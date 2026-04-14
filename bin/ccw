@@ -1,0 +1,889 @@
+#!/usr/bin/env python3
+"""ccw: readable tmux wrapper for Claude worktree sessions."""
+
+from __future__ import annotations
+
+import os
+import pwd
+import re
+import shlex
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    tomllib = None
+
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "runtime_user": "devagent",
+    "default_launch_mode": "fixed",
+    "enable_all_users_list": False,
+    "launch_user_by_caller": {},
+    "session_users": ["devagent"],
+    "allowed_roots": [
+        "/srv/apps/aiagent/workspace",
+        "/srv/agentdev",
+        "/srv/work/repos",
+    ],
+    "session_prefix": "cc-",
+    "default_claude_args": [],
+    "new_project_root": "/srv/agentdev",
+}
+
+
+USAGE = """Usage:
+  ccw [run] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
+  ccw new <name> [-w <branch>] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
+  ccw list [--all-users]
+  ccw attach <id>
+  ccw kill <id> [--dry-run]
+  ccw kill-all [--dry-run]
+  ccw -l [--all-users]
+  ccw -a <id>
+  ccw -k <id> [--dry-run]
+  ccw -n <name> [-w <branch>] [--dry-run] [--dsp|--dap] [claude-flags...]
+
+Notes:
+  - Without '-w', 'new' creates /srv/agentdev/<name> (or configured root) and runs there.
+  - With '-w <branch>', 'new' uses repo inside /srv/agentdev/<name> (no cwd fallback).
+  - Unknown flags in run/new are passed to 'claude'.
+  - ID accepts: session name (with/without cc-), unique prefix, or active pane PID.
+  - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
+  - Session IDs are human-readable: cc-<name>, cc-<name>-2, or cc-<name>-<workspace>.
+"""
+
+
+@dataclass
+class Config:
+    runtime_user: str
+    default_launch_mode: str
+    enable_all_users_list: bool
+    launch_user_by_caller: dict[str, str]
+    session_users: list[str]
+    allowed_roots: list[str]
+    session_prefix: str
+    default_claude_args: list[str]
+    new_project_root: str
+
+
+@dataclass
+class SessionInfo:
+    user: str
+    name: str
+    attached: str
+    windows: str
+    created: str
+    last_attached: str
+    pane_pids: tuple[int, ...]
+    active_pid: int | None
+    active_cmd: str
+    active_path: str
+    cpu_pct: float = 0.0
+    rss_kib: int = 0
+
+
+@dataclass
+class ParsedArgs:
+    action: str
+    target_id: str | None = None
+    worktree_branch: str | None = None
+    dry_run: bool = False
+    dsp: bool = False
+    all_users: bool = False
+    claude_args: list[str] | None = None
+
+
+def eprint(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+
+def fail(msg: str, code: int = 2) -> None:
+    eprint(f"ccw: {msg}")
+    raise SystemExit(code)
+
+
+def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in override.items():
+        out[key] = value
+    return out
+
+
+def load_toml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    if tomllib is None:
+        fail("python tomllib is unavailable on this host", 1)
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def normalize_user_list(values: list[str]) -> list[str]:
+    users: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        user = str(value).strip()
+        if not user or user in seen:
+            continue
+        seen.add(user)
+        users.append(user)
+    return users
+
+
+def canonical(path: str) -> str:
+    return str(Path(path).expanduser().resolve(strict=False))
+
+
+def is_under(path: str, base: str) -> bool:
+    path_p = Path(path)
+    base_p = Path(base)
+    try:
+        path_p.relative_to(base_p)
+        return True
+    except ValueError:
+        return False
+
+
+def find_project_config(cwd: str, allowed_roots: list[str]) -> Path | None:
+    cur = Path(cwd)
+    allowed = [Path(p) for p in allowed_roots]
+    for parent in [cur] + list(cur.parents):
+        candidate = parent / ".ccw.toml"
+        if candidate.exists():
+            for root in allowed:
+                if is_under(str(parent), str(root)):
+                    return candidate
+            return None
+    return None
+
+
+def load_config(cwd: str) -> Config:
+    merged = dict(DEFAULT_CONFIG)
+    system_cfg = Path("/etc/ccw/config.toml")
+    user_cfg = Path.home() / ".config/ccw/config.toml"
+    merged = merge_config(merged, load_toml(system_cfg))
+    merged = merge_config(merged, load_toml(user_cfg))
+
+    seed_allowed = [canonical(p) for p in merged.get("allowed_roots", [])]
+    proj_cfg = find_project_config(cwd, seed_allowed)
+    if proj_cfg:
+        merged = merge_config(merged, load_toml(proj_cfg))
+
+    runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
+    default_launch_mode = str(merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])).strip()
+    if default_launch_mode not in {"fixed", "caller"}:
+        fail(f"invalid default_launch_mode: {default_launch_mode!r} (expected 'fixed' or 'caller')")
+    launch_user_by_caller_raw = merged.get("launch_user_by_caller", DEFAULT_CONFIG["launch_user_by_caller"])
+    if not isinstance(launch_user_by_caller_raw, dict):
+        fail("launch_user_by_caller must be a TOML table")
+    launch_user_by_caller = {
+        str(k).strip(): str(v).strip()
+        for k, v in launch_user_by_caller_raw.items()
+        if str(k).strip() and str(v).strip()
+    }
+    session_users_raw = merged.get("session_users", DEFAULT_CONFIG["session_users"])
+    if not isinstance(session_users_raw, list):
+        fail("session_users must be a TOML array")
+    session_users = normalize_user_list([str(x) for x in session_users_raw])
+    if not session_users:
+        session_users = [runtime_user]
+    enable_all_users_list = bool(merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"]))
+    session_prefix = str(merged.get("session_prefix", DEFAULT_CONFIG["session_prefix"]))
+    allowed_roots = [canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
+    default_claude_args = [str(x) for x in merged.get("default_claude_args", [])]
+    new_project_root = canonical(str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"])))
+
+    return Config(
+        runtime_user=runtime_user,
+        default_launch_mode=default_launch_mode,
+        enable_all_users_list=enable_all_users_list,
+        launch_user_by_caller=launch_user_by_caller,
+        session_users=session_users,
+        allowed_roots=allowed_roots,
+        session_prefix=session_prefix,
+        default_claude_args=default_claude_args,
+        new_project_root=new_project_root,
+    )
+
+
+def slugify(name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
+    return slug or "workspace"
+
+
+def process_user() -> str:
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
+def resolve_caller_user() -> str:
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if sudo_user and sudo_user != "root":
+        return sudo_user
+    return process_user()
+
+
+def resolve_launch_user(cfg: Config, caller_user: str) -> str:
+    mapped = cfg.launch_user_by_caller.get(caller_user, "").strip()
+    if mapped:
+        return mapped
+    if cfg.default_launch_mode == "caller":
+        return caller_user
+    return cfg.runtime_user
+
+
+def resolve_all_session_users(cfg: Config, current_launch_user: str) -> list[str]:
+    users = normalize_user_list(cfg.session_users + [current_launch_user])
+    if not users:
+        return [current_launch_user]
+    return users
+
+
+def command_prefix_for_user(target_user: str) -> list[str]:
+    if process_user() == target_user:
+        return []
+    return ["sudo", "-iu", target_user, "--"]
+
+
+def tmux_base(target_user: str) -> list[str]:
+    return command_prefix_for_user(target_user) + ["tmux"]
+
+
+def fmt_epoch(ts: str) -> str:
+    if not ts:
+        return ""
+    try:
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def compact_time(iso_ts: str) -> str:
+    if not iso_ts:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(iso_ts)
+    except ValueError:
+        return "-"
+    now = datetime.now(tz=dt.tzinfo) if dt.tzinfo else datetime.now()
+    if dt.date() == now.date():
+        return dt.strftime("%H:%M")
+    return dt.strftime("%m-%d")
+
+
+def format_rss_kib(rss_kib: int) -> str:
+    if rss_kib <= 0:
+        return "-"
+    if rss_kib < 1024:
+        return f"{rss_kib}K"
+    mib = rss_kib / 1024
+    if mib < 1024:
+        return f"{mib:.0f}M"
+    gib = mib / 1024
+    return f"{gib:.1f}G"
+
+
+def format_cpu_pct(cpu_pct: float) -> str:
+    if cpu_pct <= 0:
+        return "-"
+    if cpu_pct >= 100:
+        return f"{cpu_pct:.0f}"
+    return f"{cpu_pct:.1f}"
+
+
+def run_cmd(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
+    cp = subprocess.run(cmd, text=True, capture_output=True)
+    if check and cp.returncode != 0:
+        stderr = (cp.stderr or cp.stdout).strip()
+        fail(stderr or f"command failed: {shlex.join(cmd)}", 1)
+    return cp
+
+
+def git_repo_root(cwd: str) -> str | None:
+    cp = subprocess.run(
+        ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+    )
+    if cp.returncode != 0:
+        return None
+    out = (cp.stdout or "").strip()
+    if not out:
+        return None
+    return canonical(out)
+
+
+def git_repo_root_as_user(cwd: str, target_user: str) -> str | None:
+    cp = subprocess.run(
+        command_prefix_for_user(target_user) + ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+    )
+    if cp.returncode != 0:
+        return None
+    out = (cp.stdout or "").strip()
+    if not out:
+        return None
+    return canonical(out)
+
+
+def session_stem_for_path(target_dir: str) -> str:
+    return slugify(os.path.basename(target_dir))
+
+
+def session_stem_for_worktree(repo_root: str, branch: str) -> str:
+    repo_slug = slugify(os.path.basename(repo_root))
+    workspace_slug = slugify(branch)
+    if workspace_slug == repo_slug:
+        return repo_slug
+    return f"{repo_slug}-{workspace_slug}"
+
+
+def candidate_session_name(prefix: str, stem: str, index: int) -> str:
+    if index <= 1:
+        return f"{prefix}{stem}"
+    return f"{prefix}{stem}-{index}"
+
+
+def allocate_session_name(prefix: str, stem: str, compatibility_root: str, sessions: list[SessionInfo]) -> str:
+    exact_base = f"{prefix}{stem}"
+    exact_base_hits = [s for s in sessions if s.name == exact_base]
+    if exact_base_hits and not session_path_compatible(exact_base_hits[0].active_path, compatibility_root):
+        fail(
+            "session conflict: "
+            f"{exact_base} already points to {exact_base_hits[0].active_path or '<unknown>'}, "
+            f"not under {compatibility_root}"
+        )
+
+    index = 1
+    while True:
+        candidate = candidate_session_name(prefix, stem, index)
+        existing = [s for s in sessions if s.name == candidate]
+        if not existing:
+            return candidate
+        if not session_path_compatible(existing[0].active_path, compatibility_root):
+            fail(
+                "session conflict: "
+                f"{candidate} already points to {existing[0].active_path or '<unknown>'}, "
+                f"not under {compatibility_root}"
+            )
+        index += 1
+
+
+def session_path_compatible(active_path: str, repo_root: str) -> bool:
+    if not active_path:
+        return True
+    active = canonical(active_path)
+    return is_under(active, repo_root)
+
+
+def enrich_session_usage(sessions: list[SessionInfo]) -> None:
+    if not sessions:
+        return
+
+    cp = subprocess.run(["ps", "-eo", "pid=,ppid=,rss=,%cpu="], text=True, capture_output=True)
+    if cp.returncode != 0:
+        return
+
+    proc_rows: dict[int, tuple[int, int, float]] = {}
+    children: dict[int, list[int]] = {}
+    for row in cp.stdout.splitlines():
+        parts = row.split(None, 3)
+        if len(parts) != 4:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+            rss_kib = int(parts[2])
+            cpu_pct = float(parts[3])
+        except ValueError:
+            continue
+        proc_rows[pid] = (ppid, rss_kib, cpu_pct)
+        children.setdefault(ppid, []).append(pid)
+
+    for session in sessions:
+        total_rss_kib = 0
+        total_cpu_pct = 0.0
+        seen: set[int] = set()
+        stack = list(session.pane_pids)
+        while stack:
+            pid = stack.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            proc = proc_rows.get(pid)
+            if proc is None:
+                continue
+            _, rss_kib, cpu_pct = proc
+            total_rss_kib += max(rss_kib, 0)
+            total_cpu_pct += max(cpu_pct, 0.0)
+            stack.extend(children.get(pid, []))
+        session.rss_kib = total_rss_kib
+        session.cpu_pct = total_cpu_pct
+
+
+def collect_sessions_for_user(user: str, session_prefix: str) -> list[SessionInfo]:
+    base = tmux_base(user)
+    probe = subprocess.run(base + ["list-sessions"], text=True, capture_output=True)
+    if probe.returncode != 0:
+        return []
+
+    fmt = "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_created}\t#{session_activity}"
+    rows = run_cmd(base + ["list-sessions", "-F", fmt]).stdout.splitlines()
+    sessions: list[SessionInfo] = []
+    for row in rows:
+        parts = row.split("\t")
+        if len(parts) != 5:
+            continue
+        name, attached, windows, created_ts, activity_ts = parts
+        if not name.startswith(session_prefix):
+            continue
+
+        pane_fmt = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
+        pane_rows = run_cmd(base + ["list-panes", "-t", name, "-F", pane_fmt], check=False).stdout.splitlines()
+        pane_pids: list[int] = []
+        active_pid: int | None = None
+        active_cmd = ""
+        active_path = ""
+        for prow in pane_rows:
+            pparts = prow.split("\t")
+            if len(pparts) != 4:
+                continue
+            is_active, pid_s, cmd, path = pparts
+            try:
+                pane_pid = int(pid_s)
+            except ValueError:
+                pane_pid = None
+            if pane_pid is not None:
+                pane_pids.append(pane_pid)
+            if is_active != "1":
+                continue
+            active_pid = pane_pid
+            active_cmd = cmd
+            active_path = path
+
+        sessions.append(
+            SessionInfo(
+                user=user,
+                name=name,
+                attached=attached,
+                windows=windows,
+                created=fmt_epoch(created_ts),
+                last_attached=fmt_epoch(activity_ts),
+                pane_pids=tuple(pane_pids),
+                active_pid=active_pid,
+                active_cmd=active_cmd,
+                active_path=active_path,
+            )
+        )
+    enrich_session_usage(sessions)
+    return sessions
+
+
+def collect_sessions(users: list[str], session_prefix: str) -> list[SessionInfo]:
+    sessions: list[SessionInfo] = []
+    for user in normalize_user_list(users):
+        sessions.extend(collect_sessions_for_user(user, session_prefix))
+    return sessions
+
+
+def resolve_session(identifier: str, sessions: list[SessionInfo], prefix: str) -> SessionInfo:
+    if not sessions:
+        fail("no cc-* sessions found")
+
+    # 1) exact session name
+    exact = [s for s in sessions if s.name == identifier]
+    if len(exact) == 1:
+        return exact[0]
+
+    # 2) normalized name with prefix
+    normalized = identifier if identifier.startswith(prefix) else f"{prefix}{identifier}"
+    norm = [s for s in sessions if s.name == normalized]
+    if len(norm) == 1:
+        return norm[0]
+
+    # 3) unique prefix match (with or without cc-)
+    pref: list[SessionInfo] = []
+    for s in sessions:
+        short = s.name[len(prefix) :] if s.name.startswith(prefix) else s.name
+        if s.name.startswith(identifier) or short.startswith(identifier):
+            pref.append(s)
+    uniq = {s.name: s for s in pref}
+    if len(uniq) == 1:
+        return next(iter(uniq.values()))
+    if len(uniq) > 1:
+        fail(f"ambiguous identifier '{identifier}': {', '.join(sorted(uniq))}")
+
+    # 4) active pane pid
+    if identifier.isdigit():
+        pid = int(identifier)
+        pid_hits = [s for s in sessions if s.active_pid == pid]
+        if len(pid_hits) == 1:
+            return pid_hits[0]
+        if len(pid_hits) > 1:
+            fail(f"pid '{identifier}' matches multiple sessions: {', '.join(s.name for s in pid_hits)}")
+
+    fail(f"no session match for '{identifier}'")
+    raise AssertionError("unreachable")
+
+
+def ensure_allowed_dir(target_dir: str, allowed_roots: list[str]) -> None:
+    if not os.path.isdir(target_dir):
+        fail(f"not a directory: {target_dir}")
+    for base in allowed_roots:
+        if is_under(target_dir, base):
+            return
+    eprint("ccw: directory must be under one of:")
+    for base in allowed_roots:
+        eprint(f"ccw:   - {base}")
+    fail(f"got: {target_dir}")
+
+
+def print_list(cfg: Config, sessions: list[SessionInfo], scope_users: list[str], show_user: bool = False) -> int:
+    if not sessions:
+        if show_user:
+            print(f"ccw: no {cfg.session_prefix}* sessions for users: {', '.join(scope_users)}")
+        else:
+            print(f"ccw: no {cfg.session_prefix}* sessions for {scope_users[0]}")
+        return 0
+
+    rows: list[dict[str, str]] = []
+    for s in sessions:
+        short = s.name[len(cfg.session_prefix) :] if s.name.startswith(cfg.session_prefix) else s.name
+        marker = "*" if s.attached == "1" else " "
+        pid_s = str(s.active_pid) if s.active_pid is not None else "-"
+        cpu_s = format_cpu_pct(s.cpu_pct)
+        ram_s = format_rss_kib(s.rss_kib)
+        start_s = compact_time(s.created)
+        last_s = compact_time(s.last_attached)
+        cmd_s = s.active_cmd or "-"
+        path_s = s.active_path or "-"
+        rows.append(
+            {
+                "user": s.user,
+                "id": f"{marker}{short}",
+                "pid": pid_s,
+                "cpu": cpu_s,
+                "ram": ram_s,
+                "new": start_s,
+                "last": last_s,
+                "cmd": cmd_s,
+                "path": path_s,
+            }
+        )
+
+    user_w = max(4, max(len(r["user"]) for r in rows)) if show_user else 0
+    id_w = max(2, max(len(r["id"]) for r in rows))
+    pid_w = max(3, max(len(r["pid"]) for r in rows))
+    cpu_w = max(3, max(len(r["cpu"]) for r in rows))
+    ram_w = max(3, max(len(r["ram"]) for r in rows))
+    cmd_w = max(3, max(len(r["cmd"]) for r in rows))
+    attached_count = sum(1 for s in sessions if s.attached == "1")
+    total_cpu_pct = sum(s.cpu_pct for s in sessions)
+    total_ram_kib = sum(s.rss_kib for s in sessions)
+    if show_user:
+        scope = f" users={','.join(scope_users)}"
+    else:
+        scope = f" user={scope_users[0]}"
+    print(
+        "ccw:"
+        f"{scope}"
+        f" sessions={len(rows)}"
+        f" attached={attached_count}"
+        f" cpu={format_cpu_pct(total_cpu_pct)}"
+        f" ram={format_rss_kib(total_ram_kib)}"
+    )
+    if show_user:
+        print(
+            f"{'USER':<{user_w}}  {'ID':<{id_w}}  {'PID':<{pid_w}}  {'CPU':>{cpu_w}}  "
+            f"{'RAM':>{ram_w}}  {'NEW':<5}  {'LAST':<5}  {'CMD':<{cmd_w}}  PATH"
+        )
+        for row in rows:
+            print(
+                f"{row['user']:<{user_w}}  {row['id']:<{id_w}}  {row['pid']:<{pid_w}}  "
+                f"{row['cpu']:>{cpu_w}}  {row['ram']:>{ram_w}}  {row['new']:<5}  "
+                f"{row['last']:<5}  {row['cmd']:<{cmd_w}}  {row['path']}"
+            )
+    else:
+        print(f"{'ID':<{id_w}}  {'PID':<{pid_w}}  {'CPU':>{cpu_w}}  {'RAM':>{ram_w}}  {'NEW':<5}  {'LAST':<5}  {'CMD':<{cmd_w}}  PATH")
+        for row in rows:
+            print(
+                f"{row['id']:<{id_w}}  {row['pid']:<{pid_w}}  {row['cpu']:>{cpu_w}}  "
+                f"{row['ram']:>{ram_w}}  {row['new']:<5}  {row['last']:<5}  "
+                f"{row['cmd']:<{cmd_w}}  {row['path']}"
+            )
+
+    print()
+    print("(*) attached in tmux now")
+    print("attach: ccw attach <id|pid>")
+    print("kill:   ccw kill <id|pid> [--dry-run]")
+    return 0
+
+
+SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new"}
+
+
+def parse_list_args(argv: list[str]) -> ParsedArgs:
+    all_users = "--all-users" in argv
+    extras = [a for a in argv if a != "--all-users"]
+    if extras:
+        fail(f"unknown args for list: {' '.join(extras)}")
+    return ParsedArgs(action="list", all_users=all_users)
+
+
+def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -> ParsedArgs:
+    parsed = ParsedArgs(action=action, target_id=target_id, claude_args=[])
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in ("-w", "--worktree"):
+            i += 1
+            if i >= len(argv):
+                fail(f"{token} requires a branch value")
+            parsed.worktree_branch = argv[i]
+        elif token == "--dry-run":
+            parsed.dry_run = True
+        elif token in ("--dangerously-skip-permissions", "--dsp", "--dap", "-dap"):
+            parsed.dsp = True
+        else:
+            parsed.claude_args.append(token)
+        i += 1
+    return parsed
+
+
+def parse_subcommand(argv: list[str]) -> ParsedArgs:
+    cmd = argv[0]
+    if cmd == "run":
+        return parse_run_like(argv[1:], "run")
+    if cmd == "list":
+        return parse_list_args(argv[1:])
+    if cmd == "kill-all":
+        dry = "--dry-run" in argv[1:]
+        extras = [a for a in argv[1:] if a != "--dry-run"]
+        if extras:
+            fail(f"unknown args for kill-all: {' '.join(extras)}")
+        return ParsedArgs(action="kill-all", dry_run=dry)
+    if cmd in ("attach", "kill"):
+        if len(argv) < 2:
+            fail(f"{cmd} requires an identifier")
+        target = argv[1]
+        dry = "--dry-run" in argv[2:] if cmd == "kill" else False
+        extras = [a for a in argv[2:] if not (cmd == "kill" and a == "--dry-run")]
+        if extras:
+            fail(f"unknown args for {cmd}: {' '.join(extras)}")
+        return ParsedArgs(action=cmd, target_id=target, dry_run=dry)
+    if cmd == "new":
+        if len(argv) < 2:
+            fail("new requires a name")
+        name = argv[1]
+        return parse_run_like(argv[2:], "new", target_id=name)
+    fail(f"unknown subcommand: {cmd}")
+    raise AssertionError("unreachable")
+
+
+def parse_args(argv: list[str]) -> ParsedArgs:
+    if not argv:
+        print(USAGE)
+        raise SystemExit(0)
+    if argv[0] in ("-h", "--help"):
+        print(USAGE)
+        raise SystemExit(0)
+    if argv[0] in ("-l", "--list"):
+        return parse_list_args(argv[1:])
+    if argv[0] in ("-a", "--attach"):
+        if len(argv) < 2:
+            fail("attach requires an identifier")
+        return ParsedArgs(action="attach", target_id=argv[1])
+    if argv[0] in ("-k", "--kill"):
+        if len(argv) < 2:
+            fail("kill requires an identifier")
+        dry = "--dry-run" in argv[2:]
+        extras = [a for a in argv[2:] if a != "--dry-run"]
+        if extras:
+            fail(f"unknown args for kill: {' '.join(extras)}")
+        return ParsedArgs(action="kill", target_id=argv[1], dry_run=dry)
+    if argv[0] in ("--killall",):
+        dry = "--dry-run" in argv[1:]
+        extras = [a for a in argv[1:] if a != "--dry-run"]
+        if extras:
+            fail(f"unknown args for kill-all: {' '.join(extras)}")
+        return ParsedArgs(action="kill-all", dry_run=dry)
+    if argv[0] in ("-n", "--new"):
+        if len(argv) < 2:
+            fail("new requires a name")
+        return parse_run_like(argv[2:], "new", target_id=argv[1])
+    if argv[0] in SUBCOMMANDS:
+        return parse_subcommand(argv)
+    if not argv[0].startswith("-"):
+        fail(f"unknown command: {argv[0]}\n{USAGE}")
+    if argv[0].startswith("-"):
+        # Convenience: support `ccw --model sonnet` as run passthrough.
+        return parse_run_like(argv, "run")
+    # Default to run mode for bare flags/passthrough.
+    fail(f"unknown command: {argv[0]}\n{USAGE}")
+    raise AssertionError("unreachable")
+
+
+def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+    if not args.target_id:
+        fail("attach requires an identifier")
+    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    target = resolve_session(args.target_id, sessions, cfg.session_prefix)
+    full = tmux_base(launch_user) + ["attach-session", "-t", target.name]
+    os.execvp(full[0], full)
+    return 0
+
+
+def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+    if not args.target_id:
+        fail("kill requires an identifier")
+    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    target = resolve_session(args.target_id, sessions, cfg.session_prefix)
+    full = tmux_base(launch_user) + ["kill-session", "-t", target.name]
+    if args.dry_run:
+        print(f"dry-run: {shlex.join(full)}")
+        return 0
+    run_cmd(full, check=True)
+    print(f"killed: {target.name}")
+    return 0
+
+
+def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    if not sessions:
+        print(f"ccw: no {cfg.session_prefix}* sessions for {launch_user}")
+        return 0
+    for s in sessions:
+        full = tmux_base(launch_user) + ["kill-session", "-t", s.name]
+        if args.dry_run:
+            print(f"dry-run: {shlex.join(full)}")
+            continue
+        run_cmd(full, check=False)
+        print(f"killed: {s.name}")
+    return 0
+
+
+def launch_in_tmux(target_dir: str, session: str, args: ParsedArgs, cfg: Config, branch: str | None, launch_user: str) -> int:
+    final_cmd = ["claude"] + cfg.default_claude_args + (args.claude_args or [])
+    if branch:
+        final_cmd += ["-w", branch]
+    if args.dsp:
+        final_cmd.append("--dangerously-skip-permissions")
+    full = tmux_base(launch_user) + ["new-session", "-As", session, "-c", target_dir] + final_cmd
+    if args.dry_run:
+        print(f"launch_user={shlex.quote(launch_user)}")
+        print(f"dir={shlex.quote(target_dir)}")
+        print(f"session={shlex.quote(session)}")
+        if branch:
+            print(f"branch={shlex.quote(branch)}")
+        print(f"exec {shlex.join(full)}")
+        return 0
+    os.execvp(full[0], full)
+    return 0
+
+
+def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+    name = args.target_id
+    if not name:
+        fail("new requires a name")
+    if "/" in name or name in (".", ".."):
+        fail(f"invalid name: {name}")
+    cwd = canonical(os.getcwd())
+    ensure_allowed_dir(cwd, cfg.allowed_roots)
+    project_dir = canonical(os.path.join(cfg.new_project_root, name))
+    allowed = any(is_under(project_dir, base) for base in cfg.allowed_roots)
+    if not allowed:
+        fail(f"new target must be under allowed_roots; got: {project_dir}")
+    branch = args.worktree_branch
+    if branch:
+        if not os.path.isdir(project_dir):
+            fail(
+                "new -w requires an existing project directory: "
+                f"{project_dir} (create it first with 'ccw -n {name}')"
+            )
+        repo_root = git_repo_root_as_user(project_dir, launch_user)
+        if not repo_root:
+            fail(
+                "new -w requires a git repository (checked as launch user "
+                f"{launch_user}) in {project_dir}"
+            )
+        ensure_allowed_dir(repo_root, cfg.allowed_roots)
+        target_dir = repo_root
+        session_stem = session_stem_for_worktree(repo_root, branch)
+        compatibility_root = repo_root
+    else:
+        target_dir = project_dir
+        if args.dry_run:
+            mkdir_cmd = command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir]
+            print(f"mkdir= {shlex.join(mkdir_cmd)}")
+        else:
+            run_cmd(command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
+        session_stem = session_stem_for_path(target_dir)
+        compatibility_root = target_dir
+    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+
+
+def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+    cwd = canonical(os.getcwd())
+    ensure_allowed_dir(cwd, cfg.allowed_roots)
+    branch = args.worktree_branch
+    if branch:
+        repo_root = git_repo_root_as_user(cwd, launch_user)
+        if not repo_root:
+            fail(f"run -w must be run inside a git repository readable by {launch_user}")
+        ensure_allowed_dir(repo_root, cfg.allowed_roots)
+        target_dir = repo_root
+        session_stem = session_stem_for_worktree(repo_root, branch)
+        compatibility_root = repo_root
+    else:
+        target_dir = cwd
+        session_stem = session_stem_for_path(target_dir)
+        compatibility_root = target_dir
+    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+
+
+def main(argv: list[str]) -> int:
+    try:
+        args = parse_args(argv)
+    except SystemExit as ex:
+        return int(ex.code)
+    cfg = load_config(os.getcwd())
+    caller_user = resolve_caller_user()
+    launch_user = resolve_launch_user(cfg, caller_user)
+
+    if args.action == "run":
+        return do_run(args, cfg, launch_user)
+    if args.action == "list":
+        if args.all_users:
+            if not cfg.enable_all_users_list:
+                fail("list --all-users is disabled in config")
+            scope_users = resolve_all_session_users(cfg, launch_user)
+            return print_list(cfg, collect_sessions(scope_users, cfg.session_prefix), scope_users, show_user=True)
+        scope_users = [launch_user]
+        return print_list(cfg, collect_sessions(scope_users, cfg.session_prefix), scope_users, show_user=False)
+    if args.action == "attach":
+        return do_attach(args, cfg, launch_user)
+    if args.action == "kill":
+        return do_kill(args, cfg, launch_user)
+    if args.action == "kill-all":
+        return do_kill_all(args, cfg, launch_user)
+    if args.action == "new":
+        return do_new(args, cfg, launch_user)
+    fail(f"unsupported action: {args.action}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

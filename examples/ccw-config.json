@@ -1,0 +1,17 @@
+{
+  "runtime_user": "devagent",
+  "default_launch_mode": "fixed",
+  "enable_all_users_list": true,
+  "session_prefix": "cc-",
+  "allowed_roots": [
+    "/srv",
+    "/home/remdepl"
+  ],
+  "session_users": [
+    "devagent",
+    "remdepl"
+  ],
+  "new_project_root": "/srv/agentdev",
+  "default_claude_args": [],
+  "launch_user_by_caller": {}
+}
