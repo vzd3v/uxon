@@ -5,7 +5,7 @@
 ## Host layout
 - checkout: `/srv/apps/vz_devagent_cli_tool`
 - executable: `/usr/local/bin/ccw`
-- config: `/etc/ccw/config.toml`
+- config: `/srv/apps/vz_devagent_cli_tool/config/config.toml`
 
 `/usr/local/bin/ccw` should remain a symlink to `bin/ccw` inside the canonical
 checkout. Do not keep a second copied executable as a parallel source of truth.
@@ -16,6 +16,10 @@ The infra repo may:
 - choose the target git ref (`tag`, branch, or commit)
 - pass host-specific settings to `install/render_ccw_config.py`
 - manage host-specific ACLs for editable checkouts
+
+Use an explicit ref in infra when you want deterministic rollout, and keep
+`VERSION` bumped in this repo so operators can correlate `ccw --version` with
+the deployed checkout state.
 
 The infra repo must not become a second canonical location for:
 - the `ccw` executable source

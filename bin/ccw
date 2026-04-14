@@ -21,19 +21,20 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "runtime_user": "devagent",
-    "default_launch_mode": "fixed",
+    "runtime_user": "",
+    "default_launch_mode": "caller",
     "enable_all_users_list": False,
     "launch_user_by_caller": {},
-    "session_users": ["devagent"],
+    "session_users": [],
     "allowed_roots": [
         "/srv/apps/aiagent/workspace",
         "/srv/agentdev",
+        "/srv/repos",
         "/srv/work/repos",
     ],
     "session_prefix": "cc-",
     "default_claude_args": [],
-    "new_project_root": "/srv/agentdev",
+    "new_project_root": "/srv/repos",
 }
 
 
@@ -41,6 +42,7 @@ USAGE = """Usage:
   ccw [run] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
   ccw new <name> [-w <branch>] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
   ccw list [--all-users]
+  ccw version
   ccw attach <id>
   ccw kill <id> [--dry-run]
   ccw kill-all [--dry-run]
@@ -50,8 +52,8 @@ USAGE = """Usage:
   ccw -n <name> [-w <branch>] [--dry-run] [--dsp|--dap] [claude-flags...]
 
 Notes:
-  - Without '-w', 'new' creates /srv/agentdev/<name> (or configured root) and runs there.
-  - With '-w <branch>', 'new' uses repo inside /srv/agentdev/<name> (no cwd fallback).
+  - Without '-w', 'new' creates /srv/repos/<name> (or configured root) and runs there.
+  - With '-w <branch>', 'new' uses repo inside /srv/repos/<name> (no cwd fallback).
   - Unknown flags in run/new are passed to 'claude'.
   - ID accepts: session name (with/without cc-), unique prefix, or active pane PID.
   - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
@@ -158,7 +160,11 @@ def find_project_config(cwd: str, allowed_roots: list[str]) -> Path | None:
     allowed = [Path(p) for p in allowed_roots]
     for parent in [cur] + list(cur.parents):
         candidate = parent / ".ccw.toml"
-        if candidate.exists():
+        try:
+            exists = candidate.exists()
+        except PermissionError:
+            continue
+        if exists:
             for root in allowed:
                 if is_under(str(parent), str(root)):
                     return candidate
@@ -166,12 +172,13 @@ def find_project_config(cwd: str, allowed_roots: list[str]) -> Path | None:
     return None
 
 
+def repo_config_path() -> Path:
+    return repo_root() / "config" / "config.toml"
+
+
 def load_config(cwd: str) -> Config:
     merged = dict(DEFAULT_CONFIG)
-    system_cfg = Path("/etc/ccw/config.toml")
-    user_cfg = Path.home() / ".config/ccw/config.toml"
-    merged = merge_config(merged, load_toml(system_cfg))
-    merged = merge_config(merged, load_toml(user_cfg))
+    merged = merge_config(merged, load_toml(repo_config_path()))
 
     seed_allowed = [canonical(p) for p in merged.get("allowed_roots", [])]
     proj_cfg = find_project_config(cwd, seed_allowed)
@@ -195,7 +202,7 @@ def load_config(cwd: str) -> Config:
         fail("session_users must be a TOML array")
     session_users = normalize_user_list([str(x) for x in session_users_raw])
     if not session_users:
-        session_users = [runtime_user]
+        session_users = [runtime_user] if runtime_user else []
     enable_all_users_list = bool(merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"]))
     session_prefix = str(merged.get("session_prefix", DEFAULT_CONFIG["session_prefix"]))
     allowed_roots = [canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
@@ -225,10 +232,13 @@ def process_user() -> str:
 
 
 def resolve_caller_user() -> str:
+    current_user = process_user()
+    if current_user != "root":
+        return current_user
     sudo_user = os.environ.get("SUDO_USER", "").strip()
     if sudo_user and sudo_user != "root":
         return sudo_user
-    return process_user()
+    return current_user
 
 
 def resolve_launch_user(cfg: Config, caller_user: str) -> str:
@@ -628,7 +638,7 @@ def print_list(cfg: Config, sessions: list[SessionInfo], scope_users: list[str],
     return 0
 
 
-SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new"}
+SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version"}
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
@@ -661,6 +671,8 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
 
 def parse_subcommand(argv: list[str]) -> ParsedArgs:
     cmd = argv[0]
+    if cmd == "version":
+        return ParsedArgs(action="version")
     if cmd == "run":
         return parse_run_like(argv[1:], "run")
     if cmd == "list":
@@ -696,6 +708,8 @@ def parse_args(argv: list[str]) -> ParsedArgs:
     if argv[0] in ("-h", "--help"):
         print(USAGE)
         raise SystemExit(0)
+    if argv[0] in ("-V", "--version"):
+        return ParsedArgs(action="version")
     if argv[0] in ("-l", "--list"):
         return parse_list_args(argv[1:])
     if argv[0] in ("-a", "--attach"):
@@ -796,8 +810,6 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         fail("new requires a name")
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
-    cwd = canonical(os.getcwd())
-    ensure_allowed_dir(cwd, cfg.allowed_roots)
     project_dir = canonical(os.path.join(cfg.new_project_root, name))
     allowed = any(is_under(project_dir, base) for base in cfg.allowed_roots)
     if not allowed:
@@ -854,6 +866,53 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
 
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def read_repo_version() -> str:
+    version_path = repo_root() / "VERSION"
+    try:
+        version = version_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0.0.0+unknown"
+    return version or "0.0.0+unknown"
+
+
+def read_git_commit_short() -> str | None:
+    root = str(repo_root())
+    cp = subprocess.run(
+        ["git", "-c", f"safe.directory={root}", "-C", root, "rev-parse", "--short", "HEAD"],
+        text=True,
+        capture_output=True,
+    )
+    if cp.returncode != 0:
+        return None
+    commit = (cp.stdout or "").strip()
+    return commit or None
+
+
+def repo_is_dirty() -> bool:
+    root = str(repo_root())
+    cp = subprocess.run(
+        ["git", "-c", f"safe.directory={root}", "-C", root, "status", "--short"],
+        text=True,
+        capture_output=True,
+    )
+    if cp.returncode != 0:
+        return False
+    return bool((cp.stdout or "").strip())
+
+
+def format_version() -> str:
+    version = read_repo_version()
+    commit = read_git_commit_short()
+    if commit:
+        suffix = f"{commit}-dirty" if repo_is_dirty() else commit
+        return f"ccw {version} ({suffix})"
+    return f"ccw {version}"
+
+
 def main(argv: list[str]) -> int:
     try:
         args = parse_args(argv)
@@ -863,6 +922,9 @@ def main(argv: list[str]) -> int:
     caller_user = resolve_caller_user()
     launch_user = resolve_launch_user(cfg, caller_user)
 
+    if args.action == "version":
+        print(format_version())
+        return 0
     if args.action == "run":
         return do_run(args, cfg, launch_user)
     if args.action == "list":

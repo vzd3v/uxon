@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render /etc/ccw/config.toml from a single JSON payload."""
+"""Render repo-local ccw config.toml from a single JSON payload."""
 
 from __future__ import annotations
 
@@ -115,7 +115,9 @@ def main(argv: list[str]) -> int:
     if args.output == "-":
         sys.stdout.write(rendered)
     else:
-        Path(args.output).write_text(rendered, encoding="utf-8")
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered, encoding="utf-8")
     return 0
 
 
