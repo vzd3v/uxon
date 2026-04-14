@@ -894,8 +894,15 @@ def read_git_commit_short() -> str | None:
 
 def repo_is_dirty() -> bool:
     root = str(repo_root())
+    refresh = subprocess.run(
+        ["git", "-c", f"safe.directory={root}", "-C", root, "update-index", "-q", "--refresh"],
+        text=True,
+        capture_output=True,
+    )
+    if refresh.returncode != 0:
+        return False
     cp = subprocess.run(
-        ["git", "-c", f"safe.directory={root}", "-C", root, "status", "--short"],
+        ["git", "-c", f"safe.directory={root}", "-C", root, "status", "--porcelain", "--untracked-files=no"],
         text=True,
         capture_output=True,
     )
