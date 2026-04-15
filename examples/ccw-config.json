@@ -12,6 +12,8 @@
     "remdepl"
   ],
   "new_project_root": "/srv/agentdev",
+  "repeat_noninteractive_mode": "fail",
+  "tmux_socket_template": "/tmp/ccw-{user}.sock",
   "default_claude_args": [],
   "launch_user_by_caller": {}
 }

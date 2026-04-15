@@ -61,6 +61,13 @@ def normalize_mapping(value: Any) -> dict[str, str]:
     return out
 
 
+def normalize_repeat_mode(value: Any) -> str:
+    mode = str(value if value is not None else "fail").strip().lower()
+    if mode not in {"fail", "attach", "new"}:
+        raise ValueError("repeat_noninteractive_mode must be 'fail', 'attach', or 'new'")
+    return mode
+
+
 def render_config(payload: dict[str, Any]) -> str:
     runtime_user = str(payload.get("runtime_user", "")).strip()
     default_launch_mode = str(payload.get("default_launch_mode", "caller")).strip()
@@ -71,11 +78,15 @@ def render_config(payload: dict[str, Any]) -> str:
     default_claude_args = normalize_string_list(payload.get("default_claude_args", []))
     launch_user_by_caller = normalize_mapping(payload.get("launch_user_by_caller", {}))
     new_project_root = str(payload.get("new_project_root", "")).strip()
+    repeat_noninteractive_mode = normalize_repeat_mode(payload.get("repeat_noninteractive_mode", "fail"))
+    tmux_socket_template = str(payload.get("tmux_socket_template", "/tmp/ccw-{user}.sock")).strip()
 
     if default_launch_mode not in {"fixed", "caller"}:
         raise ValueError("default_launch_mode must be 'fixed' or 'caller'")
     if default_launch_mode == "fixed" and not runtime_user:
         raise ValueError("runtime_user is required when default_launch_mode is 'fixed'")
+    if not tmux_socket_template:
+        raise ValueError("tmux_socket_template must not be empty")
 
     lines: list[str] = []
     if runtime_user:
@@ -89,6 +100,8 @@ def render_config(payload: dict[str, Any]) -> str:
     lines.extend(toml_string_list(session_users)[1:])
     if new_project_root:
         lines.append(f"new_project_root = {toml_string(new_project_root)}")
+    lines.append(f"repeat_noninteractive_mode = {toml_string(repeat_noninteractive_mode)}")
+    lines.append(f"tmux_socket_template = {toml_string(tmux_socket_template)}")
     lines.append("")
     lines.append("default_claude_args = " + toml_string_list(default_claude_args)[0])
     lines.extend(toml_string_list(default_claude_args)[1:])

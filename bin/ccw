@@ -35,17 +35,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "session_prefix": "cc-",
     "default_claude_args": [],
     "new_project_root": "/srv/repos",
+    "repeat_noninteractive_mode": "fail",
+    "tmux_socket_template": "/tmp/ccw-{user}.sock",
 }
 
 
 USAGE = """Usage:
   ccw [run] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
   ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
+  ccw doctor
   ccw list [--all-users]
   ccw version
   ccw attach <id>
   ccw kill <id> [--dry-run]
-  ccw kill-all [--dry-run]
+  ccw kill-all [--force] [--dry-run]
   ccw -l [--all-users]
   ccw -a <id>
   ccw -k <id> [--dry-run]
@@ -54,12 +57,14 @@ USAGE = """Usage:
 Notes:
   - Without '-w', 'new' creates /srv/repos/<name> (or configured root) and runs there.
   - With '-w <branch>', 'new' uses repo inside /srv/repos/<name> (no cwd fallback).
-  - Repeating plain 'new' on the same folder asks whether to attach or start a new parallel session.
+  - Repeating 'new' for the same plain project or worktree asks whether to attach or start a new parallel session.
   - Use '--attach-existing' or '--new-session' to bypass that prompt explicitly.
+  - Non-interactive repeat handling can be pinned via CCW_REPEAT_NONINTERACTIVE_POLICY or config.
   - Unknown flags in run/new are passed to 'claude'.
   - ID accepts: session name (with/without cc-), unique prefix, or active pane PID.
   - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
-  - Session IDs are human-readable: cc-<name>, cc-<name>-2, or cc-<name>-<workspace>.
+  - Session IDs are human-readable: cc-<name>, cc-<name>-2, or cc-<repo>-<workspace>.
+  - ccw uses a dedicated tmux socket per launch user by default.
 """
 
 
@@ -74,6 +79,8 @@ class Config:
     session_prefix: str
     default_claude_args: list[str]
     new_project_root: str
+    repeat_noninteractive_mode: str
+    tmux_socket_template: str
 
 
 @dataclass
@@ -100,6 +107,7 @@ class ParsedArgs:
     repeat_mode: str | None = None
     dry_run: bool = False
     dsp: bool = False
+    force: bool = False
     all_users: bool = False
     claude_args: list[str] | None = None
 
@@ -179,15 +187,30 @@ def repo_config_path() -> Path:
     return repo_root() / "config" / "config.toml"
 
 
-def load_config(cwd: str) -> Config:
+def resolve_config_layers(cwd: str) -> tuple[dict[str, Any], list[Path]]:
     merged = dict(DEFAULT_CONFIG)
-    merged = merge_config(merged, load_toml(repo_config_path()))
-
+    sources: list[Path] = []
+    repo_cfg = repo_config_path()
+    if repo_cfg.exists():
+        sources.append(repo_cfg)
+    merged = merge_config(merged, load_toml(repo_cfg))
     seed_allowed = [canonical(p) for p in merged.get("allowed_roots", [])]
     proj_cfg = find_project_config(cwd, seed_allowed)
-    if proj_cfg:
+    if proj_cfg is not None:
+        sources.append(proj_cfg)
         merged = merge_config(merged, load_toml(proj_cfg))
+    return merged, sources
 
+
+def validate_repeat_mode(value: str, source: str) -> str:
+    mode = value.strip().lower()
+    if mode not in {"fail", "attach", "new"}:
+        fail(f"invalid {source}: {value!r} (expected 'fail', 'attach', or 'new')")
+    return mode
+
+
+def load_config(cwd: str) -> Config:
+    merged, _ = resolve_config_layers(cwd)
     runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
     default_launch_mode = str(merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])).strip()
     if default_launch_mode not in {"fixed", "caller"}:
@@ -211,6 +234,13 @@ def load_config(cwd: str) -> Config:
     allowed_roots = [canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
     default_claude_args = [str(x) for x in merged.get("default_claude_args", [])]
     new_project_root = canonical(str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"])))
+    repeat_noninteractive_mode = validate_repeat_mode(
+        str(merged.get("repeat_noninteractive_mode", DEFAULT_CONFIG["repeat_noninteractive_mode"])),
+        "repeat_noninteractive_mode",
+    )
+    tmux_socket_template = str(merged.get("tmux_socket_template", DEFAULT_CONFIG["tmux_socket_template"])).strip()
+    if not tmux_socket_template:
+        fail("tmux_socket_template must not be empty")
 
     return Config(
         runtime_user=runtime_user,
@@ -222,6 +252,8 @@ def load_config(cwd: str) -> Config:
         session_prefix=session_prefix,
         default_claude_args=default_claude_args,
         new_project_root=new_project_root,
+        repeat_noninteractive_mode=repeat_noninteractive_mode,
+        tmux_socket_template=tmux_socket_template,
     )
 
 
@@ -266,8 +298,30 @@ def command_prefix_for_user(target_user: str) -> list[str]:
     return ["sudo", "-iu", target_user, "--"]
 
 
-def tmux_base(target_user: str) -> list[str]:
-    return command_prefix_for_user(target_user) + ["tmux"]
+def tmux_base(target_user: str, socket_path: str | None = None) -> list[str]:
+    base = command_prefix_for_user(target_user) + ["tmux"]
+    if socket_path:
+        base.extend(["-S", socket_path])
+    return base
+
+
+def tmux_socket_path(cfg: Config, target_user: str) -> str:
+    try:
+        uid = pwd.getpwnam(target_user).pw_uid
+    except KeyError:
+        fail(f"unknown launch user for tmux socket expansion: {target_user}", 1)
+    try:
+        rendered = cfg.tmux_socket_template.format(user=target_user, uid=uid)
+    except KeyError as exc:
+        fail(f"tmux_socket_template uses unsupported placeholder: {exc.args[0]!r}")
+    if not rendered.startswith("/"):
+        fail(f"tmux_socket_template must render to an absolute path; got: {rendered}")
+    socket_path = canonical(rendered)
+    return socket_path
+
+
+def configured_tmux_base(cfg: Config, target_user: str) -> list[str]:
+    return tmux_base(target_user, tmux_socket_path(cfg, target_user))
 
 
 def fmt_epoch(ts: str) -> str:
@@ -378,7 +432,7 @@ def parse_plain_session_index(name: str, prefix: str, stem: str) -> int | None:
     return int(suffix)
 
 
-def compatible_plain_sessions(prefix: str, stem: str, compatibility_root: str, sessions: list[SessionInfo]) -> list[SessionInfo]:
+def compatible_indexed_sessions(prefix: str, stem: str, compatibility_root: str, sessions: list[SessionInfo]) -> list[SessionInfo]:
     matches: list[SessionInfo] = []
     for session in sessions:
         idx = parse_plain_session_index(session.name, prefix, stem)
@@ -410,9 +464,9 @@ def is_interactive_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def prompt_repeat_action(target_dir: str, attach_target: SessionInfo, existing: list[SessionInfo]) -> str:
+def prompt_repeat_action(target_desc: str, attach_target: SessionInfo, existing: list[SessionInfo]) -> str:
     session_names = ", ".join(session.name for session in existing)
-    print(f"ccw: compatible sessions already exist for {target_dir}: {session_names}")
+    print(f"ccw: compatible sessions already exist for {target_desc}: {session_names}")
     prompt = f"[Enter] attach {attach_target.name}, type 'new' for a parallel session, or 'q' to cancel: "
     try:
         response = input(prompt).strip().lower()
@@ -460,6 +514,62 @@ def session_path_compatible(active_path: str, repo_root: str) -> bool:
     return is_under(active, repo_root)
 
 
+def get_env_repeat_noninteractive_mode() -> str | None:
+    value = os.environ.get("CCW_REPEAT_NONINTERACTIVE_POLICY", "").strip()
+    if not value:
+        return None
+    return validate_repeat_mode(value, "CCW_REPEAT_NONINTERACTIVE_POLICY")
+
+
+def resolve_repeat_decision(
+    explicit_mode: str | None,
+    cfg: Config,
+    target_desc: str,
+    attach_target: SessionInfo,
+    existing: list[SessionInfo],
+) -> str:
+    if explicit_mode is not None:
+        return explicit_mode
+    if is_interactive_tty():
+        return prompt_repeat_action(target_desc, attach_target, existing)
+    env_mode = get_env_repeat_noninteractive_mode()
+    decision = env_mode or cfg.repeat_noninteractive_mode
+    if decision in {"attach", "new"}:
+        return decision
+    fail(
+        "compatible session already exists and no interactive TTY is available; rerun with "
+        "--attach-existing or --new-session, set CCW_REPEAT_NONINTERACTIVE_POLICY=attach|new, "
+        "or configure repeat_noninteractive_mode. Use 'ccw doctor' to inspect the active socket/config."
+    )
+    raise AssertionError("unreachable")
+
+
+def legacy_compatible_sessions(cfg: Config, launch_user: str, stem: str, compatibility_root: str) -> list[SessionInfo]:
+    sessions = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
+    return compatible_indexed_sessions(cfg.session_prefix, stem, compatibility_root, sessions)
+
+
+def legacy_socket_conflict_hint(cfg: Config, launch_user: str, existing: list[SessionInfo]) -> str:
+    attach_cmd = shlex.join(tmux_base(launch_user) + ["attach-session", "-t", existing[0].name])
+    session_names = ", ".join(session.name for session in existing)
+    return (
+        f"compatible session(s) exist on the legacy default tmux socket: {session_names}. "
+        f"Current ccw config uses dedicated socket {tmux_socket_path(cfg, launch_user)}. "
+        f"Run 'ccw doctor' for details, attach manually with '{attach_cmd}', or clear/migrate the legacy session first."
+    )
+
+
+def repeat_guardrail_for_legacy_socket(
+    cfg: Config,
+    launch_user: str,
+    stem: str,
+    compatibility_root: str,
+) -> None:
+    legacy = legacy_compatible_sessions(cfg, launch_user, stem, compatibility_root)
+    if legacy:
+        fail(legacy_socket_conflict_hint(cfg, launch_user, legacy))
+
+
 def enrich_session_usage(sessions: list[SessionInfo]) -> None:
     if not sessions:
         return
@@ -505,8 +615,8 @@ def enrich_session_usage(sessions: list[SessionInfo]) -> None:
         session.cpu_pct = total_cpu_pct
 
 
-def collect_sessions_for_user(user: str, session_prefix: str) -> list[SessionInfo]:
-    base = tmux_base(user)
+def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str | None) -> list[SessionInfo]:
+    base = tmux_base(user, socket_path)
     probe = subprocess.run(base + ["list-sessions"], text=True, capture_output=True)
     if probe.returncode != 0:
         return []
@@ -563,10 +673,10 @@ def collect_sessions_for_user(user: str, session_prefix: str) -> list[SessionInf
     return sessions
 
 
-def collect_sessions(users: list[str], session_prefix: str) -> list[SessionInfo]:
+def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
     sessions: list[SessionInfo] = []
     for user in normalize_user_list(users):
-        sessions.extend(collect_sessions_for_user(user, session_prefix))
+        sessions.extend(collect_sessions_for_user(user, cfg.session_prefix, tmux_socket_path(cfg, user)))
     return sessions
 
 
@@ -703,7 +813,7 @@ def print_list(cfg: Config, sessions: list[SessionInfo], scope_users: list[str],
     return 0
 
 
-SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version"}
+SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version", "doctor"}
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
@@ -750,16 +860,22 @@ def parse_subcommand(argv: list[str]) -> ParsedArgs:
     cmd = argv[0]
     if cmd == "version":
         return ParsedArgs(action="version")
+    if cmd == "doctor":
+        extras = argv[1:]
+        if extras:
+            fail(f"unknown args for doctor: {' '.join(extras)}")
+        return ParsedArgs(action="doctor")
     if cmd == "run":
         return parse_run_like(argv[1:], "run")
     if cmd == "list":
         return parse_list_args(argv[1:])
     if cmd == "kill-all":
         dry = "--dry-run" in argv[1:]
-        extras = [a for a in argv[1:] if a != "--dry-run"]
+        force = "--force" in argv[1:]
+        extras = [a for a in argv[1:] if a not in {"--dry-run", "--force"}]
         if extras:
             fail(f"unknown args for kill-all: {' '.join(extras)}")
-        return ParsedArgs(action="kill-all", dry_run=dry)
+        return ParsedArgs(action="kill-all", dry_run=dry, force=force)
     if cmd in ("attach", "kill"):
         if len(argv) < 2:
             fail(f"{cmd} requires an identifier")
@@ -803,10 +919,11 @@ def parse_args(argv: list[str]) -> ParsedArgs:
         return ParsedArgs(action="kill", target_id=argv[1], dry_run=dry)
     if argv[0] in ("--killall",):
         dry = "--dry-run" in argv[1:]
-        extras = [a for a in argv[1:] if a != "--dry-run"]
+        force = "--force" in argv[1:]
+        extras = [a for a in argv[1:] if a not in {"--dry-run", "--force"}]
         if extras:
             fail(f"unknown args for kill-all: {' '.join(extras)}")
-        return ParsedArgs(action="kill-all", dry_run=dry)
+        return ParsedArgs(action="kill-all", dry_run=dry, force=force)
     if argv[0] in ("-n", "--new"):
         if len(argv) < 2:
             fail("new requires a name")
@@ -826,15 +943,23 @@ def parse_args(argv: list[str]) -> ParsedArgs:
 def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("attach requires an identifier")
-    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    sessions = collect_sessions([launch_user], cfg)
+    if not sessions:
+        legacy = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
+        if legacy:
+            fail(
+                f"no sessions found on dedicated socket {tmux_socket_path(cfg, launch_user)}, "
+                f"but legacy default-socket sessions still exist. Use 'ccw doctor' for details."
+            )
     target = resolve_session(args.target_id, sessions, cfg.session_prefix)
-    return attach_session(target, launch_user, args.dry_run)
+    return attach_session(target, cfg, launch_user, args.dry_run)
 
 
-def attach_session(target: SessionInfo, launch_user: str, dry_run: bool = False) -> int:
-    full = tmux_base(launch_user) + ["attach-session", "-t", target.name]
+def attach_session(target: SessionInfo, cfg: Config, launch_user: str, dry_run: bool = False) -> int:
+    full = configured_tmux_base(cfg, launch_user) + ["attach-session", "-t", target.name]
     if dry_run:
         print(f"attach_user={shlex.quote(launch_user)}")
+        print(f"socket={shlex.quote(tmux_socket_path(cfg, launch_user))}")
         print(f"session={shlex.quote(target.name)}")
         print(f"exec {shlex.join(full)}")
         return 0
@@ -845,9 +970,9 @@ def attach_session(target: SessionInfo, launch_user: str, dry_run: bool = False)
 def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("kill requires an identifier")
-    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    sessions = collect_sessions([launch_user], cfg)
     target = resolve_session(args.target_id, sessions, cfg.session_prefix)
-    full = tmux_base(launch_user) + ["kill-session", "-t", target.name]
+    full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
     if args.dry_run:
         print(f"dry-run: {shlex.join(full)}")
         return 0
@@ -857,12 +982,19 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
 
 def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
-    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    sessions = collect_sessions([launch_user], cfg)
     if not sessions:
         print(f"ccw: no {cfg.session_prefix}* sessions for {launch_user}")
         return 0
+    if not args.dry_run and not args.force:
+        if not is_interactive_tty():
+            fail("kill-all is destructive; rerun with --force, or use 'ccw list' / 'ccw doctor' first")
+        names = ", ".join(s.name for s in sessions)
+        response = input(f"Kill all {len(sessions)} session(s) on {tmux_socket_path(cfg, launch_user)}: {names}\nType 'kill-all' to confirm: ")
+        if response.strip() != "kill-all":
+            fail("cancelled", 130)
     for s in sessions:
-        full = tmux_base(launch_user) + ["kill-session", "-t", s.name]
+        full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
         if args.dry_run:
             print(f"dry-run: {shlex.join(full)}")
             continue
@@ -877,15 +1009,21 @@ def launch_in_tmux(target_dir: str, session: str, args: ParsedArgs, cfg: Config,
         final_cmd += ["-w", branch]
     if args.dsp:
         final_cmd.append("--dangerously-skip-permissions")
-    full = tmux_base(launch_user) + ["new-session", "-As", session, "-c", target_dir] + final_cmd
+    socket_path = tmux_socket_path(cfg, launch_user)
+    socket_parent = str(Path(socket_path).parent)
+    ensure_socket_parent = command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent]
+    full = configured_tmux_base(cfg, launch_user) + ["new-session", "-As", session, "-c", target_dir] + final_cmd
     if args.dry_run:
         print(f"launch_user={shlex.quote(launch_user)}")
         print(f"dir={shlex.quote(target_dir)}")
+        print(f"socket={shlex.quote(socket_path)}")
+        print(f"socket_parent_mkdir={shlex.join(ensure_socket_parent)}")
         print(f"session={shlex.quote(session)}")
         if branch:
             print(f"branch={shlex.quote(branch)}")
         print(f"exec {shlex.join(full)}")
         return 0
+    run_cmd(ensure_socket_parent)
     os.execvp(full[0], full)
     return 0
 
@@ -917,6 +1055,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         target_dir = repo_root
         session_stem = session_stem_for_worktree(repo_root, branch)
         compatibility_root = repo_root
+        target_desc = f"{repo_root} (worktree {branch})"
     else:
         target_dir = project_dir
         if args.dry_run:
@@ -926,21 +1065,16 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             run_cmd(command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
         session_stem = session_stem_for_path(target_dir)
         compatibility_root = target_dir
-    sessions = collect_sessions([launch_user], cfg.session_prefix)
-    if not branch:
-        existing = compatible_plain_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
-        if existing:
-            attach_target = choose_attach_session(existing, cfg.session_prefix, session_stem)
-            decision = args.repeat_mode
-            if decision is None:
-                if not is_interactive_tty():
-                    fail(
-                        "compatible session already exists; rerun with "
-                        "--attach-existing to attach or --new-session to create another session"
-                    )
-                decision = prompt_repeat_action(target_dir, attach_target, existing)
-            if decision == "attach":
-                return attach_session(attach_target, launch_user, args.dry_run)
+        target_desc = target_dir
+    sessions = collect_sessions([launch_user], cfg)
+    existing = compatible_indexed_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    if existing:
+        attach_target = choose_attach_session(existing, cfg.session_prefix, session_stem)
+        decision = resolve_repeat_decision(args.repeat_mode, cfg, target_desc, attach_target, existing)
+        if decision == "attach":
+            return attach_session(attach_target, cfg, launch_user, args.dry_run)
+    else:
+        repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
     session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
@@ -961,7 +1095,7 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         target_dir = cwd
         session_stem = session_stem_for_path(target_dir)
         compatibility_root = target_dir
-    sessions = collect_sessions([launch_user], cfg.session_prefix)
+    sessions = collect_sessions([launch_user], cfg)
     session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
@@ -1020,6 +1154,117 @@ def format_version() -> str:
     return f"ccw {version}"
 
 
+def command_path_for_user(command: str, target_user: str) -> str | None:
+    cp = subprocess.run(
+        command_prefix_for_user(target_user) + ["sh", "-lc", f"command -v {shlex.quote(command)}"],
+        text=True,
+        capture_output=True,
+    )
+    if cp.returncode != 0:
+        return None
+    resolved = (cp.stdout or "").strip().splitlines()
+    if not resolved:
+        return None
+    return resolved[0]
+
+
+def user_can_write_dir(path: str, target_user: str) -> bool:
+    cp = subprocess.run(
+        command_prefix_for_user(target_user)
+        + [
+            "python3",
+            "-c",
+            "import os, sys; raise SystemExit(0 if os.access(sys.argv[1], os.W_OK | os.X_OK) else 1)",
+            path,
+        ],
+        text=True,
+        capture_output=True,
+    )
+    return cp.returncode == 0
+
+
+def doctor_issues(
+    cfg: Config,
+    caller_user: str,
+    launch_user: str,
+    tmux_path: str | None,
+    claude_path: str | None,
+    socket_path: str,
+    current_sessions: list[SessionInfo],
+    legacy_sessions: list[SessionInfo],
+) -> list[str]:
+    issues: list[str] = []
+    if cfg.default_launch_mode == "fixed" and not cfg.runtime_user:
+        issues.append("default_launch_mode is 'fixed' but runtime_user is empty")
+    if not any(is_under(cfg.new_project_root, base) for base in cfg.allowed_roots):
+        issues.append(f"new_project_root {cfg.new_project_root} is outside allowed_roots")
+    socket_parent = str(Path(socket_path).parent)
+    if not os.path.isdir(socket_parent):
+        issues.append(f"tmux socket parent does not exist yet: {socket_parent}")
+    elif not user_can_write_dir(socket_parent, launch_user):
+        issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
+    if tmux_path is None:
+        issues.append(f"'tmux' is not resolvable for {launch_user}")
+    if claude_path is None:
+        issues.append(f"'claude' is not resolvable for {launch_user}")
+    if legacy_sessions and not current_sessions:
+        issues.append("legacy default-socket ccw sessions exist while the dedicated ccw socket has none")
+    if caller_user != launch_user and launch_user not in cfg.session_users and not cfg.enable_all_users_list:
+        issues.append(f"launch user {launch_user} is not present in session_users; list --all-users may omit it")
+    return issues
+
+
+def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
+    _, config_sources = resolve_config_layers(cwd)
+    socket_path = tmux_socket_path(cfg, launch_user)
+    tmux_path = command_path_for_user("tmux", launch_user)
+    claude_path = command_path_for_user("claude", launch_user)
+    current_sessions = collect_sessions([launch_user], cfg)
+    legacy_sessions = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
+    config_paths = [str(path) for path in config_sources]
+    env_repeat_mode = get_env_repeat_noninteractive_mode()
+    issues = doctor_issues(
+        cfg,
+        caller_user,
+        launch_user,
+        tmux_path,
+        claude_path,
+        socket_path,
+        current_sessions,
+        legacy_sessions,
+    )
+
+    print("ccw doctor")
+    print(f"version={format_version()}")
+    print(f"cwd={cwd}")
+    print(f"caller_user={caller_user}")
+    print(f"launch_user={launch_user}")
+    print(f"config_paths={', '.join(config_paths) if config_paths else '-'}")
+    print(f"allowed_roots={', '.join(cfg.allowed_roots) if cfg.allowed_roots else '-'}")
+    print(f"new_project_root={cfg.new_project_root}")
+    print(f"repeat_noninteractive_mode={cfg.repeat_noninteractive_mode}")
+    print(f"repeat_noninteractive_env={env_repeat_mode or '-'}")
+    print(f"tmux_path={tmux_path or '-'}")
+    print(f"tmux_socket={socket_path}")
+    print(f"tmux_socket_parent={Path(socket_path).parent}")
+    print(f"tmux_socket_parent_exists={'yes' if Path(socket_path).parent.is_dir() else 'no'}")
+    print(f"tmux_socket_parent_writable={'yes' if user_can_write_dir(str(Path(socket_path).parent), launch_user) else 'no'}")
+    print(f"claude_path={claude_path or '-'}")
+    print(f"current_socket_sessions={len(current_sessions)}")
+    if current_sessions:
+        print("current_socket_session_names=" + ", ".join(session.name for session in current_sessions))
+    print(f"legacy_default_socket_sessions={len(legacy_sessions)}")
+    if legacy_sessions:
+        print("legacy_default_socket_session_names=" + ", ".join(session.name for session in legacy_sessions))
+    if issues:
+        print("issues:")
+        for issue in issues:
+            print(f"- {issue}")
+    else:
+        print("issues: none")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     try:
         args = parse_args(argv)
@@ -1032,6 +1277,8 @@ def main(argv: list[str]) -> int:
     if args.action == "version":
         print(format_version())
         return 0
+    if args.action == "doctor":
+        return do_doctor(cfg, caller_user, launch_user, canonical(os.getcwd()))
     if args.action == "run":
         return do_run(args, cfg, launch_user)
     if args.action == "list":
@@ -1039,9 +1286,9 @@ def main(argv: list[str]) -> int:
             if not cfg.enable_all_users_list:
                 fail("list --all-users is disabled in config")
             scope_users = resolve_all_session_users(cfg, launch_user)
-            return print_list(cfg, collect_sessions(scope_users, cfg.session_prefix), scope_users, show_user=True)
+            return print_list(cfg, collect_sessions(scope_users, cfg), scope_users, show_user=True)
         scope_users = [launch_user]
-        return print_list(cfg, collect_sessions(scope_users, cfg.session_prefix), scope_users, show_user=False)
+        return print_list(cfg, collect_sessions(scope_users, cfg), scope_users, show_user=False)
     if args.action == "attach":
         return do_attach(args, cfg, launch_user)
     if args.action == "kill":

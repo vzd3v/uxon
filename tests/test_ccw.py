@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import sys
 import tempfile
 import textwrap
@@ -30,6 +31,8 @@ class CcwTests(unittest.TestCase):
             session_prefix="cc-",
             default_claude_args=[],
             new_project_root="/srv/repos",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/ccw-{user}.sock",
         )
 
     def make_session(
@@ -67,6 +70,15 @@ class CcwTests(unittest.TestCase):
         parsed_subcommand = ccw.parse_args(["version"])
         self.assertEqual(parsed_subcommand.action, "version")
 
+    def test_parse_args_supports_doctor(self) -> None:
+        parsed = ccw.parse_args(["doctor"])
+        self.assertEqual(parsed.action, "doctor")
+
+    def test_parse_args_supports_kill_all_force(self) -> None:
+        parsed = ccw.parse_args(["kill-all", "--force"])
+        self.assertEqual(parsed.action, "kill-all")
+        self.assertTrue(parsed.force)
+
     def test_resolve_launch_user_fixed_mode_uses_runtime_user(self) -> None:
         cfg = ccw.Config(
             runtime_user="devagent",
@@ -78,6 +90,8 @@ class CcwTests(unittest.TestCase):
             session_prefix="cc-",
             default_claude_args=[],
             new_project_root="/srv/agentdev",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/ccw-{user}.sock",
         )
 
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "devagent")
@@ -93,6 +107,8 @@ class CcwTests(unittest.TestCase):
             session_prefix="cc-",
             default_claude_args=[],
             new_project_root="/srv/agentdev",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/ccw-{user}.sock",
         )
 
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "remdepl")
@@ -108,6 +124,8 @@ class CcwTests(unittest.TestCase):
             session_prefix="cc-",
             default_claude_args=[],
             new_project_root="/srv/agentdev",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/ccw-{user}.sock",
         )
 
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "devagent")
@@ -123,6 +141,8 @@ class CcwTests(unittest.TestCase):
             session_prefix="cc-",
             default_claude_args=[],
             new_project_root="/srv/agentdev",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/ccw-{user}.sock",
         )
 
         self.assertEqual(ccw.resolve_all_session_users(cfg, "remdepl"), ["devagent", "remdepl"])
@@ -161,6 +181,8 @@ class CcwTests(unittest.TestCase):
                     allowed_roots = ["/srv", "/tmp"]
                     session_prefix = "cc-"
                     default_claude_args = ["--model", "sonnet"]
+                    repeat_noninteractive_mode = "attach"
+                    tmux_socket_template = "/tmp/ccw-{user}-{uid}.sock"
 
                     [launch_user_by_caller]
                     remdepl = "devagent"
@@ -188,6 +210,8 @@ class CcwTests(unittest.TestCase):
         self.assertEqual(cfg.session_users, ["devagent", "remdepl"])
         self.assertEqual(cfg.launch_user_by_caller, {"remdepl": "devagent"})
         self.assertEqual(cfg.default_claude_args, ["--model", "sonnet"])
+        self.assertEqual(cfg.repeat_noninteractive_mode, "attach")
+        self.assertEqual(cfg.tmux_socket_template, "/tmp/ccw-{user}-{uid}.sock")
 
     def test_format_version_reads_version_file_and_commit(self) -> None:
         with mock.patch.object(ccw, "read_repo_version", return_value="0.2.0"):
@@ -269,6 +293,115 @@ class CcwTests(unittest.TestCase):
         eprint.assert_called()
         self.assertIn("--attach-existing", eprint.call_args[0][0])
         self.assertIn("--new-session", eprint.call_args[0][0])
+
+    def test_do_new_existing_worktree_session_defaults_to_attach_in_tty(self) -> None:
+        cfg = self.make_config()
+        args = ccw.ParsedArgs(action="new", target_id="demo", worktree_branch="feature-x", claude_args=[])
+        existing = [self.make_session("cc-demo-feature-x", "/srv/repos/demo")]
+
+        with mock.patch.object(ccw.os.path, "isdir", return_value=True):
+            with mock.patch.object(ccw, "git_repo_root_as_user", return_value="/srv/repos/demo"):
+                with mock.patch.object(ccw, "collect_sessions", return_value=existing):
+                    with mock.patch.object(ccw, "is_interactive_tty", return_value=True):
+                        with mock.patch("builtins.input", return_value=""):
+                            with mock.patch.object(ccw, "attach_session", return_value=0) as attach:
+                                with mock.patch.object(ccw, "launch_in_tmux", return_value=0) as launch:
+                                    result = ccw.do_new(args, cfg, "u-vz")
+
+        self.assertEqual(result, 0)
+        attach.assert_called_once()
+        launch.assert_not_called()
+
+    def test_do_new_existing_worktree_session_uses_configured_noninteractive_new(self) -> None:
+        cfg = self.make_config()
+        cfg.repeat_noninteractive_mode = "new"
+        args = ccw.ParsedArgs(action="new", target_id="demo", worktree_branch="feature-x", claude_args=[])
+        existing = [self.make_session("cc-demo-feature-x", "/srv/repos/demo")]
+
+        with mock.patch.object(ccw.os.path, "isdir", return_value=True):
+            with mock.patch.object(ccw, "git_repo_root_as_user", return_value="/srv/repos/demo"):
+                with mock.patch.object(ccw, "collect_sessions", return_value=existing):
+                    with mock.patch.object(ccw, "is_interactive_tty", return_value=False):
+                        with mock.patch.object(ccw, "allocate_session_name", return_value="cc-demo-feature-x-2") as allocate:
+                            with mock.patch.object(ccw, "launch_in_tmux", return_value=0) as launch:
+                                result = ccw.do_new(args, cfg, "u-vz")
+
+        self.assertEqual(result, 0)
+        allocate.assert_called_once()
+        launch.assert_called_once()
+
+    def test_do_new_legacy_socket_guardrail_fails(self) -> None:
+        cfg = self.make_config()
+        args = ccw.ParsedArgs(action="new", target_id="demo", claude_args=[])
+        legacy = [self.make_session("cc-demo", "/srv/repos/demo")]
+
+        with mock.patch.object(ccw, "canonical", side_effect=lambda value: str(value)):
+            with mock.patch.object(ccw, "run_cmd"):
+                with mock.patch.object(ccw, "collect_sessions", return_value=[]):
+                    with mock.patch.object(ccw, "collect_sessions_for_user", return_value=legacy):
+                        with mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-u-vz.sock"):
+                            with mock.patch.object(ccw, "eprint") as eprint:
+                                with self.assertRaises(SystemExit) as ctx:
+                                    ccw.do_new(args, cfg, "u-vz")
+
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("legacy default tmux socket", eprint.call_args[0][0])
+
+    def test_resolve_repeat_decision_prefers_env_override(self) -> None:
+        cfg = self.make_config()
+        cfg.repeat_noninteractive_mode = "fail"
+        session = self.make_session("cc-demo", "/srv/repos/demo")
+
+        with mock.patch.object(ccw, "is_interactive_tty", return_value=False):
+            with mock.patch.dict(ccw.os.environ, {"CCW_REPEAT_NONINTERACTIVE_POLICY": "attach"}, clear=False):
+                decision = ccw.resolve_repeat_decision("none" if False else None, cfg, "/srv/repos/demo", session, [session])
+
+        self.assertEqual(decision, "attach")
+
+    def test_tmux_socket_path_expands_template(self) -> None:
+        cfg = self.make_config()
+        cfg.tmux_socket_template = "/tmp/ccw-{user}-{uid}.sock"
+
+        with mock.patch.object(ccw.pwd, "getpwnam") as getpwnam:
+            getpwnam.return_value = mock.Mock(pw_uid=1001)
+            path = ccw.tmux_socket_path(cfg, "u-vz")
+
+        self.assertEqual(path, "/tmp/ccw-u-vz-1001.sock")
+
+    def test_doctor_reports_socket_and_config(self) -> None:
+        cfg = self.make_config()
+        output = io.StringIO()
+
+        with mock.patch.object(ccw, "resolve_config_layers", return_value=({}, [Path("/srv/apps/vz_devagent_cli_tool/config/config.toml")])):
+            with mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-u-vz.sock"):
+                with mock.patch.object(ccw, "command_path_for_user", side_effect=["/usr/bin/tmux", "/usr/local/bin/claude"]):
+                    with mock.patch.object(ccw, "collect_sessions", return_value=[self.make_session("cc-demo", "/srv/repos/demo")]):
+                        with mock.patch.object(ccw, "collect_sessions_for_user", return_value=[]):
+                            with mock.patch.object(ccw, "user_can_write_dir", return_value=True):
+                                with mock.patch.object(ccw, "format_version", return_value="ccw 0.4.0 (abc1234)"):
+                                    with mock.patch("sys.stdout", output):
+                                        rc = ccw.do_doctor(cfg, "remdepl", "u-vz", "/srv/repos/demo")
+
+        self.assertEqual(rc, 0)
+        rendered = output.getvalue()
+        self.assertIn("ccw doctor", rendered)
+        self.assertIn("config_paths=/srv/apps/vz_devagent_cli_tool/config/config.toml", rendered)
+        self.assertIn("tmux_socket=/tmp/ccw-u-vz.sock", rendered)
+        self.assertIn("claude_path=/usr/local/bin/claude", rendered)
+
+    def test_do_kill_all_requires_force_without_tty(self) -> None:
+        cfg = self.make_config()
+        args = ccw.ParsedArgs(action="kill-all", force=False)
+        sessions = [self.make_session("cc-demo", "/srv/repos/demo")]
+
+        with mock.patch.object(ccw, "collect_sessions", return_value=sessions):
+            with mock.patch.object(ccw, "is_interactive_tty", return_value=False):
+                with mock.patch.object(ccw, "eprint") as eprint:
+                    with self.assertRaises(SystemExit) as ctx:
+                        ccw.do_kill_all(args, cfg, "u-vz")
+
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--force", eprint.call_args[0][0])
 
     def test_find_project_config_ignores_permission_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
