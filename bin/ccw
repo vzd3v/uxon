@@ -40,7 +40,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 USAGE = """Usage:
   ccw [run] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
-  ccw new <name> [-w <branch>] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
+  ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
   ccw list [--all-users]
   ccw version
   ccw attach <id>
@@ -49,11 +49,13 @@ USAGE = """Usage:
   ccw -l [--all-users]
   ccw -a <id>
   ccw -k <id> [--dry-run]
-  ccw -n <name> [-w <branch>] [--dry-run] [--dsp|--dap] [claude-flags...]
+  ccw -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp|--dap] [claude-flags...]
 
 Notes:
   - Without '-w', 'new' creates /srv/repos/<name> (or configured root) and runs there.
   - With '-w <branch>', 'new' uses repo inside /srv/repos/<name> (no cwd fallback).
+  - Repeating plain 'new' on the same folder asks whether to attach or start a new parallel session.
+  - Use '--attach-existing' or '--new-session' to bypass that prompt explicitly.
   - Unknown flags in run/new are passed to 'claude'.
   - ID accepts: session name (with/without cc-), unique prefix, or active pane PID.
   - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
@@ -95,6 +97,7 @@ class ParsedArgs:
     action: str
     target_id: str | None = None
     worktree_branch: str | None = None
+    repeat_mode: str | None = None
     dry_run: bool = False
     dsp: bool = False
     all_users: bool = False
@@ -361,6 +364,68 @@ def candidate_session_name(prefix: str, stem: str, index: int) -> str:
     if index <= 1:
         return f"{prefix}{stem}"
     return f"{prefix}{stem}-{index}"
+
+
+def parse_plain_session_index(name: str, prefix: str, stem: str) -> int | None:
+    base = f"{prefix}{stem}"
+    if name == base:
+        return 1
+    if not name.startswith(f"{base}-"):
+        return None
+    suffix = name[len(base) + 1 :]
+    if not suffix.isdigit():
+        return None
+    return int(suffix)
+
+
+def compatible_plain_sessions(prefix: str, stem: str, compatibility_root: str, sessions: list[SessionInfo]) -> list[SessionInfo]:
+    matches: list[SessionInfo] = []
+    for session in sessions:
+        idx = parse_plain_session_index(session.name, prefix, stem)
+        if idx is None:
+            continue
+        if not session_path_compatible(session.active_path, compatibility_root):
+            fail(
+                "session conflict: "
+                f"{session.name} already points to {session.active_path or '<unknown>'}, "
+                f"not under {compatibility_root}"
+            )
+        matches.append(session)
+    return matches
+
+
+def choose_attach_session(existing: list[SessionInfo], prefix: str, stem: str) -> SessionInfo:
+    if not existing:
+        raise ValueError("expected at least one existing session")
+    base_name = f"{prefix}{stem}"
+    attached = [s for s in existing if s.attached == "1"]
+    for bucket in (attached, existing):
+        for session in bucket:
+            if session.name == base_name:
+                return session
+    return min(existing, key=lambda session: parse_plain_session_index(session.name, prefix, stem) or 9999)
+
+
+def is_interactive_tty() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def prompt_repeat_action(target_dir: str, attach_target: SessionInfo, existing: list[SessionInfo]) -> str:
+    session_names = ", ".join(session.name for session in existing)
+    print(f"ccw: compatible sessions already exist for {target_dir}: {session_names}")
+    prompt = f"[Enter] attach {attach_target.name}, type 'new' for a parallel session, or 'q' to cancel: "
+    try:
+        response = input(prompt).strip().lower()
+    except EOFError:
+        fail("unable to read response from terminal; rerun with --attach-existing or --new-session")
+    if response in ("", "a", "attach"):
+        return "attach"
+    if response in ("n", "new"):
+        return "new"
+    if response in ("q", "quit", "cancel"):
+        fail("cancelled", 130)
+    fail("expected Enter/attach, new, or q; rerun with --attach-existing or --new-session")
+    raise AssertionError("unreachable")
 
 
 def allocate_session_name(prefix: str, stem: str, compatibility_root: str, sessions: list[SessionInfo]) -> str:
@@ -661,6 +726,18 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
             parsed.worktree_branch = argv[i]
         elif token == "--dry-run":
             parsed.dry_run = True
+        elif token == "--attach-existing":
+            if action != "new":
+                fail(f"{token} is only supported with 'new' / '-n'")
+            if parsed.repeat_mode == "new":
+                fail("cannot combine --attach-existing with --new-session")
+            parsed.repeat_mode = "attach"
+        elif token == "--new-session":
+            if action != "new":
+                fail(f"{token} is only supported with 'new' / '-n'")
+            if parsed.repeat_mode == "attach":
+                fail("cannot combine --new-session with --attach-existing")
+            parsed.repeat_mode = "new"
         elif token in ("--dangerously-skip-permissions", "--dsp", "--dap", "-dap"):
             parsed.dsp = True
         else:
@@ -751,7 +828,16 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         fail("attach requires an identifier")
     sessions = collect_sessions([launch_user], cfg.session_prefix)
     target = resolve_session(args.target_id, sessions, cfg.session_prefix)
+    return attach_session(target, launch_user, args.dry_run)
+
+
+def attach_session(target: SessionInfo, launch_user: str, dry_run: bool = False) -> int:
     full = tmux_base(launch_user) + ["attach-session", "-t", target.name]
+    if dry_run:
+        print(f"attach_user={shlex.quote(launch_user)}")
+        print(f"session={shlex.quote(target.name)}")
+        print(f"exec {shlex.join(full)}")
+        return 0
     os.execvp(full[0], full)
     return 0
 
@@ -841,6 +927,20 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         session_stem = session_stem_for_path(target_dir)
         compatibility_root = target_dir
     sessions = collect_sessions([launch_user], cfg.session_prefix)
+    if not branch:
+        existing = compatible_plain_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
+        if existing:
+            attach_target = choose_attach_session(existing, cfg.session_prefix, session_stem)
+            decision = args.repeat_mode
+            if decision is None:
+                if not is_interactive_tty():
+                    fail(
+                        "compatible session already exists; rerun with "
+                        "--attach-existing to attach or --new-session to create another session"
+                    )
+                decision = prompt_repeat_action(target_dir, attach_target, existing)
+            if decision == "attach":
+                return attach_session(attach_target, launch_user, args.dry_run)
     session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 

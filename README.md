@@ -39,6 +39,17 @@ python3 -m py_compile bin/ccw tests/test_ccw.py install/install_ccw.py install/r
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
+## Repeated `ccw -n`
+- First plain `ccw -n <name>` still creates or reuses `/srv/.../<name>` and starts a tmux session there.
+- Repeating plain `ccw -n <name>` for the same folder no longer silently creates `-2/-3`.
+- If a compatible plain session already exists and `ccw` has an interactive TTY, it prompts:
+  - default: attach to the existing session
+  - alternative: start a new parallel session in the same folder
+- Use explicit flags to skip the prompt:
+  - `--attach-existing`: attach to the compatible session immediately
+  - `--new-session`: create a parallel session immediately
+- `-w/--worktree` behavior is unchanged.
+
 ## Render config
 ```bash
 python3 install/render_ccw_config.py --config-json examples/ccw-config.json --output config/config.toml
