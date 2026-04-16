@@ -41,26 +41,30 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 USAGE = """Usage:
-  ccw [run] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
-  ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dangerously-skip-permissions|--dsp|--dap] [claude-flags...]
+  ccw                              (interactive session picker if TTY, else this help)
+  ccw [run] [-w <branch>] [--dry-run] [--dsp] [claude-flags...]
+  ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp] [claude-flags...]
   ccw doctor
   ccw list [--all-users]
   ccw version
   ccw attach <id>
   ccw kill <id> [--dry-run]
   ccw kill-all [--force] [--dry-run]
+  ccw --killall [--force] [--dry-run]
   ccw -l [--all-users]
   ccw -a <id>
   ccw -k <id> [--dry-run]
-  ccw -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp|--dap] [claude-flags...]
+  ccw -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp] [claude-flags...]
 
 Notes:
   - Without '-w', 'new' creates /srv/repos/<name> (or configured root) and runs there.
   - With '-w <branch>', 'new' uses repo inside /srv/repos/<name> (no cwd fallback).
+  - With '-w <branch>' on 'run', uses the git repo at cwd.
   - Repeating 'new' for the same plain project or worktree asks whether to attach or start a new parallel session.
   - Use '--attach-existing' or '--new-session' to bypass that prompt explicitly.
   - Non-interactive repeat handling can be pinned via CCW_REPEAT_NONINTERACTIVE_POLICY or config.
   - Unknown flags in run/new are passed to 'claude'.
+  - --dsp is short for --dangerously-skip-permissions (legacy synonyms: --dap, -dap, -dsp).
   - ID accepts: session name (with/without cc-), unique prefix, or active pane PID.
   - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
   - Session IDs are human-readable: cc-<name>, cc-<name>-2, or cc-<repo>-<workspace>.
@@ -848,7 +852,8 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
             if parsed.repeat_mode == "attach":
                 fail("cannot combine --new-session with --attach-existing")
             parsed.repeat_mode = "new"
-        elif token in ("--dangerously-skip-permissions", "--dsp", "--dap", "-dap"):
+        elif token in ("--dsp", "--dangerously-skip-permissions", "--dap", "-dap", "-dsp"):
+            # --dsp is the canonical short form; --dap, -dap, -dsp are legacy synonyms
             parsed.dsp = True
         else:
             parsed.claude_args.append(token)
@@ -908,6 +913,9 @@ def parse_args(argv: list[str]) -> ParsedArgs:
     if argv[0] in ("-a", "--attach"):
         if len(argv) < 2:
             fail("attach requires an identifier")
+        extras = argv[2:]
+        if extras:
+            fail(f"unknown args for attach: {' '.join(extras)}")
         return ParsedArgs(action="attach", target_id=argv[1])
     if argv[0] in ("-k", "--kill"):
         if len(argv) < 2:
@@ -932,12 +940,8 @@ def parse_args(argv: list[str]) -> ParsedArgs:
         return parse_subcommand(argv)
     if not argv[0].startswith("-"):
         fail(f"unknown command: {argv[0]}\n{USAGE}")
-    if argv[0].startswith("-"):
-        # Convenience: support `ccw --model sonnet` as run passthrough.
-        return parse_run_like(argv, "run")
-    # Default to run mode for bare flags/passthrough.
-    fail(f"unknown command: {argv[0]}\n{USAGE}")
-    raise AssertionError("unreachable")
+    # Convenience: support `ccw --model sonnet` as run passthrough.
+    return parse_run_like(argv, "run")
 
 
 def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
