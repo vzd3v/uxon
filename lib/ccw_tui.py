@@ -72,6 +72,12 @@ class TuiContext:
 ACTION_COUNT = 3
 
 
+def _dim(t: "Terminal", text: str) -> str:
+    """Portable dim text — t.dim(text) fails on some terminals where dim is
+    a ParameterizingString. Concatenation always works."""
+    return t.dim + text + t.normal
+
+
 # ── Rendering helpers ────────────────────────────────────────────────
 
 
@@ -79,7 +85,7 @@ def _build_header(t: "Terminal", ctx: TuiContext) -> str:
     count = len(ctx.sessions)
     title = " ccw interactive "
     stats = f" {count} sessions  cpu={ctx.total_cpu}  ram={ctx.total_ram} "
-    return t.bold_white_on_blue(title) + "  " + t.dim(stats)
+    return t.bold_white_on_blue(title) + "  " + _dim(t, stats)
 
 
 def _build_footer(t: "Terminal", mode: str = "main") -> str:
@@ -119,8 +125,8 @@ def _build_footer(t: "Terminal", mode: str = "main") -> str:
 
 def _render_action_row(t: "Terminal", num: int, label: str, detail: str, selected: bool) -> str:
     cursor = t.bold_cyan("▸ ") if selected else "  "
-    num_str = t.dim(f"{num} ") if not selected else f"{num} "
-    text = num_str + t.bold_green("+ ") + t.bold(label) + "  " + t.dim(detail)
+    num_str = _dim(t, f"{num} ") if not selected else f"{num} "
+    text = num_str + t.bold_green("+ ") + t.bold(label) + "  " + _dim(t, detail)
     if selected:
         return t.reverse(t.ljust(cursor + text, t.width))
     return cursor + text
@@ -143,7 +149,7 @@ def _render_session_row(
     cursor = t.bold_cyan("▸ ") if selected else "  "
     # Number hint: show for items 1-9, blank for 10+
     if 1 <= num <= 9:
-        num_str = t.dim(f"{num} ") if not selected else f"{num} "
+        num_str = _dim(t, f"{num} ") if not selected else f"{num} "
     else:
         num_str = "  "
 
@@ -163,17 +169,17 @@ def _render_session_row(
             elif v > 10:
                 cpu_str = t.yellow(f"{cpu_val:>{cw}}")
             else:
-                cpu_str = t.dim(f"{cpu_val:>{cw}}")
+                cpu_str = _dim(t, f"{cpu_val:>{cw}}")
         except ValueError:
-            cpu_str = t.dim(f"{cpu_val:>{cw}}")
+            cpu_str = _dim(t, f"{cpu_val:>{cw}}")
     else:
-        cpu_str = t.dim(f"{cpu_val:>{cw}}")
+        cpu_str = _dim(t, f"{cpu_val:>{cw}}")
 
     ram_str = f"{s.ram:>{rw}}"
     created_str = f"{s.created:<5}"
     last_str = f"{s.last_activity:<5}"
-    cmd_str = t.dim(f"{s.cmd:<{cmw}}")
-    path_str = t.dim(s.path)
+    cmd_str = _dim(t, f"{s.cmd:<{cmw}}")
+    path_str = _dim(t, s.path)
 
     row = f"{cursor}{num_str}{name_str}  {pid_str}  {cpu_str}  {ram_str}  {created_str}  {last_str}  {cmd_str}  {path_str}"
 
@@ -200,7 +206,7 @@ def _render_column_header(t: "Terminal", col_widths: dict[str, int]) -> str:
     cw = col_widths["cpu"]
     rw = col_widths["ram"]
     cmw = col_widths["cmd"]
-    return t.dim(
+    return _dim(t, 
         f"    {'NAME':<{nw}}    {'PID':>{pw}}  {'CPU':>{cw}}  {'RAM':>{rw}}  "
         f"{'NEW':<5}  {'LAST':<5}  {'CMD':<{cmw}}  PATH"
     )
@@ -210,7 +216,7 @@ def _render_column_header(t: "Terminal", col_widths: dict[str, int]) -> str:
 
 
 def _confirm_kill(t: "Terminal", session_name: str, y: int) -> bool:
-    prompt = t.bold_red(f"  Kill {session_name}? ") + t.dim("y/N ")
+    prompt = t.bold_red(f"  Kill {session_name}? ") + _dim(t, "y/N ")
     with t.location(0, y):
         print(t.clear_eol + prompt, end="", flush=True)
     key = t.inkey(timeout=10)
@@ -218,7 +224,7 @@ def _confirm_kill(t: "Terminal", session_name: str, y: int) -> bool:
 
 
 def _confirm_kill_all(t: "Terminal", count: int, y: int) -> bool:
-    prompt = t.bold_red(f"  Kill ALL {count} sessions? ") + t.dim("Type 'kill-all' to confirm: ")
+    prompt = t.bold_red(f"  Kill ALL {count} sessions? ") + _dim(t, "Type 'kill-all' to confirm: ")
     with t.location(0, y):
         print(t.clear_eol + prompt, end="", flush=True)
     buf = ""
@@ -257,17 +263,17 @@ def _prompt_permissions(t: "Terminal") -> bool | None:
     while True:
         print(t.home + t.clear, end="")
         print(t.bold_white_on_blue(" Launch permissions "))
-        print(t.dim("─" * t.width))
+        print(_dim(t, "─" * t.width))
         print()
 
         for i, (label, detail) in enumerate(options):
             sel = i == cursor
             prefix = t.bold_cyan("▸ ") if sel else "  "
-            num_str = t.dim(f"{i + 1} ") if not sel else f"{i + 1} "
+            num_str = _dim(t, f"{i + 1} ") if not sel else f"{i + 1} "
             if i == 0:
-                text = num_str + t.bold(label) + "  " + t.dim(detail)
+                text = num_str + t.bold(label) + "  " + _dim(t, detail)
             else:
-                text = num_str + t.bold_yellow(label) + "  " + t.dim_red(detail)
+                text = num_str + t.bold_yellow(label) + "  " + t.red + t.dim + detail + t.normal
             line = prefix + text
             if sel:
                 print(t.reverse(t.ljust(line, t.width)))
@@ -301,9 +307,9 @@ def _prompt_project_name(t: "Terminal", root: str) -> str | None:
     while True:
         print(t.home + t.clear, end="")
         print(t.bold_white_on_blue(" Create new project "))
-        print(t.dim("─" * t.width))
+        print(_dim(t, "─" * t.width))
         print()
-        print(f"  {t.dim('Directory:')} {root}/")
+        print(f"  {_dim(t, 'Directory:')} {root}/")
         print()
         print(f"  {t.bold('Project name:')} {buf}" + t.bold_cyan("█"))
 
@@ -348,8 +354,8 @@ def _prompt_existing_project(t: "Terminal", projects: list[str], root: str) -> s
     while True:
         print(t.home + t.clear, end="")
         print(t.bold_white_on_blue(" Open existing project "))
-        print(t.dim("─" * t.width))
-        print(f"  {t.dim(root)}/")
+        print(_dim(t, "─" * t.width))
+        print(f"  {_dim(t, root)}/")
         print()
 
         available = max(1, t.height - 6)
@@ -365,7 +371,7 @@ def _prompt_existing_project(t: "Terminal", projects: list[str], root: str) -> s
             prefix = t.bold_cyan("▸ ") if sel else "  "
             num = i + 1
             if 1 <= num <= 9:
-                num_str = t.dim(f"{num} ") if not sel else f"{num} "
+                num_str = _dim(t, f"{num} ") if not sel else f"{num} "
             else:
                 num_str = "  "
             text = t.bold(name) if sel else name
@@ -421,7 +427,7 @@ def _draw_main_screen(
 
     print(t.home + t.clear, end="")
     print(_build_header(t, ctx))
-    print(t.dim("─" * t.width))
+    print(_dim(t, "─" * t.width))
 
     total = _total_items(ctx)
     visible_start = scroll_offset
@@ -442,7 +448,7 @@ def _draw_main_screen(
             # Separator after last action item
             if i == ACTION_COUNT - 1 and visible_end > ACTION_COUNT:
                 if row_line < available:
-                    print(t.dim("  ─ sessions ─" + "─" * max(0, t.width - 14)))
+                    print(_dim(t, "  ─ sessions ─" + "─" * max(0, t.width - 14)))
                     row_line += 1
         else:
             # Session rows
@@ -467,12 +473,12 @@ def _draw_main_screen(
     if total == 0:
         empty_y = t.height // 2
         with t.location(0, empty_y):
-            print(t.dim("  No active sessions."))
+            print(_dim(t, "  No active sessions."))
 
     # Footer
     footer_y = t.height - 2
     with t.location(0, footer_y):
-        print(t.dim("─" * t.width), end="")
+        print(_dim(t, "─" * t.width), end="")
     with t.location(0, footer_y + 1):
         print(_build_footer(t, "main"), end="")
 
@@ -617,7 +623,7 @@ def run(ctx: TuiContext) -> int:
 
             elif key == "r":
                 ctx = ctx.on_refresh()
-                status_msg = t.dim("Refreshed")
+                status_msg = _dim(t, "Refreshed")
                 total = _total_items(ctx)
                 if cursor >= total:
                     cursor = max(0, total - 1)
