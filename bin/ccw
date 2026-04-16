@@ -901,6 +901,8 @@ def parse_subcommand(argv: list[str]) -> ParsedArgs:
 
 def parse_args(argv: list[str]) -> ParsedArgs:
     if not argv:
+        if is_interactive_tty():
+            return ParsedArgs(action="interactive")
         print(USAGE)
         raise SystemExit(0)
     if argv[0] in ("-h", "--help"):
@@ -1269,6 +1271,76 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     return 0
 
 
+def _build_tui_context(cfg: Config, launch_user: str) -> object:
+    """Build a TuiContext from live session data. Lazy-imports ccw_tui."""
+    sys.path.insert(0, str(repo_root() / "lib"))
+    import ccw_tui
+
+    sessions = collect_sessions([launch_user], cfg)
+
+    tui_sessions = []
+    for s in sessions:
+        short = s.name[len(cfg.session_prefix):] if s.name.startswith(cfg.session_prefix) else s.name
+        tui_sessions.append(ccw_tui.TuiSession(
+            name=s.name,
+            short=short,
+            attached=s.attached == "1",
+            pid=str(s.active_pid) if s.active_pid is not None else "-",
+            cpu=format_cpu_pct(s.cpu_pct),
+            ram=format_rss_kib(s.rss_kib),
+            created=compact_time(s.created),
+            last_activity=compact_time(s.last_attached),
+            cmd=s.active_cmd or "-",
+            path=s.active_path or "-",
+            user=s.user,
+        ))
+
+    total_cpu = format_cpu_pct(sum(s.cpu_pct for s in sessions))
+    total_ram = format_rss_kib(sum(s.rss_kib for s in sessions))
+
+    def on_attach(name: str) -> None:
+        target = resolve_session(name, sessions, cfg.session_prefix)
+        attach_session(target, cfg, launch_user)
+
+    def on_kill(name: str) -> None:
+        fresh = collect_sessions([launch_user], cfg)
+        target = resolve_session(name, fresh, cfg.session_prefix)
+        full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
+        run_cmd(full, check=True)
+
+    def on_kill_all() -> None:
+        fresh = collect_sessions([launch_user], cfg)
+        for s in fresh:
+            full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
+            run_cmd(full, check=False)
+
+    def on_refresh() -> object:
+        return _build_tui_context(cfg, launch_user)
+
+    return ccw_tui.TuiContext(
+        sessions=tui_sessions,
+        total_cpu=total_cpu,
+        total_ram=total_ram,
+        version=format_version(),
+        on_attach=on_attach,
+        on_kill=on_kill,
+        on_kill_all=on_kill_all,
+        on_refresh=on_refresh,
+    )
+
+
+def do_interactive(cfg: Config, launch_user: str) -> int:
+    try:
+        sys.path.insert(0, str(repo_root() / "lib"))
+        import ccw_tui
+    except ImportError:
+        eprint("ccw: interactive mode requires 'blessed' (pip install blessed)")
+        print(USAGE)
+        return 1
+    ctx = _build_tui_context(cfg, launch_user)
+    return ccw_tui.run(ctx)
+
+
 def main(argv: list[str]) -> int:
     try:
         args = parse_args(argv)
@@ -1278,6 +1350,8 @@ def main(argv: list[str]) -> int:
     caller_user = resolve_caller_user()
     launch_user = resolve_launch_user(cfg, caller_user)
 
+    if args.action == "interactive":
+        return do_interactive(cfg, launch_user)
     if args.action == "version":
         print(format_version())
         return 0
