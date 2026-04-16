@@ -1271,7 +1271,19 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     return 0
 
 
-def _build_tui_context(cfg: Config, launch_user: str) -> object:
+def _list_existing_projects(root: str) -> list[str]:
+    """List directory names under new_project_root, sorted."""
+    try:
+        entries = sorted(
+            e.name for e in Path(root).iterdir()
+            if e.is_dir() and not e.name.startswith(".")
+        )
+    except OSError:
+        entries = []
+    return entries
+
+
+def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
     """Build a TuiContext from live session data. Lazy-imports ccw_tui."""
     sys.path.insert(0, str(repo_root() / "lib"))
     import ccw_tui
@@ -1298,6 +1310,10 @@ def _build_tui_context(cfg: Config, launch_user: str) -> object:
     total_cpu = format_cpu_pct(sum(s.cpu_pct for s in sessions))
     total_ram = format_rss_kib(sum(s.rss_kib for s in sessions))
 
+    # Shorten cwd for display
+    home = os.path.expanduser("~")
+    cwd_short = cwd.replace(home, "~") if cwd.startswith(home) else cwd
+
     def on_attach(name: str) -> None:
         target = resolve_session(name, sessions, cfg.session_prefix)
         attach_session(target, cfg, launch_user)
@@ -1315,17 +1331,36 @@ def _build_tui_context(cfg: Config, launch_user: str) -> object:
             run_cmd(full, check=False)
 
     def on_refresh() -> object:
-        return _build_tui_context(cfg, launch_user)
+        return _build_tui_context(cfg, launch_user, cwd)
+
+    def on_launch_cwd(dsp: bool) -> None:
+        args = ParsedArgs(action="run", dsp=dsp, claude_args=[])
+        do_run(args, cfg, launch_user)
+
+    def on_launch_new(name: str, dsp: bool) -> None:
+        args = ParsedArgs(action="new", target_id=name, dsp=dsp, claude_args=[])
+        do_new(args, cfg, launch_user)
+
+    def on_launch_existing(name: str, dsp: bool) -> None:
+        args = ParsedArgs(action="new", target_id=name, dsp=dsp, claude_args=[])
+        do_new(args, cfg, launch_user)
 
     return ccw_tui.TuiContext(
         sessions=tui_sessions,
         total_cpu=total_cpu,
         total_ram=total_ram,
         version=format_version(),
+        cwd=cwd,
+        cwd_short=cwd_short,
+        new_project_root=cfg.new_project_root,
+        existing_projects=_list_existing_projects(cfg.new_project_root),
         on_attach=on_attach,
         on_kill=on_kill,
         on_kill_all=on_kill_all,
         on_refresh=on_refresh,
+        on_launch_cwd=on_launch_cwd,
+        on_launch_new=on_launch_new,
+        on_launch_existing=on_launch_existing,
     )
 
 
@@ -1337,7 +1372,8 @@ def do_interactive(cfg: Config, launch_user: str) -> int:
         eprint("ccw: interactive mode requires 'blessed' (pip install blessed)")
         print(USAGE)
         return 1
-    ctx = _build_tui_context(cfg, launch_user)
+    cwd = canonical(os.getcwd())
+    ctx = _build_tui_context(cfg, launch_user, cwd)
     return ccw_tui.run(ctx)
 
 
