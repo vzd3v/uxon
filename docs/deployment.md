@@ -11,6 +11,15 @@
 `/usr/local/bin/ccw` should remain a symlink to `bin/ccw` inside the canonical
 checkout. Do not keep a second copied executable as a parallel source of truth.
 
+## Runtime dependencies
+- Python 3.11+ (stdlib `tomllib` is used for config reads).
+- `tomlkit` — required for config writes (TUI Settings screen). Install via
+  `apt install python3-tomlkit` or `pip install tomlkit` into the Python env
+  `ccw` runs under. Without it, TUI saves fail while CLI (`list`, `doctor`,
+  `run`, `new`, `attach`, `kill`) keeps working.
+- `blessed` — required for the interactive TUI only; same lazy-import pattern.
+- `gh` — required on hosts that use `auth = "gh"` git-remote profiles.
+
 ## Infra integration
 The infra repo may:
 - clone/update this repo on hosts
@@ -36,11 +45,22 @@ Recommended rollout defaults:
 - keep `repeat_noninteractive_mode = "fail"` unless the host explicitly wants unattended attach/new
 - keep `tmux_socket_template = "/tmp/ccw-{user}.sock"` unless the host needs a different absolute socket path
 
+### Git remote profiles (optional)
+`git_create_enabled`, `default_git_remote_profile`, and
+`[[git_remote_profiles]]` are **hand-edited** in `config.toml` on the host —
+they are intentionally not part of the `install/render_ccw_config.py`
+JSON-to-TOML flow (profiles reference `creds_user` and `token_file`, and
+infra shouldn't hard-code those across hosts). The TUI shows them read-only.
+See `README.md` "Git remote on new project" for field reference and examples.
+
 ## Verification checklist
 After deploying a new ref:
 1. `ccw --version`
-2. `ccw doctor`
+2. `ccw doctor` — includes per-profile status for configured
+   `[[git_remote_profiles]]`, if any (read-only probe)
 3. repeat plain `ccw -n <name>` behavior
 4. repeat worktree `ccw -n <name> -w <branch>` behavior
 5. `ccw kill-all --dry-run` and guarded `ccw kill-all`
 6. confirm the reported dedicated socket path matches the deployed config
+7. if git-remote profiles are enabled: `ccw -n <throwaway> --git-remote <profile> --dry-run`
+   should print the full command plan without executing
