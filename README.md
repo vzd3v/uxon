@@ -202,7 +202,9 @@ When the TUI starts, `ccw` runs a fast, non-interactive check for
 passwordless sudo:
 
 1. `os.geteuid() == 0` → True.
-2. Otherwise `sudo -n -v` with a 0.5 s timeout. Exit 0 → True.
+2. Otherwise `sudo -n true` with a 0.5 s timeout. Exit 0 → True.
+   (We probe with `true`, not `-v`: `sudo -v` validates the credential
+   cache and fails under `-n` even for `NOPASSWD: ALL` users.)
 
 On True, the TUI gains a ⚡ superuser marker in the header/footer and
 collects sessions for every user in `session_users` (other than the current

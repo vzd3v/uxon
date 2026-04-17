@@ -185,11 +185,18 @@ class DetectPasswordlessSudoTests(unittest.TestCase):
         with mock.patch.object(ccw.os, "geteuid", return_value=0):
             self.assertTrue(ccw.detect_passwordless_sudo())
 
-    def test_detect_via_sudo_n_v_success(self) -> None:
+    def test_detect_via_sudo_n_true_success(self) -> None:
         fake = mock.Mock(returncode=0)
+        captured: dict = {}
+
+        def fake_run(cmd, *args, **kwargs):
+            captured["cmd"] = cmd
+            return fake
+
         with mock.patch.object(ccw.os, "geteuid", return_value=1000):
-            with mock.patch.object(ccw.subprocess, "run", return_value=fake):
+            with mock.patch.object(ccw.subprocess, "run", side_effect=fake_run):
                 self.assertTrue(ccw.detect_passwordless_sudo())
+        self.assertEqual(captured["cmd"], ["sudo", "-n", "true"])
 
     def test_detect_returns_false_on_nonzero_exit(self) -> None:
         fake = mock.Mock(returncode=1)
