@@ -118,6 +118,13 @@ Also: `ccw -V`, `ccw --version`.
 - **Permissions prompt** before every launch: choose between regular and
   `--dangerously-skip-permissions`.
 
+When the session you launched or attached to exits (or you detach with
+`Ctrl-b d`), `ccw` comes back to this main screen with a refreshed session
+list — it does not drop you to the shell. Pressing `q` / `Esc` on the main
+screen still exits to the shell. The CLI entry points (`ccw attach <id>`,
+`ccw run`, `ccw new`) keep their original one-shot behavior: they replace
+the process with tmux, so detach returns to the shell.
+
 ### Keys
 | Key | Action |
 |-----|--------|

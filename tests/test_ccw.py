@@ -641,6 +641,123 @@ class CcwTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("--force", eprint.call_args[0][0])
 
+    def _stub_socket_path(self):
+        return mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-test.sock")
+
+    def test_build_tmux_attach_request_produces_expected_argv(self) -> None:
+        cfg = self.make_config()
+        target = self.make_session("cc-demo", "/srv/repos/demo")
+        with self._stub_socket_path():
+            req = ccw._build_tmux_attach_request(target, cfg, "u-vz")
+        self.assertIn("attach-session", req.cmd)
+        self.assertIn("cc-demo", req.cmd)
+        self.assertEqual(req.prelaunch, ())
+        self.assertIn("attach", req.label)
+
+    def test_build_tmux_launch_request_includes_claude_and_mkdir(self) -> None:
+        cfg = self.make_config(default_claude_args=["--model", "sonnet"])
+        args = ccw.ParsedArgs(action="run", dsp=True, claude_args=["--foo"])
+        with self._stub_socket_path():
+            req = ccw._build_tmux_launch_request("/srv/repos/demo", "cc-demo", args, cfg, None, "u-vz")
+        self.assertIn("new-session", req.cmd)
+        self.assertIn("-As", req.cmd)
+        self.assertIn("cc-demo", req.cmd)
+        # default_claude_args + dsp flag + caller's claude_args all flow through
+        self.assertIn("claude", req.cmd)
+        self.assertIn("--model", req.cmd)
+        self.assertIn("sonnet", req.cmd)
+        self.assertIn("--dangerously-skip-permissions", req.cmd)
+        self.assertIn("--foo", req.cmd)
+        # prelaunch mkdir for the socket parent
+        self.assertEqual(len(req.prelaunch), 1)
+        pre = req.prelaunch[0]
+        self.assertIn("mkdir", pre)
+        self.assertIn("-p", pre)
+
+    def test_attach_session_blocking_uses_subprocess_not_execvp(self) -> None:
+        cfg = self.make_config()
+        target = self.make_session("cc-demo", "/srv/repos/demo")
+        with self._stub_socket_path():
+            with mock.patch.object(ccw.subprocess, "call", return_value=0) as call:
+                with mock.patch.object(ccw.os, "execvp") as execvp:
+                    rc = ccw.attach_session_blocking(target, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+        call.assert_called_once()
+        execvp.assert_not_called()
+
+    def test_launch_in_tmux_blocking_runs_prelaunch_then_cmd(self) -> None:
+        cfg = self.make_config()
+        args = ccw.ParsedArgs(action="run", claude_args=[])
+        with self._stub_socket_path():
+            with mock.patch.object(ccw.subprocess, "call", side_effect=[0, 0]) as call:
+                with mock.patch.object(ccw.os, "execvp") as execvp:
+                    rc = ccw.launch_in_tmux_blocking("/srv/repos/demo", "cc-demo", args, cfg, None, "u-vz")
+        self.assertEqual(rc, 0)
+        self.assertEqual(call.call_count, 2)
+        first_cmd = call.call_args_list[0][0][0]
+        second_cmd = call.call_args_list[1][0][0]
+        self.assertIn("mkdir", first_cmd)
+        self.assertIn("new-session", second_cmd)
+        execvp.assert_not_called()
+
+    def test_launch_in_tmux_blocking_aborts_on_prelaunch_failure(self) -> None:
+        cfg = self.make_config()
+        args = ccw.ParsedArgs(action="run", claude_args=[])
+        with self._stub_socket_path():
+            with mock.patch.object(ccw.subprocess, "call", side_effect=[7]) as call:
+                rc = ccw.launch_in_tmux_blocking("/srv/repos/demo", "cc-demo", args, cfg, None, "u-vz")
+        self.assertEqual(rc, 7)
+        call.assert_called_once()  # main cmd never ran
+
+    def test_attach_session_cli_still_calls_execvp(self) -> None:
+        cfg = self.make_config()
+        target = self.make_session("cc-demo", "/srv/repos/demo")
+        with self._stub_socket_path():
+            with mock.patch.object(ccw.os, "execvp") as execvp:
+                ccw.attach_session(target, cfg, "u-vz")
+        execvp.assert_called_once()
+        argv = execvp.call_args[0][1]
+        self.assertIn("attach-session", argv)
+        self.assertIn("cc-demo", argv)
+
+    def test_launch_in_tmux_cli_still_calls_execvp_after_mkdir(self) -> None:
+        cfg = self.make_config()
+        args = ccw.ParsedArgs(action="run", claude_args=[])
+        with self._stub_socket_path():
+            with mock.patch.object(ccw, "run_cmd") as run_cmd:
+                with mock.patch.object(ccw.os, "execvp") as execvp:
+                    ccw.launch_in_tmux("/srv/repos/demo", "cc-demo", args, cfg, None, "u-vz")
+        run_cmd.assert_called_once()
+        execvp.assert_called_once()
+
+    def test_plan_tui_run_returns_launch_request_without_execvp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self.make_config(allowed_roots=[tmpdir])
+            project_dir = Path(tmpdir) / "demo"
+            project_dir.mkdir()
+            with self._stub_socket_path():
+                with mock.patch.object(ccw, "collect_sessions", return_value=[]):
+                    with mock.patch.object(ccw, "allocate_session_name", return_value="cc-demo"):
+                        with mock.patch.object(ccw.os, "execvp") as execvp:
+                            req = ccw._plan_tui_run(cfg, "u-vz", str(project_dir), dsp=False)
+        self.assertIn("new-session", req.cmd)
+        self.assertIn("cc-demo", req.cmd)
+        execvp.assert_not_called()
+
+    def test_plan_tui_new_forces_attach_when_existing_session(self) -> None:
+        cfg = self.make_config(allowed_roots=["/srv/repos"], new_project_root="/srv/repos")
+        existing = [self.make_session("cc-demo", "/srv/repos/demo")]
+        with self._stub_socket_path():
+            with mock.patch.object(ccw, "canonical", side_effect=lambda v: str(v)):
+                with mock.patch.object(ccw, "run_cmd"):
+                    with mock.patch.object(ccw, "collect_sessions", return_value=existing):
+                        with mock.patch.object(ccw.os, "execvp") as execvp:
+                            req = ccw._plan_tui_new(cfg, "u-vz", "demo", dsp=False, git_profile="")
+        # Existing session → attach request, not launch
+        self.assertIn("attach-session", req.cmd)
+        self.assertIn("cc-demo", req.cmd)
+        execvp.assert_not_called()
+
     def test_find_project_config_ignores_permission_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -1026,16 +1026,44 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     return attach_session(target, cfg, launch_user, args.dry_run)
 
 
+def _tui_launch_request_cls() -> type:
+    """Lazy-load ``LaunchRequest`` from lib/ccw_tui without importing blessed."""
+    sys.path.insert(0, str(repo_root() / "lib"))
+    import ccw_tui  # noqa: WPS433 — lazy import, module-top `blessed` dep is deferred
+    return ccw_tui.LaunchRequest
+
+
+def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
+    """Return the LaunchRequest for attaching to an existing session.
+
+    Pure: no side effects, no file I/O. Used by both the CLI execvp path
+    (:func:`attach_session`) and the TUI fork-and-wait path.
+    """
+    LaunchRequest = _tui_launch_request_cls()
+    full = tuple(configured_tmux_base(cfg, launch_user) + ["attach-session", "-t", target.name])
+    return LaunchRequest(cmd=full, prelaunch=(), label=f"attach {target.name}")
+
+
 def attach_session(target: SessionInfo, cfg: Config, launch_user: str, dry_run: bool = False) -> int:
-    full = configured_tmux_base(cfg, launch_user) + ["attach-session", "-t", target.name]
+    req = _build_tmux_attach_request(target, cfg, launch_user)
     if dry_run:
         print(f"attach_user={shlex.quote(launch_user)}")
         print(f"socket={shlex.quote(tmux_socket_path(cfg, launch_user))}")
         print(f"session={shlex.quote(target.name)}")
-        print(f"exec {shlex.join(full)}")
+        print(f"exec {shlex.join(req.cmd)}")
         return 0
-    os.execvp(full[0], full)
+    os.execvp(req.cmd[0], list(req.cmd))
     return 0
+
+
+def attach_session_blocking(target: SessionInfo, cfg: Config, launch_user: str) -> int:
+    """Fork-and-wait variant of :func:`attach_session` for the TUI path."""
+    req = _build_tmux_attach_request(target, cfg, launch_user)
+    for pre in req.prelaunch:
+        rc = subprocess.call(list(pre))
+        if rc != 0:
+            return rc
+    return subprocess.call(list(req.cmd))
 
 
 def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
@@ -1074,7 +1102,21 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     return 0
 
 
-def launch_in_tmux(target_dir: str, session: str, args: ParsedArgs, cfg: Config, branch: str | None, launch_user: str) -> int:
+def _build_tmux_launch_request(
+    target_dir: str,
+    session: str,
+    args: ParsedArgs,
+    cfg: Config,
+    branch: str | None,
+    launch_user: str,
+):
+    """Assemble the ``claude`` + tmux argv plus the socket-parent mkdir.
+
+    This is the single place where the ``claude`` command line is built
+    (see AGENTS.md "hard rules"). Both the CLI execvp path
+    (:func:`launch_in_tmux`) and the TUI fork-and-wait path reuse it.
+    """
+    LaunchRequest = _tui_launch_request_cls()
     final_cmd = ["claude"] + cfg.default_claude_args + (args.claude_args or [])
     if branch:
         final_cmd += ["-w", branch]
@@ -1082,21 +1124,49 @@ def launch_in_tmux(target_dir: str, session: str, args: ParsedArgs, cfg: Config,
         final_cmd.append("--dangerously-skip-permissions")
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
-    ensure_socket_parent = command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent]
-    full = configured_tmux_base(cfg, launch_user) + ["new-session", "-As", session, "-c", target_dir] + final_cmd
+    ensure_socket_parent = tuple(command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent])
+    full = tuple(
+        configured_tmux_base(cfg, launch_user)
+        + ["new-session", "-As", session, "-c", target_dir]
+        + final_cmd
+    )
+    return LaunchRequest(cmd=full, prelaunch=(ensure_socket_parent,), label=f"launch {session}")
+
+
+def launch_in_tmux(target_dir: str, session: str, args: ParsedArgs, cfg: Config, branch: str | None, launch_user: str) -> int:
+    req = _build_tmux_launch_request(target_dir, session, args, cfg, branch, launch_user)
     if args.dry_run:
         print(f"launch_user={shlex.quote(launch_user)}")
         print(f"dir={shlex.quote(target_dir)}")
-        print(f"socket={shlex.quote(socket_path)}")
-        print(f"socket_parent_mkdir={shlex.join(ensure_socket_parent)}")
+        print(f"socket={shlex.quote(tmux_socket_path(cfg, launch_user))}")
+        for pre in req.prelaunch:
+            print(f"socket_parent_mkdir={shlex.join(pre)}")
         print(f"session={shlex.quote(session)}")
         if branch:
             print(f"branch={shlex.quote(branch)}")
-        print(f"exec {shlex.join(full)}")
+        print(f"exec {shlex.join(req.cmd)}")
         return 0
-    run_cmd(ensure_socket_parent)
-    os.execvp(full[0], full)
+    for pre in req.prelaunch:
+        run_cmd(list(pre))
+    os.execvp(req.cmd[0], list(req.cmd))
     return 0
+
+
+def launch_in_tmux_blocking(
+    target_dir: str,
+    session: str,
+    args: ParsedArgs,
+    cfg: Config,
+    branch: str | None,
+    launch_user: str,
+) -> int:
+    """Fork-and-wait variant of :func:`launch_in_tmux` for the TUI path."""
+    req = _build_tmux_launch_request(target_dir, session, args, cfg, branch, launch_user)
+    for pre in req.prelaunch:
+        rc = subprocess.call(list(pre))
+        if rc != 0:
+            return rc
+    return subprocess.call(list(req.cmd))
 
 
 def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
@@ -1564,6 +1634,71 @@ def _load_settings_sources(cwd: str) -> tuple[dict, dict, "Path | None"]:
     return repo_data, proj_data, proj_cfg
 
 
+def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
+    """Build a LaunchRequest for the TUI "New session in current folder" action.
+
+    Mirrors :func:`do_run` minus the terminal handoff: resolves the target
+    directory (cwd, under allowed_roots), allocates a session name, and
+    returns a LaunchRequest. No ``-w branch`` support — the TUI does not
+    expose that knob.
+    """
+    ensure_allowed_dir(cwd, cfg.allowed_roots)
+    target_dir = cwd
+    session_stem = session_stem_for_path(target_dir)
+    sessions = collect_sessions([launch_user], cfg)
+    session = allocate_session_name(cfg.session_prefix, session_stem, target_dir, sessions)
+    args = ParsedArgs(action="run", dsp=dsp, claude_args=[])
+    return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
+
+
+def _plan_tui_new(
+    cfg: Config,
+    launch_user: str,
+    name: str,
+    dsp: bool,
+    git_profile: str,
+):
+    """Build a LaunchRequest for the TUI "Create new project" /
+    "Open existing project" flows.
+
+    Mirrors :func:`do_new` minus the terminal handoff: creates the project
+    directory (if missing), optionally creates the git remote, and — when
+    a compatible session already exists — forces ``attach`` semantics
+    (the TUI cannot safely prompt via stdin inside a blessed context).
+    """
+    if "/" in name or name in (".", ".."):
+        fail(f"invalid name: {name}")
+    project_dir = canonical(os.path.join(cfg.new_project_root, name))
+    allowed = any(is_under(project_dir, base) for base in cfg.allowed_roots)
+    if not allowed:
+        fail(f"new target must be under allowed_roots; got: {project_dir}")
+    target_dir = project_dir
+    run_cmd(command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
+    session_stem = session_stem_for_path(target_dir)
+    compatibility_root = target_dir
+
+    args = ParsedArgs(
+        action="new",
+        target_id=name,
+        dsp=dsp,
+        claude_args=[],
+        git_remote=git_profile or None,
+        repeat_mode="attach",  # TUI cannot prompt stdin inside blessed context
+    )
+    if args.git_remote:
+        _do_create_git_remote(args, cfg, launch_user, project_dir, name, None)
+
+    sessions = collect_sessions([launch_user], cfg)
+    existing = compatible_indexed_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    if existing:
+        attach_target = choose_attach_session(existing, cfg.session_prefix, session_stem)
+        return _build_tmux_attach_request(attach_target, cfg, launch_user)
+
+    repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
+    session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
+
+
 def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
     """Build a TuiContext from live session data. Lazy-imports ccw_tui."""
     sys.path.insert(0, str(repo_root() / "lib"))
@@ -1591,10 +1726,10 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
     home = os.path.expanduser("~")
     cwd_short = cwd.replace(home, "~") if cwd.startswith(home) else cwd
 
-    def on_attach(user: str, name: str) -> None:
+    def on_attach(user: str, name: str):
         fresh = collect_sessions([user], cfg)
         target = resolve_session(name, fresh, cfg.session_prefix)
-        attach_session(target, cfg, user)
+        return _build_tmux_attach_request(target, cfg, user)
 
     def on_kill(user: str, name: str) -> None:
         fresh = collect_sessions([user], cfg)
@@ -1649,23 +1784,14 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
             for p in cfg.git_remote_profiles
         ]
 
-    def on_launch_cwd(dsp: bool) -> None:
-        args = ParsedArgs(action="run", dsp=dsp, claude_args=[])
-        do_run(args, cfg, launch_user)
+    def on_launch_cwd(dsp: bool):
+        return _plan_tui_run(cfg, launch_user, cwd, dsp)
 
-    def on_launch_new(name: str, dsp: bool, git_profile: str) -> None:
-        args = ParsedArgs(
-            action="new",
-            target_id=name,
-            dsp=dsp,
-            claude_args=[],
-            git_remote=git_profile or None,
-        )
-        do_new(args, cfg, launch_user)
+    def on_launch_new(name: str, dsp: bool, git_profile: str):
+        return _plan_tui_new(cfg, launch_user, name, dsp, git_profile)
 
-    def on_launch_existing(name: str, dsp: bool) -> None:
-        args = ParsedArgs(action="new", target_id=name, dsp=dsp, claude_args=[])
-        do_new(args, cfg, launch_user)
+    def on_launch_existing(name: str, dsp: bool):
+        return _plan_tui_new(cfg, launch_user, name, dsp, "")
 
     git_profile_options = [
         (

@@ -19,6 +19,7 @@ Sub-screens:
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
@@ -31,6 +32,21 @@ if TYPE_CHECKING:
 
 
 # ── Data ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class LaunchRequest:
+    """Describes a tmux invocation the TUI wants the outer loop to fork-and-wait.
+
+    The TUI itself never spawns subprocesses; activation handlers return
+    one of these, the main loop exits blessed's fullscreen context, runs
+    the ``prelaunch`` commands and then ``cmd``, waits for exit, and
+    re-enters the main screen with a refreshed context.
+    """
+
+    cmd: tuple[str, ...]
+    prelaunch: tuple[tuple[str, ...], ...] = ()
+    label: str = ""
 
 
 @dataclass
@@ -67,17 +83,25 @@ class TuiContext:
     has_sudo: bool = False
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
 
-    # Callbacks — TUI calls these, ccw provides them
-    on_attach: Callable[[str, str], None] = lambda user, name: None  # (user, session) -> execvp (no return)
+    # Callbacks — TUI calls these, ccw provides them.
+    # Launch/attach callbacks return a LaunchRequest; the outer run() loop
+    # runs the command and re-enters the TUI main screen on exit.
+    on_attach: Callable[[str, str], "LaunchRequest"] = (
+        lambda user, name: LaunchRequest(cmd=("true",), label="noop-attach")
+    )
     on_kill: Callable[[str, str], None] = lambda user, name: None  # (user, session) -> kill
     on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
     on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
     on_refresh: Callable[[], "TuiContext"] = lambda: None  # type: ignore[return-value]
-    on_launch_cwd: Callable[[bool], None] = lambda dsp: None  # dsp -> launch in cwd (execvp)
-    on_launch_new: Callable[[str, bool, str], None] = (
-        lambda name, dsp, git_profile: None  # name, dsp, git_profile("" = skip git) -> create & launch
+    on_launch_cwd: Callable[[bool], "LaunchRequest"] = (
+        lambda dsp: LaunchRequest(cmd=("true",), label="noop-launch-cwd")
     )
-    on_launch_existing: Callable[[str, bool], None] = lambda name, dsp: None  # name, dsp -> launch in existing
+    on_launch_new: Callable[[str, bool, str], "LaunchRequest"] = (
+        lambda name, dsp, git_profile: LaunchRequest(cmd=("true",), label="noop-launch-new")
+    )
+    on_launch_existing: Callable[[str, bool], "LaunchRequest"] = (
+        lambda name, dsp: LaunchRequest(cmd=("true",), label="noop-launch-existing")
+    )
 
     # Git remote on new project — display only. The TUI never edits these.
     git_create_enabled: bool = False
@@ -656,8 +680,17 @@ def _draw_main_screen(
             print(t.clear_eol + "  " + status_msg, end="")
 
 
-def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
-    """Handle activation (Enter / digit) for item at index. Returns status msg or None."""
+def _activate_item(
+    t: "Terminal", ctx: TuiContext, index: int
+) -> tuple[str | None, "LaunchRequest | None"]:
+    """Handle activation (Enter / digit) for item at index.
+
+    Returns ``(status_msg, launch_request)``:
+      * ``status_msg`` — text to show in the status line on next redraw
+        (``None`` = leave current message).
+      * ``launch_request`` — if set, the outer :func:`run` loop will exit
+        the fullscreen context, run it, and re-enter the main screen.
+    """
     own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
 
     if index < own_start:
@@ -665,7 +698,7 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
             dsp = _prompt_permissions(t)
             if dsp is not None:
                 print(t.normal + t.clear + t.home, end="", flush=True)
-                ctx.on_launch_cwd(dsp)
+                return None, ctx.on_launch_cwd(dsp)
         elif index == 1:
             name = _prompt_project_name(t, ctx.new_project_root)
             if name is not None:
@@ -677,37 +710,37 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
                         ctx.default_git_remote_profile,
                     )
                     if git_profile is None:
-                        return None
+                        return None, None
                 dsp = _prompt_permissions(t)
                 if dsp is not None:
                     print(t.normal + t.clear + t.home, end="", flush=True)
-                    ctx.on_launch_new(name, dsp, git_profile)
+                    return None, ctx.on_launch_new(name, dsp, git_profile)
         elif index == 2:
             if not ctx.existing_projects:
-                return t.yellow(f"No projects in {ctx.new_project_root}")
+                return t.yellow(f"No projects in {ctx.new_project_root}"), None
             name = _prompt_existing_project(t, ctx.existing_projects, ctx.new_project_root)
             if name is not None:
                 dsp = _prompt_permissions(t)
                 if dsp is not None:
                     print(t.normal + t.clear + t.home, end="", flush=True)
-                    ctx.on_launch_existing(name, dsp)
-        return None
+                    return None, ctx.on_launch_existing(name, dsp)
+        return None, None
 
     if index < other_start:
         si = index - own_start
         if 0 <= si < len(ctx.sessions):
             session = ctx.sessions[si]
             print(t.normal + t.clear + t.home, end="", flush=True)
-            ctx.on_attach(ctx.current_user, session.name)
-        return None
+            return None, ctx.on_attach(ctx.current_user, session.name)
+        return None, None
 
     if has_super and index < settings_idx:
         si = index - other_start
         if 0 <= si < len(ctx.other_sessions):
             session = ctx.other_sessions[si]
             print(t.normal + t.clear + t.home, end="", flush=True)
-            ctx.on_attach(session.user, session.name)
-        return None
+            return None, ctx.on_attach(session.user, session.name)
+        return None, None
 
     if has_super and index == settings_idx:
         from ccw_tui_settings import SettingsCallbacks, show_settings
@@ -720,7 +753,7 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
             get_git_remote_profile_rows=ctx.get_git_remote_profile_rows,
         )
         show_settings(t, cbs)
-        return _dim(t, "Settings closed")
+        return _dim(t, "Settings closed"), None
 
     if has_super and index == kill_idx:
         confirm_y = t.height - 3
@@ -728,19 +761,187 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
         if _confirm_kill_all_global(t, total_count, confirm_y):
             try:
                 ctx.on_kill_all_global()
-                return t.green(f"Killed all {total_count} sessions (all users)")
+                return t.green(f"Killed all {total_count} sessions (all users)"), None
             except SystemExit:
-                return t.red("Failed to kill all sessions globally")
-        return None
+                return t.red("Failed to kill all sessions globally"), None
+        return None, None
 
-    return None
+    return None, None
 
 
 # ── Entry point ──────────────────────────────────────────────────────
 
 
+def _run_launch_request(req: "LaunchRequest") -> tuple[int, str]:
+    """Execute a LaunchRequest via fork-and-wait (blessed context already exited).
+
+    Runs each prelaunch command in order, aborting if any returns non-zero,
+    then runs the main ``cmd``. Returns ``(rc, stage)`` where ``stage`` is
+    ``"prelaunch"`` if a prelaunch failed, else ``"cmd"``.
+    """
+    for pre in req.prelaunch:
+        rc = subprocess.call(list(pre))
+        if rc != 0:
+            return rc, "prelaunch"
+    rc = subprocess.call(list(req.cmd))
+    return rc, "cmd"
+
+
+def _format_launch_status(t: "Terminal", req: "LaunchRequest", rc: int, stage: str) -> str:
+    """Render a short status-line message about a returned-from-tmux launch."""
+    label = req.label or "launch"
+    if stage == "prelaunch":
+        return t.red(f"{label}: prelaunch failed (rc={rc})")
+    if rc == 0:
+        return ""
+    if rc == 130:
+        return _dim(t, f"{label}: cancelled")
+    return t.yellow(f"{label}: exited rc={rc}")
+
+
+def _interactive_loop(
+    t: "Terminal",
+    ctx: TuiContext,
+    cursor: int,
+    scroll_offset: int,
+    status_msg: str,
+) -> tuple[str, Any]:
+    """Run one blessed-fullscreen pass of the main screen.
+
+    Returns one of:
+      * ``("quit", rc)`` — user asked to quit the TUI.
+      * ``("launch", (req, cursor, scroll_offset, ctx))`` — user picked a
+        session/project; outer loop should run ``req`` outside fullscreen
+        and re-enter.
+    """
+    while True:
+        own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
+        total = _total_items(ctx)
+        if total > 0:
+            cursor = max(0, min(cursor, total - 1))
+        else:
+            cursor = 0
+
+        decor = 0
+        if ctx.sessions:
+            decor += 2
+        if has_super:
+            decor += 1
+            if ctx.other_sessions:
+                decor += 1
+        available = max(1, t.height - 5 - decor)
+        if cursor < scroll_offset:
+            scroll_offset = cursor
+        elif cursor >= scroll_offset + available:
+            scroll_offset = cursor - available + 1
+
+        _draw_main_screen(t, ctx, cursor, scroll_offset, status_msg)
+        status_msg = ""
+
+        key = t.inkey(timeout=None)
+
+        if key == "q" or key.name == "KEY_ESCAPE":
+            return "quit", 0
+
+        elif key.name == "KEY_UP" or key == "k":
+            if cursor > 0:
+                cursor -= 1
+
+        elif key.name == "KEY_DOWN" or key == "j":
+            if cursor < total - 1:
+                cursor += 1
+
+        elif key.name == "KEY_HOME" or key == "g":
+            cursor = 0
+
+        elif key.name == "KEY_END" or key == "G":
+            cursor = max(0, total - 1)
+
+        elif key.name == "KEY_ENTER" or key == "\n" or key == "\r":
+            msg, req = _activate_item(t, ctx, cursor)
+            status_msg = msg or ""
+            if req is not None:
+                return "launch", (req, cursor, scroll_offset, ctx)
+            # Items that come back (Settings/Kill-all) need a context refresh
+            if has_super and cursor in (settings_idx, kill_idx):
+                ctx = ctx.on_refresh()
+                total = _total_items(ctx)
+                if cursor >= total:
+                    cursor = max(0, total - 1)
+
+        elif not key.is_sequence and str(key) in "123456789":
+            idx = int(str(key)) - 1
+            if idx < total:
+                cursor = idx
+                msg, req = _activate_item(t, ctx, cursor)
+                status_msg = msg or ""
+                if req is not None:
+                    return "launch", (req, cursor, scroll_offset, ctx)
+                if has_super and cursor in (settings_idx, kill_idx):
+                    ctx = ctx.on_refresh()
+                    total = _total_items(ctx)
+                    if cursor >= total:
+                        cursor = max(0, total - 1)
+
+        elif key == "d":
+            confirm_y = t.height - 3
+            if own_start <= cursor < other_start and ctx.sessions:
+                si = cursor - own_start
+                session = ctx.sessions[si]
+                if _confirm_kill(t, session.name, confirm_y):
+                    try:
+                        ctx.on_kill(ctx.current_user, session.name)
+                        status_msg = t.green(f"Killed {session.name}")
+                    except SystemExit:
+                        status_msg = t.red(f"Failed to kill {session.name}")
+                    ctx = ctx.on_refresh()
+                    total = _total_items(ctx)
+                    if cursor >= total:
+                        cursor = max(0, total - 1)
+            elif has_super and other_start <= cursor < settings_idx:
+                si = cursor - other_start
+                session = ctx.other_sessions[si]
+                if _confirm_kill(t, session.name, confirm_y, user=session.user):
+                    try:
+                        ctx.on_kill(session.user, session.name)
+                        status_msg = t.green(f"Killed {session.name} (user={session.user})")
+                    except SystemExit:
+                        status_msg = t.red(f"Failed to kill {session.name}")
+                    ctx = ctx.on_refresh()
+                    total = _total_items(ctx)
+                    if cursor >= total:
+                        cursor = max(0, total - 1)
+
+        elif key == "D":
+            if ctx.sessions:
+                n = len(ctx.sessions)
+                confirm_y = t.height - 3
+                if _confirm_kill_all(t, n, confirm_y):
+                    try:
+                        ctx.on_kill_all()
+                        status_msg = t.green(f"Killed all {n} sessions")
+                    except SystemExit:
+                        status_msg = t.red("Failed to kill all sessions")
+                    ctx = ctx.on_refresh()
+                    cursor = 0
+                    scroll_offset = 0
+
+        elif key == "r":
+            ctx = ctx.on_refresh()
+            status_msg = _dim(t, "Refreshed")
+            total = _total_items(ctx)
+            if cursor >= total:
+                cursor = max(0, total - 1)
+
+
 def run(ctx: TuiContext) -> int:
-    """Run the interactive TUI. Returns exit code."""
+    """Run the interactive TUI.
+
+    Loop: enter blessed fullscreen → run inner screen until quit or launch.
+    On launch, exit fullscreen, run the LaunchRequest (fork-and-wait), then
+    re-enter with a refreshed context. Cursor/scroll position survive the
+    round-trip so the user lands back on the item they launched from.
+    """
     try:
         from blessed import Terminal
     except ImportError:
@@ -752,118 +953,16 @@ def run(ctx: TuiContext) -> int:
     scroll_offset = 0
     status_msg = ""
 
-    with t.fullscreen(), t.cbreak(), t.hidden_cursor():
-        while True:
-            own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
-            total = _total_items(ctx)
-            if total > 0:
-                cursor = max(0, min(cursor, total - 1))
-            else:
-                cursor = 0
+    while True:
+        with t.fullscreen(), t.cbreak(), t.hidden_cursor():
+            outcome, payload = _interactive_loop(t, ctx, cursor, scroll_offset, status_msg)
 
-            decor = 0
-            if ctx.sessions:
-                decor += 2
-            if has_super:
-                decor += 1
-                if ctx.other_sessions:
-                    decor += 1
-            available = max(1, t.height - 5 - decor)
-            if cursor < scroll_offset:
-                scroll_offset = cursor
-            elif cursor >= scroll_offset + available:
-                scroll_offset = cursor - available + 1
+        if outcome == "quit":
+            return int(payload)
 
-            _draw_main_screen(t, ctx, cursor, scroll_offset, status_msg)
-            status_msg = ""
-
-            key = t.inkey(timeout=None)
-
-            if key == "q" or key.name == "KEY_ESCAPE":
-                return 0
-
-            elif key.name == "KEY_UP" or key == "k":
-                if cursor > 0:
-                    cursor -= 1
-
-            elif key.name == "KEY_DOWN" or key == "j":
-                if cursor < total - 1:
-                    cursor += 1
-
-            elif key.name == "KEY_HOME" or key == "g":
-                cursor = 0
-
-            elif key.name == "KEY_END" or key == "G":
-                cursor = max(0, total - 1)
-
-            elif key.name == "KEY_ENTER" or key == "\n" or key == "\r":
-                status_msg = _activate_item(t, ctx, cursor) or ""
-                # Items that come back (don't execvp) need a context refresh
-                if has_super and cursor in (settings_idx, kill_idx):
-                    ctx = ctx.on_refresh()
-                    total = _total_items(ctx)
-                    if cursor >= total:
-                        cursor = max(0, total - 1)
-
-            elif not key.is_sequence and str(key) in "123456789":
-                idx = int(str(key)) - 1
-                if idx < total:
-                    cursor = idx
-                    status_msg = _activate_item(t, ctx, cursor) or ""
-                    if has_super and cursor in (settings_idx, kill_idx):
-                        ctx = ctx.on_refresh()
-                        total = _total_items(ctx)
-                        if cursor >= total:
-                            cursor = max(0, total - 1)
-
-            elif key == "d":
-                confirm_y = t.height - 3
-                if own_start <= cursor < other_start and ctx.sessions:
-                    si = cursor - own_start
-                    session = ctx.sessions[si]
-                    if _confirm_kill(t, session.name, confirm_y):
-                        try:
-                            ctx.on_kill(ctx.current_user, session.name)
-                            status_msg = t.green(f"Killed {session.name}")
-                        except SystemExit:
-                            status_msg = t.red(f"Failed to kill {session.name}")
-                        ctx = ctx.on_refresh()
-                        total = _total_items(ctx)
-                        if cursor >= total:
-                            cursor = max(0, total - 1)
-                elif has_super and other_start <= cursor < settings_idx:
-                    si = cursor - other_start
-                    session = ctx.other_sessions[si]
-                    if _confirm_kill(t, session.name, confirm_y, user=session.user):
-                        try:
-                            ctx.on_kill(session.user, session.name)
-                            status_msg = t.green(f"Killed {session.name} (user={session.user})")
-                        except SystemExit:
-                            status_msg = t.red(f"Failed to kill {session.name}")
-                        ctx = ctx.on_refresh()
-                        total = _total_items(ctx)
-                        if cursor >= total:
-                            cursor = max(0, total - 1)
-
-            elif key == "D":
-                if ctx.sessions:
-                    n = len(ctx.sessions)
-                    confirm_y = t.height - 3
-                    if _confirm_kill_all(t, n, confirm_y):
-                        try:
-                            ctx.on_kill_all()
-                            status_msg = t.green(f"Killed all {n} sessions")
-                        except SystemExit:
-                            status_msg = t.red("Failed to kill all sessions")
-                        ctx = ctx.on_refresh()
-                        cursor = 0
-                        scroll_offset = 0
-
-            elif key == "r":
-                ctx = ctx.on_refresh()
-                status_msg = _dim(t, "Refreshed")
-                total = _total_items(ctx)
-                if cursor >= total:
-                    cursor = max(0, total - 1)
-
-    return 0
+        # outcome == "launch"
+        req, cursor, scroll_offset, ctx = payload
+        sys.stdout.flush()
+        rc, stage = _run_launch_request(req)
+        status_msg = _format_launch_status(t, req, rc, stage)
+        ctx = ctx.on_refresh()
