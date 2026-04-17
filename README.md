@@ -229,10 +229,14 @@ launch user). The *── superuser ──* block at the bottom contains, in ord
    - `x` reverts a repo-level override back to the built-in default.
    - Values that come from a project-level `.ccw.toml` are read-only and
      clearly marked — edit them in the project instead.
-   - Saves rewrite `config/config.toml` (using `sudo` automatically when
-     the file is not directly writable). **Comments in `config.toml` are
-     lost on save** — that is the intentional tradeoff for a stdlib-only
-     writer.
+   - Saves rewrite `config/config.toml` in place (using `sudo tee`
+     automatically when the file is not directly writable). Comments
+     and formatting of untouched parts are preserved — the writer
+     round-trips through `tomlkit`.
+   - Structured tables (`[[git_remote_profiles]]`, `[launch_user_by_caller]`)
+     are not edited here as forms; `launch_user_by_caller` has its own
+     mapping editor above, `[[git_remote_profiles]]` is hand-edited in
+     `config.toml` (press `g` to view them read-only).
 3. **Kill ALL ccw sessions (all users)** — last item, only when at least
    one session exists. Confirmation phrase: `kill-all-global` (distinct
    from the regular `kill-all` phrase for `D`).
@@ -436,12 +440,15 @@ cat /srv/apps/vz_devagent_cli_tool/VERSION
 
 ## Repo structure
 
-- `bin/ccw` — CLI entrypoint (stdlib-only; thin wrapper around `lib/`).
+- `bin/ccw` — CLI entrypoint (thin wrapper around `lib/`).
 - `lib/ccw_tui.py` — interactive TUI main loop + main-screen rendering.
 - `lib/ccw_tui_widgets.py` — reusable TUI primitives (`dim`,
   `confirm_phrase`, `confirm_yn`, `text_input`, `flash_error`).
 - `lib/ccw_tui_settings.py` — superuser *⚙ Settings* sub-screens.
 - `lib/ccw_settings.py` — settings schema + repo-level TOML read/write.
+- `lib/ccw_git_profiles.py` + `ccw_git_backend_gh.py` +
+  `ccw_git_backend_token.py` + `ccw_git_create.py` — git-remote-on-new-project
+  (schema, two backends, orchestrator).
 - `install/install_ccw.py` — installs `/usr/local/bin/ccw` symlink.
 - `install/render_ccw_config.py` — renders `config.toml` from JSON.
 - `tests/` — unit tests.
@@ -453,15 +460,8 @@ cat /srv/apps/vz_devagent_cli_tool/VERSION
 
 ## Local checks
 
-```bash
-python3 -m py_compile bin/ccw lib/ccw_tui.py lib/ccw_tui_widgets.py \
-  lib/ccw_tui_settings.py lib/ccw_settings.py \
-  tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
-  install/install_ccw.py install/render_ccw_config.py
-python3 -m unittest discover -s tests -p 'test_*.py'
-```
-
-CI runs the same two checks on pushes to `main` and pull requests.
+See the checks block in [`AGENTS.md`](AGENTS.md) — CI runs the same two
+commands on pushes to `main` and pull requests.
 
 ---
 
