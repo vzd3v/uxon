@@ -1271,6 +1271,31 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     return 0
 
 
+def detect_passwordless_sudo() -> bool:
+    """Fast non-interactive check for passwordless sudo.
+
+    Returns True if:
+      - the process is already root (euid==0), or
+      - `sudo -n -v` succeeds within a short timeout (NOPASSWD or cached credential).
+
+    Timeout is intentionally tight (0.5s) so the TUI never blocks on startup.
+    False on timeout / OSError / non-zero exit.
+    """
+    if os.geteuid() == 0:
+        return True
+    try:
+        cp = subprocess.run(
+            ["sudo", "-n", "-v"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=0.5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return cp.returncode == 0
+
+
 def _list_existing_projects(root: str) -> list[str]:
     """List directory names under new_project_root, sorted."""
     try:
@@ -1283,45 +1308,61 @@ def _list_existing_projects(root: str) -> list[str]:
     return entries
 
 
+def _to_tui_session(s: SessionInfo, prefix: str) -> object:
+    sys.path.insert(0, str(repo_root() / "lib"))
+    import ccw_tui
+
+    short = s.name[len(prefix):] if s.name.startswith(prefix) else s.name
+    return ccw_tui.TuiSession(
+        name=s.name,
+        short=short,
+        attached=s.attached == "1",
+        pid=str(s.active_pid) if s.active_pid is not None else "-",
+        cpu=format_cpu_pct(s.cpu_pct),
+        ram=format_rss_kib(s.rss_kib),
+        created=compact_time(s.created),
+        last_activity=compact_time(s.last_attached),
+        cmd=s.active_cmd or "-",
+        path=s.active_path or "-",
+        user=s.user,
+    )
+
+
 def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
     """Build a TuiContext from live session data. Lazy-imports ccw_tui."""
     sys.path.insert(0, str(repo_root() / "lib"))
     import ccw_tui
 
-    sessions = collect_sessions([launch_user], cfg)
+    has_sudo = detect_passwordless_sudo()
+    own = collect_sessions([launch_user], cfg)
 
-    tui_sessions = []
-    for s in sessions:
-        short = s.name[len(cfg.session_prefix):] if s.name.startswith(cfg.session_prefix) else s.name
-        tui_sessions.append(ccw_tui.TuiSession(
-            name=s.name,
-            short=short,
-            attached=s.attached == "1",
-            pid=str(s.active_pid) if s.active_pid is not None else "-",
-            cpu=format_cpu_pct(s.cpu_pct),
-            ram=format_rss_kib(s.rss_kib),
-            created=compact_time(s.created),
-            last_activity=compact_time(s.last_attached),
-            cmd=s.active_cmd or "-",
-            path=s.active_path or "-",
-            user=s.user,
-        ))
+    other: list[SessionInfo] = []
+    if has_sudo:
+        other_users = [u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user]
+        if other_users:
+            other = collect_sessions(other_users, cfg)
 
-    total_cpu = format_cpu_pct(sum(s.cpu_pct for s in sessions))
-    total_ram = format_rss_kib(sum(s.rss_kib for s in sessions))
+    own.sort(key=lambda s: s.name)
+    other.sort(key=lambda s: (s.user, s.name))
 
-    # Shorten cwd for display
+    tui_own = [_to_tui_session(s, cfg.session_prefix) for s in own]
+    tui_other = [_to_tui_session(s, cfg.session_prefix) for s in other]
+
+    total_cpu = format_cpu_pct(sum(s.cpu_pct for s in own) + sum(s.cpu_pct for s in other))
+    total_ram = format_rss_kib(sum(s.rss_kib for s in own) + sum(s.rss_kib for s in other))
+
     home = os.path.expanduser("~")
     cwd_short = cwd.replace(home, "~") if cwd.startswith(home) else cwd
 
-    def on_attach(name: str) -> None:
-        target = resolve_session(name, sessions, cfg.session_prefix)
-        attach_session(target, cfg, launch_user)
-
-    def on_kill(name: str) -> None:
-        fresh = collect_sessions([launch_user], cfg)
+    def on_attach(user: str, name: str) -> None:
+        fresh = collect_sessions([user], cfg)
         target = resolve_session(name, fresh, cfg.session_prefix)
-        full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
+        attach_session(target, cfg, user)
+
+    def on_kill(user: str, name: str) -> None:
+        fresh = collect_sessions([user], cfg)
+        target = resolve_session(name, fresh, cfg.session_prefix)
+        full = configured_tmux_base(cfg, user) + ["kill-session", "-t", target.name]
         run_cmd(full, check=True)
 
     def on_kill_all() -> None:
@@ -1329,6 +1370,14 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         for s in fresh:
             full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
             run_cmd(full, check=False)
+
+    def on_kill_all_global() -> None:
+        users = resolve_all_session_users(cfg, launch_user) if has_sudo else [launch_user]
+        for u in users:
+            fresh = collect_sessions([u], cfg)
+            for s in fresh:
+                full = configured_tmux_base(cfg, u) + ["kill-session", "-t", s.name]
+                run_cmd(full, check=False)
 
     def on_refresh() -> object:
         return _build_tui_context(cfg, launch_user, cwd)
@@ -1346,7 +1395,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         do_new(args, cfg, launch_user)
 
     return ccw_tui.TuiContext(
-        sessions=tui_sessions,
+        sessions=tui_own,
         total_cpu=total_cpu,
         total_ram=total_ram,
         version=format_version(),
@@ -1354,9 +1403,13 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         cwd_short=cwd_short,
         new_project_root=cfg.new_project_root,
         existing_projects=_list_existing_projects(cfg.new_project_root),
+        current_user=launch_user,
+        has_sudo=has_sudo,
+        other_sessions=tui_other,
         on_attach=on_attach,
         on_kill=on_kill,
         on_kill_all=on_kill_all,
+        on_kill_all_global=on_kill_all_global,
         on_refresh=on_refresh,
         on_launch_cwd=on_launch_cwd,
         on_launch_new=on_launch_new,

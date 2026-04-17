@@ -1,32 +1,327 @@
-# vz_devagent_cli_tool
+# ccw — Claude Code tmux wrapper
 
-Single source of truth for the `ccw` CLI used to launch and manage Claude Code
-tmux sessions on VPS hosts.
+`ccw` is a readable, multi-user wrapper around `tmux` for running `claude`
+sessions on a shared VPS. It standardizes session naming, isolates state on a
+dedicated tmux socket, supports git worktrees, and provides an interactive TUI
+picker.
 
-## Canonical layout
-- Canonical repo: GitHub `vz_devagent_cli_tool`
-- Canonical host checkout: `/srv/apps/vz_devagent_cli_tool`
-- User-facing command: `/usr/local/bin/ccw` -> symlink to `bin/ccw`
-- Repo-local config: `/srv/apps/vz_devagent_cli_tool/config/config.toml`
-- Dedicated tmux socket: `/tmp/ccw-<launch-user>.sock` by default
-- Repo version file: `VERSION`
+Canonical paths on a deployed host:
 
-The `infra` repo deploys this tool, but it is not the canonical source for the
-`ccw` executable or config-rendering logic.
+- repo checkout: `/srv/apps/vz_devagent_cli_tool`
+- user command: `/usr/local/bin/ccw` → symlink to `bin/ccw`
+- config: `/srv/apps/vz_devagent_cli_tool/config/config.toml`
+- tmux socket: `/tmp/ccw-<launch-user>.sock` (default)
 
-## Repo structure
-- `VERSION`: human-owned tool version for releases and host verification
-- `bin/ccw`: main CLI entrypoint
-- `install/install_ccw.py`: installs `/usr/local/bin/ccw` as a symlink
-- `install/render_ccw_config.py`: renders `config/config.toml` from JSON
-- `tests/test_ccw.py`: unit tests for config and launch-user behavior
-- `examples/ccw-config.json`: example payload for config rendering
-- `config/`: local host config directory, intentionally gitignored
+---
+
+## Quick start
+
+```bash
+ccw                         # interactive TUI session picker (needs a TTY)
+ccw run                     # start claude in the current directory
+ccw -n myproj               # create /srv/repos/myproj and start claude there
+ccw -n myrepo -w feature/x  # run claude inside git worktree 'feature/x'
+ccw list                    # list active cc-* sessions for this user
+ccw attach myproj           # re-attach to an existing session
+ccw kill myproj             # kill a session
+ccw doctor                  # print diagnostics
+```
+
+All `ccw` sessions are named `cc-<stem>` (or `cc-<stem>-N` for parallels). The
+prefix is configurable.
+
+---
+
+## Commands
+
+Short form and long form are equivalent unless noted.
+
+### `ccw` (no args)
+- With a TTY: opens the interactive TUI.
+- Without a TTY: prints usage and exits.
+
+### `ccw run [-w <branch>] [--dry-run] [--dsp] [claude-flags...]`
+Start `claude` in the current directory.
+- `-w <branch>`: run inside an existing git worktree branch at cwd.
+- `--dry-run`: print the tmux command instead of executing.
+- `--dsp`: pass `--dangerously-skip-permissions` to `claude`
+  (legacy aliases: `--dap`, `-dap`, `-dsp`).
+- Any unknown flag is forwarded to `claude`.
+
+### `ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp] [claude-flags...]`
+Short form: `ccw -n <name> ...`.
+- Without `-w`: creates (or reuses) `<new_project_root>/<name>` and starts
+  `claude` there.
+- With `-w <branch>`: uses the git repo inside `<new_project_root>/<name>`
+  (the directory must exist and be a git repo).
+- `--attach-existing` / `--new-session`: bypass the repeat prompt (see
+  [Repeat behavior](#repeat-behavior)).
+
+### `ccw list [--all-users]`
+Short form: `ccw -l [--all-users]`.
+Lists `cc-*` sessions with PID, CPU, RAM, creation time, last-attach time,
+current command, and path.
+- Default scope: the current launch user.
+- `--all-users`: scope all `session_users` from config (requires
+  `enable_all_users_list = true`).
+
+### `ccw attach <id>`
+Short form: `ccw -a <id>`.
+Re-attaches to a session. `<id>` accepts:
+- full session name (`cc-myproj`)
+- short name without prefix (`myproj`)
+- unique prefix (`my` if it matches exactly one)
+- active-pane PID.
+
+### `ccw kill <id> [--dry-run]`
+Short form: `ccw -k <id> [--dry-run]`. Kills one session.
+
+### `ccw kill-all [--force] [--dry-run]`
+Alias: `ccw --killall`. Kills all `cc-*` sessions for the current launch user.
+Requires an interactive confirmation (`kill-all`) or `--force`.
+
+### `ccw doctor`
+Read-only diagnostics. See [Diagnostics](#diagnostics).
+
+### `ccw version`
+Prints repo version and short git commit (if available).
+Also: `ccw -V`, `ccw --version`.
+
+---
+
+## Interactive TUI
+
+`ccw` with no arguments on a TTY opens a full-screen picker (requires the
+`blessed` Python package). It offers:
+
+- **Actions** at the top:
+  1. *New session in current folder* — `ccw run` equivalent.
+  2. *Create new project* — prompts for a name, creates it under
+     `new_project_root`, and starts `claude`.
+  3. *Open existing project* — pick an existing directory under
+     `new_project_root`.
+- **Sessions list** (your own) with live CPU/RAM, attached marker, and recency.
+- **⚡ Superuser block** (only when passwordless sudo is detected and at
+  least one other configured `session_users` entry has a running session):
+  other users' sessions with a yellow `USER` column — `Enter` attaches via
+  `sudo -iu <user>`, `d` kills the highlighted one. The last line in the
+  block is *Kill ALL ccw sessions (all users)*, which requires typing
+  `kill-all-global` to confirm.
+- **Permissions prompt** before every launch: choose between regular and
+  `--dangerously-skip-permissions`.
+
+### Keys
+| Key | Action |
+|-----|--------|
+| `↑` `↓` / `j` `k` | Navigate |
+| `1`–`9` | Jump to item by number |
+| `Enter` | Activate (launch action / attach session / trigger global kill-all) |
+| `d` | Kill highlighted session (with confirmation; works on own and other-user sessions when superuser) |
+| `D` | Kill all **own** sessions (type `kill-all` to confirm) |
+| `r` | Refresh |
+| `g` / `G` | Jump to first / last |
+| `q` / `Esc` | Quit (or back, in sub-screens) |
+
+---
+
+## Session naming
+
+- Plain: `cc-<slug(dirname)>`
+- Worktree: `cc-<slug(repo)>-<slug(branch)>` (collapses to `cc-<repo>` when
+  slugs match)
+- Parallels: suffix `-2`, `-3`, … auto-allocated on demand
+
+The prefix `cc-` is configurable via `session_prefix`.
+
+---
+
+## Worktrees (`-w <branch>`)
+
+- `ccw run -w <branch>`: uses the git repo at the current working directory.
+- `ccw new <name> -w <branch>`: uses the repo inside
+  `<new_project_root>/<name>`. The directory must already exist and be a git
+  repo — `ccw` never creates worktrees for you.
+- The session name includes both repo and branch slugs, so multiple branches
+  of the same repo coexist cleanly.
+
+---
+
+## Repeat behavior
+
+When `ccw new` finds a session that is already compatible with the requested
+target (same project or same worktree):
+
+- **Interactive TTY**: prompts to attach, start a parallel session, or cancel.
+- **Non-interactive**, resolved in this order:
+  1. Explicit flag: `--attach-existing` or `--new-session`.
+  2. Env var `CCW_REPEAT_NONINTERACTIVE_POLICY=fail|attach|new`.
+  3. Config key `repeat_noninteractive_mode` (default `fail`).
+
+If compatible sessions exist only on the **legacy default tmux socket**
+(pre-dedicated-socket era), `ccw new` fails with an explicit hint instead of
+silently creating duplicates on the dedicated socket.
+
+---
+
+## Allowed roots
+
+`ccw` refuses to run in directories outside `allowed_roots`. This guards
+against accidentally starting `claude` in `$HOME`, `/tmp`, system paths, etc.
+Configure via `allowed_roots` in `config.toml`.
+
+`new_project_root` (the base for `ccw new <name>` without `-w`) must itself be
+under `allowed_roots` — `ccw doctor` flags this.
+
+---
+
+## Multi-user / launch user
+
+`ccw` distinguishes the **caller user** (who invoked the command) from the
+**launch user** (who actually owns the tmux session and runs `claude`). This
+lets a single tool support multiple service users on one host.
+
+Resolution order for the launch user:
+
+1. `launch_user_by_caller[<caller>]` if set.
+2. If `default_launch_mode = "caller"` → the caller.
+3. Otherwise → `runtime_user`.
+
+When the caller differs from the launch user, `ccw` uses `sudo -iu <user>` to
+run tmux / git / mkdir as that user. Each launch user gets a separate tmux
+socket.
+
+`ccw list --all-users` aggregates sessions across every user in
+`session_users` (requires `enable_all_users_list = true`).
+
+---
+
+## Superuser mode (TUI)
+
+When the TUI starts, `ccw` runs a fast, non-interactive check for
+passwordless sudo:
+
+1. `os.geteuid() == 0` → True.
+2. Otherwise `sudo -n -v` with a 0.5 s timeout. Exit 0 → True.
+
+On True, the TUI gains a ⚡ superuser marker in the header/footer and
+collects sessions for every user in `session_users` (other than the current
+launch user). If any exist, they are shown in a dedicated *── superuser ──*
+block at the bottom with a highlighted `USER` column. All per-session
+actions (`Enter`, `d`) work on them the same way, routed through
+`sudo -iu <user>` transparently.
+
+A final *Kill ALL ccw sessions (all users)* item in the superuser block
+tears down every `cc-*` session across all configured users at once.
+Confirmation phrase: `kill-all-global` (distinct from the regular
+`kill-all` phrase for `D`).
+
+When passwordless sudo is not available, nothing superuser-related is
+shown — the TUI behaves exactly as before.
+
+---
+
+## Dedicated tmux socket
+
+Every launch user has its own socket, rendered from `tmux_socket_template`
+(default: `/tmp/ccw-{user}.sock`; placeholders: `{user}`, `{uid}`). This
+isolates `ccw` sessions from the user's default tmux server, making
+`list`/`attach`/`kill`/`kill-all` deterministic.
+
+**Migration**: if you had `cc-*` sessions on the user's default socket before
+this change, they are not automatically managed. Use `ccw doctor` to spot
+them, then clean up or migrate manually.
+
+---
+
+## `--dsp` (dangerously-skip-permissions)
+
+`--dsp` is the canonical short form for `--dangerously-skip-permissions`. Use
+it to let `claude` operate without prompting for tool permissions. The TUI
+asks explicitly before every launch; the CLI requires the flag.
+
+Legacy aliases accepted for back-compat: `--dap`, `-dap`, `-dsp`.
+
+---
+
+## Diagnostics
+
+`ccw doctor` prints:
+
+- caller user and resolved launch user
+- active config paths (repo-level + project-level `.ccw.toml`, if any)
+- `allowed_roots` and `new_project_root`
+- `repeat_noninteractive_mode` and env override
+- `tmux` path for the launch user
+- dedicated socket path, parent existence, parent writability
+- `claude` path for the launch user
+- current sessions on the dedicated socket
+- legacy sessions on the default socket (if any)
+- a list of detected configuration / runtime issues
+
+Use it first whenever behavior is unexpected.
+
+---
+
+## Configuration
+
+Two layers, merged in order (later wins):
+
+1. **Repo config**: `/srv/apps/vz_devagent_cli_tool/config/config.toml`
+2. **Project config**: the nearest `.ccw.toml` in the cwd or a parent,
+   provided that parent is inside an `allowed_roots` entry.
+
+### Keys
+
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `runtime_user` | string | `""` | Launch user when `default_launch_mode="fixed"`. |
+| `default_launch_mode` | `"caller"` / `"fixed"` | `"caller"` | Default for unmapped callers. |
+| `launch_user_by_caller` | table | `{}` | Per-caller override. |
+| `session_users` | array | `[]` | Users scanned by `list --all-users` and by the TUI superuser block. |
+| `enable_all_users_list` | bool | `false` | Enables `list --all-users`. |
+| `allowed_roots` | array | (see source) | Dirs `ccw` is allowed to run in. |
+| `new_project_root` | string | `/srv/repos` | Base dir for `ccw new <name>`. |
+| `session_prefix` | string | `"cc-"` | Tmux session name prefix. |
+| `default_claude_args` | array | `[]` | Prepended to every `claude` invocation. |
+| `tmux_socket_template` | string | `/tmp/ccw-{user}.sock` | Per-user socket path. Placeholders: `{user}`, `{uid}`. |
+| `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback for repeat prompt. |
+
+### Environment
+
+- `CCW_REPEAT_NONINTERACTIVE_POLICY` — overrides `repeat_noninteractive_mode`
+  per invocation.
+- `SUDO_USER` — honored when `ccw` is invoked via `sudo` to identify the real
+  caller.
+
+### Rendering config from JSON
+
+```bash
+python3 install/render_ccw_config.py \
+  --config-json examples/ccw-config.json \
+  --output config/config.toml
+```
+
+---
+
+## Install
+
+```bash
+sudo python3 install/install_ccw.py \
+  --repo-dir /srv/apps/vz_devagent_cli_tool \
+  --install-path /usr/local/bin/ccw
+```
+
+`blessed` (for the TUI) is optional: `pip install blessed`. Without it,
+`ccw` prints a hint and all non-interactive subcommands still work.
+
+---
 
 ## Versioning
-- Bump `VERSION` when the user-visible `ccw` behavior changes.
-- `ccw --version` prints the repo version and, when available, the current git commit.
-- On a host, verify both the installed command and checkout with:
+
+- Bump `VERSION` whenever user-visible behavior changes.
+- `ccw --version` prints repo version and git commit (with `-dirty` suffix
+  when the checkout is dirty).
+- Verify a host:
 
 ```bash
 ccw --version
@@ -34,74 +329,39 @@ git -C /srv/apps/vz_devagent_cli_tool rev-parse --short HEAD
 cat /srv/apps/vz_devagent_cli_tool/VERSION
 ```
 
+---
+
+## Repo structure
+
+- `bin/ccw` — CLI entrypoint
+- `lib/ccw_tui.py` — interactive TUI (blessed)
+- `install/install_ccw.py` — installs `/usr/local/bin/ccw` symlink
+- `install/render_ccw_config.py` — renders `config.toml` from JSON
+- `tests/` — unit tests
+- `examples/ccw-config.json` — example config-rendering payload
+- `config/` — host config dir (gitignored)
+- `VERSION` — release version
+
+---
+
 ## Local checks
+
 ```bash
-python3 -m py_compile bin/ccw tests/test_ccw.py install/install_ccw.py install/render_ccw_config.py
+python3 -m py_compile bin/ccw lib/ccw_tui.py tests/test_ccw.py \
+  tests/test_ccw_tui.py install/install_ccw.py install/render_ccw_config.py
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-## CI
-- GitHub Actions runs on pushes to `main` and on pull requests.
-- Baseline checks:
-  - `python3 -m py_compile ...`
-  - `python3 -m unittest discover -s tests -p 'test_*.py'`
+CI runs the same two checks on pushes to `main` and pull requests.
 
-## Repeated `ccw new`
-- First plain `ccw -n <name>` still creates or reuses `/srv/.../<name>` and starts a tmux session there.
-- Repeating either plain `ccw -n <name>` or worktree `ccw -n <name> -w <branch>` no longer silently creates `-2/-3`.
-- If a compatible session already exists and `ccw` has an interactive TTY, it prompts:
-  - default: attach to the existing session
-  - alternative: start a new parallel session
-- Use explicit flags to skip the prompt:
-  - `--attach-existing`: attach to the compatible session immediately
-  - `--new-session`: create a parallel session immediately
-- Without a TTY, precedence is:
-  - explicit CLI flag
-  - `CCW_REPEAT_NONINTERACTIVE_POLICY=fail|attach|new`
-  - `repeat_noninteractive_mode` from config
-  - default `fail`
-
-## `ccw doctor`
-- `ccw doctor` is the main read-only diagnostic entrypoint for operators.
-- It reports:
-  - caller user and resolved launch user
-  - active config path(s)
-  - `allowed_roots` and `new_project_root`
-  - `tmux` path, dedicated socket path, and socket-parent writability
-  - whether `claude` resolves for the launch user
-  - current dedicated-socket sessions and any legacy default-socket sessions
-  - obvious config/runtime mismatches
-
-## Dedicated tmux socket
-- `ccw` now uses a dedicated tmux socket per launch user by default via `tmux_socket_template`.
-- Default template: `/tmp/ccw-{user}.sock`
-- This isolates `ccw` sessions from a user's default tmux server and makes `ccw list/attach/kill/kill-all` deterministic.
-- Migration note: legacy `cc-*` sessions on the user's default tmux socket are not automatically managed by the new socket. Use `ccw doctor` to spot that state before cleanup/migration.
-
-## Guardrails
-- `ccw kill-all` now requires either:
-  - an interactive confirmation, or
-  - `--force`
-- When `ccw new` sees compatible sessions only on the legacy default tmux socket, it fails with guidance instead of silently creating duplicate sessions on the dedicated socket.
-
-## Render config
-```bash
-python3 install/render_ccw_config.py --config-json examples/ccw-config.json --output config/config.toml
-```
-
-Config keys relevant to this release:
-- `repeat_noninteractive_mode`: `fail`, `attach`, or `new`
-- `tmux_socket_template`: absolute socket path template; supports `{user}` and `{uid}`
-
-## Install command
-```bash
-sudo python3 install/install_ccw.py --repo-dir /srv/apps/vz_devagent_cli_tool --install-path /usr/local/bin/ccw
-```
+---
 
 ## Release / rollout checklist
-1. Update code, tests, docs, and `VERSION` in this repo.
+
+1. Update code, tests, docs, and `VERSION`.
 2. Run local checks plus `ccw doctor` against a rendered repo-local config.
-3. Commit and push this repo.
+3. Commit and push.
 4. Deploy the exact ref to each host.
-5. Verify `ccw --version`, `ccw doctor`, repeat-session behavior, and socket path on each host.
-6. Update infra runbooks, host passports, and change logs to match the live state.
+5. Verify `ccw --version`, `ccw doctor`, repeat-session behavior, and socket
+   path on each host.
+6. Update infra runbooks, host passports, and change logs.

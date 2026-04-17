@@ -22,7 +22,7 @@ def _noop(*args, **kwargs):
     pass
 
 
-def _make_session(name: str = "demo", attached: bool = False) -> ccw_tui.TuiSession:
+def _make_session(name: str = "demo", attached: bool = False, user: str = "devagent") -> ccw_tui.TuiSession:
     return ccw_tui.TuiSession(
         name=f"cc-{name}",
         short=name,
@@ -34,25 +34,35 @@ def _make_session(name: str = "demo", attached: bool = False) -> ccw_tui.TuiSess
         last_activity="14:35",
         cmd="claude",
         path="/srv/repos/demo",
-        user="devagent",
+        user=user,
     )
 
 
-def _make_ctx(sessions=None, existing_projects=None) -> ccw_tui.TuiContext:
+def _make_ctx(
+    sessions=None,
+    existing_projects=None,
+    has_sudo: bool = False,
+    other_sessions=None,
+    current_user: str = "devagent",
+) -> ccw_tui.TuiContext:
     if sessions is None:
         sessions = []
     ctx = ccw_tui.TuiContext(
         sessions=sessions,
         total_cpu="5.0",
         total_ram="512M",
-        version="ccw 0.5.0",
+        version="ccw 0.6.0",
         cwd="/srv/repos/myproject",
         cwd_short="myproject",
         new_project_root="/srv/agentdev",
         existing_projects=existing_projects or [],
+        current_user=current_user,
+        has_sudo=has_sudo,
+        other_sessions=other_sessions or [],
         on_attach=_noop,
         on_kill=_noop,
         on_kill_all=_noop,
+        on_kill_all_global=_noop,
         on_refresh=lambda: ctx,
         on_launch_cwd=_noop,
         on_launch_new=_noop,
@@ -108,6 +118,77 @@ class TuiDataTests(unittest.TestCase):
     def test_total_items_no_sessions(self) -> None:
         ctx = _make_ctx()
         self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT)
+
+
+class SuperuserSegmentTests(unittest.TestCase):
+    def test_no_superuser_block_without_sudo(self) -> None:
+        ctx = _make_ctx(
+            sessions=[_make_session("mine")],
+            other_sessions=[_make_session("theirs", user="alice")],
+            has_sudo=False,
+        )
+        _, _, _, has_super = ccw_tui._segments(ctx)
+        self.assertFalse(has_super)
+        self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1)
+
+    def test_no_superuser_block_when_no_other_sessions(self) -> None:
+        ctx = _make_ctx(sessions=[_make_session("mine")], has_sudo=True)
+        _, _, _, has_super = ccw_tui._segments(ctx)
+        self.assertFalse(has_super)
+        self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1)
+
+    def test_superuser_block_adds_other_sessions_plus_kill_all(self) -> None:
+        own = [_make_session("mine")]
+        other = [_make_session("x", user="alice"), _make_session("y", user="bob")]
+        ctx = _make_ctx(sessions=own, other_sessions=other, has_sudo=True)
+        own_start, other_start, kill_idx, has_super = ccw_tui._segments(ctx)
+        self.assertTrue(has_super)
+        self.assertEqual(own_start, ccw_tui.ACTION_COUNT)
+        self.assertEqual(other_start, ccw_tui.ACTION_COUNT + 1)
+        self.assertEqual(kill_idx, ccw_tui.ACTION_COUNT + 1 + 2)
+        # Total = actions + own + other + 1 (kill-all-global)
+        self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1 + 2 + 1)
+
+    def test_compute_col_widths_includes_user_when_requested(self) -> None:
+        other = [_make_session("x", user="alice"), _make_session("y", user="bobbie")]
+        widths = ccw_tui._compute_col_widths(other, include_user=True)
+        self.assertIn("user", widths)
+        self.assertEqual(widths["user"], len("bobbie"))
+
+    def test_compute_col_widths_omits_user_by_default(self) -> None:
+        widths = ccw_tui._compute_col_widths([_make_session("x")])
+        self.assertNotIn("user", widths)
+
+
+class DetectPasswordlessSudoTests(unittest.TestCase):
+    def test_detect_when_euid_is_root(self) -> None:
+        with mock.patch.object(ccw.os, "geteuid", return_value=0):
+            self.assertTrue(ccw.detect_passwordless_sudo())
+
+    def test_detect_via_sudo_n_v_success(self) -> None:
+        fake = mock.Mock(returncode=0)
+        with mock.patch.object(ccw.os, "geteuid", return_value=1000):
+            with mock.patch.object(ccw.subprocess, "run", return_value=fake):
+                self.assertTrue(ccw.detect_passwordless_sudo())
+
+    def test_detect_returns_false_on_nonzero_exit(self) -> None:
+        fake = mock.Mock(returncode=1)
+        with mock.patch.object(ccw.os, "geteuid", return_value=1000):
+            with mock.patch.object(ccw.subprocess, "run", return_value=fake):
+                self.assertFalse(ccw.detect_passwordless_sudo())
+
+    def test_detect_returns_false_on_timeout(self) -> None:
+        def raise_timeout(*_args, **_kwargs):
+            raise ccw.subprocess.TimeoutExpired(cmd="sudo", timeout=0.5)
+
+        with mock.patch.object(ccw.os, "geteuid", return_value=1000):
+            with mock.patch.object(ccw.subprocess, "run", side_effect=raise_timeout):
+                self.assertFalse(ccw.detect_passwordless_sudo())
+
+    def test_detect_returns_false_on_oserror(self) -> None:
+        with mock.patch.object(ccw.os, "geteuid", return_value=1000):
+            with mock.patch.object(ccw.subprocess, "run", side_effect=FileNotFoundError):
+                self.assertFalse(ccw.detect_passwordless_sudo())
 
 
 class ListExistingProjectsTests(unittest.TestCase):
