@@ -29,6 +29,9 @@ class SettingsCallbacks:
     save_setting: Callable[[str, Any], None]  # (key, new_value)
     remove_setting: Callable[[str], None]  # (key) — revert to default
     save_mapping: Callable[[str, dict], None]  # (key, new_mapping)
+    # Optional: returns full profile rows for a read-only subscreen.
+    # Each row is a tuple (name, host, owner, auth, creds_user_display, visibility, token_file).
+    get_git_remote_profile_rows: "Callable[[], list[tuple]]" = None  # type: ignore[assignment]
 
 
 # ── Formatting ───────────────────────────────────────────────────────
@@ -82,13 +85,6 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
                 "SRC: repo=config/config.toml · project=.ccw.toml (read-only) · default=built-in",
             )
         )
-        print(
-            "  "
-            + dim(
-                t,
-                "Note: saving rewrites config.toml and discards comments in that file.",
-            )
-        )
         print()
 
         key_w = max(len(e.spec.key) for e in entries)
@@ -134,12 +130,20 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
         footer_y = t.height - 1
         with t.location(0, footer_y):
             print(
-                dim(t, "  ↑↓ nav · Enter edit · x reset to default · Esc back"), end=""
+                dim(
+                    t,
+                    "  ↑↓ nav · Enter edit · x reset · g git remotes · Esc back",
+                ),
+                end="",
             )
 
         key = t.inkey(timeout=None)
         if key.name == "KEY_ESCAPE" or key == "q":
             return
+        if key == "g":
+            if cbs.get_git_remote_profile_rows is not None:
+                _show_git_remotes(t, cbs.get_git_remote_profile_rows())
+                continue
         if key.name == "KEY_UP" or key == "k":
             cursor = max(0, cursor - 1)
         elif key.name == "KEY_DOWN" or key == "j":
@@ -171,6 +175,45 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
             idx = int(str(key)) - 1
             if 0 <= idx < len(entries):
                 cursor = idx
+
+
+# ── Git remotes: read-only view ──────────────────────────────────────
+
+
+def _show_git_remotes(t: "Terminal", rows: list) -> None:
+    """Read-only table of [[git_remote_profiles]]. Edit via config.toml."""
+    while True:
+        print(t.home + t.clear, end="")
+        print(t.bold_white_on_blue(" Git remote profiles (read-only) "))
+        print(dim(t, "─" * t.width))
+        print(
+            "  "
+            + dim(
+                t,
+                "To add/edit profiles, open config/config.toml directly.",
+            )
+        )
+        print()
+
+        if not rows:
+            print("  " + dim(t, "(no profiles configured)"))
+        else:
+            headers = ("name", "host", "owner", "auth", "creds_user", "visibility", "token_file")
+            widths = [max(len(h), max(len(str(r[i])) for r in rows)) for i, h in enumerate(headers)]
+            header_line = "  " + "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
+            print(t.bold(header_line))
+            print("  " + dim(t, "  ".join("─" * w for w in widths)))
+            for r in rows:
+                parts = [str(r[i]).ljust(widths[i]) for i in range(len(headers))]
+                print("  " + "  ".join(parts))
+
+        footer_y = t.height - 1
+        with t.location(0, footer_y):
+            print(dim(t, "  Esc back"), end="")
+
+        key = t.inkey(timeout=None)
+        if key.name == "KEY_ESCAPE" or key == "q":
+            return
 
 
 # ── Per-type edit dispatcher ─────────────────────────────────────────

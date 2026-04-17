@@ -48,7 +48,7 @@ Start `claude` in the current directory.
   (legacy aliases: `--dap`, `-dap`, `-dsp`).
 - Any unknown flag is forwarded to `claude`.
 
-### `ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp] [claude-flags...]`
+### `ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp] [--git-remote <profile>|default | --no-git] [--git-visibility private|public] [claude-flags...]`
 Short form: `ccw -n <name> ...`.
 - Without `-w`: creates (or reuses) `<new_project_root>/<name>` and starts
   `claude` there.
@@ -56,6 +56,13 @@ Short form: `ccw -n <name> ...`.
   (the directory must exist and be a git repo).
 - `--attach-existing` / `--new-session`: bypass the repeat prompt (see
   [Repeat behavior](#repeat-behavior)).
+- `--git-remote <profile>`: before launching, create a remote repo for the
+  project through the named [git remote profile](#git-remote-on-new-project).
+  `default` uses `default_git_remote_profile`. Incompatible with `-w`.
+  Without `--git-remote`, no git is touched (CLI is non-interactive).
+- `--git-visibility private|public`: override the profile's visibility
+  default for this one call.
+- `--no-git`: explicit "don't touch git" — same as omitting `--git-remote`.
 
 ### `ccw list [--all-users]`
 Short form: `ccw -l [--all-users]`.
@@ -305,6 +312,82 @@ Two layers, merged in order (later wins):
 | `default_claude_args` | array | `[]` | Prepended to every `claude` invocation. |
 | `tmux_socket_template` | string | `/tmp/ccw-{user}.sock` | Per-user socket path. Placeholders: `{user}`, `{uid}`. |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback for repeat prompt. |
+| `git_create_enabled` | bool | `false` | Master switch for the [git remote on new project](#git-remote-on-new-project) flow. |
+| `default_git_remote_profile` | string | `""` | Profile used when `--git-remote default` is passed or as the TUI pre-selected default. |
+| `git_remote_profiles` | array of tables | `[]` | Whitelist of allowed targets; see section below. |
+
+### Git remote on new project
+
+When `git_create_enabled = true`, `ccw new <name>` can create a fresh
+remote repo on a supported host (currently GitHub) before launching
+claude. The TUI asks interactively; the CLI only acts when you pass
+`--git-remote <profile>` explicitly — it never prompts.
+
+ccw never creates a repo outside the `git_remote_profiles` whitelist.
+
+Each profile explicitly names:
+- `host`, `owner` — where the repo lands (e.g. `github.com` / `vzd3v`).
+- `auth` — how the remote is created:
+    - `"gh"` — runs `gh repo create` under `creds_user` (the OAuth token
+      from that user's `~/.config/gh/hosts.yml` is used; `repo` scope is
+      required). Other devs don't need their own `gh` login.
+    - `"token"` — reads a fine-grained Personal Access Token from
+      `token_file` under `creds_user` and calls the GitHub REST API
+      directly. The token is held only for the duration of the API
+      call, never logged, never printed in `--dry-run` output.
+- `creds_user` (optional) — OS user on this host whose credentials are
+  used for the *remote creation* step. Falls back to the launch_user.
+  Local `git init`/`commit`/`push` always run under the launch_user.
+- `token_file` — required when `auth="token"`; must be readable by
+  `creds_user`. ccw only probes readability; ownership and mode are up
+  to the operator.
+- `visibility` — `"private"` (default) or `"public"` for newly created
+  repos. Override per-call with `--git-visibility`.
+
+Example `config/config.toml`:
+
+```toml
+git_create_enabled = true
+default_git_remote_profile = "vzd3v-personal-gh"
+
+# ─ vzd3v's personal account via the `gh` CLI logged in as "remdepl" ─
+[[git_remote_profiles]]
+name       = "vzd3v-personal-gh"
+host       = "github.com"
+owner      = "vzd3v"
+auth       = "gh"
+creds_user = "remdepl"
+visibility = "private"
+
+# ─ Org "acme", restricted to create-repo via a fine-grained token ─
+[[git_remote_profiles]]
+name       = "acme-fg"
+host       = "github.com"
+owner      = "acme"
+auth       = "token"
+creds_user = "remdepl"
+token_file = "/home/remdepl/.secrets/ccw-acme-create.token"
+visibility = "private"
+```
+
+`ccw doctor` prints one line per profile with a read-only status
+(`ok` / `warn:<reason>`) — passwordless sudo to `creds_user`, presence
+of `gh`, login status or token-file readability. It never attempts the
+create call.
+
+Under the hood:
+1. `git init -b main` + empty initial commit in the project dir (under
+   launch_user).
+2. `gh repo create … --source=<dir> --push` (for `auth="gh"`) or `POST
+   /user/repos` / `/orgs/<owner>/repos` with the fine-grained token
+   (for `auth="token"`), under `creds_user`.
+3. For `auth="token"`: `git remote add origin <ssh_url>` + `git push -u
+   origin main` under launch_user. For `auth="gh"`: `gh` already pushed,
+   we just make sure `origin` URL matches.
+
+If any step fails, the local `.git` stays in place so you can inspect or
+rerun — ccw reports which *stage* failed (`preflight` / `local_init` /
+`remote_create` / `push`).
 
 ### Environment
 

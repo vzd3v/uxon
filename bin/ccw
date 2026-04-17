@@ -37,13 +37,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "new_project_root": "/srv/repos",
     "repeat_noninteractive_mode": "fail",
     "tmux_socket_template": "/tmp/ccw-{user}.sock",
+    "git_create_enabled": False,
+    "default_git_remote_profile": "",
+    "git_remote_profiles": [],
 }
 
 
 USAGE = """Usage:
   ccw                              (interactive session picker if TTY, else this help)
   ccw [run] [-w <branch>] [--dry-run] [--dsp] [claude-flags...]
-  ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp] [claude-flags...]
+  ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp]
+                 [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
+                 [claude-flags...]
   ccw doctor
   ccw list [--all-users]
   ccw version
@@ -54,7 +59,9 @@ USAGE = """Usage:
   ccw -l [--all-users]
   ccw -a <id>
   ccw -k <id> [--dry-run]
-  ccw -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp] [claude-flags...]
+  ccw -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp]
+                [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
+                [claude-flags...]
 
 Notes:
   - Without '-w', 'new' creates /srv/repos/<name> (or configured root) and runs there.
@@ -69,6 +76,9 @@ Notes:
   - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
   - Session IDs are human-readable: cc-<name>, cc-<name>-2, or cc-<repo>-<workspace>.
   - ccw uses a dedicated tmux socket per launch user by default.
+  - '--git-remote <profile>' creates a remote repo before launching claude,
+    using the named profile from config.toml. 'default' picks
+    default_git_remote_profile. Without the flag, no git is touched.
 """
 
 
@@ -85,6 +95,9 @@ class Config:
     new_project_root: str
     repeat_noninteractive_mode: str
     tmux_socket_template: str
+    git_create_enabled: bool
+    default_git_remote_profile: str
+    git_remote_profiles: list  # list[GitRemoteProfile] — parsed once in load_config
 
 
 @dataclass
@@ -114,6 +127,9 @@ class ParsedArgs:
     force: bool = False
     all_users: bool = False
     claude_args: list[str] | None = None
+    git_remote: str | None = None  # profile name, or "default", or None
+    no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
+    git_visibility: str | None = None  # "private" | "public" | None (use profile default)
 
 
 def eprint(msg: str) -> None:
@@ -214,6 +230,9 @@ def validate_repeat_mode(value: str, source: str) -> str:
 
 
 def load_config(cwd: str) -> Config:
+    sys.path.insert(0, str(repo_root() / "lib"))
+    import ccw_git_profiles
+
     merged, _ = resolve_config_layers(cwd)
     runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
     default_launch_mode = str(merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])).strip()
@@ -246,6 +265,24 @@ def load_config(cwd: str) -> Config:
     if not tmux_socket_template:
         fail("tmux_socket_template must not be empty")
 
+    git_create_enabled = bool(merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"]))
+    default_git_remote_profile = str(
+        merged.get("default_git_remote_profile", DEFAULT_CONFIG["default_git_remote_profile"])
+    ).strip()
+    try:
+        git_remote_profiles = ccw_git_profiles.load_profiles(
+            merged.get("git_remote_profiles", DEFAULT_CONFIG["git_remote_profiles"])
+        )
+    except ccw_git_profiles.ProfileError as exc:
+        fail(str(exc))
+    if default_git_remote_profile and not ccw_git_profiles.find_profile(
+        git_remote_profiles, default_git_remote_profile
+    ):
+        fail(
+            f"default_git_remote_profile={default_git_remote_profile!r} does not "
+            f"exist in git_remote_profiles"
+        )
+
     return Config(
         runtime_user=runtime_user,
         default_launch_mode=default_launch_mode,
@@ -258,6 +295,9 @@ def load_config(cwd: str) -> Config:
         new_project_root=new_project_root,
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,
+        git_create_enabled=git_create_enabled,
+        default_git_remote_profile=default_git_remote_profile,
+        git_remote_profiles=git_remote_profiles,
     )
 
 
@@ -855,6 +895,31 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
         elif token in ("--dsp", "--dangerously-skip-permissions", "--dap", "-dap", "-dsp"):
             # --dsp is the canonical short form; --dap, -dap, -dsp are legacy synonyms
             parsed.dsp = True
+        elif token == "--git-remote":
+            if action != "new":
+                fail(f"{token} is only supported with 'new' / '-n'")
+            if parsed.no_git:
+                fail("cannot combine --git-remote with --no-git")
+            i += 1
+            if i >= len(argv):
+                fail(f"{token} requires a profile name (or 'default')")
+            parsed.git_remote = argv[i]
+        elif token == "--no-git":
+            if action != "new":
+                fail(f"{token} is only supported with 'new' / '-n'")
+            if parsed.git_remote:
+                fail("cannot combine --no-git with --git-remote")
+            parsed.no_git = True
+        elif token == "--git-visibility":
+            if action != "new":
+                fail(f"{token} is only supported with 'new' / '-n'")
+            i += 1
+            if i >= len(argv):
+                fail(f"{token} requires 'private' or 'public'")
+            value = argv[i]
+            if value not in ("private", "public"):
+                fail(f"{token} must be 'private' or 'public', got {value!r}")
+            parsed.git_visibility = value
         else:
             parsed.claude_args.append(token)
         i += 1
@@ -1072,6 +1137,9 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         session_stem = session_stem_for_path(target_dir)
         compatibility_root = target_dir
         target_desc = target_dir
+    if args.git_remote:
+        _do_create_git_remote(args, cfg, launch_user, project_dir, name, branch)
+
     sessions = collect_sessions([launch_user], cfg)
     existing = compatible_indexed_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
     if existing:
@@ -1083,6 +1151,78 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
     session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+
+
+def _do_create_git_remote(
+    args: ParsedArgs,
+    cfg: Config,
+    launch_user: str,
+    project_dir: str,
+    repo_name: str,
+    branch: str | None,
+) -> None:
+    """Resolve the selected profile and drive the creation orchestrator.
+
+    Fails (via :func:`fail`) on invalid combinations — the CLI is
+    strictly non-interactive, so mismatches are surfaced as errors
+    rather than prompts.
+    """
+    if branch:
+        fail("--git-remote is not supported together with -w <branch>")
+    if not cfg.git_create_enabled:
+        fail(
+            "git_create_enabled=false in config; either flip it on in "
+            "config/config.toml or drop --git-remote"
+        )
+    if not cfg.git_remote_profiles:
+        fail(
+            "no git_remote_profiles configured; add at least one "
+            "[[git_remote_profiles]] entry to config/config.toml"
+        )
+
+    sys.path.insert(0, str(repo_root() / "lib"))
+    import ccw_git_create
+    import ccw_git_profiles
+
+    try:
+        profile = ccw_git_profiles.resolve_profile_selector(
+            cfg.git_remote_profiles,
+            args.git_remote,
+            cfg.default_git_remote_profile,
+        )
+    except ccw_git_profiles.ProfileError as exc:
+        fail(str(exc))
+
+    if args.git_visibility:
+        profile = ccw_git_profiles.GitRemoteProfile(
+            name=profile.name,
+            host=profile.host,
+            owner=profile.owner,
+            auth=profile.auth,
+            creds_user=profile.creds_user,
+            token_file=profile.token_file,
+            visibility=args.git_visibility,
+        )
+
+    current_user = process_user()
+    try:
+        result = ccw_git_create.create_project_remote(
+            profile,
+            repo_name,
+            project_dir,
+            launch_user=launch_user,
+            current_user=current_user,
+            dry_run=args.dry_run,
+        )
+    except ccw_git_create.CreationError as exc:
+        fail(f"git remote creation failed at stage {exc.stage!r}: {exc}")
+
+    if args.dry_run:
+        for cmd in result.commands:
+            print(f"git-remote dry-run: {cmd}")
+        print(f"git-remote ssh_url={result.ssh_url}")
+    else:
+        print(f"git remote created: {result.ssh_url}")
 
 
 def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
@@ -1262,6 +1402,14 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     print(f"legacy_default_socket_sessions={len(legacy_sessions)}")
     if legacy_sessions:
         print("legacy_default_socket_session_names=" + ", ".join(session.name for session in legacy_sessions))
+    print(f"git_create_enabled={'yes' if cfg.git_create_enabled else 'no'}")
+    print(f"default_git_remote_profile={cfg.default_git_remote_profile or '-'}")
+    if cfg.git_remote_profiles:
+        print(f"git_remote_profiles={len(cfg.git_remote_profiles)}:")
+        for row in _doctor_git_profile_rows(cfg, launch_user):
+            print(f"- {row}")
+    else:
+        print("git_remote_profiles=0")
     if issues:
         print("issues:")
         for issue in issues:
@@ -1269,6 +1417,74 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     else:
         print("issues: none")
     return 0
+
+
+def _doctor_git_profile_rows(cfg: Config, launch_user: str) -> list[str]:
+    """One status line per profile for ``ccw doctor``. Probes are
+    read-only (no repo creation). ``[ok]`` / ``[warn:<reason>]``.
+    """
+    rows: list[str] = []
+    current_user = process_user()
+    for p in cfg.git_remote_profiles:
+        creds_user = p.creds_user or launch_user
+        status = _probe_git_profile(p, creds_user, current_user)
+        token_bit = f" token_file={p.token_file}" if p.auth == "token" else ""
+        rows.append(
+            f"{p.name}  host={p.host}  owner={p.owner}  auth={p.auth}  "
+            f"creds_user={creds_user}{token_bit}  status={status}"
+        )
+    return rows
+
+
+def _probe_git_profile(profile, creds_user: str, current_user: str) -> str:
+    """Non-destructive probe for ``ccw doctor``. Doesn't touch GitHub."""
+    # sudo reachability under creds_user
+    if creds_user and creds_user != current_user:
+        probe = subprocess.run(
+            ["sudo", "-n", "-u", creds_user, "--", "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=0.5,
+        )
+        if probe.returncode != 0:
+            return f"warn:passwordless sudo to {creds_user} unavailable"
+
+    prefix = (
+        ["sudo", "-n", "-u", creds_user, "--"]
+        if creds_user and creds_user != current_user
+        else []
+    )
+    if profile.auth == "gh":
+        which = subprocess.run(
+            prefix + ["sh", "-c", "command -v gh"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if which.returncode != 0 or not which.stdout.strip():
+            return f"warn:gh not found under {creds_user}"
+        status = subprocess.run(
+            prefix + ["gh", "auth", "status", "--hostname", profile.host],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if status.returncode != 0:
+            return f"warn:gh not logged in to {profile.host}"
+        return "ok"
+    if profile.auth == "token":
+        res = subprocess.run(
+            prefix + ["test", "-r", profile.token_file],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        if res.returncode != 0:
+            return f"warn:token_file unreadable under {creds_user}"
+        return "ok"
+    return "warn:unknown auth"
 
 
 def detect_passwordless_sudo() -> bool:
@@ -1410,33 +1626,54 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         repo_data, proj_data, proj_cfg = _load_settings_sources(cwd)
         return ccw_settings.resolve_setting_entries(repo_data, proj_data, proj_cfg, DEFAULT_CONFIG)
 
-    def _persist_repo_data(new_repo_data: dict) -> None:
-        content = ccw_settings.render_repo_config_toml(new_repo_data)
-        ccw_settings.write_repo_config_toml(content, repo_config_path())
-
     def on_setting_save(key: str, value: object) -> None:
-        repo_data, _, _ = _load_settings_sources(cwd)
-        _persist_repo_data(ccw_settings.apply_setting(repo_data, key, value))
+        ccw_settings.persist_repo_config_updates(repo_config_path(), {key: value})
 
     def on_setting_remove(key: str) -> None:
-        repo_data, _, _ = _load_settings_sources(cwd)
-        _persist_repo_data(ccw_settings.remove_setting(repo_data, key))
+        ccw_settings.remove_repo_key(repo_config_path(), key)
 
     def on_setting_save_mapping(key: str, mapping: dict) -> None:
-        repo_data, _, _ = _load_settings_sources(cwd)
-        _persist_repo_data(ccw_settings.replace_mapping(repo_data, key, mapping))
+        ccw_settings.persist_repo_config_updates(repo_config_path(), {key: mapping})
+
+    def get_git_remote_profile_rows() -> list:
+        return [
+            (
+                p.name,
+                p.host,
+                p.owner,
+                p.auth,
+                p.creds_user or launch_user,
+                p.visibility,
+                p.token_file or "-",
+            )
+            for p in cfg.git_remote_profiles
+        ]
 
     def on_launch_cwd(dsp: bool) -> None:
         args = ParsedArgs(action="run", dsp=dsp, claude_args=[])
         do_run(args, cfg, launch_user)
 
-    def on_launch_new(name: str, dsp: bool) -> None:
-        args = ParsedArgs(action="new", target_id=name, dsp=dsp, claude_args=[])
+    def on_launch_new(name: str, dsp: bool, git_profile: str) -> None:
+        args = ParsedArgs(
+            action="new",
+            target_id=name,
+            dsp=dsp,
+            claude_args=[],
+            git_remote=git_profile or None,
+        )
         do_new(args, cfg, launch_user)
 
     def on_launch_existing(name: str, dsp: bool) -> None:
         args = ParsedArgs(action="new", target_id=name, dsp=dsp, claude_args=[])
         do_new(args, cfg, launch_user)
+
+    git_profile_options = [
+        (
+            p.name,
+            f"{p.host}/{p.owner}  via {p.creds_user or launch_user} [{p.auth}]",
+        )
+        for p in cfg.git_remote_profiles
+    ]
 
     return ccw_tui.TuiContext(
         sessions=tui_own,
@@ -1462,6 +1699,10 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         on_setting_save=on_setting_save,
         on_setting_remove=on_setting_remove,
         on_setting_save_mapping=on_setting_save_mapping,
+        get_git_remote_profile_rows=get_git_remote_profile_rows,
+        git_create_enabled=cfg.git_create_enabled,
+        default_git_remote_profile=cfg.default_git_remote_profile,
+        git_remote_profile_options=git_profile_options,
     )
 
 

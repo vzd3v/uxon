@@ -74,14 +74,23 @@ class TuiContext:
     on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
     on_refresh: Callable[[], "TuiContext"] = lambda: None  # type: ignore[return-value]
     on_launch_cwd: Callable[[bool], None] = lambda dsp: None  # dsp -> launch in cwd (execvp)
-    on_launch_new: Callable[[str, bool], None] = lambda name, dsp: None  # name, dsp -> create & launch
+    on_launch_new: Callable[[str, bool, str], None] = (
+        lambda name, dsp, git_profile: None  # name, dsp, git_profile("" = skip git) -> create & launch
+    )
     on_launch_existing: Callable[[str, bool], None] = lambda name, dsp: None  # name, dsp -> launch in existing
+
+    # Git remote on new project — display only. The TUI never edits these.
+    git_create_enabled: bool = False
+    default_git_remote_profile: str = ""
+    # Each entry: (profile_name, description string like "github.com/vzd3v via remdepl [gh]")
+    git_remote_profile_options: list[tuple[str, str]] = field(default_factory=list)
 
     # Settings (superuser-only). The TUI delegates all file I/O through these.
     get_settings_entries: Callable[[], list] = lambda: []
     on_setting_save: Callable[[str, Any], None] = lambda key, value: None
     on_setting_remove: Callable[[str], None] = lambda key: None
     on_setting_save_mapping: Callable[[str, dict], None] = lambda key, mapping: None
+    get_git_remote_profile_rows: Callable[[], list] = lambda: []
 
 
 # Number of action items at the top of the main list
@@ -430,6 +439,65 @@ def _prompt_project_name(t: "Terminal", root: str) -> str | None:
         error_msg = ""
 
 
+def _prompt_git_profile(
+    t: "Terminal",
+    options: list[tuple[str, str]],
+    default_name: str,
+) -> str | None:
+    """Ask whether to create a git remote and which profile to use.
+
+    Returns:
+      - "" if the user chose to skip git creation,
+      - profile name if selected,
+      - None if the user pressed Esc to cancel the whole new-project flow.
+    """
+    if not options:
+        return ""
+
+    # Menu rows: 0 = skip, then one per profile.
+    rows = [("", "skip — don't create any git remote")] + list(options)
+    default_cursor = 0
+    if default_name:
+        for i, (name, _) in enumerate(options):
+            if name == default_name:
+                default_cursor = i + 1
+                break
+    cursor = default_cursor
+
+    while True:
+        print(t.home + t.clear, end="")
+        print(t.bold_white_on_blue(" Create git remote? "))
+        print(_dim(t, "─" * t.width))
+        print()
+        for i, (name, desc) in enumerate(rows):
+            selected = i == cursor
+            prefix = t.bold_cyan("▸ ") if selected else "  "
+            num = _dim(t, f"{i} ") if not selected else f"{i} "
+            label = t.bold("skip") if not name else t.bold(name)
+            row = prefix + num + label + "  " + _dim(t, desc)
+            if selected:
+                print(t.reverse(t.ljust(row, t.width)))
+            else:
+                print(row)
+        footer_y = t.height - 1
+        with t.location(0, footer_y):
+            print(_build_footer(t, "permissions"), end="")
+
+        key = t.inkey(timeout=None)
+        if key.name == "KEY_ESCAPE":
+            return None
+        if key.name == "KEY_UP" or key == "k":
+            cursor = max(0, cursor - 1)
+        elif key.name == "KEY_DOWN" or key == "j":
+            cursor = min(len(rows) - 1, cursor + 1)
+        elif key.name == "KEY_ENTER" or key == "\n" or key == "\r":
+            return rows[cursor][0]
+        elif str(key).isdigit():
+            idx = int(str(key))
+            if 0 <= idx < len(rows):
+                cursor = idx
+
+
 def _prompt_existing_project(t: "Terminal", projects: list[str], root: str) -> str | None:
     """Project picker from existing directories. Returns name or None for cancel."""
     if not projects:
@@ -601,10 +669,19 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
         elif index == 1:
             name = _prompt_project_name(t, ctx.new_project_root)
             if name is not None:
+                git_profile = ""
+                if ctx.git_create_enabled and ctx.git_remote_profile_options:
+                    git_profile = _prompt_git_profile(
+                        t,
+                        ctx.git_remote_profile_options,
+                        ctx.default_git_remote_profile,
+                    )
+                    if git_profile is None:
+                        return None
                 dsp = _prompt_permissions(t)
                 if dsp is not None:
                     print(t.normal + t.clear + t.home, end="", flush=True)
-                    ctx.on_launch_new(name, dsp)
+                    ctx.on_launch_new(name, dsp, git_profile)
         elif index == 2:
             if not ctx.existing_projects:
                 return t.yellow(f"No projects in {ctx.new_project_root}")
@@ -640,6 +717,7 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
             save_setting=ctx.on_setting_save,
             remove_setting=ctx.on_setting_remove,
             save_mapping=ctx.on_setting_save_mapping,
+            get_git_remote_profile_rows=ctx.get_git_remote_profile_rows,
         )
         show_settings(t, cbs)
         return _dim(t, "Settings closed")

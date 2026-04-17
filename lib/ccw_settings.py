@@ -7,13 +7,16 @@ repo-level ``config/config.toml``.
 Project-level ``.ccw.toml`` is never written from here — it is surfaced
 read-only in the UI so operators can see where a given key's value came
 from.
+
+Round-trip writes preserve comments: the existing TOML text is parsed
+with ``tomlkit``, only the changed keys are mutated in the document tree,
+and the document is re-serialized. If the file does not exist yet, a
+minimal TOML is emitted from scratch.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +62,12 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "string",
         "Per-user socket path. Placeholders: {user}, {uid}.",
     ),
+    SettingSpec("git_create_enabled", "bool", "Enable the git-remote-on-new-project flow."),
+    SettingSpec(
+        "default_git_remote_profile",
+        "string",
+        "Profile name used when --git-remote default is passed or picked as TUI default.",
+    ),
 )
 
 TABLE_KEYS: tuple[str, ...] = tuple(spec.key for spec in SETTINGS_SPECS if spec.kind == "table")
@@ -101,7 +110,7 @@ def resolve_setting_entries(
     return out
 
 
-# ── TOML rendering ───────────────────────────────────────────────────
+# ── TOML rendering (minimal, for fresh files only) ───────────────────
 
 
 def _escape_string(s: str) -> str:
@@ -133,12 +142,14 @@ def _format_value(v: Any) -> str:
 
 
 def render_repo_config_toml(repo_data: dict) -> str:
-    """Render a repo-level config.toml body from ``repo_data``.
+    """Render a minimal repo-level config.toml body from scratch.
 
-    Keys are emitted in SETTINGS_SPECS order for stability. Comments in the
-    original file are *not* preserved — callers must warn the user.
-    The ``launch_user_by_caller`` table is always emitted at the end (even
-    when empty) so operators see it when opening the file directly.
+    Used only when there is no existing file to update (e.g. fresh
+    install). No comments are emitted — an installer that wants a
+    commented starter should ship a hand-written template.
+    Keys are emitted in SETTINGS_SPECS order for stability. The
+    ``launch_user_by_caller`` table is always emitted (even when empty)
+    so operators see it when opening the file directly.
     """
     lines: list[str] = []
 
@@ -164,6 +175,43 @@ def render_repo_config_toml(repo_data: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ── Round-trip update (comment-preserving) ───────────────────────────
+
+
+def update_repo_config_text(existing_text: str, updates: dict) -> str:
+    """Apply ``updates`` to ``existing_text`` (a config.toml body) and
+    return the new text with comments and formatting of untouched parts
+    preserved byte-identical.
+
+    ``updates`` maps schema keys to their new values. Table-kind keys
+    (see :data:`TABLE_KEYS`) are replaced wholesale: the table body is
+    rewritten but the table header line and any comments above it stay
+    intact.
+
+    Raises ``KeyError`` for unknown keys and ``ValueError`` for type
+    mismatches (mirrors :func:`apply_setting`/:func:`replace_mapping`).
+    """
+    import tomlkit  # lazy: only the writer path pulls tomlkit in
+
+    doc = tomlkit.parse(existing_text)
+    for key, value in updates.items():
+        if key not in SCHEMA_KEYS:
+            raise KeyError(f"unknown setting key: {key}")
+        if key in TABLE_KEYS:
+            if not isinstance(value, dict):
+                raise ValueError(f"{key} must be a mapping")
+            tbl = tomlkit.table()
+            for sub_k in sorted(value):
+                sub_v = value[sub_k]
+                if not isinstance(sub_k, str) or not isinstance(sub_v, str):
+                    raise ValueError(f"table {key} requires string keys and values")
+                tbl[sub_k] = sub_v
+            doc[key] = tbl
+        else:
+            doc[key] = value
+    return tomlkit.dumps(doc)
+
+
 # ── Persistence ──────────────────────────────────────────────────────
 
 
@@ -181,28 +229,36 @@ def write_repo_config_toml(content: str, path: "Path | str") -> None:
     except (PermissionError, OSError):
         pass
 
-    # Fall back to sudo tee (non-atomic but preserves ownership and mode).
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", delete=False, suffix=".toml"
-    ) as f:
-        f.write(content)
-        tmp_path = f.name
+    # Fall back to ``sudo tee`` with content piped on stdin — avoids any
+    # shell interpolation of the destination path (which is otherwise
+    # attacker-influenced via repo checkout layout).
+    result = subprocess.run(
+        ["sudo", "tee", "--", str(path)],
+        input=content.encode("utf-8"),
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"failed to write {path}: {stderr or 'unknown error'}")
+
+
+def persist_repo_config_updates(path: "Path | str", updates: dict) -> None:
+    """Read ``path`` (if it exists), apply ``updates`` via
+    :func:`update_repo_config_text`, and write the result back.
+
+    When the file is missing, a minimal starter is rendered: the updates
+    alone are emitted with no accompanying comments.
+    """
+    path = Path(path)
     try:
-        result = subprocess.run(
-            ["sudo", "sh", "-c", f"cat {tmp_path!s} > {str(path)!s}"],
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"failed to write {path}: {stderr or 'unknown error'}")
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
+    new_text = update_repo_config_text(existing, updates)
+    write_repo_config_toml(new_text, path)
 
 
-# ── Mutators ─────────────────────────────────────────────────────────
+# ── Mutators (in-memory dict helpers) ────────────────────────────────
 
 
 def apply_setting(repo_data: dict, key: str, new_value: Any) -> dict:
@@ -235,3 +291,22 @@ def replace_mapping(repo_data: dict, key: str, new_mapping: dict) -> dict:
     out = dict(repo_data)
     out[key] = dict(new_mapping)
     return out
+
+
+def remove_repo_key(path: "Path | str", key: str) -> None:
+    """Drop ``key`` from the repo-level config.toml. Preserves comments
+    and formatting of untouched parts. No-op if file or key is missing.
+    """
+    import tomlkit
+
+    if key not in SCHEMA_KEYS:
+        raise KeyError(f"unknown setting key: {key}")
+    path = Path(path)
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    doc = tomlkit.parse(existing)
+    if key in doc:
+        del doc[key]
+        write_repo_config_toml(tomlkit.dumps(doc), path)

@@ -12,8 +12,7 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 
 ## Code layout
 
-- `bin/ccw` — CLI entrypoint (stdlib only; wires subcommands and builds
-  the TUI context).
+- `bin/ccw` — CLI entrypoint (wires subcommands and builds the TUI context).
 - `lib/ccw_tui.py` — TUI main loop and main-screen rendering
   (requires `blessed`; imported lazily).
 - `lib/ccw_tui_widgets.py` — stateless, reusable TUI primitives
@@ -23,8 +22,20 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
   Knows nothing about file I/O; all side effects go through a
   `SettingsCallbacks` bundle provided by `bin/ccw`.
 - `lib/ccw_settings.py` — settings schema (the single list of known keys),
-  layer resolution (default / repo / project), minimal TOML writer, and
-  safe repo-file persistence (with `sudo` fallback).
+  layer resolution (default / repo / project), round-trip TOML writer
+  (via `tomlkit`, preserves comments and formatting), and safe repo-file
+  persistence (with `sudo` fallback).
+- `lib/ccw_git_profiles.py` — pure-data schema for
+  `[[git_remote_profiles]]`: dataclass, validation, URL/API-base helpers.
+- `lib/ccw_git_backend_gh.py` — `gh`-CLI backend: preflight + `gh repo
+  create` under `creds_user`.
+- `lib/ccw_git_backend_token.py` — fine-grained-PAT backend: reads
+  `token_file` under `creds_user`, calls the REST API via `urllib`, and
+  guarantees the token never leaves memory or appears in any log/dry-run
+  output.
+- `lib/ccw_git_create.py` — orchestrator for the git-remote-on-new-project
+  pipeline. Dispatches to the matching backend, drives local git under
+  launch_user, raises `CreationError(stage=...)` on failure.
 - `install/` — installer and config renderer.
 - `tests/` — `unittest`, discovered via `python3 -m unittest`.
 - `config/` — host-local, gitignored. Source of truth for a running host.
@@ -47,9 +58,15 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 
 - **No `claude` invocations added outside of `launch_in_tmux`.** `ccw` is the
   single place that builds the `claude` command line.
-- **No third-party runtime deps in `bin/ccw`.** stdlib only. The TUI file may
-  import `blessed`, but only lazily (`ccw list`, `ccw doctor`, etc. must keep
-  working without it installed).
+- **Heavy/UI-only deps are imported lazily** so non-UI paths (`ccw list`,
+  `ccw doctor`, `ccw version`) keep working without them installed.
+  `blessed` is imported lazily by TUI files; same rule for any future
+  dependency that's not needed on every code path.
+- **Config writes require `tomlkit`.** The round-trip TOML writer in
+  `lib/ccw_settings.py` imports it lazily; CLI read paths stay on stdlib
+  `tomllib`. Installer must ensure `tomlkit` is available in the Python
+  env `ccw` runs under (`python3-tomlkit` on Debian/Ubuntu, or
+  `pip install tomlkit`).
 - **Dedicated tmux socket stays per-user.** Don't add code paths that fall
   back to the default socket silently; fail with a hint instead (see
   `repeat_guardrail_for_legacy_socket`).
@@ -73,7 +90,11 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 ```bash
 python3 -m py_compile bin/ccw lib/ccw_tui.py lib/ccw_tui_widgets.py \
   lib/ccw_tui_settings.py lib/ccw_settings.py \
+  lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
+  lib/ccw_git_backend_token.py lib/ccw_git_create.py \
   tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
+  tests/test_ccw_git_profiles.py tests/test_ccw_git_backend_gh.py \
+  tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
   install/install_ccw.py install/render_ccw_config.py
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```

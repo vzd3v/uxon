@@ -20,8 +20,8 @@ SPEC.loader.exec_module(ccw)
 
 
 class CcwTests(unittest.TestCase):
-    def make_config(self) -> ccw.Config:
-        return ccw.Config(
+    def make_config(self, **overrides) -> ccw.Config:
+        defaults = dict(
             runtime_user="",
             default_launch_mode="caller",
             enable_all_users_list=False,
@@ -33,7 +33,12 @@ class CcwTests(unittest.TestCase):
             new_project_root="/srv/repos",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/ccw-{user}.sock",
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
         )
+        defaults.update(overrides)
+        return ccw.Config(**defaults)
 
     def make_session(
         self,
@@ -92,6 +97,9 @@ class CcwTests(unittest.TestCase):
             new_project_root="/srv/agentdev",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/ccw-{user}.sock",
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
         )
 
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "devagent")
@@ -109,6 +117,9 @@ class CcwTests(unittest.TestCase):
             new_project_root="/srv/agentdev",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/ccw-{user}.sock",
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
         )
 
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "remdepl")
@@ -126,6 +137,9 @@ class CcwTests(unittest.TestCase):
             new_project_root="/srv/agentdev",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/ccw-{user}.sock",
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
         )
 
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "devagent")
@@ -143,6 +157,9 @@ class CcwTests(unittest.TestCase):
             new_project_root="/srv/agentdev",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/ccw-{user}.sock",
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
         )
 
         self.assertEqual(ccw.resolve_all_session_users(cfg, "remdepl"), ["devagent", "remdepl"])
@@ -212,6 +229,227 @@ class CcwTests(unittest.TestCase):
         self.assertEqual(cfg.default_claude_args, ["--model", "sonnet"])
         self.assertEqual(cfg.repeat_noninteractive_mode, "attach")
         self.assertEqual(cfg.tmux_socket_template, "/tmp/ccw-{user}-{uid}.sock")
+
+    def test_load_config_reads_git_remote_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cwd = tmp_path / "workspace"
+            cwd.mkdir()
+            repo_cfg = tmp_path / "repo-config.toml"
+            repo_cfg.write_text(
+                textwrap.dedent(
+                    """
+                    git_create_enabled = true
+                    default_git_remote_profile = "vzd3v-gh"
+
+                    [[git_remote_profiles]]
+                    name = "vzd3v-gh"
+                    host = "github.com"
+                    owner = "vzd3v"
+                    auth = "gh"
+                    creds_user = "remdepl"
+                    visibility = "private"
+
+                    [[git_remote_profiles]]
+                    name = "acme-tok"
+                    host = "github.com"
+                    owner = "acme"
+                    auth = "token"
+                    creds_user = "remdepl"
+                    token_file = "/home/remdepl/.secrets/acme.token"
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def fake_load_toml(path: Path) -> dict[str, object]:
+                if path == tmp_path / "config" / "config.toml":
+                    with repo_cfg.open("rb") as fh:
+                        return ccw.tomllib.load(fh)
+                return {}
+
+            with mock.patch.object(ccw, "repo_root", return_value=tmp_path):
+                with mock.patch.object(ccw, "find_project_config", return_value=None):
+                    with mock.patch.object(ccw, "canonical", side_effect=lambda v: str(v)):
+                        with mock.patch.object(ccw, "load_toml", side_effect=fake_load_toml):
+                            cfg = ccw.load_config(str(cwd))
+
+        self.assertTrue(cfg.git_create_enabled)
+        self.assertEqual(cfg.default_git_remote_profile, "vzd3v-gh")
+        self.assertEqual([p.name for p in cfg.git_remote_profiles], ["vzd3v-gh", "acme-tok"])
+        self.assertEqual(cfg.git_remote_profiles[1].token_file, "/home/remdepl/.secrets/acme.token")
+
+    def test_load_config_rejects_default_pointing_to_missing_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cwd = tmp_path / "workspace"
+            cwd.mkdir()
+            repo_cfg = tmp_path / "repo-config.toml"
+            repo_cfg.write_text(
+                textwrap.dedent(
+                    """
+                    default_git_remote_profile = "missing"
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def fake_load_toml(path: Path) -> dict[str, object]:
+                if path == tmp_path / "config" / "config.toml":
+                    with repo_cfg.open("rb") as fh:
+                        return ccw.tomllib.load(fh)
+                return {}
+
+            with mock.patch.object(ccw, "repo_root", return_value=tmp_path):
+                with mock.patch.object(ccw, "find_project_config", return_value=None):
+                    with mock.patch.object(ccw, "canonical", side_effect=lambda v: str(v)):
+                        with mock.patch.object(ccw, "load_toml", side_effect=fake_load_toml):
+                            with self.assertRaises(SystemExit):
+                                ccw.load_config(str(cwd))
+
+    def test_parse_new_with_git_remote(self) -> None:
+        parsed = ccw.parse_subcommand(
+            ["new", "demo", "--git-remote", "prof-a", "--git-visibility", "public"]
+        )
+        self.assertEqual(parsed.action, "new")
+        self.assertEqual(parsed.target_id, "demo")
+        self.assertEqual(parsed.git_remote, "prof-a")
+        self.assertEqual(parsed.git_visibility, "public")
+        self.assertFalse(parsed.no_git)
+
+    def test_parse_new_no_git(self) -> None:
+        parsed = ccw.parse_subcommand(["new", "demo", "--no-git"])
+        self.assertTrue(parsed.no_git)
+        self.assertIsNone(parsed.git_remote)
+
+    def test_parse_new_git_remote_default(self) -> None:
+        parsed = ccw.parse_subcommand(["new", "demo", "--git-remote", "default"])
+        self.assertEqual(parsed.git_remote, "default")
+
+    def test_parse_new_rejects_git_remote_with_no_git(self) -> None:
+        with self.assertRaises(SystemExit):
+            ccw.parse_subcommand(["new", "demo", "--git-remote", "p", "--no-git"])
+
+    def test_parse_new_rejects_bad_visibility(self) -> None:
+        with self.assertRaises(SystemExit):
+            ccw.parse_subcommand(["new", "demo", "--git-visibility", "secret"])
+
+    def test_do_new_git_remote_dry_run_invokes_orchestrator(self) -> None:
+        profile = {
+            "name": "prof-a",
+            "host": "github.com",
+            "owner": "vzd3v",
+            "auth": "gh",
+            "creds_user": "remdepl",
+            "visibility": "private",
+        }
+        import sys as _sys
+        _sys.path.insert(0, str(CCW_PATH.parent.parent / "lib"))
+        import ccw_git_profiles
+        cfg = self.make_config(
+            allowed_roots=["/srv/repos"],
+            git_create_enabled=True,
+            default_git_remote_profile="prof-a",
+            git_remote_profiles=ccw_git_profiles.load_profiles([profile]),
+        )
+        args = ccw.ParsedArgs(
+            action="new",
+            target_id="demo",
+            dry_run=True,
+            git_remote="prof-a",
+            claude_args=[],
+        )
+
+        calls = []
+
+        def fake_create(profile_arg, repo_name, project_dir, **kwargs):
+            calls.append(
+                {
+                    "name": profile_arg.name,
+                    "repo": repo_name,
+                    "dir": project_dir,
+                    "dry_run": kwargs.get("dry_run"),
+                    "launch_user": kwargs.get("launch_user"),
+                    "current_user": kwargs.get("current_user"),
+                }
+            )
+            import ccw_git_create
+            return ccw_git_create.CreationResult(
+                profile_name=profile_arg.name,
+                ssh_url=f"git@github.com:vzd3v/{repo_name}.git",
+                commands=["would run: git init"],
+            )
+
+        import ccw_git_create
+        with mock.patch.object(ccw_git_create, "create_project_remote", side_effect=fake_create):
+            with mock.patch.object(ccw, "collect_sessions", return_value=[]):
+                with mock.patch.object(ccw, "launch_in_tmux", return_value=0):
+                    with mock.patch.object(ccw, "is_interactive_tty", return_value=False):
+                        ccw.do_new(args, cfg, "devagent")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "prof-a")
+        self.assertEqual(calls[0]["repo"], "demo")
+        self.assertEqual(calls[0]["dir"], "/srv/repos/demo")
+        self.assertTrue(calls[0]["dry_run"])
+        self.assertEqual(calls[0]["launch_user"], "devagent")
+
+    def test_do_new_git_remote_rejects_disabled_feature(self) -> None:
+        cfg = self.make_config(git_create_enabled=False)
+        args = ccw.ParsedArgs(
+            action="new",
+            target_id="demo",
+            git_remote="default",
+            dry_run=True,
+            claude_args=[],
+        )
+        with mock.patch.object(ccw, "is_interactive_tty", return_value=False):
+            with self.assertRaisesRegex(SystemExit, "2"):
+                ccw.do_new(args, cfg, "devagent")
+
+    def test_do_new_git_remote_with_worktree_fails(self) -> None:
+        import sys as _sys
+        _sys.path.insert(0, str(CCW_PATH.parent.parent / "lib"))
+        import ccw_git_profiles
+        cfg = self.make_config(
+            git_create_enabled=True,
+            default_git_remote_profile="prof-a",
+            git_remote_profiles=ccw_git_profiles.load_profiles(
+                [
+                    {
+                        "name": "prof-a",
+                        "host": "github.com",
+                        "owner": "vzd3v",
+                        "auth": "gh",
+                        "creds_user": "remdepl",
+                        "visibility": "private",
+                    }
+                ]
+            ),
+        )
+        args = ccw.ParsedArgs(
+            action="new",
+            target_id="demo",
+            worktree_branch="feature",
+            git_remote="prof-a",
+            dry_run=True,
+            claude_args=[],
+        )
+        with mock.patch.object(ccw, "os", wraps=ccw.os) as m_os:
+            m_os.path.isdir.return_value = True
+            with mock.patch.object(ccw, "git_repo_root_as_user", return_value="/srv/repos/demo"):
+                with self.assertRaises(SystemExit):
+                    ccw.do_new(args, cfg, "devagent")
+
+    def test_parse_run_rejects_git_flags(self) -> None:
+        with self.assertRaises(SystemExit):
+            ccw.parse_subcommand(["run", "--git-remote", "p"])
+        with self.assertRaises(SystemExit):
+            ccw.parse_subcommand(["run", "--no-git"])
+        with self.assertRaises(SystemExit):
+            ccw.parse_subcommand(["run", "--git-visibility", "private"])
 
     def test_format_version_reads_version_file_and_commit(self) -> None:
         with mock.patch.object(ccw, "read_repo_version", return_value="0.2.0"):
