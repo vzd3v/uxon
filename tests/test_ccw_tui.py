@@ -51,7 +51,7 @@ def _make_ctx(
         sessions=sessions,
         total_cpu="5.0",
         total_ram="512M",
-        version="ccw 0.6.0",
+        version="ccw 0.7.0",
         cwd="/srv/repos/myproject",
         cwd_short="myproject",
         new_project_root="/srv/agentdev",
@@ -67,6 +67,10 @@ def _make_ctx(
         on_launch_cwd=_noop,
         on_launch_new=_noop,
         on_launch_existing=_noop,
+        get_settings_entries=lambda: [],
+        on_setting_save=_noop,
+        on_setting_remove=_noop,
+        on_setting_save_mapping=_noop,
     )
     return ctx
 
@@ -127,27 +131,43 @@ class SuperuserSegmentTests(unittest.TestCase):
             other_sessions=[_make_session("theirs", user="alice")],
             has_sudo=False,
         )
-        _, _, _, has_super = ccw_tui._segments(ctx)
+        _, _, settings_idx, kill_idx, has_super = ccw_tui._segments(ctx)
         self.assertFalse(has_super)
+        self.assertEqual(settings_idx, -1)
+        self.assertEqual(kill_idx, -1)
         self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1)
 
-    def test_no_superuser_block_when_no_other_sessions(self) -> None:
+    def test_sudo_with_no_sessions_shows_only_settings(self) -> None:
+        ctx = _make_ctx(has_sudo=True)
+        own_start, other_start, settings_idx, kill_idx, has_super = ccw_tui._segments(ctx)
+        self.assertTrue(has_super)
+        self.assertEqual(own_start, ccw_tui.ACTION_COUNT)
+        self.assertEqual(other_start, ccw_tui.ACTION_COUNT)
+        self.assertEqual(settings_idx, ccw_tui.ACTION_COUNT)
+        self.assertEqual(kill_idx, -1)  # no sessions → no kill-all-global
+        self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1)
+
+    def test_sudo_with_only_own_sessions_has_settings_and_kill(self) -> None:
         ctx = _make_ctx(sessions=[_make_session("mine")], has_sudo=True)
-        _, _, _, has_super = ccw_tui._segments(ctx)
-        self.assertFalse(has_super)
-        self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1)
+        _, _, settings_idx, kill_idx, has_super = ccw_tui._segments(ctx)
+        self.assertTrue(has_super)
+        # actions(3) + 1 own → settings at 4, kill at 5
+        self.assertEqual(settings_idx, ccw_tui.ACTION_COUNT + 1)
+        self.assertEqual(kill_idx, ccw_tui.ACTION_COUNT + 2)
+        self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1 + 2)
 
-    def test_superuser_block_adds_other_sessions_plus_kill_all(self) -> None:
+    def test_superuser_block_adds_other_sessions_plus_settings_plus_kill(self) -> None:
         own = [_make_session("mine")]
         other = [_make_session("x", user="alice"), _make_session("y", user="bob")]
         ctx = _make_ctx(sessions=own, other_sessions=other, has_sudo=True)
-        own_start, other_start, kill_idx, has_super = ccw_tui._segments(ctx)
+        own_start, other_start, settings_idx, kill_idx, has_super = ccw_tui._segments(ctx)
         self.assertTrue(has_super)
         self.assertEqual(own_start, ccw_tui.ACTION_COUNT)
         self.assertEqual(other_start, ccw_tui.ACTION_COUNT + 1)
-        self.assertEqual(kill_idx, ccw_tui.ACTION_COUNT + 1 + 2)
-        # Total = actions + own + other + 1 (kill-all-global)
-        self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1 + 2 + 1)
+        self.assertEqual(settings_idx, ccw_tui.ACTION_COUNT + 1 + 2)
+        self.assertEqual(kill_idx, settings_idx + 1)
+        # actions + own + other + settings + kill
+        self.assertEqual(ccw_tui._total_items(ctx), ccw_tui.ACTION_COUNT + 1 + 2 + 1 + 1)
 
     def test_compute_col_widths_includes_user_when_requested(self) -> None:
         other = [_make_session("x", user="alice"), _make_session("y", user="bobbie")]

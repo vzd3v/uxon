@@ -6,13 +6,14 @@ and inline confirmations for kill/kill-all actions.
 Main screen layout:
   - Action items (new session in cwd, create project, open existing project)
   - ── sessions ── (own sessions for the current launch user)
-  - ── superuser ── (other users' sessions + global kill-all) — only when
-    passwordless sudo is detected and at least one other user has a session
+  - ── superuser ── (other users' sessions + ⚙ Settings + global kill-all) —
+    shown whenever passwordless sudo is detected
 
 Sub-screens:
   - Permission prompt (regular vs --dsp) before any launch
   - Project name input for "Create new project"
   - Project picker for "Open existing project"
+  - Settings list + per-type editor (see ccw_tui_settings.py)
 """
 
 from __future__ import annotations
@@ -20,7 +21,10 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+from ccw_tui_widgets import confirm_phrase as _confirm_phrase_widget
+from ccw_tui_widgets import dim as _dim_widget
 
 if TYPE_CHECKING:
     from blessed import Terminal
@@ -73,35 +77,55 @@ class TuiContext:
     on_launch_new: Callable[[str, bool], None] = lambda name, dsp: None  # name, dsp -> create & launch
     on_launch_existing: Callable[[str, bool], None] = lambda name, dsp: None  # name, dsp -> launch in existing
 
+    # Settings (superuser-only). The TUI delegates all file I/O through these.
+    get_settings_entries: Callable[[], list] = lambda: []
+    on_setting_save: Callable[[str, Any], None] = lambda key, value: None
+    on_setting_remove: Callable[[str], None] = lambda key: None
+    on_setting_save_mapping: Callable[[str, dict], None] = lambda key, mapping: None
+
 
 # Number of action items at the top of the main list
 ACTION_COUNT = 3
 
 
 def _dim(t: "Terminal", text: str) -> str:
-    """Portable dim text — t.dim(text) fails on some terminals where dim is
-    a ParameterizingString. Concatenation always works."""
-    return t.dim + text + t.normal
+    """Kept as a local alias for backwards compatibility with existing tests."""
+    return _dim_widget(t, text)
 
 
-def _segments(ctx: TuiContext) -> tuple[int, int, int, bool]:
-    """Return (own_start, other_start, kill_global_idx, has_super).
+# ── Segment / index map ─────────────────────────────────────────────
+#
+# Without sudo:
+#   [actions: 0..ACTION_COUNT) | [own: ACTION_COUNT..ACTION_COUNT+len(own))
+#
+# With sudo (superuser block always available):
+#   ... | [own] | [other-user sessions] | ⚙ Settings | [Kill ALL (all users)]
+#                                                     ^ only when any session exists
 
-    own_start = ACTION_COUNT
-    other_start = own_start + len(ctx.sessions)
-    kill_global_idx = other_start + len(ctx.other_sessions)
-    has_super = True when there is at least one other-user session and sudo is available
+
+def _segments(ctx: TuiContext) -> tuple[int, int, int, int, bool]:
+    """Return (own_start, other_start, settings_idx, kill_global_idx, has_super).
+
+    Indexes that don't apply return -1. ``has_super`` is True iff
+    ``ctx.has_sudo``.
     """
     own_start = ACTION_COUNT
     other_start = own_start + len(ctx.sessions)
-    kill_global_idx = other_start + len(ctx.other_sessions)
-    has_super = ctx.has_sudo and bool(ctx.other_sessions)
-    return own_start, other_start, kill_global_idx, has_super
+    if not ctx.has_sudo:
+        return own_start, other_start, -1, -1, False
+    settings_idx = other_start + len(ctx.other_sessions)
+    total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
+    kill_global_idx = settings_idx + 1 if total_sessions > 0 else -1
+    return own_start, other_start, settings_idx, kill_global_idx, True
 
 
 def _total_items(ctx: TuiContext) -> int:
-    _, _, kill_idx, has_super = _segments(ctx)
-    return kill_idx + 1 if has_super else ACTION_COUNT + len(ctx.sessions)
+    _, _, settings_idx, kill_idx, has_super = _segments(ctx)
+    if not has_super:
+        return ACTION_COUNT + len(ctx.sessions)
+    if kill_idx >= 0:
+        return kill_idx + 1
+    return settings_idx + 1
 
 
 # ── Rendering helpers ────────────────────────────────────────────────
@@ -273,6 +297,18 @@ def _render_kill_all_global_row(t: "Terminal", num: int, selected: bool, total_c
     return cursor + text
 
 
+def _render_settings_row(t: "Terminal", num: int, selected: bool) -> str:
+    cursor = t.bold_cyan("▸ ") if selected else "  "
+    if 1 <= num <= 9:
+        num_str = _dim(t, f"{num} ") if not selected else f"{num} "
+    else:
+        num_str = "  "
+    text = num_str + t.bold_yellow("⚙ ") + t.bold("Settings") + "  " + _dim(t, "(repo-level config.toml)")
+    if selected:
+        return t.reverse(t.ljust(cursor + text, t.width))
+    return cursor + text
+
+
 # ── Confirmation prompts ─────────────────────────────────────────────
 
 
@@ -287,41 +323,16 @@ def _confirm_kill(t: "Terminal", session_name: str, y: int, user: str | None = N
     return key.lower() == "y"
 
 
-def _confirm_phrase(t: "Terminal", prompt: str, phrase: str, y: int) -> bool:
-    with t.location(0, y):
-        print(t.clear_eol + prompt, end="", flush=True)
-    buf = ""
-    while True:
-        key = t.inkey(timeout=30)
-        if not key:
-            return False
-        if key.name == "KEY_ENTER" or key == "\n" or key == "\r":
-            return buf == phrase
-        if key.name == "KEY_ESCAPE":
-            return False
-        if key.name == "KEY_BACKSPACE" or key == "\x7f":
-            if buf:
-                buf = buf[:-1]
-                with t.location(0, y):
-                    print(t.clear_eol + prompt + buf, end="", flush=True)
-            continue
-        if key.is_sequence:
-            continue
-        buf += str(key)
-        with t.location(0, y):
-            print(t.clear_eol + prompt + buf, end="", flush=True)
-
-
 def _confirm_kill_all(t: "Terminal", count: int, y: int) -> bool:
     prompt = t.bold_red(f"  Kill ALL {count} sessions? ") + _dim(t, "Type 'kill-all' to confirm: ")
-    return _confirm_phrase(t, prompt, "kill-all", y)
+    return _confirm_phrase_widget(t, prompt, "kill-all", y)
 
 
 def _confirm_kill_all_global(t: "Terminal", count: int, y: int) -> bool:
     prompt = t.bold_red(f"  Kill ALL {count} sessions across ALL users? ") + _dim(
         t, "Type 'kill-all-global' to confirm: "
     )
-    return _confirm_phrase(t, prompt, "kill-all-global", y)
+    return _confirm_phrase_widget(t, prompt, "kill-all-global", y)
 
 
 # ── Sub-screens ──────────────────────────────────────────────────────
@@ -492,7 +503,7 @@ def _draw_main_screen(
     status_msg: str,
 ) -> None:
     """Full redraw of the main TUI screen."""
-    own_start, other_start, kill_idx, has_super = _segments(ctx)
+    own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
     own_widths = _compute_col_widths(ctx.sessions)
     other_widths = _compute_col_widths(ctx.other_sessions, include_user=True)
     total = _total_items(ctx)
@@ -503,7 +514,9 @@ def _draw_main_screen(
     if ctx.sessions:
         decor += 2  # "─ sessions ─" + column header
     if has_super:
-        decor += 2  # "─ superuser ─" + USER column header
+        decor += 1  # "─ superuser ─"
+        if ctx.other_sessions:
+            decor += 1  # USER column header
     available = max(1, t.height - 5 - decor)
 
     print(t.home + t.clear, end="")
@@ -514,55 +527,47 @@ def _draw_main_screen(
     visible_end = min(scroll_offset + available, total)
     row_line = 0
 
+    def _print(line: str) -> None:
+        nonlocal row_line
+        if row_line < available:
+            print(line)
+            row_line += 1
+
     for i in range(visible_start, visible_end):
+        # Segment separators / column headers are drawn before the first row
+        # of a new segment so layout remains consistent even when a segment
+        # is empty (e.g. superuser block with only Settings and no sessions).
+        if i == own_start and ctx.sessions:
+            _print(_dim(t, "  ─ sessions ─" + "─" * max(0, t.width - 14)))
+            _print(_render_column_header(t, own_widths))
+        if has_super and i == other_start:
+            _print(_dim(t, "  ─ superuser ─" + "─" * max(0, t.width - 15)))
+            if ctx.other_sessions:
+                _print(_render_column_header(t, other_widths, show_user=True))
+
         if i < own_start:
-            # Action items — numbered starting from 1
             num = i + 1
             if i == 0:
-                print(_render_action_row(t, num, "New session in current folder", f"({ctx.cwd_short})", i == cursor))
+                _print(_render_action_row(t, num, "New session in current folder", f"({ctx.cwd_short})", i == cursor))
             elif i == 1:
-                print(_render_action_row(t, num, "Create new project", f"({ctx.new_project_root}/...)", i == cursor))
+                _print(_render_action_row(t, num, "Create new project", f"({ctx.new_project_root}/...)", i == cursor))
             elif i == 2:
-                print(_render_action_row(t, num, "Open existing project", f"({ctx.new_project_root}/...)", i == cursor))
-            row_line += 1
-            # After last action: "─ sessions ─" separator + own column header, if any own sessions
-            if i == own_start - 1 and ctx.sessions and row_line < available:
-                print(_dim(t, "  ─ sessions ─" + "─" * max(0, t.width - 14)))
-                row_line += 1
-                if row_line < available:
-                    print(_render_column_header(t, own_widths))
-                    row_line += 1
+                _print(_render_action_row(t, num, "Open existing project", f"({ctx.new_project_root}/...)", i == cursor))
         elif i < other_start:
-            # Own session rows
             si = i - own_start
-            s = ctx.sessions[si]
-            if row_line < available:
-                item_num = i + 1
-                print(_render_session_row(t, s, i == cursor, own_widths, num=item_num))
-                row_line += 1
-            # After last own session: superuser separator + USER column header
-            if has_super and i == other_start - 1 and row_line < available:
-                print(_dim(t, "  ─ superuser ─" + "─" * max(0, t.width - 15)))
-                row_line += 1
-                if row_line < available:
-                    print(_render_column_header(t, other_widths, show_user=True))
-                    row_line += 1
-        elif has_super and i < kill_idx:
-            # Other-user session rows
+            _print(_render_session_row(t, ctx.sessions[si], i == cursor, own_widths, num=i + 1))
+        elif has_super and i < settings_idx:
             si = i - other_start
-            s = ctx.other_sessions[si]
-            if row_line < available:
-                item_num = i + 1
-                print(
-                    _render_session_row(t, s, i == cursor, other_widths, num=item_num, show_user=True)
+            _print(
+                _render_session_row(
+                    t, ctx.other_sessions[si], i == cursor, other_widths, num=i + 1, show_user=True
                 )
-                row_line += 1
+            )
+        elif has_super and i == settings_idx:
+            _print(_render_settings_row(t, i + 1, i == cursor))
         elif has_super and i == kill_idx:
-            # kill-all-global
-            if row_line < available:
-                total_count = len(ctx.sessions) + len(ctx.other_sessions)
-                print(_render_kill_all_global_row(t, i + 1, i == cursor, total_count))
-                row_line += 1
+            total_count = len(ctx.sessions) + len(ctx.other_sessions)
+            _print(_render_kill_all_global_row(t, i + 1, i == cursor, total_count))
 
     if total == ACTION_COUNT:
         # No sessions at all (superuser has none too). Print a hint under actions.
@@ -585,17 +590,15 @@ def _draw_main_screen(
 
 def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
     """Handle activation (Enter / digit) for item at index. Returns status msg or None."""
-    own_start, other_start, kill_idx, has_super = _segments(ctx)
+    own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
 
     if index < own_start:
         if index == 0:
-            # New session in cwd
             dsp = _prompt_permissions(t)
             if dsp is not None:
                 print(t.normal + t.clear + t.home, end="", flush=True)
                 ctx.on_launch_cwd(dsp)
         elif index == 1:
-            # Create new project
             name = _prompt_project_name(t, ctx.new_project_root)
             if name is not None:
                 dsp = _prompt_permissions(t)
@@ -603,7 +606,6 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
                     print(t.normal + t.clear + t.home, end="", flush=True)
                     ctx.on_launch_new(name, dsp)
         elif index == 2:
-            # Open existing project
             if not ctx.existing_projects:
                 return t.yellow(f"No projects in {ctx.new_project_root}")
             name = _prompt_existing_project(t, ctx.existing_projects, ctx.new_project_root)
@@ -615,7 +617,6 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
         return None
 
     if index < other_start:
-        # Attach to own session
         si = index - own_start
         if 0 <= si < len(ctx.sessions):
             session = ctx.sessions[si]
@@ -623,8 +624,7 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
             ctx.on_attach(ctx.current_user, session.name)
         return None
 
-    if has_super and index < kill_idx:
-        # Attach to another user's session
+    if has_super and index < settings_idx:
         si = index - other_start
         if 0 <= si < len(ctx.other_sessions):
             session = ctx.other_sessions[si]
@@ -632,8 +632,19 @@ def _activate_item(t: "Terminal", ctx: TuiContext, index: int) -> str | None:
             ctx.on_attach(session.user, session.name)
         return None
 
+    if has_super and index == settings_idx:
+        from ccw_tui_settings import SettingsCallbacks, show_settings
+
+        cbs = SettingsCallbacks(
+            get_entries=ctx.get_settings_entries,
+            save_setting=ctx.on_setting_save,
+            remove_setting=ctx.on_setting_remove,
+            save_mapping=ctx.on_setting_save_mapping,
+        )
+        show_settings(t, cbs)
+        return _dim(t, "Settings closed")
+
     if has_super and index == kill_idx:
-        # Global kill-all
         confirm_y = t.height - 3
         total_count = len(ctx.sessions) + len(ctx.other_sessions)
         if _confirm_kill_all_global(t, total_count, confirm_y):
@@ -665,7 +676,7 @@ def run(ctx: TuiContext) -> int:
 
     with t.fullscreen(), t.cbreak(), t.hidden_cursor():
         while True:
-            own_start, other_start, kill_idx, has_super = _segments(ctx)
+            own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
             total = _total_items(ctx)
             if total > 0:
                 cursor = max(0, min(cursor, total - 1))
@@ -676,7 +687,9 @@ def run(ctx: TuiContext) -> int:
             if ctx.sessions:
                 decor += 2
             if has_super:
-                decor += 2
+                decor += 1
+                if ctx.other_sessions:
+                    decor += 1
             available = max(1, t.height - 5 - decor)
             if cursor < scroll_offset:
                 scroll_offset = cursor
@@ -707,23 +720,23 @@ def run(ctx: TuiContext) -> int:
 
             elif key.name == "KEY_ENTER" or key == "\n" or key == "\r":
                 status_msg = _activate_item(t, ctx, cursor) or ""
-                # Refresh after global kill-all (which doesn't execvp)
-                if has_super and cursor == kill_idx:
+                # Items that come back (don't execvp) need a context refresh
+                if has_super and cursor in (settings_idx, kill_idx):
                     ctx = ctx.on_refresh()
                     total = _total_items(ctx)
-                    cursor = 0
-                    scroll_offset = 0
+                    if cursor >= total:
+                        cursor = max(0, total - 1)
 
             elif not key.is_sequence and str(key) in "123456789":
-                idx = int(str(key)) - 1  # 0-based
+                idx = int(str(key)) - 1
                 if idx < total:
                     cursor = idx
                     status_msg = _activate_item(t, ctx, cursor) or ""
-                    if has_super and cursor == kill_idx:
+                    if has_super and cursor in (settings_idx, kill_idx):
                         ctx = ctx.on_refresh()
                         total = _total_items(ctx)
-                        cursor = 0
-                        scroll_offset = 0
+                        if cursor >= total:
+                            cursor = max(0, total - 1)
 
             elif key == "d":
                 confirm_y = t.height - 3
@@ -740,7 +753,7 @@ def run(ctx: TuiContext) -> int:
                         total = _total_items(ctx)
                         if cursor >= total:
                             cursor = max(0, total - 1)
-                elif has_super and other_start <= cursor < kill_idx:
+                elif has_super and other_start <= cursor < settings_idx:
                     si = cursor - other_start
                     session = ctx.other_sessions[si]
                     if _confirm_kill(t, session.name, confirm_y, user=session.user):

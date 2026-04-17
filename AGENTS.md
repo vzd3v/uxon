@@ -12,12 +12,36 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 
 ## Code layout
 
-- `bin/ccw` — CLI entrypoint (single Python file, no deps beyond stdlib).
-- `lib/ccw_tui.py` — interactive TUI (requires `blessed`; imported lazily).
+- `bin/ccw` — CLI entrypoint (stdlib only; wires subcommands and builds
+  the TUI context).
+- `lib/ccw_tui.py` — TUI main loop and main-screen rendering
+  (requires `blessed`; imported lazily).
+- `lib/ccw_tui_widgets.py` — stateless, reusable TUI primitives
+  (`dim`, `text_input`, `confirm_phrase`, `confirm_yn`, `flash_error`).
+  Prefer adding shared widgets here over re-implementing them in a screen.
+- `lib/ccw_tui_settings.py` — superuser settings sub-screens.
+  Knows nothing about file I/O; all side effects go through a
+  `SettingsCallbacks` bundle provided by `bin/ccw`.
+- `lib/ccw_settings.py` — settings schema (the single list of known keys),
+  layer resolution (default / repo / project), minimal TOML writer, and
+  safe repo-file persistence (with `sudo` fallback).
 - `install/` — installer and config renderer.
 - `tests/` — `unittest`, discovered via `python3 -m unittest`.
 - `config/` — host-local, gitignored. Source of truth for a running host.
 - `VERSION` — human-owned release tag.
+
+### Module boundaries
+
+- `bin/ccw` may import from `lib/*`. `lib/*` modules never import from
+  `bin/ccw` — the CLI assembles the pieces, not vice versa.
+- UI files (`lib/ccw_tui*.py`) must not import `subprocess`, `pwd`, or
+  touch the filesystem directly; push those through callbacks in
+  `TuiContext` / `SettingsCallbacks`.
+- `lib/ccw_settings.py` is pure data + TOML I/O. No blessed, no TUI.
+- When adding a new screen/widget, decide first: is it generic
+  (→ `ccw_tui_widgets.py`), domain-specific reusable
+  (→ its own `ccw_tui_<feature>.py` module), or one-off main-screen
+  behavior (→ `ccw_tui.py`).
 
 ## Hard rules
 
@@ -47,8 +71,10 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 ## Local checks (always run before committing)
 
 ```bash
-python3 -m py_compile bin/ccw lib/ccw_tui.py tests/test_ccw.py \
-  tests/test_ccw_tui.py install/install_ccw.py install/render_ccw_config.py
+python3 -m py_compile bin/ccw lib/ccw_tui.py lib/ccw_tui_widgets.py \
+  lib/ccw_tui_settings.py lib/ccw_settings.py \
+  tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
+  install/install_ccw.py install/render_ccw_config.py
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
@@ -57,13 +83,18 @@ add a test for it.
 
 ## Config
 
-- Two layers: repo-level `config/config.toml` (rendered from JSON) and the
-  nearest project-level `.ccw.toml` within an `allowed_roots` entry.
+- Two layers: repo-level `config/config.toml` (rendered from JSON, edited
+  directly or via the TUI Settings screen) and the nearest project-level
+  `.ccw.toml` within an `allowed_roots` entry. The TUI never writes
+  `.ccw.toml`.
 - When adding a config key:
-  1. Extend `DEFAULT_CONFIG` + `Config` + `load_config`.
+  1. Extend `DEFAULT_CONFIG` + `Config` + `load_config` in `bin/ccw`.
   2. Add validation if the value space is constrained.
-  3. Document it in the README config table.
-  4. Add a `load_config` test in `tests/test_ccw.py`.
+  3. Add a matching `SettingSpec` in `lib/ccw_settings.py::SETTINGS_SPECS`
+     so it shows up in the TUI Settings screen.
+  4. Document it in the README config table.
+  5. Add a `load_config` test in `tests/test_ccw.py` and a round-trip test
+     in `tests/test_ccw_settings.py` if the value has non-trivial encoding.
 
 ## Docs
 

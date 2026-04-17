@@ -1328,9 +1328,24 @@ def _to_tui_session(s: SessionInfo, prefix: str) -> object:
     )
 
 
+def _load_settings_sources(cwd: str) -> tuple[dict, dict, "Path | None"]:
+    """Load raw repo + project config data (unmerged) plus the project path.
+
+    Used by the TUI settings screen so it can show each value's origin and
+    write back only to the repo-level file.
+    """
+    repo_cfg = repo_config_path()
+    repo_data = load_toml(repo_cfg)
+    seed_allowed = [canonical(p) for p in repo_data.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
+    proj_cfg = find_project_config(cwd, seed_allowed)
+    proj_data = load_toml(proj_cfg) if proj_cfg else {}
+    return repo_data, proj_data, proj_cfg
+
+
 def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
     """Build a TuiContext from live session data. Lazy-imports ccw_tui."""
     sys.path.insert(0, str(repo_root() / "lib"))
+    import ccw_settings
     import ccw_tui
 
     has_sudo = detect_passwordless_sudo()
@@ -1380,7 +1395,30 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
                 run_cmd(full, check=False)
 
     def on_refresh() -> object:
-        return _build_tui_context(cfg, launch_user, cwd)
+        # Re-read config so settings edits take effect immediately.
+        fresh_cfg = load_config(cwd)
+        return _build_tui_context(fresh_cfg, launch_user, cwd)
+
+    # ── Settings bindings (superuser-only; safe to wire unconditionally) ──
+    def get_settings_entries() -> list:
+        repo_data, proj_data, proj_cfg = _load_settings_sources(cwd)
+        return ccw_settings.resolve_setting_entries(repo_data, proj_data, proj_cfg, DEFAULT_CONFIG)
+
+    def _persist_repo_data(new_repo_data: dict) -> None:
+        content = ccw_settings.render_repo_config_toml(new_repo_data)
+        ccw_settings.write_repo_config_toml(content, repo_config_path())
+
+    def on_setting_save(key: str, value: object) -> None:
+        repo_data, _, _ = _load_settings_sources(cwd)
+        _persist_repo_data(ccw_settings.apply_setting(repo_data, key, value))
+
+    def on_setting_remove(key: str) -> None:
+        repo_data, _, _ = _load_settings_sources(cwd)
+        _persist_repo_data(ccw_settings.remove_setting(repo_data, key))
+
+    def on_setting_save_mapping(key: str, mapping: dict) -> None:
+        repo_data, _, _ = _load_settings_sources(cwd)
+        _persist_repo_data(ccw_settings.replace_mapping(repo_data, key, mapping))
 
     def on_launch_cwd(dsp: bool) -> None:
         args = ParsedArgs(action="run", dsp=dsp, claude_args=[])
@@ -1414,6 +1452,10 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         on_launch_cwd=on_launch_cwd,
         on_launch_new=on_launch_new,
         on_launch_existing=on_launch_existing,
+        get_settings_entries=get_settings_entries,
+        on_setting_save=on_setting_save,
+        on_setting_remove=on_setting_remove,
+        on_setting_save_mapping=on_setting_save_mapping,
     )
 
 

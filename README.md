@@ -101,12 +101,13 @@ Also: `ccw -V`, `ccw --version`.
   3. *Open existing project* — pick an existing directory under
      `new_project_root`.
 - **Sessions list** (your own) with live CPU/RAM, attached marker, and recency.
-- **⚡ Superuser block** (only when passwordless sudo is detected and at
-  least one other configured `session_users` entry has a running session):
-  other users' sessions with a yellow `USER` column — `Enter` attaches via
-  `sudo -iu <user>`, `d` kills the highlighted one. The last line in the
-  block is *Kill ALL ccw sessions (all users)*, which requires typing
-  `kill-all-global` to confirm.
+- **⚡ Superuser block** (whenever passwordless sudo is detected):
+  - Other users' sessions with a yellow `USER` column (if any exist).
+    `Enter` attaches via `sudo -iu <user>`, `d` kills the highlighted one.
+  - *⚙ Settings* — opens a repo-level `config.toml` editor (see
+    [Superuser mode](#superuser-mode-tui)).
+  - *Kill ALL ccw sessions (all users)* — appears when at least one session
+    exists anywhere; requires typing `kill-all-global` to confirm.
 - **Permissions prompt** before every launch: choose between regular and
   `--dangerously-skip-permissions`.
 
@@ -205,15 +206,27 @@ passwordless sudo:
 
 On True, the TUI gains a ⚡ superuser marker in the header/footer and
 collects sessions for every user in `session_users` (other than the current
-launch user). If any exist, they are shown in a dedicated *── superuser ──*
-block at the bottom with a highlighted `USER` column. All per-session
-actions (`Enter`, `d`) work on them the same way, routed through
-`sudo -iu <user>` transparently.
+launch user). The *── superuser ──* block at the bottom contains, in order:
 
-A final *Kill ALL ccw sessions (all users)* item in the superuser block
-tears down every `cc-*` session across all configured users at once.
-Confirmation phrase: `kill-all-global` (distinct from the regular
-`kill-all` phrase for `D`).
+1. **Other users' sessions** (if any), with a highlighted yellow `USER`
+   column. `Enter`, `d`, and other per-session actions work the same as for
+   your own — they are transparently routed through `sudo -iu <user>`.
+2. **⚙ Settings** — a sub-screen listing every `config.toml` key, its
+   current value, and its origin (`default` / `repo` / `project:<path>`):
+   - `Enter` opens a type-appropriate editor: bools toggle, enums cycle,
+     strings get a text input, arrays use comma-separated input,
+     `launch_user_by_caller` opens a dedicated mapping editor
+     (`a` add / `d` delete / `Enter` edit / `s` save).
+   - `x` reverts a repo-level override back to the built-in default.
+   - Values that come from a project-level `.ccw.toml` are read-only and
+     clearly marked — edit them in the project instead.
+   - Saves rewrite `config/config.toml` (using `sudo` automatically when
+     the file is not directly writable). **Comments in `config.toml` are
+     lost on save** — that is the intentional tradeoff for a stdlib-only
+     writer.
+3. **Kill ALL ccw sessions (all users)** — last item, only when at least
+   one session exists. Confirmation phrase: `kill-all-global` (distinct
+   from the regular `kill-all` phrase for `D`).
 
 When passwordless sudo is not available, nothing superuser-related is
 shown — the TUI behaves exactly as before.
@@ -266,9 +279,14 @@ Use it first whenever behavior is unexpected.
 
 Two layers, merged in order (later wins):
 
-1. **Repo config**: `/srv/apps/vz_devagent_cli_tool/config/config.toml`
+1. **Repo config**: `/srv/apps/vz_devagent_cli_tool/config/config.toml` —
+   host-wide `ccw` settings, usually owned by an admin user. Edited
+   directly or via the [superuser Settings screen](#superuser-mode-tui)
+   in the TUI.
 2. **Project config**: the nearest `.ccw.toml` in the cwd or a parent,
-   provided that parent is inside an `allowed_roots` entry.
+   provided that parent is inside an `allowed_roots` entry. Used to
+   override individual keys for a specific project/repo; ships with the
+   project source. The TUI never writes `.ccw.toml`.
 
 ### Keys
 
@@ -333,22 +351,28 @@ cat /srv/apps/vz_devagent_cli_tool/VERSION
 
 ## Repo structure
 
-- `bin/ccw` — CLI entrypoint
-- `lib/ccw_tui.py` — interactive TUI (blessed)
-- `install/install_ccw.py` — installs `/usr/local/bin/ccw` symlink
-- `install/render_ccw_config.py` — renders `config.toml` from JSON
-- `tests/` — unit tests
-- `examples/ccw-config.json` — example config-rendering payload
-- `config/` — host config dir (gitignored)
-- `VERSION` — release version
+- `bin/ccw` — CLI entrypoint (stdlib-only; thin wrapper around `lib/`).
+- `lib/ccw_tui.py` — interactive TUI main loop + main-screen rendering.
+- `lib/ccw_tui_widgets.py` — reusable TUI primitives (`dim`,
+  `confirm_phrase`, `confirm_yn`, `text_input`, `flash_error`).
+- `lib/ccw_tui_settings.py` — superuser *⚙ Settings* sub-screens.
+- `lib/ccw_settings.py` — settings schema + repo-level TOML read/write.
+- `install/install_ccw.py` — installs `/usr/local/bin/ccw` symlink.
+- `install/render_ccw_config.py` — renders `config.toml` from JSON.
+- `tests/` — unit tests.
+- `examples/ccw-config.json` — example config-rendering payload.
+- `config/` — host config dir (gitignored).
+- `VERSION` — release version.
 
 ---
 
 ## Local checks
 
 ```bash
-python3 -m py_compile bin/ccw lib/ccw_tui.py tests/test_ccw.py \
-  tests/test_ccw_tui.py install/install_ccw.py install/render_ccw_config.py
+python3 -m py_compile bin/ccw lib/ccw_tui.py lib/ccw_tui_widgets.py \
+  lib/ccw_tui_settings.py lib/ccw_settings.py \
+  tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
+  install/install_ccw.py install/render_ccw_config.py
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
