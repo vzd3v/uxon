@@ -1803,20 +1803,11 @@ def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
 
 
-def _plan_tui_new(
-    cfg: Config,
-    launch_user: str,
-    name: str,
-    dsp: bool,
-    git_profile: str,
-):
-    """Build a LaunchRequest for the TUI "Create new project" /
-    "Open existing project" flows.
+def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
+    """Shared validation + directory creation for both TUI project flows.
 
-    Mirrors :func:`do_new` minus the terminal handoff: creates the project
-    directory (if missing), optionally creates the git remote, and — when
-    a compatible session already exists — forces ``attach`` semantics
-    (the TUI cannot safely prompt via stdin inside a blessed context).
+    Returns the canonical absolute path; raises via ``fail()`` if ``name``
+    is malformed or the resulting path is not under ``allowed_roots``.
     """
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
@@ -1824,11 +1815,53 @@ def _plan_tui_new(
     allowed = any(is_under(project_dir, base) for base in cfg.allowed_roots)
     if not allowed:
         fail(f"new target must be under allowed_roots; got: {project_dir}")
-    target_dir = project_dir
-    run_cmd(command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
-    session_stem = session_stem_for_path(target_dir)
-    compatibility_root = target_dir
+    run_cmd(command_prefix_for_user(launch_user) + ["mkdir", "-p", project_dir])
+    return project_dir
 
+
+def _plan_tui_existing_session_or_launch(
+    cfg: Config,
+    launch_user: str,
+    project_dir: str,
+    name: str,
+    args: "ParsedArgs",
+):
+    """Resolve to either an attach request (compatible session exists) or
+    a fresh tmux launch request. Shared tail of both TUI project flows.
+    """
+    session_stem = session_stem_for_path(project_dir)
+    compatibility_root = project_dir
+    sessions = collect_sessions([launch_user], cfg)
+    existing = compatible_indexed_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    if existing:
+        attach_target = choose_attach_session(existing, cfg.session_prefix, session_stem)
+        return _build_tmux_attach_request(attach_target, cfg, launch_user)
+
+    repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
+    session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    return _build_tmux_launch_request(project_dir, session, args, cfg, None, launch_user)
+
+
+def _plan_tui_create_new(
+    cfg: Config,
+    launch_user: str,
+    name: str,
+    dsp: bool,
+    git_profile: str,
+):
+    """Build a LaunchRequest for the TUI "Create new project" flow.
+
+    Mirrors :func:`do_new` minus the terminal handoff: creates the project
+    directory (if missing), optionally creates the git remote, and — when
+    a compatible session already exists — forces ``attach`` semantics
+    (the TUI cannot safely prompt via stdin inside a blessed context).
+
+    ``git_profile`` is the (possibly empty) name of a `[[git_remote_profiles]]`
+    entry. When set, this function calls :func:`_do_create_git_remote`.
+    The "Open existing project" flow must never call this function — see
+    :func:`_plan_tui_open_existing`.
+    """
+    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
     args = ParsedArgs(
         action="new",
         target_id=name,
@@ -1839,16 +1872,34 @@ def _plan_tui_new(
     )
     if args.git_remote:
         _do_create_git_remote(args, cfg, launch_user, project_dir, name, None)
+    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
 
-    sessions = collect_sessions([launch_user], cfg)
-    existing = compatible_indexed_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
-    if existing:
-        attach_target = choose_attach_session(existing, cfg.session_prefix, session_stem)
-        return _build_tmux_attach_request(attach_target, cfg, launch_user)
 
-    repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
-    session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
-    return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
+def _plan_tui_open_existing(
+    cfg: Config,
+    launch_user: str,
+    name: str,
+    dsp: bool,
+):
+    """Build a LaunchRequest for the TUI "Open existing project" flow.
+
+    By construction this function has **no** git_profile parameter and
+    never calls :func:`_do_create_git_remote`. That is an enforced
+    invariant: opening an existing project must not have any git side
+    effect, regardless of `git_create_enabled` or profile configuration.
+    A static AST check in tests/test_ccw_tui.py verifies that
+    ``_do_create_git_remote`` is not referenced from this function.
+    """
+    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
+    args = ParsedArgs(
+        action="new",
+        target_id=name,
+        dsp=dsp,
+        claude_args=[],
+        git_remote=None,  # Locked: open-existing never creates a git remote.
+        repeat_mode="attach",
+    )
+    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
 
 
 def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
@@ -1940,10 +1991,10 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         return _plan_tui_run(cfg, launch_user, cwd, dsp)
 
     def on_launch_new(name: str, dsp: bool, git_profile: str):
-        return _plan_tui_new(cfg, launch_user, name, dsp, git_profile)
+        return _plan_tui_create_new(cfg, launch_user, name, dsp, git_profile)
 
     def on_launch_existing(name: str, dsp: bool):
-        return _plan_tui_new(cfg, launch_user, name, dsp, "")
+        return _plan_tui_open_existing(cfg, launch_user, name, dsp)
 
     git_profile_options = [
         (

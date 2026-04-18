@@ -769,7 +769,7 @@ class CcwTests(unittest.TestCase):
         self.assertIn("cc-demo", req.cmd)
         execvp.assert_not_called()
 
-    def test_plan_tui_new_forces_attach_when_existing_session(self) -> None:
+    def test_plan_tui_create_new_forces_attach_when_existing_session(self) -> None:
         cfg = self.make_config(allowed_roots=["/srv/repos"], new_project_root="/srv/repos")
         existing = [self.make_session("cc-demo", "/srv/repos/demo")]
         with self._stub_socket_path():
@@ -777,11 +777,26 @@ class CcwTests(unittest.TestCase):
                 with mock.patch.object(ccw, "run_cmd"):
                     with mock.patch.object(ccw, "collect_sessions", return_value=existing):
                         with mock.patch.object(ccw.os, "execvp") as execvp:
-                            req = ccw._plan_tui_new(cfg, "u-vz", "demo", dsp=False, git_profile="")
+                            req = ccw._plan_tui_create_new(cfg, "u-vz", "demo", dsp=False, git_profile="")
         # Existing session → attach request, not launch
         self.assertIn("attach-session", req.cmd)
         self.assertIn("cc-demo", req.cmd)
         execvp.assert_not_called()
+
+    def test_plan_tui_open_existing_forces_attach_when_existing_session(self) -> None:
+        """Open-existing uses the same attach-on-compatible-session path as
+        create-new, minus any git side effects."""
+        cfg = self.make_config(allowed_roots=["/srv/repos"], new_project_root="/srv/repos")
+        existing = [self.make_session("cc-demo", "/srv/repos/demo")]
+        with self._stub_socket_path():
+            with mock.patch.object(ccw, "canonical", side_effect=lambda v: str(v)):
+                with mock.patch.object(ccw, "run_cmd"):
+                    with mock.patch.object(ccw, "collect_sessions", return_value=existing):
+                        with mock.patch.object(ccw, "_do_create_git_remote") as git_create:
+                            req = ccw._plan_tui_open_existing(cfg, "u-vz", "demo", dsp=False)
+        self.assertIn("attach-session", req.cmd)
+        self.assertIn("cc-demo", req.cmd)
+        git_create.assert_not_called()
 
     def test_find_project_config_ignores_permission_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,4 +1,6 @@
+import ast
 import importlib.util
+import inspect
 import sys
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -615,6 +617,45 @@ class DrainStdinTests(unittest.TestCase):
         t.cbreak = broken_cbreak  # type: ignore[attr-defined]
         # Must not raise.
         self.assertEqual(ccw_tui._drain_stdin(t), 0)
+
+
+class PlanTuiOpenExistingTests(unittest.TestCase):
+    """PR 5 invariant: the TUI "Open existing project" planner is
+    structurally incapable of calling git-creation code. Verified by AST
+    inspection of the function source — _do_create_git_remote must not
+    appear as a name anywhere in the function body.
+    """
+
+    def test_plan_tui_open_existing_exists(self) -> None:
+        self.assertTrue(hasattr(ccw, "_plan_tui_open_existing"))
+
+    def test_plan_tui_open_existing_has_no_git_profile_param(self) -> None:
+        sig = inspect.signature(ccw._plan_tui_open_existing)
+        self.assertNotIn("git_profile", sig.parameters)
+        # Positive: it *does* take the four documented params.
+        self.assertEqual(
+            list(sig.parameters),
+            ["cfg", "launch_user", "name", "dsp"],
+        )
+
+    def test_plan_tui_open_existing_does_not_reference_git_create(self) -> None:
+        src = inspect.getsource(ccw._plan_tui_open_existing)
+        tree = ast.parse(src)
+        names = {
+            n.id for n in ast.walk(tree)
+            if isinstance(n, ast.Name)
+        }
+        attrs = {
+            n.attr for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute)
+        }
+        self.assertNotIn("_do_create_git_remote", names, "Open-existing must not reference _do_create_git_remote")
+        self.assertNotIn("_do_create_git_remote", attrs)
+
+    def test_plan_tui_create_new_still_can_create_git(self) -> None:
+        """Positive control: the create-new planner keeps its git branch."""
+        src = inspect.getsource(ccw._plan_tui_create_new)
+        self.assertIn("_do_create_git_remote", src)
 
 
 class DigitHintedIndicesTests(unittest.TestCase):
