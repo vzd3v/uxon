@@ -619,6 +619,90 @@ class DrainStdinTests(unittest.TestCase):
         self.assertEqual(ccw_tui._drain_stdin(t), 0)
 
 
+class LogEventTests(unittest.TestCase):
+    """PR 7 invariant: `_log_event` writes JSONL to
+    `/srv/work/logs/ccw/tui-{user}-YYYYMMDD.log`, silently on failure,
+    and never crashes the caller.
+    """
+
+    def _tmp_log_dir(self):
+        import tempfile
+        return tempfile.mkdtemp(prefix="ccw_log_test_")
+
+    def test_log_event_writes_jsonl_line(self) -> None:
+        import json
+        import os as _os
+        import shutil
+        from pathlib import Path
+
+        d = self._tmp_log_dir()
+        try:
+            with mock.patch.dict(_os.environ, {"CCW_LOG_DIR": d}):
+                ccw_tui._log_event(
+                    "tui_start",
+                    caller_user="u-den",
+                    launch_user="u-vz",
+                    screen=ccw_tui.Screen.MAIN,
+                    extra={"version": "ccw 0.11.0"},
+                )
+            files = list(Path(d).iterdir())
+            self.assertEqual(len(files), 1)
+            content = files[0].read_text().strip()
+            self.assertTrue(content)
+            record = json.loads(content)
+            self.assertEqual(record["event"], "tui_start")
+            self.assertEqual(record["caller_user"], "u-den")
+            self.assertEqual(record["launch_user"], "u-vz")
+            self.assertEqual(record["screen"], "main")
+            self.assertIn("ts", record)
+            self.assertEqual(record["extra"]["version"], "ccw 0.11.0")
+            # Filename should encode the launch_user and a date.
+            self.assertIn("tui-u-vz-", files[0].name)
+            self.assertTrue(files[0].name.endswith(".log"))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_log_event_appends_multiple_records(self) -> None:
+        import os as _os
+        import shutil
+        from pathlib import Path
+
+        d = self._tmp_log_dir()
+        try:
+            with mock.patch.dict(_os.environ, {"CCW_LOG_DIR": d}):
+                ccw_tui._log_event("tui_start", launch_user="u-vz")
+                ccw_tui._log_event("launch", launch_user="u-vz", outcome="rc=0")
+                ccw_tui._log_event("tui_quit", launch_user="u-vz", outcome="rc=0")
+            files = list(Path(d).iterdir())
+            self.assertEqual(len(files), 1)
+            lines = files[0].read_text().strip().splitlines()
+            self.assertEqual(len(lines), 3)
+
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_log_event_swallows_errors(self) -> None:
+        """Writing to an unwritable location must not raise."""
+        import os as _os
+        with mock.patch.dict(_os.environ, {"CCW_LOG_DIR": "/proc/nonexistent/cannot_create"}):
+            # Must not raise — logging is best-effort.
+            ccw_tui._log_event("tui_start", launch_user="u-vz")
+
+    def test_log_event_creates_directory(self) -> None:
+        import os as _os
+        import shutil
+        import tempfile
+
+        base = tempfile.mkdtemp(prefix="ccw_log_parent_")
+        nested = _os.path.join(base, "a", "b", "c")
+        try:
+            with mock.patch.dict(_os.environ, {"CCW_LOG_DIR": nested}):
+                ccw_tui._log_event("tui_start", launch_user="u-vz")
+            self.assertTrue(_os.path.isdir(nested))
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+
 class KeymapRegistryTests(unittest.TestCase):
     """PR 6 invariant: every key binding handled at runtime by any TUI
     screen is declared in :data:`ccw_tui.SCREEN_KEYMAP`. This is the
