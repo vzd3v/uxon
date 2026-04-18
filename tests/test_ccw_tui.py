@@ -619,6 +619,86 @@ class DrainStdinTests(unittest.TestCase):
         self.assertEqual(ccw_tui._drain_stdin(t), 0)
 
 
+class BuildItemsTests(unittest.TestCase):
+    """PR 9 invariant: item identity (kind + label) is stable under
+    session-count changes. The cursor used to point at "Open existing
+    project" via integer index 2; now it points at an Item whose
+    kind == "action-open" regardless of how many sessions are between
+    it and Settings. This kills the aliasing class of bug where a
+    new session appearing would shift what integer cursor=N means.
+    """
+
+    def test_actions_always_first_three_items(self) -> None:
+        ctx = _make_ctx()
+        items = ccw_tui.build_items(ctx)
+        self.assertGreaterEqual(len(items), 3)
+        self.assertEqual(items[0].kind, "action-cwd")
+        self.assertEqual(items[1].kind, "action-new")
+        self.assertEqual(items[2].kind, "action-open")
+
+    def test_action_items_have_digit_hints_1_through_3(self) -> None:
+        items = ccw_tui.build_items(_make_ctx())
+        self.assertEqual(items[0].digit_hint, 1)
+        self.assertEqual(items[1].digit_hint, 2)
+        self.assertEqual(items[2].digit_hint, 3)
+
+    def test_settings_item_has_no_digit_hint(self) -> None:
+        """PR 2 invariant, now expressed at the Item level: Settings is
+        never digit-reachable regardless of ctx shape."""
+        shapes = [
+            _make_ctx(has_sudo=True),
+            _make_ctx(has_sudo=True, sessions=[_make_session("a")]),
+            _make_ctx(has_sudo=True, other_sessions=[_make_session("x", user="alice")]),
+        ]
+        for ctx in shapes:
+            items = ccw_tui.build_items(ctx)
+            settings_items = [it for it in items if it.kind == "settings"]
+            self.assertEqual(len(settings_items), 1)
+            self.assertIsNone(settings_items[0].digit_hint)
+
+    def test_kill_all_item_has_no_digit_hint(self) -> None:
+        ctx = _make_ctx(has_sudo=True, sessions=[_make_session("a")])
+        items = ccw_tui.build_items(ctx)
+        killers = [it for it in items if it.kind == "kill-all-global"]
+        self.assertEqual(len(killers), 1)
+        self.assertIsNone(killers[0].digit_hint)
+
+    def test_action_open_identity_stable_under_session_change(self) -> None:
+        """Add a session; the 'action-open' Item must still exist with the
+        same kind + label. This is the target invariant of PR 9."""
+        ctx_empty = _make_ctx()
+        ctx_with_session = _make_ctx(sessions=[_make_session("demo")])
+        items_empty = ccw_tui.build_items(ctx_empty)
+        items_with = ccw_tui.build_items(ctx_with_session)
+
+        open_empty = next(it for it in items_empty if it.kind == "action-open")
+        open_with = next(it for it in items_with if it.kind == "action-open")
+        self.assertEqual(open_empty.kind, open_with.kind)
+        self.assertEqual(open_empty.label, open_with.label)
+
+    def test_build_items_length_matches_total_items(self) -> None:
+        """Bridge-test: the new typed list aligns with the old _total_items()
+        so legacy integer-cursor code continues to work during the
+        migration."""
+        for shape, ctx in [
+            ("empty", _make_ctx()),
+            ("own sessions", _make_ctx(sessions=[_make_session("a"), _make_session("b")])),
+            ("sudo empty", _make_ctx(has_sudo=True)),
+            ("sudo + sessions", _make_ctx(
+                has_sudo=True,
+                sessions=[_make_session("a")],
+                other_sessions=[_make_session("b", user="alice")],
+            )),
+        ]:
+            with self.subTest(shape=shape):
+                self.assertEqual(len(ccw_tui.build_items(ctx)), ccw_tui._total_items(ctx))
+
+    def test_action_count_derived_from_action_kinds(self) -> None:
+        """`ACTION_COUNT` must equal len(_ACTION_KINDS); if a kind is added,
+        the constant follows automatically."""
+        self.assertEqual(ccw_tui.ACTION_COUNT, len(ccw_tui._ACTION_KINDS))
+
+
 class LogEventTests(unittest.TestCase):
     """PR 7 invariant: `_log_event` writes JSONL to
     `/srv/work/logs/ccw/tui-{user}-YYYYMMDD.log`, silently on failure,

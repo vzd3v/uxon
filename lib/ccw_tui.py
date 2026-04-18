@@ -243,8 +243,119 @@ class TuiContext:
     get_git_remote_profile_rows: Callable[[], list] = lambda: []
 
 
-# Number of action items at the top of the main list
-ACTION_COUNT = 3
+# Number of action items at the top of the main list.
+#
+# Historically a loose module-level constant; as of PR 9 (2026-04-18)
+# this is derived from :data:`_ACTION_KINDS` which is itself the
+# canonical description of "what are the action rows". Keep
+# ``ACTION_COUNT`` for backward compatibility with tests and for
+# readability in segment arithmetic; new code should use
+# :func:`build_items` / item.kind dispatch instead of raw indices.
+_ACTION_KINDS: tuple[str, ...] = ("action-cwd", "action-new", "action-open")
+ACTION_COUNT = len(_ACTION_KINDS)
+
+
+@dataclass(frozen=True)
+class Item:
+    """One row on the main TUI screen, described by identity rather than index.
+
+    ``kind`` names the semantic role of the row. ``digit_hint`` is the
+    digit that would activate it on keypress, or None if the row cannot
+    be reached by a digit jump (Settings, Kill-ALL).
+
+    This is the type-safe replacement for the integer-cursor scheme.
+    Activation should dispatch on ``kind``, not on the position of the
+    row inside the flat list — session-count changes shift every index
+    below the new/removed session, but ``kind`` is stable.
+
+    The current :func:`_activate_item` still takes an integer ``index``
+    for backward compatibility with test fixtures. New code should
+    prefer looking up the item via :func:`build_items` and dispatching
+    on ``item.kind``.
+    """
+
+    kind: str  # one of: action-cwd, action-new, action-open,
+    #                    own-session, other-session,
+    #                    settings, kill-all-global
+    label: str
+    enabled: bool = True
+    # Payloads (only one is populated per kind):
+    session: "TuiSession | None" = None
+    digit_hint: "int | None" = None  # 1..9, or None if not digit-reachable
+
+
+def build_items(ctx: "TuiContext") -> list[Item]:
+    """Materialise the main-screen row list as a typed list of :class:`Item`.
+
+    The returned list is the source of truth for what's on the main
+    screen. Its order is the same order the current renderer uses, so
+    integer indices computed by :func:`_segments` align 1:1 with
+    positions in this list.
+
+    Invariant: item identity (kind + label) is stable under session
+    count changes for the action rows and for Settings / Kill-ALL;
+    session rows have identity "own-session:<name>" / "other-session:
+    <user>/<name>" so their position shifts but the item that used to
+    be "Open existing project" remains the same Item.
+    """
+    items: list[Item] = []
+    # Actions (indices 0..ACTION_COUNT-1). Digit hints are 1..3.
+    items.append(Item(
+        kind="action-cwd",
+        label="New session in current folder",
+        enabled=ctx.cwd_allowed,
+        digit_hint=1,
+    ))
+    items.append(Item(
+        kind="action-new",
+        label="Create new project",
+        enabled=True,
+        digit_hint=2,
+    ))
+    items.append(Item(
+        kind="action-open",
+        label="Open existing project",
+        enabled=bool(ctx.existing_projects),
+        digit_hint=3,
+    ))
+    # Own sessions
+    for i, s in enumerate(ctx.sessions):
+        pos = ACTION_COUNT + i  # 0-based position in the final list
+        hint = pos + 1 if 1 <= pos + 1 <= 9 else None
+        items.append(Item(
+            kind="own-session",
+            label=s.short,
+            enabled=True,
+            session=s,
+            digit_hint=hint,
+        ))
+    # Superuser block: other-user sessions, settings, kill-all-global.
+    if ctx.has_sudo:
+        for i, s in enumerate(ctx.other_sessions):
+            pos = ACTION_COUNT + len(ctx.sessions) + i
+            hint = pos + 1 if 1 <= pos + 1 <= 9 else None
+            items.append(Item(
+                kind="other-session",
+                label=f"{s.user}/{s.short}",
+                enabled=True,
+                session=s,
+                digit_hint=hint,
+            ))
+        # Settings: no digit_hint — PR 2 invariant.
+        items.append(Item(
+            kind="settings",
+            label="⚙ Settings",
+            enabled=True,
+        ))
+        total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
+        if total_sessions > 0:
+            # Kill-ALL: no digit_hint — PR 2 invariant.
+            items.append(Item(
+                kind="kill-all-global",
+                label=f"⚡ Kill ALL ({total_sessions})",
+                enabled=True,
+            ))
+    return items
 
 
 def _dim(t: "Terminal", text: str) -> str:
