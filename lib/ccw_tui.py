@@ -936,7 +936,10 @@ def _interactive_loop(
 
         elif not key.is_sequence and str(key) in "123456789":
             idx = int(str(key)) - 1
-            if idx < total:
+            # Digit jumps move the cursor but never auto-activate Settings or
+            # Kill-ALL — stray keystrokes must not open destructive/surprising
+            # screens. Enter on the item still works for deliberate access.
+            if idx < total and not (has_super and idx in (settings_idx, kill_idx)):
                 cursor = idx
                 try:
                     msg, req = _activate_item(t, ctx, cursor)
@@ -953,6 +956,11 @@ def _interactive_loop(
                     total = _total_items(ctx)
                     if cursor >= total:
                         cursor = max(0, total - 1)
+            elif idx < total and has_super and idx in (settings_idx, kill_idx):
+                cursor = idx
+                status_msg = _dim(
+                    t, "Press Enter to open Settings / Kill-ALL (digit moves cursor only)"
+                )
 
         elif key == "d":
             confirm_y = t.height - 3

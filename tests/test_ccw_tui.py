@@ -466,5 +466,73 @@ class LaunchRequestTests(unittest.TestCase):
         self.assertEqual(req.cmd, ("true",))
 
 
+class SettingsScreenKeymapTests(unittest.TestCase):
+    """Regression tests for the Settings screen keymap.
+
+    Background: the old Settings screen had a hidden `g` shortcut that
+    opened the read-only git-remotes sub-screen. Combined with the empty
+    superuser-state digit-jump landing users on Settings, `u-den`
+    regularly ended up staring at "Git remote profiles (no profiles
+    configured)" after an unrelated flow. The shortcut is gone; these
+    tests lock that in.
+    """
+
+    def test_settings_g_key_is_noop_does_not_open_git_remotes(self) -> None:
+        import ccw_tui_settings
+
+        t = _FakeTerm()
+        # inkey yields "g" first, then "q" to exit.
+        keys = iter(["g", "q"])
+
+        class _K(str):
+            @property
+            def name(self) -> str:
+                return ""
+
+            @property
+            def is_sequence(self) -> bool:
+                return False
+
+        def fake_inkey(timeout=None):
+            return _K(next(keys))
+
+        t.inkey = fake_inkey  # type: ignore[attr-defined]
+
+        cbs = ccw_tui_settings.SettingsCallbacks(
+            get_entries=lambda: [],  # empty list returns early
+            save_setting=_noop,
+            remove_setting=_noop,
+            save_mapping=_noop,
+            get_git_remote_profile_rows=lambda: [],
+        )
+        with mock.patch.object(ccw_tui_settings, "_show_git_remotes") as show:
+            ccw_tui_settings.show_settings(t, cbs)
+        show.assert_not_called()
+
+
+class DigitJumpGuardTests(unittest.TestCase):
+    """Digit 1–9 must move the cursor but never *auto-activate* Settings
+    or Kill-ALL. This prevents stray-keystroke disasters when the
+    superuser block is empty and `settings_idx == ACTION_COUNT == 3`.
+    """
+
+    def test_settings_idx_collapses_to_action_count_for_empty_superuser(self) -> None:
+        ctx = _make_ctx(has_sudo=True)  # zero own + zero other sessions
+        _own_start, _other_start, settings_idx, kill_idx, has_super = ccw_tui._segments(ctx)
+        self.assertTrue(has_super)
+        self.assertEqual(settings_idx, ccw_tui.ACTION_COUNT)
+        # No sessions → no global Kill-ALL row.
+        self.assertEqual(kill_idx, -1)
+
+    def test_activate_settings_via_enter_still_opens_it(self) -> None:
+        """Deliberate activation (Enter on the Settings row) is unchanged."""
+        ctx = _make_ctx(has_sudo=True)
+        t = _FakeTerm()
+        with mock.patch("ccw_tui_settings.show_settings") as show:
+            msg, req = ccw_tui._activate_item(t, ctx, ccw_tui.ACTION_COUNT)
+        show.assert_called_once()
+        self.assertIsNone(req)
+
+
 if __name__ == "__main__":
     unittest.main()

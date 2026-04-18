@@ -132,7 +132,7 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
             print(
                 dim(
                     t,
-                    "  ↑↓ nav · Enter edit · x reset · g git remotes · Esc back",
+                    "  ↑↓ nav · Enter edit · x reset · Esc back",
                 ),
                 end="",
             )
@@ -140,15 +140,11 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
         key = t.inkey(timeout=None)
         if key.name == "KEY_ESCAPE" or key == "q":
             return
-        if key == "g":
-            if cbs.get_git_remote_profile_rows is not None:
-                _show_git_remotes(t, cbs.get_git_remote_profile_rows())
-                continue
         if key.name == "KEY_UP" or key == "k":
             cursor = max(0, cursor - 1)
         elif key.name == "KEY_DOWN" or key == "j":
             cursor = min(len(entries) - 1, cursor + 1)
-        elif key.name == "KEY_HOME" or key == "g":
+        elif key.name == "KEY_HOME":
             cursor = 0
         elif key.name == "KEY_END" or key == "G":
             cursor = len(entries) - 1
