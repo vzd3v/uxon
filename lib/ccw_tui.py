@@ -858,6 +858,33 @@ def _format_launch_status(t: "Terminal", req: "LaunchRequest", rc: int, stage: s
     return t.yellow(f"{label}: exited rc={rc}")
 
 
+def _drain_stdin(t: "Terminal", max_keys: int = 64) -> int:
+    """Read-and-discard any buffered keystrokes on the TTY.
+
+    Called after a launch round-trip returns and before the TUI re-enters
+    fullscreen. blessed's ``t.cbreak()`` does not flush pending bytes on
+    entry, so keys typed while tmux was running (or during the split
+    second after ``_pause_on_launch_failure``) would otherwise be
+    consumed by the next screen's ``t.inkey()`` — re-animating a stale
+    cursor. Bounded at ``max_keys`` to dodge a pathological "stdin is a
+    pipe of infinite bytes" scenario.
+
+    Returns the number of keys drained (for testability / logging).
+    """
+    drained = 0
+    try:
+        with t.cbreak():
+            while drained < max_keys:
+                key = t.inkey(timeout=0)
+                if not key:
+                    break
+                drained += 1
+    except Exception:
+        # Drain is best-effort. A broken tty must not crash the TUI.
+        return drained
+    return drained
+
+
 def _pause_on_launch_failure(
     t: "Terminal", req: "LaunchRequest", rc: int, stage: str
 ) -> None:
@@ -1083,6 +1110,11 @@ def run(ctx: TuiContext) -> int:
             rc, stage = _run_launch_request(req)
             status_msg = _format_launch_status(t, req, rc, stage)
             _pause_on_launch_failure(t, req, rc, stage)
+            # Flush any keys the user typed while tmux was attached or
+            # during the post-launch pause. Without this drain, a
+            # fast-exit launch (rc=0, <1s) could hand buffered bytes to
+            # the main screen's inkey() and surprise-activate an item.
+            _drain_stdin(t)
             try:
                 ctx = ctx.on_refresh()
             except CallbackError as exc:

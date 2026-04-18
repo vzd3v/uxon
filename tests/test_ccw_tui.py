@@ -534,6 +534,60 @@ class DigitJumpGuardTests(unittest.TestCase):
         self.assertIsNone(req)
 
 
+class DrainStdinTests(unittest.TestCase):
+    """`_drain_stdin` must consume buffered keystrokes between a launch
+    round-trip and the next screen's inkey(). This kills Candidate 2 of
+    the 2026-04-18 bug review: keys typed while the TUI is suspended
+    cannot re-animate a stale cursor after fullscreen re-entry.
+    """
+
+    def _make_draining_term(self, buffered_keys: list[str]) -> "_FakeTerm":
+        t = _FakeTerm()
+        queue = list(buffered_keys)
+
+        class _NullCM:
+            def __enter__(self_inner): return self_inner
+            def __exit__(self_inner, *exc): return False
+
+        def fake_inkey(timeout=None):
+            # timeout=0: non-blocking poll. Return "" when empty.
+            if queue:
+                return queue.pop(0)
+            return ""
+
+        t.cbreak = lambda: _NullCM()  # type: ignore[attr-defined]
+        t.inkey = fake_inkey  # type: ignore[attr-defined]
+        t._queue = queue  # type: ignore[attr-defined]
+        return t
+
+    def test_drain_empties_the_queue(self) -> None:
+        t = self._make_draining_term(["a", "b", "c"])
+        drained = ccw_tui._drain_stdin(t)
+        self.assertEqual(drained, 3)
+        self.assertEqual(t._queue, [])  # type: ignore[attr-defined]
+
+    def test_drain_empty_queue_is_zero(self) -> None:
+        t = self._make_draining_term([])
+        self.assertEqual(ccw_tui._drain_stdin(t), 0)
+
+    def test_drain_is_bounded(self) -> None:
+        """Bounded so a pathological fake/real tty cannot wedge the TUI."""
+        t = self._make_draining_term(["x"] * 500)
+        drained = ccw_tui._drain_stdin(t, max_keys=10)
+        self.assertEqual(drained, 10)
+
+    def test_drain_swallows_exceptions(self) -> None:
+        """If the tty is broken, drain returns quietly instead of bubbling."""
+        t = _FakeTerm()
+
+        def broken_cbreak():
+            raise OSError("tty gone")
+
+        t.cbreak = broken_cbreak  # type: ignore[attr-defined]
+        # Must not raise.
+        self.assertEqual(ccw_tui._drain_stdin(t), 0)
+
+
 class DigitHintedIndicesTests(unittest.TestCase):
     """`_digit_hinted_indices(ctx)` is the single source of truth for which
     item indices a digit keypress may activate. It must never include
