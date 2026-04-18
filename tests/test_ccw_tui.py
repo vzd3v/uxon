@@ -534,5 +534,60 @@ class DigitJumpGuardTests(unittest.TestCase):
         self.assertIsNone(req)
 
 
+class DigitHintedIndicesTests(unittest.TestCase):
+    """`_digit_hinted_indices(ctx)` is the single source of truth for which
+    item indices a digit keypress may activate. It must never include
+    Settings or Kill-ALL in any context shape — that is the invariant
+    locking in PR 2 of the 2026-04-18 structural refactor.
+    """
+
+    def _all_shapes(self):
+        return [
+            ("no-sudo empty", _make_ctx()),
+            ("no-sudo with sessions", _make_ctx(sessions=[_make_session("a"), _make_session("b")])),
+            ("sudo empty", _make_ctx(has_sudo=True)),
+            ("sudo only own", _make_ctx(sessions=[_make_session("a")], has_sudo=True)),
+            (
+                "sudo own+other",
+                _make_ctx(
+                    sessions=[_make_session("a")],
+                    other_sessions=[_make_session("b", user="alice")],
+                    has_sudo=True,
+                ),
+            ),
+        ]
+
+    def test_digit_allowed_excludes_settings_and_kill(self) -> None:
+        for label, ctx in self._all_shapes():
+            allowed = ccw_tui._digit_hinted_indices(ctx)
+            _, _, settings_idx, kill_idx, has_super = ccw_tui._segments(ctx)
+            if has_super:
+                self.assertNotIn(settings_idx, allowed, f"{label}: settings leaked into digit allow-list")
+                if kill_idx >= 0:
+                    self.assertNotIn(kill_idx, allowed, f"{label}: kill-all leaked into digit allow-list")
+
+    def test_digit_allowed_is_subset_of_valid_items(self) -> None:
+        for label, ctx in self._all_shapes():
+            allowed = ccw_tui._digit_hinted_indices(ctx)
+            total = ccw_tui._total_items(ctx)
+            for idx in allowed:
+                self.assertLess(idx, total, f"{label}: index {idx} is past total {total}")
+                self.assertGreaterEqual(idx, 0, f"{label}: negative index {idx}")
+
+    def test_digit_allowed_actions_always_included(self) -> None:
+        """Every action row (0..ACTION_COUNT-1) is digit-reachable."""
+        for label, ctx in self._all_shapes():
+            allowed = ccw_tui._digit_hinted_indices(ctx)
+            for i in range(ccw_tui.ACTION_COUNT):
+                self.assertIn(i, allowed, f"{label}: action idx {i} not in digit allow-list")
+
+    def test_digit_allowed_includes_session_rows(self) -> None:
+        ctx = _make_ctx(sessions=[_make_session("a"), _make_session("b")])
+        allowed = ccw_tui._digit_hinted_indices(ctx)
+        # Own sessions start at ACTION_COUNT
+        self.assertIn(ccw_tui.ACTION_COUNT, allowed)
+        self.assertIn(ccw_tui.ACTION_COUNT + 1, allowed)
+
+
 if __name__ == "__main__":
     unittest.main()

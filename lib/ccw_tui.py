@@ -183,6 +183,35 @@ def _total_items(ctx: TuiContext) -> int:
     return settings_idx + 1
 
 
+def _digit_hinted_indices(ctx: TuiContext) -> set[int]:
+    """Return the set of item indices reachable via a digit keypress.
+
+    Digit 1..9 maps to index 0..8. Only items whose index is in this set
+    may be activated by a digit keypress. Settings and Kill-ALL are
+    deliberately excluded — they are non-destructive-to-read but
+    surprising-to-land-on for a new user, and on empty superuser state
+    `settings_idx` collapses to `ACTION_COUNT` which makes a mis-typed
+    digit dangerously ambiguous. Both remain reachable via
+    arrow-down + Enter, which is a deliberate two-step gesture.
+    """
+    own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
+    total = _total_items(ctx)
+    allowed: set[int] = set()
+    # Actions (0..ACTION_COUNT-1)
+    for i in range(min(ACTION_COUNT, total)):
+        allowed.add(i)
+    # Own sessions
+    for i in range(own_start, min(other_start, total)):
+        allowed.add(i)
+    # Other users' sessions (still session rows, safe to jump to)
+    if has_super:
+        other_end = settings_idx if settings_idx >= 0 else total
+        for i in range(other_start, min(other_end, total)):
+            allowed.add(i)
+    # Settings and Kill-ALL are intentionally excluded.
+    return allowed
+
+
 # ── Rendering helpers ────────────────────────────────────────────────
 
 
@@ -936,10 +965,12 @@ def _interactive_loop(
 
         elif not key.is_sequence and str(key) in "123456789":
             idx = int(str(key)) - 1
-            # Digit jumps move the cursor but never auto-activate Settings or
-            # Kill-ALL — stray keystrokes must not open destructive/surprising
-            # screens. Enter on the item still works for deliberate access.
-            if idx < total and not (has_super and idx in (settings_idx, kill_idx)):
+            # Digit jumps route through the digit-hinted allow-list — they
+            # can never auto-activate Settings or Kill-ALL. Stray keystrokes
+            # must not open destructive or surprising screens. Enter on the
+            # item still works for deliberate access.
+            digit_allowed = _digit_hinted_indices(ctx)
+            if idx in digit_allowed:
                 cursor = idx
                 try:
                     msg, req = _activate_item(t, ctx, cursor)
@@ -948,15 +979,9 @@ def _interactive_loop(
                 status_msg = msg or ""
                 if req is not None:
                     return "launch", (req, cursor, scroll_offset, ctx)
-                if has_super and cursor in (settings_idx, kill_idx):
-                    try:
-                        ctx = ctx.on_refresh()
-                    except CallbackError as exc:
-                        status_msg = t.red(f"Refresh failed: {exc}")
-                    total = _total_items(ctx)
-                    if cursor >= total:
-                        cursor = max(0, total - 1)
             elif idx < total and has_super and idx in (settings_idx, kill_idx):
+                # Digit pointed at Settings or Kill-ALL. Move the cursor
+                # but do NOT activate — make this explicit so users see why.
                 cursor = idx
                 status_msg = _dim(
                     t, "Press Enter to open Settings / Kill-ALL (digit moves cursor only)"
