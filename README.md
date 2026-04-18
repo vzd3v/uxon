@@ -180,9 +180,16 @@ silently creating duplicates on the dedicated socket.
 
 ## Allowed roots
 
-`ccw` refuses to run in directories outside `allowed_roots`. This guards
-against accidentally starting `claude` in `$HOME`, `/tmp`, system paths, etc.
+`ccw` refuses to launch `claude` in directories outside `allowed_roots`. This
+guards against accidentally starting `claude` in `/tmp`, system paths, etc.
 Configure via `allowed_roots` in `config.toml`.
+
+In addition to the configured list, the **launch user's home directory is
+always treated as an allowed root** for launching (not for project creation) —
+running `claude` in your own home is a normal workflow and shouldn't require
+an explicit config entry. It's a launch-time augmentation only; it does not
+show up in `config.toml` and `ccw new <name>` still creates projects under
+`new_project_root` exclusively.
 
 `new_project_root` (the base for `ccw new <name>` without `-w`) must itself be
 under `allowed_roots` — `ccw doctor` flags this.

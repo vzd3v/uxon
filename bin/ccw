@@ -823,6 +823,28 @@ def ensure_allowed_dir(target_dir: str, allowed_roots: list[str]) -> None:
     fail(f"got: {target_dir}")
 
 
+def launch_allowed_roots(cfg: Config, launch_user: str) -> list[str]:
+    """Allowed roots for **launching** claude (as opposed to creating new
+    projects under :attr:`Config.new_project_root`).
+
+    On top of ``cfg.allowed_roots`` this also treats the launch user's
+    home directory as allowed: running ``claude`` in your own home is
+    a perfectly normal workflow and shouldn't require an explicit
+    config entry. The new-project flow (``ccw new …``) still uses
+    ``cfg.allowed_roots`` directly, so projects continue to be created
+    only where the operator opted in.
+    """
+    roots = list(cfg.allowed_roots)
+    try:
+        home = pwd.getpwnam(launch_user).pw_dir
+    except KeyError:
+        return roots
+    home_c = canonical(home)
+    if home_c and home_c not in roots:
+        roots.append(home_c)
+    return roots
+
+
 def print_list(cfg: Config, sessions: list[SessionInfo], scope_users: list[str], show_user: bool = False) -> int:
     if not sessions:
         if show_user:
@@ -1261,7 +1283,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 "new -w requires a git repository (checked as launch user "
                 f"{launch_user}) in {project_dir}"
             )
-        ensure_allowed_dir(repo_root, cfg.allowed_roots)
+        ensure_allowed_dir(repo_root, launch_allowed_roots(cfg, launch_user))
         target_dir = repo_root
         session_stem = session_stem_for_worktree(repo_root, branch)
         compatibility_root = repo_root
@@ -1366,13 +1388,14 @@ def _do_create_git_remote(
 
 def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     cwd = canonical(os.getcwd())
-    ensure_allowed_dir(cwd, cfg.allowed_roots)
+    launch_roots = launch_allowed_roots(cfg, launch_user)
+    ensure_allowed_dir(cwd, launch_roots)
     branch = args.worktree_branch
     if branch:
         repo_root = git_repo_root_as_user(cwd, launch_user)
         if not repo_root:
             fail(f"run -w must be run inside a git repository readable by {launch_user}")
-        ensure_allowed_dir(repo_root, cfg.allowed_roots)
+        ensure_allowed_dir(repo_root, launch_roots)
         target_dir = repo_root
         session_stem = session_stem_for_worktree(repo_root, branch)
         compatibility_root = repo_root
@@ -1711,7 +1734,7 @@ def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     returns a LaunchRequest. No ``-w branch`` support — the TUI does not
     expose that knob.
     """
-    ensure_allowed_dir(cwd, cfg.allowed_roots)
+    ensure_allowed_dir(cwd, launch_allowed_roots(cfg, launch_user))
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
     sessions = collect_sessions([launch_user], cfg)
@@ -1870,7 +1893,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         for p in cfg.git_remote_profiles
     ]
 
-    cwd_allowed = any(is_under(cwd, base) for base in cfg.allowed_roots)
+    cwd_allowed = any(is_under(cwd, base) for base in launch_allowed_roots(cfg, launch_user))
     return ccw_tui.TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,

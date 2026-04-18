@@ -798,6 +798,30 @@ class CcwTests(unittest.TestCase):
             with mock.patch.object(Path, "exists", fake_exists):
                 self.assertIsNone(ccw.find_project_config(str(target), allowed))
 
+    # ── launch_allowed_roots (user home is implicit) ─────────────────
+
+    def test_launch_allowed_roots_adds_user_home(self) -> None:
+        cfg = self.make_config(allowed_roots=["/srv/repos"])
+        fake_pw = mock.Mock(pw_dir="/home/u-ed")
+        with mock.patch.object(ccw.pwd, "getpwnam", return_value=fake_pw):
+            with mock.patch.object(ccw, "canonical", side_effect=lambda v: str(v)):
+                roots = ccw.launch_allowed_roots(cfg, "u-ed")
+        self.assertEqual(roots, ["/srv/repos", "/home/u-ed"])
+
+    def test_launch_allowed_roots_does_not_duplicate_existing_entry(self) -> None:
+        cfg = self.make_config(allowed_roots=["/srv/repos", "/home/u-ed"])
+        fake_pw = mock.Mock(pw_dir="/home/u-ed")
+        with mock.patch.object(ccw.pwd, "getpwnam", return_value=fake_pw):
+            with mock.patch.object(ccw, "canonical", side_effect=lambda v: str(v)):
+                roots = ccw.launch_allowed_roots(cfg, "u-ed")
+        self.assertEqual(roots, ["/srv/repos", "/home/u-ed"])
+
+    def test_launch_allowed_roots_falls_back_gracefully_when_user_missing(self) -> None:
+        cfg = self.make_config(allowed_roots=["/srv/repos"])
+        with mock.patch.object(ccw.pwd, "getpwnam", side_effect=KeyError("nope")):
+            roots = ccw.launch_allowed_roots(cfg, "nosuchuser")
+        self.assertEqual(roots, ["/srv/repos"])
+
     # ── tmux nesting detection ───────────────────────────────────────
 
     def test_tmux_host_socket_returns_none_without_env(self) -> None:
