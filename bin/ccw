@@ -1870,6 +1870,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         for p in cfg.git_remote_profiles
     ]
 
+    cwd_allowed = any(is_under(cwd, base) for base in cfg.allowed_roots)
     return ccw_tui.TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,
@@ -1879,6 +1880,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         cwd_short=cwd_short,
         new_project_root=cfg.new_project_root,
         existing_projects=_list_existing_projects(cfg.new_project_root),
+        cwd_allowed=cwd_allowed,
         current_user=launch_user,
         has_sudo=has_sudo,
         other_sessions=tui_other,

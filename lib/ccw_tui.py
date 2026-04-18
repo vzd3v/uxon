@@ -79,6 +79,13 @@ class TuiContext:
     new_project_root: str
     existing_projects: list[str]  # sorted dir names under new_project_root
 
+    # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
+    # "New session in current folder" can actually launch. Computed by
+    # ccw before constructing the context so the TUI itself stays off
+    # the filesystem. When False, the row is dimmed and activation
+    # shows a clear status-line hint instead of silently exiting ccw.
+    cwd_allowed: bool = True
+
     current_user: str = ""
     has_sudo: bool = False
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
@@ -640,7 +647,8 @@ def _draw_main_screen(
         if i < own_start:
             num = i + 1
             if i == 0:
-                _print(_render_action_row(t, num, "New session in current folder", f"({ctx.cwd_short})", i == cursor))
+                cwd_hint = f"({ctx.cwd_short})" if ctx.cwd_allowed else f"({ctx.cwd_short} — not under allowed_roots)"
+                _print(_render_action_row(t, num, "New session in current folder", cwd_hint, i == cursor))
             elif i == 1:
                 _print(_render_action_row(t, num, "Create new project", f"({ctx.new_project_root}/...)", i == cursor))
             elif i == 2:
@@ -695,6 +703,13 @@ def _activate_item(
 
     if index < own_start:
         if index == 0:
+            if not ctx.cwd_allowed:
+                return (
+                    f"cwd {ctx.cwd_short} is not under allowed_roots; "
+                    "cd into one of them first (use option 2/3 to create/open under "
+                    f"{ctx.new_project_root})",
+                    None,
+                )
             dsp = _prompt_permissions(t)
             if dsp is not None:
                 print(t.normal + t.clear + t.home, end="", flush=True)

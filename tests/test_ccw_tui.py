@@ -48,6 +48,7 @@ def _make_ctx(
     has_sudo: bool = False,
     other_sessions=None,
     current_user: str = "devagent",
+    cwd_allowed: bool = True,
 ) -> ccw_tui.TuiContext:
     if sessions is None:
         sessions = []
@@ -60,6 +61,7 @@ def _make_ctx(
         cwd_short="myproject",
         new_project_root="/srv/agentdev",
         existing_projects=existing_projects or [],
+        cwd_allowed=cwd_allowed,
         current_user=current_user,
         has_sudo=has_sudo,
         other_sessions=other_sessions or [],
@@ -290,6 +292,27 @@ class ActivateItemReturnsLaunchRequestTests(unittest.TestCase):
             msg, req = ccw_tui._activate_item(t, ctx, ccw_tui.ACTION_COUNT)
         self.assertIsNone(req)
         self.assertIsNotNone(msg)
+
+    def test_activate_launch_cwd_disabled_when_cwd_not_allowed(self) -> None:
+        """Picking 'New session in current folder' when cwd is not under
+        allowed_roots must show a status-line hint and must NOT invoke
+        on_launch_cwd (which would otherwise call fail() and silently
+        exit the whole TUI)."""
+        ctx = _make_ctx(cwd_allowed=False)
+        called: dict = {}
+
+        def on_launch_cwd(dsp: bool):
+            called["dsp"] = dsp
+            return ccw_tui.LaunchRequest(cmd=("true",), label="should-not-fire")
+
+        ctx.on_launch_cwd = on_launch_cwd  # type: ignore[assignment]
+
+        t = _FakeTerm()
+        msg, req = ccw_tui._activate_item(t, ctx, 0)
+        self.assertIsNone(req)
+        self.assertIsNotNone(msg)
+        self.assertIn("allowed_roots", msg)
+        self.assertNotIn("dsp", called)
 
 
 class LaunchRequestTests(unittest.TestCase):
