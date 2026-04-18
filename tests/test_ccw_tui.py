@@ -363,9 +363,10 @@ class LaunchRequestTests(unittest.TestCase):
             label="attach demo",
         )
         with mock.patch.object(ccw_tui.subprocess, "call", side_effect=[0, 0]) as call:
-            rc, stage = ccw_tui._run_launch_request(req)
+            rc, stage, wall = ccw_tui._run_launch_request(req)
         self.assertEqual(rc, 0)
         self.assertEqual(stage, "cmd")
+        self.assertGreaterEqual(wall, 0.0)
         self.assertEqual(call.call_count, 2)
         self.assertEqual(call.call_args_list[0][0][0], ["mkdir", "-p", "/tmp/x"])
         self.assertEqual(call.call_args_list[1][0][0], ["tmux", "attach"])
@@ -376,8 +377,9 @@ class LaunchRequestTests(unittest.TestCase):
             prelaunch=(("mkdir", "-p", "/tmp/x"),),
         )
         with mock.patch.object(ccw_tui.subprocess, "call", side_effect=[5]) as call:
-            rc, stage = ccw_tui._run_launch_request(req)
+            rc, stage, wall = ccw_tui._run_launch_request(req)
         self.assertEqual((rc, stage), (5, "prelaunch"))
+        self.assertGreaterEqual(wall, 0.0)
         call.assert_called_once()  # main cmd never ran
 
     def test_callback_error_is_exception(self) -> None:
@@ -429,6 +431,33 @@ class LaunchRequestTests(unittest.TestCase):
         with mock.patch.object(ccw_tui.sys.stdout, "write") as w:
             ccw_tui._pause_on_launch_failure(t, req, 0, "cmd")
             ccw_tui._pause_on_launch_failure(t, req, 130, "cmd")
+        w.assert_not_called()
+
+    def test_pause_on_fast_zero_exit_shows_banner(self) -> None:
+        """rc=0 but sub-second wall time → pause with 'exited immediately'
+        banner so the user can read anything the launch printed before the
+        next fullscreen re-entry wipes it."""
+        class _NullCM:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+
+        t = _FakeTerm()
+        t.cbreak = lambda: _NullCM()  # type: ignore[attr-defined]
+        t.inkey = lambda timeout=None: "x"  # type: ignore[attr-defined]
+        req = ccw_tui.LaunchRequest(cmd=("claude",), label="launch cc-demo")
+        with mock.patch.object(ccw_tui.sys.stdout, "write") as w, \
+             mock.patch.object(ccw_tui.sys.stdout, "flush"):
+            ccw_tui._pause_on_launch_failure(t, req, 0, "cmd", wall_seconds=0.1)
+        written = "".join(c.args[0] for c in w.call_args_list)
+        self.assertIn("exited immediately", written)
+        self.assertIn("press any key", written)
+
+    def test_pause_skips_on_slow_zero_exit(self) -> None:
+        """rc=0 with healthy wall time (≥ FAST_EXIT_THRESHOLD_SEC) stays silent."""
+        t = _FakeTerm()
+        req = ccw_tui.LaunchRequest(cmd=("tmux",), label="attach demo")
+        with mock.patch.object(ccw_tui.sys.stdout, "write") as w:
+            ccw_tui._pause_on_launch_failure(t, req, 0, "cmd", wall_seconds=5.0)
         w.assert_not_called()
 
     def test_pause_on_launch_failure_waits_for_key_on_nonzero_rc(self) -> None:

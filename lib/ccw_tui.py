@@ -831,19 +831,26 @@ def _activate_item(
 # ── Entry point ──────────────────────────────────────────────────────
 
 
-def _run_launch_request(req: "LaunchRequest") -> tuple[int, str]:
+def _run_launch_request(req: "LaunchRequest") -> tuple[int, str, float]:
     """Execute a LaunchRequest via fork-and-wait (blessed context already exited).
 
     Runs each prelaunch command in order, aborting if any returns non-zero,
-    then runs the main ``cmd``. Returns ``(rc, stage)`` where ``stage`` is
-    ``"prelaunch"`` if a prelaunch failed, else ``"cmd"``.
+    then runs the main ``cmd``. Returns ``(rc, stage, wall_seconds)`` where
+    ``stage`` is ``"prelaunch"`` if a prelaunch failed, else ``"cmd"``, and
+    ``wall_seconds`` is the total elapsed time across prelaunch + cmd.
+    Wall time is used by the caller to detect silent fast-exit launches
+    (rc=0 but sub-second duration) that would otherwise strip the user
+    of any context about why tmux didn't stick.
     """
+    import time as _time
+
+    t0 = _time.monotonic()
     for pre in req.prelaunch:
         rc = subprocess.call(list(pre))
         if rc != 0:
-            return rc, "prelaunch"
+            return rc, "prelaunch", _time.monotonic() - t0
     rc = subprocess.call(list(req.cmd))
-    return rc, "cmd"
+    return rc, "cmd", _time.monotonic() - t0
 
 
 def _format_launch_status(t: "Terminal", req: "LaunchRequest", rc: int, stage: str) -> str:
@@ -885,8 +892,21 @@ def _drain_stdin(t: "Terminal", max_keys: int = 64) -> int:
     return drained
 
 
+#: Threshold below which an rc=0 launch is treated as a silent fast-exit.
+#: Empirically a healthy tmux attach that actually landed the user in a
+#: claude session will be in the foreground for at least a few seconds;
+#: anything sub-second that returns rc=0 is almost certainly a broken
+#: command (missing binary, bad argv) that printed to stderr and exited
+#: before the user could read it.
+FAST_EXIT_THRESHOLD_SEC = 1.0
+
+
 def _pause_on_launch_failure(
-    t: "Terminal", req: "LaunchRequest", rc: int, stage: str
+    t: "Terminal",
+    req: "LaunchRequest",
+    rc: int,
+    stage: str,
+    wall_seconds: float | None = None,
 ) -> None:
     """Hold the terminal after a failed launch so the user can read stderr.
 
@@ -895,12 +915,33 @@ def _pause_on_launch_failure(
     terminal at this point; without a pause, re-entering fullscreen wipes
     it. We print a clear banner pointing at the output above and wait for
     a keypress. ``rc == 130`` (user Ctrl-C'd) is not treated as a failure.
+
+    When ``wall_seconds`` is provided and the launch returned rc=0 in
+    under :data:`FAST_EXIT_THRESHOLD_SEC`, also pause — a near-instant
+    zero exit is almost always a silent launch failure (e.g. claude
+    binary missing, bad tmux argv) and the user deserves to see any
+    output that was printed before fullscreen wipes it.
     """
-    if rc == 0 or rc == 130:
+    fast_zero = (
+        rc == 0
+        and wall_seconds is not None
+        and wall_seconds < FAST_EXIT_THRESHOLD_SEC
+    )
+    if rc == 130:
+        return
+    if rc == 0 and not fast_zero:
         return
     label = req.label or "launch"
     sys.stdout.write("\n")
-    sys.stdout.write(t.bold_red(f"ccw: {label} failed (rc={rc}, stage={stage})") + "\n")
+    if fast_zero:
+        sys.stdout.write(
+            t.bold_yellow(
+                f"ccw: {label} exited immediately (rc=0 in {wall_seconds:.2f}s, stage={stage})"
+            )
+            + "\n"
+        )
+    else:
+        sys.stdout.write(t.bold_red(f"ccw: {label} failed (rc={rc}, stage={stage})") + "\n")
     if stage == "prelaunch":
         sys.stdout.write(
             _dim(t, f"  command: {' '.join(list(req.prelaunch[0]) if req.prelaunch else [])}") + "\n"
@@ -1107,9 +1148,9 @@ def run(ctx: TuiContext) -> int:
             # outcome == "launch"
             req, cursor, scroll_offset, ctx = payload
             sys.stdout.flush()
-            rc, stage = _run_launch_request(req)
+            rc, stage, wall_seconds = _run_launch_request(req)
             status_msg = _format_launch_status(t, req, rc, stage)
-            _pause_on_launch_failure(t, req, rc, stage)
+            _pause_on_launch_failure(t, req, rc, stage, wall_seconds)
             # Flush any keys the user typed while tmux was attached or
             # during the post-launch pause. Without this drain, a
             # fast-exit launch (rc=0, <1s) could hand buffered bytes to
