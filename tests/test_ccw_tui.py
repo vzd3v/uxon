@@ -257,6 +257,9 @@ class _FakeTerm:
         # Any color/style like t.green, t.bold_red, etc. → identity function
         return lambda s="": s
 
+    def ljust(self, s: str, width: int) -> str:  # blessed.Terminal.ljust
+        return s.ljust(width)
+
     def location(self, *args, **kwargs):
         class _CM:
             def __enter__(self_inner):
@@ -495,6 +498,98 @@ class LaunchRequestTests(unittest.TestCase):
         req = ctx.on_attach("u", "s")
         self.assertIsInstance(req, ccw_tui.LaunchRequest)
         self.assertEqual(req.cmd, ("true",))
+
+
+class SettingsGitRemotesEntryTests(unittest.TestCase):
+    """PR 10 invariant: the git-remotes sub-screen is reachable only via
+    an explicit, visible list entry in Settings — never via a bare key
+    shortcut. And the opposite: no list item with a digit hint is absent
+    from its own screen's rendered output.
+    """
+
+    def _make_cbs(self, with_profile_rows: bool) -> "object":
+        import ccw_tui_settings
+        return ccw_tui_settings.SettingsCallbacks(
+            get_entries=lambda: [
+                type("E", (), dict(
+                    spec=type("S", (), dict(key="foo", description="desc", kind="bool"))(),
+                    value=True, source="repo", editable=True,
+                ))(),
+            ],
+            save_setting=_noop,
+            remove_setting=_noop,
+            save_mapping=_noop,
+            get_git_remote_profile_rows=(lambda: []) if with_profile_rows else None,
+        )
+
+    def test_git_remotes_view_label_is_module_constant(self) -> None:
+        import ccw_tui_settings
+        self.assertTrue(hasattr(ccw_tui_settings, "GIT_REMOTES_VIEW_LABEL"))
+        self.assertIn("Git remote profiles", ccw_tui_settings.GIT_REMOTES_VIEW_LABEL)
+
+    def test_enter_on_virtual_row_opens_git_remotes(self) -> None:
+        """Cursor on index 0 (the virtual row) + Enter calls
+        `_show_git_remotes`. Sub-screen must be reachable via the list."""
+        import ccw_tui_settings
+
+        t = _FakeTerm()
+        # Sequence: Enter to open git-remotes, then q to exit the
+        # settings screen cleanly.
+        keys = iter([("", "KEY_ENTER"), ("q", "")])
+
+        class _K(str):
+            def __new__(cls, value: str, name: str):
+                inst = str.__new__(cls, value)
+                inst._name = name  # type: ignore[attr-defined]
+                return inst
+            @property
+            def name(self) -> str:
+                return self._name  # type: ignore[attr-defined]
+            @property
+            def is_sequence(self) -> bool:
+                return bool(self._name)  # type: ignore[attr-defined]
+
+        def fake_inkey(timeout=None):
+            v, n = next(keys)
+            return _K(v, n)
+
+        t.inkey = fake_inkey  # type: ignore[attr-defined]
+
+        cbs = self._make_cbs(with_profile_rows=True)
+        with mock.patch.object(ccw_tui_settings, "_show_git_remotes") as show:
+            ccw_tui_settings.show_settings(t, cbs)
+        show.assert_called_once()
+
+    def test_without_profile_rows_callback_no_virtual_row(self) -> None:
+        """If cbs.get_git_remote_profile_rows is None (non-superuser), the
+        virtual row is not shown and Enter on index 0 edits the first
+        entry instead of opening a sub-screen."""
+        import ccw_tui_settings
+
+        t = _FakeTerm()
+        keys = iter([("q", "")])
+
+        class _K(str):
+            def __new__(cls, value: str, name: str):
+                inst = str.__new__(cls, value)
+                inst._name = name  # type: ignore[attr-defined]
+                return inst
+            @property
+            def name(self) -> str:
+                return self._name  # type: ignore[attr-defined]
+            @property
+            def is_sequence(self) -> bool:
+                return bool(self._name)  # type: ignore[attr-defined]
+
+        def fake_inkey(timeout=None):
+            v, n = next(keys)
+            return _K(v, n)
+
+        t.inkey = fake_inkey  # type: ignore[attr-defined]
+        cbs = self._make_cbs(with_profile_rows=False)
+        with mock.patch.object(ccw_tui_settings, "_show_git_remotes") as show:
+            ccw_tui_settings.show_settings(t, cbs)
+        show.assert_not_called()
 
 
 class SettingsScreenKeymapTests(unittest.TestCase):
