@@ -368,6 +368,53 @@ def configured_tmux_base(cfg: Config, target_user: str) -> list[str]:
     return tmux_base(target_user, tmux_socket_path(cfg, target_user))
 
 
+def tmux_host_socket() -> str | None:
+    """Return the socket path of the tmux server this process is already
+    inside, or ``None`` if ``$TMUX`` is unset.
+
+    tmux exports ``$TMUX`` as ``<socket>,<server-pid>,<session-id>``.
+    We only care about the socket component.
+    """
+    raw = os.environ.get("TMUX", "")
+    if not raw:
+        return None
+    socket = raw.split(",", 1)[0]
+    return socket or None
+
+
+def tmux_nesting_mode(target_socket: str) -> str:
+    """Decide how to launch/attach a tmux session given the current ``$TMUX``.
+
+    Returns ``"execvp"`` when the process is not already inside tmux
+    (classic flow: ``execvp tmux attach-session`` / ``new-session``).
+    Returns ``"switch"`` when the process is inside a tmux client on the
+    same socket that owns ``target_socket`` — the caller should then use
+    ``tmux switch-client -t <name>`` (plus a detached ``new-session`` for
+    the launch path) so tmux does not refuse to nest.
+    Raises ``SystemExit`` (via :func:`fail`) when ``$TMUX`` names a
+    different socket: nesting across tmux servers is not something ccw
+    can do cleanly, and the user must detach first.
+    """
+    host = tmux_host_socket()
+    if host is None:
+        return "execvp"
+    try:
+        host_real = os.path.realpath(host)
+    except OSError:
+        host_real = host
+    try:
+        target_real = os.path.realpath(target_socket)
+    except OSError:
+        target_real = target_socket
+    if host_real == target_real:
+        return "switch"
+    fail(
+        "ccw: already inside a tmux session on a different socket "
+        f"({host}); detach first (Ctrl-B d) and rerun ccw"
+    )
+    raise AssertionError("unreachable")
+
+
 def fmt_epoch(ts: str) -> str:
     if not ts:
         return ""
@@ -1036,11 +1083,20 @@ def _tui_launch_request_cls() -> type:
 def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
     """Return the LaunchRequest for attaching to an existing session.
 
-    Pure: no side effects, no file I/O. Used by both the CLI execvp path
-    (:func:`attach_session`) and the TUI fork-and-wait path.
+    Reads ``$TMUX`` via :func:`tmux_nesting_mode` to decide between a
+    classic ``attach-session`` (when the process is not already inside
+    tmux) and a ``switch-client`` (when it is, on the same socket).
+    Raises ``SystemExit`` when ``$TMUX`` names a different socket.
+    Used by both the CLI execvp path (:func:`attach_session`) and the
+    TUI fork-and-wait path.
     """
     LaunchRequest = _tui_launch_request_cls()
-    full = tuple(configured_tmux_base(cfg, launch_user) + ["attach-session", "-t", target.name])
+    base = configured_tmux_base(cfg, launch_user)
+    mode = tmux_nesting_mode(tmux_socket_path(cfg, launch_user))
+    if mode == "switch":
+        full = tuple(base + ["switch-client", "-t", target.name])
+        return LaunchRequest(cmd=full, prelaunch=(), label=f"switch-client {target.name}")
+    full = tuple(base + ["attach-session", "-t", target.name])
     return LaunchRequest(cmd=full, prelaunch=(), label=f"attach {target.name}")
 
 
@@ -1125,11 +1181,24 @@ def _build_tmux_launch_request(
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
     ensure_socket_parent = tuple(command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent])
-    full = tuple(
-        configured_tmux_base(cfg, launch_user)
-        + ["new-session", "-As", session, "-c", target_dir]
-        + final_cmd
-    )
+    base = configured_tmux_base(cfg, launch_user)
+    mode = tmux_nesting_mode(socket_path)
+    if mode == "switch":
+        # Already inside tmux on the target socket — classic
+        # ``new-session -As`` would try to attach and tmux refuses to
+        # nest. Instead create the session detached (idempotent via
+        # ``-dA``; claude is ignored when the session already exists)
+        # and then switch the current client over to it.
+        create = tuple(
+            base + ["new-session", "-dA", "-s", session, "-c", target_dir] + final_cmd
+        )
+        switch = tuple(base + ["switch-client", "-t", session])
+        return LaunchRequest(
+            cmd=switch,
+            prelaunch=(ensure_socket_parent, create),
+            label=f"switch-client {session} (nested)",
+        )
+    full = tuple(base + ["new-session", "-As", session, "-c", target_dir] + final_cmd)
     return LaunchRequest(cmd=full, prelaunch=(ensure_socket_parent,), label=f"launch {session}")
 
 

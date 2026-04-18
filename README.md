@@ -264,6 +264,21 @@ isolates `ccw` sessions from the user's default tmux server, making
 this change, they are not automatically managed. Use `ccw doctor` to spot
 them, then clean up or migrate manually.
 
+### Running `ccw` from inside an existing tmux session
+
+tmux refuses to nest (`sessions should be nested with care, unset $TMUX`),
+so a naive `tmux attach-session` / `tmux new-session` from a shell already
+inside tmux just flashes the refusal message and drops back to the prompt.
+`ccw` handles this transparently: when `$TMUX` names the same socket that
+`ccw` uses for the launch user, `attach` is executed as
+`tmux switch-client -t <session>` and `new` first creates the session
+detached (`tmux new-session -dA -s <name> -c <dir> claude …`) and then
+switch-clients to it. The end result is the same — the user's tmux client
+ends up attached to the target session — with no refusal message. When
+`$TMUX` names a **different** socket (a tmux server not owned by `ccw`),
+`ccw` bails out with an actionable error telling the user to `Ctrl-B d`
+first.
+
 ---
 
 ## `--dsp` (dangerously-skip-permissions)

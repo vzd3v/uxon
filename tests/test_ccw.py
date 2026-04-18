@@ -19,6 +19,25 @@ sys.modules[SPEC.name] = ccw
 SPEC.loader.exec_module(ccw)
 
 
+class _StubsChain:
+    """Tiny helper to combine multiple ``mock.patch`` context managers into
+    one ``with`` statement for readability in tests."""
+
+    def __init__(self, *patches):
+        self._patches = patches
+        self._entered = []
+
+    def __enter__(self):
+        for p in self._patches:
+            self._entered.append(p.__enter__())
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        for p in reversed(self._patches):
+            p.__exit__(exc_type, exc, tb)
+        return False
+
+
 class CcwTests(unittest.TestCase):
     def make_config(self, **overrides) -> ccw.Config:
         defaults = dict(
@@ -642,7 +661,13 @@ class CcwTests(unittest.TestCase):
         self.assertIn("--force", eprint.call_args[0][0])
 
     def _stub_socket_path(self):
-        return mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-test.sock")
+        # Classic tests run as if the process is NOT inside tmux so the
+        # build_request helpers stay on the execvp / attach-session /
+        # new-session path.
+        return _StubsChain(
+            mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-test.sock"),
+            mock.patch.object(ccw, "tmux_host_socket", return_value=None),
+        )
 
     def test_build_tmux_attach_request_produces_expected_argv(self) -> None:
         cfg = self.make_config()
@@ -772,6 +797,76 @@ class CcwTests(unittest.TestCase):
 
             with mock.patch.object(Path, "exists", fake_exists):
                 self.assertIsNone(ccw.find_project_config(str(target), allowed))
+
+    # ── tmux nesting detection ───────────────────────────────────────
+
+    def test_tmux_host_socket_returns_none_without_env(self) -> None:
+        with mock.patch.dict(ccw.os.environ, {}, clear=True):
+            self.assertIsNone(ccw.tmux_host_socket())
+
+    def test_tmux_host_socket_parses_socket_from_tmux_env(self) -> None:
+        env = {"TMUX": "/tmp/ccw-u-vz.sock,12345,0"}
+        with mock.patch.dict(ccw.os.environ, env, clear=True):
+            self.assertEqual(ccw.tmux_host_socket(), "/tmp/ccw-u-vz.sock")
+
+    def test_tmux_nesting_mode_execvp_when_not_in_tmux(self) -> None:
+        with mock.patch.object(ccw, "tmux_host_socket", return_value=None):
+            self.assertEqual(ccw.tmux_nesting_mode("/tmp/ccw-u-vz.sock"), "execvp")
+
+    def test_tmux_nesting_mode_switch_when_same_socket(self) -> None:
+        with mock.patch.object(ccw, "tmux_host_socket", return_value="/tmp/ccw-u-vz.sock"):
+            self.assertEqual(ccw.tmux_nesting_mode("/tmp/ccw-u-vz.sock"), "switch")
+
+    def test_tmux_nesting_mode_fails_when_foreign_socket(self) -> None:
+        with mock.patch.object(ccw, "tmux_host_socket", return_value="/tmp/tmux-1000/default"):
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                with self.assertRaises(SystemExit) as ctx:
+                    ccw.tmux_nesting_mode("/tmp/ccw-u-vz.sock")
+        self.assertNotEqual(ctx.exception.code, 0)
+        self.assertIn("different socket", stderr.getvalue())
+
+    def test_build_tmux_attach_request_uses_switch_client_when_nested(self) -> None:
+        cfg = self.make_config()
+        target = self.make_session("cc-demo", "/srv/repos/demo")
+        stubs = _StubsChain(
+            mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-test.sock"),
+            mock.patch.object(ccw, "tmux_host_socket", return_value="/tmp/ccw-test.sock"),
+        )
+        with stubs:
+            req = ccw._build_tmux_attach_request(target, cfg, "u-vz")
+        self.assertIn("switch-client", req.cmd)
+        self.assertNotIn("attach-session", req.cmd)
+        self.assertIn("cc-demo", req.cmd)
+        self.assertEqual(req.prelaunch, ())
+        self.assertIn("switch-client", req.label)
+
+    def test_build_tmux_launch_request_uses_switch_client_when_nested(self) -> None:
+        cfg = self.make_config(default_claude_args=["--model", "sonnet"])
+        args = ccw.ParsedArgs(action="run", dsp=True, claude_args=["--foo"])
+        stubs = _StubsChain(
+            mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-test.sock"),
+            mock.patch.object(ccw, "tmux_host_socket", return_value="/tmp/ccw-test.sock"),
+        )
+        with stubs:
+            req = ccw._build_tmux_launch_request(
+                "/srv/repos/demo", "cc-demo", args, cfg, None, "u-vz"
+            )
+        # Main cmd is the switch; creation happens in prelaunch.
+        self.assertIn("switch-client", req.cmd)
+        self.assertIn("cc-demo", req.cmd)
+        # Two prelaunches: mkdir + detached create-or-noop with claude args.
+        self.assertEqual(len(req.prelaunch), 2)
+        mkdir_pre, create_pre = req.prelaunch
+        self.assertIn("mkdir", mkdir_pre)
+        self.assertIn("new-session", create_pre)
+        self.assertIn("-dA", create_pre)
+        self.assertIn("cc-demo", create_pre)
+        self.assertIn("claude", create_pre)
+        self.assertIn("--dangerously-skip-permissions", create_pre)
+        self.assertIn("--foo", create_pre)
+        self.assertIn("--model", create_pre)
+        self.assertIn("sonnet", create_pre)
+        self.assertIn("nested", req.label)
 
 
 if __name__ == "__main__":
