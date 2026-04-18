@@ -271,6 +271,36 @@ isolates `ccw` sessions from the user's default tmux server, making
 this change, they are not automatically managed. Use `ccw doctor` to spot
 them, then clean up or migrate manually.
 
+### Error surfacing in the TUI
+
+Operations launched from the TUI (attach / kill / create / refresh) can fail
+for many reasons — tmux session gone, permission denied, allowed-roots
+mismatch, git remote creation error, config write conflict, and so on.
+Historically some of these failures reached `fail()` inside ccw, which
+prints `ccw: <msg>` to stderr and `raise SystemExit`. Under blessed's
+fullscreen context that combination looked like ccw silently quitting.
+
+Since 0.10.3 every TUI callback is wrapped so any `SystemExit` (or other
+exception) is converted into a `CallbackError` carrying the original
+stderr, and the main loop renders it on the status line in red (e.g.
+`Kill cc-demo failed: tmux: no server running on /tmp/ccw-u-ed.sock`).
+Refresh / settings / kill-all / activate all go through this path. A
+crash in the outer loop itself (unexpected exception) is caught after
+blessed has restored the terminal and printed as a visible traceback
+instead of leaving a blank screen.
+
+Failed launches (non-zero rc from the forked tmux/claude process) also
+pause with a banner on the physical terminal before the main screen
+re-enters fullscreen, so the user can read whatever stderr the failed
+command printed:
+
+    ccw: launch cc-myproj failed (rc=1, stage=cmd)
+      command: tmux -S /tmp/ccw-u-vz.sock new-session -As cc-myproj -c /srv/repos/myproj claude
+      see output above for details
+    press any key to return to the ccw menu...
+
+rc `0` (success) and rc `130` (user Ctrl-C in claude) do not pause.
+
 ### Running `ccw` from inside an existing tmux session
 
 tmux refuses to nest (`sessions should be nested with care, unset $TMUX`),

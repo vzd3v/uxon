@@ -141,6 +141,66 @@ def fail(msg: str, code: int = 2) -> None:
     raise SystemExit(code)
 
 
+def _sanitize_callback_stderr(raw: str) -> str:
+    """Strip boilerplate (``ccw:`` prefix, trailing blank lines) from
+    captured stderr so it reads cleanly on a TUI status line.
+
+    Keeps multi-line lists intact (e.g. allowed-roots bullets) with their
+    indentation normalised to two spaces. Called by
+    :func:`_wrap_tui_callback`.
+    """
+    out: list[str] = []
+    for line in raw.splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        if line.startswith("ccw:   - "):
+            out.append("  - " + line[len("ccw:   - "):])
+        elif line.startswith("ccw: "):
+            out.append(line[len("ccw: "):])
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _wrap_tui_callback(fn: Any, callback_error_cls: type) -> Any:
+    """Wrap a callback so exceptions surface on the TUI status line.
+
+    Captures anything the callback writes to ``stderr`` (e.g. the message
+    :func:`fail` prints before ``raise SystemExit``), and on exception
+    raises ``callback_error_cls`` with the captured text as its payload.
+    A plain return is passed through untouched.
+
+    This is the single place that converts ccw's ``fail() → SystemExit``
+    style into a structured error the TUI can render in red without the
+    blessed fullscreen context swallowing the message.
+    """
+    import contextlib
+    import io as _io
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        buf = _io.StringIO()
+        try:
+            with contextlib.redirect_stderr(buf):
+                return fn(*args, **kwargs)
+        except SystemExit as exc:
+            msg = _sanitize_callback_stderr(buf.getvalue())
+            if not msg:
+                code = exc.code if exc.code is not None else "?"
+                msg = f"command exited with code {code}"
+            raise callback_error_cls(msg) from exc
+        except callback_error_cls:
+            raise
+        except Exception as exc:  # pragma: no cover — defensive
+            detail = _sanitize_callback_stderr(buf.getvalue())
+            head = str(exc) or exc.__class__.__name__
+            msg = f"{head}\n{detail}" if detail else head
+            raise callback_error_cls(msg) from exc
+
+    wrapper.__name__ = getattr(fn, "__name__", "wrapped_callback")
+    return wrapper
+
+
 def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out = dict(base)
     for key, value in override.items():
@@ -1894,6 +1954,24 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
     ]
 
     cwd_allowed = any(is_under(cwd, base) for base in launch_allowed_roots(cfg, launch_user))
+
+    # Wrap all callbacks so failures surface on the TUI status line instead of
+    # killing ccw silently (blessed's fullscreen context hides stderr + tracebacks).
+    _CbErr = ccw_tui.CallbackError
+    on_attach = _wrap_tui_callback(on_attach, _CbErr)
+    on_kill = _wrap_tui_callback(on_kill, _CbErr)
+    on_kill_all = _wrap_tui_callback(on_kill_all, _CbErr)
+    on_kill_all_global = _wrap_tui_callback(on_kill_all_global, _CbErr)
+    on_refresh = _wrap_tui_callback(on_refresh, _CbErr)
+    on_launch_cwd = _wrap_tui_callback(on_launch_cwd, _CbErr)
+    on_launch_new = _wrap_tui_callback(on_launch_new, _CbErr)
+    on_launch_existing = _wrap_tui_callback(on_launch_existing, _CbErr)
+    get_settings_entries = _wrap_tui_callback(get_settings_entries, _CbErr)
+    on_setting_save = _wrap_tui_callback(on_setting_save, _CbErr)
+    on_setting_remove = _wrap_tui_callback(on_setting_remove, _CbErr)
+    on_setting_save_mapping = _wrap_tui_callback(on_setting_save_mapping, _CbErr)
+    get_git_remote_profile_rows = _wrap_tui_callback(get_git_remote_profile_rows, _CbErr)
+
     return ccw_tui.TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,

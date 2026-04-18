@@ -822,6 +822,65 @@ class CcwTests(unittest.TestCase):
             roots = ccw.launch_allowed_roots(cfg, "nosuchuser")
         self.assertEqual(roots, ["/srv/repos"])
 
+    # ── TUI callback error surfacing (0.10.3) ────────────────────────
+
+    def test_sanitize_callback_stderr_strips_ccw_prefix_and_list_indent(self) -> None:
+        raw = (
+            "ccw: directory must be under one of:\n"
+            "ccw:   - /srv/repos\n"
+            "ccw:   - /home/u-ed\n"
+            "ccw: got: /tmp\n"
+        )
+        expected = (
+            "directory must be under one of:\n"
+            "  - /srv/repos\n"
+            "  - /home/u-ed\n"
+            "got: /tmp"
+        )
+        self.assertEqual(ccw._sanitize_callback_stderr(raw), expected)
+
+    def test_sanitize_callback_stderr_passes_through_non_ccw_lines(self) -> None:
+        raw = "random warning\nccw: the real error\n\n"
+        self.assertEqual(
+            ccw._sanitize_callback_stderr(raw),
+            "random warning\nthe real error",
+        )
+
+    def test_wrap_tui_callback_passes_return_value(self) -> None:
+        class _Err(Exception):
+            pass
+
+            # pragma: no cover — marker only
+        wrapped = ccw._wrap_tui_callback(lambda x, y: x + y, _Err)
+        self.assertEqual(wrapped(2, 3), 5)
+
+    def test_wrap_tui_callback_captures_fail_message(self) -> None:
+        class _Err(Exception):
+            pass
+
+        def inner() -> None:
+            ccw.fail("directory must be under one of:\n" "ccw:   - /srv/repos")
+
+        wrapped = ccw._wrap_tui_callback(inner, _Err)
+        with self.assertRaises(_Err) as cm:
+            wrapped()
+        # Leading "ccw: " prefix must be stripped; list indent normalised.
+        self.assertIn("directory must be under one of:", str(cm.exception))
+        self.assertIn("/srv/repos", str(cm.exception))
+        self.assertNotIn("ccw:", str(cm.exception))
+
+    def test_wrap_tui_callback_falls_back_to_exit_code_when_stderr_empty(self) -> None:
+        class _Err(Exception):
+            pass
+
+        def inner() -> None:
+            raise SystemExit(7)
+
+        wrapped = ccw._wrap_tui_callback(inner, _Err)
+        with self.assertRaises(_Err) as cm:
+            wrapped()
+        self.assertIn("7", str(cm.exception))
+
     # ── tmux nesting detection ───────────────────────────────────────
 
     def test_tmux_host_socket_returns_none_without_env(self) -> None:

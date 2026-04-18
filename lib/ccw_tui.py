@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -29,6 +30,20 @@ from ccw_tui_widgets import dim as _dim_widget
 
 if TYPE_CHECKING:
     from blessed import Terminal
+
+
+# ── Errors ───────────────────────────────────────────────────────────
+
+
+class CallbackError(Exception):
+    """Raised by a TUI callback when the underlying ccw operation failed.
+
+    The message is user-facing: the main loop renders it on the status
+    line (or in the post-launch banner) in red. ``bin/ccw`` wraps every
+    callback with ``_wrap_tui_callback`` so that ``fail() → SystemExit``
+    paths inside ccw surface here with their stderr message intact,
+    instead of killing the process silently under blessed's fullscreen.
+    """
 
 
 # ── Data ─────────────────────────────────────────────────────────────
@@ -777,8 +792,8 @@ def _activate_item(
             try:
                 ctx.on_kill_all_global()
                 return t.green(f"Killed all {total_count} sessions (all users)"), None
-            except SystemExit:
-                return t.red("Failed to kill all sessions globally"), None
+            except CallbackError as exc:
+                return t.red(f"Kill all (global) failed: {exc}"), None
         return None, None
 
     return None, None
@@ -812,6 +827,35 @@ def _format_launch_status(t: "Terminal", req: "LaunchRequest", rc: int, stage: s
     if rc == 130:
         return _dim(t, f"{label}: cancelled")
     return t.yellow(f"{label}: exited rc={rc}")
+
+
+def _pause_on_launch_failure(
+    t: "Terminal", req: "LaunchRequest", rc: int, stage: str
+) -> None:
+    """Hold the terminal after a failed launch so the user can read stderr.
+
+    Called after the blessed fullscreen context has exited and before we
+    re-enter it. The failed subprocess's stderr is still on the physical
+    terminal at this point; without a pause, re-entering fullscreen wipes
+    it. We print a clear banner pointing at the output above and wait for
+    a keypress. ``rc == 130`` (user Ctrl-C'd) is not treated as a failure.
+    """
+    if rc == 0 or rc == 130:
+        return
+    label = req.label or "launch"
+    sys.stdout.write("\n")
+    sys.stdout.write(t.bold_red(f"ccw: {label} failed (rc={rc}, stage={stage})") + "\n")
+    if stage == "prelaunch":
+        sys.stdout.write(
+            _dim(t, f"  command: {' '.join(list(req.prelaunch[0]) if req.prelaunch else [])}") + "\n"
+        )
+    else:
+        sys.stdout.write(_dim(t, f"  command: {' '.join(req.cmd)}") + "\n")
+    sys.stdout.write(_dim(t, "  see output above for details") + "\n")
+    sys.stdout.write(t.bold("press any key to return to the ccw menu...") + "\n")
+    sys.stdout.flush()
+    with t.cbreak():
+        t.inkey(timeout=None)
 
 
 def _interactive_loop(
@@ -873,13 +917,19 @@ def _interactive_loop(
             cursor = max(0, total - 1)
 
         elif key.name == "KEY_ENTER" or key == "\n" or key == "\r":
-            msg, req = _activate_item(t, ctx, cursor)
+            try:
+                msg, req = _activate_item(t, ctx, cursor)
+            except CallbackError as exc:
+                msg, req = t.red(f"Error: {exc}"), None
             status_msg = msg or ""
             if req is not None:
                 return "launch", (req, cursor, scroll_offset, ctx)
             # Items that come back (Settings/Kill-all) need a context refresh
             if has_super and cursor in (settings_idx, kill_idx):
-                ctx = ctx.on_refresh()
+                try:
+                    ctx = ctx.on_refresh()
+                except CallbackError as exc:
+                    status_msg = t.red(f"Refresh failed: {exc}")
                 total = _total_items(ctx)
                 if cursor >= total:
                     cursor = max(0, total - 1)
@@ -888,12 +938,18 @@ def _interactive_loop(
             idx = int(str(key)) - 1
             if idx < total:
                 cursor = idx
-                msg, req = _activate_item(t, ctx, cursor)
+                try:
+                    msg, req = _activate_item(t, ctx, cursor)
+                except CallbackError as exc:
+                    msg, req = t.red(f"Error: {exc}"), None
                 status_msg = msg or ""
                 if req is not None:
                     return "launch", (req, cursor, scroll_offset, ctx)
                 if has_super and cursor in (settings_idx, kill_idx):
-                    ctx = ctx.on_refresh()
+                    try:
+                        ctx = ctx.on_refresh()
+                    except CallbackError as exc:
+                        status_msg = t.red(f"Refresh failed: {exc}")
                     total = _total_items(ctx)
                     if cursor >= total:
                         cursor = max(0, total - 1)
@@ -907,9 +963,12 @@ def _interactive_loop(
                     try:
                         ctx.on_kill(ctx.current_user, session.name)
                         status_msg = t.green(f"Killed {session.name}")
-                    except SystemExit:
-                        status_msg = t.red(f"Failed to kill {session.name}")
-                    ctx = ctx.on_refresh()
+                    except CallbackError as exc:
+                        status_msg = t.red(f"Kill {session.name} failed: {exc}")
+                    try:
+                        ctx = ctx.on_refresh()
+                    except CallbackError as exc:
+                        status_msg = t.red(f"Refresh failed: {exc}")
                     total = _total_items(ctx)
                     if cursor >= total:
                         cursor = max(0, total - 1)
@@ -920,9 +979,12 @@ def _interactive_loop(
                     try:
                         ctx.on_kill(session.user, session.name)
                         status_msg = t.green(f"Killed {session.name} (user={session.user})")
-                    except SystemExit:
-                        status_msg = t.red(f"Failed to kill {session.name}")
-                    ctx = ctx.on_refresh()
+                    except CallbackError as exc:
+                        status_msg = t.red(f"Kill {session.name} failed: {exc}")
+                    try:
+                        ctx = ctx.on_refresh()
+                    except CallbackError as exc:
+                        status_msg = t.red(f"Refresh failed: {exc}")
                     total = _total_items(ctx)
                     if cursor >= total:
                         cursor = max(0, total - 1)
@@ -935,15 +997,21 @@ def _interactive_loop(
                     try:
                         ctx.on_kill_all()
                         status_msg = t.green(f"Killed all {n} sessions")
-                    except SystemExit:
-                        status_msg = t.red("Failed to kill all sessions")
-                    ctx = ctx.on_refresh()
+                    except CallbackError as exc:
+                        status_msg = t.red(f"Kill all failed: {exc}")
+                    try:
+                        ctx = ctx.on_refresh()
+                    except CallbackError as exc:
+                        status_msg = t.red(f"Refresh failed: {exc}")
                     cursor = 0
                     scroll_offset = 0
 
         elif key == "r":
-            ctx = ctx.on_refresh()
-            status_msg = _dim(t, "Refreshed")
+            try:
+                ctx = ctx.on_refresh()
+                status_msg = _dim(t, "Refreshed")
+            except CallbackError as exc:
+                status_msg = t.red(f"Refresh failed: {exc}")
             total = _total_items(ctx)
             if cursor >= total:
                 cursor = max(0, total - 1)
@@ -968,16 +1036,31 @@ def run(ctx: TuiContext) -> int:
     scroll_offset = 0
     status_msg = ""
 
-    while True:
-        with t.fullscreen(), t.cbreak(), t.hidden_cursor():
-            outcome, payload = _interactive_loop(t, ctx, cursor, scroll_offset, status_msg)
+    try:
+        while True:
+            with t.fullscreen(), t.cbreak(), t.hidden_cursor():
+                outcome, payload = _interactive_loop(t, ctx, cursor, scroll_offset, status_msg)
 
-        if outcome == "quit":
-            return int(payload)
+            if outcome == "quit":
+                return int(payload)
 
-        # outcome == "launch"
-        req, cursor, scroll_offset, ctx = payload
-        sys.stdout.flush()
-        rc, stage = _run_launch_request(req)
-        status_msg = _format_launch_status(t, req, rc, stage)
-        ctx = ctx.on_refresh()
+            # outcome == "launch"
+            req, cursor, scroll_offset, ctx = payload
+            sys.stdout.flush()
+            rc, stage = _run_launch_request(req)
+            status_msg = _format_launch_status(t, req, rc, stage)
+            _pause_on_launch_failure(t, req, rc, stage)
+            try:
+                ctx = ctx.on_refresh()
+            except CallbackError as exc:
+                status_msg = t.red(f"Refresh failed: {exc}")
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:  # pragma: no cover — last-ditch guard
+        # We're already outside blessed fullscreen here (context manager
+        # exits on exception propagation), so writing to stderr is safe.
+        print(file=sys.stderr)
+        print(t.bold_red(f"ccw: interactive mode crashed: {exc}"), file=sys.stderr)
+        print(_dim(t, "─" * 40), file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        return 1

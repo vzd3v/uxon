@@ -380,6 +380,76 @@ class LaunchRequestTests(unittest.TestCase):
         self.assertEqual((rc, stage), (5, "prelaunch"))
         call.assert_called_once()  # main cmd never ran
 
+    def test_callback_error_is_exception(self) -> None:
+        self.assertTrue(issubclass(ccw_tui.CallbackError, Exception))
+        err = ccw_tui.CallbackError("boom")
+        self.assertEqual(str(err), "boom")
+
+    def test_activate_propagates_callback_error_from_on_attach(self) -> None:
+        """A CallbackError raised by on_attach must bubble out of _activate_item
+        so the outer loop (which wraps this call) can render it on the status
+        line instead of crashing the TUI."""
+        ctx = _make_ctx(sessions=[_make_session("demo")])
+
+        def on_attach(user: str, name: str):
+            raise ccw_tui.CallbackError("tmux kill-session: no such session")
+
+        ctx.on_attach = on_attach  # type: ignore[assignment]
+        t = _FakeTerm()
+        with self.assertRaises(ccw_tui.CallbackError) as cm:
+            ccw_tui._activate_item(t, ctx, ccw_tui.ACTION_COUNT)
+        self.assertIn("no such session", str(cm.exception))
+
+    def test_activate_global_kill_renders_callback_error_message(self) -> None:
+        """Kill-all-global raising CallbackError becomes a status-line message
+        including the underlying error text (not a generic 'failed')."""
+        ctx = _make_ctx(sessions=[_make_session("a")], has_sudo=True)
+
+        def on_kill_all_global() -> None:
+            raise ccw_tui.CallbackError("permission denied on socket")
+
+        ctx.on_kill_all_global = on_kill_all_global  # type: ignore[assignment]
+
+        # Compute the kill-all-global item index.
+        _, _, _, kill_idx, has_super = ccw_tui._segments(ctx)
+        self.assertTrue(has_super)
+        self.assertGreater(kill_idx, 0)
+
+        t = _FakeTerm()
+        with mock.patch.object(ccw_tui, "_confirm_kill_all_global", return_value=True):
+            msg, req = ccw_tui._activate_item(t, ctx, kill_idx)
+        self.assertIsNone(req)
+        self.assertIsNotNone(msg)
+        self.assertIn("permission denied", msg)
+
+    def test_pause_on_launch_failure_skips_on_success_and_cancel(self) -> None:
+        """No pause and no output when rc is 0 (success) or 130 (Ctrl-C)."""
+        t = _FakeTerm()
+        req = ccw_tui.LaunchRequest(cmd=("true",), label="attach demo")
+        with mock.patch.object(ccw_tui.sys.stdout, "write") as w:
+            ccw_tui._pause_on_launch_failure(t, req, 0, "cmd")
+            ccw_tui._pause_on_launch_failure(t, req, 130, "cmd")
+        w.assert_not_called()
+
+    def test_pause_on_launch_failure_waits_for_key_on_nonzero_rc(self) -> None:
+        class _NullCM:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+
+        t = _FakeTerm()
+        # _FakeTerm must provide cbreak() and inkey() for this path. Stub.
+        t.cbreak = lambda: _NullCM()  # type: ignore[attr-defined]
+        t.inkey = lambda timeout=None: "x"  # type: ignore[attr-defined]
+        req = ccw_tui.LaunchRequest(cmd=("tmux", "new-session"), label="launch cc-demo")
+        with mock.patch.object(ccw_tui.sys.stdout, "write") as w, \
+             mock.patch.object(ccw_tui.sys.stdout, "flush"):
+            ccw_tui._pause_on_launch_failure(t, req, 5, "cmd")
+        # Should have written the banner (includes the rc) before blocking.
+        written = "".join(c.args[0] for c in w.call_args_list)
+        self.assertIn("rc=5", written)
+        self.assertIn("press any key", written)
+        self.assertIn("launch cc-demo", written)
+
     def test_tui_context_defaults_return_noop_launch_request(self) -> None:
         ctx = ccw_tui.TuiContext(
             sessions=[],
