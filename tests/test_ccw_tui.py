@@ -619,6 +619,85 @@ class DrainStdinTests(unittest.TestCase):
         self.assertEqual(ccw_tui._drain_stdin(t), 0)
 
 
+class KeymapRegistryTests(unittest.TestCase):
+    """PR 6 invariant: every key binding handled at runtime by any TUI
+    screen is declared in :data:`ccw_tui.SCREEN_KEYMAP`. This is the
+    active gate the review asked for — silent-overload bugs like the
+    old ``g → open git remotes`` shortcut become detectable as an
+    undeclared binding instead of hiding in first-match-if chains.
+    """
+
+    def test_main_screen_has_quit_activate_and_kill_keys(self) -> None:
+        main = ccw_tui.SCREEN_KEYMAP[ccw_tui.Screen.MAIN]
+        self.assertIn("quit", main)
+        self.assertIn("q", main["quit"])
+        self.assertIn("KEY_ESCAPE", main["quit"])
+        self.assertIn("activate", main)
+        self.assertIn("kill", main)
+        self.assertIn("d", main["kill"])
+
+    def test_settings_screen_does_not_bind_g_to_anything(self) -> None:
+        """PR 1 invariant, now formalised in the registry: the Settings
+        screen has no binding for the literal key ``g`` — it is not in
+        the allow-list for cursor_home (only KEY_HOME) nor for any
+        other action."""
+        settings = ccw_tui.SCREEN_KEYMAP[ccw_tui.Screen.SETTINGS]
+        for action, keys in settings.items():
+            self.assertNotIn(
+                "g", keys,
+                f"Settings screen must not bind 'g' to any action, found in '{action}'",
+            )
+
+    def test_every_screen_has_activate_or_submit_or_cancel(self) -> None:
+        """Every screen must offer at least one exit/activate action."""
+        for screen, bindings in ccw_tui.SCREEN_KEYMAP.items():
+            exits = set(bindings).intersection({"activate", "submit", "cancel", "quit", "back"})
+            self.assertTrue(exits, f"Screen {screen} has no activate/submit/cancel binding")
+
+    def test_no_duplicate_key_within_a_screen(self) -> None:
+        """Within a screen, the same key may not appear under two actions —
+        otherwise the runtime first-match dispatch is ambiguous."""
+        for screen, bindings in ccw_tui.SCREEN_KEYMAP.items():
+            seen: dict[str, str] = {}
+            for action, keys in bindings.items():
+                for k in keys:
+                    if k in seen:
+                        self.fail(f"Screen {screen}: key {k!r} bound to both {seen[k]!r} and {action!r}")
+                    seen[k] = action
+
+    def test_registry_key_matches_runtime_literal_keys(self) -> None:
+        """Scan the source of the main interactive loop for ``key == "X"``
+        literal comparisons and assert each referenced literal is in the
+        MAIN screen's keymap. This catches unauthorised new bindings."""
+        src = inspect.getsource(ccw_tui._interactive_loop)
+        import re
+        # Match: key == "X" or == "KEY_X" (single-char or name-style).
+        # Source text has escape sequences as 2-char strings (\n → "\\n").
+        literal_eqs = re.findall(r'key == "([^"]+)"', src)
+        name_eqs = re.findall(r'key\.name == "([^"]+)"', src)
+        main = ccw_tui.SCREEN_KEYMAP[ccw_tui.Screen.MAIN]
+        declared = set()
+        for keys in main.values():
+            declared.update(keys)
+
+        def _decode(lit: str) -> str:
+            # In the source text, "\n" is the two chars '\' and 'n'; decode
+            # common escapes to their actual keypress value.
+            return lit.encode("utf-8").decode("unicode_escape")
+
+        for lit in literal_eqs:
+            decoded = _decode(lit)
+            self.assertIn(
+                decoded, declared,
+                f"Runtime literal key {decoded!r} in _interactive_loop is not declared in MAIN keymap",
+            )
+        for name in name_eqs:
+            self.assertIn(
+                name, declared,
+                f"Runtime KEY_* name {name!r} in _interactive_loop is not declared in MAIN keymap",
+            )
+
+
 class PlanTuiOpenExistingTests(unittest.TestCase):
     """PR 5 invariant: the TUI "Open existing project" planner is
     structurally incapable of calling git-creation code. Verified by AST

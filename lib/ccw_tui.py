@@ -14,6 +14,15 @@ Sub-screens:
   - Project name input for "Create new project"
   - Project picker for "Open existing project"
   - Settings list + per-type editor (see ccw_tui_settings.py)
+
+Per-screen key bindings are documented in the :data:`SCREEN_KEYMAP`
+registry at the bottom of this module. Each screen's inline ``t.inkey``
+handler is the source of truth at runtime; :data:`SCREEN_KEYMAP`
+is the hand-curated declaration that reviewers and tests use to
+detect silent overloads or drift. A regression test
+(``KeymapRegistryTests`` in tests/test_ccw_tui.py) walks the module
+source and verifies every runtime binding is declared in the registry
+for the screen that owns it.
 """
 
 from __future__ import annotations
@@ -23,6 +32,7 @@ import subprocess
 import sys
 import traceback
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
 from ccw_tui_widgets import confirm_phrase as _confirm_phrase_widget
@@ -1170,3 +1180,97 @@ def run(ctx: TuiContext) -> int:
         print(_dim(t, "─" * 40), file=sys.stderr)
         print(traceback.format_exc(), file=sys.stderr)
         return 1
+
+
+# ── Key-binding registry ─────────────────────────────────────────────
+#
+# This is a hand-curated declaration of what each screen's input
+# handler is supposed to do for every key it accepts. It is NOT the
+# runtime dispatch — the per-screen handlers (``_interactive_loop``,
+# ``_prompt_existing_project``, ``_prompt_permissions``,
+# ``_prompt_project_name``, ``_prompt_git_profile``, and
+# ``ccw_tui_settings.show_settings``) still match keys inline. The
+# registry exists so:
+#
+#   * A test (``KeymapRegistryTests``) can walk the module and verify
+#     every ``key == "X"`` / ``key.name == "KEY_X"`` comparison in the
+#     runtime code is declared here for the screen that owns it —
+#     silent overloads like the old ``g → open git remotes`` in
+#     Settings show up as an entry mismatch.
+#   * Reviewers have one place to read "what does key X do on
+#     screen Y".
+#   * Future refactors to a true dispatch-table architecture have a
+#     ground-truth to migrate against.
+#
+# When you add or remove a key binding in any screen handler, update
+# this registry to match. The registry test will fail if they drift.
+
+
+class Screen(Enum):
+    MAIN = "main"
+    PICKER_EXISTING = "picker-existing"
+    PROMPT_NEW_PROJECT = "prompt-new-project"
+    PROMPT_GIT_PROFILE = "prompt-git-profile"
+    PROMPT_PERMISSIONS = "prompt-permissions"
+    SETTINGS = "settings"
+
+
+#: For each screen, a dict from an "action label" to the set of key
+#: representations that may trigger it. Keys are either literal
+#: strings (``"q"``, ``"d"``) or special names (``"KEY_UP"``,
+#: ``"KEY_ENTER"``). A test verifies every key in the runtime source
+#: is declared in exactly one action for its screen.
+SCREEN_KEYMAP: dict[Screen, dict[str, tuple[str, ...]]] = {
+    Screen.MAIN: {
+        "quit": ("q", "KEY_ESCAPE"),
+        "cursor_up": ("KEY_UP", "k"),
+        "cursor_down": ("KEY_DOWN", "j"),
+        "cursor_home": ("KEY_HOME", "g"),
+        "cursor_end": ("KEY_END", "G"),
+        "activate": ("KEY_ENTER", "\n", "\r"),
+        "digit_jump": ("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+        "kill": ("d",),
+        "kill_all_own": ("D",),
+        "refresh": ("r",),
+    },
+    Screen.PICKER_EXISTING: {
+        "cancel": ("KEY_ESCAPE", "q"),
+        "cursor_up": ("KEY_UP", "k"),
+        "cursor_down": ("KEY_DOWN", "j"),
+        "cursor_home": ("KEY_HOME", "g"),
+        "cursor_end": ("KEY_END", "G"),
+        "activate": ("KEY_ENTER", "\n", "\r"),
+        "digit_pick": ("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+    },
+    Screen.PROMPT_PERMISSIONS: {
+        "cancel": ("KEY_ESCAPE", "q"),
+        "cursor_up": ("KEY_UP", "k"),
+        "cursor_down": ("KEY_DOWN", "j"),
+        "activate": ("KEY_ENTER", "\n", "\r"),
+        "digit_regular": ("1",),
+        "digit_dsp": ("2",),
+    },
+    Screen.PROMPT_NEW_PROJECT: {
+        "cancel": ("KEY_ESCAPE",),
+        "submit": ("KEY_ENTER", "\n", "\r"),
+        "backspace": ("KEY_BACKSPACE", "\x7f"),
+    },
+    Screen.PROMPT_GIT_PROFILE: {
+        "cancel": ("KEY_ESCAPE",),
+        "cursor_up": ("KEY_UP", "k"),
+        "cursor_down": ("KEY_DOWN", "j"),
+        "activate": ("KEY_ENTER", "\n", "\r"),
+        # Digit picks in this prompt: 0 = "skip", 1..N = profile choices.
+        "digit_pick": ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9"),
+    },
+    Screen.SETTINGS: {
+        "back": ("KEY_ESCAPE", "q"),
+        "cursor_up": ("KEY_UP", "k"),
+        "cursor_down": ("KEY_DOWN", "j"),
+        "cursor_home": ("KEY_HOME",),  # Note: "g" deliberately absent — see PR 1.
+        "cursor_end": ("KEY_END", "G"),
+        "activate": ("KEY_ENTER", "\n", "\r"),
+        "reset": ("x",),
+        "digit_jump": ("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+    },
+}
