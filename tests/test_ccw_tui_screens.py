@@ -68,7 +68,9 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         app = CcwApp(_mk_ctx())
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            await pilot.press("1")
+            await pilot.press("1")   # digit-1 → PermissionsScreen
+            await pilot.pause()
+            await pilot.press("1")   # pick regular → on_launch_cwd(False)
             await pilot.pause()
         self.assertIsNotNone(app.pending_launch)
         self.assertEqual(app.pending_launch.label, "cwd")
@@ -147,6 +149,9 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("d")
             await pilot.pause()
+            # ConfirmYesNo modal is active — answer y.
+            await pilot.press("y")
+            await pilot.pause()
             await pilot.press("q")
             await pilot.pause()
         self.assertEqual(kill_calls, [("devagent", "devagent.foo")])
@@ -189,7 +194,9 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 
             app.notify = cap
             await pilot.pause()
-            await pilot.press("1")
+            await pilot.press("1")        # digit-1 → PermissionsScreen
+            await pilot.pause()
+            await pilot.press("1")        # pick regular → on_launch_cwd(False)
             await pilot.pause()
             await pilot.press("q")
             await pilot.pause()

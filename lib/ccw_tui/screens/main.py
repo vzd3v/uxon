@@ -37,6 +37,11 @@ from ..context import (
     _total_items,
 )
 from ..widgets import ActionRow, SessionTable
+from .confirm import ConfirmPhrase, ConfirmYesNo
+from .existing import ExistingProjectScreen
+from .git_profile import GitProfileScreen
+from .new_project import NewProjectScreen
+from .permissions import PermissionsScreen
 
 
 class MainScreen(Screen):
@@ -212,25 +217,54 @@ class MainScreen(Screen):
                 timeout=6,
             )
             return
-        # Permissions modal arrives in T10/T14. For now pick regular.
-        dsp = False
-        self.app.notify("TODO permissions modal (T10/T14)")
-        try:
-            req = self.ctx.on_launch_cwd(dsp)
-        except CallbackError as exc:
-            self.app.notify(str(exc), severity="error", timeout=6)
-            return
-        self.app.request_launch(req)  # type: ignore[attr-defined]
+
+        def after_perm(dsp: bool | None) -> None:
+            if dsp is None:
+                return
+            try:
+                req = self.ctx.on_launch_cwd(dsp)
+            except CallbackError as exc:
+                self.app.notify(str(exc), severity="error", timeout=6)
+                return
+            self.app.request_launch(req)  # type: ignore[attr-defined]
+
+        self.app.push_screen(PermissionsScreen(), after_perm)
 
     def _launch_new(self) -> None:
-        # Name + git + permissions chain arrives in T14.
-        self.app.notify("TODO new-project modal chain (T11/T12/T10 → T14)")
-        try:
-            req = self.ctx.on_launch_new("placeholder-name", False, "")
-        except CallbackError as exc:
-            self.app.notify(str(exc), severity="error", timeout=6)
-            return
-        self.app.request_launch(req)  # type: ignore[attr-defined]
+        def after_perm(name: str, git_profile: str):
+            def _on_perm(dsp: bool | None) -> None:
+                if dsp is None:
+                    return
+                try:
+                    req = self.ctx.on_launch_new(name, dsp, git_profile)
+                except CallbackError as exc:
+                    self.app.notify(str(exc), severity="error", timeout=6)
+                    return
+                self.app.request_launch(req)  # type: ignore[attr-defined]
+            return _on_perm
+
+        def after_git(name: str):
+            def _on_git(git_profile: str | None) -> None:
+                if git_profile is None:
+                    return  # user cancelled the whole chain
+                self.app.push_screen(PermissionsScreen(), after_perm(name, git_profile))
+            return _on_git
+
+        def after_name(name: str | None) -> None:
+            if not name:
+                return
+            if self.ctx.git_create_enabled and self.ctx.git_remote_profile_options:
+                self.app.push_screen(
+                    GitProfileScreen(
+                        self.ctx.git_remote_profile_options,
+                        default_profile=self.ctx.default_git_remote_profile,
+                    ),
+                    after_git(name),
+                )
+            else:
+                self.app.push_screen(PermissionsScreen(), after_perm(name, ""))
+
+        self.app.push_screen(NewProjectScreen(self.ctx.new_project_root), after_name)
 
     def _launch_existing(self) -> None:
         if not self.ctx.existing_projects:
@@ -240,28 +274,55 @@ class MainScreen(Screen):
                 timeout=4,
             )
             return
-        self.app.notify("TODO existing-project picker modal (T13/T10 → T14)")
-        try:
-            req = self.ctx.on_launch_existing(self.ctx.existing_projects[0], False)
-        except CallbackError as exc:
-            self.app.notify(str(exc), severity="error", timeout=6)
-            return
-        self.app.request_launch(req)  # type: ignore[attr-defined]
+
+        def after_name(name: str | None) -> None:
+            if not name:
+                return
+
+            def after_perm(dsp: bool | None) -> None:
+                if dsp is None:
+                    return
+                try:
+                    req = self.ctx.on_launch_existing(name, dsp)
+                except CallbackError as exc:
+                    self.app.notify(str(exc), severity="error", timeout=6)
+                    return
+                self.app.request_launch(req)  # type: ignore[attr-defined]
+
+            self.app.push_screen(PermissionsScreen(), after_perm)
+
+        self.app.push_screen(
+            ExistingProjectScreen(self.ctx.existing_projects, self.ctx.new_project_root),
+            after_name,
+        )
 
     def _kill_all_global(self) -> None:
         total = len(self.ctx.sessions) + len(self.ctx.other_sessions)
         if total == 0:
             return
-        self.app.notify(f"TODO confirm kill-all-global ({total}) (T14)")
-        try:
-            self.ctx.on_kill_all_global()
-            self.app.notify(f"Killed all {total} sessions (all users)")
-        except CallbackError as exc:
-            self.app.notify(
-                f"Kill all (global) failed: {exc}", severity="error", timeout=6
-            )
-            return
-        self.action_refresh()
+
+        def after_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            try:
+                self.ctx.on_kill_all_global()
+                self.app.notify(f"Killed all {total} sessions (all users)")
+            except CallbackError as exc:
+                self.app.notify(
+                    f"Kill all (global) failed: {exc}",
+                    severity="error",
+                    timeout=6,
+                )
+                return
+            self.action_refresh()
+
+        self.app.push_screen(
+            ConfirmPhrase(
+                f"Kill ALL {total} sessions across ALL users?",
+                "kill-all-global",
+            ),
+            after_confirm,
+        )
 
     # ── Core bindings ────────────────────────────────────────────────
 
@@ -285,12 +346,7 @@ class MainScreen(Screen):
         self.app.switch_screen(new_screen)
 
     def action_kill(self) -> None:
-        """Kill the session under focus.
-
-        Modal-confirm flow lands in T14. For T7c we stub the confirm
-        with a ``notify`` and always proceed — pilot tests mock the
-        ``on_kill`` callback to assert plumbing.
-        """
+        """Confirm then kill the session under focus."""
         focused = self.focused
         if not isinstance(focused, SessionTable):
             self.app.notify("Select a session first.", severity="warning")
@@ -300,30 +356,49 @@ class MainScreen(Screen):
         if session is None:
             return
         user = session.user or self.ctx.current_user
-        self.app.notify(f"TODO confirm kill {session.name} (user={user}) (T14)")
-        try:
-            self.ctx.on_kill(user, session.name)
-            self.app.notify(f"Killed {session.short}")
-        except CallbackError as exc:
-            self.app.notify(
-                f"Kill {session.short} failed: {exc}", severity="error", timeout=6
-            )
-            return
-        self.action_refresh()
+
+        def after_confirm(ok: bool) -> None:
+            if not ok:
+                return
+            try:
+                self.ctx.on_kill(user, session.name)
+                self.app.notify(f"Killed {session.short}")
+            except CallbackError as exc:
+                self.app.notify(
+                    f"Kill {session.short} failed: {exc}",
+                    severity="error",
+                    timeout=6,
+                )
+                return
+            self.action_refresh()
+
+        self.app.push_screen(
+            ConfirmYesNo(f"Kill {session.name} (user={user})?"),
+            after_confirm,
+        )
 
     def action_kill_all_own(self) -> None:
         if not self.ctx.sessions:
             return
-        self.app.notify(
-            f"TODO confirm kill-all-own ({len(self.ctx.sessions)}) (T14)"
+        n = len(self.ctx.sessions)
+
+        def after_confirm(ok: bool) -> None:
+            if not ok:
+                return
+            try:
+                self.ctx.on_kill_all()
+                self.app.notify(f"Killed all {n} sessions")
+            except CallbackError as exc:
+                self.app.notify(
+                    f"Kill all failed: {exc}", severity="error", timeout=6
+                )
+                return
+            self.action_refresh()
+
+        self.app.push_screen(
+            ConfirmPhrase(f"Kill ALL {n} sessions?", "kill-all"),
+            after_confirm,
         )
-        try:
-            self.ctx.on_kill_all()
-            self.app.notify(f"Killed all {len(self.ctx.sessions)} sessions")
-        except CallbackError as exc:
-            self.app.notify(f"Kill all failed: {exc}", severity="error", timeout=6)
-            return
-        self.action_refresh()
 
     # ── Digit-jump ───────────────────────────────────────────────────
 
