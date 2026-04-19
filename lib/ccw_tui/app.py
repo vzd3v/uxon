@@ -18,25 +18,14 @@ import os
 import sys
 from typing import Any
 
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Static
 
 from .context import CallbackError, LaunchRequest, TuiContext
 from .events import _log_event
 from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request
-
-
-class _PlaceholderMainScreen(Static):
-    """T5 placeholder. Real :class:`MainScreen` arrives in T7a."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "ccw interactive (textual placeholder — real main screen in T7a)\n\n"
-            "Press q to quit, l to simulate a no-op launch.",
-            id="placeholder",
-        )
+from .screens.main import MainScreen
 
 
 class CcwApp(App):
@@ -52,11 +41,11 @@ class CcwApp(App):
 
     CSS_PATH = "styles.tcss"
 
-    BINDINGS = [
-        Binding("q", "quit_app", "Quit", show=True),
-        Binding("escape", "quit_app", "Quit", show=False),
-        Binding("f1", "help", "Help", show=False),
-    ]
+    # CcwApp has no per-app bindings — quit/help etc. live on the
+    # MainScreen so its Footer displays them; delegating to screens
+    # keeps the ``Footer`` widget single-source-of-truth (T18 drift
+    # guard depends on this).
+    BINDINGS = []
 
     def __init__(self, ctx: TuiContext, pending_status: str = "") -> None:
         super().__init__()
@@ -65,26 +54,14 @@ class CcwApp(App):
         self.quit_rc: int | None = None
         self.pending_status = pending_status
 
-    def compose(self) -> ComposeResult:
-        yield Header()
-        yield _PlaceholderMainScreen()
-        yield Footer()
-
     def on_mount(self) -> None:
+        # Push the main screen as the first and only base screen.
+        self.push_screen(MainScreen(self.ctx))
         if self.pending_status:
             # T0a confirmed: a notify() raised on mount survives the app
             # re-create cycle when the outer loop stashes the message.
             self.notify(self.pending_status, severity="error", timeout=6)
         self.pending_status = ""
-
-    # ── Bindings ─────────────────────────────────────────────────────
-
-    def action_quit_app(self) -> None:
-        self.quit_rc = 0
-        self.exit()
-
-    def action_help(self) -> None:
-        self.notify("ccw interactive — see docs/ for keybinding reference.")
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 
