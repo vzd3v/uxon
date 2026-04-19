@@ -41,8 +41,9 @@ from .launch import (
     _run_launch_request,
 )
 
-# Hints. ``TEXTUAL_MISSING_HINT`` is added in T4.
+# Hints.
 from ._legacy import BLESSED_MISSING_HINT
+from .hints import TEXTUAL_MISSING_HINT
 
 # Entry point + legacy helpers. The symbols exported here keep test
 # monkey-patching via ``mock.patch.object(ccw_tui, "<name>")`` working
@@ -82,6 +83,7 @@ __all__ = [
     "LaunchRequest",
     "SCREEN_KEYMAP",
     "Screen",
+    "TEXTUAL_MISSING_HINT",
     "TuiContext",
     "TuiSession",
     "build_items",
