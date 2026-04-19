@@ -967,5 +967,34 @@ class CcwTests(unittest.TestCase):
         self.assertIn("nested", req.label)
 
 
+class DoInteractiveBlessedMissingTests(unittest.TestCase):
+    """With blessed unavailable, ``ccw`` (interactive) must print a single
+    install hint on stderr, no traceback, and return 1."""
+
+    def test_prints_install_hint_when_blessed_missing(self) -> None:
+        # Force `import ccw_tui` to raise ImportError even though lib/ is
+        # on sys.path.
+        saved_ccw_tui = sys.modules.get("ccw_tui")
+        sys.modules["ccw_tui"] = None  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = ccw.load_config(tmp)
+                buf_err = io.StringIO()
+                buf_out = io.StringIO()
+                with mock.patch.object(sys, "stderr", buf_err), \
+                     mock.patch.object(sys, "stdout", buf_out):
+                    rc = ccw.do_interactive(cfg, "nobody")
+                self.assertEqual(rc, 1)
+                err_text = buf_err.getvalue()
+                self.assertIn("requires", err_text)
+                self.assertIn("blessed", err_text)
+                self.assertNotIn("Traceback", err_text)
+        finally:
+            if saved_ccw_tui is None:
+                sys.modules.pop("ccw_tui", None)
+            else:
+                sys.modules["ccw_tui"] = saved_ccw_tui
+
+
 if __name__ == "__main__":
     unittest.main()

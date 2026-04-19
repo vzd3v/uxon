@@ -2060,8 +2060,13 @@ def do_interactive(cfg: Config, launch_user: str) -> int:
         sys.path.insert(0, str(repo_root() / "lib"))
         import ccw_tui
     except ImportError:
-        eprint("ccw: interactive mode requires 'blessed' (pip install blessed)")
-        print(USAGE)
+        sys.path.insert(0, str(repo_root() / "lib"))
+        try:
+            from ccw_tui import BLESSED_MISSING_HINT
+            eprint(BLESSED_MISSING_HINT)
+        except ImportError:
+            eprint("ccw: interactive mode requires the 'blessed' package "
+                   "(apt install python3-blessed, or pip install --user blessed).")
         return 1
     cwd = canonical(os.getcwd())
     ctx = _build_tui_context(cfg, launch_user, cwd)

@@ -42,6 +42,13 @@ if TYPE_CHECKING:
     from blessed import Terminal
 
 
+BLESSED_MISSING_HINT = (
+    "ccw: interactive mode requires the 'blessed' package.\n"
+    "  Install system-wide:  sudo apt install python3-blessed\n"
+    "  Or per-user:          pip install --user blessed"
+)
+
+
 # ── Errors ───────────────────────────────────────────────────────────
 
 
@@ -1344,7 +1351,7 @@ def run(ctx: TuiContext) -> int:
     try:
         from blessed import Terminal
     except ImportError:
-        print("ccw: interactive mode requires 'blessed' (pip install blessed)", file=sys.stderr)
+        print(BLESSED_MISSING_HINT, file=sys.stderr)
         return 1
 
     t = Terminal()
