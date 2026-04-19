@@ -18,6 +18,12 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 - `lib/ccw_tui_widgets.py` — stateless, reusable TUI primitives
   (`dim`, `text_input`, `confirm_phrase`, `confirm_yn`, `flash_error`).
   Prefer adding shared widgets here over re-implementing them in a screen.
+- `lib/ccw_tui_mouse.py` — SGR-1006 mouse enable/disable, sequence parser,
+  `read_input()` helper that returns either a blessed Keystroke or a
+  `MouseEvent`, and `HitRegion` / `hit_test` for row routing.
+- `lib/ccw_tui_modals.py` — `run_modal(t, modal)` dispatcher and
+  `MenuModal` list-selection helper. Callers must re-render their own
+  screen after a modal dismisses; the dispatcher does not save/restore.
 - `lib/ccw_tui_settings.py` — superuser settings sub-screens.
   Knows nothing about file I/O; all side effects go through a
   `SettingsCallbacks` bundle provided by `bin/ccw`.
@@ -89,10 +95,12 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 
 ```bash
 python3 -m py_compile bin/ccw lib/ccw_tui.py lib/ccw_tui_widgets.py \
-  lib/ccw_tui_settings.py lib/ccw_settings.py \
+  lib/ccw_tui_settings.py lib/ccw_tui_mouse.py lib/ccw_tui_modals.py \
+  lib/ccw_settings.py \
   lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
   lib/ccw_git_backend_token.py lib/ccw_git_create.py \
   tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
+  tests/test_ccw_tui_mouse.py tests/test_ccw_tui_modals.py \
   tests/test_ccw_git_profiles.py tests/test_ccw_git_backend_gh.py \
   tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
   install/install_ccw.py install/render_ccw_config.py
