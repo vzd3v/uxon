@@ -27,6 +27,8 @@ from textual.widgets import (
     Static,
 )
 
+from ..context import CallbackError
+
 
 GIT_REMOTES_VIEW_LABEL = "Git remote profiles (view)"
 
@@ -96,7 +98,14 @@ class SettingsScreen(Screen):
         t = self.query_one("#settings-table", DataTable)
         cursor = t.cursor_row
         t.clear()
-        self._entries = list(self.cbs.get_entries())
+        try:
+            self._entries = list(self.cbs.get_entries())
+        except CallbackError as exc:
+            self._entries = []
+            self.app.notify(
+                f"Settings load failed: {exc}", severity="error", timeout=6
+            )
+            return
         self._has_git_view = (
             getattr(self.cbs, "get_git_remote_profile_rows", None) is not None
         )
@@ -136,7 +145,15 @@ class SettingsScreen(Screen):
         if self._has_git_view and t.cursor_row == 0:
             # Virtual row → open git remotes read-only screen.
             from .git_remotes import GitRemotesScreen
-            rows = self.cbs.get_git_remote_profile_rows()
+            try:
+                rows = self.cbs.get_git_remote_profile_rows()
+            except CallbackError as exc:
+                self.app.notify(
+                    f"Git remotes load failed: {exc}",
+                    severity="error",
+                    timeout=6,
+                )
+                return
             self.app.push_screen(GitRemotesScreen(rows))
             return
         entry = self._selected_entry()
