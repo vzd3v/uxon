@@ -73,6 +73,11 @@ class MainScreen(Screen):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
+        # Arrow navigation across focusable widgets. DataTable consumes
+        # up/down internally for row navigation, so these only fire when
+        # focus sits on an ActionRow — crossing widget boundaries.
+        Binding("up", "app.focus_previous", "", show=False),
+        Binding("down", "app.focus_next", "", show=False),
         # Digit 1-9 jump — resolver guards Settings / Kill-ALL.
         Binding("1", "digit_jump(1)", "1-9 jump", show=True),
         Binding("2", "digit_jump(2)", "", show=False),
@@ -155,6 +160,19 @@ class MainScreen(Screen):
         return f"({self.ctx.cwd_short} — not under allowed_roots)"
 
     def on_mount(self) -> None:
+        # VerticalScroll is focusable by default and swallows arrow keys
+        # for its own scroll. We want arrow keys to flow through to screen
+        # bindings (focus_next/focus_previous), so disable its focusability.
+        try:
+            scroll = self.query_one("#main-scroll")
+            scroll.can_focus = False
+        except Exception:  # pragma: no cover — defensive
+            pass
+        # Land focus on the first actionable row so arrows work immediately.
+        try:
+            self.query_one("#action-cwd", ActionRow).focus()
+        except Exception:  # pragma: no cover
+            pass
         if self.ctx.sessions:
             try:
                 self.query_one("#sessions-own", SessionTable).populate(self.ctx.sessions)
