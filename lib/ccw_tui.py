@@ -735,6 +735,8 @@ def _prompt_git_profile(
     if not options:
         return ""
 
+    from ccw_tui_mouse import MouseEvent, HitRegion, hit_test, read_input
+
     # Menu rows: 0 = skip, then one per profile.
     rows = [("", "skip — don't create any git remote")] + list(options)
     default_cursor = 0
@@ -750,6 +752,9 @@ def _prompt_git_profile(
         print(t.bold_white_on_blue(" Create git remote? "))
         print(_dim(t, "─" * t.width))
         print()
+        regions: list[HitRegion] = []
+        # Header(1) + separator(1) + blank(1) = 3 lines before first row.
+        row_y = 3
         for i, (name, desc) in enumerate(rows):
             selected = i == cursor
             prefix = t.bold_cyan("▸ ") if selected else "  "
@@ -760,11 +765,28 @@ def _prompt_git_profile(
                 print(t.reverse(t.ljust(row, t.width)))
             else:
                 print(row)
+            regions.append(HitRegion(y=row_y, action="row", payload=i))
+            row_y += 1
         footer_y = t.height - 1
         with t.location(0, footer_y):
             print(_build_footer(t, "git_profile"), end="")
 
-        key = t.inkey(timeout=None)
+        ev = read_input(t, timeout=None)
+        if isinstance(ev, MouseEvent):
+            if ev.wheel < 0:
+                cursor = max(0, cursor - 1)
+                continue
+            if ev.wheel > 0:
+                cursor = min(len(rows) - 1, cursor + 1)
+                continue
+            hit = hit_test(regions, y=ev.y - 1)
+            if hit and hit.action == "row":
+                if ev.pressed:
+                    cursor = int(hit.payload)
+                else:
+                    return rows[int(hit.payload)][0]
+            continue
+        key = ev
         if key.name == "KEY_ESCAPE":
             return None
         if key.name == "KEY_UP" or key == "k":
