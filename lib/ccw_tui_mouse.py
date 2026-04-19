@@ -89,6 +89,9 @@ def disable(t: "Terminal") -> None:
     sys.stdout.flush()
 
 
+_MOUSE_TERM = ("M", "m")
+
+
 def read_input(t: "Terminal", timeout=None):
     """Read a keystroke; if it is an SGR-1006 mouse sequence, return
     :class:`MouseEvent` instead. Otherwise return the blessed Keystroke
@@ -96,25 +99,49 @@ def read_input(t: "Terminal", timeout=None):
 
     Return type: ``Keystroke | MouseEvent | None`` (``None`` on timeout).
 
-    ASSUMPTION: under ``cbreak`` + SGR-1006 on modern terminals
-    (xterm, tmux≥2.4, iTerm2, kitty, Alacritty), ``blessed.inkey()``
-    aggregates unknown CSI sequences up to their terminator within its
-    internal KEYSTROKE_DELAY (~0.34s) and hands back the full
-    ``\\x1b[<b;x;y(M|m)`` as one Keystroke. We do NOT re-enter
-    ``inkey()`` with ``timeout=0`` to drain the rest — doing so risks
-    consuming the leading ESC of a different keystroke and
-    mis-attributing it.
-
-    If in future we see a terminal that splits the sequence, the right
-    fix is to read raw bytes via ``os.read(sys.stdin.fileno(), ...)`` in
-    the same ``cbreak`` context, NOT to re-enter ``inkey()``.
+    In practice ``blessed.Terminal.inkey()`` recognizes the CSI prefix
+    ``\\x1b[`` as a partial sequence and, for SGR-1006 mouse reports
+    (which blessed has no built-in mapping for), often splits the
+    payload across multiple ``inkey()`` calls — we have observed
+    ``\\x1b[``, ``<``, ``6``, ``5``, ``;`` arriving as separate
+    keystrokes on xterm-256color via tmux/pty. So when the first
+    keystroke *starts* a plausible SGR mouse sequence, we drain
+    subsequent characters with short zero-timeout calls until we see
+    the terminator ``M``/``m``. We never re-enter with a long timeout,
+    so a genuine lone ESC keystroke cannot be swallowed.
     """
     key = t.inkey(timeout=timeout)
     if not key:
         return None
     s = str(key)
-    if s.startswith("\x1b[<") and (s.endswith("M") or s.endswith("m")):
+    # Fast path: full sequence already returned in one keystroke.
+    if s.startswith("\x1b[<") and s[-1:] in _MOUSE_TERM:
         ev = parse_mouse_sgr(s)
         if ev is not None:
             return ev
+    # Partial SGR-1006: blessed split the CSI sequence. Drain the rest.
+    if s in ("\x1b[", "\x1b[<") or (
+        s.startswith("\x1b[<") and s[-1:] not in _MOUSE_TERM
+    ):
+        buf = s
+        # Ensure we're past the "<" — if we only have "\x1b[", the next
+        # char must be "<" to be an SGR mouse report.
+        deadline_reads = 32  # hard cap to prevent infinite loops on noise
+        while deadline_reads > 0 and buf[-1:] not in _MOUSE_TERM:
+            deadline_reads -= 1
+            nxt = t.inkey(timeout=0.1)
+            if not nxt:
+                break
+            ns = str(nxt)
+            buf += ns
+            # Early abort: the collated buffer is no longer a valid SGR
+            # prefix (e.g. second char after "\x1b[" is not "<"). Hand
+            # the original keystroke back unchanged so the caller can
+            # treat it as a non-mouse sequence.
+            if len(buf) >= 3 and not buf.startswith("\x1b[<"):
+                return key
+        if buf.startswith("\x1b[<") and buf[-1:] in _MOUSE_TERM:
+            ev = parse_mouse_sgr(buf)
+            if ev is not None:
+                return ev
     return key

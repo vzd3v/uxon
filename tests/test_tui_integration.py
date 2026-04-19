@@ -112,6 +112,26 @@ class PtyTuiIntegrationTests(unittest.TestCase):
         trace = self._run([b"\x1b[B", b"\r", b"q", b"q"])
         self.assertNotIn("Git remote profiles", trace.plain)
 
+    def test_left_click_on_second_action_row_selects_it(self) -> None:
+        """Click press + release on a visible action row should move the
+        cursor to that item without crashing. Exact row index isn't
+        asserted — we just need the TUI to parse the SGR-1006 sequence
+        and keep running."""
+        press = b"\x1b[<0;5;4M"
+        release = b"\x1b[<0;5;4m"
+        trace = self._run([press, release, b"q"])
+        self.assertNotIn("Traceback", trace.plain)
+        self.assertNotIn("crashed", trace.plain)
+        # All three action rows should still be visible in the last frame.
+        self.assertIn("Create new project", trace.plain)
+
+    def test_wheel_down_then_q_exits_cleanly(self) -> None:
+        """Wheel-down event (button 65) must not crash and must be
+        consumed as a cursor move."""
+        trace = self._run([b"\x1b[<65;1;1M", b"q"])
+        self.assertNotIn("Traceback", trace.plain)
+        self.assertNotIn("crashed", trace.plain)
+
 
 if __name__ == "__main__":
     unittest.main()

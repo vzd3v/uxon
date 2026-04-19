@@ -829,8 +829,16 @@ def _draw_main_screen(
     cursor: int,
     scroll_offset: int,
     status_msg: str,
-) -> None:
-    """Full redraw of the main TUI screen."""
+) -> "list":
+    """Full redraw of the main TUI screen.
+
+    Returns the list of :class:`HitRegion` entries describing which
+    0-based output rows correspond to which item index — consumed by
+    the main loop to route mouse clicks to the same activation handler
+    as ``Enter``.
+    """
+    from ccw_tui_mouse import HitRegion
+    regions: list = []
     own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
     own_widths = _compute_col_widths(ctx.sessions)
     other_widths = _compute_col_widths(ctx.other_sessions, include_user=True)
@@ -854,12 +862,16 @@ def _draw_main_screen(
     visible_start = scroll_offset
     visible_end = min(scroll_offset + available, total)
     row_line = 0
+    # Header (1) + separator (1) were printed via raw print() — they
+    # consume 2 physical lines. The first in-loop _print lands at y=2.
+    row_y = 2
 
     def _print(line: str) -> None:
-        nonlocal row_line
+        nonlocal row_line, row_y
         if row_line < available:
             print(line)
             row_line += 1
+            row_y += 1
 
     for i in range(visible_start, visible_end):
         # Segment separators / column headers are drawn before the first row
@@ -873,6 +885,7 @@ def _draw_main_screen(
             if ctx.other_sessions:
                 _print(_render_column_header(t, other_widths, show_user=True))
 
+        item_row_y = row_y  # the y this item row is about to occupy
         if i < own_start:
             num = i + 1
             if i == 0:
@@ -897,6 +910,9 @@ def _draw_main_screen(
         elif has_super and i == kill_idx:
             total_count = len(ctx.sessions) + len(ctx.other_sessions)
             _print(_render_kill_all_global_row(t, i + 1, i == cursor, total_count))
+        # Record hit region only if the row actually rendered (row_y advanced).
+        if row_y > item_row_y:
+            regions.append(HitRegion(y=item_row_y, action="row", payload=i))
 
     if total == ACTION_COUNT:
         # No sessions at all (superuser has none too). Print a hint under actions.
@@ -915,6 +931,8 @@ def _draw_main_screen(
     if status_msg:
         with t.location(0, t.height - 3):
             print(t.clear_eol + "  " + status_msg, end="")
+
+    return regions
 
 
 def _activate_item(
@@ -1155,6 +1173,8 @@ def _interactive_loop(
         session/project; outer loop should run ``req`` outside fullscreen
         and re-enter.
     """
+    from ccw_tui_mouse import MouseEvent, hit_test, read_input
+    _press_y: int | None = None
     while True:
         own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
         total = _total_items(ctx)
@@ -1176,10 +1196,53 @@ def _interactive_loop(
         elif cursor >= scroll_offset + available:
             scroll_offset = cursor - available + 1
 
-        _draw_main_screen(t, ctx, cursor, scroll_offset, status_msg)
+        regions = _draw_main_screen(t, ctx, cursor, scroll_offset, status_msg)
         status_msg = ""
 
-        key = t.inkey(timeout=None)
+        ev = read_input(t, timeout=None)
+
+        if isinstance(ev, MouseEvent):
+            if ev.wheel < 0:
+                if cursor > 0:
+                    cursor -= 1
+                continue
+            if ev.wheel > 0:
+                if cursor < total - 1:
+                    cursor += 1
+                continue
+            # Protocol y is 1-based; blessed rows are 0-based.
+            hit = hit_test(regions, y=ev.y - 1)
+            if hit is None or hit.action != "row":
+                if ev.pressed:
+                    _press_y = None
+                continue
+            idx = int(hit.payload)
+            if ev.pressed:
+                cursor = idx
+                _press_y = ev.y
+                continue
+            # Release: only activate if on the same row as the press.
+            if _press_y != ev.y:
+                _press_y = None
+                continue
+            _press_y = None
+            # Same gate as digit_jump: don't auto-open Settings / Kill-ALL.
+            if has_super and idx in (settings_idx, kill_idx):
+                status_msg = _dim(
+                    t,
+                    "Press Enter to open Settings / Kill-ALL (click selects only)",
+                )
+                continue
+            try:
+                msg, req = _activate_item(t, ctx, idx)
+            except CallbackError as exc:
+                msg, req = t.red(f"Error: {exc}"), None
+            status_msg = msg or ""
+            if req is not None:
+                return "launch", (req, idx, scroll_offset, ctx)
+            continue
+
+        key = ev  # Keystroke — fall through to existing branches
 
         if key == "q" or key.name == "KEY_ESCAPE":
             return "quit", 0
@@ -1317,10 +1380,18 @@ def run(ctx: TuiContext) -> int:
         print(BLESSED_MISSING_HINT, file=sys.stderr)
         return 1
 
+    import atexit
+    from ccw_tui_mouse import enable as _mouse_enable, disable as _mouse_disable
+
     t = Terminal()
     cursor = 0
     scroll_offset = 0
     status_msg = ""
+
+    # atexit safety net: if we crash inside fullscreen, ensure mouse
+    # reporting is disabled so the user's post-crash shell doesn't see
+    # CSI bytes as garbage text.
+    atexit.register(_mouse_disable, t)
 
     caller_user = os.environ.get("SUDO_USER") or os.environ.get("USER", "")
     launch_user = ctx.current_user
@@ -1335,7 +1406,11 @@ def run(ctx: TuiContext) -> int:
     try:
         while True:
             with t.fullscreen(), t.cbreak(), t.hidden_cursor():
-                outcome, payload = _interactive_loop(t, ctx, cursor, scroll_offset, status_msg)
+                _mouse_enable(t)
+                try:
+                    outcome, payload = _interactive_loop(t, ctx, cursor, scroll_offset, status_msg)
+                finally:
+                    _mouse_disable(t)
 
             if outcome == "quit":
                 _log_event(
@@ -1378,10 +1453,12 @@ def run(ctx: TuiContext) -> int:
             except CallbackError as exc:
                 status_msg = t.red(f"Refresh failed: {exc}")
     except KeyboardInterrupt:
+        _mouse_disable(t)
         return 130
     except Exception as exc:  # pragma: no cover — last-ditch guard
         # We're already outside blessed fullscreen here (context manager
         # exits on exception propagation), so writing to stderr is safe.
+        _mouse_disable(t)
         print(file=sys.stderr)
         print(t.bold_red(f"ccw: interactive mode crashed: {exc}"), file=sys.stderr)
         print(_dim(t, "─" * 40), file=sys.stderr)
