@@ -19,16 +19,18 @@ jobs:
           python-version: "3.11"
 
       - name: Install runtime deps
-        run: python3 -m pip install tomlkit
+        run: python3 -m pip install tomlkit blessed
 
       - name: Compile Python files
         run: |
           python3 -m py_compile bin/ccw \
             lib/ccw_tui.py lib/ccw_tui_widgets.py \
-            lib/ccw_tui_settings.py lib/ccw_settings.py \
+            lib/ccw_tui_settings.py lib/ccw_tui_modals.py \
+            lib/ccw_tui_mouse.py lib/ccw_settings.py \
             lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
             lib/ccw_git_backend_token.py lib/ccw_git_create.py \
             tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
+            tests/test_ccw_tui_modals.py tests/test_ccw_tui_mouse.py \
             tests/test_ccw_git_profiles.py tests/test_ccw_git_backend_gh.py \
             tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
             install/install_ccw.py install/render_ccw_config.py

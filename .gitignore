@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 config/
+_external_sources/
+docs/plans/
