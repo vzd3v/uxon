@@ -32,7 +32,9 @@ from ..context import (
     ACTION_COUNT,
     CallbackError,
     TuiContext,
+    _digit_hinted_indices,
     _segments,
+    _total_items,
 )
 from ..widgets import ActionRow, SessionTable
 
@@ -66,6 +68,16 @@ class MainScreen(Screen):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
+        # Digit 1-9 jump — resolver guards Settings / Kill-ALL.
+        Binding("1", "digit_jump(1)", "1-9 jump", show=True),
+        Binding("2", "digit_jump(2)", "", show=False),
+        Binding("3", "digit_jump(3)", "", show=False),
+        Binding("4", "digit_jump(4)", "", show=False),
+        Binding("5", "digit_jump(5)", "", show=False),
+        Binding("6", "digit_jump(6)", "", show=False),
+        Binding("7", "digit_jump(7)", "", show=False),
+        Binding("8", "digit_jump(8)", "", show=False),
+        Binding("9", "digit_jump(9)", "", show=False),
     ]
 
     def __init__(self, ctx: TuiContext) -> None:
@@ -178,6 +190,83 @@ class MainScreen(Screen):
 
     def action_kill_all_own(self) -> None:
         self.app.notify("TODO modal kill-all-own (T7c)")
+
+    # ── Digit-jump ───────────────────────────────────────────────────
+
+    def action_digit_jump(self, n: int) -> None:
+        """Jump to (and activate) the item hinted by digit ``n``.
+
+        Guard (ported verbatim from ``DigitJumpGuardTests``): on an
+        empty-superuser state, digit ACTION_COUNT+1 lands on Settings /
+        Kill-ALL, which must NOT auto-activate — it's a "move cursor
+        only" row, reachable by arrow-down + Enter. Same rule applies
+        in the textual flavour via :func:`_digit_hinted_indices`.
+        """
+        idx = n - 1
+        total = _total_items(self.ctx)
+        if idx < 0 or idx >= total:
+            return
+        allowed = _digit_hinted_indices(self.ctx)
+        if idx in allowed:
+            self._activate_index(idx)
+            return
+        # Digit pointed at Settings or Kill-ALL — move focus there but
+        # don't auto-activate.
+        own_start, other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
+        if has_super and idx in (settings_idx, kill_idx):
+            self._focus_index(idx)
+            self.app.notify(
+                "Press Enter to open Settings / Kill-ALL (digit moves cursor only)"
+            )
+
+    def _activate_index(self, idx: int) -> None:
+        """Resolve index into a concrete item and fire its activation.
+
+        Wiring to real callbacks lands in T7c. For T7b, this is a thin
+        focus+notify router so pilot tests can verify the guard logic
+        without the full modal chain.
+        """
+        own_start, other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
+        self._focus_index(idx)
+        if idx < own_start:
+            kinds = ("action-cwd", "action-new", "action-open")
+            self.app.notify(f"digit → {kinds[idx]}")
+            return
+        if idx < other_start:
+            session = self.ctx.sessions[idx - own_start]
+            self.app.notify(f"digit → own-session:{session.short}")
+            return
+        if has_super and idx < settings_idx:
+            session = self.ctx.other_sessions[idx - other_start]
+            self.app.notify(f"digit → other-session:{session.user}/{session.short}")
+            return
+
+    def _focus_index(self, idx: int) -> None:
+        """Move focus to the widget backing ``idx`` on the current screen."""
+        own_start, other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
+        try:
+            if idx < own_start:
+                action_ids = ("action-cwd", "action-new", "action-open")
+                self.query_one(f"#{action_ids[idx]}", ActionRow).focus()
+                return
+            if idx < other_start:
+                t = self.query_one("#sessions-own", SessionTable)
+                t.move_cursor(row=idx - own_start)
+                t.focus()
+                return
+            if has_super and idx < settings_idx:
+                t = self.query_one("#sessions-other", SessionTable)
+                t.move_cursor(row=idx - other_start)
+                t.focus()
+                return
+            if has_super and idx == settings_idx:
+                self.query_one("#action-settings", ActionRow).focus()
+                return
+            if has_super and idx == kill_idx:
+                self.query_one("#action-kill-all-global", ActionRow).focus()
+                return
+        except Exception:  # pragma: no cover — focus best-effort
+            pass
 
     # ── Convenience ──────────────────────────────────────────────────
 
