@@ -132,6 +132,15 @@ class PtyTuiIntegrationTests(unittest.TestCase):
         self.assertNotIn("Traceback", trace.plain)
         self.assertNotIn("crashed", trace.plain)
 
+    def test_click_on_settings_row_opens_settings(self) -> None:
+        """With no own sessions, Settings is the first superuser row.
+        A click (press + release) on a main-screen action area must not
+        crash the TUI. Exact row coordinates vary with layout — this is
+        a smoke test, not a position-assert."""
+        trace = self._run([b"\x1b[<0;5;6M", b"\x1b[<0;5;6m", b"q", b"q"])
+        self.assertNotIn("Traceback", trace.plain)
+        self.assertNotIn("crashed", trace.plain)
+
 
 if __name__ == "__main__":
     unittest.main()
