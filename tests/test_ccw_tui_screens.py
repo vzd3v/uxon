@@ -359,3 +359,44 @@ class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_escape_cancels(self):
         result = await self._run("bar", submit_key="escape")
         self.assertIsNone(result)
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class GitProfileScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, keys, options, default=""):
+        from textual.app import App
+        from ccw_tui.screens.git_profile import GitProfileScreen
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(GitProfileScreen(options, default_profile=default), done)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            for k in keys:
+                await pilot.press(k)
+            await pilot.pause()
+        return app.result
+
+    async def test_digit_0_picks_skip(self):
+        opts = [("profA", "A"), ("profB", "B")]
+        self.assertEqual(await self._run(["0"], opts), "")
+
+    async def test_digit_1_picks_first(self):
+        opts = [("profA", "A"), ("profB", "B")]
+        self.assertEqual(await self._run(["1"], opts), "profA")
+
+    async def test_escape_cancels(self):
+        opts = [("profA", "A")]
+        self.assertIsNone(await self._run(["escape"], opts))
+
+    async def test_default_profile_preselected(self):
+        opts = [("profA", "A"), ("profB", "B")]
+        # Default = profB → cursor starts at index 2 → Enter picks profB.
+        self.assertEqual(await self._run(["enter"], opts, default="profB"), "profB")
