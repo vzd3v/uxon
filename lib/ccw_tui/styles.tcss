@@ -1,10 +1,17 @@
 /* ccw TUI — root stylesheet.
  *
- * Theme tokens (applied via ``$ccw-*`` variables) land here in T17.
- * T5 ships a minimal header/footer + placeholder layout to keep the
- * boot path non-empty. Widget-specific styling moves in alongside
- * each screen as it lands (T6–T16).
+ * Tokens pinned per T0c: textual 8.x provides $error / $warning /
+ * $text-muted / $accent / $surface / $boost. Renaming requires a
+ * follow-up across every .tcss in this package.
  */
+
+/* Theme tokens (aliases over textual built-ins). */
+$ccw-attached: green;
+$ccw-danger: $error;
+$ccw-sudo: $warning;
+$ccw-dim: $text-muted;
+$ccw-hot: red;      /* CPU hot */
+$ccw-warm: yellow;  /* CPU warm */
 
 Screen {
     layout: vertical;
@@ -16,10 +23,122 @@ Header {
 
 Footer {
     dock: bottom;
+    background: $panel;
 }
 
-#placeholder {
-    padding: 1 2;
+/* ── MainScreen ──────────────────────────────────────────────────── */
+
+#main-scroll {
     width: 1fr;
     height: 1fr;
+}
+
+.segment-header {
+    color: $ccw-dim;
+    padding: 0 1;
+    margin-top: 1;
+    text-style: dim;
+}
+
+.empty-note {
+    color: $ccw-dim;
+    padding: 1 2;
+    text-style: italic;
+}
+
+/* ── ActionRow ───────────────────────────────────────────────────── */
+
+ActionRow {
+    width: 1fr;
+    height: 1;
+    padding: 0 1;
+    content-align: left middle;
+}
+
+ActionRow:focus {
+    background: $accent 30%;
+    text-style: bold;
+}
+
+ActionRow:hover {
+    background: $boost;
+}
+
+ActionRow.-disabled {
+    color: $ccw-dim;
+    text-style: dim;
+}
+
+ActionRow.destructive,
+#action-kill-all-global {
+    color: $ccw-danger;
+}
+
+#action-settings {
+    color: $ccw-sudo;
+}
+
+/* ── SessionTable ────────────────────────────────────────────────── */
+
+SessionTable {
+    width: 1fr;
+    height: auto;
+}
+
+SessionTable > .datatable--hover {
+    background: $boost;
+}
+
+SessionTable > .datatable--cursor {
+    background: $accent 40%;
+    text-style: bold;
+}
+
+SessionTable .attached {
+    color: $ccw-attached;
+    text-style: bold;
+}
+
+SessionTable .cpu-hot {
+    color: $ccw-hot;
+    text-style: bold;
+}
+
+SessionTable .cpu-warm {
+    color: $ccw-warm;
+}
+
+SessionTable .sudo-only {
+    color: $ccw-sudo;
+    text-style: bold;
+}
+
+/* ── Modals (ConfirmYesNo, ConfirmPhrase, Permissions, etc.) ─────── */
+
+ModalScreen {
+    align: center middle;
+}
+
+.prompt, .title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.prompt {
+    color: $ccw-danger;
+}
+
+/* Phrase modals get the heavier danger border. */
+ConfirmPhrase > Vertical {
+    border: round $ccw-danger;
+}
+
+.buttons {
+    height: auto;
+    align: center middle;
+    margin-top: 1;
+}
+
+Button {
+    margin: 0 1;
 }
