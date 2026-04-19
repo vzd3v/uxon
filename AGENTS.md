@@ -13,20 +13,20 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 ## Code layout
 
 - `bin/ccw` — CLI entrypoint (wires subcommands and builds the TUI context).
-- `lib/ccw_tui.py` — TUI main loop and main-screen rendering
-  (requires `blessed`; imported lazily).
-- `lib/ccw_tui_widgets.py` — stateless, reusable TUI primitives
-  (`dim`, `text_input`, `confirm_phrase`, `confirm_yn`, `flash_error`).
-  Prefer adding shared widgets here over re-implementing them in a screen.
-- `lib/ccw_tui_mouse.py` — SGR-1006 mouse enable/disable, sequence parser,
-  `read_input()` helper that returns either a blessed Keystroke or a
-  `MouseEvent`, and `HitRegion` / `hit_test` for row routing.
-- `lib/ccw_tui_modals.py` — `run_modal(t, modal)` dispatcher and
-  `MenuModal` list-selection helper. Callers must re-render their own
-  screen after a modal dismisses; the dispatcher does not save/restore.
-- `lib/ccw_tui_settings.py` — superuser settings sub-screens.
-  Knows nothing about file I/O; all side effects go through a
-  `SettingsCallbacks` bundle provided by `bin/ccw`.
+- `lib/ccw_tui/` — textual app. Every screen declares ``BINDINGS``; CSS
+  lives in ``styles.tcss``; launch TTY handoff uses ``App.exit()`` + outer
+  re-create loop (see ``app.py::run``). Sub-modules:
+    - ``context.py`` — pure data (``TuiContext``, ``TuiSession``,
+      ``LaunchRequest``, ``Item``, ``build_items``, ``CallbackError``).
+      No textual / no blessed.
+    - ``events.py`` — best-effort JSONL event log.
+    - ``launch.py`` — fork-and-wait launch helper + failure pause banner.
+      Runs **outside** the textual App between round-trips.
+    - ``hints.py`` — ``TEXTUAL_MISSING_HINT`` install guidance.
+    - ``app.py`` — ``CcwApp(App)`` + ``run(ctx)`` outer loop.
+    - ``screens/`` — one module per screen (``main`` + modals).
+    - ``widgets/`` — ``ActionRow``, ``SessionTable`` (only two custom
+      widgets; everything else is stock textual).
 - `lib/ccw_settings.py` — settings schema (the single list of known keys),
   layer resolution (default / repo / project), round-trip TOML writer
   (via `tomlkit`, preserves comments and formatting), and safe repo-file
@@ -51,23 +51,28 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 
 - `bin/ccw` may import from `lib/*`. `lib/*` modules never import from
   `bin/ccw` — the CLI assembles the pieces, not vice versa.
-- UI files (`lib/ccw_tui*.py`) must not import `subprocess`, `pwd`, or
-  touch the filesystem directly; push those through callbacks in
+- UI files (under `lib/ccw_tui/`) must not import `subprocess`, `pwd`,
+  or touch the filesystem directly; push those through callbacks on
   `TuiContext` / `SettingsCallbacks`.
-- `lib/ccw_settings.py` is pure data + TOML I/O. No blessed, no TUI.
-- When adding a new screen/widget, decide first: is it generic
-  (→ `ccw_tui_widgets.py`), domain-specific reusable
-  (→ its own `ccw_tui_<feature>.py` module), or one-off main-screen
-  behavior (→ `ccw_tui.py`).
+- `lib/ccw_settings.py` is pure data + TOML I/O. No textual, no TUI.
+- When adding a new screen, drop a module under
+  ``lib/ccw_tui/screens/``, declare ``BINDINGS`` there, and wire the
+  push from ``MainScreen`` (or the relevant existing screen).
+- Custom widgets go under ``lib/ccw_tui/widgets/``. Resist the urge —
+  most cases should compose stock textual widgets.
 
 ## Hard rules
 
 - **No `claude` invocations added outside of `launch_in_tmux`.** `ccw` is the
   single place that builds the `claude` command line.
-- **Heavy/UI-only deps are imported lazily** so non-UI paths (`ccw list`,
-  `ccw doctor`, `ccw version`) keep working without them installed.
-  `blessed` is imported lazily by TUI files; same rule for any future
-  dependency that's not needed on every code path.
+- **Textual is imported lazily inside ``do_interactive``.** Non-TUI
+  subcommands (``ccw list``, ``ccw doctor``, ``ccw version``) never
+  import ``ccw_tui`` and therefore do not require textual.
+- **All key handling goes through ``BINDINGS``.** No ``on_key`` overrides
+  on screen classes — the drift guard in
+  ``tests/test_ccw_tui_bindings.py`` refuses the PR otherwise. Destructive
+  bindings (``kill*``) MUST have ``show=True`` + a non-empty description
+  so the footer reflects them.
 - **Config writes require `tomlkit`.** The round-trip TOML writer in
   `lib/ccw_settings.py` imports it lazily; CLI read paths stay on stdlib
   `tomllib`. Installer must ensure `tomlkit` is available in the Python
@@ -94,13 +99,22 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 ## Local checks (always run before committing)
 
 ```bash
-python3 -m py_compile bin/ccw lib/ccw_tui.py lib/ccw_tui_widgets.py \
-  lib/ccw_tui_settings.py lib/ccw_tui_mouse.py lib/ccw_tui_modals.py \
+python3 -m py_compile bin/ccw \
+  lib/ccw_tui/__init__.py lib/ccw_tui/app.py lib/ccw_tui/context.py \
+  lib/ccw_tui/events.py lib/ccw_tui/launch.py lib/ccw_tui/hints.py \
+  lib/ccw_tui/widgets/__init__.py lib/ccw_tui/widgets/action_row.py \
+  lib/ccw_tui/widgets/session_table.py \
+  lib/ccw_tui/screens/__init__.py lib/ccw_tui/screens/main.py \
+  lib/ccw_tui/screens/confirm.py lib/ccw_tui/screens/permissions.py \
+  lib/ccw_tui/screens/new_project.py lib/ccw_tui/screens/git_profile.py \
+  lib/ccw_tui/screens/existing.py lib/ccw_tui/screens/settings.py \
+  lib/ccw_tui/screens/git_remotes.py \
   lib/ccw_settings.py \
   lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
   lib/ccw_git_backend_token.py lib/ccw_git_create.py \
   tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
-  tests/test_ccw_tui_mouse.py tests/test_ccw_tui_modals.py \
+  tests/test_ccw_tui_screens.py tests/test_ccw_tui_widgets_textual.py \
+  tests/test_ccw_tui_bindings.py tests/test_ccw_tui_logging.py \
   tests/test_ccw_git_profiles.py tests/test_ccw_git_backend_gh.py \
   tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
   install/install_ccw.py install/render_ccw_config.py
