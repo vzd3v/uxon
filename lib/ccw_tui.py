@@ -609,6 +609,7 @@ def _confirm_kill_all_global(t: "Terminal", count: int, y: int) -> bool:
 
 def _prompt_permissions(t: "Terminal") -> bool | None:
     """Show permission choice. Returns True for dsp, False for regular, None for cancel."""
+    from ccw_tui_mouse import MouseEvent, HitRegion, hit_test, read_input
     options = [
         ("Regular permissions", "default, safe mode"),
         ("ALL PERMISSIONS", "--dangerously-skip-permissions"),
@@ -621,6 +622,9 @@ def _prompt_permissions(t: "Terminal") -> bool | None:
         print(_dim(t, "─" * t.width))
         print()
 
+        regions: list[HitRegion] = []
+        # Header(1) + separator(1) + blank(1) = 3 lines before first row.
+        row_y = 3
         for i, (label, detail) in enumerate(options):
             sel = i == cursor
             prefix = t.bold_cyan("▸ ") if sel else "  "
@@ -634,12 +638,29 @@ def _prompt_permissions(t: "Terminal") -> bool | None:
                 print(t.reverse(t.ljust(line, t.width)))
             else:
                 print(line)
+            regions.append(HitRegion(y=row_y, action="row", payload=i))
+            row_y += 1
 
         footer_y = t.height - 1
         with t.location(0, footer_y):
             print(_build_footer(t, "permissions"), end="")
 
-        key = t.inkey(timeout=None)
+        ev = read_input(t, timeout=None)
+        if isinstance(ev, MouseEvent):
+            if ev.wheel < 0:
+                cursor = max(0, cursor - 1)
+                continue
+            if ev.wheel > 0:
+                cursor = min(len(options) - 1, cursor + 1)
+                continue
+            hit = hit_test(regions, y=ev.y - 1)
+            if hit and hit.action == "row":
+                if ev.pressed:
+                    cursor = int(hit.payload)
+                else:
+                    return int(hit.payload) == 1  # True = dsp
+            continue
+        key = ev
         if key.name == "KEY_ESCAPE" or key == "q":
             return None
         if key == "1":
