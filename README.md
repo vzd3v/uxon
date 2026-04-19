@@ -99,7 +99,7 @@ Also: `ccw -V`, `ccw --version`.
 ## Interactive TUI
 
 `ccw` with no arguments on a TTY opens a full-screen picker (requires the
-`blessed` Python package). It offers:
+`textual` Python package, `>=0.80,<9`). It offers:
 
 - **Actions** at the top:
   1. *New session in current folder* — `ccw run` equivalent.
@@ -277,17 +277,16 @@ Operations launched from the TUI (attach / kill / create / refresh) can fail
 for many reasons — tmux session gone, permission denied, allowed-roots
 mismatch, git remote creation error, config write conflict, and so on.
 Historically some of these failures reached `fail()` inside ccw, which
-prints `ccw: <msg>` to stderr and `raise SystemExit`. Under blessed's
-fullscreen context that combination looked like ccw silently quitting.
+prints `ccw: <msg>` to stderr and `raise SystemExit`. Under the fullscreen
+TUI context that combination looked like ccw silently quitting.
 
 Since 0.10.3 every TUI callback is wrapped so any `SystemExit` (or other
-exception) is converted into a `CallbackError` carrying the original
-stderr, and the main loop renders it on the status line in red (e.g.
+exception) is converted into a `CallbackError`; the screen renders it as
+a red toast via ``self.notify(..., severity="error")`` (e.g.
 `Kill cc-demo failed: tmux: no server running on /tmp/ccw-u-ed.sock`).
 Refresh / settings / kill-all / activate all go through this path. A
-crash in the outer loop itself (unexpected exception) is caught after
-blessed has restored the terminal and printed as a visible traceback
-instead of leaving a blank screen.
+crash in the outer loop is caught after textual releases the terminal
+and printed as a visible traceback instead of leaving a blank screen.
 
 Failed launches (non-zero rc from the forked tmux/claude process) also
 pause with a banner on the physical terminal before the main screen
@@ -477,7 +476,7 @@ sudo python3 install/install_ccw.py \
   --install-path /usr/local/bin/ccw
 ```
 
-`blessed` (for the TUI) is optional: `pip install blessed`. Without it,
+`textual` (for the TUI) is optional: `pip install textual`. Without it,
 `ccw` prints a hint and all non-interactive subcommands still work.
 
 ---

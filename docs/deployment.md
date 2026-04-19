@@ -17,7 +17,9 @@ checkout. Do not keep a second copied executable as a parallel source of truth.
   `apt install python3-tomlkit` or `pip install tomlkit` into the Python env
   `ccw` runs under. Without it, TUI saves fail while CLI (`list`, `doctor`,
   `run`, `new`, `attach`, `kill`) keeps working.
-- `blessed` — required for the interactive TUI only; same lazy-import pattern.
+- `textual>=0.80,<9` — required for the interactive TUI only; lazy-imported
+  inside ``do_interactive`` so non-TUI subcommands (`list`, `doctor`,
+  `version`) run without it.
 - `gh` — required on hosts that use `auth = "gh"` git-remote profiles.
 
 ## Infra integration

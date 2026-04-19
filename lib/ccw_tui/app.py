@@ -24,7 +24,7 @@ from textual.binding import Binding
 from .context import CallbackError, LaunchRequest, TuiContext
 from .events import _log_event
 from .hints import TEXTUAL_MISSING_HINT
-from .launch import _run_launch_request
+from .launch import _run_launch_request, pause_on_launch_failure
 from .screens.main import MainScreen
 
 
@@ -152,7 +152,7 @@ def run(ctx: TuiContext) -> int:
             outcome=f"rc={rc}",
             extra={"label": req.label, "stage": stage, "wall_seconds": round(wall_seconds, 3)},
         )
-        _pause_on_launch_failure_plain(sys.stdout, req, rc, stage, wall_seconds)
+        pause_on_launch_failure(sys.stdout, req, rc, stage, wall_seconds)
         try:
             ctx = ctx.on_refresh()
             pending_status = ""
@@ -160,41 +160,3 @@ def run(ctx: TuiContext) -> int:
             pending_status = f"Refresh failed: {exc}"
 
 
-def _pause_on_launch_failure_plain(
-    stream: Any, req: LaunchRequest, rc: int, stage: str, wall_seconds: float
-) -> None:
-    """Plain-text variant of the blessed-era pause banner.
-
-    Called after a launch round-trip when the TUI has exited. Prints to
-    ``stream`` (normally ``sys.stdout``) without any blessed escape
-    codes — textual is not active here. Stays silent on rc=0 unless the
-    launch returned in under :data:`FAST_EXIT_THRESHOLD_SEC` (almost
-    certainly a silent failure worth pausing to show stderr).
-    """
-    from .launch import FAST_EXIT_THRESHOLD_SEC
-
-    fast_zero = rc == 0 and wall_seconds < FAST_EXIT_THRESHOLD_SEC
-    if rc == 130:  # user Ctrl-C
-        return
-    if rc == 0 and not fast_zero:
-        return
-    label = req.label or "launch"
-    stream.write("\n")
-    if fast_zero:
-        stream.write(
-            f"ccw: {label} exited immediately (rc=0 in {wall_seconds:.2f}s, stage={stage})\n"
-        )
-    else:
-        stream.write(f"ccw: {label} failed (rc={rc}, stage={stage})\n")
-    if stage == "prelaunch":
-        first = list(req.prelaunch[0]) if req.prelaunch else []
-        stream.write(f"  command: {' '.join(first)}\n")
-    else:
-        stream.write(f"  command: {' '.join(req.cmd)}\n")
-    stream.write("  see output above for details\n")
-    stream.write("press Enter to return to the ccw menu...\n")
-    stream.flush()
-    try:
-        sys.stdin.readline()
-    except Exception:
-        pass

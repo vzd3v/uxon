@@ -1,13 +1,15 @@
 """SettingsScreen + per-kind edit modals.
 
-Reuses :class:`SettingsCallbacks` and :class:`SettingEntry` from the
-pre-existing ``ccw_tui_settings`` / ``ccw_settings`` modules — the
-TUI-facing I/O contract is unchanged; only the UI is rewritten.
+Reuses :class:`SettingEntry` from the pre-existing ``ccw_settings``
+module — the TUI-facing I/O contract is unchanged; only the UI is
+rewritten. :class:`SettingsCallbacks` moved from the retired
+``ccw_tui_settings`` module.
 """
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from typing import Any, Callable, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -27,6 +29,18 @@ from textual.widgets import (
 
 
 GIT_REMOTES_VIEW_LABEL = "Git remote profiles (view)"
+
+
+@dataclass
+class SettingsCallbacks:
+    """Thin glue that the settings UI calls to persist changes."""
+
+    get_entries: Callable[[], list]  # -> list[SettingEntry]
+    save_setting: Callable[[str, Any], None]  # (key, new_value)
+    remove_setting: Callable[[str], None]  # (key) — revert to default
+    save_mapping: Callable[[str, dict], None]  # (key, new_mapping)
+    # Optional: returns full profile rows for a read-only subscreen.
+    get_git_remote_profile_rows: "Callable[[], list[tuple]] | None" = None
 
 
 class SettingsScreen(Screen):

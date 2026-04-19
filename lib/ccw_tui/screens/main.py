@@ -297,12 +297,7 @@ class MainScreen(Screen):
 
     def _open_settings(self) -> None:
         """Push SettingsScreen with the context's callback bundle."""
-        # Lazy import to dodge circular-ish deps.
-        from .settings import SettingsScreen
-        # Local import: the callback dataclass still lives in the legacy
-        # module. T20 pulls it into ``ccw_tui.screens.settings`` when the
-        # legacy file is deleted.
-        from ccw_tui_settings import SettingsCallbacks
+        from .settings import SettingsCallbacks, SettingsScreen
 
         cbs = SettingsCallbacks(
             get_entries=self.ctx.get_settings_entries,

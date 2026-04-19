@@ -446,7 +446,7 @@ class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
     async def _mk_cbs(self, entries_factory):
-        from ccw_tui_settings import SettingsCallbacks
+        from ccw_tui.screens.settings import SettingsCallbacks
 
         saved: list = []
         removed: list = []

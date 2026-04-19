@@ -967,11 +967,11 @@ class CcwTests(unittest.TestCase):
         self.assertIn("nested", req.label)
 
 
-class DoInteractiveBlessedMissingTests(unittest.TestCase):
-    """With blessed unavailable, ``ccw`` (interactive) must print a single
+class DoInteractiveTextualMissingTests(unittest.TestCase):
+    """With textual unavailable, ``ccw`` (interactive) must print a single
     install hint on stderr, no traceback, and return 1."""
 
-    def test_prints_install_hint_when_blessed_missing(self) -> None:
+    def test_prints_install_hint_when_textual_missing(self) -> None:
         # Force `import ccw_tui` to raise ImportError even though lib/ is
         # on sys.path.
         saved_ccw_tui = sys.modules.get("ccw_tui")
@@ -987,7 +987,7 @@ class DoInteractiveBlessedMissingTests(unittest.TestCase):
                 self.assertEqual(rc, 1)
                 err_text = buf_err.getvalue()
                 self.assertIn("requires", err_text)
-                self.assertIn("blessed", err_text)
+                self.assertIn("textual", err_text)
                 self.assertNotIn("Traceback", err_text)
         finally:
             if saved_ccw_tui is None:
