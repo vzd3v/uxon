@@ -320,3 +320,42 @@ class PermissionsScreenTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_escape_returns_none(self):
         self.assertIsNone(await self._run(["escape"]))
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, text, submit_key="enter"):
+        from textual.app import App
+        from textual.widgets import Input
+        from ccw_tui.screens.new_project import NewProjectScreen
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(NewProjectScreen("/srv/work"), done)
+
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            inp = app.screen.query_one("#name-input", Input)
+            inp.focus()
+            if text:
+                await pilot.press(*list(text))
+            await pilot.press(submit_key)
+            await pilot.pause()
+        return app.result
+
+    async def test_valid_name_returned(self):
+        self.assertEqual(await self._run("foo"), "foo")
+
+    async def test_empty_name_rejected(self):
+        result = await self._run("", submit_key="enter")
+        self.assertEqual(result, "unset")
+
+    async def test_escape_cancels(self):
+        result = await self._run("bar", submit_key="escape")
+        self.assertIsNone(result)
