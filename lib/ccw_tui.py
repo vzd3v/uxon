@@ -762,6 +762,7 @@ def _prompt_existing_project(t: "Terminal", projects: list[str], root: str) -> s
     """Project picker from existing directories. Returns name or None for cancel."""
     if not projects:
         return None
+    from ccw_tui_mouse import MouseEvent, HitRegion, hit_test, read_input
     cursor = 0
     scroll_offset = 0
 
@@ -779,6 +780,10 @@ def _prompt_existing_project(t: "Terminal", projects: list[str], root: str) -> s
             scroll_offset = cursor - available + 1
 
         visible_end = min(scroll_offset + available, len(projects))
+        regions: list[HitRegion] = []
+        # Header(1) + separator(1) + root(1) + blank(1) = 4 lines printed
+        # before the first item. First item row sits at y=4 (0-based).
+        row_y = 4
         for i in range(scroll_offset, visible_end):
             name = projects[i]
             sel = i == cursor
@@ -794,12 +799,29 @@ def _prompt_existing_project(t: "Terminal", projects: list[str], root: str) -> s
                 print(t.reverse(t.ljust(line, t.width)))
             else:
                 print(line)
+            regions.append(HitRegion(y=row_y, action="row", payload=i))
+            row_y += 1
 
         footer_y = t.height - 1
         with t.location(0, footer_y):
             print(_build_footer(t, "projects"), end="")
 
-        key = t.inkey(timeout=None)
+        ev = read_input(t, timeout=None)
+        if isinstance(ev, MouseEvent):
+            if ev.wheel < 0 and cursor > 0:
+                cursor -= 1
+                continue
+            if ev.wheel > 0 and cursor < len(projects) - 1:
+                cursor += 1
+                continue
+            hit = hit_test(regions, y=ev.y - 1)
+            if hit and hit.action == "row" and not ev.pressed:
+                return projects[int(hit.payload)]
+            if hit and hit.action == "row" and ev.pressed:
+                cursor = int(hit.payload)
+            continue
+        key = ev
+
         if key.name == "KEY_ESCAPE" or key == "q":
             return None
         if key.name == "KEY_UP" or key == "k":
