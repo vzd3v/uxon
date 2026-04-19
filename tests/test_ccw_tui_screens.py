@@ -520,3 +520,30 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
             await pilot.pause()
         self.assertEqual(removed, ["session_prefix"])
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class GitRemotesScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def test_populates_and_esc_dismisses(self):
+        from textual.app import App
+        from ccw_tui.screens.git_remotes import GitRemotesScreen
+
+        rows = [
+            ("foo", "github.com", "alice", "gh", "alice", "private", ""),
+            ("bar", "gitlab.com", "bob", "token", "bob", "public", "~/.tok"),
+        ]
+
+        class Host(App):
+            dismissed = False
+            def on_mount(self):
+                def done(_r):
+                    self.dismissed = True
+                    self.exit()
+                self.push_screen(GitRemotesScreen(rows), done)
+
+        app = Host()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+        self.assertTrue(app.dismissed)
