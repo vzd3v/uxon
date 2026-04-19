@@ -1051,5 +1051,29 @@ class DigitHintedIndicesTests(unittest.TestCase):
         self.assertIn(ccw_tui.ACTION_COUNT + 1, allowed)
 
 
+class FooterFromKeymapTests(unittest.TestCase):
+    """The footer must be a projection of SCREEN_KEYMAP: every action
+    with a label should render; actions not in the screen's keymap
+    must not appear."""
+
+    def test_main_footer_includes_all_labelled_main_actions(self) -> None:
+        t = _FakeTerm()
+        footer = ccw_tui._build_footer(t, "main", has_sudo=False)
+        for fragment in ("quit", "refresh", "select"):
+            self.assertIn(fragment, footer)
+        # No superuser hint when has_sudo=False
+        self.assertNotIn("superuser", footer)
+
+    def test_main_footer_adds_superuser_hint_when_has_sudo(self) -> None:
+        t = _FakeTerm()
+        footer = ccw_tui._build_footer(t, "main", has_sudo=True)
+        self.assertIn("superuser", footer)
+
+    def test_projects_footer_lacks_kill_actions(self) -> None:
+        t = _FakeTerm()
+        footer = ccw_tui._build_footer(t, "projects")
+        self.assertNotIn("kill", footer)
+
+
 if __name__ == "__main__":
     unittest.main()

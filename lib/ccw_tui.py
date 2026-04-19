@@ -446,43 +446,6 @@ def _build_header(t: "Terminal", ctx: TuiContext) -> str:
     return t.bold_white_on_blue(title) + "  " + _dim(t, stats)
 
 
-def _build_footer(t: "Terminal", mode: str = "main", has_sudo: bool = False) -> str:
-    if mode == "main":
-        keys = [
-            (t.bold("↑↓"), "navigate"),
-            (t.bold("1-9"), "jump"),
-            (t.bold("Enter"), "select"),
-            (t.bold_red("d"), "kill"),
-            (t.bold_red("D"), "kill all (mine)"),
-            (t.bold("r"), "refresh"),
-            (t.bold("q"), "quit"),
-        ]
-        if has_sudo:
-            keys.insert(5, (t.bold_yellow("⚡"), "superuser"))
-    elif mode == "projects":
-        keys = [
-            (t.bold("↑↓"), "navigate"),
-            (t.bold("1-9"), "jump"),
-            (t.bold("Enter"), "select"),
-            (t.bold("Esc"), "back"),
-        ]
-    elif mode == "permissions":
-        keys = [
-            (t.bold("1"), "regular"),
-            (t.bold("2"), "all perms"),
-            (t.bold("Enter"), "select"),
-            (t.bold("Esc"), "back"),
-        ]
-    elif mode == "input":
-        keys = [
-            (t.bold("Enter"), "confirm"),
-            (t.bold("Esc"), "cancel"),
-        ]
-    else:
-        keys = []
-    return "  ".join(f"{k} {v}" for k, v in keys)
-
-
 def _render_action_row(t: "Terminal", num: int, label: str, detail: str, selected: bool) -> str:
     cursor = t.bold_cyan("▸ ") if selected else "  "
     num_str = _dim(t, f"{num} ") if not selected else f"{num} "
@@ -778,7 +741,7 @@ def _prompt_git_profile(
                 print(row)
         footer_y = t.height - 1
         with t.location(0, footer_y):
-            print(_build_footer(t, "permissions"), end="")
+            print(_build_footer(t, "git_profile"), end="")
 
         key = t.inkey(timeout=None)
         if key.name == "KEY_ESCAPE":
@@ -1518,3 +1481,80 @@ SCREEN_KEYMAP: dict[Screen, dict[str, tuple[str, ...]]] = {
         "digit_jump": ("1", "2", "3", "4", "5", "6", "7", "8", "9"),
     },
 }
+
+
+# Short display labels per action. Only actions that appear here render
+# in the footer. Other actions (e.g. backspace) are intentionally hidden.
+_FOOTER_LABELS: dict[str, tuple[str, str]] = {
+    # action_name -> (hint_key_display, description)
+    "cursor_up":    ("↑↓", "navigate"),
+    "cursor_down":  ("↑↓", "navigate"),   # collapsed with cursor_up
+    "digit_jump":   ("1-9", "jump"),
+    "digit_pick":   ("1-9", "pick"),
+    "activate":     ("Enter", "select"),
+    "kill":         ("d", "kill"),
+    "kill_all_own": ("D", "kill all (mine)"),
+    "refresh":      ("r", "refresh"),
+    "quit":         ("q", "quit"),
+    "cancel":       ("Esc", "back"),
+    "back":         ("Esc", "back"),
+    "submit":       ("Enter", "confirm"),
+    "reset":        ("x", "reset"),
+    "digit_regular": ("1", "regular"),
+    "digit_dsp":     ("2", "all perms"),
+}
+
+_MODE_TO_SCREEN: dict[str, Screen] = {
+    "main":        Screen.MAIN,
+    "projects":    Screen.PICKER_EXISTING,
+    "permissions": Screen.PROMPT_PERMISSIONS,
+    "input":       Screen.PROMPT_NEW_PROJECT,
+    "git_profile": Screen.PROMPT_GIT_PROFILE,
+    "settings":    Screen.SETTINGS,
+}
+
+
+def _build_footer(t: "Terminal", mode: str = "main", has_sudo: bool = False) -> str:
+    """Build the footer hint line from :data:`SCREEN_KEYMAP`.
+
+    The footer displays one pill per declared action whose name appears
+    in :data:`_FOOTER_LABELS`. Duplicate pills (e.g. ``cursor_up`` /
+    ``cursor_down`` both mapping to ``↑↓ navigate``) are de-duplicated.
+    When ``has_sudo`` is true on the main screen, the superuser hint is
+    inserted next to the refresh action so operators see it without
+    scanning.
+    """
+    screen = _MODE_TO_SCREEN.get(mode)
+    if screen is None:
+        return ""
+    keymap = SCREEN_KEYMAP.get(screen, {})
+    seen: set[tuple[str, str]] = set()
+    pills: list[str] = []
+    order = [
+        "cursor_up", "cursor_down", "digit_jump", "digit_pick",
+        "activate", "submit", "kill", "kill_all_own",
+        "refresh", "reset", "cancel", "back", "quit",
+        "digit_regular", "digit_dsp",
+    ]
+    for action in order:
+        if action not in keymap:
+            continue
+        label = _FOOTER_LABELS.get(action)
+        if label is None:
+            continue
+        if label in seen:
+            continue
+        seen.add(label)
+        k, desc = label
+        # Color cues match the prior hand-rolled footer.
+        if action in ("kill", "kill_all_own"):
+            pills.append(f"{t.bold_red(k)} {desc}")
+        else:
+            pills.append(f"{t.bold(k)} {desc}")
+    if mode == "main" and has_sudo:
+        # Insert next to destructive actions, mirroring the old footer.
+        pills.insert(
+            min(len(pills), 5),
+            f"{t.bold_yellow('⚡')} superuser",
+        )
+    return "  ".join(pills)

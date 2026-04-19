@@ -188,13 +188,8 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
 
         footer_y = t.height - 1
         with t.location(0, footer_y):
-            print(
-                dim(
-                    t,
-                    "  ↑↓ nav · Enter edit · x reset · Esc back",
-                ),
-                end="",
-            )
+            from ccw_tui import _build_footer  # lazy to avoid cycle
+            print("  " + _build_footer(t, "settings"), end="")
 
         key = t.inkey(timeout=None)
         if key.name == "KEY_ESCAPE" or key == "q":
