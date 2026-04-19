@@ -1,0 +1,25 @@
+/* ccw TUI — root stylesheet.
+ *
+ * Theme tokens (applied via ``$ccw-*`` variables) land here in T17.
+ * T5 ships a minimal header/footer + placeholder layout to keep the
+ * boot path non-empty. Widget-specific styling moves in alongside
+ * each screen as it lands (T6–T16).
+ */
+
+Screen {
+    layout: vertical;
+}
+
+Header {
+    dock: top;
+}
+
+Footer {
+    dock: bottom;
+}
+
+#placeholder {
+    padding: 1 2;
+    width: 1fr;
+    height: 1fr;
+}

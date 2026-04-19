@@ -45,11 +45,10 @@ from .launch import (
 from ._legacy import BLESSED_MISSING_HINT
 from .hints import TEXTUAL_MISSING_HINT
 
-# Entry point + legacy helpers. The symbols exported here keep test
-# monkey-patching via ``mock.patch.object(ccw_tui, "<name>")`` working
-# across the T3 split. In ``_legacy`` each call site resolves these
-# helpers via module globals; tests patch the package namespace and
-# we mirror the write through to the legacy module (see end of file).
+# Entry point — textual runner lives in ``app.py``. Legacy helpers
+# below are still re-exported for the test suite during the migration
+# window; they are deleted along with ``_legacy`` in T20.
+from .app import run
 from ._legacy import (
     SCREEN_KEYMAP,
     Screen,
@@ -64,7 +63,6 @@ from ._legacy import (
     _prompt_git_profile,
     _prompt_permissions,
     _prompt_project_name,
-    run,
 )
 
 # Legacy attribute compatibility for tests that monkey-patch
