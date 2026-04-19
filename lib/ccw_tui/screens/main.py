@@ -163,6 +163,106 @@ class MainScreen(Screen):
             except Exception:  # pragma: no cover — defensive
                 pass
 
+    # ── ActionRow.Activated dispatcher ───────────────────────────────
+
+    def on_action_row_activated(self, event: ActionRow.Activated) -> None:
+        """Route an :class:`ActionRow.Activated` to the right handler.
+
+        Modal chains are stubbed here and wired through in T14.
+        ``CallbackError`` from any callback renders as a red toast.
+        """
+        kind = event.row.kind
+        if kind == "action-cwd":
+            self._launch_cwd()
+        elif kind == "action-new":
+            self._launch_new()
+        elif kind == "action-open":
+            self._launch_existing()
+        elif kind == "settings":
+            # T15 replaces this with push_screen(SettingsScreen(...)).
+            self.app.notify("TODO Settings screen (T15)")
+        elif kind == "kill-all-global":
+            self._kill_all_global()
+
+    # ── DataTable row activation (Enter on a SessionTable row) ───────
+
+    def on_data_table_row_selected(self, event) -> None:  # type: ignore[no-untyped-def]
+        """Enter/click on a session row attaches to that session."""
+        table = event.data_table
+        if not isinstance(table, SessionTable):
+            return
+        session = table.session_at(event.cursor_row)
+        if session is None:
+            return
+        user = session.user or self.ctx.current_user
+        try:
+            req = self.ctx.on_attach(user, session.name)
+        except CallbackError as exc:
+            self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
+            return
+        self.app.request_launch(req)  # type: ignore[attr-defined]
+
+    # ── Activation handlers (modals stubbed — T14 replaces stubs) ────
+
+    def _launch_cwd(self) -> None:
+        if not self.ctx.cwd_allowed:
+            self.app.notify(
+                f"cwd {self.ctx.cwd_short} is not under allowed_roots",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        # Permissions modal arrives in T10/T14. For now pick regular.
+        dsp = False
+        self.app.notify("TODO permissions modal (T10/T14)")
+        try:
+            req = self.ctx.on_launch_cwd(dsp)
+        except CallbackError as exc:
+            self.app.notify(str(exc), severity="error", timeout=6)
+            return
+        self.app.request_launch(req)  # type: ignore[attr-defined]
+
+    def _launch_new(self) -> None:
+        # Name + git + permissions chain arrives in T14.
+        self.app.notify("TODO new-project modal chain (T11/T12/T10 → T14)")
+        try:
+            req = self.ctx.on_launch_new("placeholder-name", False, "")
+        except CallbackError as exc:
+            self.app.notify(str(exc), severity="error", timeout=6)
+            return
+        self.app.request_launch(req)  # type: ignore[attr-defined]
+
+    def _launch_existing(self) -> None:
+        if not self.ctx.existing_projects:
+            self.app.notify(
+                f"No projects in {self.ctx.new_project_root}",
+                severity="warning",
+                timeout=4,
+            )
+            return
+        self.app.notify("TODO existing-project picker modal (T13/T10 → T14)")
+        try:
+            req = self.ctx.on_launch_existing(self.ctx.existing_projects[0], False)
+        except CallbackError as exc:
+            self.app.notify(str(exc), severity="error", timeout=6)
+            return
+        self.app.request_launch(req)  # type: ignore[attr-defined]
+
+    def _kill_all_global(self) -> None:
+        total = len(self.ctx.sessions) + len(self.ctx.other_sessions)
+        if total == 0:
+            return
+        self.app.notify(f"TODO confirm kill-all-global ({total}) (T14)")
+        try:
+            self.ctx.on_kill_all_global()
+            self.app.notify(f"Killed all {total} sessions (all users)")
+        except CallbackError as exc:
+            self.app.notify(
+                f"Kill all (global) failed: {exc}", severity="error", timeout=6
+            )
+            return
+        self.action_refresh()
+
     # ── Core bindings ────────────────────────────────────────────────
 
     def action_quit(self) -> None:
@@ -185,11 +285,45 @@ class MainScreen(Screen):
         self.app.switch_screen(new_screen)
 
     def action_kill(self) -> None:
-        """Delegate kill to T7c wiring — stub for now."""
-        self.app.notify("TODO modal kill (T7c)")
+        """Kill the session under focus.
+
+        Modal-confirm flow lands in T14. For T7c we stub the confirm
+        with a ``notify`` and always proceed — pilot tests mock the
+        ``on_kill`` callback to assert plumbing.
+        """
+        focused = self.focused
+        if not isinstance(focused, SessionTable):
+            self.app.notify("Select a session first.", severity="warning")
+            return
+        row = focused.cursor_row
+        session = focused.session_at(row)
+        if session is None:
+            return
+        user = session.user or self.ctx.current_user
+        self.app.notify(f"TODO confirm kill {session.name} (user={user}) (T14)")
+        try:
+            self.ctx.on_kill(user, session.name)
+            self.app.notify(f"Killed {session.short}")
+        except CallbackError as exc:
+            self.app.notify(
+                f"Kill {session.short} failed: {exc}", severity="error", timeout=6
+            )
+            return
+        self.action_refresh()
 
     def action_kill_all_own(self) -> None:
-        self.app.notify("TODO modal kill-all-own (T7c)")
+        if not self.ctx.sessions:
+            return
+        self.app.notify(
+            f"TODO confirm kill-all-own ({len(self.ctx.sessions)}) (T14)"
+        )
+        try:
+            self.ctx.on_kill_all()
+            self.app.notify(f"Killed all {len(self.ctx.sessions)} sessions")
+        except CallbackError as exc:
+            self.app.notify(f"Kill all failed: {exc}", severity="error", timeout=6)
+            return
+        self.action_refresh()
 
     # ── Digit-jump ───────────────────────────────────────────────────
 
@@ -220,25 +354,34 @@ class MainScreen(Screen):
             )
 
     def _activate_index(self, idx: int) -> None:
-        """Resolve index into a concrete item and fire its activation.
-
-        Wiring to real callbacks lands in T7c. For T7b, this is a thin
-        focus+notify router so pilot tests can verify the guard logic
-        without the full modal chain.
-        """
+        """Resolve index into a concrete item and fire its activation."""
         own_start, other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
         self._focus_index(idx)
         if idx < own_start:
-            kinds = ("action-cwd", "action-new", "action-open")
-            self.app.notify(f"digit → {kinds[idx]}")
+            if idx == 0:
+                self._launch_cwd()
+            elif idx == 1:
+                self._launch_new()
+            elif idx == 2:
+                self._launch_existing()
             return
         if idx < other_start:
             session = self.ctx.sessions[idx - own_start]
-            self.app.notify(f"digit → own-session:{session.short}")
+            try:
+                req = self.ctx.on_attach(self.ctx.current_user, session.name)
+            except CallbackError as exc:
+                self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
+                return
+            self.app.request_launch(req)  # type: ignore[attr-defined]
             return
         if has_super and idx < settings_idx:
             session = self.ctx.other_sessions[idx - other_start]
-            self.app.notify(f"digit → other-session:{session.user}/{session.short}")
+            try:
+                req = self.ctx.on_attach(session.user, session.name)
+            except CallbackError as exc:
+                self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
+                return
+            self.app.request_launch(req)  # type: ignore[attr-defined]
             return
 
     def _focus_index(self, idx: int) -> None:
