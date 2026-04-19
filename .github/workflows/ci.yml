@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install runtime deps
-        run: python3 -m pip install tomlkit blessed
+        run: python3 -m pip install tomlkit blessed "textual>=0.80,<9"
 
       - name: Compile Python files
         run: |
