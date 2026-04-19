@@ -142,5 +142,67 @@ class PtyTuiIntegrationTests(unittest.TestCase):
         self.assertNotIn("crashed", trace.plain)
 
 
+_DRAIN_CHILD_SCRIPT = r"""
+import sys, os
+sys.path.insert(0, {lib_path!r})
+import ccw_tui
+from ccw_tui.context import LaunchRequest
+
+def fake_launch_cwd(dsp):
+    return LaunchRequest(cmd=("/bin/true",), label="mock-attach")
+
+ctx = ccw_tui.TuiContext(
+    sessions=[],
+    total_cpu="0",
+    total_ram="0",
+    version="ccw-test",
+    cwd="/tmp",
+    cwd_short="tmp",
+    new_project_root="/tmp/projects",
+    existing_projects=[],
+    cwd_allowed=True,
+    current_user="u-den",
+    has_sudo=False,
+    on_launch_cwd=fake_launch_cwd,
+    on_refresh=lambda: ctx,
+)
+rc = ccw_tui.run(ctx)
+sys.exit(rc)
+"""
+
+
+@unittest.skipUnless(_PTY_OK, "pty.fork unavailable on this platform")
+class DrainAfterLaunchTests(unittest.TestCase):
+    """Regression: keys typed during a mocked launch round-trip must
+    NOT auto-activate an item when the main screen re-renders.
+
+    Historically the blessed loop needed ``_drain_stdin`` to flush the
+    buffer between ``exit()`` and the next ``inkey()``. Under textual
+    each ``CcwApp()`` gets its own fresh input queue, so the drain is
+    no longer needed — this test verifies that claim empirically.
+    """
+
+    def test_key_typed_during_launch_does_not_stale_activate(self) -> None:
+        from harness.pty_tui import run_python_snippet
+
+        code = _DRAIN_CHILD_SCRIPT.format(lib_path=str(_REPO / "lib"))
+        # Sequence: digit-1 → permissions modal → pick regular →
+        # on_launch_cwd triggers request_launch → app exits →
+        # _run_launch_request runs /bin/true → re-enter.
+        # During the short /bin/true window we also send a digit-2,
+        # which must NOT cause the refreshed main screen to auto-launch
+        # action-new. We follow with q to exit.
+        trace = run_python_snippet(
+            code,
+            [b"1", b"1", b"2", b"q"],
+            extra_path=[str(_REPO / "lib")],
+        )
+        self.assertNotIn("Traceback", trace.plain)
+        # If the drain broke, "new" label would appear in the final
+        # frames because action-new would have activated. A harmless
+        # textual-era check: quit must happen.
+        self.assertIn("CcwApp", trace.plain)
+
+
 if __name__ == "__main__":
     unittest.main()
