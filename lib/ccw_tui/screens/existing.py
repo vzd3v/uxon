@@ -34,6 +34,10 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
     }
     ExistingProjectScreen ListView {
         height: auto;
+        scrollbar-gutter: stable;
+    }
+    ExistingProjectScreen ListItem {
+        padding: 0 1;
     }
     """
 
@@ -60,8 +64,11 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         with Vertical():
             yield Static("Open existing project", classes="title")
             yield Static(f"  {self.project_root}/")
+            # Right-align the digit hint so single- and double-digit
+            # prefixes occupy the same column width — prevents the name
+            # column from shifting when the list scrolls past item 9.
             items = [
-                ListItem(Label(f"{i + 1} {name}"))
+                ListItem(Label(f"{i + 1:>2} {name}"))
                 for i, name in enumerate(self.projects)
             ]
             yield ListView(*items, id="existing-list")
