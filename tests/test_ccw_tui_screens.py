@@ -441,3 +441,82 @@ class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_escape_cancels(self):
         self.assertIsNone(await self._run(["escape"], ["alpha"]))
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def _mk_cbs(self, entries_factory):
+        from ccw_tui_settings import SettingsCallbacks
+
+        saved: list = []
+        removed: list = []
+
+        def save(k, v):
+            saved.append((k, v))
+
+        def remove(k):
+            removed.append(k)
+
+        def save_mapping(k, v):
+            saved.append((k, v))
+
+        return saved, removed, SettingsCallbacks(
+            get_entries=entries_factory,
+            save_setting=save,
+            remove_setting=remove,
+            save_mapping=save_mapping,
+        )
+
+    async def test_bool_toggle_saves_value(self):
+        from textual.app import App
+        from ccw_settings import SettingEntry, SettingSpec
+        from ccw_tui.screens.settings import SettingsScreen, BoolToggleModal
+
+        spec = SettingSpec("git_create_enabled", "bool", "desc")
+        entries = [SettingEntry(spec=spec, value=False, source="default", editable=True)]
+
+        saved, removed, cbs = await self._mk_cbs(lambda: entries)
+
+        class Host(App):
+            def on_mount(self):
+                self.push_screen(SettingsScreen(cbs))
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # SettingsScreen is active; its DataTable cursor is on row 0
+            # (the bool entry). Press Enter → BoolToggleModal pushed.
+            await pilot.press("enter")
+            await pilot.pause()
+            # Click True button.
+            from ccw_tui.screens.settings import BoolToggleModal
+            modal = app.screen_stack[-1]
+            self.assertIsInstance(modal, BoolToggleModal)
+            btn = modal.query_one("#true")
+            btn.press()
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+        self.assertEqual(saved, [("git_create_enabled", True)])
+
+    async def test_reset_calls_remove(self):
+        from textual.app import App
+        from ccw_settings import SettingEntry, SettingSpec
+        from ccw_tui.screens.settings import SettingsScreen
+
+        spec = SettingSpec("session_prefix", "string", "desc")
+        entries = [SettingEntry(spec=spec, value="ccw", source="repo", editable=True)]
+        saved, removed, cbs = await self._mk_cbs(lambda: entries)
+
+        class Host(App):
+            def on_mount(self):
+                self.push_screen(SettingsScreen(cbs))
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("x")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+        self.assertEqual(removed, ["session_prefix"])

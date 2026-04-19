@@ -184,8 +184,7 @@ class MainScreen(Screen):
         elif kind == "action-open":
             self._launch_existing()
         elif kind == "settings":
-            # T15 replaces this with push_screen(SettingsScreen(...)).
-            self.app.notify("TODO Settings screen (T15)")
+            self._open_settings()
         elif kind == "kill-all-global":
             self._kill_all_global()
 
@@ -295,6 +294,24 @@ class MainScreen(Screen):
             ExistingProjectScreen(self.ctx.existing_projects, self.ctx.new_project_root),
             after_name,
         )
+
+    def _open_settings(self) -> None:
+        """Push SettingsScreen with the context's callback bundle."""
+        # Lazy import to dodge circular-ish deps.
+        from .settings import SettingsScreen
+        # Local import: the callback dataclass still lives in the legacy
+        # module. T20 pulls it into ``ccw_tui.screens.settings`` when the
+        # legacy file is deleted.
+        from ccw_tui_settings import SettingsCallbacks
+
+        cbs = SettingsCallbacks(
+            get_entries=self.ctx.get_settings_entries,
+            save_setting=self.ctx.on_setting_save,
+            remove_setting=self.ctx.on_setting_remove,
+            save_mapping=self.ctx.on_setting_save_mapping,
+            get_git_remote_profile_rows=self.ctx.get_git_remote_profile_rows,
+        )
+        self.app.push_screen(SettingsScreen(cbs))
 
     def _kill_all_global(self) -> None:
         total = len(self.ctx.sessions) + len(self.ctx.other_sessions)
