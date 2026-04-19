@@ -287,3 +287,36 @@ class ConfirmModalTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class PermissionsScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, keys):
+        from textual.app import App
+        from ccw_tui.screens.permissions import PermissionsScreen
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(PermissionsScreen(), done)
+
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            for k in keys:
+                await pilot.press(k)
+            await pilot.pause()
+        return app.result
+
+    async def test_digit_1_returns_regular(self):
+        self.assertEqual(await self._run(["1"]), False)
+
+    async def test_digit_2_returns_dsp(self):
+        self.assertEqual(await self._run(["2"]), True)
+
+    async def test_escape_returns_none(self):
+        self.assertIsNone(await self._run(["escape"]))
