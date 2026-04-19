@@ -22,6 +22,32 @@ _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "tests"))
 sys.path.insert(0, str(_REPO / "lib"))
 
+
+def locate_row(trace_plain: str, label_regex: str) -> int | None:
+    """Scan pty output for a label and return its 1-based y coordinate.
+
+    Layout-agnostic helper for click tests. ``trace_plain`` is the
+    rendered frame string from the pty harness; we split on "\r\n" and
+    return the index of the first line matching ``label_regex``.
+    Returns None if no match.
+
+    Used by tests that would otherwise hardcode a row number — letting
+    the MainScreen layout drift without breaking click-based tests.
+    """
+    import re
+    pattern = re.compile(label_regex)
+    for i, line in enumerate(trace_plain.splitlines(), start=1):
+        if pattern.search(line):
+            return i
+    return None
+
+
+def sgr_click(x: int, y: int) -> tuple[bytes, bytes]:
+    """Build SGR-1006 press+release byte pairs for coordinate (x, y)."""
+    press = f"\x1b[<0;{x};{y}M".encode()
+    release = f"\x1b[<0;{x};{y}m".encode()
+    return press, release
+
 try:
     import pty  # type: ignore[import]
     _PTY_OK = hasattr(pty, "fork")
