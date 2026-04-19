@@ -28,15 +28,37 @@ for the screen that owns it.
 from __future__ import annotations
 
 import os
-import subprocess
+import subprocess  # noqa: F401 — tests monkey-patch ccw_tui.subprocess
 import sys
 import traceback
-from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from ccw_tui_widgets import confirm_phrase as _confirm_phrase_widget
 from ccw_tui_widgets import dim as _dim_widget
+
+# Re-exported pure data / events / launch helpers live in sibling modules.
+from .context import (
+    ACTION_COUNT,
+    CallbackError,
+    Item,
+    LaunchRequest,
+    TuiContext,
+    TuiSession,
+    _ACTION_KINDS,
+    _digit_hinted_indices,
+    _segments,
+    _total_items,
+    build_items,
+)
+from .events import LOG_DIR, _log_dir, _log_event
+from .launch import (
+    FAST_EXIT_THRESHOLD_SEC,
+    _drain_stdin,
+    _format_launch_status,
+    _pause_on_launch_failure,
+    _run_launch_request,
+)
 
 if TYPE_CHECKING:
     from blessed import Terminal
@@ -49,389 +71,9 @@ BLESSED_MISSING_HINT = (
 )
 
 
-# ── Errors ───────────────────────────────────────────────────────────
-
-
-class CallbackError(Exception):
-    """Raised by a TUI callback when the underlying ccw operation failed.
-
-    The message is user-facing: the main loop renders it on the status
-    line (or in the post-launch banner) in red. ``bin/ccw`` wraps every
-    callback with ``_wrap_tui_callback`` so that ``fail() → SystemExit``
-    paths inside ccw surface here with their stderr message intact,
-    instead of killing the process silently under blessed's fullscreen.
-    """
-
-
-# ── Structured event log ─────────────────────────────────────────────
-#
-# Every user-visible transition in the TUI writes one JSON line to
-# ``/srv/work/logs/ccw/tui-{launch_user}-YYYYMMDD.log``. Format is
-# newline-delimited JSON; each line is self-describing. Log writes are
-# best-effort — a failure here must NEVER crash the TUI or propagate
-# into the blessed fullscreen context.
-#
-# Fields (all optional except ``ts`` and ``event``):
-#   ts              ISO-8601 UTC timestamp with seconds precision
-#   caller_user     real caller username (``os.getlogin()`` or $USER)
-#   launch_user     effective launch user (may differ under sudo)
-#   screen          the :class:`Screen` the event originated from
-#   event           short event name (``key``, ``activate``, ``launch``,
-#                    ``launch_completed``, ``refresh``, …)
-#   action          mapped action name from SCREEN_KEYMAP, when known
-#   key             raw key representation, for ``event == "key"``
-#   item_kind       kind of item activated, for ``event == "activate"``
-#   outcome         terminal outcome string (``ok``, ``cancel``,
-#                    ``rc=5``, ``error:<msg>``)
-#   extra           free-form dict for event-specific fields
-
-LOG_DIR = "/srv/work/logs/ccw"
-
-
-def _log_dir() -> str:
-    """Return the log directory, honouring an env-var override for tests."""
-    return os.environ.get("CCW_LOG_DIR", LOG_DIR)
-
-
-def _log_event(
-    event: str,
-    *,
-    screen: "Screen | None" = None,
-    caller_user: str = "",
-    launch_user: str = "",
-    action: str = "",
-    key: str = "",
-    item_kind: str = "",
-    outcome: str = "",
-    extra: "dict[str, Any] | None" = None,
-) -> None:
-    """Append one JSON line to today's ccw TUI log.
-
-    Silent on failure — logging must NEVER break the TUI. A missing
-    directory is created on the first call. Permission / write errors
-    are swallowed.
-    """
-    try:
-        import datetime
-        import json
-
-        now = datetime.datetime.now(datetime.timezone.utc)
-        record: dict[str, Any] = {
-            "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "event": event,
-        }
-        if screen is not None:
-            record["screen"] = screen.value
-        if caller_user:
-            record["caller_user"] = caller_user
-        if launch_user:
-            record["launch_user"] = launch_user
-        if action:
-            record["action"] = action
-        if key:
-            record["key"] = key
-        if item_kind:
-            record["item_kind"] = item_kind
-        if outcome:
-            record["outcome"] = outcome
-        if extra:
-            record["extra"] = extra
-
-        log_dir = _log_dir()
-        try:
-            os.makedirs(log_dir, mode=0o2775, exist_ok=True)
-        except OSError:
-            # Directory creation may fail (parent missing, no perm).
-            # Try to write anyway — the open() below will raise and we
-            # swallow that too.
-            pass
-
-        user = launch_user or caller_user or "unknown"
-        date_str = now.strftime("%Y%m%d")
-        path = os.path.join(log_dir, f"tui-{user}-{date_str}.log")
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        # Any exception during logging is swallowed. Logging is telemetry,
-        # not a correctness path.
-        return
-
-
-# ── Data ─────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class LaunchRequest:
-    """Describes a tmux invocation the TUI wants the outer loop to fork-and-wait.
-
-    The TUI itself never spawns subprocesses; activation handlers return
-    one of these, the main loop exits blessed's fullscreen context, runs
-    the ``prelaunch`` commands and then ``cmd``, waits for exit, and
-    re-enters the main screen with a refreshed context.
-    """
-
-    cmd: tuple[str, ...]
-    prelaunch: tuple[tuple[str, ...], ...] = ()
-    label: str = ""
-
-
-@dataclass
-class TuiSession:
-    """Flattened session data for TUI rendering (decoupled from ccw internals)."""
-
-    name: str
-    short: str
-    attached: bool
-    pid: str
-    cpu: str
-    ram: str
-    created: str
-    last_activity: str
-    cmd: str
-    path: str
-    user: str
-
-
-@dataclass
-class TuiContext:
-    """Everything the TUI needs from ccw to operate."""
-
-    sessions: list[TuiSession]  # sessions owned by current_user
-    total_cpu: str
-    total_ram: str
-    version: str
-    cwd: str
-    cwd_short: str
-    new_project_root: str
-    existing_projects: list[str]  # sorted dir names under new_project_root
-
-    # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
-    # "New session in current folder" can actually launch. Computed by
-    # ccw before constructing the context so the TUI itself stays off
-    # the filesystem. When False, the row is dimmed and activation
-    # shows a clear status-line hint instead of silently exiting ccw.
-    cwd_allowed: bool = True
-
-    current_user: str = ""
-    has_sudo: bool = False
-    other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
-
-    # Callbacks — TUI calls these, ccw provides them.
-    # Launch/attach callbacks return a LaunchRequest; the outer run() loop
-    # runs the command and re-enters the TUI main screen on exit.
-    on_attach: Callable[[str, str], "LaunchRequest"] = (
-        lambda user, name: LaunchRequest(cmd=("true",), label="noop-attach")
-    )
-    on_kill: Callable[[str, str], None] = lambda user, name: None  # (user, session) -> kill
-    on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
-    on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
-    on_refresh: Callable[[], "TuiContext"] = lambda: None  # type: ignore[return-value]
-    on_launch_cwd: Callable[[bool], "LaunchRequest"] = (
-        lambda dsp: LaunchRequest(cmd=("true",), label="noop-launch-cwd")
-    )
-    on_launch_new: Callable[[str, bool, str], "LaunchRequest"] = (
-        lambda name, dsp, git_profile: LaunchRequest(cmd=("true",), label="noop-launch-new")
-    )
-    on_launch_existing: Callable[[str, bool], "LaunchRequest"] = (
-        lambda name, dsp: LaunchRequest(cmd=("true",), label="noop-launch-existing")
-    )
-
-    # Git remote on new project — display only. The TUI never edits these.
-    git_create_enabled: bool = False
-    default_git_remote_profile: str = ""
-    # Each entry: (profile_name, description string like "github.com/vzd3v via remdepl [gh]")
-    git_remote_profile_options: list[tuple[str, str]] = field(default_factory=list)
-
-    # Settings (superuser-only). The TUI delegates all file I/O through these.
-    get_settings_entries: Callable[[], list] = lambda: []
-    on_setting_save: Callable[[str, Any], None] = lambda key, value: None
-    on_setting_remove: Callable[[str], None] = lambda key: None
-    on_setting_save_mapping: Callable[[str, dict], None] = lambda key, mapping: None
-    get_git_remote_profile_rows: Callable[[], list] = lambda: []
-
-
-# Number of action items at the top of the main list.
-#
-# Historically a loose module-level constant; as of PR 9 (2026-04-18)
-# this is derived from :data:`_ACTION_KINDS` which is itself the
-# canonical description of "what are the action rows". Keep
-# ``ACTION_COUNT`` for backward compatibility with tests and for
-# readability in segment arithmetic; new code should use
-# :func:`build_items` / item.kind dispatch instead of raw indices.
-_ACTION_KINDS: tuple[str, ...] = ("action-cwd", "action-new", "action-open")
-ACTION_COUNT = len(_ACTION_KINDS)
-
-
-@dataclass(frozen=True)
-class Item:
-    """One row on the main TUI screen, described by identity rather than index.
-
-    ``kind`` names the semantic role of the row. ``digit_hint`` is the
-    digit that would activate it on keypress, or None if the row cannot
-    be reached by a digit jump (Settings, Kill-ALL).
-
-    This is the type-safe replacement for the integer-cursor scheme.
-    Activation should dispatch on ``kind``, not on the position of the
-    row inside the flat list — session-count changes shift every index
-    below the new/removed session, but ``kind`` is stable.
-
-    The current :func:`_activate_item` still takes an integer ``index``
-    for backward compatibility with test fixtures. New code should
-    prefer looking up the item via :func:`build_items` and dispatching
-    on ``item.kind``.
-    """
-
-    kind: str  # one of: action-cwd, action-new, action-open,
-    #                    own-session, other-session,
-    #                    settings, kill-all-global
-    label: str
-    enabled: bool = True
-    # Payloads (only one is populated per kind):
-    session: "TuiSession | None" = None
-    digit_hint: "int | None" = None  # 1..9, or None if not digit-reachable
-
-
-def build_items(ctx: "TuiContext") -> list[Item]:
-    """Materialise the main-screen row list as a typed list of :class:`Item`.
-
-    The returned list is the source of truth for what's on the main
-    screen. Its order is the same order the current renderer uses, so
-    integer indices computed by :func:`_segments` align 1:1 with
-    positions in this list.
-
-    Invariant: item identity (kind + label) is stable under session
-    count changes for the action rows and for Settings / Kill-ALL;
-    session rows have identity "own-session:<name>" / "other-session:
-    <user>/<name>" so their position shifts but the item that used to
-    be "Open existing project" remains the same Item.
-    """
-    items: list[Item] = []
-    # Actions (indices 0..ACTION_COUNT-1). Digit hints are 1..3.
-    items.append(Item(
-        kind="action-cwd",
-        label="New session in current folder",
-        enabled=ctx.cwd_allowed,
-        digit_hint=1,
-    ))
-    items.append(Item(
-        kind="action-new",
-        label="Create new project",
-        enabled=True,
-        digit_hint=2,
-    ))
-    items.append(Item(
-        kind="action-open",
-        label="Open existing project",
-        enabled=bool(ctx.existing_projects),
-        digit_hint=3,
-    ))
-    # Own sessions
-    for i, s in enumerate(ctx.sessions):
-        pos = ACTION_COUNT + i  # 0-based position in the final list
-        hint = pos + 1 if 1 <= pos + 1 <= 9 else None
-        items.append(Item(
-            kind="own-session",
-            label=s.short,
-            enabled=True,
-            session=s,
-            digit_hint=hint,
-        ))
-    # Superuser block: other-user sessions, settings, kill-all-global.
-    if ctx.has_sudo:
-        for i, s in enumerate(ctx.other_sessions):
-            pos = ACTION_COUNT + len(ctx.sessions) + i
-            hint = pos + 1 if 1 <= pos + 1 <= 9 else None
-            items.append(Item(
-                kind="other-session",
-                label=f"{s.user}/{s.short}",
-                enabled=True,
-                session=s,
-                digit_hint=hint,
-            ))
-        # Settings: no digit_hint — PR 2 invariant.
-        items.append(Item(
-            kind="settings",
-            label="⚙ Settings",
-            enabled=True,
-        ))
-        total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
-        if total_sessions > 0:
-            # Kill-ALL: no digit_hint — PR 2 invariant.
-            items.append(Item(
-                kind="kill-all-global",
-                label=f"⚡ Kill ALL ({total_sessions})",
-                enabled=True,
-            ))
-    return items
-
-
 def _dim(t: "Terminal", text: str) -> str:
     """Kept as a local alias for backwards compatibility with existing tests."""
     return _dim_widget(t, text)
-
-
-# ── Segment / index map ─────────────────────────────────────────────
-#
-# Without sudo:
-#   [actions: 0..ACTION_COUNT) | [own: ACTION_COUNT..ACTION_COUNT+len(own))
-#
-# With sudo (superuser block always available):
-#   ... | [own] | [other-user sessions] | ⚙ Settings | [Kill ALL (all users)]
-#                                                     ^ only when any session exists
-
-
-def _segments(ctx: TuiContext) -> tuple[int, int, int, int, bool]:
-    """Return (own_start, other_start, settings_idx, kill_global_idx, has_super).
-
-    Indexes that don't apply return -1. ``has_super`` is True iff
-    ``ctx.has_sudo``.
-    """
-    own_start = ACTION_COUNT
-    other_start = own_start + len(ctx.sessions)
-    if not ctx.has_sudo:
-        return own_start, other_start, -1, -1, False
-    settings_idx = other_start + len(ctx.other_sessions)
-    total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
-    kill_global_idx = settings_idx + 1 if total_sessions > 0 else -1
-    return own_start, other_start, settings_idx, kill_global_idx, True
-
-
-def _total_items(ctx: TuiContext) -> int:
-    _, _, settings_idx, kill_idx, has_super = _segments(ctx)
-    if not has_super:
-        return ACTION_COUNT + len(ctx.sessions)
-    if kill_idx >= 0:
-        return kill_idx + 1
-    return settings_idx + 1
-
-
-def _digit_hinted_indices(ctx: TuiContext) -> set[int]:
-    """Return the set of item indices reachable via a digit keypress.
-
-    Digit 1..9 maps to index 0..8. Only items whose index is in this set
-    may be activated by a digit keypress. Settings and Kill-ALL are
-    deliberately excluded — they are non-destructive-to-read but
-    surprising-to-land-on for a new user, and on empty superuser state
-    `settings_idx` collapses to `ACTION_COUNT` which makes a mis-typed
-    digit dangerously ambiguous. Both remain reachable via
-    arrow-down + Enter, which is a deliberate two-step gesture.
-    """
-    own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
-    total = _total_items(ctx)
-    allowed: set[int] = set()
-    # Actions (0..ACTION_COUNT-1)
-    for i in range(min(ACTION_COUNT, total)):
-        allowed.add(i)
-    # Own sessions
-    for i in range(own_start, min(other_start, total)):
-        allowed.add(i)
-    # Other users' sessions (still session rows, safe to jump to)
-    if has_super:
-        other_end = settings_idx if settings_idx >= 0 else total
-        for i in range(other_start, min(other_end, total)):
-            allowed.add(i)
-    # Settings and Kill-ALL are intentionally excluded.
-    return allowed
 
 
 # ── Rendering helpers ────────────────────────────────────────────────
@@ -1085,7 +727,10 @@ def _activate_item(
     if has_super and index == kill_idx:
         confirm_y = t.height - 3
         total_count = len(ctx.sessions) + len(ctx.other_sessions)
-        if _confirm_kill_all_global(t, total_count, confirm_y):
+        # Resolve through the package namespace so tests can still
+        # ``mock.patch.object(ccw_tui, "_confirm_kill_all_global")``.
+        import ccw_tui as _pkg  # noqa: PLC0415 — lazy to avoid circular import
+        if _pkg._confirm_kill_all_global(t, total_count, confirm_y):
             try:
                 ctx.on_kill_all_global()
                 return t.green(f"Killed all {total_count} sessions (all users)"), None
@@ -1099,128 +744,6 @@ def _activate_item(
 # ── Entry point ──────────────────────────────────────────────────────
 
 
-def _run_launch_request(req: "LaunchRequest") -> tuple[int, str, float]:
-    """Execute a LaunchRequest via fork-and-wait (blessed context already exited).
-
-    Runs each prelaunch command in order, aborting if any returns non-zero,
-    then runs the main ``cmd``. Returns ``(rc, stage, wall_seconds)`` where
-    ``stage`` is ``"prelaunch"`` if a prelaunch failed, else ``"cmd"``, and
-    ``wall_seconds`` is the total elapsed time across prelaunch + cmd.
-    Wall time is used by the caller to detect silent fast-exit launches
-    (rc=0 but sub-second duration) that would otherwise strip the user
-    of any context about why tmux didn't stick.
-    """
-    import time as _time
-
-    t0 = _time.monotonic()
-    for pre in req.prelaunch:
-        rc = subprocess.call(list(pre))
-        if rc != 0:
-            return rc, "prelaunch", _time.monotonic() - t0
-    rc = subprocess.call(list(req.cmd))
-    return rc, "cmd", _time.monotonic() - t0
-
-
-def _format_launch_status(t: "Terminal", req: "LaunchRequest", rc: int, stage: str) -> str:
-    """Render a short status-line message about a returned-from-tmux launch."""
-    label = req.label or "launch"
-    if stage == "prelaunch":
-        return t.red(f"{label}: prelaunch failed (rc={rc})")
-    if rc == 0:
-        return ""
-    if rc == 130:
-        return _dim(t, f"{label}: cancelled")
-    return t.yellow(f"{label}: exited rc={rc}")
-
-
-def _drain_stdin(t: "Terminal", max_keys: int = 64) -> int:
-    """Read-and-discard any buffered keystrokes on the TTY.
-
-    Called after a launch round-trip returns and before the TUI re-enters
-    fullscreen. blessed's ``t.cbreak()`` does not flush pending bytes on
-    entry, so keys typed while tmux was running (or during the split
-    second after ``_pause_on_launch_failure``) would otherwise be
-    consumed by the next screen's ``t.inkey()`` — re-animating a stale
-    cursor. Bounded at ``max_keys`` to dodge a pathological "stdin is a
-    pipe of infinite bytes" scenario.
-
-    Returns the number of keys drained (for testability / logging).
-    """
-    drained = 0
-    try:
-        with t.cbreak():
-            while drained < max_keys:
-                key = t.inkey(timeout=0)
-                if not key:
-                    break
-                drained += 1
-    except Exception:
-        # Drain is best-effort. A broken tty must not crash the TUI.
-        return drained
-    return drained
-
-
-#: Threshold below which an rc=0 launch is treated as a silent fast-exit.
-#: Empirically a healthy tmux attach that actually landed the user in a
-#: claude session will be in the foreground for at least a few seconds;
-#: anything sub-second that returns rc=0 is almost certainly a broken
-#: command (missing binary, bad argv) that printed to stderr and exited
-#: before the user could read it.
-FAST_EXIT_THRESHOLD_SEC = 1.0
-
-
-def _pause_on_launch_failure(
-    t: "Terminal",
-    req: "LaunchRequest",
-    rc: int,
-    stage: str,
-    wall_seconds: float | None = None,
-) -> None:
-    """Hold the terminal after a failed launch so the user can read stderr.
-
-    Called after the blessed fullscreen context has exited and before we
-    re-enter it. The failed subprocess's stderr is still on the physical
-    terminal at this point; without a pause, re-entering fullscreen wipes
-    it. We print a clear banner pointing at the output above and wait for
-    a keypress. ``rc == 130`` (user Ctrl-C'd) is not treated as a failure.
-
-    When ``wall_seconds`` is provided and the launch returned rc=0 in
-    under :data:`FAST_EXIT_THRESHOLD_SEC`, also pause — a near-instant
-    zero exit is almost always a silent launch failure (e.g. claude
-    binary missing, bad tmux argv) and the user deserves to see any
-    output that was printed before fullscreen wipes it.
-    """
-    fast_zero = (
-        rc == 0
-        and wall_seconds is not None
-        and wall_seconds < FAST_EXIT_THRESHOLD_SEC
-    )
-    if rc == 130:
-        return
-    if rc == 0 and not fast_zero:
-        return
-    label = req.label or "launch"
-    sys.stdout.write("\n")
-    if fast_zero:
-        sys.stdout.write(
-            t.bold_yellow(
-                f"ccw: {label} exited immediately (rc=0 in {wall_seconds:.2f}s, stage={stage})"
-            )
-            + "\n"
-        )
-    else:
-        sys.stdout.write(t.bold_red(f"ccw: {label} failed (rc={rc}, stage={stage})") + "\n")
-    if stage == "prelaunch":
-        sys.stdout.write(
-            _dim(t, f"  command: {' '.join(list(req.prelaunch[0]) if req.prelaunch else [])}") + "\n"
-        )
-    else:
-        sys.stdout.write(_dim(t, f"  command: {' '.join(req.cmd)}") + "\n")
-    sys.stdout.write(_dim(t, "  see output above for details") + "\n")
-    sys.stdout.write(t.bold("press any key to return to the ccw menu...") + "\n")
-    sys.stdout.flush()
-    with t.cbreak():
-        t.inkey(timeout=None)
 
 
 def _interactive_loop(

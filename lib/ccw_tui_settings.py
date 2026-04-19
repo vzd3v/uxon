@@ -198,7 +198,7 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
 
         footer_y = t.height - 1
         with t.location(0, footer_y):
-            from ccw_tui import _build_footer  # lazy to avoid cycle
+            from ccw_tui._legacy import _build_footer  # lazy to avoid cycle
             print("  " + _build_footer(t, "settings"), end="")
 
         from ccw_tui_mouse import MouseEvent, hit_test, read_input
