@@ -111,7 +111,12 @@ def read_input(t: "Terminal", timeout=None):
     so a genuine lone ESC keystroke cannot be swallowed.
     """
     key = t.inkey(timeout=timeout)
-    if not key:
+    if key is None:
+        return None
+    # Treat the empty-string timeout return blessed emits as "no key"
+    # ONLY when it has no name set (real keystrokes like KEY_ENTER
+    # stringify to "" but have .name = "KEY_ENTER").
+    if str(key) == "" and not getattr(key, "name", None):
         return None
     s = str(key)
     # Fast path: full sequence already returned in one keystroke.

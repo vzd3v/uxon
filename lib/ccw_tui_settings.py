@@ -141,6 +141,12 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
             scroll_offset = cursor - available + 1
         visible_end = min(scroll_offset + available, total_rows)
 
+        from ccw_tui_mouse import HitRegion
+        regions: list[HitRegion] = []
+        # Header(1) + separator(1) + SRC line(1) + blank(1) = 4 physical
+        # lines printed before the first visible row. Scroll within the
+        # loop shifts the mapping to the first rendered row, not item 0.
+        row_y = 4
         for i in range(scroll_offset, visible_end):
             sel = i == cursor
             prefix = t.bold_cyan("▸ ") if sel else "  "
@@ -159,6 +165,8 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
                     print(t.reverse(t.ljust(line, t.width)))
                 else:
                     print(line)
+                regions.append(HitRegion(y=row_y, action="row", payload=i))
+                row_y += 1
                 continue
 
             e = entries[i - len(virtual_rows)]
@@ -176,6 +184,8 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
                 print(t.reverse(t.ljust(line, t.width)))
             else:
                 print(line)
+            regions.append(HitRegion(y=row_y, action="row", payload=i))
+            row_y += 1
 
         # Description for selected entry
         if 0 <= cursor < total_rows:
@@ -191,7 +201,36 @@ def show_settings(t: "Terminal", cbs: SettingsCallbacks) -> None:
             from ccw_tui import _build_footer  # lazy to avoid cycle
             print("  " + _build_footer(t, "settings"), end="")
 
-        key = t.inkey(timeout=None)
+        from ccw_tui_mouse import MouseEvent, hit_test, read_input
+        ev = read_input(t, timeout=None)
+        if isinstance(ev, MouseEvent):
+            if ev.wheel < 0:
+                cursor = max(0, cursor - 1)
+                continue
+            if ev.wheel > 0:
+                cursor = min(total_rows - 1, cursor + 1)
+                continue
+            hit = hit_test(regions, y=ev.y - 1)
+            if hit is None or hit.action != "row":
+                continue
+            idx = int(hit.payload)
+            if ev.pressed:
+                cursor = idx
+                continue
+            # Release → activate same as Enter.
+            if idx < len(virtual_rows):
+                _, activate = virtual_rows[idx]
+                activate()
+                entries = cbs.get_entries()
+            else:
+                changed = _edit_entry(t, entries[idx - len(virtual_rows)], cbs)
+                if changed:
+                    entries = cbs.get_entries()
+                    total_rows = len(virtual_rows) + len(entries)
+                    if cursor >= total_rows:
+                        cursor = max(0, total_rows - 1)
+            continue
+        key = ev
         if key.name == "KEY_ESCAPE" or key == "q":
             return
         if key.name == "KEY_UP" or key == "k":
