@@ -44,10 +44,33 @@ class SessionTable(DataTable):
 
     def __init__(self, *, show_user: bool = False, id: str | None = None) -> None:
         super().__init__(id=id)
-        self.cursor_type = "row"
+        # Hide the row cursor until the table actually receives focus, so the
+        # first row doesn't look "selected" while the user is navigating the
+        # action rows above. Toggled in on_focus / on_blur.
+        self.cursor_type = "none"
         self.zebra_stripes = True
         self.show_user = show_user
         self._session_index: list[TuiSession] = []
+
+    def on_focus(self) -> None:
+        self.cursor_type = "row"
+
+    def on_blur(self) -> None:
+        self.cursor_type = "none"
+
+    def action_cursor_up(self) -> None:
+        """At row 0, pass focus back up instead of staying in the table."""
+        if self.cursor_row <= 0:
+            self.app.action_focus_previous()
+            return
+        super().action_cursor_up()
+
+    def action_cursor_down(self) -> None:
+        """At the last row, advance focus out of the table."""
+        if self.cursor_row >= self.row_count - 1:
+            self.app.action_focus_next()
+            return
+        super().action_cursor_down()
 
     COLUMN_KEYS: ClassVar[list[str]] = [
         "name", "pid", "cpu", "ram", "new", "last", "cmd", "path",
