@@ -400,3 +400,37 @@ class GitProfileScreenTests(unittest.IsolatedAsyncioTestCase):
         opts = [("profA", "A"), ("profB", "B")]
         # Default = profB → cursor starts at index 2 → Enter picks profB.
         self.assertEqual(await self._run(["enter"], opts, default="profB"), "profB")
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, keys, projects):
+        from textual.app import App
+        from ccw_tui.screens.existing import ExistingProjectScreen
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(ExistingProjectScreen(projects, "/srv/work"), done)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            for k in keys:
+                await pilot.press(k)
+            await pilot.pause()
+        return app.result
+
+    async def test_digit_1_picks_first(self):
+        projs = ["alpha", "beta", "gamma"]
+        self.assertEqual(await self._run(["1"], projs), "alpha")
+
+    async def test_enter_picks_cursor(self):
+        self.assertEqual(await self._run(["enter"], ["alpha"]), "alpha")
+
+    async def test_escape_cancels(self):
+        self.assertIsNone(await self._run(["escape"], ["alpha"]))
