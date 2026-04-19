@@ -198,5 +198,92 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(app.pending_launch)
 
 
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class ConfirmModalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_yesno_y_confirms(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.confirm import ConfirmYesNo
+
+        class Host(App):
+            result = None
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(ConfirmYesNo("Kill foo?"), done)
+
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+        self.assertTrue(app.result)
+
+    async def test_yesno_n_cancels(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.confirm import ConfirmYesNo
+
+        class Host(App):
+            result = None
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(ConfirmYesNo("Kill foo?"), done)
+
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+        self.assertFalse(app.result)
+
+    async def test_phrase_matching_string_confirms(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.confirm import ConfirmPhrase
+
+        class Host(App):
+            result = None
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(ConfirmPhrase("Danger!", "kill-all"), done)
+
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("#confirm-input").focus()
+            await pilot.press(*"kill-all")
+            await pilot.press("enter")
+            await pilot.pause()
+        self.assertTrue(app.result)
+
+    async def test_phrase_mismatch_rejects(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.confirm import ConfirmPhrase
+
+        class Host(App):
+            result = None
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(ConfirmPhrase("Danger!", "kill-all"), done)
+
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("#confirm-input").focus()
+            await pilot.press(*"nope")
+            await pilot.press("enter")
+            await pilot.pause()
+        self.assertFalse(app.result)
+
+
 if __name__ == "__main__":
     unittest.main()
