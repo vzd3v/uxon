@@ -23,7 +23,7 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
     }
     ExistingProjectScreen > Vertical {
         width: 70;
-        max-height: 30;
+        height: 90%;
         padding: 1 2;
         border: round $accent;
         background: $surface;
@@ -33,7 +33,7 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         margin-bottom: 1;
     }
     ExistingProjectScreen ListView {
-        height: auto;
+        height: 1fr;
         scrollbar-gutter: stable;
     }
     ExistingProjectScreen ListItem {
