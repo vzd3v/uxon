@@ -272,6 +272,8 @@ class _EditModalBase(ModalScreen[bool]):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel", "Cancel", show=True),
+        Binding("up", "app.focus_previous", "", show=False),
+        Binding("down", "app.focus_next", "", show=False),
     ]
 
     def __init__(self, entry: Any, cbs: Any) -> None:

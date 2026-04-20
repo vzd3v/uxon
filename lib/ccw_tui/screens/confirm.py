@@ -50,6 +50,10 @@ class ConfirmYesNo(ModalScreen[bool]):
         Binding("y", "confirm", "Yes", show=True),
         Binding("n", "cancel", "No", show=True),
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("up", "app.focus_previous", "", show=False),
+        Binding("down", "app.focus_next", "", show=False),
+        Binding("left", "app.focus_previous", "", show=False),
+        Binding("right", "app.focus_next", "", show=False),
     ]
 
     def __init__(self, prompt: str) -> None:

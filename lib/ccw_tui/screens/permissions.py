@@ -43,6 +43,8 @@ class PermissionsScreen(ModalScreen["bool | None"]):
         Binding("escape", "cancel", "Cancel", show=True),
         Binding("1", "pick_regular", "Regular", show=True),
         Binding("2", "pick_dsp", "All perms", show=True),
+        Binding("up", "app.focus_previous", "", show=False),
+        Binding("down", "app.focus_next", "", show=False),
     ]
 
     def compose(self) -> ComposeResult:

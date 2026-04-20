@@ -71,6 +71,8 @@ class NewProjectScreen(ModalScreen["str | None"]):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel", "Cancel", show=True),
+        Binding("up", "app.focus_previous", "", show=False),
+        Binding("down", "app.focus_next", "", show=False),
     ]
 
     def __init__(self, project_root: str) -> None:
