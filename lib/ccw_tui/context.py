@@ -72,7 +72,7 @@ class TuiContext:
     cwd: str
     cwd_short: str
     new_project_root: str
-    existing_projects: list[str]  # sorted dir names under new_project_root
+    existing_projects: list[tuple[str, str]]  # (name, compact_mtime) under new_project_root
 
     # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
     # "New session in current folder" can actually launch. Computed by

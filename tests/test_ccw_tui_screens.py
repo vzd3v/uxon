@@ -415,6 +415,10 @@ class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
         from textual.app import App
         from ccw_tui.screens.existing import ExistingProjectScreen
 
+        # Test helper: accept bare names; ExistingProjectScreen now
+        # expects ``(name, compact_mtime)`` tuples.
+        prepared = [(p, "") if isinstance(p, str) else p for p in projects]
+
         class Host(App):
             result = "unset"
 
@@ -422,7 +426,7 @@ class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
                 def done(r):
                     self.result = r
                     self.exit()
-                self.push_screen(ExistingProjectScreen(projects, "/srv/work"), done)
+                self.push_screen(ExistingProjectScreen(prepared, "/srv/work"), done)
 
         app = Host()
         async with app.run_test(size=(100, 30)) as pilot:

@@ -1740,16 +1740,28 @@ def detect_passwordless_sudo() -> bool:
     return cp.returncode == 0
 
 
-def _list_existing_projects(root: str) -> list[str]:
-    """List directory names under new_project_root, sorted."""
+def _list_existing_projects(root: str) -> list[tuple[str, str]]:
+    """List ``(name, compact_mtime)`` under ``new_project_root``, sorted by name.
+
+    ``compact_mtime`` uses :func:`compact_time`: ``HH:MM`` if the
+    directory was last modified today, ``MM-DD`` otherwise. ``"-"``
+    when the stat call fails.
+    """
     try:
-        entries = sorted(
-            e.name for e in Path(root).iterdir()
-            if e.is_dir() and not e.name.startswith(".")
-        )
+        entries = [(e.name, e.path) for e in Path(root).iterdir()
+                   if e.is_dir() and not e.name.startswith(".")]
     except OSError:
-        entries = []
-    return entries
+        return []
+    entries.sort()
+    result: list[tuple[str, str]] = []
+    for name, path in entries:
+        try:
+            mtime = int(os.stat(path).st_mtime)
+            mtime_str = compact_time(fmt_epoch(str(mtime)))
+        except OSError:
+            mtime_str = "-"
+        result.append((name, mtime_str))
+    return result
 
 
 def _to_tui_session(s: SessionInfo, prefix: str) -> object:

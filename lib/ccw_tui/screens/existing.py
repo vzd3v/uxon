@@ -55,8 +55,11 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         Binding("9", "pick_digit(9)", "", show=False),
     ]
 
-    def __init__(self, projects: list[str], project_root: str) -> None:
+    def __init__(
+        self, projects: list[tuple[str, str]], project_root: str
+    ) -> None:
         super().__init__()
+        # Each entry: (name, compact_mtime). See _list_existing_projects.
         self.projects = list(projects)
         self.project_root = project_root
 
@@ -64,12 +67,13 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         with Vertical():
             yield Static("Open existing project", classes="title")
             yield Static(f"  {self.project_root}/")
-            # Right-align the digit hint so single- and double-digit
-            # prefixes occupy the same column width — prevents the name
-            # column from shifting when the list scrolls past item 9.
+            # ``{i+1:>2}`` right-aligns the digit so single- and double-
+            # digit prefixes share one column. ``{name:<50.50}`` pads/
+            # truncates the name so the mtime column lines up no matter
+            # how long each name is.
             items = [
-                ListItem(Label(f"{i + 1:>2} {name}"))
-                for i, name in enumerate(self.projects)
+                ListItem(Label(f"{i + 1:>2} {name:<50.50} {mtime:>5}"))
+                for i, (name, mtime) in enumerate(self.projects)
             ]
             yield ListView(*items, id="existing-list")
 
@@ -83,12 +87,12 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         lv = self.query_one(ListView)
         idx = lv.index or 0
         if 0 <= idx < len(self.projects):
-            self.dismiss(self.projects[idx])
+            self.dismiss(self.projects[idx][0])
 
     def action_pick_digit(self, n: int) -> None:
         idx = n - 1
         if 0 <= idx < len(self.projects):
-            self.dismiss(self.projects[idx])
+            self.dismiss(self.projects[idx][0])
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_pick()
