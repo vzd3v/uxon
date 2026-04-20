@@ -861,6 +861,27 @@ class CcwTests(unittest.TestCase):
             "random warning\nthe real error",
         )
 
+    def test_list_existing_projects_returns_name_and_mtime(self) -> None:
+        """Smoke test against a real temp dir — guards against regressions
+        like mistaking Path objects for os.DirEntry (no ``.path`` attr)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "alpha").mkdir()
+            (root / "beta").mkdir()
+            (root / ".hidden").mkdir()  # dot-prefixed must be skipped
+            (root / "not_a_dir.txt").write_text("x")
+            entries = ccw._list_existing_projects(str(root))
+        names = [n for n, _ in entries]
+        self.assertEqual(names, ["alpha", "beta"])
+        for _, mtime in entries:
+            # Either HH:MM (today) or MM-DD. Never blank on a fresh mkdir.
+            self.assertRegex(mtime, r"^\d\d[:-]\d\d$")
+
+    def test_list_existing_projects_missing_root_returns_empty(self) -> None:
+        self.assertEqual(
+            ccw._list_existing_projects("/nonexistent/path/for/ccw/test"), []
+        )
+
     def test_wrap_tui_callback_passes_return_value(self) -> None:
         class _Err(Exception):
             pass

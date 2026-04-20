@@ -1748,7 +1748,7 @@ def _list_existing_projects(root: str) -> list[tuple[str, str]]:
     when the stat call fails.
     """
     try:
-        entries = [(e.name, e.path) for e in Path(root).iterdir()
+        entries = [(e.name, str(e)) for e in Path(root).iterdir()
                    if e.is_dir() and not e.name.startswith(".")]
     except OSError:
         return []
