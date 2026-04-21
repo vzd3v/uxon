@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
@@ -87,6 +88,116 @@ class AgentsUnavailableScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
             await pilot.pause()
         self.assertIsNone(app.result)
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
+    """End-to-end: CcwApp pushes AgentsUnavailableScreen iff all probes miss."""
+
+    async def test_pushes_when_all_agents_missing(self) -> None:
+        from ccw_tui.app import CcwApp, _AgentAvailabilityUpdated
+        from ccw_tui.screens.agents_unavailable import AgentsUnavailableScreen
+        import ccw_agents
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude", "codex"),
+            default_agent="claude",
+        )
+
+        app = CcwApp(ctx)
+        with mock.patch("ccw_agents.probe_agents", return_value={}):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                ctx.agent_availability.clear()
+                ctx.agent_availability.update({
+                    aid: ccw_agents.AgentAvailability(status="missing", error="not found")
+                    for aid in ctx.enabled_agents
+                })
+                app.post_message(_AgentAvailabilityUpdated())
+                await pilot.pause()
+                self.assertTrue(
+                    any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack),
+                    f"popup not pushed; stack={app.screen_stack!r}",
+                )
+                await pilot.press("q")
+                await pilot.pause()
+
+    async def test_does_not_push_when_one_agent_ok(self) -> None:
+        from ccw_tui.app import CcwApp, _AgentAvailabilityUpdated
+        from ccw_tui.screens.agents_unavailable import AgentsUnavailableScreen
+        import ccw_agents
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude", "codex"),
+            default_agent="claude",
+        )
+        app = CcwApp(ctx)
+        with mock.patch("ccw_agents.probe_agents", return_value={}):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                ctx.agent_availability.clear()
+                ctx.agent_availability.update({
+                    "claude": ccw_agents.AgentAvailability(status="ok", version="x"),
+                    "codex": ccw_agents.AgentAvailability(status="missing"),
+                })
+                app.post_message(_AgentAvailabilityUpdated())
+                await pilot.pause()
+                self.assertFalse(
+                    any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack),
+                )
+                await pilot.press("q")
+                await pilot.pause()
+
+    async def test_does_not_push_while_pending(self) -> None:
+        from ccw_tui.app import CcwApp, _AgentAvailabilityUpdated
+        from ccw_tui.screens.agents_unavailable import AgentsUnavailableScreen
+        import ccw_agents
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude", "codex"),
+            default_agent="claude",
+        )
+        app = CcwApp(ctx)
+        with mock.patch("ccw_agents.probe_agents", return_value={}):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                ctx.agent_availability.clear()
+                # Only one resolved, the other still pending.
+                ctx.agent_availability.update({
+                    "claude": ccw_agents.AgentAvailability(status="missing"),
+                    # codex intentionally absent = still pending.
+                })
+                app.post_message(_AgentAvailabilityUpdated())
+                await pilot.pause()
+                self.assertFalse(
+                    any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack),
+                )
+
+    async def test_pushed_only_once_per_cycle(self) -> None:
+        from ccw_tui.app import CcwApp, _AgentAvailabilityUpdated
+        from ccw_tui.screens.agents_unavailable import AgentsUnavailableScreen
+        import ccw_agents
+
+        ctx = _mk_ctx(enabled_agents=("claude",), default_agent="claude")
+        app = CcwApp(ctx)
+        with mock.patch("ccw_agents.probe_agents", return_value={}):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                ctx.agent_availability.clear()
+                ctx.agent_availability["claude"] = ccw_agents.AgentAvailability(status="missing")
+                app.post_message(_AgentAvailabilityUpdated())
+                await pilot.pause()
+                # Dismiss the modal.
+                await pilot.press("escape")
+                await pilot.pause()
+                # Re-post the same event — must NOT re-push.
+                app.post_message(_AgentAvailabilityUpdated())
+                await pilot.pause()
+                self.assertFalse(
+                    any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack),
+                )
+                await pilot.press("q")
+                await pilot.pause()
 
 
 if __name__ == "__main__":

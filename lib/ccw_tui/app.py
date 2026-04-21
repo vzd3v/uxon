@@ -26,6 +26,7 @@ from .context import CallbackError, LaunchRequest, TuiContext
 from .events import _log_event
 from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
+from .screens.agents_unavailable import AgentsUnavailableScreen
 from .screens.main import MainScreen
 
 
@@ -58,6 +59,13 @@ class CcwApp(App):
         self.pending_launch: LaunchRequest | None = None
         self.quit_rc: int | None = None
         self.pending_status = pending_status
+        # Latch: AgentsUnavailableScreen is pushed at most once per app
+        # instance. ``run()``'s outer loop re-creates the app after every
+        # launch, which is the right cadence to re-arm the popup. The
+        # in-session ``r`` refresh does NOT re-run the probe (it only
+        # rebuilds ctx), so it intentionally does not re-arm either —
+        # the popup copy tells the user to quit and restart.
+        self._agents_popup_shown: bool = False
 
     def on_mount(self) -> None:
         # Push the main screen as the first and only base screen.
@@ -96,6 +104,43 @@ class CcwApp(App):
         self.pop_until_main()
         self.pending_launch = req
         self.exit()
+
+    def on__agent_availability_updated(self, event: _AgentAvailabilityUpdated) -> None:
+        """Gate: on every probe update, decide whether to pop the install hint.
+
+        Re-dispatches to the top screen so an active modal (e.g.
+        LaunchOptionsScreen) can refresh its visible-agents list. We post
+        a *fresh* message instance because textual marks the original as
+        handled once this method returns; re-posting the same object is
+        a silent no-op.
+        """
+        # Re-dispatch to the active top screen — app-level messages do
+        # not bubble down by default.
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if top is not None and top is not self:
+            top.post_message(_AgentAvailabilityUpdated())
+
+        if self._agents_popup_shown:
+            return
+        enabled = self.ctx.enabled_agents
+        if not enabled:
+            return
+        avail = self.ctx.agent_availability
+        # Require every enabled agent to have a resolved status.
+        resolved = all(
+            aid in avail and getattr(avail[aid], "status", "pending") != "pending"
+            for aid in enabled
+        )
+        if not resolved:
+            return
+        all_unusable = all(
+            getattr(avail[aid], "status", None) in ("missing", "timeout")
+            for aid in enabled
+        )
+        if not all_unusable:
+            return
+        self._agents_popup_shown = True
+        self.push_screen(AgentsUnavailableScreen(tuple(enabled)))
 
     def pop_until_main(self) -> None:
         """Dismiss every modal above the main screen.
