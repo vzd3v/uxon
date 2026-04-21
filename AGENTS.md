@@ -47,7 +47,8 @@ topology notes live in [docs/deployment.md](docs/deployment.md).
   `PermissionMode` definitions, `AgentAvailability`, and the parallel
   `probe_agents(...)` availability probe. No textual, no TUI.
 - `install/` — installer and config renderer.
-- `tests/` — `unittest`, discovered via `python3 -m unittest`.
+- `tests/` — `unittest.TestCase`; run via `pytest tests/ -n auto`
+  (stdlib `python3 -m unittest discover -s tests` still works as fallback).
 - `config/` — host-local, gitignored. Source of truth for a running host.
 - `VERSION` — human-owned release tag.
 
@@ -130,7 +131,7 @@ python3 -m py_compile bin/ccw \
   tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
   tests/test_ccw_agents.py tests/test_ccw_tui_agents_unavailable.py \
   install/install_ccw.py install/render_ccw_config.py
-python3 -m unittest discover -s tests -p 'test_*.py'
+pytest tests/ -n auto
 ```
 
 CI runs the same two commands. If CI catches something local checks miss,
