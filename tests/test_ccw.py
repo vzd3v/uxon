@@ -667,13 +667,13 @@ class CcwTests(unittest.TestCase):
 
     def test_build_tmux_launch_request_includes_claude_and_mkdir(self) -> None:
         cfg = self.make_config(agent_default_args={"claude": ("--model", "sonnet"), "codex": (), "cursor": ()})
-        args = ccw.ParsedArgs(action="run", dsp=True, agent_args=["--foo"])
+        args = ccw.ParsedArgs(action="run", permission_mode="yolo", agent_args=["--foo"])
         with self._stub_socket_path():
-            req = ccw._build_tmux_launch_request("/srv/repos/demo", "ccw-demo", args, cfg, None, "u-vz")
+            req = ccw._build_tmux_launch_request("/srv/repos/demo", "ccw-demo@claude", args, cfg, None, "u-vz")
         self.assertIn("new-session", req.cmd)
         self.assertIn("-As", req.cmd)
-        self.assertIn("ccw-demo", req.cmd)
-        # agent_default_args + dsp flag + caller's agent_args all flow through
+        self.assertIn("ccw-demo@claude", req.cmd)
+        # agent_default_args + yolo flag + caller's agent_args all flow through
         self.assertIn("claude", req.cmd)
         self.assertIn("--model", req.cmd)
         self.assertIn("sonnet", req.cmd)
@@ -947,31 +947,88 @@ class CcwTests(unittest.TestCase):
 
     def test_build_tmux_launch_request_uses_switch_client_when_nested(self) -> None:
         cfg = self.make_config(agent_default_args={"claude": ("--model", "sonnet"), "codex": (), "cursor": ()})
-        args = ccw.ParsedArgs(action="run", dsp=True, agent_args=["--foo"])
+        args = ccw.ParsedArgs(action="run", permission_mode="yolo", agent_args=["--foo"])
         stubs = _StubsChain(
             mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-test.sock"),
             mock.patch.object(ccw, "tmux_host_socket", return_value="/tmp/ccw-test.sock"),
         )
         with stubs:
             req = ccw._build_tmux_launch_request(
-                "/srv/repos/demo", "ccw-demo", args, cfg, None, "u-vz"
+                "/srv/repos/demo", "ccw-demo@claude", args, cfg, None, "u-vz"
             )
         # Main cmd is the switch; creation happens in prelaunch.
         self.assertIn("switch-client", req.cmd)
-        self.assertIn("ccw-demo", req.cmd)
+        self.assertIn("ccw-demo@claude", req.cmd)
         # Two prelaunches: mkdir + detached create-or-noop with claude args.
         self.assertEqual(len(req.prelaunch), 2)
         mkdir_pre, create_pre = req.prelaunch
         self.assertIn("mkdir", mkdir_pre)
         self.assertIn("new-session", create_pre)
         self.assertIn("-dA", create_pre)
-        self.assertIn("ccw-demo", create_pre)
+        self.assertIn("ccw-demo@claude", create_pre)
         self.assertIn("claude", create_pre)
         self.assertIn("--dangerously-skip-permissions", create_pre)
         self.assertIn("--foo", create_pre)
         self.assertIn("--model", create_pre)
         self.assertIn("sonnet", create_pre)
         self.assertIn("nested", req.label)
+
+    # ── Task 5: --agent / --auto / permission_mode ───────────────────
+
+    def test_parse_dsp_and_auto_mutually_exclusive(self) -> None:
+        with self.assertRaises(SystemExit):
+            ccw.parse_run_like(["--dsp", "--auto"], "run")
+        with self.assertRaises(SystemExit):
+            ccw.parse_run_like(["--auto", "--dsp"], "run")
+
+    def test_parse_agent_flag(self) -> None:
+        p = ccw.parse_run_like(["--agent", "codex", "--dsp"], "run")
+        self.assertEqual(p.agent, "codex")
+        self.assertEqual(p.permission_mode, "yolo")
+
+    def test_parse_unknown_flag_goes_to_agent_args(self) -> None:
+        p = ccw.parse_run_like(["--some-claude-flag", "x"], "run")
+        self.assertEqual(p.agent_args, ["--some-claude-flag", "x"])
+
+    def test_launch_builder_cursor_yolo(self) -> None:
+        cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
+        args = ccw.ParsedArgs(action="run", permission_mode="yolo")
+        with self._stub_socket_path():
+            req = ccw._build_tmux_launch_request("/tmp/x", "ccw-x@cursor", args, cfg, None, "u-vz")
+        self.assertIn("cursor-agent", req.cmd)
+        self.assertIn("--yolo", req.cmd)
+
+    def test_launch_builder_cursor_auto_errors(self) -> None:
+        cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
+        args = ccw.ParsedArgs(action="run", permission_mode="auto", agent="cursor")
+        with self._stub_socket_path():
+            with self.assertRaises(SystemExit):
+                ccw._build_tmux_launch_request("/tmp/x", "ccw-x@cursor", args, cfg, None, "u-vz")
+
+    def test_launch_builder_codex_full_auto(self) -> None:
+        cfg = self.make_config(enabled_agents=("codex",), default_agent="codex")
+        args = ccw.ParsedArgs(action="run", permission_mode="auto", agent="codex")
+        with self._stub_socket_path():
+            req = ccw._build_tmux_launch_request("/tmp/x", "ccw-x@codex", args, cfg, None, "u-vz")
+        self.assertIn("--full-auto", req.cmd)
+
+    def test_launch_builder_worktree_rejected_for_non_claude(self) -> None:
+        cfg = self.make_config(enabled_agents=("codex",), default_agent="codex")
+        args = ccw.ParsedArgs(action="run", agent="codex")
+        with self._stub_socket_path():
+            with self.assertRaises(SystemExit):
+                ccw._build_tmux_launch_request("/tmp/x", "ccw-x@codex", args, cfg, branch="b", launch_user="u-vz")
+
+    def test_auto_with_cursor_default_fails_at_launch(self) -> None:
+        # Full-stack check: parser accepts --auto without knowing the resolved agent;
+        # launch builder must reject it when the resolved agent has no auto mode.
+        cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
+        parsed = ccw.parse_run_like(["--auto"], "run")
+        self.assertEqual(parsed.permission_mode, "auto")
+        self.assertIsNone(parsed.agent)  # not explicitly set
+        with self._stub_socket_path():
+            with self.assertRaises(SystemExit):
+                ccw._build_tmux_launch_request("/tmp/x", "ccw-x@cursor", parsed, cfg, None, "u-vz")
 
 
 def _mk_session(name: str, path: str = "/srv/repos/x", agent: str = "claude", legacy: bool = False) -> ccw.SessionInfo:

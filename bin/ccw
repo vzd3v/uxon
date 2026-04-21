@@ -9,7 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -135,20 +135,14 @@ class ParsedArgs:
     worktree_branch: str | None = None
     repeat_mode: str | None = None
     dry_run: bool = False
-    dsp: bool = False  # transitional: removed in Task 5; kept for _plan_tui_* callers
     force: bool = False
     all_users: bool = False
-    agent: str | None = None                    # None = use cfg.default_agent
-    permission_mode: str = "normal"             # "normal" | "auto" | "yolo"
-    agent_args: list[str] | None = None
+    agent: str | None = None                              # None = use cfg.default_agent
+    permission_mode: str = "normal"                       # "normal" | "auto" | "yolo"
+    agent_args: list[str] = field(default_factory=list)
     git_remote: str | None = None  # profile name, or "default", or None
     no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
     git_visibility: str | None = None  # "private" | "public" | None (use profile default)
-
-    # transitional: remove in Task 5
-    @property
-    def claude_args(self) -> list[str]:
-        return self.agent_args or []
 
 
 def eprint(msg: str) -> None:
@@ -1116,7 +1110,7 @@ def parse_list_args(argv: list[str]) -> ParsedArgs:
 
 
 def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -> ParsedArgs:
-    parsed = ParsedArgs(action=action, target_id=target_id, agent_args=[])
+    parsed = ParsedArgs(action=action, target_id=target_id)
     i = 0
     while i < len(argv):
         token = argv[i]
@@ -1141,7 +1135,21 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
             parsed.repeat_mode = "new"
         elif token in ("--dsp", "--dangerously-skip-permissions", "--dap", "-dap", "-dsp"):
             # --dsp is the canonical short form; --dap, -dap, -dsp are legacy synonyms
-            parsed.dsp = True
+            if parsed.permission_mode == "auto":
+                fail("--dsp and --auto are mutually exclusive")
+            parsed.permission_mode = "yolo"
+        elif token == "--auto":
+            if parsed.permission_mode == "yolo":
+                fail("--dsp and --auto are mutually exclusive")
+            parsed.permission_mode = "auto"
+        elif token == "--agent":
+            i += 1
+            if i >= len(argv):
+                fail("--agent requires an id (claude|codex|cursor)")
+            value = argv[i]
+            if value not in ("claude", "codex", "cursor"):
+                fail(f"--agent must be claude|codex|cursor, got {value!r}")
+            parsed.agent = value
         elif token == "--git-remote":
             if action != "new":
                 fail(f"{token} is only supported with 'new' / '-n'")
@@ -1366,19 +1374,31 @@ def _build_tmux_launch_request(
     branch: str | None,
     launch_user: str,
 ):
-    """Assemble the ``claude`` + tmux argv plus the socket-parent mkdir.
+    """Assemble the agent + tmux argv plus the socket-parent mkdir.
 
-    This is the single place where the ``claude`` command line is built
+    This is the single place where the agent command line is built
     (see AGENTS.md "hard rules"). Both the CLI execvp path
     (:func:`launch_in_tmux`) and the TUI fork-and-wait path reuse it.
     """
+    import ccw_agents
     LaunchRequest = _tui_launch_request_cls()
-    # Transitional bridge: fully rewritten in Task 5
-    final_cmd = ["claude"] + list(cfg.agent_default_args.get("claude", ())) + (args.agent_args or [])
+    agent_id = args.agent or cfg.default_agent
+    if agent_id not in cfg.enabled_agents:
+        fail(f"agent {agent_id!r} is not in agents.enabled={list(cfg.enabled_agents)}")
+    spec = ccw_agents.CATALOG[agent_id]
+    mode_obj = ccw_agents.permission_mode_for(spec, args.permission_mode)
+    if mode_obj is None:
+        fail(f"{agent_id} has no '{args.permission_mode}' permission mode")
+    if branch and agent_id != "claude":
+        fail(f"-w/--worktree is only supported for claude (got agent={agent_id})")
+    final_cmd = (
+        [spec.binary]
+        + list(cfg.agent_default_args.get(agent_id, ()))
+        + list(args.agent_args)
+        + list(mode_obj.flags)
+    )
     if branch:
         final_cmd += ["-w", branch]
-    if args.dsp:
-        final_cmd.append("--dangerously-skip-permissions")
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
     ensure_socket_parent = tuple(command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent])
@@ -1933,7 +1953,7 @@ def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     _agent = cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
     session = allocate_session_name(session_stem, _agent, target_dir, sessions)
-    args = ParsedArgs(action="run", dsp=dsp, agent_args=[])
+    args = ParsedArgs(action="run", permission_mode="yolo" if dsp else "normal")
     return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
 
 
@@ -2000,8 +2020,7 @@ def _plan_tui_create_new(
     args = ParsedArgs(
         action="new",
         target_id=name,
-        dsp=dsp,
-        agent_args=[],
+        permission_mode="yolo" if dsp else "normal",
         git_remote=git_profile or None,
         repeat_mode="attach",  # TUI cannot prompt stdin inside blessed context
     )
@@ -2029,8 +2048,7 @@ def _plan_tui_open_existing(
     args = ParsedArgs(
         action="new",
         target_id=name,
-        dsp=dsp,
-        agent_args=[],
+        permission_mode="yolo" if dsp else "normal",
         git_remote=None,  # Locked: open-existing never creates a git remote.
         repeat_mode="attach",
     )
