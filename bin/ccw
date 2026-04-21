@@ -9,7 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
+
+LEGACY_CLAUDE_PREFIX = "cc-"
+
+# Known agent ids. Kept in sync with ccw_agents.CATALOG (verified by tests);
+# declared here as a literal so CLI parsing doesn't need the lazy lib import.
+VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "runtime_user": "",
@@ -32,8 +38,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "/srv/repos",
         "/srv/work/repos",
     ],
-    "session_prefix": "cc-",
-    "default_claude_args": [],
+    "session_prefix": "ccw-",
+    "agents": {
+        "enabled": ["claude"],
+        "default": "claude",
+        "claude": {"default_args": []},
+        "codex": {"default_args": []},
+        "cursor": {"default_args": []},
+    },
     "new_project_root": "/srv/repos",
     "repeat_noninteractive_mode": "fail",
     "tmux_socket_template": "/tmp/ccw-{user}.sock",
@@ -91,7 +103,9 @@ class Config:
     session_users: list[str]
     allowed_roots: list[str]
     session_prefix: str
-    default_claude_args: list[str]
+    enabled_agents: tuple[str, ...]
+    default_agent: str
+    agent_default_args: dict[str, tuple[str, ...]]
     new_project_root: str
     repeat_noninteractive_mode: str
     tmux_socket_template: str
@@ -114,6 +128,8 @@ class SessionInfo:
     active_path: str
     cpu_pct: float = 0.0
     rss_kib: int = 0
+    agent: str = "claude"    # "claude" | "codex" | "cursor" | "unknown"
+    legacy: bool = False     # True iff name matches LEGACY_CLAUDE_PREFIX
 
 
 @dataclass
@@ -123,10 +139,11 @@ class ParsedArgs:
     worktree_branch: str | None = None
     repeat_mode: str | None = None
     dry_run: bool = False
-    dsp: bool = False
     force: bool = False
     all_users: bool = False
-    claude_args: list[str] | None = None
+    agent: str | None = None                              # None = use cfg.default_agent
+    permission_mode: str = "normal"                       # "normal" | "auto" | "yolo"
+    agent_args: list[str] = field(default_factory=list)
     git_remote: str | None = None  # profile name, or "default", or None
     no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
     git_visibility: str | None = None  # "private" | "public" | None (use profile default)
@@ -294,6 +311,8 @@ def load_config(cwd: str) -> Config:
     import ccw_git_profiles
 
     merged, _ = resolve_config_layers(cwd)
+    # Load raw repo data (before merge with defaults) to detect legacy flat keys.
+    _raw_repo = load_toml(repo_config_path())
     runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
     default_launch_mode = str(merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])).strip()
     if default_launch_mode not in {"fixed", "caller"}:
@@ -315,7 +334,43 @@ def load_config(cwd: str) -> Config:
     enable_all_users_list = bool(merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"]))
     session_prefix = str(merged.get("session_prefix", DEFAULT_CONFIG["session_prefix"]))
     allowed_roots = [canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
-    default_claude_args = [str(x) for x in merged.get("default_claude_args", [])]
+
+    # Hard-reject legacy flat key with a clear migration message.
+    # Check raw repo config (not merged with defaults) so that the presence
+    # of agents in DEFAULT_CONFIG doesn't mask a flat-key migration failure.
+    if "default_claude_args" in _raw_repo:
+        fail(
+            "config key 'default_claude_args' was replaced by "
+            "'[agents.claude] default_args = [...]'. "
+            "Update config/config.toml (see docs/superpowers/specs/"
+            "2026-04-21-multi-agent-support-design.md)."
+        )
+
+    agents_tbl = merged.get("agents", {})
+    if not isinstance(agents_tbl, dict):
+        fail("'agents' must be a TOML table")
+    enabled_raw = agents_tbl.get("enabled", ["claude"])
+    if not isinstance(enabled_raw, list) or not enabled_raw:
+        fail("'agents.enabled' must be a non-empty list")
+    enabled = tuple(str(x) for x in enabled_raw)
+    for aid in enabled:
+        if aid not in VALID_AGENT_IDS:
+            fail(f"unknown agent id in agents.enabled: {aid!r} "
+                 f"(expected one of {VALID_AGENT_IDS})")
+    default_agent = str(agents_tbl.get("default", enabled[0]))
+    if default_agent not in enabled:
+        fail(f"agents.default={default_agent!r} is not in agents.enabled={list(enabled)}")
+
+    agent_default_args: dict[str, tuple[str, ...]] = {}
+    for aid in VALID_AGENT_IDS:
+        sub = agents_tbl.get(aid, {})
+        if not isinstance(sub, dict):
+            fail(f"'agents.{aid}' must be a TOML table")
+        args = sub.get("default_args", [])
+        if not isinstance(args, list):
+            fail(f"'agents.{aid}.default_args' must be a list")
+        agent_default_args[aid] = tuple(str(x) for x in args)
+
     new_project_root = canonical(str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"])))
     repeat_noninteractive_mode = validate_repeat_mode(
         str(merged.get("repeat_noninteractive_mode", DEFAULT_CONFIG["repeat_noninteractive_mode"])),
@@ -351,7 +406,9 @@ def load_config(cwd: str) -> Config:
         session_users=session_users,
         allowed_roots=allowed_roots,
         session_prefix=session_prefix,
-        default_claude_args=default_claude_args,
+        enabled_agents=enabled,
+        default_agent=default_agent,
+        agent_default_args=agent_default_args,
         new_project_root=new_project_root,
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,
@@ -565,28 +622,51 @@ def session_stem_for_worktree(repo_root: str, branch: str) -> str:
     return f"{repo_slug}-{workspace_slug}"
 
 
-def candidate_session_name(prefix: str, stem: str, index: int) -> str:
+_NEW_SESSION_RE = re.compile(
+    r"^ccw-(?P<stem>.+?)@(?P<agent>[a-z][a-z0-9_]*)(?:-(?P<index>\d+))?$"
+)
+_LEGACY_SESSION_RE = re.compile(r"^cc-(?P<stem>.+?)(?:-(?P<index>\d+))?$")
+
+
+def parse_session_name(name: str) -> tuple[str, str, int, bool] | None:
+    """Return (stem, agent, index, legacy) or None if the name is not ours.
+
+    For the new scheme the agent may be any id; callers that need to
+    match CATALOG validate separately. Legacy ``cc-<stem>`` returns
+    agent='claude', legacy=True.
+    """
+    m = _NEW_SESSION_RE.match(name)
+    if m:
+        idx = int(m.group("index")) if m.group("index") else 1
+        return m.group("stem"), m.group("agent"), idx, False
+    m = _LEGACY_SESSION_RE.match(name)
+    if m:
+        idx = int(m.group("index")) if m.group("index") else 1
+        return m.group("stem"), "claude", idx, True
+    return None
+
+
+def candidate_session_name(stem: str, index: int, agent: str) -> str:
+    base = f"ccw-{stem}@{agent}"
     if index <= 1:
-        return f"{prefix}{stem}"
-    return f"{prefix}{stem}-{index}"
+        return base
+    return f"{base}-{index}"
 
 
-def parse_plain_session_index(name: str, prefix: str, stem: str) -> int | None:
-    base = f"{prefix}{stem}"
-    if name == base:
-        return 1
-    if not name.startswith(f"{base}-"):
+def parse_plain_session_index(name: str, stem: str, agent: str) -> int | None:
+    parsed = parse_session_name(name)
+    if parsed is None:
         return None
-    suffix = name[len(base) + 1 :]
-    if not suffix.isdigit():
+    p_stem, p_agent, p_index, _legacy = parsed
+    if p_stem != stem or p_agent != agent:
         return None
-    return int(suffix)
+    return p_index
 
 
-def compatible_indexed_sessions(prefix: str, stem: str, compatibility_root: str, sessions: list[SessionInfo]) -> list[SessionInfo]:
+def compatible_indexed_sessions(stem: str, agent: str, compatibility_root: str, sessions: list[SessionInfo]) -> list[SessionInfo]:
     matches: list[SessionInfo] = []
     for session in sessions:
-        idx = parse_plain_session_index(session.name, prefix, stem)
+        idx = parse_plain_session_index(session.name, stem, agent)
         if idx is None:
             continue
         if not session_path_compatible(session.active_path, compatibility_root):
@@ -599,16 +679,16 @@ def compatible_indexed_sessions(prefix: str, stem: str, compatibility_root: str,
     return matches
 
 
-def choose_attach_session(existing: list[SessionInfo], prefix: str, stem: str) -> SessionInfo:
+def choose_attach_session(existing: list[SessionInfo], stem: str, agent: str) -> SessionInfo:
     if not existing:
         raise ValueError("expected at least one existing session")
-    base_name = f"{prefix}{stem}"
+    base_name = candidate_session_name(stem, 1, agent)
     attached = [s for s in existing if s.attached == "1"]
     for bucket in (attached, existing):
         for session in bucket:
             if session.name == base_name:
                 return session
-    return min(existing, key=lambda session: parse_plain_session_index(session.name, prefix, stem) or 9999)
+    return min(existing, key=lambda session: parse_plain_session_index(session.name, stem, agent) or 9999)
 
 
 def is_interactive_tty() -> bool:
@@ -633,8 +713,8 @@ def prompt_repeat_action(target_desc: str, attach_target: SessionInfo, existing:
     raise AssertionError("unreachable")
 
 
-def allocate_session_name(prefix: str, stem: str, compatibility_root: str, sessions: list[SessionInfo]) -> str:
-    exact_base = f"{prefix}{stem}"
+def allocate_session_name(stem: str, agent: str, compatibility_root: str, sessions: list[SessionInfo]) -> str:
+    exact_base = candidate_session_name(stem, 1, agent)
     exact_base_hits = [s for s in sessions if s.name == exact_base]
     if exact_base_hits and not session_path_compatible(exact_base_hits[0].active_path, compatibility_root):
         fail(
@@ -645,7 +725,7 @@ def allocate_session_name(prefix: str, stem: str, compatibility_root: str, sessi
 
     index = 1
     while True:
-        candidate = candidate_session_name(prefix, stem, index)
+        candidate = candidate_session_name(stem, index, agent)
         existing = [s for s in sessions if s.name == candidate]
         if not existing:
             return candidate
@@ -697,7 +777,7 @@ def resolve_repeat_decision(
 
 def legacy_compatible_sessions(cfg: Config, launch_user: str, stem: str, compatibility_root: str) -> list[SessionInfo]:
     sessions = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
-    return compatible_indexed_sessions(cfg.session_prefix, stem, compatibility_root, sessions)
+    return compatible_indexed_sessions(stem, cfg.default_agent, compatibility_root, sessions)
 
 
 def legacy_socket_conflict_hint(cfg: Config, launch_user: str, existing: list[SessionInfo]) -> str:
@@ -780,7 +860,7 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
         if len(parts) != 5:
             continue
         name, attached, windows, created_ts, activity_ts = parts
-        if not name.startswith(session_prefix):
+        if not (name.startswith("ccw-") or name.startswith(LEGACY_CLAUDE_PREFIX)):
             continue
 
         pane_fmt = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
@@ -806,6 +886,12 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
             active_cmd = cmd
             active_path = path
 
+        _parsed = parse_session_name(name)
+        if _parsed is None:
+            continue  # dual-prefix filter matched but parser disagreed — skip
+        _, _agent, _, _legacy = _parsed
+        if _agent not in ("claude", "codex", "cursor"):
+            _agent = "unknown"
         sessions.append(
             SessionInfo(
                 user=user,
@@ -818,6 +904,8 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
                 active_pid=active_pid,
                 active_cmd=active_cmd,
                 active_path=active_path,
+                agent=_agent,
+                legacy=_legacy,
             )
         )
     enrich_session_usage(sessions)
@@ -833,32 +921,58 @@ def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
 
 def resolve_session(identifier: str, sessions: list[SessionInfo], prefix: str) -> SessionInfo:
     if not sessions:
-        fail("no cc-* sessions found")
+        fail("no ccw-* sessions found")
 
-    # 1) exact session name
+    # 1) exact name
     exact = [s for s in sessions if s.name == identifier]
     if len(exact) == 1:
         return exact[0]
 
-    # 2) normalized name with prefix
-    normalized = identifier if identifier.startswith(prefix) else f"{prefix}{identifier}"
-    norm = [s for s in sessions if s.name == normalized]
-    if len(norm) == 1:
-        return norm[0]
-
-    # 3) unique prefix match (with or without cc-)
-    pref: list[SessionInfo] = []
-    for s in sessions:
-        short = s.name[len(prefix) :] if s.name.startswith(prefix) else s.name
-        if s.name.startswith(identifier) or short.startswith(identifier):
-            pref.append(s)
-    uniq = {s.name: s for s in pref}
+    # 2) normalized with either modern or legacy prefix
+    candidates: list[SessionInfo] = []
+    for candidate_prefix in ("ccw-", LEGACY_CLAUDE_PREFIX):
+        normalized = identifier if identifier.startswith(candidate_prefix) else f"{candidate_prefix}{identifier}"
+        candidates.extend(s for s in sessions if s.name == normalized)
+    uniq: dict[str, SessionInfo] = {s.name: s for s in candidates}
     if len(uniq) == 1:
         return next(iter(uniq.values()))
     if len(uniq) > 1:
         fail(f"ambiguous identifier '{identifier}': {', '.join(sorted(uniq))}")
 
-    # 4) active pane pid
+    # 3) stem match across all agents (both legacy and new)
+    stem_hits: list[SessionInfo] = []
+    for s in sessions:
+        parsed = parse_session_name(s.name)
+        if parsed is None:
+            continue
+        p_stem, _agent, _idx, _legacy = parsed
+        if p_stem == identifier:
+            stem_hits.append(s)
+    if len(stem_hits) == 1:
+        return stem_hits[0]
+    if len(stem_hits) > 1:
+        fail(
+            f"ambiguous stem '{identifier}' matches multiple agents: "
+            + ", ".join(sorted(s.name for s in stem_hits))
+        )
+
+    # 4) unique prefix match (as before, both prefix variants)
+    pref: list[SessionInfo] = []
+    for s in sessions:
+        short = s.name
+        for p in ("ccw-", LEGACY_CLAUDE_PREFIX):
+            if short.startswith(p):
+                short = short[len(p):]
+                break
+        if s.name.startswith(identifier) or short.startswith(identifier):
+            pref.append(s)
+    uniq2: dict[str, SessionInfo] = {s.name: s for s in pref}
+    if len(uniq2) == 1:
+        return next(iter(uniq2.values()))
+    if len(uniq2) > 1:
+        fail(f"ambiguous identifier '{identifier}': {', '.join(sorted(uniq2))}")
+
+    # 5) active pane pid
     if identifier.isdigit():
         pid = int(identifier)
         pid_hits = [s for s in sessions if s.active_pid == pid]
@@ -998,7 +1112,7 @@ def parse_list_args(argv: list[str]) -> ParsedArgs:
 
 
 def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -> ParsedArgs:
-    parsed = ParsedArgs(action=action, target_id=target_id, claude_args=[])
+    parsed = ParsedArgs(action=action, target_id=target_id)
     i = 0
     while i < len(argv):
         token = argv[i]
@@ -1023,7 +1137,21 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
             parsed.repeat_mode = "new"
         elif token in ("--dsp", "--dangerously-skip-permissions", "--dap", "-dap", "-dsp"):
             # --dsp is the canonical short form; --dap, -dap, -dsp are legacy synonyms
-            parsed.dsp = True
+            if parsed.permission_mode == "auto":
+                fail("--dsp and --auto are mutually exclusive")
+            parsed.permission_mode = "yolo"
+        elif token == "--auto":
+            if parsed.permission_mode == "yolo":
+                fail("--dsp and --auto are mutually exclusive")
+            parsed.permission_mode = "auto"
+        elif token == "--agent":
+            i += 1
+            if i >= len(argv):
+                fail("--agent requires an id (claude|codex|cursor)")
+            value = argv[i]
+            if value not in VALID_AGENT_IDS:
+                fail(f"--agent must be one of {VALID_AGENT_IDS}, got {value!r}")
+            parsed.agent = value
         elif token == "--git-remote":
             if action != "new":
                 fail(f"{token} is only supported with 'new' / '-n'")
@@ -1050,7 +1178,7 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
                 fail(f"{token} must be 'private' or 'public', got {value!r}")
             parsed.git_visibility = value
         else:
-            parsed.claude_args.append(token)
+            parsed.agent_args.append(token)
         i += 1
     return parsed
 
@@ -1248,18 +1376,31 @@ def _build_tmux_launch_request(
     branch: str | None,
     launch_user: str,
 ):
-    """Assemble the ``claude`` + tmux argv plus the socket-parent mkdir.
+    """Assemble the agent + tmux argv plus the socket-parent mkdir.
 
-    This is the single place where the ``claude`` command line is built
+    This is the single place where the agent command line is built
     (see AGENTS.md "hard rules"). Both the CLI execvp path
     (:func:`launch_in_tmux`) and the TUI fork-and-wait path reuse it.
     """
+    import ccw_agents
     LaunchRequest = _tui_launch_request_cls()
-    final_cmd = ["claude"] + cfg.default_claude_args + (args.claude_args or [])
+    agent_id = args.agent or cfg.default_agent
+    if agent_id not in cfg.enabled_agents:
+        fail(f"agent {agent_id!r} is not in agents.enabled={list(cfg.enabled_agents)}")
+    spec = ccw_agents.CATALOG[agent_id]
+    mode_obj = ccw_agents.permission_mode_for(spec, args.permission_mode)
+    if mode_obj is None:
+        fail(f"{agent_id} has no '{args.permission_mode}' permission mode")
+    if branch and agent_id != "claude":
+        fail(f"-w/--worktree is only supported for claude (got agent={agent_id})")
+    final_cmd = (
+        [spec.binary]
+        + list(cfg.agent_default_args.get(agent_id, ()))
+        + list(args.agent_args)
+        + list(mode_obj.flags)
+    )
     if branch:
         final_cmd += ["-w", branch]
-    if args.dsp:
-        final_cmd.append("--dangerously-skip-permissions")
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
     ensure_socket_parent = tuple(command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent])
@@ -1361,16 +1502,17 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if args.git_remote:
         _do_create_git_remote(args, cfg, launch_user, project_dir, name, branch)
 
+    _agent = args.agent or cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
-    existing = compatible_indexed_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    existing = compatible_indexed_sessions(session_stem, _agent, compatibility_root, sessions)
     if existing:
-        attach_target = choose_attach_session(existing, cfg.session_prefix, session_stem)
+        attach_target = choose_attach_session(existing, session_stem, _agent)
         decision = resolve_repeat_decision(args.repeat_mode, cfg, target_desc, attach_target, existing)
         if decision == "attach":
             return attach_session(attach_target, cfg, launch_user, args.dry_run)
     else:
         repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
-    session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    session = allocate_session_name(session_stem, _agent, compatibility_root, sessions)
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
 
@@ -1463,8 +1605,9 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         target_dir = cwd
         session_stem = session_stem_for_path(target_dir)
         compatibility_root = target_dir
+    _agent = args.agent or cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
-    session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    session = allocate_session_name(session_stem, _agent, compatibility_root, sessions)
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
 
@@ -1556,7 +1699,7 @@ def doctor_issues(
     caller_user: str,
     launch_user: str,
     tmux_path: str | None,
-    claude_path: str | None,
+    agent_paths: dict[str, str | None],
     socket_path: str,
     current_sessions: list[SessionInfo],
     legacy_sessions: list[SessionInfo],
@@ -1573,8 +1716,9 @@ def doctor_issues(
         issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
     if tmux_path is None:
         issues.append(f"'tmux' is not resolvable for {launch_user}")
-    if claude_path is None:
-        issues.append(f"'claude' is not resolvable for {launch_user}")
+    for aid, path in agent_paths.items():
+        if path is None:
+            issues.append(f"'{aid}' agent binary is not resolvable for {launch_user}")
     if legacy_sessions and not current_sessions:
         issues.append("legacy default-socket ccw sessions exist while the dedicated ccw socket has none")
     if caller_user != launch_user and launch_user not in cfg.session_users and not cfg.enable_all_users_list:
@@ -1583,10 +1727,17 @@ def doctor_issues(
 
 
 def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
+    import ccw_agents
+
     _, config_sources = resolve_config_layers(cwd)
     socket_path = tmux_socket_path(cfg, launch_user)
     tmux_path = command_path_for_user("tmux", launch_user)
-    claude_path = command_path_for_user("claude", launch_user)
+    # Probe all enabled agents in parallel.
+    availability = ccw_agents.probe_agents(list(cfg.enabled_agents), launch_user)
+    agent_paths: dict[str, str | None] = {
+        aid: command_path_for_user(ccw_agents.CATALOG[aid].binary, launch_user)
+        for aid in cfg.enabled_agents
+    }
     current_sessions = collect_sessions([launch_user], cfg)
     legacy_sessions = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
     config_paths = [str(path) for path in config_sources]
@@ -1596,7 +1747,7 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
         caller_user,
         launch_user,
         tmux_path,
-        claude_path,
+        agent_paths,
         socket_path,
         current_sessions,
         legacy_sessions,
@@ -1617,7 +1768,17 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     print(f"tmux_socket_parent={Path(socket_path).parent}")
     print(f"tmux_socket_parent_exists={'yes' if Path(socket_path).parent.is_dir() else 'no'}")
     print(f"tmux_socket_parent_writable={'yes' if user_can_write_dir(str(Path(socket_path).parent), launch_user) else 'no'}")
-    print(f"claude_path={claude_path or '-'}")
+    # Per-agent status block.
+    for aid in cfg.enabled_agents:
+        spec = ccw_agents.CATALOG[aid]
+        path = agent_paths.get(aid) or "-"
+        avail = availability.get(aid)
+        if avail and avail.status == "ok":
+            print(f"{aid}:  {path}  ok ({avail.version or '?'})")
+        elif avail and avail.status == "timeout":
+            print(f"{aid}:  {path}  TIMEOUT (>{ccw_agents.PROBE_TIMEOUT_SEC}s)")
+        else:
+            print(f"{aid}:  -  MISSING  ({spec.install_hint})")
     print(f"current_socket_sessions={len(current_sessions)}")
     if current_sessions:
         print("current_socket_session_names=" + ", ".join(session.name for session in current_sessions))
@@ -1769,6 +1930,11 @@ def _to_tui_session(s: SessionInfo, prefix: str) -> object:
     import ccw_tui
 
     short = s.name[len(prefix):] if s.name.startswith(prefix) else s.name
+    parsed = parse_session_name(s.name)
+    if parsed is not None:
+        stem, agent, _idx, legacy = parsed
+    else:
+        stem, agent, legacy = s.name, "unknown", False
     return ccw_tui.TuiSession(
         name=s.name,
         short=short,
@@ -1781,6 +1947,9 @@ def _to_tui_session(s: SessionInfo, prefix: str) -> object:
         cmd=s.active_cmd or "-",
         path=s.active_path or "-",
         user=s.user,
+        stem=stem,
+        agent=agent,
+        legacy=legacy,
     )
 
 
@@ -1798,6 +1967,60 @@ def _load_settings_sources(cwd: str) -> tuple[dict, dict, "Path | None"]:
     return repo_data, proj_data, proj_cfg
 
 
+def _plan_tui_run_agent(cfg: Config, launch_user: str, cwd: str, agent_id: str, mode_id: str):
+    """Agent-aware variant of ``_plan_tui_run``; used by the new callbacks."""
+    ensure_allowed_dir(cwd, launch_allowed_roots(cfg, launch_user))
+    target_dir = cwd
+    session_stem = session_stem_for_path(target_dir)
+    sessions = collect_sessions([launch_user], cfg)
+    session = allocate_session_name(session_stem, agent_id, target_dir, sessions)
+    args = ParsedArgs(action="run", agent=agent_id, permission_mode=mode_id)
+    return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
+
+
+def _plan_tui_create_new_agent(
+    cfg: Config,
+    launch_user: str,
+    name: str,
+    agent_id: str,
+    mode_id: str,
+    git_profile: str,
+):
+    """Agent-aware variant of ``_plan_tui_create_new``."""
+    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
+    args = ParsedArgs(
+        action="new",
+        target_id=name,
+        agent=agent_id,
+        permission_mode=mode_id,
+        git_remote=git_profile or None,
+        repeat_mode="attach",
+    )
+    if args.git_remote:
+        _do_create_git_remote(args, cfg, launch_user, project_dir, name, None)
+    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
+
+
+def _plan_tui_open_existing_agent(
+    cfg: Config,
+    launch_user: str,
+    name: str,
+    agent_id: str,
+    mode_id: str,
+):
+    """Agent-aware variant of ``_plan_tui_open_existing``."""
+    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
+    args = ParsedArgs(
+        action="new",
+        target_id=name,
+        agent=agent_id,
+        permission_mode=mode_id,
+        git_remote=None,
+        repeat_mode="attach",
+    )
+    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
+
+
 def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     """Build a LaunchRequest for the TUI "New session in current folder" action.
 
@@ -1809,9 +2032,10 @@ def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     ensure_allowed_dir(cwd, launch_allowed_roots(cfg, launch_user))
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
+    _agent = cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
-    session = allocate_session_name(cfg.session_prefix, session_stem, target_dir, sessions)
-    args = ParsedArgs(action="run", dsp=dsp, claude_args=[])
+    session = allocate_session_name(session_stem, _agent, target_dir, sessions)
+    args = ParsedArgs(action="run", permission_mode="yolo" if dsp else "normal")
     return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
 
 
@@ -1843,14 +2067,15 @@ def _plan_tui_existing_session_or_launch(
     """
     session_stem = session_stem_for_path(project_dir)
     compatibility_root = project_dir
+    _agent = (args.agent if args.agent else None) or cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
-    existing = compatible_indexed_sessions(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    existing = compatible_indexed_sessions(session_stem, _agent, compatibility_root, sessions)
     if existing:
-        attach_target = choose_attach_session(existing, cfg.session_prefix, session_stem)
+        attach_target = choose_attach_session(existing, session_stem, _agent)
         return _build_tmux_attach_request(attach_target, cfg, launch_user)
 
     repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
-    session = allocate_session_name(cfg.session_prefix, session_stem, compatibility_root, sessions)
+    session = allocate_session_name(session_stem, _agent, compatibility_root, sessions)
     return _build_tmux_launch_request(project_dir, session, args, cfg, None, launch_user)
 
 
@@ -1877,8 +2102,7 @@ def _plan_tui_create_new(
     args = ParsedArgs(
         action="new",
         target_id=name,
-        dsp=dsp,
-        claude_args=[],
+        permission_mode="yolo" if dsp else "normal",
         git_remote=git_profile or None,
         repeat_mode="attach",  # TUI cannot prompt stdin inside blessed context
     )
@@ -1906,8 +2130,7 @@ def _plan_tui_open_existing(
     args = ParsedArgs(
         action="new",
         target_id=name,
-        dsp=dsp,
-        claude_args=[],
+        permission_mode="yolo" if dsp else "normal",
         git_remote=None,  # Locked: open-existing never creates a git remote.
         repeat_mode="attach",
     )
@@ -1999,14 +2222,14 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
             for p in cfg.git_remote_profiles
         ]
 
-    def on_launch_cwd(dsp: bool):
-        return _plan_tui_run(cfg, launch_user, cwd, dsp)
+    def on_launch_cwd(agent_id: str, mode_id: str):
+        return _plan_tui_run_agent(cfg, launch_user, cwd, agent_id, mode_id)
 
-    def on_launch_new(name: str, dsp: bool, git_profile: str):
-        return _plan_tui_create_new(cfg, launch_user, name, dsp, git_profile)
+    def on_launch_new(name: str, agent_id: str, mode_id: str, git_profile: str):
+        return _plan_tui_create_new_agent(cfg, launch_user, name, agent_id, mode_id, git_profile)
 
-    def on_launch_existing(name: str, dsp: bool):
-        return _plan_tui_open_existing(cfg, launch_user, name, dsp)
+    def on_launch_existing(name: str, agent_id: str, mode_id: str):
+        return _plan_tui_open_existing_agent(cfg, launch_user, name, agent_id, mode_id)
 
     git_profile_options = [
         (
@@ -2035,6 +2258,12 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
     on_setting_save_mapping = _wrap_tui_callback(on_setting_save_mapping, _CbErr)
     get_git_remote_profile_rows = _wrap_tui_callback(get_git_remote_profile_rows, _CbErr)
 
+    import ccw_agents as _ccw_agents
+    agent_availability = {
+        aid: _ccw_agents.AgentAvailability(status="pending")
+        for aid in cfg.enabled_agents
+    }
+
     return ccw_tui.TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,
@@ -2048,6 +2277,10 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         current_user=launch_user,
         has_sudo=has_sudo,
         other_sessions=tui_other,
+        enabled_agents=cfg.enabled_agents,
+        default_agent=cfg.default_agent,
+        launch_user=launch_user,
+        agent_availability=agent_availability,
         on_attach=on_attach,
         on_kill=on_kill,
         on_kill_all=on_kill_all,

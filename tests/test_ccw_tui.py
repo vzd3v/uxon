@@ -65,7 +65,7 @@ class TuiContextShapeTests(unittest.TestCase):
 
     def test_tui_context_defaults_return_noop_launch_request(self) -> None:
         ctx = _ctx()
-        req = ctx.on_launch_cwd(False)
+        req = ctx.on_launch_cwd("claude", "normal")
         self.assertIsInstance(req, ccw_tui.LaunchRequest)
         self.assertEqual(req.cmd, ("true",))
 
