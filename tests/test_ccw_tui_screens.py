@@ -424,6 +424,30 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         result = await self._run_screen(ctx, ["escape"])
         self.assertIsNone(result)
 
+    async def test_all_missing_dismisses_with_none(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("missing")},
+        )
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(LaunchOptionsScreen(ctx), done)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+        self.assertIsNone(app.result)
+
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):

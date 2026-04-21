@@ -82,6 +82,10 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
                 yield ListView(id="mode-list")
 
     def on_mount(self) -> None:
+        if not self._visible_agents:
+            # No usable agent — let the app-level gate handle the hint.
+            self.dismiss(None)
+            return
         agent_panel = self.query_one("#agent-panel", Vertical)
         agent_panel.display = not self._single_agent
         self._rebuild_mode_list(self._current_agent)
