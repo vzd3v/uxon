@@ -172,5 +172,42 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         )
 
     def on__agent_availability_updated(self, event) -> None:
-        """Availability arrived — rebuild left panel visibility and labels."""
-        self.refresh(layout=True)
+        """Availability arrived — rebuild left panel contents and visibility."""
+        self._rebuild_agent_list()
+
+    def _rebuild_agent_list(self) -> None:
+        """Recompute visible agents from availability and repopulate the left
+        ListView in place. Called on mount-time update and whenever a probe
+        result arrives after the screen is already showing."""
+        enabled = list(self.ctx.enabled_agents)
+        avail = self.ctx.agent_availability
+        visible = [
+            aid for aid in enabled
+            if avail.get(aid) is None
+            or getattr(avail.get(aid), "status", "pending") in ("pending", "ok")
+        ]
+        self._visible_agents = visible
+        self._single_agent = len(visible) <= 1
+
+        agent_panel = self.query_one("#agent-panel", Vertical)
+        agent_panel.display = not self._single_agent
+
+        agent_list = self.query_one("#agent-list", ListView)
+        agent_list.clear()
+        for idx, aid in enumerate(visible, start=1):
+            avail_obj = avail.get(aid)
+            status = getattr(avail_obj, "status", None) if avail_obj else None
+            label = f"{idx} {aid}"
+            if status == "pending":
+                label += "  (checking…)"
+            agent_list.append(ListItem(Static(label), id=f"agent-{aid}"))
+
+        # Clamp current selection to the new list.
+        if self._current_agent not in visible:
+            self._current_agent = visible[0] if visible else self._current_agent
+            self._rebuild_mode_list(self._current_agent)
+        if visible:
+            try:
+                agent_list.index = visible.index(self._current_agent)
+            except ValueError:
+                agent_list.index = 0
