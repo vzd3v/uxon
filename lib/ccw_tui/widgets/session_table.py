@@ -25,11 +25,14 @@ from ..context import TuiSession
 class SessionTable(DataTable):
     """Session-list DataTable with an opinionated :meth:`populate`.
 
-    Columns (when ``show_user=False``):
+    Columns (when ``show_user=False``, ``show_agent_column=False``):
         ``name pid cpu ram new last cmd path``
 
     Columns (when ``show_user=True``):
         ``user name pid cpu ram new last cmd path``
+
+    Columns (when ``show_agent_column=True``):
+        ``[user] name agent pid cpu ram new last cmd path``
     """
 
     DEFAULT_CSS = """
@@ -42,7 +45,13 @@ class SessionTable(DataTable):
     }
     """
 
-    def __init__(self, *, show_user: bool = False, id: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        show_user: bool = False,
+        show_agent_column: bool = False,
+        id: str | None = None,
+    ) -> None:
         super().__init__(id=id)
         # Hide the row cursor until the table actually receives focus, so the
         # first row doesn't look "selected" while the user is navigating the
@@ -50,6 +59,7 @@ class SessionTable(DataTable):
         self.cursor_type = "none"
         self.zebra_stripes = True
         self.show_user = show_user
+        self.show_agent_column = show_agent_column
         self._session_index: list[TuiSession] = []
 
     def on_focus(self) -> None:
@@ -79,7 +89,17 @@ class SessionTable(DataTable):
     def on_mount(self) -> None:
         if self.show_user:
             self.add_column("USER", key="user")
-        self.add_columns("NAME", "PID", "CPU", "RAM", "NEW", "LAST", "CMD", "PATH")
+        self.add_column("NAME", key="name")
+        if self.show_agent_column:
+            self.add_column("AGENT", key="agent")
+        self.add_columns("PID", "CPU", "RAM", "NEW", "LAST", "CMD", "PATH")
+
+    @staticmethod
+    def _agent_label(session: TuiSession) -> str:
+        """Return the agent cell value for a session row."""
+        if session.legacy and session.agent == "claude":
+            return "claude (legacy)"
+        return session.agent
 
     def populate(self, sessions: list[TuiSession]) -> None:
         """Replace all rows with the given sessions. Preserves cursor."""
@@ -87,16 +107,20 @@ class SessionTable(DataTable):
         self.clear()
         self._session_index = list(sessions)
         for s in sessions:
-            name_text = Text(s.short)
+            # Use stem for the name cell; fall back to short if stem not set.
+            display_name = s.stem if s.stem else s.short
+            name_text = Text(display_name)
             if s.attached:
-                name_text = Text(s.short, style="bold green")
+                name_text = Text(display_name, style="bold green")
                 name_text.append(" ●", style="green")
             cpu_text = self._cpu_cell(s.cpu)
             row = []
             if self.show_user:
                 row.append(Text(s.user, style="bold yellow"))
+            row.append(name_text)
+            if self.show_agent_column:
+                row.append(self._agent_label(s))
             row.extend([
-                name_text,
                 s.pid,
                 cpu_text,
                 s.ram,

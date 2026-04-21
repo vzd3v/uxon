@@ -144,6 +144,98 @@ class SessionTableTests(unittest.IsolatedAsyncioTestCase):
             cols = list(t.columns)
             self.assertEqual(t.columns[cols[0]].label.plain, "USER")
 
+    async def test_session_table_shows_stem_not_full_name(self) -> None:
+        """Name cell renders session.stem, not the full tmux session name."""
+        from textual.app import App, ComposeResult
+        from ccw_tui.context import TuiSession
+        from ccw_tui.widgets import SessionTable
+
+        session = TuiSession(
+            name="ccw-myproject@codex",
+            short="myproject@codex",
+            attached=False,
+            pid="1",
+            cpu="0",
+            ram="1M",
+            created="1s",
+            last_activity="1s",
+            cmd="codex",
+            path="/srv/work",
+            user="devagent",
+            stem="myproject",
+            agent="codex",
+            legacy=False,
+        )
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionTable(show_agent_column=False, id="sessions")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            t = app.query_one(SessionTable)
+            t.populate([session])
+            await pilot.pause()
+            # The NAME column (index 0) should show "myproject", not the full name.
+            cols = list(t.columns)
+            name_col_key = cols[0]
+            self.assertEqual(t.columns[name_col_key].label.plain, "NAME")
+            self.assertEqual(t.session_at(0).stem, "myproject")
+
+    async def test_session_table_agent_column_when_multi(self) -> None:
+        """show_agent_column=True adds AGENT header and per-row agent labels."""
+        from textual.app import App, ComposeResult
+        from ccw_tui.context import TuiSession
+        from ccw_tui.widgets import SessionTable
+
+        def _s(name, stem, agent, legacy=False):
+            return TuiSession(
+                name=name, short=stem, attached=False,
+                pid="1", cpu="0", ram="1M", created="1s",
+                last_activity="1s", cmd=agent, path="/srv/work", user="dev",
+                stem=stem, agent=agent, legacy=legacy,
+            )
+
+        sessions = [_s("ccw-foo@claude", "foo", "claude"), _s("ccw-foo@codex", "foo", "codex")]
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionTable(show_agent_column=True, id="sessions")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            t = app.query_one(SessionTable)
+            t.populate(sessions)
+            await pilot.pause()
+            cols = list(t.columns)
+            headers = [t.columns[k].label.plain for k in cols]
+            self.assertIn("AGENT", headers)
+            self.assertEqual(t.row_count, 2)
+
+    async def test_session_table_legacy_label(self) -> None:
+        """Legacy cc-<stem> session shows 'claude (legacy)' in the agent cell."""
+        from ccw_tui.widgets import SessionTable
+        from ccw_tui.context import TuiSession
+
+        s = TuiSession(
+            name="cc-oldproject",
+            short="oldproject",
+            attached=False,
+            pid="1",
+            cpu="0",
+            ram="1M",
+            created="1s",
+            last_activity="1s",
+            cmd="claude",
+            path="/srv/work",
+            user="dev",
+            stem="oldproject",
+            agent="claude",
+            legacy=True,
+        )
+        label = SessionTable._agent_label(s)
+        self.assertEqual(label, "claude (legacy)")
+
 
 if __name__ == "__main__":
     unittest.main()

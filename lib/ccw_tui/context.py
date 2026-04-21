@@ -62,6 +62,10 @@ class TuiSession:
     cmd: str
     path: str
     user: str
+    # Multi-agent fields (default to backward-compatible values).
+    stem: str = ""        # bare project stem, e.g. "myproject"
+    agent: str = "claude" # agent id, e.g. "claude", "codex", "cursor"
+    legacy: bool = False  # True when parsed from old cc-<stem> naming
 
 
 @dataclass

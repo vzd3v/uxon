@@ -1910,6 +1910,11 @@ def _to_tui_session(s: SessionInfo, prefix: str) -> object:
     import ccw_tui
 
     short = s.name[len(prefix):] if s.name.startswith(prefix) else s.name
+    parsed = parse_session_name(s.name)
+    if parsed is not None:
+        stem, agent, _idx, legacy = parsed
+    else:
+        stem, agent, legacy = s.name, "unknown", False
     return ccw_tui.TuiSession(
         name=s.name,
         short=short,
@@ -1922,6 +1927,9 @@ def _to_tui_session(s: SessionInfo, prefix: str) -> object:
         cmd=s.active_cmd or "-",
         path=s.active_path or "-",
         user=s.user,
+        stem=stem,
+        agent=agent,
+        legacy=legacy,
     )
 
 

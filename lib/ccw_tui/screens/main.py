@@ -122,13 +122,14 @@ class MainScreen(Screen):
                 enabled=bool(self.ctx.existing_projects),
                 id="action-open",
             )
+            show_agent = len(self.ctx.enabled_agents) > 1
             if self.ctx.sessions:
                 yield Static("── sessions ──", classes="segment-header")
-                yield SessionTable(id="sessions-own")
+                yield SessionTable(show_agent_column=show_agent, id="sessions-own")
             if self.ctx.has_sudo:
                 yield Static("── superuser ──", classes="segment-header")
                 if self.ctx.other_sessions:
-                    yield SessionTable(show_user=True, id="sessions-other")
+                    yield SessionTable(show_user=True, show_agent_column=show_agent, id="sessions-other")
                 yield ActionRow(
                     kind="settings",
                     label="⚙ Settings",
