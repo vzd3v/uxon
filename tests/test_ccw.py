@@ -10,6 +10,9 @@ from unittest import mock
 
 
 CCW_PATH = Path(__file__).resolve().parents[1] / "bin" / "ccw"
+_LIB_PATH = str(Path(__file__).resolve().parents[1] / "lib")
+if _LIB_PATH not in sys.path:
+    sys.path.insert(0, _LIB_PATH)
 LOADER = SourceFileLoader("ccw_module", str(CCW_PATH))
 SPEC = importlib.util.spec_from_loader("ccw_module", LOADER)
 if SPEC is None or SPEC.loader is None:
@@ -612,25 +615,58 @@ class CcwTests(unittest.TestCase):
         self.assertEqual(path, "/tmp/ccw-u-vz-1001.sock")
 
     def test_doctor_reports_socket_and_config(self) -> None:
+        import ccw_agents
+
         cfg = self.make_config()
         output = io.StringIO()
+        ok_avail = ccw_agents.AgentAvailability(status="ok", version="1.2.3")
+
+        def _command_path_side_effect(command, user):
+            if command == "tmux":
+                return "/usr/bin/tmux"
+            return "/usr/local/bin/claude"
 
         with mock.patch.object(ccw, "resolve_config_layers", return_value=({}, [Path("/srv/apps/vz_devagent_cli_tool/config/config.toml")])):
             with mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-u-vz.sock"):
-                with mock.patch.object(ccw, "command_path_for_user", side_effect=["/usr/bin/tmux", "/usr/local/bin/claude"]):
-                    with mock.patch.object(ccw, "collect_sessions", return_value=[self.make_session("ccw-demo", "/srv/repos/demo")]):
-                        with mock.patch.object(ccw, "collect_sessions_for_user", return_value=[]):
-                            with mock.patch.object(ccw, "user_can_write_dir", return_value=True):
-                                with mock.patch.object(ccw, "format_version", return_value="ccw 0.4.0 (abc1234)"):
-                                    with mock.patch("sys.stdout", output):
-                                        rc = ccw.do_doctor(cfg, "remdepl", "u-vz", "/srv/repos/demo")
+                with mock.patch.object(ccw, "command_path_for_user", side_effect=_command_path_side_effect):
+                    with mock.patch.object(ccw_agents, "probe_agents", return_value={"claude": ok_avail}):
+                        with mock.patch.object(ccw, "collect_sessions", return_value=[self.make_session("ccw-demo@claude", "/srv/repos/demo")]):
+                            with mock.patch.object(ccw, "collect_sessions_for_user", return_value=[]):
+                                with mock.patch.object(ccw, "user_can_write_dir", return_value=True):
+                                    with mock.patch.object(ccw, "format_version", return_value="ccw 0.4.0 (abc1234)"):
+                                        with mock.patch("sys.stdout", output):
+                                            rc = ccw.do_doctor(cfg, "remdepl", "u-vz", "/srv/repos/demo")
 
         self.assertEqual(rc, 0)
         rendered = output.getvalue()
         self.assertIn("ccw doctor", rendered)
         self.assertIn("config_paths=/srv/apps/vz_devagent_cli_tool/config/config.toml", rendered)
         self.assertIn("tmux_socket=/tmp/ccw-u-vz.sock", rendered)
-        self.assertIn("claude_path=/usr/local/bin/claude", rendered)
+        self.assertIn("claude:", rendered)
+        self.assertIn("ok (1.2.3)", rendered)
+
+    def test_doctor_reports_missing_agent(self) -> None:
+        import ccw_agents
+
+        cfg = self.make_config()
+        output = io.StringIO()
+        missing_avail = ccw_agents.AgentAvailability(status="missing", error="not found")
+
+        with mock.patch.object(ccw, "resolve_config_layers", return_value=({}, [])):
+            with mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-u-vz.sock"):
+                with mock.patch.object(ccw, "command_path_for_user", return_value="/usr/bin/tmux"):
+                    with mock.patch.object(ccw_agents, "probe_agents", return_value={"claude": missing_avail}):
+                        with mock.patch.object(ccw, "collect_sessions", return_value=[]):
+                            with mock.patch.object(ccw, "collect_sessions_for_user", return_value=[]):
+                                with mock.patch.object(ccw, "user_can_write_dir", return_value=True):
+                                    with mock.patch.object(ccw, "format_version", return_value="ccw 0.4.0"):
+                                        with mock.patch("sys.stdout", output):
+                                            rc = ccw.do_doctor(cfg, "u-vz", "u-vz", "/srv/repos/demo")
+
+        rendered = output.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("MISSING", rendered)
+        self.assertIn("claude:", rendered)
 
     def test_do_kill_all_requires_force_without_tty(self) -> None:
         cfg = self.make_config()

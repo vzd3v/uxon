@@ -1697,7 +1697,7 @@ def doctor_issues(
     caller_user: str,
     launch_user: str,
     tmux_path: str | None,
-    claude_path: str | None,
+    agent_paths: dict[str, str | None],
     socket_path: str,
     current_sessions: list[SessionInfo],
     legacy_sessions: list[SessionInfo],
@@ -1714,8 +1714,9 @@ def doctor_issues(
         issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
     if tmux_path is None:
         issues.append(f"'tmux' is not resolvable for {launch_user}")
-    if claude_path is None:
-        issues.append(f"'claude' is not resolvable for {launch_user}")
+    for aid, path in agent_paths.items():
+        if path is None:
+            issues.append(f"'{aid}' agent binary is not resolvable for {launch_user}")
     if legacy_sessions and not current_sessions:
         issues.append("legacy default-socket ccw sessions exist while the dedicated ccw socket has none")
     if caller_user != launch_user and launch_user not in cfg.session_users and not cfg.enable_all_users_list:
@@ -1724,10 +1725,17 @@ def doctor_issues(
 
 
 def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
+    import ccw_agents
+
     _, config_sources = resolve_config_layers(cwd)
     socket_path = tmux_socket_path(cfg, launch_user)
     tmux_path = command_path_for_user("tmux", launch_user)
-    claude_path = command_path_for_user("claude", launch_user)
+    # Probe all enabled agents in parallel.
+    availability = ccw_agents.probe_agents(list(cfg.enabled_agents), launch_user)
+    agent_paths: dict[str, str | None] = {
+        aid: command_path_for_user(ccw_agents.CATALOG[aid].binary, launch_user)
+        for aid in cfg.enabled_agents
+    }
     current_sessions = collect_sessions([launch_user], cfg)
     legacy_sessions = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
     config_paths = [str(path) for path in config_sources]
@@ -1737,7 +1745,7 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
         caller_user,
         launch_user,
         tmux_path,
-        claude_path,
+        agent_paths,
         socket_path,
         current_sessions,
         legacy_sessions,
@@ -1758,7 +1766,17 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     print(f"tmux_socket_parent={Path(socket_path).parent}")
     print(f"tmux_socket_parent_exists={'yes' if Path(socket_path).parent.is_dir() else 'no'}")
     print(f"tmux_socket_parent_writable={'yes' if user_can_write_dir(str(Path(socket_path).parent), launch_user) else 'no'}")
-    print(f"claude_path={claude_path or '-'}")
+    # Per-agent status block.
+    for aid in cfg.enabled_agents:
+        spec = ccw_agents.CATALOG[aid]
+        path = agent_paths.get(aid) or "-"
+        avail = availability.get(aid)
+        if avail and avail.status == "ok":
+            print(f"{aid}:  {path}  ok ({avail.version or '?'})")
+        elif avail and avail.status == "timeout":
+            print(f"{aid}:  {path}  TIMEOUT (>{ccw_agents.PROBE_TIMEOUT_SEC}s)")
+        else:
+            print(f"{aid}:  -  MISSING  ({spec.install_hint})")
     print(f"current_socket_sessions={len(current_sessions)}")
     if current_sessions:
         print("current_socket_session_names=" + ", ".join(session.name for session in current_sessions))
