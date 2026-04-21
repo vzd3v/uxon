@@ -31,14 +31,14 @@ from .screens.main import MainScreen
 
 
 class _AgentAvailabilityUpdated(Message):
-    """Posted (app-level) when the background probe finishes or updates.
+    """Posted by the background probe worker when its dict update lands.
 
-    ``bubble = False`` is critical: the app-level handler re-posts this
-    message to the active top screen so open modals can refresh, but if
-    the message bubbled back up from the screen to the app, the app
-    would re-dispatch again, creating an infinite loop (observed as
-    a visibly flashing agent list with the selection resetting each
-    tick).
+    Handled only at the app level (:meth:`CcwApp.on__agent_availability_updated`).
+    Modals that need to refresh are invoked via ``call_later`` — no
+    re-posting of this message. Re-posting to screens caused the message
+    to bubble back up to the app and trigger a second dispatch, observed
+    as an infinitely-flashing agent list with the selection resetting
+    each tick.
     """
 
     bubble = False
@@ -118,24 +118,20 @@ class CcwApp(App):
     def on__agent_availability_updated(self, event: _AgentAvailabilityUpdated) -> None:
         """Gate: on every probe update, decide whether to pop the install hint.
 
-        Re-dispatches to the top screen so an active modal (e.g.
-        LaunchOptionsScreen) can refresh its visible-agents list. We post
-        a *fresh* message instance because textual marks the original as
-        handled once this method returns; re-posting the same object is
-        a silent no-op.
+        Also directly kicks the active modal (if it's the one that reads
+        availability state — :class:`LaunchOptionsScreen`) so its
+        ``(checking…)`` labels resolve. We intentionally do NOT post a
+        second message at the screen here: re-posting caused the message
+        to bubble back up to the app and trigger a second dispatch,
+        flashing the list.
         """
-        # Re-dispatch to the active top screen — app-level messages do
-        # not bubble down by default. Skip when the top is already the
-        # unavailable-agents popup (re-dispatching to ourselves is a
-        # no-op) or missing; otherwise an active modal like
-        # LaunchOptionsScreen gets a chance to refresh.
+        from .screens.launch_options import LaunchOptionsScreen
+
         top = self.screen_stack[-1] if self.screen_stack else None
-        if (
-            top is not None
-            and top is not self
-            and not isinstance(top, AgentsUnavailableScreen)
-        ):
-            top.post_message(_AgentAvailabilityUpdated())
+        if isinstance(top, LaunchOptionsScreen):
+            # call_later schedules the coroutine on the event loop and
+            # does not go through the message-pump / bubbling path.
+            self.call_later(top._rebuild_agent_list)
 
         if self._agents_popup_shown:
             return

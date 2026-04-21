@@ -175,10 +175,6 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
             ListView,
         )
 
-    async def on__agent_availability_updated(self, event) -> None:
-        """Availability arrived — rebuild left panel contents and visibility."""
-        await self._rebuild_agent_list()
-
     async def _rebuild_agent_list(self) -> None:
         """Recompute visible agents from availability and repopulate the left
         ListView in place. Called on mount-time update and whenever a probe
