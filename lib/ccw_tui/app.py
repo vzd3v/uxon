@@ -20,12 +20,17 @@ from typing import Any
 
 from textual.app import App
 from textual.binding import Binding
+from textual.message import Message
 
 from .context import CallbackError, LaunchRequest, TuiContext
 from .events import _log_event
 from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
 from .screens.main import MainScreen
+
+
+class _AgentAvailabilityUpdated(Message):
+    """Posted (app-level) when the background probe finishes or updates."""
 
 
 class CcwApp(App):
@@ -62,6 +67,20 @@ class CcwApp(App):
             # re-create cycle when the outer loop stashes the message.
             self.notify(self.pending_status, severity="error", timeout=6)
         self.pending_status = ""
+        # Kick off background agent availability probe.
+        if self.ctx.enabled_agents:
+            self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
+
+    def _probe_agents_worker(self) -> None:
+        """Background thread: probe each enabled agent's binary --version."""
+        import ccw_agents
+        result = ccw_agents.probe_agents(
+            list(self.ctx.enabled_agents),
+            launch_user=self.ctx.launch_user or None,
+        )
+        for aid, avail in result.items():
+            self.ctx.agent_availability[aid] = avail
+        self.post_message(_AgentAvailabilityUpdated())
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 

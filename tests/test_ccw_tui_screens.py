@@ -42,9 +42,9 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_allowed=True,
         current_user="devagent",
-        on_launch_cwd=lambda dsp: LaunchRequest(cmd=("/bin/true",), label="cwd"),
-        on_launch_new=lambda n, d, g: LaunchRequest(cmd=("/bin/true",), label="new"),
-        on_launch_existing=lambda n, d: LaunchRequest(cmd=("/bin/true",), label="existing"),
+        on_launch_cwd=lambda agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+        on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(cmd=("/bin/true",), label="new"),
+        on_launch_existing=lambda n, agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="existing"),
     )
     base.update(overrides)
     return TuiContext(**base)
@@ -179,7 +179,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         from ccw_tui.app import CcwApp
         from ccw_tui.context import CallbackError
 
-        def boom_launch(dsp):
+        def boom_launch(agent_id, mode_id):
             raise CallbackError("nope")
 
         ctx = _mk_ctx(on_launch_cwd=boom_launch)

@@ -1939,6 +1939,60 @@ def _load_settings_sources(cwd: str) -> tuple[dict, dict, "Path | None"]:
     return repo_data, proj_data, proj_cfg
 
 
+def _plan_tui_run_agent(cfg: Config, launch_user: str, cwd: str, agent_id: str, mode_id: str):
+    """Agent-aware variant of ``_plan_tui_run``; used by the new callbacks."""
+    ensure_allowed_dir(cwd, launch_allowed_roots(cfg, launch_user))
+    target_dir = cwd
+    session_stem = session_stem_for_path(target_dir)
+    sessions = collect_sessions([launch_user], cfg)
+    session = allocate_session_name(session_stem, agent_id, target_dir, sessions)
+    args = ParsedArgs(action="run", agent=agent_id, permission_mode=mode_id)
+    return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
+
+
+def _plan_tui_create_new_agent(
+    cfg: Config,
+    launch_user: str,
+    name: str,
+    agent_id: str,
+    mode_id: str,
+    git_profile: str,
+):
+    """Agent-aware variant of ``_plan_tui_create_new``."""
+    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
+    args = ParsedArgs(
+        action="new",
+        target_id=name,
+        agent=agent_id,
+        permission_mode=mode_id,
+        git_remote=git_profile or None,
+        repeat_mode="attach",
+    )
+    if args.git_remote:
+        _do_create_git_remote(args, cfg, launch_user, project_dir, name, None)
+    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
+
+
+def _plan_tui_open_existing_agent(
+    cfg: Config,
+    launch_user: str,
+    name: str,
+    agent_id: str,
+    mode_id: str,
+):
+    """Agent-aware variant of ``_plan_tui_open_existing``."""
+    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
+    args = ParsedArgs(
+        action="new",
+        target_id=name,
+        agent=agent_id,
+        permission_mode=mode_id,
+        git_remote=None,
+        repeat_mode="attach",
+    )
+    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
+
+
 def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     """Build a LaunchRequest for the TUI "New session in current folder" action.
 
@@ -2140,14 +2194,14 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
             for p in cfg.git_remote_profiles
         ]
 
-    def on_launch_cwd(dsp: bool):
-        return _plan_tui_run(cfg, launch_user, cwd, dsp)
+    def on_launch_cwd(agent_id: str, mode_id: str):
+        return _plan_tui_run_agent(cfg, launch_user, cwd, agent_id, mode_id)
 
-    def on_launch_new(name: str, dsp: bool, git_profile: str):
-        return _plan_tui_create_new(cfg, launch_user, name, dsp, git_profile)
+    def on_launch_new(name: str, agent_id: str, mode_id: str, git_profile: str):
+        return _plan_tui_create_new_agent(cfg, launch_user, name, agent_id, mode_id, git_profile)
 
-    def on_launch_existing(name: str, dsp: bool):
-        return _plan_tui_open_existing(cfg, launch_user, name, dsp)
+    def on_launch_existing(name: str, agent_id: str, mode_id: str):
+        return _plan_tui_open_existing_agent(cfg, launch_user, name, agent_id, mode_id)
 
     git_profile_options = [
         (
@@ -2176,6 +2230,12 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
     on_setting_save_mapping = _wrap_tui_callback(on_setting_save_mapping, _CbErr)
     get_git_remote_profile_rows = _wrap_tui_callback(get_git_remote_profile_rows, _CbErr)
 
+    import ccw_agents as _ccw_agents
+    agent_availability = {
+        aid: _ccw_agents.AgentAvailability(status="pending")
+        for aid in cfg.enabled_agents
+    }
+
     return ccw_tui.TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,
@@ -2189,6 +2249,10 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         current_user=launch_user,
         has_sudo=has_sudo,
         other_sessions=tui_other,
+        enabled_agents=cfg.enabled_agents,
+        default_agent=cfg.default_agent,
+        launch_user=launch_user,
+        agent_availability=agent_availability,
         on_attach=on_attach,
         on_kill=on_kill,
         on_kill_all=on_kill_all,

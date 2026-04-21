@@ -238,8 +238,9 @@ class MainScreen(Screen):
         def after_perm(dsp: bool | None) -> None:
             if dsp is None:
                 return
+            mode_id = "yolo" if dsp else "normal"
             try:
-                req = self.ctx.on_launch_cwd(dsp)
+                req = self.ctx.on_launch_cwd(self.ctx.default_agent, mode_id)
             except CallbackError as exc:
                 self.app.notify(str(exc), severity="error", timeout=6)
                 return
@@ -252,8 +253,9 @@ class MainScreen(Screen):
             def _on_perm(dsp: bool | None) -> None:
                 if dsp is None:
                     return
+                mode_id = "yolo" if dsp else "normal"
                 try:
-                    req = self.ctx.on_launch_new(name, dsp, git_profile)
+                    req = self.ctx.on_launch_new(name, self.ctx.default_agent, mode_id, git_profile)
                 except CallbackError as exc:
                     self.app.notify(str(exc), severity="error", timeout=6)
                     return
@@ -299,8 +301,9 @@ class MainScreen(Screen):
             def after_perm(dsp: bool | None) -> None:
                 if dsp is None:
                     return
+                mode_id = "yolo" if dsp else "normal"
                 try:
-                    req = self.ctx.on_launch_existing(name, dsp)
+                    req = self.ctx.on_launch_existing(name, self.ctx.default_agent, mode_id)
                 except CallbackError as exc:
                     self.app.notify(str(exc), severity="error", timeout=6)
                     return

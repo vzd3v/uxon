@@ -9,7 +9,10 @@ without pulling in any terminal dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from ccw_agents import AgentAvailability
 
 
 # ── Errors ───────────────────────────────────────────────────────────
@@ -85,6 +88,13 @@ class TuiContext:
     has_sudo: bool = False
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
 
+    # Multi-agent fields (Task 7+)
+    enabled_agents: tuple[str, ...] = ("claude",)
+    default_agent: str = "claude"
+    launch_user: str = ""
+    # Maps agent_id → AgentAvailability (status: "pending"|"ok"|"missing"|"timeout")
+    agent_availability: dict[str, Any] = field(default_factory=dict)
+
     # Callbacks — TUI calls these, ccw provides them.
     # Launch/attach callbacks return a LaunchRequest; the outer run() loop
     # runs the command and re-enters the TUI main screen on exit.
@@ -95,14 +105,14 @@ class TuiContext:
     on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
     on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
     on_refresh: Callable[[], "TuiContext"] = lambda: None  # type: ignore[return-value]
-    on_launch_cwd: Callable[[bool], "LaunchRequest"] = (
-        lambda dsp: LaunchRequest(cmd=("true",), label="noop-launch-cwd")
+    on_launch_cwd: Callable[[str, str], "LaunchRequest"] = (
+        lambda agent_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-cwd")
     )
-    on_launch_new: Callable[[str, bool, str], "LaunchRequest"] = (
-        lambda name, dsp, git_profile: LaunchRequest(cmd=("true",), label="noop-launch-new")
+    on_launch_new: Callable[[str, str, str, str], "LaunchRequest"] = (
+        lambda name, agent_id, mode_id, git_profile: LaunchRequest(cmd=("true",), label="noop-launch-new")
     )
-    on_launch_existing: Callable[[str, bool], "LaunchRequest"] = (
-        lambda name, dsp: LaunchRequest(cmd=("true",), label="noop-launch-existing")
+    on_launch_existing: Callable[[str, str, str], "LaunchRequest"] = (
+        lambda name, agent_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
 
     # Git remote on new project — display only. The TUI never edits these.
