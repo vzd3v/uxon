@@ -33,6 +33,8 @@ class SettingSpec:
     choices: "tuple[str, ...] | None" = None  # for "enum"
 
 
+VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
+
 SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec("runtime_user", "string", "Launch user when default_launch_mode='fixed'."),
     SettingSpec(
@@ -49,7 +51,16 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec("allowed_roots", "array", "Directories ccw is allowed to run in."),
     SettingSpec("session_prefix", "string", "Tmux session name prefix."),
-    SettingSpec("default_claude_args", "array", "Flags prepended to every claude invocation."),
+    SettingSpec("agents.enabled", "array", "Enabled agents (subset of claude/codex/cursor)."),
+    SettingSpec(
+        "agents.default",
+        "enum",
+        "Default agent when --agent is not passed.",
+        choices=("claude", "codex", "cursor"),
+    ),
+    SettingSpec("agents.claude.default_args", "array", "Flags prepended to every claude invocation."),
+    SettingSpec("agents.codex.default_args", "array", "Flags prepended to every codex invocation."),
+    SettingSpec("agents.cursor.default_args", "array", "Flags prepended to every cursor-agent invocation."),
     SettingSpec("new_project_root", "string", "Base directory for 'ccw new <name>'."),
     SettingSpec(
         "repeat_noninteractive_mode",
@@ -74,6 +85,33 @@ TABLE_KEYS: tuple[str, ...] = tuple(spec.key for spec in SETTINGS_SPECS if spec.
 SCHEMA_KEYS: tuple[str, ...] = tuple(spec.key for spec in SETTINGS_SPECS)
 
 
+# ── Dotted-key helpers for nested TOML tables ─────────────────────────
+
+
+def _set_dotted(doc: Any, dotted_key: str, value: Any) -> None:
+    """Walk/create nested tomlkit tables and set the leaf value."""
+    import tomlkit
+    parts = dotted_key.split(".")
+    node = doc
+    for part in parts[:-1]:
+        if part not in node:
+            node[part] = tomlkit.table()
+        node = node[part]
+    node[parts[-1]] = value
+
+
+def _get_dotted(doc: Any, dotted_key: str, default: Any = None) -> Any:
+    """Walk nested dict/tomlkit tables, returning ``default`` if any key is missing."""
+    node = doc
+    for part in dotted_key.split("."):
+        if not isinstance(node, dict) and not hasattr(node, "get"):
+            return default
+        if part not in node:
+            return default
+        node = node[part]
+    return node
+
+
 # ── Resolved entry (schema + current value + source) ─────────────────
 
 
@@ -94,20 +132,43 @@ def resolve_setting_entries(
     """Merge the three layers and return one entry per schema key with source info."""
     out: list[SettingEntry] = []
     for spec in SETTINGS_SPECS:
-        if spec.key in project_data:
-            value = project_data[spec.key]
-            source = f"project:{project_path}" if project_path else "project"
-            editable = False
-        elif spec.key in repo_data:
-            value = repo_data[spec.key]
-            source = "repo"
-            editable = True
+        key = spec.key
+        is_dotted = "." in key
+        if is_dotted:
+            # Check project_data using dotted lookup
+            proj_val = _get_dotted(project_data, key, _MISSING)
+            repo_val = _get_dotted(repo_data, key, _MISSING)
+            def_val = _get_dotted(defaults, key, None)
+            if proj_val is not _MISSING:
+                value = proj_val
+                source = f"project:{project_path}" if project_path else "project"
+                editable = False
+            elif repo_val is not _MISSING:
+                value = repo_val
+                source = "repo"
+                editable = True
+            else:
+                value = def_val
+                source = "default"
+                editable = True
         else:
-            value = defaults.get(spec.key)
-            source = "default"
-            editable = True
+            if key in project_data:
+                value = project_data[key]
+                source = f"project:{project_path}" if project_path else "project"
+                editable = False
+            elif key in repo_data:
+                value = repo_data[key]
+                source = "repo"
+                editable = True
+            else:
+                value = defaults.get(key)
+                source = "default"
+                editable = True
         out.append(SettingEntry(spec=spec, value=value, source=source, editable=editable))
     return out
+
+
+_MISSING = object()  # sentinel for dotted-key lookup
 
 
 # ── TOML rendering (minimal, for fresh files only) ───────────────────
@@ -207,6 +268,8 @@ def update_repo_config_text(existing_text: str, updates: dict) -> str:
                     raise ValueError(f"table {key} requires string keys and values")
                 tbl[sub_k] = sub_v
             doc[key] = tbl
+        elif "." in key:
+            _set_dotted(doc, key, value)
         else:
             doc[key] = value
     return tomlkit.dumps(doc)
@@ -265,8 +328,12 @@ def apply_setting(repo_data: dict, key: str, new_value: Any) -> dict:
     """Return a new dict with repo_data[key] = new_value. Does not mutate input."""
     if key not in SCHEMA_KEYS:
         raise KeyError(f"unknown setting key: {key}")
-    out = dict(repo_data)
-    out[key] = new_value
+    import copy
+    out = copy.deepcopy(repo_data)
+    if "." in key:
+        _set_dotted(out, key, new_value)
+    else:
+        out[key] = new_value
     return out
 
 
@@ -274,8 +341,18 @@ def remove_setting(repo_data: dict, key: str) -> dict:
     """Return a new dict with repo_data[key] removed (reverting to default)."""
     if key not in SCHEMA_KEYS:
         raise KeyError(f"unknown setting key: {key}")
-    out = dict(repo_data)
-    out.pop(key, None)
+    import copy
+    out = copy.deepcopy(repo_data)
+    if "." in key:
+        parts = key.split(".")
+        node = out
+        for part in parts[:-1]:
+            if part not in node:
+                return out
+            node = node[part]
+        node.pop(parts[-1], None)
+    else:
+        out.pop(key, None)
     return out
 
 
@@ -307,6 +384,16 @@ def remove_repo_key(path: "Path | str", key: str) -> None:
     except FileNotFoundError:
         return
     doc = tomlkit.parse(existing)
-    if key in doc:
+    if "." in key:
+        parts = key.split(".")
+        node = doc
+        for part in parts[:-1]:
+            if part not in node:
+                return
+            node = node[part]
+        if parts[-1] in node:
+            del node[parts[-1]]
+            write_repo_config_toml(tomlkit.dumps(doc), path)
+    elif key in doc:
         del doc[key]
         write_repo_config_toml(tomlkit.dumps(doc), path)

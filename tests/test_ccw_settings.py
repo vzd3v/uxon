@@ -244,5 +244,52 @@ class WriteRepoConfigTomlTests(unittest.TestCase):
         self.assertEqual(real_run.call_args.kwargs["input"], b"data")
 
 
+class NestedAgentKeysTests(unittest.TestCase):
+    """Round-trip tests for dotted agents.* keys."""
+
+    def _src(self) -> str:
+        return (
+            "# top comment\n"
+            "[agents]\n"
+            'enabled = ["claude"]\n'
+            'default = "claude"\n'
+            "\n"
+            "[agents.claude]\n"
+            "default_args = []\n"
+        )
+
+    def test_round_trip_nested_agent_keys(self) -> None:
+        src = self._src()
+        new = cs.update_repo_config_text(src, {"agents.claude.default_args": ["--verbose"]})
+        parsed = tomllib.loads(new)
+        self.assertEqual(parsed["agents"]["claude"]["default_args"], ["--verbose"])
+        # Comment survived
+        self.assertIn("# top comment", new)
+        # Other keys survived
+        self.assertEqual(parsed["agents"]["enabled"], ["claude"])
+        self.assertEqual(parsed["agents"]["default"], "claude")
+
+    def test_round_trip_agents_default(self) -> None:
+        src = self._src()
+        new = cs.update_repo_config_text(src, {"agents.default": "codex"})
+        parsed = tomllib.loads(new)
+        self.assertEqual(parsed["agents"]["default"], "codex")
+        self.assertIn("# top comment", new)
+
+    def test_resolve_entries_dotted_key_from_repo(self) -> None:
+        repo_data = {"agents": {"enabled": ["claude", "cursor"], "default": "cursor"}}
+        entries = cs.resolve_setting_entries(repo_data, {}, None, {})
+        by_key = {e.spec.key: e for e in entries}
+        self.assertEqual(by_key["agents.enabled"].value, ["claude", "cursor"])
+        self.assertEqual(by_key["agents.enabled"].source, "repo")
+        self.assertEqual(by_key["agents.default"].value, "cursor")
+
+    def test_resolve_entries_dotted_key_default_when_absent(self) -> None:
+        entries = cs.resolve_setting_entries({}, {}, None, {})
+        by_key = {e.spec.key: e for e in entries}
+        self.assertEqual(by_key["agents.enabled"].source, "default")
+        self.assertIsNone(by_key["agents.enabled"].value)
+
+
 if __name__ == "__main__":
     unittest.main()
