@@ -18,8 +18,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install runtime deps
-        run: python3 -m pip install tomlkit "textual>=0.80,<9"
+      - name: Install runtime + test deps
+        run: python3 -m pip install tomlkit "textual>=0.80,<9" pytest pytest-xdist
 
       - name: Compile Python files
         run: |
@@ -51,4 +51,4 @@ jobs:
             install/install_ccw.py install/render_ccw_config.py
 
       - name: Run unit tests
-        run: python3 -m unittest discover -s tests -p 'test_*.py'
+        run: pytest tests/ -n auto
