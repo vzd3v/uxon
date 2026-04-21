@@ -85,7 +85,7 @@ class AgentAvailability:
     error: str | None = None
 
 
-PROBE_TIMEOUT_SEC = 1.5
+PROBE_TIMEOUT_SEC = 10.0  # cursor-agent --version is slow (~5-8s); probe is async + parallel, non-blocking
 
 
 def _current_user() -> str:
