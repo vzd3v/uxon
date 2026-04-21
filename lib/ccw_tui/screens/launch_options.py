@@ -175,11 +175,11 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
             ListView,
         )
 
-    def on__agent_availability_updated(self, event) -> None:
+    async def on__agent_availability_updated(self, event) -> None:
         """Availability arrived — rebuild left panel contents and visibility."""
-        self._rebuild_agent_list()
+        await self._rebuild_agent_list()
 
-    def _rebuild_agent_list(self) -> None:
+    async def _rebuild_agent_list(self) -> None:
         """Recompute visible agents from availability and repopulate the left
         ListView in place. Called on mount-time update and whenever a probe
         result arrives after the screen is already showing."""
@@ -197,7 +197,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         agent_panel.display = not self._single_agent
 
         agent_list = self.query_one("#agent-list", ListView)
-        agent_list.clear()
+        await agent_list.clear()
         for idx, aid in enumerate(visible, start=1):
             avail_obj = avail.get(aid)
             status = getattr(avail_obj, "status", None) if avail_obj else None

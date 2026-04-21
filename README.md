@@ -536,6 +536,12 @@ ccw run --dsp                  # yolo/dangerously-skip-permissions
 - `-w <branch>` (worktree) is claude-only. Using it with codex or cursor is an error.
 - `ccw doctor` probes each enabled agent and prints its path, version, and status.
 
+If ccw starts and none of the agents listed under `[agents] enabled` are
+installed, the TUI shows a modal with the install hint for each one
+(links / package names from the agent catalog). The modal appears only
+after the background probe resolves — initial paint is not blocked.
+Press `r` on the main screen after installing to re-probe.
+
 ---
 
 ## Install

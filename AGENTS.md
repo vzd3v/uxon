@@ -24,7 +24,8 @@ topology notes live in [docs/deployment.md](docs/deployment.md).
       Runs **outside** the textual App between round-trips.
     - ``hints.py`` — ``TEXTUAL_MISSING_HINT`` install guidance.
     - ``app.py`` — ``CcwApp(App)`` + ``run(ctx)`` outer loop.
-    - ``screens/`` — one module per screen (``main`` + modals).
+    - ``screens/`` — one module per screen (``main`` + modals):
+        ``agents_unavailable.py`` — modal shown when every enabled agent is missing.
     - ``widgets/`` — ``ActionRow``, ``SessionTable`` (only two custom
       widgets; everything else is stock textual).
 - `lib/ccw_settings.py` — settings schema (the single list of known keys),
@@ -118,6 +119,7 @@ python3 -m py_compile bin/ccw \
   lib/ccw_tui/screens/new_project.py lib/ccw_tui/screens/git_profile.py \
   lib/ccw_tui/screens/existing.py lib/ccw_tui/screens/settings.py \
   lib/ccw_tui/screens/git_remotes.py \
+  lib/ccw_tui/screens/agents_unavailable.py \
   lib/ccw_settings.py lib/ccw_agents.py \
   lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
   lib/ccw_git_backend_token.py lib/ccw_git_create.py \
@@ -126,7 +128,7 @@ python3 -m py_compile bin/ccw \
   tests/test_ccw_tui_bindings.py tests/test_ccw_tui_logging.py \
   tests/test_ccw_git_profiles.py tests/test_ccw_git_backend_gh.py \
   tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
-  tests/test_ccw_agents.py \
+  tests/test_ccw_agents.py tests/test_ccw_tui_agents_unavailable.py \
   install/install_ccw.py install/render_ccw_config.py
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
