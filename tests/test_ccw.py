@@ -485,7 +485,7 @@ class CcwTests(unittest.TestCase):
     def test_do_new_existing_session_defaults_to_attach_in_tty(self) -> None:
         cfg = self.make_config()
         args = ccw.ParsedArgs(action="new", target_id="demo", agent_args=[])
-        existing = [self.make_session("ccw-demo", "/srv/repos/demo")]
+        existing = [self.make_session("ccw-demo@claude", "/srv/repos/demo")]
 
         with mock.patch.object(ccw, "canonical", side_effect=lambda value: str(value)):
             with mock.patch.object(ccw, "run_cmd") as run_cmd:
@@ -504,7 +504,7 @@ class CcwTests(unittest.TestCase):
     def test_do_new_existing_session_force_new_bypasses_prompt(self) -> None:
         cfg = self.make_config()
         args = ccw.ParsedArgs(action="new", target_id="demo", repeat_mode="new", agent_args=[])
-        existing = [self.make_session("ccw-demo", "/srv/repos/demo")]
+        existing = [self.make_session("ccw-demo@claude", "/srv/repos/demo")]
 
         with mock.patch.object(ccw, "canonical", side_effect=lambda value: str(value)):
             with mock.patch.object(ccw, "run_cmd") as run_cmd:
@@ -521,7 +521,7 @@ class CcwTests(unittest.TestCase):
     def test_do_new_existing_session_without_tty_fails_with_guidance(self) -> None:
         cfg = self.make_config()
         args = ccw.ParsedArgs(action="new", target_id="demo", agent_args=[])
-        existing = [self.make_session("ccw-demo", "/srv/repos/demo")]
+        existing = [self.make_session("ccw-demo@claude", "/srv/repos/demo")]
 
         with mock.patch.object(ccw, "canonical", side_effect=lambda value: str(value)):
             with mock.patch.object(ccw, "run_cmd") as run_cmd:
@@ -540,7 +540,7 @@ class CcwTests(unittest.TestCase):
     def test_do_new_existing_worktree_session_defaults_to_attach_in_tty(self) -> None:
         cfg = self.make_config()
         args = ccw.ParsedArgs(action="new", target_id="demo", worktree_branch="feature-x", agent_args=[])
-        existing = [self.make_session("ccw-demo-feature-x", "/srv/repos/demo")]
+        existing = [self.make_session("ccw-demo-feature-x@claude", "/srv/repos/demo")]
 
         with mock.patch.object(ccw.os.path, "isdir", return_value=True):
             with mock.patch.object(ccw, "git_repo_root_as_user", return_value="/srv/repos/demo"):
@@ -559,7 +559,7 @@ class CcwTests(unittest.TestCase):
         cfg = self.make_config()
         cfg.repeat_noninteractive_mode = "new"
         args = ccw.ParsedArgs(action="new", target_id="demo", worktree_branch="feature-x", agent_args=[])
-        existing = [self.make_session("ccw-demo-feature-x", "/srv/repos/demo")]
+        existing = [self.make_session("ccw-demo-feature-x@claude", "/srv/repos/demo")]
 
         with mock.patch.object(ccw.os.path, "isdir", return_value=True):
             with mock.patch.object(ccw, "git_repo_root_as_user", return_value="/srv/repos/demo"):
@@ -576,7 +576,7 @@ class CcwTests(unittest.TestCase):
     def test_do_new_legacy_socket_guardrail_fails(self) -> None:
         cfg = self.make_config()
         args = ccw.ParsedArgs(action="new", target_id="demo", agent_args=[])
-        legacy = [self.make_session("ccw-demo", "/srv/repos/demo")]
+        legacy = [self.make_session("ccw-demo@claude", "/srv/repos/demo")]
 
         with mock.patch.object(ccw, "canonical", side_effect=lambda value: str(value)):
             with mock.patch.object(ccw, "run_cmd"):
@@ -757,7 +757,7 @@ class CcwTests(unittest.TestCase):
 
     def test_plan_tui_create_new_forces_attach_when_existing_session(self) -> None:
         cfg = self.make_config(allowed_roots=["/srv/repos"], new_project_root="/srv/repos")
-        existing = [self.make_session("ccw-demo", "/srv/repos/demo")]
+        existing = [self.make_session("ccw-demo@claude", "/srv/repos/demo")]
         with self._stub_socket_path():
             with mock.patch.object(ccw, "canonical", side_effect=lambda v: str(v)):
                 with mock.patch.object(ccw, "run_cmd"):
@@ -766,14 +766,14 @@ class CcwTests(unittest.TestCase):
                             req = ccw._plan_tui_create_new(cfg, "u-vz", "demo", dsp=False, git_profile="")
         # Existing session → attach request, not launch
         self.assertIn("attach-session", req.cmd)
-        self.assertIn("ccw-demo", req.cmd)
+        self.assertIn("ccw-demo@claude", req.cmd)
         execvp.assert_not_called()
 
     def test_plan_tui_open_existing_forces_attach_when_existing_session(self) -> None:
         """Open-existing uses the same attach-on-compatible-session path as
         create-new, minus any git side effects."""
         cfg = self.make_config(allowed_roots=["/srv/repos"], new_project_root="/srv/repos")
-        existing = [self.make_session("ccw-demo", "/srv/repos/demo")]
+        existing = [self.make_session("ccw-demo@claude", "/srv/repos/demo")]
         with self._stub_socket_path():
             with mock.patch.object(ccw, "canonical", side_effect=lambda v: str(v)):
                 with mock.patch.object(ccw, "run_cmd"):
@@ -781,7 +781,7 @@ class CcwTests(unittest.TestCase):
                         with mock.patch.object(ccw, "_do_create_git_remote") as git_create:
                             req = ccw._plan_tui_open_existing(cfg, "u-vz", "demo", dsp=False)
         self.assertIn("attach-session", req.cmd)
-        self.assertIn("ccw-demo", req.cmd)
+        self.assertIn("ccw-demo@claude", req.cmd)
         git_create.assert_not_called()
 
     def test_find_project_config_ignores_permission_errors(self) -> None:
@@ -972,6 +972,83 @@ class CcwTests(unittest.TestCase):
         self.assertIn("--model", create_pre)
         self.assertIn("sonnet", create_pre)
         self.assertIn("nested", req.label)
+
+
+def _mk_session(name: str, path: str = "/srv/repos/x", agent: str = "claude", legacy: bool = False) -> ccw.SessionInfo:
+    return ccw.SessionInfo(
+        user="u",
+        name=name,
+        attached="0",
+        windows="1",
+        created="-",
+        last_attached="-",
+        pane_pids=(),
+        active_pid=None,
+        active_cmd="",
+        active_path=path,
+        agent=agent,
+        legacy=legacy,
+    )
+
+
+class SessionNamingTests(unittest.TestCase):
+    """Tests for the new ccw-<stem>@<agent> session naming scheme."""
+
+    def test_parse_session_name_new(self) -> None:
+        self.assertEqual(ccw.parse_session_name("ccw-foo@codex"), ("foo", "codex", 1, False))
+        self.assertEqual(ccw.parse_session_name("ccw-foo@codex-3"), ("foo", "codex", 3, False))
+        self.assertEqual(ccw.parse_session_name("ccw-my-repo-branch@claude"), ("my-repo-branch", "claude", 1, False))
+
+    def test_parse_session_name_legacy(self) -> None:
+        self.assertEqual(ccw.parse_session_name("cc-foo"), ("foo", "claude", 1, True))
+        self.assertEqual(ccw.parse_session_name("cc-foo-2"), ("foo", "claude", 2, True))
+
+    def test_parse_session_name_rejects_garbage(self) -> None:
+        self.assertIsNone(ccw.parse_session_name("random-x"))
+        self.assertIsNone(ccw.parse_session_name("ccw-foo"))  # missing @agent
+
+    def test_candidate_session_name(self) -> None:
+        self.assertEqual(ccw.candidate_session_name("foo", 1, "cursor"), "ccw-foo@cursor")
+        self.assertEqual(ccw.candidate_session_name("foo", 2, "cursor"), "ccw-foo@cursor-2")
+
+    def test_compatible_indexed_sessions_agent_specific(self) -> None:
+        # Two sessions same stem different agents are NOT siblings.
+        compat_root = "/srv/repos/foo"
+        s_claude = _mk_session("ccw-foo@claude", compat_root, agent="claude")
+        s_codex = _mk_session("ccw-foo@codex", compat_root, agent="codex")
+        matches = ccw.compatible_indexed_sessions("foo", "claude", compat_root, [s_claude, s_codex])
+        self.assertEqual([m.name for m in matches], ["ccw-foo@claude"])
+
+    def test_resolve_full_new(self) -> None:
+        sessions = [_mk_session("ccw-foo@claude"), _mk_session("ccw-foo@codex", agent="codex")]
+        self.assertEqual(
+            ccw.resolve_session("ccw-foo@codex", sessions, "ccw-").name,
+            "ccw-foo@codex",
+        )
+
+    def test_resolve_suffixed_without_prefix(self) -> None:
+        sessions = [_mk_session("ccw-foo@codex", agent="codex")]
+        self.assertEqual(
+            ccw.resolve_session("foo@codex", sessions, "ccw-").name,
+            "ccw-foo@codex",
+        )
+
+    def test_resolve_stem_unique(self) -> None:
+        sessions = [_mk_session("ccw-foo@codex", agent="codex")]
+        self.assertEqual(
+            ccw.resolve_session("foo", sessions, "ccw-").name,
+            "ccw-foo@codex",
+        )
+
+    def test_resolve_stem_ambiguous(self) -> None:
+        sessions = [_mk_session("ccw-foo@claude"), _mk_session("ccw-foo@codex", agent="codex")]
+        with self.assertRaises(SystemExit):
+            ccw.resolve_session("foo", sessions, "ccw-")
+
+    def test_resolve_legacy(self) -> None:
+        sessions = [_mk_session("cc-foo", legacy=True)]
+        self.assertEqual(ccw.resolve_session("cc-foo", sessions, "ccw-").name, "cc-foo")
+        self.assertEqual(ccw.resolve_session("foo", sessions, "ccw-").name, "cc-foo")
 
 
 class DoInteractiveTextualMissingTests(unittest.TestCase):
