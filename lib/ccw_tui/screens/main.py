@@ -40,8 +40,8 @@ from ..widgets import ActionRow, SessionTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
 from .git_profile import GitProfileScreen
+from .launch_options import LaunchOptionsScreen
 from .new_project import NewProjectScreen
-from .permissions import PermissionsScreen
 
 
 class MainScreen(Screen):
@@ -235,38 +235,38 @@ class MainScreen(Screen):
             )
             return
 
-        def after_perm(dsp: bool | None) -> None:
-            if dsp is None:
+        def after_opts(result: "tuple[str, str] | None") -> None:
+            if result is None:
                 return
-            mode_id = "yolo" if dsp else "normal"
+            agent_id, mode_id = result
             try:
-                req = self.ctx.on_launch_cwd(self.ctx.default_agent, mode_id)
+                req = self.ctx.on_launch_cwd(agent_id, mode_id)
             except CallbackError as exc:
                 self.app.notify(str(exc), severity="error", timeout=6)
                 return
             self.app.request_launch(req)  # type: ignore[attr-defined]
 
-        self.app.push_screen(PermissionsScreen(), after_perm)
+        self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts)
 
     def _launch_new(self) -> None:
-        def after_perm(name: str, git_profile: str):
-            def _on_perm(dsp: bool | None) -> None:
-                if dsp is None:
+        def after_opts(name: str, git_profile: str):
+            def _on_opts(result: "tuple[str, str] | None") -> None:
+                if result is None:
                     return
-                mode_id = "yolo" if dsp else "normal"
+                agent_id, mode_id = result
                 try:
-                    req = self.ctx.on_launch_new(name, self.ctx.default_agent, mode_id, git_profile)
+                    req = self.ctx.on_launch_new(name, agent_id, mode_id, git_profile)
                 except CallbackError as exc:
                     self.app.notify(str(exc), severity="error", timeout=6)
                     return
                 self.app.request_launch(req)  # type: ignore[attr-defined]
-            return _on_perm
+            return _on_opts
 
         def after_git(name: str):
             def _on_git(git_profile: str | None) -> None:
                 if git_profile is None:
                     return  # user cancelled the whole chain
-                self.app.push_screen(PermissionsScreen(), after_perm(name, git_profile))
+                self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts(name, git_profile))
             return _on_git
 
         def after_name(name: str | None) -> None:
@@ -281,7 +281,7 @@ class MainScreen(Screen):
                     after_git(name),
                 )
             else:
-                self.app.push_screen(PermissionsScreen(), after_perm(name, ""))
+                self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts(name, ""))
 
         self.app.push_screen(NewProjectScreen(self.ctx.new_project_root), after_name)
 
@@ -298,18 +298,18 @@ class MainScreen(Screen):
             if not name:
                 return
 
-            def after_perm(dsp: bool | None) -> None:
-                if dsp is None:
+            def after_opts(result: "tuple[str, str] | None") -> None:
+                if result is None:
                     return
-                mode_id = "yolo" if dsp else "normal"
+                agent_id, mode_id = result
                 try:
-                    req = self.ctx.on_launch_existing(name, self.ctx.default_agent, mode_id)
+                    req = self.ctx.on_launch_existing(name, agent_id, mode_id)
                 except CallbackError as exc:
                     self.app.notify(str(exc), severity="error", timeout=6)
                     return
                 self.app.request_launch(req)  # type: ignore[attr-defined]
 
-            self.app.push_screen(PermissionsScreen(), after_perm)
+            self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts)
 
         self.app.push_screen(
             ExistingProjectScreen(self.ctx.existing_projects, self.ctx.new_project_root),

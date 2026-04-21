@@ -105,7 +105,7 @@ python3 -m py_compile bin/ccw \
   lib/ccw_tui/widgets/__init__.py lib/ccw_tui/widgets/action_row.py \
   lib/ccw_tui/widgets/session_table.py \
   lib/ccw_tui/screens/__init__.py lib/ccw_tui/screens/main.py \
-  lib/ccw_tui/screens/confirm.py lib/ccw_tui/screens/permissions.py \
+  lib/ccw_tui/screens/confirm.py lib/ccw_tui/screens/launch_options.py \
   lib/ccw_tui/screens/new_project.py lib/ccw_tui/screens/git_profile.py \
   lib/ccw_tui/screens/existing.py lib/ccw_tui/screens/settings.py \
   lib/ccw_tui/screens/git_remotes.py \

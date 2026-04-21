@@ -68,9 +68,9 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         app = CcwApp(_mk_ctx())
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            await pilot.press("1")   # digit-1 → PermissionsScreen
+            await pilot.press("1")      # digit-1 → LaunchOptionsScreen
             await pilot.pause()
-            await pilot.press("1")   # pick regular → on_launch_cwd(False)
+            await pilot.press("enter")  # confirm mode (normal, index 0)
             await pilot.pause()
         self.assertIsNotNone(app.pending_launch)
         self.assertEqual(app.pending_launch.label, "cwd")
@@ -194,9 +194,9 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 
             app.notify = cap
             await pilot.pause()
-            await pilot.press("1")        # digit-1 → PermissionsScreen
+            await pilot.press("1")        # digit-1 → LaunchOptionsScreen
             await pilot.pause()
-            await pilot.press("1")        # pick regular → on_launch_cwd(False)
+            await pilot.press("enter")    # confirm mode → on_launch_cwd(...)
             await pilot.pause()
             await pilot.press("q")
             await pilot.pause()
@@ -297,10 +297,16 @@ if __name__ == "__main__":
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class PermissionsScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def _run(self, keys):
+class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
+    """Pilot tests for the two-panel agent × permission-mode modal."""
+
+    def _make_avail(self, status: str):
+        from ccw_agents import AgentAvailability
+        return AgentAvailability(status=status)
+
+    async def _run_screen(self, ctx, keys):
         from textual.app import App
-        from ccw_tui.screens.permissions import PermissionsScreen
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
 
         class Host(App):
             result = "unset"
@@ -309,24 +315,114 @@ class PermissionsScreenTests(unittest.IsolatedAsyncioTestCase):
                 def done(r):
                     self.result = r
                     self.exit()
-                self.push_screen(PermissionsScreen(), done)
+                self.push_screen(LaunchOptionsScreen(ctx), done)
 
         app = Host()
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             for k in keys:
                 await pilot.press(k)
             await pilot.pause()
         return app.result
 
-    async def test_digit_1_returns_regular(self):
-        self.assertEqual(await self._run(["1"]), False)
+    async def test_single_agent_hides_left_panel(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
+        from ccw_tui.widgets import SessionTable
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("ok")},
+        )
+        app = App()
+        async with app.run_test(size=(100, 30)) as pilot:
+            screen = LaunchOptionsScreen(ctx)
+            app.push_screen(screen)
+            await pilot.pause()
+            panel = screen.query_one("#agent-panel")
+            self.assertFalse(panel.display)
 
-    async def test_digit_2_returns_dsp(self):
-        self.assertEqual(await self._run(["2"]), True)
+    async def test_two_agents_both_panels_visible(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
+        ctx = _mk_ctx(
+            enabled_agents=("claude", "cursor"),
+            default_agent="claude",
+            agent_availability={
+                "claude": self._make_avail("ok"),
+                "cursor": self._make_avail("ok"),
+            },
+        )
+        app = App()
+        async with app.run_test(size=(100, 30)) as pilot:
+            screen = LaunchOptionsScreen(ctx)
+            app.push_screen(screen)
+            await pilot.pause()
+            panel = screen.query_one("#agent-panel")
+            self.assertTrue(panel.display)
 
-    async def test_escape_returns_none(self):
-        self.assertIsNone(await self._run(["escape"]))
+    async def test_pending_agent_shown_as_checking(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("pending")},
+        )
+        app = App()
+        async with app.run_test(size=(100, 30)) as pilot:
+            screen = LaunchOptionsScreen(ctx)
+            app.push_screen(screen)
+            await pilot.pause()
+            # pending agent is still visible (not filtered out — only missing/timeout hide it)
+            self.assertIn("claude", screen._visible_agents)
+            # the agent label in the ListView includes "(checking…)"
+            agent_list = screen.query_one("#agent-list")
+            labels = [str(item.query_one("Static").content) for item in agent_list.children]
+            self.assertTrue(any("checking" in lbl for lbl in labels), f"no checking in {labels}")
+        # mode panel still works when agent is pending
+        result = await self._run_screen(ctx, ["enter"])
+        self.assertIsNotNone(result)
+
+    async def test_missing_agent_hidden(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
+        from textual.widgets import ListView
+        ctx = _mk_ctx(
+            enabled_agents=("claude", "codex"),
+            default_agent="claude",
+            agent_availability={
+                "claude": self._make_avail("ok"),
+                "codex": self._make_avail("missing"),
+            },
+        )
+        app = App()
+        async with app.run_test(size=(100, 30)) as pilot:
+            screen = LaunchOptionsScreen(ctx)
+            app.push_screen(screen)
+            await pilot.pause()
+            # codex is missing → not in visible_agents
+            self.assertNotIn("codex", screen._visible_agents)
+            self.assertIn("claude", screen._visible_agents)
+
+    async def test_dismiss_returns_agent_and_mode(self) -> None:
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("ok")},
+        )
+        # Single agent → mode panel active; enter at index 0 = "normal"
+        result = await self._run_screen(ctx, ["enter"])
+        self.assertEqual(result, ("claude", "normal"))
+
+    async def test_escape_returns_none(self) -> None:
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("ok")},
+        )
+        result = await self._run_screen(ctx, ["escape"])
+        self.assertIsNone(result)
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
