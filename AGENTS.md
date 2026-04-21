@@ -109,7 +109,7 @@ python3 -m py_compile bin/ccw \
   lib/ccw_tui/screens/new_project.py lib/ccw_tui/screens/git_profile.py \
   lib/ccw_tui/screens/existing.py lib/ccw_tui/screens/settings.py \
   lib/ccw_tui/screens/git_remotes.py \
-  lib/ccw_settings.py \
+  lib/ccw_settings.py lib/ccw_agents.py \
   lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
   lib/ccw_git_backend_token.py lib/ccw_git_create.py \
   tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
@@ -117,6 +117,7 @@ python3 -m py_compile bin/ccw \
   tests/test_ccw_tui_bindings.py tests/test_ccw_tui_logging.py \
   tests/test_ccw_git_profiles.py tests/test_ccw_git_backend_gh.py \
   tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
+  tests/test_ccw_agents.py \
   install/install_ccw.py install/render_ccw_config.py
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
