@@ -198,13 +198,19 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
 
         agent_list = self.query_one("#agent-list", ListView)
         await agent_list.clear()
+        new_items = []
         for idx, aid in enumerate(visible, start=1):
             avail_obj = avail.get(aid)
             status = getattr(avail_obj, "status", None) if avail_obj else None
             label = f"{idx} {aid}"
             if status == "pending":
                 label += "  (checking…)"
-            agent_list.append(ListItem(Static(label), id=f"agent-{aid}"))
+            new_items.append(ListItem(Static(label), id=f"agent-{aid}"))
+        if new_items:
+            # extend() returns AwaitMount — must be awaited before we set
+            # .index on the list, otherwise the index points into a
+            # still-empty DOM and the ListView renders as an empty box.
+            await agent_list.extend(new_items)
 
         # Clamp current selection to the new list.
         if self._current_agent not in visible:

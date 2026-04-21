@@ -31,7 +31,17 @@ from .screens.main import MainScreen
 
 
 class _AgentAvailabilityUpdated(Message):
-    """Posted (app-level) when the background probe finishes or updates."""
+    """Posted (app-level) when the background probe finishes or updates.
+
+    ``bubble = False`` is critical: the app-level handler re-posts this
+    message to the active top screen so open modals can refresh, but if
+    the message bubbled back up from the screen to the app, the app
+    would re-dispatch again, creating an infinite loop (observed as
+    a visibly flashing agent list with the selection resetting each
+    tick).
+    """
+
+    bubble = False
 
 
 class CcwApp(App):
