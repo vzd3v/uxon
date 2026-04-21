@@ -20,6 +20,8 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
 
+LEGACY_CLAUDE_PREFIX = "cc-"
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "runtime_user": "",
     "default_launch_mode": "caller",
@@ -32,8 +34,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "/srv/repos",
         "/srv/work/repos",
     ],
-    "session_prefix": "cc-",
-    "default_claude_args": [],
+    "session_prefix": "ccw-",
+    "agents": {
+        "enabled": ["claude"],
+        "default": "claude",
+        "claude": {"default_args": []},
+        "codex": {"default_args": []},
+        "cursor": {"default_args": []},
+    },
     "new_project_root": "/srv/repos",
     "repeat_noninteractive_mode": "fail",
     "tmux_socket_template": "/tmp/ccw-{user}.sock",
@@ -91,7 +99,9 @@ class Config:
     session_users: list[str]
     allowed_roots: list[str]
     session_prefix: str
-    default_claude_args: list[str]
+    enabled_agents: tuple[str, ...]
+    default_agent: str
+    agent_default_args: dict[str, tuple[str, ...]]
     new_project_root: str
     repeat_noninteractive_mode: str
     tmux_socket_template: str
@@ -123,13 +133,20 @@ class ParsedArgs:
     worktree_branch: str | None = None
     repeat_mode: str | None = None
     dry_run: bool = False
-    dsp: bool = False
+    dsp: bool = False  # transitional: removed in Task 5; kept for _plan_tui_* callers
     force: bool = False
     all_users: bool = False
-    claude_args: list[str] | None = None
+    agent: str | None = None                    # None = use cfg.default_agent
+    permission_mode: str = "normal"             # "normal" | "auto" | "yolo"
+    agent_args: list[str] | None = None
     git_remote: str | None = None  # profile name, or "default", or None
     no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
     git_visibility: str | None = None  # "private" | "public" | None (use profile default)
+
+    # transitional: remove in Task 5
+    @property
+    def claude_args(self) -> list[str]:
+        return self.agent_args or []
 
 
 def eprint(msg: str) -> None:
@@ -294,6 +311,8 @@ def load_config(cwd: str) -> Config:
     import ccw_git_profiles
 
     merged, _ = resolve_config_layers(cwd)
+    # Load raw repo data (before merge with defaults) to detect legacy flat keys.
+    _raw_repo = load_toml(repo_config_path())
     runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
     default_launch_mode = str(merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])).strip()
     if default_launch_mode not in {"fixed", "caller"}:
@@ -315,7 +334,45 @@ def load_config(cwd: str) -> Config:
     enable_all_users_list = bool(merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"]))
     session_prefix = str(merged.get("session_prefix", DEFAULT_CONFIG["session_prefix"]))
     allowed_roots = [canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
-    default_claude_args = [str(x) for x in merged.get("default_claude_args", [])]
+
+    VALID_AGENTS = ("claude", "codex", "cursor")
+
+    # Hard-reject legacy flat key with a clear migration message.
+    # Check raw repo config (not merged with defaults) so that the presence
+    # of agents in DEFAULT_CONFIG doesn't mask a flat-key migration failure.
+    if "default_claude_args" in _raw_repo:
+        fail(
+            "config key 'default_claude_args' was replaced by "
+            "'[agents.claude] default_args = [...]'. "
+            "Update config/config.toml (see docs/superpowers/specs/"
+            "2026-04-21-multi-agent-support-design.md)."
+        )
+
+    agents_tbl = merged.get("agents", {})
+    if not isinstance(agents_tbl, dict):
+        fail("'agents' must be a TOML table")
+    enabled_raw = agents_tbl.get("enabled", ["claude"])
+    if not isinstance(enabled_raw, list) or not enabled_raw:
+        fail("'agents.enabled' must be a non-empty list")
+    enabled = tuple(str(x) for x in enabled_raw)
+    for aid in enabled:
+        if aid not in VALID_AGENTS:
+            fail(f"unknown agent id in agents.enabled: {aid!r} "
+                 f"(expected one of {VALID_AGENTS})")
+    default_agent = str(agents_tbl.get("default", enabled[0]))
+    if default_agent not in enabled:
+        fail(f"agents.default={default_agent!r} is not in agents.enabled={list(enabled)}")
+
+    agent_default_args: dict[str, tuple[str, ...]] = {}
+    for aid in VALID_AGENTS:
+        sub = agents_tbl.get(aid, {})
+        if not isinstance(sub, dict):
+            fail(f"'agents.{aid}' must be a TOML table")
+        args = sub.get("default_args", [])
+        if not isinstance(args, list):
+            fail(f"'agents.{aid}.default_args' must be a list")
+        agent_default_args[aid] = tuple(str(x) for x in args)
+
     new_project_root = canonical(str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"])))
     repeat_noninteractive_mode = validate_repeat_mode(
         str(merged.get("repeat_noninteractive_mode", DEFAULT_CONFIG["repeat_noninteractive_mode"])),
@@ -351,7 +408,9 @@ def load_config(cwd: str) -> Config:
         session_users=session_users,
         allowed_roots=allowed_roots,
         session_prefix=session_prefix,
-        default_claude_args=default_claude_args,
+        enabled_agents=enabled,
+        default_agent=default_agent,
+        agent_default_args=agent_default_args,
         new_project_root=new_project_root,
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,
@@ -998,7 +1057,7 @@ def parse_list_args(argv: list[str]) -> ParsedArgs:
 
 
 def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -> ParsedArgs:
-    parsed = ParsedArgs(action=action, target_id=target_id, claude_args=[])
+    parsed = ParsedArgs(action=action, target_id=target_id, agent_args=[])
     i = 0
     while i < len(argv):
         token = argv[i]
@@ -1050,7 +1109,7 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
                 fail(f"{token} must be 'private' or 'public', got {value!r}")
             parsed.git_visibility = value
         else:
-            parsed.claude_args.append(token)
+            parsed.agent_args.append(token)
         i += 1
     return parsed
 
@@ -1255,7 +1314,8 @@ def _build_tmux_launch_request(
     (:func:`launch_in_tmux`) and the TUI fork-and-wait path reuse it.
     """
     LaunchRequest = _tui_launch_request_cls()
-    final_cmd = ["claude"] + cfg.default_claude_args + (args.claude_args or [])
+    # Transitional bridge: fully rewritten in Task 5
+    final_cmd = ["claude"] + list(cfg.agent_default_args.get("claude", ())) + (args.agent_args or [])
     if branch:
         final_cmd += ["-w", branch]
     if args.dsp:
@@ -1811,7 +1871,7 @@ def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     session_stem = session_stem_for_path(target_dir)
     sessions = collect_sessions([launch_user], cfg)
     session = allocate_session_name(cfg.session_prefix, session_stem, target_dir, sessions)
-    args = ParsedArgs(action="run", dsp=dsp, claude_args=[])
+    args = ParsedArgs(action="run", dsp=dsp, agent_args=[])
     return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
 
 
@@ -1878,7 +1938,7 @@ def _plan_tui_create_new(
         action="new",
         target_id=name,
         dsp=dsp,
-        claude_args=[],
+        agent_args=[],
         git_remote=git_profile or None,
         repeat_mode="attach",  # TUI cannot prompt stdin inside blessed context
     )
@@ -1907,7 +1967,7 @@ def _plan_tui_open_existing(
         action="new",
         target_id=name,
         dsp=dsp,
-        claude_args=[],
+        agent_args=[],
         git_remote=None,  # Locked: open-existing never creates a git remote.
         repeat_mode="attach",
     )
