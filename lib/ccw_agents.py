@@ -94,7 +94,15 @@ def _current_user() -> str:
 
 def _build_probe_cmd(binary: str, launch_user: str | None) -> list[str]:
     if launch_user and launch_user != _current_user():
-        return ["sudo", "-n", "-u", launch_user, "--", binary, "--version"]
+        # Match the login-env semantics that ``command_prefix_for_user``
+        # in ``bin/ccw`` uses for the actual launch (``sudo -iu``). The
+        # ``-i`` loads the target user's login shell so ``PATH`` picks
+        # up npm-global / nvm / ``~/.local/bin`` entries where agents
+        # like ``claude`` and ``cursor-agent`` are typically installed.
+        # Without ``-i``, sudo's ``secure_path`` hides them and the
+        # probe reports "missing" for agents that the launch can
+        # actually run.
+        return ["sudo", "-niu", launch_user, "--", binary, "--version"]
     return [binary, "--version"]
 
 
