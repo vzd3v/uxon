@@ -115,9 +115,16 @@ class CcwApp(App):
         a silent no-op.
         """
         # Re-dispatch to the active top screen — app-level messages do
-        # not bubble down by default.
+        # not bubble down by default. Skip when the top is already the
+        # unavailable-agents popup (re-dispatching to ourselves is a
+        # no-op) or missing; otherwise an active modal like
+        # LaunchOptionsScreen gets a chance to refresh.
         top = self.screen_stack[-1] if self.screen_stack else None
-        if top is not None and top is not self:
+        if (
+            top is not None
+            and top is not self
+            and not isinstance(top, AgentsUnavailableScreen)
+        ):
             top.post_message(_AgentAvailabilityUpdated())
 
         if self._agents_popup_shown:

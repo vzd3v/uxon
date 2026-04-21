@@ -63,7 +63,7 @@ class AgentsUnavailableScreen(ModalScreen[None]):
             yield Static("No agents installed", classes="title")
             yield Static(
                 "ccw could not find any of the configured agents on PATH.\n"
-                "Install at least one, then quit (q) and restart ccw:",
+                "Install at least one, dismiss this message, then restart ccw:",
             )
             yield Static(self.body_text, id="agents-unavailable-body")
             yield Static(
