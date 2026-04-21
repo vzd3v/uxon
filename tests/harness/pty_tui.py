@@ -30,6 +30,13 @@ _ANSI_CSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 _ANSI_CHARSET = re.compile(rb"\x1b\([AB0]")
 _ANSI_MODE = re.compile(rb"\x1b[=>]")
 
+# Adaptive-drain idle threshold (milliseconds). After the first data byte
+# in any drain window, `_drain` returns as soon as the pty has been quiet
+# for this many ms instead of sleeping the full budget. Before the first
+# byte, the full remaining budget is used so slow-starting processes
+# (textual import takes 2–3 s) are not cut short.
+_IDLE_MS = 250
+
 
 def strip_ansi(data: bytes) -> str:
     """Remove ANSI escape sequences and decode to text."""
@@ -72,7 +79,7 @@ def run_pty(
     env: "dict[str, str] | None" = None,
     rows: int = 40,
     cols: int = 140,
-    initial_drain: float = 1.5,
+    initial_drain: float = 6.0,
     per_key_drain: float = 0.4,
     final_drain: float = 0.8,
     timeout: float = 30.0,
@@ -82,6 +89,13 @@ def run_pty(
     ``keys`` may be either:
       * a list of ``bytes`` — each is sent with ``per_key_drain`` pause after,
       * or a list of ``(delay_seconds, bytes)`` tuples for fine-grained control.
+
+    ``initial_drain``, ``per_key_drain``, and ``final_drain`` are **upper
+    bounds**, not fixed sleeps. Each drain waits for the full remaining budget
+    before the first byte arrives (so slow-starting processes like textual,
+    which can take 2–3 s to import, are not cut short). Once data has started
+    flowing, the drain exits as soon as the pty has been idle for ``_IDLE_MS``
+    milliseconds (default 250). All values cap the worst-case wait.
 
     Returns a :class:`PtyTrace` with the combined raw output, per-frame
     snapshots, and the child's exit code.
@@ -112,23 +126,36 @@ def run_pty(
         pass
 
     trace = PtyTrace()
-    deadline = time.monotonic() + timeout
+    deadline_outer = time.monotonic() + timeout
 
-    def _drain(secs: float) -> None:
-        end = min(time.monotonic() + secs, deadline)
-        while time.monotonic() < end:
-            remaining = end - time.monotonic()
-            if remaining <= 0:
-                break
-            rlist, _, _ = select.select([fd], [], [], min(0.2, remaining))
-            if fd in rlist:
-                try:
-                    chunk = os.read(fd, 8192)
-                except OSError:
-                    return
-                if not chunk:
-                    return
-                trace.raw += chunk
+    def _drain(max_secs: float) -> None:
+        idle = _IDLE_MS / 1000.0
+        deadline = min(time.monotonic() + max_secs, deadline_outer)
+        got_data = False
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if got_data:
+                # After first data: apply idle window so we exit quickly
+                # once the pty goes quiet instead of sleeping the full budget.
+                timeout_for_select = min(idle, remaining)
+            else:
+                # Before any data: wait up to the full remaining budget so
+                # slow-starting processes (e.g. textual import) are not cut
+                # short before the TUI has produced any output.
+                timeout_for_select = remaining
+            rlist, _, _ = select.select([fd], [], [], timeout_for_select)
+            if not rlist:
+                # select timed out — either truly idle for `idle` (after
+                # data was seen), or hit `remaining` near deadline. Stop.
+                return
+            try:
+                chunk = os.read(fd, 8192)
+            except OSError:
+                return
+            if not chunk:
+                return
+            got_data = True
+            trace.raw += chunk
 
     try:
         _drain(initial_drain)
