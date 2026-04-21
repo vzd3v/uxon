@@ -5,10 +5,10 @@ Keep this file tight; don't duplicate README content — link to it instead.
 
 ## Scope
 
-`ccw` is a multi-user `tmux` wrapper for `claude` on a shared VPS. User-facing
-behavior, commands, flags, TUI, configuration, and rollout docs all live in
-[README.md](README.md). Deployment topology notes live in
-[docs/deployment.md](docs/deployment.md).
+`ccw` is a multi-user `tmux` wrapper for AI coding agents (`claude`, `codex`,
+`cursor-agent`) on a shared VPS. User-facing behavior, commands, flags, TUI,
+configuration, and rollout docs all live in [README.md](README.md). Deployment
+topology notes live in [docs/deployment.md](docs/deployment.md).
 
 ## Code layout
 
@@ -42,6 +42,9 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 - `lib/ccw_git_create.py` — orchestrator for the git-remote-on-new-project
   pipeline. Dispatches to the matching backend, drives local git under
   launch_user, raises `CreationError(stage=...)` on failure.
+- `lib/ccw_agents.py` — pure-data `AgentSpec` catalog (`CATALOG`), per-agent
+  `PermissionMode` definitions, `AgentAvailability`, and the parallel
+  `probe_agents(...)` availability probe. No textual, no TUI.
 - `install/` — installer and config renderer.
 - `tests/` — `unittest`, discovered via `python3 -m unittest`.
 - `config/` — host-local, gitignored. Source of truth for a running host.
@@ -63,8 +66,10 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
 
 ## Hard rules
 
-- **No `claude` invocations added outside of `launch_in_tmux`.** `ccw` is the
-  single place that builds the `claude` command line.
+- **No agent invocations added outside the launch builder
+  (`_build_tmux_launch_request`).** `ccw` is the single place that builds
+  agent command lines. Adding direct agent exec calls anywhere else is
+  forbidden — add them to the launch builder, which consults `ccw_agents.CATALOG`.
 - **Textual is imported lazily inside ``do_interactive``.** Non-TUI
   subcommands (``ccw list``, ``ccw doctor``, ``ccw version``) never
   import ``ccw_tui`` and therefore do not require textual.
@@ -83,8 +88,12 @@ behavior, commands, flags, TUI, configuration, and rollout docs all live in
   `repeat_guardrail_for_legacy_socket`).
 - **`--dsp` is the canonical short form.** `--dap`, `-dap`, `-dsp` are legacy
   aliases — keep them accepted, don't add new ones.
-- **Session naming is stable.** `cc-<stem>` / `cc-<stem>-N`. Changing the
-  scheme breaks every operator's muscle memory and existing sessions.
+- **Session naming is stable.** New sessions: `ccw-<stem>@<agent>` /
+  `ccw-<stem>@<agent>-N` (index after the agent suffix). Legacy `cc-<stem>` /
+  `cc-<stem>-N` sessions are read-only as `claude`; `ccw` never creates new
+  `cc-*` sessions. The canonical prefix for new sessions is `ccw-` (hardcoded).
+  Do not change this scheme without updating `parse_session_name` and
+  `candidate_session_name` in unison.
 - **Passwordless-sudo detection must stay fast.** `detect_passwordless_sudo`
   has a 0.5 s timeout; don't add probes that can exceed it.
 

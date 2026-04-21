@@ -40,18 +40,19 @@ Short form and long form are equivalent unless noted.
 - With a TTY: opens the interactive TUI.
 - Without a TTY: prints usage and exits.
 
-### `ccw run [-w <branch>] [--dry-run] [--dsp] [claude-flags...]`
-Start `claude` in the current directory.
-- `-w <branch>`: run inside an existing git worktree branch at cwd.
+### `ccw run [-w <branch>] [--dry-run] [--agent <id>] [--auto] [--dsp] [agent-flags...]`
+Start an agent in the current directory.
+- `--agent claude|codex|cursor`: choose which agent to launch (default: `agents.default` from config).
+- `--auto`: select the agent's "auto" permission mode (claude: `--permission-mode auto`; codex: `--full-auto`). Not supported by `cursor`.
+- `--dsp`: select the agent's "yolo" permission mode (`--dangerously-skip-permissions` for claude, `--dangerously-bypass-approvals-and-sandbox` for codex, `--yolo` for cursor). Legacy aliases: `--dap`, `-dap`, `-dsp`.
+- `--auto` and `--dsp` are mutually exclusive.
+- `-w <branch>`: run inside an existing git worktree branch at cwd (claude only; errors for other agents).
 - `--dry-run`: print the tmux command instead of executing.
-- `--dsp`: pass `--dangerously-skip-permissions` to `claude`
-  (legacy aliases: `--dap`, `-dap`, `-dsp`).
-- Any unknown flag is forwarded to `claude`.
+- Any unknown flag is forwarded to the selected agent binary.
 
-### `ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp] [--git-remote <profile>|default | --no-git] [--git-visibility private|public] [claude-flags...]`
+### `ccw new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--agent <id>] [--auto] [--dsp] [--git-remote <profile>|default | --no-git] [--git-visibility private|public] [agent-flags...]`
 Short form: `ccw -n <name> ...`.
-- Without `-w`: creates (or reuses) `<new_project_root>/<name>` and starts
-  `claude` there.
+- Without `-w`: creates (or reuses) `<new_project_root>/<name>` and starts the agent there.
 - With `-w <branch>`: uses the git repo inside `<new_project_root>/<name>`
   (the directory must exist and be a git repo).
 - `--attach-existing` / `--new-session`: bypass the repeat prompt (see
@@ -141,12 +142,22 @@ the process with tmux, so detach returns to the shell.
 
 ## Session naming
 
-- Plain: `cc-<slug(dirname)>`
-- Worktree: `cc-<slug(repo)>-<slug(branch)>` (collapses to `cc-<repo>` when
-  slugs match)
-- Parallels: suffix `-2`, `-3`, … auto-allocated on demand
+New sessions follow the form `ccw-<stem>@<agent>`:
 
-The prefix `cc-` is configurable via `session_prefix`.
+- Plain: `ccw-<slug(dirname)>@<agent>` (e.g. `ccw-myproject@claude`)
+- Worktree: `ccw-<slug(repo)>-<slug(branch)>@<agent>` (e.g. `ccw-myrepo-feature-x@cursor`)
+- Parallels: suffix `-2`, `-3`, … appended **after** the agent (e.g. `ccw-myproject@codex-2`)
+
+The prefix `ccw-` is hardcoded for new sessions. Legacy `cc-<stem>` / `cc-<stem>-N` sessions
+(from before 2026-04-21) are still recognized as read-only claude sessions — they appear in
+`ccw list`, can be attached/killed, but `ccw` will never create new `cc-*` sessions.
+
+Identifier resolution (for `ccw attach`, `ccw kill`, etc.) accepts:
+- Full name: `ccw-myproject@codex`
+- Without prefix: `myproject@codex`
+- Bare stem: `myproject` (succeeds if exactly one session matches across all agents; errors with candidates if ambiguous)
+- Legacy: `cc-myproject`
+- Active pane PID
 
 ---
 
@@ -370,8 +381,12 @@ Two layers, merged in order (later wins):
 | `enable_all_users_list` | bool | `false` | Enables `list --all-users`. |
 | `allowed_roots` | array | (see source) | Dirs `ccw` is allowed to run in. |
 | `new_project_root` | string | `/srv/repos` | Base dir for `ccw new <name>`. |
-| `session_prefix` | string | `"cc-"` | Tmux session name prefix. |
-| `default_claude_args` | array | `[]` | Prepended to every `claude` invocation. |
+| `session_prefix` | string | `"ccw-"` | Tmux session name prefix (hardcoded for new sessions). |
+| `agents.enabled` | array | `["claude"]` | Ordered list of enabled agent ids (`claude`, `codex`, `cursor`). |
+| `agents.default` | string | `"claude"` | Default agent when `--agent` is not passed. Must be in `agents.enabled`. |
+| `agents.claude.default_args` | array | `[]` | Flags prepended to every claude invocation. |
+| `agents.codex.default_args` | array | `[]` | Flags prepended to every codex invocation. |
+| `agents.cursor.default_args` | array | `[]` | Flags prepended to every cursor-agent invocation. |
 | `tmux_socket_template` | string | `/tmp/ccw-{user}.sock` | Per-user socket path. Placeholders: `{user}`, `{uid}`. |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback for repeat prompt. |
 | `git_create_enabled` | bool | `false` | Master switch for the [git remote on new project](#git-remote-on-new-project) flow. |
@@ -465,6 +480,61 @@ python3 install/render_ccw_config.py \
   --config-json examples/ccw-config.json \
   --output config/config.toml
 ```
+
+---
+
+## Supported agents
+
+`ccw` can launch three terminal AI agents. Which agents are available on a given host is declared in
+`config/config.toml` under `[agents]`.
+
+### Agent catalog
+
+| Agent id | Binary | `--auto` mode | `--dsp` (yolo) mode | Install |
+|----------|--------|---------------|---------------------|---------|
+| `claude` | `claude` | `--permission-mode auto` | `--dangerously-skip-permissions` | see https://docs.claude.com/claude-code |
+| `codex` | `codex` | `--full-auto` | `--dangerously-bypass-approvals-and-sandbox` | `npm i -g @openai/codex` |
+| `cursor` | `cursor-agent` | (not supported) | `--yolo` | `curl https://cursor.com/install -fsSL \| bash` |
+
+### Example config
+
+```toml
+[agents]
+enabled = ["claude", "cursor"]   # codex not installed on this host
+default = "claude"
+
+[agents.claude]
+default_args = []
+
+[agents.codex]
+default_args = []
+
+[agents.cursor]
+default_args = []
+```
+
+### CLI cheat sheet
+
+```bash
+# Use the default agent (from agents.default):
+ccw run
+ccw new myproject
+
+# Explicit agent:
+ccw new myproject --agent cursor
+ccw run --agent codex --auto   # codex in full-auto mode
+
+# Permission modes:
+ccw run                        # normal (default)
+ccw run --auto                 # auto (claude/codex only)
+ccw run --dsp                  # yolo/dangerously-skip-permissions
+```
+
+### Notes
+
+- `cursor` does not have an `--auto` permission mode. Passing `--auto` with cursor (explicitly or as the default agent) is an error.
+- `-w <branch>` (worktree) is claude-only. Using it with codex or cursor is an error.
+- `ccw doctor` probes each enabled agent and prints its path, version, and status.
 
 ---
 

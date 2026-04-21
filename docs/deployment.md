@@ -47,6 +47,35 @@ Recommended rollout defaults:
 - keep `repeat_noninteractive_mode = "fail"` unless the host explicitly wants unattended attach/new
 - keep `tmux_socket_template = "/tmp/ccw-{user}.sock"` unless the host needs a different absolute socket path
 
+### Multi-agent config schema (2026-04-21)
+
+The flat `default_claude_args` key is **removed**. Config now uses nested tables:
+
+```toml
+[agents]
+enabled = ["claude", "cursor"]
+default = "claude"
+
+[agents.claude]
+default_args = []
+
+[agents.codex]
+default_args = []
+
+[agents.cursor]
+default_args = []
+```
+
+**Manual migration required per host.** No automatic migration code runs.
+Steps:
+1. Edit `config/config.toml` on each host and replace the flat
+   `default_claude_args = [...]` line with the nested `[agents]` tables above.
+2. Include only agents that are installed on that host in `enabled`.
+3. Run `ccw doctor` to verify the config loads and all enabled agents probe OK.
+
+If the old flat key is still present when `ccw` loads, it will fail with a
+clear error message pointing here.
+
 ### Git remote profiles (optional)
 `git_create_enabled`, `default_git_remote_profile`, and
 `[[git_remote_profiles]]` are **hand-edited** in `config.toml` on the host —
