@@ -26,6 +26,7 @@ jobs:
           python3 -m py_compile bin/ccw \
             lib/ccw_tui/__init__.py \
             lib/ccw_tui/app.py lib/ccw_tui/context.py \
+            lib/ccw_tui/state.py \
             lib/ccw_tui/events.py lib/ccw_tui/launch.py \
             lib/ccw_tui/hints.py \
             lib/ccw_tui/widgets/__init__.py \
@@ -34,20 +35,25 @@ jobs:
             lib/ccw_tui/screens/__init__.py \
             lib/ccw_tui/screens/main.py \
             lib/ccw_tui/screens/confirm.py \
-            lib/ccw_tui/screens/permissions.py \
+            lib/ccw_tui/screens/launch_options.py \
             lib/ccw_tui/screens/new_project.py \
             lib/ccw_tui/screens/git_profile.py \
             lib/ccw_tui/screens/existing.py \
             lib/ccw_tui/screens/settings.py \
             lib/ccw_tui/screens/git_remotes.py \
+            lib/ccw_tui/screens/agents_unavailable.py \
             lib/ccw_settings.py \
+            lib/ccw_agents.py \
             lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
             lib/ccw_git_backend_token.py lib/ccw_git_create.py \
+            tests/harness/__init__.py tests/harness/pty_tui.py \
+            tests/harness/textual_scenarios.py \
             tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
             tests/test_ccw_tui_screens.py tests/test_ccw_tui_widgets_textual.py \
             tests/test_ccw_tui_bindings.py tests/test_ccw_tui_logging.py \
             tests/test_ccw_git_profiles.py tests/test_ccw_git_backend_gh.py \
             tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
+            tests/test_ccw_agents.py tests/test_ccw_tui_agents_unavailable.py \
             install/install_ccw.py install/render_ccw_config.py
 
       - name: Run unit tests
