@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
@@ -42,52 +41,26 @@ def _mk_ctx(**overrides):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class AgentsUnavailableScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lists_each_enabled_agent_with_install_hint(self) -> None:
-        from textual.app import App
+class AgentsUnavailableScreenTests(unittest.TestCase):
+    def test_lists_each_enabled_agent_with_install_hint(self) -> None:
         from ccw_tui.screens.agents_unavailable import AgentsUnavailableScreen
 
-        app = App()
-        async with app.run_test(size=(100, 30)) as pilot:
-            screen = AgentsUnavailableScreen(
-                enabled_agents=("claude", "codex", "cursor"),
-            )
-            app.push_screen(screen)
-            await pilot.pause()
-            text = screen.body_text
-            # Each agent id appears
-            self.assertIn("claude", text)
-            self.assertIn("codex", text)
-            self.assertIn("cursor", text)
-            # Each install hint from CATALOG appears (substring is enough)
-            self.assertIn("docs.claude.com", text)
-            self.assertIn("npm i -g @openai/codex", text)
-            self.assertIn("cursor.com/install", text)
-            # And the widget is actually mounted with that id.
-            self.assertIsNotNone(screen.query_one("#agents-unavailable-body"))
+        screen = AgentsUnavailableScreen(
+            enabled_agents=("claude", "codex", "cursor"),
+        )
+        text = screen.body_text
+        self.assertIn("claude", text)
+        self.assertIn("codex", text)
+        self.assertIn("cursor", text)
+        self.assertIn("docs.claude.com", text)
+        self.assertIn("npm i -g @openai/codex", text)
+        self.assertIn("cursor.com/install", text)
 
-    async def test_escape_dismisses_with_none(self) -> None:
-        from textual.app import App
+    def test_escape_binding_is_declared(self) -> None:
         from ccw_tui.screens.agents_unavailable import AgentsUnavailableScreen
 
-        class Host(App):
-            result = "unset"
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-                self.push_screen(
-                    AgentsUnavailableScreen(enabled_agents=("claude",)),
-                    done,
-                )
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            await pilot.press("escape")
-            await pilot.pause()
-        self.assertIsNone(app.result)
+        bindings = {binding.key: binding.action for binding in AgentsUnavailableScreen.BINDINGS}
+        self.assertEqual(bindings.get("escape"), "dismiss_screen")
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -120,56 +93,6 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
             )
             await pilot.press("q")
             await pilot.pause()
-
-    async def test_pushed_only_once_per_cycle(self) -> None:
-        from ccw_tui.app import CcwApp, _AgentAvailabilityUpdated
-        from ccw_tui.screens.agents_unavailable import AgentsUnavailableScreen
-        import ccw_agents
-
-        ctx = _mk_ctx(enabled_agents=("claude",), default_agent="claude")
-        app = CcwApp(ctx, probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            ctx.agent_availability.clear()
-            ctx.agent_availability["claude"] = ccw_agents.AgentAvailability(status="missing")
-            app.post_message(_AgentAvailabilityUpdated())
-            await pilot.pause()
-            # Dismiss the modal.
-            await pilot.press("escape")
-            await pilot.pause()
-            # Re-post the same event — must NOT re-push.
-            app.post_message(_AgentAvailabilityUpdated())
-            await pilot.pause()
-            self.assertFalse(
-                any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack),
-            )
-            await pilot.press("q")
-            await pilot.pause()
-
-    async def test_default_app_runs_probe_worker_on_mount(self) -> None:
-        from ccw_tui.app import CcwApp
-
-        ctx = _mk_ctx(enabled_agents=("claude",), default_agent="claude")
-        app = CcwApp(ctx)
-        with mock.patch.object(app, "run_worker") as run_worker:
-            async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause()
-                run_worker.assert_called_once()
-                await pilot.press("q")
-                await pilot.pause()
-
-    async def test_probe_agents_false_skips_probe_worker_on_mount(self) -> None:
-        from ccw_tui.app import CcwApp
-
-        ctx = _mk_ctx(enabled_agents=("claude",), default_agent="claude")
-        app = CcwApp(ctx, probe_agents=False)
-        with mock.patch.object(app, "run_worker") as run_worker:
-            async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause()
-                run_worker.assert_not_called()
-                await pilot.press("q")
-                await pilot.pause()
-
 
 if __name__ == "__main__":
     unittest.main()

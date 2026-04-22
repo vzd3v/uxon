@@ -5,7 +5,7 @@ pseudo-terminal, writes keystrokes into it, reads back the rendered
 frames, and returns a trace that tests can assert against.
 
 Standard library only — ``pty``, ``os``, ``select``, ``re``, ``time``,
-``struct``, ``fcntl``, ``termios``, ``signal``. No external deps. Tests
+``struct``, ``fcntl``, ``termios``, ``subprocess``. No external deps. Tests
 that use this harness must guard with
 ``@unittest.skipUnless(hasattr(pty, 'fork'), ...)`` so they skip on
 platforms without a working pty (pure-Windows builds).
@@ -17,8 +17,8 @@ import fcntl
 import os
 import re
 import select
-import signal
 import struct
+import subprocess
 import sys
 import termios
 import time
@@ -35,7 +35,7 @@ _ANSI_MODE = re.compile(rb"\x1b[=>]")
 # for this many ms instead of sleeping the full budget. Before the first
 # byte, the full remaining budget is used so slow-starting processes
 # (textual import takes 2–3 s) are not cut short.
-_IDLE_MS = 250
+_IDLE_MS = 100
 
 
 def strip_ansi(data: bytes) -> str:
@@ -95,35 +95,33 @@ def run_pty(
     before the first byte arrives (so slow-starting processes like textual,
     which can take 2–3 s to import, are not cut short). Once data has started
     flowing, the drain exits as soon as the pty has been idle for ``_IDLE_MS``
-    milliseconds (default 250). All values cap the worst-case wait.
+    milliseconds (default 100). All values cap the worst-case wait.
 
     Returns a :class:`PtyTrace` with the combined raw output, per-frame
     snapshots, and the child's exit code.
     """
+    fd, slave_fd = os.openpty()
     try:
-        import pty  # type: ignore[import]
-    except ImportError as exc:  # pragma: no cover — Windows only
-        raise RuntimeError("pty module unavailable on this platform") from exc
-
-    pid, fd = pty.fork()
-    if pid == 0:
-        # Child: set TERM and exec the requested command.
-        if env:
-            for k, v in env.items():
-                os.environ[k] = v
-        os.environ.setdefault("TERM", "xterm-256color")
-        os.environ.setdefault("COLUMNS", str(cols))
-        os.environ.setdefault("LINES", str(rows))
-        try:
-            os.execvp(argv[0], argv)
-        except OSError:
-            os._exit(127)
-
-    # Parent.
-    try:
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     except Exception:
         pass
+
+    child_env = dict(os.environ)
+    if env:
+        child_env.update(env)
+    child_env.setdefault("TERM", "xterm-256color")
+    child_env.setdefault("COLUMNS", str(cols))
+    child_env.setdefault("LINES", str(rows))
+
+    proc = subprocess.Popen(
+        argv,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        env=child_env,
+        close_fds=True,
+    )
+    os.close(slave_fd)
 
     trace = PtyTrace()
     deadline_outer = time.monotonic() + timeout
@@ -176,25 +174,14 @@ def run_pty(
         _drain(final_drain)
         trace.frames.append(trace.plain)
     finally:
-        # Reap the child. First try a clean kill; if it's already gone,
-        # the waitpid below will return quickly.
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
-        try:
-            _, status = os.waitpid(pid, os.WNOHANG)
-            if status == 0:
-                # Still alive; give it a moment, then SIGKILL.
-                time.sleep(0.1)
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
-                _, status = os.waitpid(pid, 0)
-            trace.exit_code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else None
-        except ChildProcessError:
-            trace.exit_code = None
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        trace.exit_code = proc.returncode
         try:
             os.close(fd)
         except OSError:

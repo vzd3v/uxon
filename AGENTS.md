@@ -78,6 +78,21 @@ topology notes live in [docs/deployment.md](docs/deployment.md).
   loops, or any case where isolation is part of the assertion. If adding a
   new unbatched `run_test()`, explain in a comment why it cannot join an
   existing batch.
+
+### TUI test runtime policy
+
+The canonical runtime gate is `python3 -m pytest tests/ -n auto`.
+Sequential Pilot timings are diagnostic only. Keep Textual `Pilot` tests for
+mounting, key routing, `ListView`/`DataTable` event behavior, async workers,
+and one smoke path per feature. Branchy state decisions belong in
+`lib/ccw_tui/state.py` with pure tests in `tests/test_ccw_tui.py`.
+
+Do not add a new `App.run_test()` case when a pure state helper can cover the
+behavior and an existing smoke test already proves the Textual wiring.
+
+The pty integration harness must not emit Python 3.12 `forkpty()` warnings
+under `pytest -n auto`; warnings in the canonical local check are treated as
+test failures to investigate, not harmless noise.
 - `lib/ccw_settings.py` is pure data + TOML I/O. No textual, no TUI.
 - When adding a new screen, drop a module under
   ``lib/ccw_tui/screens/``, declare ``BINDINGS`` there, and wire the

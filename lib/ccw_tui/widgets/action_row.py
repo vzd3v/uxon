@@ -24,6 +24,10 @@ from textual.message import Message
 from textual.widgets import Static
 
 
+def action_row_can_activate(enabled: bool) -> bool:
+    return enabled
+
+
 class ActionRow(Static):
     """A focusable row with a keyboard/mouse-activated payload.
 
@@ -106,14 +110,14 @@ class ActionRow(Static):
     # ── Activation ───────────────────────────────────────────────────
 
     def action_activate(self) -> None:
-        if not self._enabled:
+        if not action_row_can_activate(self._enabled):
             return
         self.post_message(self.Activated(self))
 
     async def _on_click(self, event: events.Click) -> None:  # type: ignore[override]
         event.stop()
         self.focus()
-        if self._enabled:
+        if action_row_can_activate(self._enabled):
             self.post_message(self.Activated(self))
 
 

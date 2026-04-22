@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from .context import (
     ACTION_COUNT,
+    CallbackError,
     TuiContext,
     TuiSession,
     _digit_hinted_indices,
@@ -45,12 +46,41 @@ def should_show_agents_unavailable(
     )
 
 
+def should_start_agent_probe(*, probe_agents: bool, enabled_agents: tuple[str, ...]) -> bool:
+    return probe_agents and bool(enabled_agents)
+
+
+@dataclass(frozen=True)
+class CallbackFailure:
+    message: str
+    severity: str
+
+
+def callback_failure_to_toast(prefix: str, exc: CallbackError) -> CallbackFailure:
+    return CallbackFailure(f"{prefix}: {exc}", "error")
+
+
 @dataclass(frozen=True)
 class LaunchOptionsState:
     visible_agents: tuple[str, ...]
     single_agent: bool
     active_panel: str
     current_agent: str
+
+
+@dataclass(frozen=True)
+class LaunchOptionsUpdate:
+    visible_agents: tuple[str, ...]
+    single_agent: bool
+    active_panel: str
+    current_agent: str
+    dismiss: bool
+
+
+@dataclass(frozen=True)
+class LaunchCommitDecision:
+    action: str
+    mode_id: str | None = None
 
 
 def visible_agent_ids(
@@ -62,6 +92,42 @@ def visible_agent_ids(
         aid for aid in enabled_agents
         if availability.get(aid) is None
         or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
+    )
+
+
+def update_launch_options_after_availability(
+    *,
+    enabled_agents: tuple[str, ...],
+    default_agent: str,
+    availability: Mapping[str, Any],
+    current_agent: str,
+    active_panel: str,
+) -> LaunchOptionsUpdate:
+    visible = visible_agent_ids(
+        enabled_agents=enabled_agents,
+        availability=availability,
+    )
+    if not visible:
+        return LaunchOptionsUpdate(
+            visible_agents=(),
+            single_agent=True,
+            active_panel="mode",
+            current_agent=current_agent or default_agent,
+            dismiss=True,
+        )
+    single = len(visible) <= 1
+    if current_agent in visible:
+        next_agent = current_agent
+    elif default_agent in visible:
+        next_agent = default_agent
+    else:
+        next_agent = visible[0]
+    return LaunchOptionsUpdate(
+        visible_agents=visible,
+        single_agent=single,
+        active_panel="mode" if single else active_panel,
+        current_agent=next_agent,
+        dismiss=False,
     )
 
 
@@ -126,10 +192,42 @@ def launch_mode_id(agent_id: str, mode_index: int) -> str | None:
     return "normal"
 
 
+def launch_commit_decision(
+    *,
+    active_panel: str,
+    current_agent: str,
+    availability: Mapping[str, Any],
+    mode_index: int,
+) -> LaunchCommitDecision:
+    if active_panel == "agent":
+        if agent_is_pending(current_agent, availability):
+            return LaunchCommitDecision("ignore")
+        return LaunchCommitDecision("switch-to-mode")
+    mode_id = launch_mode_id(current_agent, mode_index)
+    if mode_id is None:
+        return LaunchCommitDecision("dismiss")
+    return LaunchCommitDecision("commit", mode_id)
+
+
 def pick_index(rows: list[tuple[str, str]] | tuple[tuple[str, str], ...], index: int) -> str | None:
     if 0 <= index < len(rows):
         return rows[index][0]
     return None
+
+
+def selected_setting_index(*, row: int, has_git_view: bool, entry_count: int) -> int | None:
+    idx = row - 1 if has_git_view else row
+    if has_git_view and row == 0:
+        return None
+    if 0 <= idx < entry_count:
+        return idx
+    return None
+
+
+def resettable_setting_key(entry: Any | None) -> str | None:
+    if entry is None or not getattr(entry, "editable", False):
+        return None
+    return entry.spec.key
 
 
 @dataclass(frozen=True)

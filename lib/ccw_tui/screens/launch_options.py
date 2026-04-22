@@ -23,12 +23,11 @@ from textual.screen import ModalScreen
 from textual.widgets import ListItem, ListView, Static
 
 from ..state import (
-    agent_is_pending,
     agent_list_label,
-    launch_mode_id,
+    launch_commit_decision,
     launch_options_state,
     pick_visible_agent,
-    visible_agent_ids,
+    update_launch_options_after_availability,
 )
 
 
@@ -151,19 +150,22 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         await self._rebuild_mode_list(new_agent)
 
     def action_commit(self) -> None:
-        if self._active_panel == "agent":
-            if agent_is_pending(self._current_agent, self.ctx.agent_availability):
-                return
+        decision = launch_commit_decision(
+            active_panel=self._active_panel,
+            current_agent=self._current_agent,
+            availability=self.ctx.agent_availability,
+            mode_index=(self.query_one("#mode-list", ListView).index or 0),
+        )
+        if decision.action == "ignore":
+            return
+        if decision.action == "switch-to-mode":
             self._active_panel = "mode"
             self._reflect_focus()
             return
-        mode_list = self.query_one("#mode-list", ListView)
-        mode_idx = mode_list.index or 0
-        mode_id = launch_mode_id(self._current_agent, mode_idx)
-        if mode_id is None:
+        if decision.action == "dismiss" or decision.mode_id is None:
             self.dismiss(None)
             return
-        self.dismiss((self._current_agent, mode_id))
+        self.dismiss((self._current_agent, decision.mode_id))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -173,12 +175,17 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         ListView in place. Called on mount-time update and whenever a probe
         result arrives after the screen is already showing."""
         avail = self.ctx.agent_availability
-        visible = list(visible_agent_ids(
+        update = update_launch_options_after_availability(
             enabled_agents=tuple(self.ctx.enabled_agents),
-            availability=self.ctx.agent_availability,
-        ))
+            default_agent=self.ctx.default_agent,
+            availability=avail,
+            current_agent=self._current_agent,
+            active_panel=self._active_panel,
+        )
+        visible = list(update.visible_agents)
         self._visible_agents = visible
-        self._single_agent = len(visible) <= 1
+        self._single_agent = update.single_agent
+        self._active_panel = update.active_panel
 
         agent_panel = self.query_one("#agent-panel", Vertical)
         agent_panel.display = not self._single_agent
@@ -197,19 +204,15 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
             # still-empty DOM and the ListView renders as an empty box.
             await agent_list.extend(new_items)
 
-        if not visible:
-            self._active_panel = "mode"
+        if update.dismiss:
             mode_list = self.query_one("#mode-list", ListView)
             await mode_list.clear()
             self.dismiss(None)
             return
 
-        if self._single_agent:
-            self._active_panel = "mode"
-
         # Clamp current selection to the new list.
-        if self._current_agent not in visible:
-            self._current_agent = visible[0]
+        if self._current_agent != update.current_agent:
+            self._current_agent = update.current_agent
             await self._rebuild_mode_list(self._current_agent)
         if visible:
             try:

@@ -28,7 +28,7 @@ from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
 from .screens.agents_unavailable import AgentsUnavailableScreen
 from .screens.main import MainScreen
-from .state import should_show_agents_unavailable
+from .state import should_show_agents_unavailable, should_start_agent_probe
 
 
 class _AgentAvailabilityUpdated(Message):
@@ -94,7 +94,10 @@ class CcwApp(App):
             self.notify(self.pending_status, severity="error", timeout=6)
         self.pending_status = ""
         # Kick off background agent availability probe.
-        if self.probe_agents and self.ctx.enabled_agents:
+        if should_start_agent_probe(
+            probe_agents=self.probe_agents,
+            enabled_agents=self.ctx.enabled_agents,
+        ):
             self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
 
     def _probe_agents_worker(self) -> None:
@@ -230,4 +233,3 @@ def run(ctx: TuiContext) -> int:
             pending_status = ""
         except CallbackError as exc:
             pending_status = f"Refresh failed: {exc}"
-

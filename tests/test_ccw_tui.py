@@ -29,13 +29,18 @@ from ccw_tui.context import (  # noqa: E402
     build_items,
 )
 from ccw_tui.state import (  # noqa: E402
+    CallbackFailure,
+    LaunchCommitDecision,
     LaunchOptionsState,
+    LaunchOptionsUpdate,
     MainIntent,
     activate_main_index,
     agent_is_pending,
     agent_list_label,
+    callback_failure_to_toast,
     confirm_phrase_matches,
     digit_jump_intent,
+    launch_commit_decision,
     launch_mode_id,
     launch_options_state,
     main_action_intent,
@@ -44,8 +49,12 @@ from ccw_tui.state import (  # noqa: E402
     pick_visible_agent,
     project_name_error,
     project_name_valid,
+    resettable_setting_key,
+    selected_setting_index,
     session_intent,
+    should_start_agent_probe,
     should_show_agents_unavailable,
+    update_launch_options_after_availability,
     visible_agent_ids,
 )
 
@@ -91,6 +100,11 @@ class TuiContextShapeTests(unittest.TestCase):
 
 
 class AgentsUnavailableGateStateTests(unittest.TestCase):
+    def test_probe_starts_only_when_enabled(self) -> None:
+        self.assertTrue(should_start_agent_probe(probe_agents=True, enabled_agents=("claude",)))
+        self.assertFalse(should_start_agent_probe(probe_agents=False, enabled_agents=("claude",)))
+        self.assertFalse(should_start_agent_probe(probe_agents=True, enabled_agents=()))
+
     def test_gate_false_when_already_shown(self) -> None:
         result = should_show_agents_unavailable(
             enabled_agents=("claude",),
@@ -214,6 +228,89 @@ class LaunchOptionsStateTests(unittest.TestCase):
         self.assertEqual(launch_mode_id("cursor", 99), "normal")
         self.assertEqual(launch_mode_id("nosuch", 0), None)
 
+    def test_launch_update_all_missing_dismisses(self) -> None:
+        update = update_launch_options_after_availability(
+            enabled_agents=("claude", "codex"),
+            default_agent="claude",
+            availability={
+                "claude": self._avail("missing"),
+                "codex": self._avail("timeout"),
+            },
+            current_agent="claude",
+            active_panel="agent",
+        )
+        self.assertEqual(
+            update,
+            LaunchOptionsUpdate(
+                visible_agents=(),
+                single_agent=True,
+                active_panel="mode",
+                current_agent="claude",
+                dismiss=True,
+            ),
+        )
+
+    def test_launch_update_two_to_one_switches_to_mode_panel(self) -> None:
+        update = update_launch_options_after_availability(
+            enabled_agents=("claude", "cursor"),
+            default_agent="claude",
+            availability={
+                "claude": self._avail("missing"),
+                "cursor": self._avail("ok"),
+            },
+            current_agent="claude",
+            active_panel="agent",
+        )
+        self.assertEqual(update.visible_agents, ("cursor",))
+        self.assertTrue(update.single_agent)
+        self.assertEqual(update.active_panel, "mode")
+        self.assertEqual(update.current_agent, "cursor")
+        self.assertFalse(update.dismiss)
+
+    def test_launch_update_pending_agent_stays_visible(self) -> None:
+        update = update_launch_options_after_availability(
+            enabled_agents=("claude", "cursor"),
+            default_agent="claude",
+            availability={
+                "claude": self._avail("pending"),
+                "cursor": self._avail("ok"),
+            },
+            current_agent="claude",
+            active_panel="agent",
+        )
+        self.assertEqual(update.visible_agents, ("claude", "cursor"))
+        self.assertEqual(update.current_agent, "claude")
+        self.assertEqual(update.active_panel, "agent")
+
+    def test_launch_commit_ignores_pending_agent_panel(self) -> None:
+        decision = launch_commit_decision(
+            active_panel="agent",
+            current_agent="claude",
+            availability={"claude": self._avail("pending")},
+            mode_index=0,
+        )
+        self.assertEqual(decision, LaunchCommitDecision("ignore"))
+
+    def test_launch_commit_switches_panel_or_commits_mode(self) -> None:
+        self.assertEqual(
+            launch_commit_decision(
+                active_panel="agent",
+                current_agent="claude",
+                availability={"claude": self._avail("ok")},
+                mode_index=0,
+            ),
+            LaunchCommitDecision("switch-to-mode"),
+        )
+        self.assertEqual(
+            launch_commit_decision(
+                active_panel="mode",
+                current_agent="cursor",
+                availability={},
+                mode_index=1,
+            ),
+            LaunchCommitDecision("commit", "yolo"),
+        )
+
 
 class PickIndexStateTests(unittest.TestCase):
     def test_pick_index_returns_name_for_valid_index(self) -> None:
@@ -240,6 +337,13 @@ class MainScreenIntentStateTests(unittest.TestCase):
     def test_digit_jump_activates_hinted_action(self) -> None:
         ctx = _ctx()
         self.assertEqual(digit_jump_intent(ctx, 1), MainIntent("launch-cwd", index=0))
+
+    def test_refresh_is_screen_wiring_only(self) -> None:
+        self.assertEqual(main_action_intent("action-cwd"), MainIntent("launch-cwd"))
+
+    def test_callback_failure_to_toast(self) -> None:
+        failure = callback_failure_to_toast("Refresh failed", ccw_tui.CallbackError("nope"))
+        self.assertEqual(failure, CallbackFailure("Refresh failed: nope", "error"))
 
     def test_digit_jump_focuses_settings_without_activation(self) -> None:
         ctx = _ctx(has_sudo=True)
@@ -285,6 +389,22 @@ class ModalStateTests(unittest.TestCase):
         self.assertEqual(project_name_error(""), "Name cannot be empty")
         self.assertEqual(project_name_error("a/b"), "Name cannot contain '/'")
         self.assertEqual(project_name_error(".."), "Invalid name")
+
+
+class SettingsStateTests(unittest.TestCase):
+    def test_selected_setting_index_accounts_for_git_view(self) -> None:
+        self.assertIsNone(selected_setting_index(row=0, has_git_view=True, entry_count=2))
+        self.assertEqual(selected_setting_index(row=1, has_git_view=True, entry_count=2), 0)
+        self.assertEqual(selected_setting_index(row=0, has_git_view=False, entry_count=2), 0)
+        self.assertIsNone(selected_setting_index(row=3, has_git_view=True, entry_count=2))
+
+    def test_resettable_setting_key_requires_editable_entry(self) -> None:
+        spec = type("Spec", (), {"key": "session_prefix"})()
+        editable = type("Entry", (), {"spec": spec, "editable": True})()
+        readonly = type("Entry", (), {"spec": spec, "editable": False})()
+        self.assertEqual(resettable_setting_key(editable), "session_prefix")
+        self.assertIsNone(resettable_setting_key(readonly))
+        self.assertIsNone(resettable_setting_key(None))
 
 
 class SegmentsTests(unittest.TestCase):

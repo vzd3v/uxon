@@ -86,13 +86,23 @@ class SessionTable(DataTable):
         "name", "pid", "cpu", "ram", "new", "last", "cmd", "path",
     ]
 
+    @staticmethod
+    def column_labels(*, show_user: bool, show_agent_column: bool) -> tuple[str, ...]:
+        labels = []
+        if show_user:
+            labels.append("USER")
+        labels.append("NAME")
+        if show_agent_column:
+            labels.append("AGENT")
+        labels.extend(("PID", "CPU", "RAM", "NEW", "LAST", "CMD", "PATH"))
+        return tuple(labels)
+
     def on_mount(self) -> None:
-        if self.show_user:
-            self.add_column("USER", key="user")
-        self.add_column("NAME", key="name")
-        if self.show_agent_column:
-            self.add_column("AGENT", key="agent")
-        self.add_columns("PID", "CPU", "RAM", "NEW", "LAST", "CMD", "PATH")
+        for label in self.column_labels(
+            show_user=self.show_user,
+            show_agent_column=self.show_agent_column,
+        ):
+            self.add_column(label)
 
     @staticmethod
     def _agent_label(session: TuiSession) -> str:
@@ -101,14 +111,17 @@ class SessionTable(DataTable):
             return "claude (legacy)"
         return session.agent
 
+    @staticmethod
+    def _display_name(session: TuiSession) -> str:
+        return session.stem if session.stem else session.short
+
     def populate(self, sessions: list[TuiSession]) -> None:
         """Replace all rows with the given sessions. Preserves cursor."""
         prev_cursor = self.cursor_row
         self.clear()
         self._session_index = list(sessions)
         for s in sessions:
-            # Use stem for the name cell; fall back to short if stem not set.
-            display_name = s.stem if s.stem else s.short
+            display_name = self._display_name(s)
             name_text = Text(display_name)
             if s.attached:
                 name_text = Text(display_name, style="bold green")
