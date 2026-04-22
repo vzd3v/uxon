@@ -18,6 +18,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
+from ..state import confirm_phrase_matches
+
 
 class ConfirmYesNo(ModalScreen[bool]):
     """Yes/No confirmation. ``y`` = yes, ``n``/``Esc`` = no."""
@@ -120,4 +122,4 @@ class ConfirmPhrase(ModalScreen[bool]):
         self.dismiss(False)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value.strip() == self.phrase)
+        self.dismiss(confirm_phrase_matches(event.value, self.phrase))

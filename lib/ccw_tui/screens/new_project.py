@@ -16,27 +16,18 @@ from textual.screen import ModalScreen
 from textual.validation import Function, ValidationResult, Validator
 from textual.widgets import Button, Input, Static
 
+from ..state import project_name_error, project_name_valid
+
 
 def _validate_project_name(value: str) -> bool:
-    name = value.strip()
-    if not name:
-        return False
-    if "/" in name:
-        return False
-    if name in (".", ".."):
-        return False
-    return True
+    return project_name_valid(value)
 
 
 class _ProjectNameValidator(Validator):
     def validate(self, value: str) -> ValidationResult:
-        if not value.strip():
-            return self.failure("Name cannot be empty")
-        if "/" in value:
-            return self.failure("Name cannot contain '/'")
-        if value.strip() in (".", ".."):
-            return self.failure("Invalid name")
-        return self.success()
+        if project_name_valid(value):
+            return self.success()
+        return self.failure(project_name_error(value))
 
 
 class NewProjectScreen(ModalScreen["str | None"]):
@@ -120,9 +111,4 @@ class NewProjectScreen(ModalScreen["str | None"]):
             self.dismiss(name)
         else:
             label = self.query_one("#error-label", Static)
-            if not name:
-                label.update("Name cannot be empty")
-            elif "/" in name:
-                label.update("Name cannot contain '/'")
-            else:
-                label.update("Invalid name")
+            label.update(project_name_error(value))

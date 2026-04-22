@@ -22,6 +22,15 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import ListItem, ListView, Static
 
+from ..state import (
+    agent_is_pending,
+    agent_list_label,
+    launch_mode_id,
+    launch_options_state,
+    pick_visible_agent,
+    visible_agent_ids,
+)
+
 
 class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     DEFAULT_CSS = """
@@ -40,29 +49,20 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         Binding("left", "focus_left", "Agent", show=True),
         Binding("right", "focus_right", "Mode", show=True),
         Binding("enter", "commit", "Select", show=True, priority=True),
-        Binding("up", "row_up", "", show=False),
-        Binding("down", "row_down", "", show=False),
     ]
 
     def __init__(self, ctx) -> None:
         super().__init__()
         self.ctx = ctx
-        enabled = list(ctx.enabled_agents)
-        avail = ctx.agent_availability
-        # Visible agents: enabled + not confirmed missing/timeout.
-        self._visible_agents = [
-            aid for aid in enabled
-            if avail.get(aid) is None
-            or getattr(avail.get(aid), "status", "pending") in ("pending", "ok")
-        ]
-        self._single_agent = len(self._visible_agents) <= 1
-        self._active_panel: str = "agent" if not self._single_agent else "mode"
-        initial_agent = (
-            ctx.default_agent
-            if ctx.default_agent in self._visible_agents
-            else (self._visible_agents[0] if self._visible_agents else ctx.default_agent)
+        state = launch_options_state(
+            enabled_agents=tuple(ctx.enabled_agents),
+            default_agent=ctx.default_agent,
+            availability=ctx.agent_availability,
         )
-        self._current_agent = initial_agent
+        self._visible_agents = list(state.visible_agents)
+        self._single_agent = state.single_agent
+        self._active_panel = state.active_panel
+        self._current_agent = state.current_agent
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -70,36 +70,51 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
                 yield Static("Agent", classes="panel-title")
                 items = []
                 for idx, aid in enumerate(self._visible_agents, start=1):
-                    avail_obj = self.ctx.agent_availability.get(aid)
-                    status = getattr(avail_obj, "status", None) if avail_obj else None
-                    label = f"{idx} {aid}"
-                    if status == "pending":
-                        label += "  (checking…)"
-                    items.append(ListItem(Static(label), id=f"agent-{aid}"))
+                    items.append(ListItem(
+                        Static(agent_list_label(idx, aid, self.ctx.agent_availability.get(aid))),
+                        id=f"agent-{aid}",
+                    ))
                 yield ListView(*items, id="agent-list")
             with Vertical(id="mode-panel"):
                 yield Static("Permission mode", classes="panel-title")
                 yield ListView(id="mode-list")
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         if not self._visible_agents:
             # No usable agent — let the app-level gate handle the hint.
             self.dismiss(None)
             return
         agent_panel = self.query_one("#agent-panel", Vertical)
         agent_panel.display = not self._single_agent
-        self._rebuild_mode_list(self._current_agent)
+        # Sync the agent ListView's highlighted index with _current_agent
+        # so the initial Highlighted event (if any) doesn't race the
+        # explicit rebuild below.
+        if not self._single_agent:
+            agent_list = self.query_one("#agent-list", ListView)
+            try:
+                agent_list.index = self._visible_agents.index(self._current_agent)
+            except ValueError:
+                agent_list.index = 0
+        await self._rebuild_mode_list(self._current_agent)
         self._reflect_focus()
 
-    def _rebuild_mode_list(self, agent_id: str) -> None:
+    async def _rebuild_mode_list(self, agent_id: str) -> None:
         import ccw_agents
         mode_list = self.query_one("#mode-list", ListView)
-        mode_list.clear()
+        # clear() and extend() are async — must be awaited, otherwise the
+        # removal of the previous agent's modes can race with mounting the
+        # new ones and the list ends up showing stale entries (e.g. claude's
+        # "auto" remains visible after switching to cursor).
+        await mode_list.clear()
         if agent_id not in ccw_agents.CATALOG:
             return
         spec = ccw_agents.CATALOG[agent_id]
-        for idx, mode in enumerate(spec.permission_modes, start=1):
-            mode_list.append(ListItem(Static(f"{idx} {mode.label}"), id=f"mode-{mode.id}"))
+        items = [
+            ListItem(Static(f"{idx} {mode.label}"), id=f"mode-{mode.id}")
+            for idx, mode in enumerate(spec.permission_modes, start=1)
+        ]
+        if items:
+            await mode_list.extend(items)
         mode_list.index = 0
 
     def _reflect_focus(self) -> None:
@@ -120,72 +135,48 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         self._active_panel = "mode"
         self._reflect_focus()
 
-    def action_row_up(self) -> None:
-        lv = self._focused_list()
-        if lv.index is not None and lv.index > 0:
-            lv.index -= 1
-        self._maybe_rebuild_mode()
-
-    def action_row_down(self) -> None:
-        lv = self._focused_list()
-        if lv.index is not None and lv.index < len(lv.children) - 1:
-            lv.index += 1
-        self._maybe_rebuild_mode()
-
-    def _maybe_rebuild_mode(self) -> None:
-        if self._active_panel != "agent":
+    async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        # Stock ListView consumes arrow keys before any screen-level
+        # binding can see them, so we can't rebuild the mode list from
+        # row_up/row_down actions. Listen to Highlighted instead — it
+        # fires for both keyboard cursor moves and mouse hover/click.
+        lv = event.list_view
+        if lv.id != "agent-list":
             return
-        agent_list = self.query_one("#agent-list", ListView)
-        idx = agent_list.index or 0
-        if idx < len(self._visible_agents):
-            new_agent = self._visible_agents[idx]
-            if new_agent != self._current_agent:
-                self._current_agent = new_agent
-                self._rebuild_mode_list(new_agent)
+        idx = lv.index or 0
+        new_agent = pick_visible_agent(tuple(self._visible_agents), idx, self._current_agent)
+        if new_agent == self._current_agent:
+            return
+        self._current_agent = new_agent
+        await self._rebuild_mode_list(new_agent)
 
     def action_commit(self) -> None:
         if self._active_panel == "agent":
-            # Block commit while agent is still pending
-            avail_obj = self.ctx.agent_availability.get(self._current_agent)
-            if avail_obj is not None and getattr(avail_obj, "status", None) == "pending":
+            if agent_is_pending(self._current_agent, self.ctx.agent_availability):
                 return
             self._active_panel = "mode"
             self._reflect_focus()
             return
-        # mode panel
-        import ccw_agents
-        if self._current_agent not in ccw_agents.CATALOG:
-            self.dismiss(None)
-            return
-        spec = ccw_agents.CATALOG[self._current_agent]
         mode_list = self.query_one("#mode-list", ListView)
         mode_idx = mode_list.index or 0
-        if mode_idx < len(spec.permission_modes):
-            mode_id = spec.permission_modes[mode_idx].id
-        else:
-            mode_id = "normal"
+        mode_id = launch_mode_id(self._current_agent, mode_idx)
+        if mode_id is None:
+            self.dismiss(None)
+            return
         self.dismiss((self._current_agent, mode_id))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-    def _focused_list(self) -> ListView:
-        return self.query_one(
-            "#agent-list" if self._active_panel == "agent" else "#mode-list",
-            ListView,
-        )
-
     async def _rebuild_agent_list(self) -> None:
         """Recompute visible agents from availability and repopulate the left
         ListView in place. Called on mount-time update and whenever a probe
         result arrives after the screen is already showing."""
-        enabled = list(self.ctx.enabled_agents)
         avail = self.ctx.agent_availability
-        visible = [
-            aid for aid in enabled
-            if avail.get(aid) is None
-            or getattr(avail.get(aid), "status", "pending") in ("pending", "ok")
-        ]
+        visible = list(visible_agent_ids(
+            enabled_agents=tuple(self.ctx.enabled_agents),
+            availability=self.ctx.agent_availability,
+        ))
         self._visible_agents = visible
         self._single_agent = len(visible) <= 1
 
@@ -196,24 +187,33 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         await agent_list.clear()
         new_items = []
         for idx, aid in enumerate(visible, start=1):
-            avail_obj = avail.get(aid)
-            status = getattr(avail_obj, "status", None) if avail_obj else None
-            label = f"{idx} {aid}"
-            if status == "pending":
-                label += "  (checking…)"
-            new_items.append(ListItem(Static(label), id=f"agent-{aid}"))
+            new_items.append(ListItem(
+                Static(agent_list_label(idx, aid, avail.get(aid))),
+                id=f"agent-{aid}",
+            ))
         if new_items:
             # extend() returns AwaitMount — must be awaited before we set
             # .index on the list, otherwise the index points into a
             # still-empty DOM and the ListView renders as an empty box.
             await agent_list.extend(new_items)
 
+        if not visible:
+            self._active_panel = "mode"
+            mode_list = self.query_one("#mode-list", ListView)
+            await mode_list.clear()
+            self.dismiss(None)
+            return
+
+        if self._single_agent:
+            self._active_panel = "mode"
+
         # Clamp current selection to the new list.
         if self._current_agent not in visible:
-            self._current_agent = visible[0] if visible else self._current_agent
-            self._rebuild_mode_list(self._current_agent)
+            self._current_agent = visible[0]
+            await self._rebuild_mode_list(self._current_agent)
         if visible:
             try:
                 agent_list.index = visible.index(self._current_agent)
             except ValueError:
                 agent_list.index = 0
+        self._reflect_focus()

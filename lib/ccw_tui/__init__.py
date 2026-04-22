@@ -4,6 +4,7 @@ Public API re-exports only. Implementation lives in sibling modules:
 
   - ``context``  — pure data (``TuiContext``, ``TuiSession``, ``LaunchRequest``,
                    ``Item``, ``build_items``, ``CallbackError``).
+  - ``state``    — pure TUI state decisions (not public-re-exported).
   - ``events``   — JSONL event log (``LOG_DIR``, ``_log_event``).
   - ``launch``   — launch-handoff helpers (runs outside the TUI).
   - ``hints``    — ``TEXTUAL_MISSING_HINT`` install guidance.

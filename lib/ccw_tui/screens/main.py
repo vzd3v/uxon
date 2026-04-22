@@ -32,9 +32,14 @@ from ..context import (
     ACTION_COUNT,
     CallbackError,
     TuiContext,
-    _digit_hinted_indices,
     _segments,
-    _total_items,
+)
+from ..state import (
+    MainIntent,
+    activate_main_index,
+    digit_jump_intent,
+    main_action_intent,
+    session_intent,
 )
 from ..widgets import ActionRow, SessionTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
@@ -195,17 +200,7 @@ class MainScreen(Screen):
         Modal chains are stubbed here and wired through in T14.
         ``CallbackError`` from any callback renders as a red toast.
         """
-        kind = event.row.kind
-        if kind == "action-cwd":
-            self._launch_cwd()
-        elif kind == "action-new":
-            self._launch_new()
-        elif kind == "action-open":
-            self._launch_existing()
-        elif kind == "settings":
-            self._open_settings()
-        elif kind == "kill-all-global":
-            self._kill_all_global()
+        self._run_intent(main_action_intent(event.row.kind))
 
     # ── DataTable row activation (Enter on a SessionTable row) ───────
 
@@ -217,9 +212,31 @@ class MainScreen(Screen):
         session = table.session_at(event.cursor_row)
         if session is None:
             return
-        user = session.user or self.ctx.current_user
+        self._run_intent(session_intent(session, self.ctx.current_user))
+
+    def _run_intent(self, intent: MainIntent | None) -> None:
+        if intent is None:
+            return
+        if intent.index is not None:
+            self._focus_index(intent.index)
+        if intent.kind == "launch-cwd":
+            self._launch_cwd()
+        elif intent.kind == "launch-new":
+            self._launch_new()
+        elif intent.kind == "launch-existing":
+            self._launch_existing()
+        elif intent.kind == "open-settings":
+            self._open_settings()
+        elif intent.kind == "kill-all-global":
+            self._kill_all_global()
+        elif intent.kind == "attach":
+            self._attach_session(intent.user, intent.session_name)
+        elif intent.kind == "focus-only":
+            self.app.notify("Press Enter to open Settings / Kill-ALL (digit moves cursor only)")
+
+    def _attach_session(self, user: str, session_name: str) -> None:
         try:
-            req = self.ctx.on_attach(user, session.name)
+            req = self.ctx.on_attach(user, session_name)
         except CallbackError as exc:
             self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
             return
@@ -445,53 +462,11 @@ class MainScreen(Screen):
         only" row, reachable by arrow-down + Enter. Same rule applies
         in the textual flavour via :func:`_digit_hinted_indices`.
         """
-        idx = n - 1
-        total = _total_items(self.ctx)
-        if idx < 0 or idx >= total:
-            return
-        allowed = _digit_hinted_indices(self.ctx)
-        if idx in allowed:
-            self._activate_index(idx)
-            return
-        # Digit pointed at Settings or Kill-ALL — move focus there but
-        # don't auto-activate.
-        own_start, other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
-        if has_super and idx in (settings_idx, kill_idx):
-            self._focus_index(idx)
-            self.app.notify(
-                "Press Enter to open Settings / Kill-ALL (digit moves cursor only)"
-            )
+        self._run_intent(digit_jump_intent(self.ctx, n))
 
     def _activate_index(self, idx: int) -> None:
         """Resolve index into a concrete item and fire its activation."""
-        own_start, other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
-        self._focus_index(idx)
-        if idx < own_start:
-            if idx == 0:
-                self._launch_cwd()
-            elif idx == 1:
-                self._launch_new()
-            elif idx == 2:
-                self._launch_existing()
-            return
-        if idx < other_start:
-            session = self.ctx.sessions[idx - own_start]
-            try:
-                req = self.ctx.on_attach(self.ctx.current_user, session.name)
-            except CallbackError as exc:
-                self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
-                return
-            self.app.request_launch(req)  # type: ignore[attr-defined]
-            return
-        if has_super and idx < settings_idx:
-            session = self.ctx.other_sessions[idx - other_start]
-            try:
-                req = self.ctx.on_attach(session.user, session.name)
-            except CallbackError as exc:
-                self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
-                return
-            self.app.request_launch(req)  # type: ignore[attr-defined]
-            return
+        self._run_intent(activate_main_index(self.ctx, idx))
 
     def _focus_index(self, idx: int) -> None:
         """Move focus to the widget backing ``idx`` on the current screen."""

@@ -15,6 +15,8 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, ListItem, ListView, Static
 
+from ..state import pick_index
+
 
 class ExistingProjectScreen(ModalScreen["str | None"]):
     DEFAULT_CSS = """
@@ -86,13 +88,15 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
     def action_pick(self) -> None:
         lv = self.query_one(ListView)
         idx = lv.index or 0
-        if 0 <= idx < len(self.projects):
-            self.dismiss(self.projects[idx][0])
+        picked = pick_index(self.projects, idx)
+        if picked is not None:
+            self.dismiss(picked)
 
     def action_pick_digit(self, n: int) -> None:
         idx = n - 1
-        if 0 <= idx < len(self.projects):
-            self.dismiss(self.projects[idx][0])
+        picked = pick_index(self.projects, idx)
+        if picked is not None:
+            self.dismiss(picked)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_pick()

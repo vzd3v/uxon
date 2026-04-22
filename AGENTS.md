@@ -19,6 +19,9 @@ topology notes live in [docs/deployment.md](docs/deployment.md).
     - ``context.py`` — pure data (``TuiContext``, ``TuiSession``,
       ``LaunchRequest``, ``Item``, ``build_items``, ``CallbackError``).
       No textual / no blessed.
+    - ``state.py`` — pure TUI state decisions. No textual / no blessed /
+      no filesystem. Use this for branchy UI decisions that can be tested
+      without ``Pilot``.
     - ``events.py`` — best-effort JSONL event log.
     - ``launch.py`` — fork-and-wait launch helper + failure pause banner.
       Runs **outside** the textual App between round-trips.
@@ -59,6 +62,22 @@ topology notes live in [docs/deployment.md](docs/deployment.md).
 - UI files (under `lib/ccw_tui/`) must not import `subprocess`, `pwd`,
   or touch the filesystem directly; push those through callbacks on
   `TuiContext` / `SettingsCallbacks`.
+- New TUI behavior must keep validation, row selection, state transitions,
+  and callback-routing decisions in pure helpers with no Textual imports
+  whenever the logic has meaningful branches. Screen classes should compose
+  widgets and interpret those decisions. ``Pilot`` / pty tests are for
+  Textual wiring, focus/key routing, async worker / ``call_later`` behavior,
+  and one smoke path per feature; business branches belong in fast pure tests.
+- `Pilot` tests must amortize Textual lifecycle. Do not add one
+  `App.run_test()` per simple branch. Batch compatible screen/modal smoke
+  scenarios with `tests/harness/textual_scenarios.py::run_screen_scenarios`.
+  Batch when scenarios only verify mount/render/cancel/basic submit wiring
+  and do not depend on shared app state. Keep tests separate when they cover
+  focus/key regression timing, `ListView.Highlighted`, async worker or
+  `call_later` behavior, live availability refresh, app-level launch/exit
+  loops, or any case where isolation is part of the assertion. If adding a
+  new unbatched `run_test()`, explain in a comment why it cannot join an
+  existing batch.
 - `lib/ccw_settings.py` is pure data + TOML I/O. No textual, no TUI.
 - When adding a new screen, drop a module under
   ``lib/ccw_tui/screens/``, declare ``BINDINGS`` there, and wire the
@@ -112,6 +131,7 @@ topology notes live in [docs/deployment.md](docs/deployment.md).
 ```bash
 python3 -m py_compile bin/ccw \
   lib/ccw_tui/__init__.py lib/ccw_tui/app.py lib/ccw_tui/context.py \
+  lib/ccw_tui/state.py \
   lib/ccw_tui/events.py lib/ccw_tui/launch.py lib/ccw_tui/hints.py \
   lib/ccw_tui/widgets/__init__.py lib/ccw_tui/widgets/action_row.py \
   lib/ccw_tui/widgets/session_table.py \
@@ -124,6 +144,8 @@ python3 -m py_compile bin/ccw \
   lib/ccw_settings.py lib/ccw_agents.py \
   lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
   lib/ccw_git_backend_token.py lib/ccw_git_create.py \
+  tests/harness/__init__.py tests/harness/pty_tui.py \
+  tests/harness/textual_scenarios.py \
   tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
   tests/test_ccw_tui_screens.py tests/test_ccw_tui_widgets_textual.py \
   tests/test_ccw_tui_bindings.py tests/test_ccw_tui_logging.py \

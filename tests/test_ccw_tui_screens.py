@@ -19,6 +19,8 @@ _LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
 if _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
+from harness.textual_scenarios import ScreenScenario, press_keys, run_screen_scenarios  # noqa: E402
+
 
 def _textual_available() -> bool:
     try:
@@ -55,7 +57,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_q_quits(self) -> None:
         from ccw_tui.app import CcwApp
 
-        app = CcwApp(_mk_ctx())
+        app = CcwApp(_mk_ctx(), probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             await pilot.press("q")
@@ -65,7 +67,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_digit_1_activates_action_cwd(self) -> None:
         from ccw_tui.app import CcwApp
 
-        app = CcwApp(_mk_ctx())
+        app = CcwApp(_mk_ctx(), probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             await pilot.press("1")      # digit-1 → LaunchOptionsScreen
@@ -74,33 +76,6 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
         self.assertIsNotNone(app.pending_launch)
         self.assertEqual(app.pending_launch.label, "cwd")
-
-    async def test_digit_jump_guard_fresh_superuser_empty(self) -> None:
-        """Empty-superuser state: digit ACTION_COUNT+1 (which would land
-        on Settings) must NOT auto-open Settings. Equivalent to the
-        legacy ``DigitJumpGuardTests::fresh_superuser_digit_4`` case.
-        """
-        from ccw_tui.app import CcwApp
-
-        ctx = _mk_ctx(has_sudo=True)
-        app = CcwApp(ctx)
-        captured: list[str] = []
-        async with app.run_test(size=(100, 30)) as pilot:
-            orig = app.notify
-            def cap(msg, **kw):
-                captured.append(str(msg))
-                return orig(msg, **kw)
-            app.notify = cap
-            await pilot.pause()
-            await pilot.press("4")
-            await pilot.pause()
-            await pilot.press("q")
-            await pilot.pause()
-        self.assertIsNone(app.pending_launch)
-        self.assertTrue(
-            any("moves cursor only" in m for m in captured),
-            f"expected digit-4 guard toast in {captured!r}",
-        )
 
     async def test_kill_calls_on_kill_callback(self) -> None:
         from ccw_tui.app import CcwApp
@@ -138,7 +113,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             on_kill=fake_kill,
             on_refresh=fake_refresh,
         )
-        app = CcwApp(ctx)
+        app = CcwApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             # Focus the session table and press 'd'.
@@ -166,7 +141,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             return _mk_ctx(on_refresh=fake_refresh)
 
         ctx = _mk_ctx(on_refresh=fake_refresh)
-        app = CcwApp(ctx)
+        app = CcwApp(ctx, probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             await pilot.press("r")
@@ -183,7 +158,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             raise CallbackError("nope")
 
         ctx = _mk_ctx(on_launch_cwd=boom_launch)
-        app = CcwApp(ctx)
+        app = CcwApp(ctx, probe_agents=False)
         captured: list[tuple[str, str]] = []
         async with app.run_test(size=(100, 30)) as pilot:
             orig = app.notify
@@ -207,90 +182,22 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ConfirmModalTests(unittest.IsolatedAsyncioTestCase):
-    async def test_yesno_y_confirms(self) -> None:
-        from textual.app import App
-        from ccw_tui.screens.confirm import ConfirmYesNo
+    async def test_confirm_modal_smoke_batch(self) -> None:
+        from textual.widgets import Input
+        from ccw_tui.screens.confirm import ConfirmPhrase, ConfirmYesNo
 
-        class Host(App):
-            result = None
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-                self.push_screen(ConfirmYesNo("Kill foo?"), done)
-
-        app = Host()
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.press("y")
-            await pilot.pause()
-        self.assertTrue(app.result)
-
-    async def test_yesno_n_cancels(self) -> None:
-        from textual.app import App
-        from ccw_tui.screens.confirm import ConfirmYesNo
-
-        class Host(App):
-            result = None
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-                self.push_screen(ConfirmYesNo("Kill foo?"), done)
-
-        app = Host()
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.press("n")
-            await pilot.pause()
-        self.assertFalse(app.result)
-
-    async def test_phrase_matching_string_confirms(self) -> None:
-        from textual.app import App
-        from ccw_tui.screens.confirm import ConfirmPhrase
-
-        class Host(App):
-            result = None
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-                self.push_screen(ConfirmPhrase("Danger!", "kill-all"), done)
-
-        app = Host()
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("#confirm-input").focus()
+        async def phrase(app, pilot):
+            app.screen.query_one("#confirm-input", Input).focus()
             await pilot.press(*"kill-all")
             await pilot.press("enter")
-            await pilot.pause()
-        self.assertTrue(app.result)
 
-    async def test_phrase_mismatch_rejects(self) -> None:
-        from textual.app import App
-        from ccw_tui.screens.confirm import ConfirmPhrase
-
-        class Host(App):
-            result = None
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-                self.push_screen(ConfirmPhrase("Danger!", "kill-all"), done)
-
-        app = Host()
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("#confirm-input").focus()
-            await pilot.press(*"nope")
-            await pilot.press("enter")
-            await pilot.pause()
-        self.assertFalse(app.result)
-
+        scenarios = [
+            ScreenScenario("yesno-y", lambda: ConfirmYesNo("Kill foo?"), press_keys("y"), True),
+            ScreenScenario("yesno-n", lambda: ConfirmYesNo("Kill foo?"), press_keys("n"), False),
+            ScreenScenario("phrase-match", lambda: ConfirmPhrase("Danger!", "kill-all"), phrase, True),
+        ]
+        results = await run_screen_scenarios(scenarios, size=(80, 24))
+        self.assertEqual(results, [s.expected for s in scenarios])
 
 if __name__ == "__main__":
     unittest.main()
@@ -325,85 +232,66 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
         return app.result
 
-    async def test_single_agent_hides_left_panel(self) -> None:
+    async def test_launch_options_layout_smoke_batch(self) -> None:
         from textual.app import App
         from ccw_tui.screens.launch_options import LaunchOptionsScreen
-        from ccw_tui.widgets import SessionTable
-        ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
-            agent_availability={"claude": self._make_avail("ok")},
-        )
-        app = App()
-        async with app.run_test(size=(100, 30)) as pilot:
-            screen = LaunchOptionsScreen(ctx)
-            app.push_screen(screen)
-            await pilot.pause()
+
+        async def assert_single(app, pilot):
+            screen = app.screen
             panel = screen.query_one("#agent-panel")
             self.assertFalse(panel.display)
 
-    async def test_two_agents_both_panels_visible(self) -> None:
-        from textual.app import App
-        from ccw_tui.screens.launch_options import LaunchOptionsScreen
-        ctx = _mk_ctx(
-            enabled_agents=("claude", "cursor"),
-            default_agent="claude",
-            agent_availability={
-                "claude": self._make_avail("ok"),
-                "cursor": self._make_avail("ok"),
-            },
-        )
-        app = App()
-        async with app.run_test(size=(100, 30)) as pilot:
-            screen = LaunchOptionsScreen(ctx)
-            app.push_screen(screen)
-            await pilot.pause()
+        async def assert_two(app, pilot):
+            screen = app.screen
             panel = screen.query_one("#agent-panel")
             self.assertTrue(panel.display)
 
-    async def test_pending_agent_shown_as_checking(self) -> None:
-        from textual.app import App
-        from ccw_tui.screens.launch_options import LaunchOptionsScreen
-        ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
-            agent_availability={"claude": self._make_avail("pending")},
-        )
-        app = App()
-        async with app.run_test(size=(100, 30)) as pilot:
-            screen = LaunchOptionsScreen(ctx)
-            app.push_screen(screen)
-            await pilot.pause()
-            # pending agent is still visible (not filtered out — only missing/timeout hide it)
+        async def assert_pending(app, pilot):
+            screen = app.screen
             self.assertIn("claude", screen._visible_agents)
-            # the agent label in the ListView includes "(checking…)"
             agent_list = screen.query_one("#agent-list")
             labels = [str(item.query_one("Static").content) for item in agent_list.children]
-            self.assertTrue(any("checking" in lbl for lbl in labels), f"no checking in {labels}")
-        # mode panel still works when agent is pending
-        result = await self._run_screen(ctx, ["enter"])
-        self.assertIsNotNone(result)
+            self.assertTrue(any("checking" in label for label in labels), f"no checking in {labels}")
+            await pilot.press("enter")
 
-    async def test_missing_agent_hidden(self) -> None:
-        from textual.app import App
-        from ccw_tui.screens.launch_options import LaunchOptionsScreen
-        from textual.widgets import ListView
-        ctx = _mk_ctx(
-            enabled_agents=("claude", "codex"),
-            default_agent="claude",
-            agent_availability={
-                "claude": self._make_avail("ok"),
-                "codex": self._make_avail("missing"),
-            },
-        )
-        app = App()
-        async with app.run_test(size=(100, 30)) as pilot:
-            screen = LaunchOptionsScreen(ctx)
-            app.push_screen(screen)
-            await pilot.pause()
-            # codex is missing → not in visible_agents
-            self.assertNotIn("codex", screen._visible_agents)
-            self.assertIn("claude", screen._visible_agents)
+        scenarios = [
+            ScreenScenario(
+                "single-agent-hidden",
+                lambda: LaunchOptionsScreen(_mk_ctx(
+                    enabled_agents=("claude",),
+                    default_agent="claude",
+                    agent_availability={"claude": self._make_avail("ok")},
+                )),
+                assert_single,
+                "unset",
+            ),
+            ScreenScenario(
+                "two-agents-visible",
+                lambda: LaunchOptionsScreen(_mk_ctx(
+                    enabled_agents=("claude", "cursor"),
+                    default_agent="claude",
+                    agent_availability={
+                        "claude": self._make_avail("ok"),
+                        "cursor": self._make_avail("ok"),
+                    },
+                )),
+                assert_two,
+                "unset",
+            ),
+            ScreenScenario(
+                "pending-label",
+                lambda: LaunchOptionsScreen(_mk_ctx(
+                    enabled_agents=("claude",),
+                    default_agent="claude",
+                    agent_availability={"claude": self._make_avail("pending")},
+                )),
+                assert_pending,
+                ("claude", "normal"),
+            ),
+        ]
+
+        results = await run_screen_scenarios(scenarios)
+        self.assertEqual(results, [s.expected for s in scenarios])
 
     async def test_dismiss_returns_agent_and_mode(self) -> None:
         ctx = _mk_ctx(
@@ -423,6 +311,61 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         )
         result = await self._run_screen(ctx, ["escape"])
         self.assertIsNone(result)
+
+    async def test_arrow_to_cursor_rebuilds_modes_and_commits_cursor(self) -> None:
+        """Regression: arrow-down on the agent list must update _current_agent
+        and rebuild the mode list for that agent.
+
+        Previous bug: the screen-level up/down bindings were shadowed by
+        ListView's built-in cursor_up/cursor_down, so _maybe_rebuild_mode
+        never ran. Arrowing down to cursor kept _current_agent=claude and
+        kept claude's three modes (normal/auto/yolo) in the right panel,
+        so pressing enter twice committed ("claude", "yolo (--dsp)")
+        instead of a cursor launch.
+        """
+        from textual.app import App
+        from textual.widgets import ListView
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude", "cursor"),
+            default_agent="claude",
+            agent_availability={
+                "claude": self._make_avail("ok"),
+                "cursor": self._make_avail("ok"),
+            },
+        )
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(LaunchOptionsScreen(ctx), done)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            # Move highlight to cursor (2nd entry).
+            await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(screen._current_agent, "cursor")
+            mode_list = screen.query_one("#mode-list", ListView)
+            # cursor has exactly two modes in the catalog: normal, yolo.
+            self.assertEqual(len(mode_list.children), 2)
+            mode_ids = [item.id for item in mode_list.children]
+            self.assertEqual(mode_ids, ["mode-normal", "mode-yolo"])
+            # Right → switch to mode panel; down → highlight yolo; enter → commit.
+            await pilot.press("right")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        self.assertEqual(app.result, ("cursor", "yolo"))
 
     async def test_all_missing_dismisses_with_none(self) -> None:
         from textual.app import App
@@ -448,13 +391,15 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
         self.assertIsNone(app.result)
 
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def _run(self, text, submit_key="enter"):
+    async def test_live_update_to_all_missing_dismisses_without_stale_commit(self) -> None:
         from textual.app import App
-        from textual.widgets import Input
-        from ccw_tui.screens.new_project import NewProjectScreen
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("pending")},
+        )
 
         class Host(App):
             result = "unset"
@@ -463,108 +408,122 @@ class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
                 def done(r):
                     self.result = r
                     self.exit()
-                self.push_screen(NewProjectScreen("/srv/work"), done)
+                self.push_screen(LaunchOptionsScreen(ctx), done)
 
         app = Host()
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            inp = app.screen.query_one("#name-input", Input)
-            inp.focus()
-            if text:
-                await pilot.press(*list(text))
-            await pilot.press(submit_key)
+            screen = app.screen
+            ctx.agent_availability["claude"] = self._make_avail("missing")
+            await screen._rebuild_agent_list()
             await pilot.pause()
-        return app.result
+        self.assertIsNone(app.result)
 
-    async def test_valid_name_returned(self):
-        self.assertEqual(await self._run("foo"), "foo")
+    async def test_live_update_from_two_agents_to_one_switches_to_mode_panel(self) -> None:
+        from textual.app import App
+        from ccw_tui.screens.launch_options import LaunchOptionsScreen
 
-    async def test_empty_name_rejected(self):
-        result = await self._run("", submit_key="enter")
-        self.assertEqual(result, "unset")
+        ctx = _mk_ctx(
+            enabled_agents=("claude", "cursor"),
+            default_agent="claude",
+            agent_availability={
+                "claude": self._make_avail("pending"),
+                "cursor": self._make_avail("ok"),
+            },
+        )
 
-    async def test_escape_cancels(self):
-        result = await self._run("bar", submit_key="escape")
-        self.assertIsNone(result)
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+                self.push_screen(LaunchOptionsScreen(ctx), done)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            ctx.agent_availability["claude"] = self._make_avail("missing")
+            await screen._rebuild_agent_list()
+            await pilot.pause()
+            self.assertEqual(screen._visible_agents, ["cursor"])
+            self.assertEqual(screen._current_agent, "cursor")
+            self.assertEqual(screen._active_panel, "mode")
+            await pilot.press("enter")
+            await pilot.pause()
+        self.assertEqual(app.result, ("cursor", "normal"))
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_project_smoke_batch(self) -> None:
+        from textual.widgets import Input
+        from ccw_tui.screens.new_project import NewProjectScreen
+
+        async def submit_foo(app, pilot):
+            app.screen.query_one("#name-input", Input).focus()
+            await pilot.press(*"foo")
+            await pilot.press("enter")
+
+        async def cancel_bar(app, pilot):
+            app.screen.query_one("#name-input", Input).focus()
+            await pilot.press(*"bar")
+            await pilot.press("escape")
+
+        scenarios = [
+            ScreenScenario("valid-name", lambda: NewProjectScreen("/srv/work"), submit_foo, "foo"),
+            ScreenScenario("escape-cancel", lambda: NewProjectScreen("/srv/work"), cancel_bar, None),
+        ]
+        results = await run_screen_scenarios(scenarios, size=(80, 24))
+        self.assertEqual(results, [s.expected for s in scenarios])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class GitProfileScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def _run(self, keys, options, default=""):
-        from textual.app import App
+    async def test_git_profile_smoke_batch(self) -> None:
         from ccw_tui.screens.git_profile import GitProfileScreen
 
-        class Host(App):
-            result = "unset"
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-                self.push_screen(GitProfileScreen(options, default_profile=default), done)
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            for k in keys:
-                await pilot.press(k)
-            await pilot.pause()
-        return app.result
-
-    async def test_digit_0_picks_skip(self):
-        opts = [("profA", "A"), ("profB", "B")]
-        self.assertEqual(await self._run(["0"], opts), "")
-
-    async def test_digit_1_picks_first(self):
-        opts = [("profA", "A"), ("profB", "B")]
-        self.assertEqual(await self._run(["1"], opts), "profA")
-
-    async def test_escape_cancels(self):
-        opts = [("profA", "A")]
-        self.assertIsNone(await self._run(["escape"], opts))
-
-    async def test_default_profile_preselected(self):
-        opts = [("profA", "A"), ("profB", "B")]
-        # Default = profB → cursor starts at index 2 → Enter picks profB.
-        self.assertEqual(await self._run(["enter"], opts, default="profB"), "profB")
+        scenarios = [
+            ScreenScenario(
+                "escape-cancel",
+                lambda: GitProfileScreen([("profA", "A")]),
+                press_keys("escape"),
+                None,
+            ),
+            ScreenScenario(
+                "default-profile-enter",
+                lambda: GitProfileScreen([("profA", "A"), ("profB", "B")], default_profile="profB"),
+                press_keys("enter"),
+                "profB",
+            ),
+        ]
+        results = await run_screen_scenarios(scenarios)
+        self.assertEqual(results, [s.expected for s in scenarios])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def _run(self, keys, projects):
-        from textual.app import App
+    async def test_existing_project_smoke_batch(self) -> None:
         from ccw_tui.screens.existing import ExistingProjectScreen
 
-        # Test helper: accept bare names; ExistingProjectScreen now
-        # expects ``(name, compact_mtime)`` tuples.
-        prepared = [(p, "") if isinstance(p, str) else p for p in projects]
-
-        class Host(App):
-            result = "unset"
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-                self.push_screen(ExistingProjectScreen(prepared, "/srv/work"), done)
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            for k in keys:
-                await pilot.press(k)
-            await pilot.pause()
-        return app.result
-
-    async def test_digit_1_picks_first(self):
-        projs = ["alpha", "beta", "gamma"]
-        self.assertEqual(await self._run(["1"], projs), "alpha")
-
-    async def test_enter_picks_cursor(self):
-        self.assertEqual(await self._run(["enter"], ["alpha"]), "alpha")
-
-    async def test_escape_cancels(self):
-        self.assertIsNone(await self._run(["escape"], ["alpha"]))
+        scenarios = [
+            ScreenScenario(
+                "enter-picks-cursor",
+                lambda: ExistingProjectScreen([("alpha", "")], "/srv/work"),
+                press_keys("enter"),
+                "alpha",
+            ),
+            ScreenScenario(
+                "escape-cancel",
+                lambda: ExistingProjectScreen([("alpha", "")], "/srv/work"),
+                press_keys("escape"),
+                None,
+            ),
+        ]
+        results = await run_screen_scenarios(scenarios)
+        self.assertEqual(results, [s.expected for s in scenarios])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")

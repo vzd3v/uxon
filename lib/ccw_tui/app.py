@@ -28,6 +28,7 @@ from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
 from .screens.agents_unavailable import AgentsUnavailableScreen
 from .screens.main import MainScreen
+from .state import should_show_agents_unavailable
 
 
 class _AgentAvailabilityUpdated(Message):
@@ -63,12 +64,19 @@ class CcwApp(App):
     # guard depends on this).
     BINDINGS = []
 
-    def __init__(self, ctx: TuiContext, pending_status: str = "") -> None:
+    def __init__(
+        self,
+        ctx: TuiContext,
+        pending_status: str = "",
+        *,
+        probe_agents: bool = True,
+    ) -> None:
         super().__init__()
         self.ctx = ctx
         self.pending_launch: LaunchRequest | None = None
         self.quit_rc: int | None = None
         self.pending_status = pending_status
+        self.probe_agents = probe_agents
         # Latch: AgentsUnavailableScreen is pushed at most once per app
         # instance. ``run()``'s outer loop re-creates the app after every
         # launch, which is the right cadence to re-arm the popup. The
@@ -86,7 +94,7 @@ class CcwApp(App):
             self.notify(self.pending_status, severity="error", timeout=6)
         self.pending_status = ""
         # Kick off background agent availability probe.
-        if self.ctx.enabled_agents:
+        if self.probe_agents and self.ctx.enabled_agents:
             self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
 
     def _probe_agents_worker(self) -> None:
@@ -133,27 +141,14 @@ class CcwApp(App):
             # does not go through the message-pump / bubbling path.
             self.call_later(top._rebuild_agent_list)
 
-        if self._agents_popup_shown:
-            return
-        enabled = self.ctx.enabled_agents
-        if not enabled:
-            return
-        avail = self.ctx.agent_availability
-        # Require every enabled agent to have a resolved status.
-        resolved = all(
-            aid in avail and getattr(avail[aid], "status", "pending") != "pending"
-            for aid in enabled
-        )
-        if not resolved:
-            return
-        all_unusable = all(
-            getattr(avail[aid], "status", None) in ("missing", "timeout")
-            for aid in enabled
-        )
-        if not all_unusable:
+        if not should_show_agents_unavailable(
+            enabled_agents=self.ctx.enabled_agents,
+            availability=self.ctx.agent_availability,
+            already_shown=self._agents_popup_shown,
+        ):
             return
         self._agents_popup_shown = True
-        self.push_screen(AgentsUnavailableScreen(tuple(enabled)))
+        self.push_screen(AgentsUnavailableScreen(tuple(self.ctx.enabled_agents)))
 
     def pop_until_main(self) -> None:
         """Dismiss every modal above the main screen.
@@ -235,5 +230,4 @@ def run(ctx: TuiContext) -> int:
             pending_status = ""
         except CallbackError as exc:
             pending_status = f"Refresh failed: {exc}"
-
 

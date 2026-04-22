@@ -28,6 +28,26 @@ from ccw_tui.context import (  # noqa: E402
     _total_items,
     build_items,
 )
+from ccw_tui.state import (  # noqa: E402
+    LaunchOptionsState,
+    MainIntent,
+    activate_main_index,
+    agent_is_pending,
+    agent_list_label,
+    confirm_phrase_matches,
+    digit_jump_intent,
+    launch_mode_id,
+    launch_options_state,
+    main_action_intent,
+    mode_item_ids,
+    pick_index,
+    pick_visible_agent,
+    project_name_error,
+    project_name_valid,
+    session_intent,
+    should_show_agents_unavailable,
+    visible_agent_ids,
+)
 
 
 def _ctx(**overrides) -> "ccw_tui.TuiContext":
@@ -68,6 +88,203 @@ class TuiContextShapeTests(unittest.TestCase):
         req = ctx.on_launch_cwd("claude", "normal")
         self.assertIsInstance(req, ccw_tui.LaunchRequest)
         self.assertEqual(req.cmd, ("true",))
+
+
+class AgentsUnavailableGateStateTests(unittest.TestCase):
+    def test_gate_false_when_already_shown(self) -> None:
+        result = should_show_agents_unavailable(
+            enabled_agents=("claude",),
+            availability={"claude": type("Avail", (), {"status": "missing"})()},
+            already_shown=True,
+        )
+        self.assertFalse(result)
+
+    def test_gate_false_without_enabled_agents(self) -> None:
+        self.assertFalse(
+            should_show_agents_unavailable(
+                enabled_agents=(),
+                availability={},
+                already_shown=False,
+            )
+        )
+
+    def test_gate_false_until_every_agent_resolved(self) -> None:
+        result = should_show_agents_unavailable(
+            enabled_agents=("claude", "codex"),
+            availability={"claude": type("Avail", (), {"status": "missing"})()},
+            already_shown=False,
+        )
+        self.assertFalse(result)
+
+    def test_gate_false_when_any_agent_is_ok(self) -> None:
+        result = should_show_agents_unavailable(
+            enabled_agents=("claude", "codex"),
+            availability={
+                "claude": type("Avail", (), {"status": "ok"})(),
+                "codex": type("Avail", (), {"status": "missing"})(),
+            },
+            already_shown=False,
+        )
+        self.assertFalse(result)
+
+    def test_gate_true_when_all_agents_missing_or_timeout(self) -> None:
+        result = should_show_agents_unavailable(
+            enabled_agents=("claude", "codex"),
+            availability={
+                "claude": type("Avail", (), {"status": "missing"})(),
+                "codex": type("Avail", (), {"status": "timeout"})(),
+            },
+            already_shown=False,
+        )
+        self.assertTrue(result)
+
+
+class LaunchOptionsStateTests(unittest.TestCase):
+    def _avail(self, status: str):
+        return type("Avail", (), {"status": status})()
+
+    def test_visible_agents_include_pending_ok_and_unknown(self) -> None:
+        visible = visible_agent_ids(
+            enabled_agents=("claude", "codex", "cursor"),
+            availability={
+                "claude": self._avail("ok"),
+                "codex": self._avail("pending"),
+            },
+        )
+        self.assertEqual(visible, ("claude", "codex", "cursor"))
+
+    def test_visible_agents_exclude_missing_and_timeout(self) -> None:
+        visible = visible_agent_ids(
+            enabled_agents=("claude", "codex", "cursor"),
+            availability={
+                "claude": self._avail("missing"),
+                "codex": self._avail("timeout"),
+                "cursor": self._avail("ok"),
+            },
+        )
+        self.assertEqual(visible, ("cursor",))
+
+    def test_initial_agent_prefers_default_when_visible(self) -> None:
+        state = launch_options_state(
+            enabled_agents=("claude", "codex"),
+            default_agent="codex",
+            availability={},
+        )
+        self.assertEqual(
+            state,
+            LaunchOptionsState(
+                visible_agents=("claude", "codex"),
+                single_agent=False,
+                active_panel="agent",
+                current_agent="codex",
+            ),
+        )
+
+    def test_initial_agent_falls_back_to_first_visible(self) -> None:
+        state = launch_options_state(
+            enabled_agents=("claude", "codex"),
+            default_agent="claude",
+            availability={"claude": self._avail("missing")},
+        )
+        self.assertEqual(state.current_agent, "codex")
+        self.assertTrue(state.single_agent)
+        self.assertEqual(state.active_panel, "mode")
+
+    def test_pick_visible_agent_ignores_out_of_range_index(self) -> None:
+        self.assertEqual(pick_visible_agent(("claude",), 4, "claude"), "claude")
+
+    def test_agent_is_pending_only_for_pending_status(self) -> None:
+        self.assertTrue(agent_is_pending("claude", {"claude": self._avail("pending")}))
+        self.assertFalse(agent_is_pending("claude", {"claude": self._avail("ok")}))
+        self.assertFalse(agent_is_pending("claude", {}))
+
+    def test_agent_list_label_marks_pending_agents(self) -> None:
+        self.assertEqual(agent_list_label(2, "codex", self._avail("pending")), "2 codex  (checking…)")
+        self.assertEqual(agent_list_label(1, "claude", self._avail("ok")), "1 claude")
+        self.assertEqual(agent_list_label(1, "claude", None), "1 claude")
+
+    def test_mode_item_ids_match_catalog_order(self) -> None:
+        self.assertEqual(
+            mode_item_ids("cursor"),
+            ("mode-normal", "mode-yolo"),
+        )
+
+    def test_launch_mode_id_uses_selected_mode_or_normal_fallback(self) -> None:
+        self.assertEqual(launch_mode_id("cursor", 1), "yolo")
+        self.assertEqual(launch_mode_id("cursor", 99), "normal")
+        self.assertEqual(launch_mode_id("nosuch", 0), None)
+
+
+class PickIndexStateTests(unittest.TestCase):
+    def test_pick_index_returns_name_for_valid_index(self) -> None:
+        self.assertEqual(pick_index([("alpha", "1s"), ("beta", "2s")], 1), "beta")
+
+    def test_pick_index_returns_none_for_negative_or_too_large_index(self) -> None:
+        rows = [("alpha", "1s")]
+        self.assertIsNone(pick_index(rows, -1))
+        self.assertIsNone(pick_index(rows, 9))
+
+    def test_pick_index_preserves_empty_string_sentinel(self) -> None:
+        self.assertEqual(pick_index([("", "skip"), ("main", "desc")], 0), "")
+
+
+class MainScreenIntentStateTests(unittest.TestCase):
+    def test_main_action_intent_for_action_rows(self) -> None:
+        self.assertEqual(main_action_intent("action-cwd"), MainIntent("launch-cwd"))
+        self.assertEqual(main_action_intent("action-new"), MainIntent("launch-new"))
+        self.assertEqual(main_action_intent("action-open"), MainIntent("launch-existing"))
+        self.assertEqual(main_action_intent("settings"), MainIntent("open-settings"))
+        self.assertEqual(main_action_intent("kill-all-global"), MainIntent("kill-all-global"))
+        self.assertIsNone(main_action_intent("unknown"))
+
+    def test_digit_jump_activates_hinted_action(self) -> None:
+        ctx = _ctx()
+        self.assertEqual(digit_jump_intent(ctx, 1), MainIntent("launch-cwd", index=0))
+
+    def test_digit_jump_focuses_settings_without_activation(self) -> None:
+        ctx = _ctx(has_sudo=True)
+        self.assertEqual(digit_jump_intent(ctx, 4), MainIntent("focus-only", index=3))
+
+    def test_digit_jump_out_of_range_is_none(self) -> None:
+        self.assertIsNone(digit_jump_intent(_ctx(), 9))
+
+    def test_activate_main_index_attaches_own_session(self) -> None:
+        ctx = _ctx(sessions=[_session("dev.foo", "stored-owner")], current_user="dev")
+        self.assertEqual(
+            activate_main_index(ctx, ACTION_COUNT),
+            MainIntent("attach", index=ACTION_COUNT, user="dev", session_name="dev.foo"),
+        )
+
+    def test_activate_main_index_attaches_other_session(self) -> None:
+        ctx = _ctx(
+            has_sudo=True,
+            sessions=[],
+            other_sessions=[_session("alice.foo", "alice")],
+            current_user="dev",
+        )
+        self.assertEqual(
+            activate_main_index(ctx, ACTION_COUNT),
+            MainIntent("attach", index=ACTION_COUNT, user="alice", session_name="alice.foo"),
+        )
+
+    def test_session_intent_defaults_blank_user_to_current_user(self) -> None:
+        s = _session("dev.foo", "")
+        self.assertEqual(session_intent(s, "dev"), MainIntent("attach", user="dev", session_name="dev.foo"))
+
+
+class ModalStateTests(unittest.TestCase):
+    def test_confirm_phrase_matches_after_strip_only(self) -> None:
+        self.assertTrue(confirm_phrase_matches(" kill-all ", "kill-all"))
+        self.assertFalse(confirm_phrase_matches("KILL-ALL", "kill-all"))
+
+    def test_project_name_validation_and_errors(self) -> None:
+        self.assertTrue(project_name_valid("demo"))
+        self.assertFalse(project_name_valid(""))
+        self.assertFalse(project_name_valid("a/b"))
+        self.assertFalse(project_name_valid("."))
+        self.assertEqual(project_name_error(""), "Name cannot be empty")
+        self.assertEqual(project_name_error("a/b"), "Name cannot contain '/'")
+        self.assertEqual(project_name_error(".."), "Invalid name")
 
 
 class SegmentsTests(unittest.TestCase):

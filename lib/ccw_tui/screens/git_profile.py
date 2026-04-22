@@ -16,6 +16,8 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, ListItem, ListView, Static
 
+from ..state import pick_index
+
 
 class GitProfileScreen(ModalScreen["str | None"]):
     DEFAULT_CSS = """
@@ -93,8 +95,9 @@ class GitProfileScreen(ModalScreen["str | None"]):
         self._select(n)
 
     def _select(self, idx: int) -> None:
-        if 0 <= idx < len(self.rows):
-            self.dismiss(self.rows[idx][0])
+        picked = pick_index(self.rows, idx)
+        if picked is not None:
+            self.dismiss(picked)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         lv = self.query_one(ListView)
