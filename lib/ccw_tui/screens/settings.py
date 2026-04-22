@@ -174,6 +174,8 @@ class SettingsScreen(Screen):
             modal = EnumCycleModal(entry, self.cbs)
         elif kind == "string":
             modal = StringInputModal(entry, self.cbs)
+        elif kind == "number":
+            modal = NumberInputModal(entry, self.cbs)
         elif kind == "array":
             modal = ArrayCsvModal(entry, self.cbs)
         elif kind == "table":
@@ -243,12 +245,12 @@ def _source_text(source: str) -> str:
 class _EditModalBase(ModalScreen[bool]):
     DEFAULT_CSS = """
     _EditModalBase, BoolToggleModal, EnumCycleModal,
-    StringInputModal, ArrayCsvModal, TableMappingModal {
+    StringInputModal, NumberInputModal, ArrayCsvModal, TableMappingModal {
         align: center middle;
     }
     _EditModalBase > Vertical, BoolToggleModal > Vertical,
     EnumCycleModal > Vertical, StringInputModal > Vertical,
-    ArrayCsvModal > Vertical, TableMappingModal > Vertical {
+    NumberInputModal > Vertical, ArrayCsvModal > Vertical, TableMappingModal > Vertical {
         width: 80;
         max-height: 30;
         padding: 1 2;
@@ -360,6 +362,37 @@ class StringInputModal(_EditModalBase):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._try_save(event.value)
+
+
+class NumberInputModal(_EditModalBase):
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(self._title(), classes="title")
+            yield Static(self.entry.spec.description, classes="desc")
+            yield Input(value=str(self.entry.value or ""), id="number-input")
+            with Horizontal(classes="buttons"):
+                yield Button("Save", variant="primary", id="save")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self._save_value(self.query_one(Input).value)
+        elif event.button.id == "cancel":
+            self.dismiss(False)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._save_value(event.value)
+
+    def _save_value(self, raw: str) -> None:
+        try:
+            value = float(raw)
+        except ValueError:
+            self.app.notify("Expected a number.", severity="error", timeout=4)
+            return
+        self._try_save(value)
 
 
 class ArrayCsvModal(_EditModalBase):

@@ -77,6 +77,21 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
         self.assertEqual(calls, ["cwd"])
 
+    async def test_refresh_preserves_action_focus(self) -> None:
+        from ccw_tui.app import CcwApp
+        from ccw_tui.widgets import ActionRow
+
+        def fake_refresh():
+            return _mk_ctx(on_refresh=fake_refresh)
+
+        app = CcwApp(_mk_ctx(on_refresh=fake_refresh), probe_agents=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("#action-open", ActionRow).focus()
+            await pilot.press("r")
+            await pilot.pause()
+            self.assertEqual(app.screen.focused.id, "action-open")
+
     async def test_kill_calls_on_kill_callback(self) -> None:
         from ccw_tui.app import CcwApp
         from ccw_tui.context import TuiSession
@@ -301,6 +316,12 @@ class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
                 lambda: ExistingProjectScreen([("alpha", "")], "/srv/work"),
                 press_keys("escape"),
                 None,
+            ),
+            ScreenScenario(
+                "up-wraps-to-last",
+                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
+                press_keys("up", "enter"),
+                "beta",
             ),
         ]
         results = await run_screen_scenarios(scenarios)

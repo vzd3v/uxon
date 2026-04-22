@@ -92,6 +92,9 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
         parsed = tomllib.loads(content)
         self.assertEqual(parsed["runtime_user"], 'quote"here')
 
+    def test_formats_float_values(self) -> None:
+        self.assertEqual(cs._format_value(2.5), "2.5")
+
     def test_always_emits_launch_user_by_caller_header(self) -> None:
         content = cs.render_repo_config_toml({"runtime_user": "x"})
         self.assertIn("[launch_user_by_caller]", content)

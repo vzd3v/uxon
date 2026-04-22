@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from .context import (
     ACTION_COUNT,
     CallbackError,
+    ServerStatus,
     TuiContext,
     TuiSession,
     _digit_hinted_indices,
@@ -228,6 +229,23 @@ def resettable_setting_key(entry: Any | None) -> str | None:
     if entry is None or not getattr(entry, "editable", False):
         return None
     return entry.spec.key
+
+
+def server_status_line(status: ServerStatus) -> str:
+    parts: list[str] = []
+    if status.cpu or status.load:
+        cpu = status.cpu or "-"
+        load = status.load or "-"
+        parts.append(f"cpu {cpu} load {load}")
+    if status.ram:
+        parts.append(f"ram {status.ram}")
+    if status.disk:
+        parts.append(f"disk {status.disk}")
+    if status.uptime:
+        parts.append(f"up {status.uptime}")
+    if not parts:
+        return "server: unavailable"
+    return "server: " + " | ".join(parts)
 
 
 @dataclass(frozen=True)

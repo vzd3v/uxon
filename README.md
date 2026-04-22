@@ -109,6 +109,9 @@ Also: `ccw -V`, `ccw --version`.
   3. *Open existing project* — pick an existing directory under
      `new_project_root`.
 - **Sessions list** (your own) with live CPU/RAM, attached marker, and recency.
+- **Server status** with load, normalized CPU load, RAM, disk usage, and uptime.
+  The main screen auto-refreshes every `tui_refresh_interval_seconds` seconds
+  while preserving the highlighted row.
 - **⚡ Superuser block** (whenever passwordless sudo is detected):
   - Other users' sessions with a yellow `USER` column (if any exist).
     `Enter` attaches via `sudo -iu <user>`, `d` kills the highlighted one.
@@ -388,6 +391,7 @@ Two layers, merged in order (later wins):
 | `agents.codex.default_args` | array | `[]` | Flags prepended to every codex invocation. |
 | `agents.cursor.default_args` | array | `[]` | Flags prepended to every cursor-agent invocation. |
 | `tmux_socket_template` | string | `/tmp/ccw-{user}.sock` | Per-user socket path. Placeholders: `{user}`, `{uid}`. |
+| `tui_refresh_interval_seconds` | number | `2.0` | Main TUI auto-refresh interval in seconds. |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback for repeat prompt. |
 | `git_create_enabled` | bool | `false` | Master switch for the [git remote on new project](#git-remote-on-new-project) flow. |
 | `default_git_remote_profile` | string | `""` | Profile used when `--git-remote default` is passed or as the TUI pre-selected default. |

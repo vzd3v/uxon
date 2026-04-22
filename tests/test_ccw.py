@@ -57,6 +57,7 @@ class CcwTests(unittest.TestCase):
             new_project_root="/srv/repos",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/ccw-{user}.sock",
+            tui_refresh_interval_seconds=2.0,
             git_create_enabled=False,
             default_git_remote_profile="",
             git_remote_profiles=[],
@@ -124,6 +125,7 @@ class CcwTests(unittest.TestCase):
             new_project_root=kw.get("new_project_root", "/srv/agentdev"),
             repeat_noninteractive_mode=kw.get("repeat_noninteractive_mode", "fail"),
             tmux_socket_template=kw.get("tmux_socket_template", "/tmp/ccw-{user}.sock"),
+            tui_refresh_interval_seconds=kw.get("tui_refresh_interval_seconds", 2.0),
             git_create_enabled=kw.get("git_create_enabled", False),
             default_git_remote_profile=kw.get("default_git_remote_profile", ""),
             git_remote_profiles=kw.get("git_remote_profiles", []),
@@ -226,6 +228,16 @@ class CcwTests(unittest.TestCase):
         self.assertEqual(cfg.default_agent, "claude")
         self.assertEqual(cfg.repeat_noninteractive_mode, "attach")
         self.assertEqual(cfg.tmux_socket_template, "/tmp/ccw-{user}-{uid}.sock")
+
+    def test_load_config_reads_tui_refresh_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("tui_refresh_interval_seconds = 5\n", tmpdir)
+        self.assertEqual(cfg.tui_refresh_interval_seconds, 5.0)
+
+    def test_load_config_rejects_invalid_tui_refresh_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg("tui_refresh_interval_seconds = 0\n", tmpdir)
 
     def test_load_config_reads_git_remote_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

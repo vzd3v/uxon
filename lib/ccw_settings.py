@@ -28,7 +28,7 @@ from typing import Any
 @dataclass(frozen=True)
 class SettingSpec:
     key: str
-    kind: str  # "string" | "bool" | "enum" | "array" | "table"
+    kind: str  # "string" | "number" | "bool" | "enum" | "array" | "table"
     description: str = ""
     choices: "tuple[str, ...] | None" = None  # for "enum"
 
@@ -72,6 +72,11 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "tmux_socket_template",
         "string",
         "Per-user socket path. Placeholders: {user}, {uid}.",
+    ),
+    SettingSpec(
+        "tui_refresh_interval_seconds",
+        "number",
+        "Main TUI auto-refresh interval in seconds.",
     ),
     SettingSpec("git_create_enabled", "bool", "Enable the git-remote-on-new-project flow."),
     SettingSpec(
@@ -188,6 +193,8 @@ def _format_value(v: Any) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
         return str(v)
     if isinstance(v, str):
         return _escape_string(v)

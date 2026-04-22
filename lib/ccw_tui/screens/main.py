@@ -39,6 +39,7 @@ from ..state import (
     activate_main_index,
     digit_jump_intent,
     main_action_intent,
+    server_status_line,
     session_intent,
 )
 from ..widgets import ActionRow, SessionTable
@@ -69,6 +70,11 @@ class MainScreen(Screen):
         color: $text-muted;
         padding: 1 2;
     }
+    #server-status {
+        color: $text-muted;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -98,10 +104,12 @@ class MainScreen(Screen):
     def __init__(self, ctx: TuiContext) -> None:
         super().__init__()
         self.ctx = ctx
+        self._restore_focus_key = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="main-scroll"):
+            yield Static(server_status_line(self.ctx.server_status), id="server-status")
             # Action rows
             yield ActionRow(
                 kind="action-cwd",
@@ -174,11 +182,6 @@ class MainScreen(Screen):
             scroll.can_focus = False
         except Exception:  # pragma: no cover — defensive
             pass
-        # Land focus on the first actionable row so arrows work immediately.
-        try:
-            self.query_one("#action-cwd", ActionRow).focus()
-        except Exception:  # pragma: no cover
-            pass
         if self.ctx.sessions:
             try:
                 self.query_one("#sessions-own", SessionTable).populate(self.ctx.sessions)
@@ -191,6 +194,16 @@ class MainScreen(Screen):
                 )
             except Exception:  # pragma: no cover — defensive
                 pass
+        interval = self.ctx.tui_refresh_interval_seconds
+        if interval > 0:
+            self.set_interval(interval, self._auto_refresh)
+        if self._restore_focus_key and self._focus_key(self._restore_focus_key):
+            return
+        # Land focus on the first actionable row so arrows work immediately.
+        try:
+            self.query_one("#action-cwd", ActionRow).focus()
+        except Exception:  # pragma: no cover
+            pass
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 
@@ -387,6 +400,15 @@ class MainScreen(Screen):
         )
 
     def action_refresh(self) -> None:
+        self._refresh_main()
+
+    def _auto_refresh(self) -> None:
+        if self.app.screen is not self:
+            return
+        self._refresh_main()
+
+    def _refresh_main(self) -> None:
+        focus_key = self._current_focus_key()
         try:
             self.ctx = self.ctx.on_refresh()
         except CallbackError as exc:
@@ -394,6 +416,7 @@ class MainScreen(Screen):
             return
         # Full re-compose: swap the top screen with a fresh MainScreen.
         new_screen = MainScreen(self.ctx)
+        new_screen._restore_focus_key = focus_key
         self.app.switch_screen(new_screen)
 
     def action_kill(self) -> None:
@@ -494,6 +517,48 @@ class MainScreen(Screen):
                 return
         except Exception:  # pragma: no cover — focus best-effort
             pass
+
+    def _current_focus_key(self) -> str:
+        focused = self.focused
+        if isinstance(focused, ActionRow):
+            return f"action:{focused.id or ''}"
+        if isinstance(focused, SessionTable):
+            session = focused.session_at(focused.cursor_row)
+            if session is None:
+                return ""
+            if focused.id == "sessions-other":
+                return f"other:{session.user}/{session.name}"
+            return f"own:{session.name}"
+        return ""
+
+    def _focus_key(self, key: str) -> bool:
+        if key.startswith("action:"):
+            selector = key.removeprefix("action:")
+            if not selector:
+                return False
+            try:
+                self.query_one(f"#{selector}", ActionRow).focus()
+                return True
+            except Exception:
+                return False
+        if key.startswith("own:"):
+            return self._focus_session_key("#sessions-own", key.removeprefix("own:"))
+        if key.startswith("other:"):
+            _, _, session_name = key.removeprefix("other:").partition("/")
+            return self._focus_session_key("#sessions-other", session_name)
+        return False
+
+    def _focus_session_key(self, selector: str, session_name: str) -> bool:
+        try:
+            table = self.query_one(selector, SessionTable)
+        except Exception:
+            return False
+        for idx, session in enumerate(table._session_index):
+            if session.name == session_name:
+                table.focus()
+                table.move_cursor(row=idx)
+                return True
+        return False
 
     # ── Convenience ──────────────────────────────────────────────────
 

@@ -49,6 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "new_project_root": "/srv/repos",
     "repeat_noninteractive_mode": "fail",
     "tmux_socket_template": "/tmp/ccw-{user}.sock",
+    "tui_refresh_interval_seconds": 2.0,
     "git_create_enabled": False,
     "default_git_remote_profile": "",
     "git_remote_profiles": [],
@@ -109,6 +110,7 @@ class Config:
     new_project_root: str
     repeat_noninteractive_mode: str
     tmux_socket_template: str
+    tui_refresh_interval_seconds: float
     git_create_enabled: bool
     default_git_remote_profile: str
     git_remote_profiles: list  # list[GitRemoteProfile] — parsed once in load_config
@@ -379,6 +381,17 @@ def load_config(cwd: str) -> Config:
     tmux_socket_template = str(merged.get("tmux_socket_template", DEFAULT_CONFIG["tmux_socket_template"])).strip()
     if not tmux_socket_template:
         fail("tmux_socket_template must not be empty")
+    try:
+        tui_refresh_interval_seconds = float(
+            merged.get(
+                "tui_refresh_interval_seconds",
+                DEFAULT_CONFIG["tui_refresh_interval_seconds"],
+            )
+        )
+    except (TypeError, ValueError):
+        fail("tui_refresh_interval_seconds must be a number")
+    if tui_refresh_interval_seconds <= 0:
+        fail("tui_refresh_interval_seconds must be greater than 0")
 
     git_create_enabled = bool(merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"]))
     default_git_remote_profile = str(
@@ -412,6 +425,7 @@ def load_config(cwd: str) -> Config:
         new_project_root=new_project_root,
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,
+        tui_refresh_interval_seconds=tui_refresh_interval_seconds,
         git_create_enabled=git_create_enabled,
         default_git_remote_profile=default_git_remote_profile,
         git_remote_profiles=git_remote_profiles,
@@ -572,6 +586,91 @@ def format_cpu_pct(cpu_pct: float) -> str:
     if cpu_pct >= 100:
         return f"{cpu_pct:.0f}"
     return f"{cpu_pct:.1f}"
+
+
+def _format_bytes(num_bytes: int) -> str:
+    if num_bytes <= 0:
+        return "-"
+    value = float(num_bytes)
+    for suffix in ("B", "K", "M", "G", "T"):
+        if value < 1024 or suffix == "T":
+            if suffix == "B":
+                return f"{int(value)}B"
+            if value >= 10:
+                return f"{value:.0f}{suffix}"
+            return f"{value:.1f}{suffix}"
+        value /= 1024
+    return f"{value:.0f}T"
+
+
+def _pct(used: int, total: int) -> str:
+    if total <= 0:
+        return "-"
+    return f"{(used / total) * 100:.0f}%"
+
+
+def _compact_duration(seconds: float) -> str:
+    total = max(0, int(seconds))
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _read_server_status(disk_path: str) -> object:
+    sys.path.insert(0, str(repo_root() / "lib"))
+    import ccw_tui
+
+    load = ""
+    cpu = ""
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8") as fh:
+            load = fh.read().split()[0]
+        cores = os.cpu_count() or 1
+        cpu = f"{(float(load) / cores) * 100:.0f}%"
+    except (OSError, ValueError, IndexError):
+        pass
+
+    ram = ""
+    try:
+        meminfo: dict[str, int] = {}
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                value = rest.strip().split()[0]
+                meminfo[key] = int(value) * 1024
+        total = meminfo.get("MemTotal", 0)
+        available = meminfo.get("MemAvailable", 0)
+        used = total - available
+        if total > 0 and used >= 0:
+            ram = f"{_format_bytes(used)}/{_format_bytes(total)} {_pct(used, total)}"
+    except (OSError, ValueError, IndexError):
+        pass
+
+    disk = ""
+    try:
+        path = disk_path if os.path.exists(disk_path) else "/"
+        st = os.statvfs(path)
+        total = st.f_blocks * st.f_frsize
+        available = st.f_bavail * st.f_frsize
+        used = total - available
+        if total > 0 and used >= 0:
+            disk = f"{_format_bytes(used)}/{_format_bytes(total)} {_pct(used, total)}"
+    except OSError:
+        pass
+
+    uptime = ""
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8") as fh:
+            uptime = _compact_duration(float(fh.read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        pass
+
+    return ccw_tui.ServerStatus(load=load, cpu=cpu, ram=ram, disk=disk, uptime=uptime)
 
 
 def run_cmd(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -2273,6 +2372,8 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         cwd_short=cwd_short,
         new_project_root=cfg.new_project_root,
         existing_projects=_list_existing_projects(cfg.new_project_root),
+        server_status=_read_server_status(cfg.new_project_root),
+        tui_refresh_interval_seconds=cfg.tui_refresh_interval_seconds,
         cwd_allowed=cwd_allowed,
         current_user=launch_user,
         has_sudo=has_sudo,

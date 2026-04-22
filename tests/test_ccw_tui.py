@@ -22,6 +22,7 @@ if _LIB not in sys.path:
 import ccw_tui  # noqa: E402
 from ccw_tui.context import (  # noqa: E402
     ACTION_COUNT,
+    ServerStatus,
     _ACTION_KINDS,
     _digit_hinted_indices,
     _segments,
@@ -51,6 +52,7 @@ from ccw_tui.state import (  # noqa: E402
     project_name_valid,
     resettable_setting_key,
     selected_setting_index,
+    server_status_line,
     session_intent,
     should_start_agent_probe,
     should_show_agents_unavailable,
@@ -97,6 +99,23 @@ class TuiContextShapeTests(unittest.TestCase):
         req = ctx.on_launch_cwd("claude", "normal")
         self.assertIsInstance(req, ccw_tui.LaunchRequest)
         self.assertEqual(req.cmd, ("true",))
+
+    def test_server_status_defaults_to_unavailable(self) -> None:
+        ctx = _ctx()
+        self.assertEqual(server_status_line(ctx.server_status), "server: unavailable")
+
+    def test_server_status_line_formats_compact_snapshot(self) -> None:
+        status = ServerStatus(
+            load="0.42",
+            cpu="11%",
+            ram="2.0G/8.0G 25%",
+            disk="20G/100G 20%",
+            uptime="3d 2h",
+        )
+        self.assertEqual(
+            server_status_line(status),
+            "server: cpu 11% load 0.42 | ram 2.0G/8.0G 25% | disk 20G/100G 20% | up 3d 2h",
+        )
 
 
 class AgentsUnavailableGateStateTests(unittest.TestCase):

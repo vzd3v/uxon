@@ -46,6 +46,10 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel", "Cancel", show=True),
         Binding("enter", "pick", "Select", show=True),
+        Binding("up", "cursor_up", "", show=False, priority=True),
+        Binding("down", "cursor_down", "", show=False, priority=True),
+        Binding("k", "cursor_up", "", show=False, priority=True),
+        Binding("j", "cursor_down", "", show=False, priority=True),
         Binding("1", "pick_digit(1)", "1-9 pick", show=True),
         Binding("2", "pick_digit(2)", "", show=False),
         Binding("3", "pick_digit(3)", "", show=False),
@@ -97,6 +101,19 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         picked = pick_index(self.projects, idx)
         if picked is not None:
             self.dismiss(picked)
+
+    def action_cursor_up(self) -> None:
+        self._move_cursor_wrapped(-1)
+
+    def action_cursor_down(self) -> None:
+        self._move_cursor_wrapped(1)
+
+    def _move_cursor_wrapped(self, delta: int) -> None:
+        if not self.projects:
+            return
+        lv = self.query_one(ListView)
+        current = lv.index if lv.index is not None else 0
+        lv.index = (current + delta) % len(self.projects)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_pick()

@@ -68,6 +68,17 @@ class TuiSession:
     legacy: bool = False  # True when parsed from old cc-<stem> naming
 
 
+@dataclass(frozen=True)
+class ServerStatus:
+    """Compact host health snapshot rendered on the main TUI screen."""
+
+    load: str = ""
+    cpu: str = ""
+    ram: str = ""
+    disk: str = ""
+    uptime: str = ""
+
+
 @dataclass
 class TuiContext:
     """Everything the TUI needs from ccw to operate."""
@@ -80,6 +91,8 @@ class TuiContext:
     cwd_short: str
     new_project_root: str
     existing_projects: list[tuple[str, str]]  # (name, compact_mtime) under new_project_root
+    server_status: ServerStatus = field(default_factory=ServerStatus)
+    tui_refresh_interval_seconds: float = 2.0
 
     # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
     # "New session in current folder" can actually launch. Computed by
