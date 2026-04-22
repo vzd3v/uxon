@@ -38,6 +38,19 @@ _ANSI_MODE = re.compile(rb"\x1b[=>]")
 _IDLE_MS = 100
 
 
+def _make_controlling_tty(slave_fd: int) -> None:
+    """Child-side setup for ``subprocess.Popen``.
+
+    ``pty.fork()`` gives the child a controlling terminal but emits a
+    Python 3.12 warning under pytest-xdist's threaded workers. ``Popen``
+    with plain ``stdin=slave_fd`` keeps stdio as a tty, but leaves
+    ``/dev/tty`` unavailable. This small child setup preserves the old
+    controlling-terminal semantics without calling ``forkpty()``.
+    """
+    os.setsid()
+    fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
+
 def strip_ansi(data: bytes) -> str:
     """Remove ANSI escape sequences and decode to text."""
     data = _ANSI_CSI.sub(b"", data)
@@ -119,6 +132,7 @@ def run_pty(
         stdout=slave_fd,
         stderr=slave_fd,
         env=child_env,
+        preexec_fn=lambda: _make_controlling_tty(slave_fd),
         close_fds=True,
     )
     os.close(slave_fd)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -103,6 +104,19 @@ class PtyTuiIntegrationTests(unittest.TestCase):
             **kwargs,
         )
 
+    def test_pty_harness_provides_controlling_terminal(self) -> None:
+        from harness.pty_tui import run_python_snippet
+
+        trace = run_python_snippet(
+            "import os; fd = os.open('/dev/tty', os.O_RDWR); "
+            "print(f'controlling-tty:{os.isatty(0)}:{os.isatty(1)}'); os.close(fd)",
+            [b""],
+            initial_drain=1.0,
+            final_drain=0.1,
+            timeout=3.0,
+        )
+        self.assertIn("controlling-tty:True:True", trace.plain)
+
     def test_fresh_superuser_digit_4_does_not_open_git_remotes(self) -> None:
         """PR 1 + PR 2 regression: on empty superuser state,
         `settings_idx == ACTION_COUNT == 3` so digit '4' points at
@@ -172,10 +186,21 @@ _DRAIN_CHILD_SCRIPT = r"""
 import sys, os
 sys.path.insert(0, {lib_path!r})
 import ccw_tui
+import ccw_agents
 from ccw_tui.context import LaunchRequest
 
-def fake_launch_cwd(dsp):
-    return LaunchRequest(cmd=("/bin/true",), label="mock-attach")
+MARKER = {marker_path!r}
+ccw_agents.probe_agents = lambda *args, **kwargs: {{}}
+
+def fake_launch_cwd(agent_id, mode_id):
+    with open(MARKER, "a", encoding="utf-8") as f:
+        f.write(f"cwd:{{agent_id}}:{{mode_id}}\n")
+    return LaunchRequest(cmd=("/bin/sh", "-c", "sleep 2.0"), label="mock-attach")
+
+def fake_launch_new(name, agent_id, mode_id, git_profile):
+    with open(MARKER, "a", encoding="utf-8") as f:
+        f.write(f"new:{{name}}:{{agent_id}}:{{mode_id}}:{{git_profile}}\n")
+    return LaunchRequest(cmd=("/bin/true",), label="mock-new")
 
 ctx = ccw_tui.TuiContext(
     sessions=[],
@@ -190,6 +215,7 @@ ctx = ccw_tui.TuiContext(
     current_user="u-den",
     has_sudo=False,
     on_launch_cwd=fake_launch_cwd,
+    on_launch_new=fake_launch_new,
     on_refresh=lambda: ctx,
 )
 rc = ccw_tui.run(ctx)
@@ -211,22 +237,30 @@ class DrainAfterLaunchTests(unittest.TestCase):
     def test_key_typed_during_launch_does_not_stale_activate(self) -> None:
         from harness.pty_tui import run_python_snippet
 
-        code = _DRAIN_CHILD_SCRIPT.format(lib_path=str(_REPO / "lib"))
+        fd, marker_path = tempfile.mkstemp(prefix="ccw-drain-", text=True)
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(marker_path) and os.unlink(marker_path))
+
+        code = _DRAIN_CHILD_SCRIPT.format(
+            lib_path=str(_REPO / "lib"),
+            marker_path=marker_path,
+        )
         # Sequence: digit-1 → permissions modal → pick regular →
         # on_launch_cwd triggers request_launch → app exits →
         # _run_launch_request runs /bin/true → re-enter.
-        # During the short /bin/true window we also send a digit-2,
-        # which must NOT cause the refreshed main screen to auto-launch
-        # action-new. We follow with q to exit.
+        # Send digit-2 immediately after the modal commit while the mocked
+        # launch command is still sleeping. It must not open NewProjectScreen
+        # after the app re-enters.
         trace = run_python_snippet(
             code,
-            [b"1", b"1", b"2", b"q"],
+            [(1.0, b"1"), (0.5, b"\r"), (0.1, b"2"), b"q"],
             extra_path=[str(_REPO / "lib")],
         )
         self.assertNotIn("Traceback", trace.plain)
-        # If the drain broke, "new" label would appear in the final
-        # frames because action-new would have activated. A harmless
-        # textual-era check: quit must happen.
+        marker = Path(marker_path).read_text(encoding="utf-8")
+        self.assertIn("cwd:claude:normal", marker)
+        self.assertNotIn("new:", marker)
+        self.assertNotIn("project name", trace.plain)
         self.assertIn("CcwApp", trace.plain)
 
 
