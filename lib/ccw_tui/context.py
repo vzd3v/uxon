@@ -101,6 +101,7 @@ class TuiContext:
     existing_projects: list[tuple[str, str]]  # (name, compact_mtime) under new_project_root
     server_status: ServerStatus = field(default_factory=ServerStatus)
     link_health_status: LinkHealthStatus = field(default_factory=LinkHealthStatus)
+    refresh_tick: int = 0
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
 

@@ -113,7 +113,11 @@ class MainScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="main-scroll"):
-            line = main_status_line(self.ctx.server_status, self.ctx.link_health_status)
+            line = main_status_line(
+                self.ctx.server_status,
+                self.ctx.link_health_status,
+                self.ctx.refresh_tick,
+            )
             yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
             # Action rows
             yield ActionRow(
@@ -473,6 +477,7 @@ class MainScreen(Screen):
             self.app.notify(f"Refresh failed: {exc}", severity="error", timeout=6)
             return
         new_ctx.link_health_status = old_link_health
+        new_ctx.refresh_tick = self.ctx.refresh_tick + 1
         self.ctx = new_ctx
         if self._layout_signature(self.ctx) == old_signature and self._apply_ctx_refresh():
             if focus_key and self._focus_key(focus_key):
@@ -626,7 +631,11 @@ class MainScreen(Screen):
         return False
 
     def _update_status_line(self) -> None:
-        line = main_status_line(self.ctx.server_status, self.ctx.link_health_status)
+        line = main_status_line(
+            self.ctx.server_status,
+            self.ctx.link_health_status,
+            self.ctx.refresh_tick,
+        )
         status = self.query_one("#server-status", Static)
         status.update(line.text)
         status.set_class(line.alert, "-alert")

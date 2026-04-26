@@ -113,7 +113,8 @@ Also: `ccw -V`, `ccw --version`.
   When `ccw` is running inside a live SSH session, the same line also includes
   an async `ssh-link` probe derived from the current SSH TCP connection's RTT,
   variance, and retransmits. If there is no SSH session, the `ssh-link` segment
-  is omitted.
+  is omitted. A tiny rotating tick marker changes on each main-screen refresh
+  so it is obvious the view is live.
   The main screen auto-refreshes every `tui_refresh_interval_seconds` seconds
   while preserving the highlighted row. The `ssh-link` probe refreshes on its
   own cadence via `tui_ssh_refresh_interval_seconds`.

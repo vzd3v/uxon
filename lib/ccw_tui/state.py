@@ -255,9 +255,18 @@ class MainStatusLine:
     alert: bool
 
 
-def main_status_line(server_status: ServerStatus, link_health_status: LinkHealthStatus) -> MainStatusLine:
+def refresh_tick_glyph(tick: int) -> str:
+    glyphs = "-\\|/"
+    return glyphs[tick % len(glyphs)]
+
+
+def main_status_line(
+    server_status: ServerStatus,
+    link_health_status: LinkHealthStatus,
+    refresh_tick: int,
+) -> MainStatusLine:
     summary = (link_health_status.summary or "").strip()
-    text = f"CcwApp | {server_status_line(server_status)}"
+    text = f"CcwApp {refresh_tick_glyph(refresh_tick)} | {server_status_line(server_status)}"
     if summary:
         text += f" | ssh-link: {summary}"
     return MainStatusLine(
