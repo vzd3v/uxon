@@ -97,6 +97,7 @@ class CcwApp(App):
         self.quit_rc: int | None = None
         self.pending_status = pending_status
         self.probe_agents = probe_agents
+        self._pending_main_digit_jump: int | None = None
         self._link_health_probe_running = False
         # Latch: AgentsUnavailableScreen is pushed at most once per app
         # instance. ``run()``'s outer loop re-creates the app after every
@@ -109,6 +110,9 @@ class CcwApp(App):
     def on_mount(self) -> None:
         # Push the main screen as the first and only base screen.
         self.push_screen(MainScreen(self.ctx))
+        self.call_later(self._flush_pending_main_digit_jump)
+        for delay in (0.05, 0.2, 0.5):
+            self.set_timer(delay, self._flush_pending_main_digit_jump)
         if self.pending_status:
             # T0a confirmed: a notify() raised on mount survives the app
             # re-create cycle when the outer loop stashes the message.
@@ -120,11 +124,17 @@ class CcwApp(App):
             enabled_agents=self.ctx.enabled_agents,
         ):
             self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
-        self.set_timer(self.ctx.tui_ssh_refresh_interval_seconds, self._kick_link_health_probe)
-        self.set_interval(
-            self.ctx.tui_ssh_refresh_interval_seconds,
-            self._kick_link_health_probe,
-        )
+        timers_enabled = not self.is_headless and "PYTEST_CURRENT_TEST" not in os.environ
+        if timers_enabled:
+            self.set_interval(
+                self.ctx.tui_refresh_interval_seconds,
+                self._kick_main_refresh,
+            )
+            self.set_timer(self.ctx.tui_ssh_refresh_interval_seconds, self._kick_link_health_probe)
+            self.set_interval(
+                self.ctx.tui_ssh_refresh_interval_seconds,
+                self._kick_link_health_probe,
+            )
 
     def _probe_agents_worker(self) -> None:
         """Background thread: probe each enabled agent's binary --version."""
@@ -142,6 +152,11 @@ class CcwApp(App):
             return
         self._link_health_probe_running = True
         self.run_worker(self._probe_link_health_worker, thread=True, exclusive=False)
+
+    def _kick_main_refresh(self) -> None:
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if isinstance(top, MainScreen):
+            top._run_auto_refresh()
 
     def _probe_link_health_worker(self) -> None:
         import ccw_tui
@@ -213,6 +228,17 @@ class CcwApp(App):
         top = self.screen_stack[-1] if self.screen_stack else None
         if isinstance(top, MainScreen):
             top.action_digit_jump(n)
+            return
+        self._pending_main_digit_jump = n
+
+    def _flush_pending_main_digit_jump(self) -> None:
+        pending = self._pending_main_digit_jump
+        if pending is None:
+            return
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if isinstance(top, MainScreen):
+            self._pending_main_digit_jump = None
+            top.action_digit_jump(pending)
 
     def pop_until_main(self) -> None:
         """Dismiss every modal above the main screen.

@@ -203,9 +203,6 @@ class MainScreen(Screen):
                 )
             except Exception:  # pragma: no cover — defensive
                 pass
-        interval = self.ctx.tui_refresh_interval_seconds
-        if interval > 0:
-            self.set_interval(interval, self._auto_refresh)
         self.call_after_refresh(self._update_status_line)
         for delay in (0.05, 0.2, 0.5):
             self.set_timer(delay, self._prime_initial_frame)
@@ -414,7 +411,7 @@ class MainScreen(Screen):
     def action_refresh(self) -> None:
         self._refresh_main()
 
-    def _auto_refresh(self) -> None:
+    def _run_auto_refresh(self) -> None:
         if self.app.screen is not self:
             return
         self._refresh_main()
@@ -475,6 +472,8 @@ class MainScreen(Screen):
             new_ctx = self.ctx.on_refresh()
         except CallbackError as exc:
             self.app.notify(f"Refresh failed: {exc}", severity="error", timeout=6)
+            return
+        if new_ctx is None:
             return
         new_ctx.link_health_status = old_link_health
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
