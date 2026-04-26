@@ -415,16 +415,71 @@ class MainScreen(Screen):
             return
         self._refresh_main()
 
+    def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
+        return (
+            bool(ctx.sessions),
+            ctx.has_sudo,
+            bool(ctx.other_sessions),
+            ctx.has_sudo and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
+        )
+
+    def _apply_ctx_refresh(self) -> bool:
+        try:
+            self.query_one("#action-cwd", ActionRow).detail = self._cwd_detail()
+            self.query_one("#action-cwd", ActionRow)._render_text()
+            self.query_one("#action-cwd", ActionRow).set_enabled(self.ctx.cwd_allowed)
+            open_row = self.query_one("#action-open", ActionRow)
+            open_row.detail = f"({self.ctx.new_project_root}/…)"
+            open_row.set_enabled(bool(self.ctx.existing_projects))
+            self.query_one("#action-new", ActionRow).detail = f"({self.ctx.new_project_root}/…)"
+            self.query_one("#action-new", ActionRow)._render_text()
+        except Exception:
+            return False
+
+        try:
+            own_table = self.query_one("#sessions-own", SessionTable)
+        except Exception:
+            own_table = None
+        if own_table is not None:
+            own_table.populate(self.ctx.sessions)
+
+        try:
+            other_table = self.query_one("#sessions-other", SessionTable)
+        except Exception:
+            other_table = None
+        if other_table is not None:
+            other_table.populate(self.ctx.other_sessions)
+
+        if self.ctx.has_sudo:
+            try:
+                kill_row = self.query_one("#action-kill-all-global", ActionRow)
+            except Exception:
+                kill_row = None
+            if kill_row is not None:
+                total_sessions = len(self.ctx.sessions) + len(self.ctx.other_sessions)
+                kill_row.label = f"⚡ Kill ALL ccw sessions (all users, {total_sessions} total)"
+                kill_row._render_text()
+
+        self._update_status_line()
+        return True
+
     def _refresh_main(self) -> None:
         focus_key = self._current_focus_key()
+        old_signature = self._layout_signature(self.ctx)
         old_link_health = self.ctx.link_health_status
         try:
-            self.ctx = self.ctx.on_refresh()
+            new_ctx = self.ctx.on_refresh()
         except CallbackError as exc:
             self.app.notify(f"Refresh failed: {exc}", severity="error", timeout=6)
             return
-        self.ctx.link_health_status = old_link_health
-        # Full re-compose: swap the top screen with a fresh MainScreen.
+        new_ctx.link_health_status = old_link_health
+        self.ctx = new_ctx
+        if self._layout_signature(self.ctx) == old_signature and self._apply_ctx_refresh():
+            if focus_key and self._focus_key(focus_key):
+                return
+            self.call_later(self._focus_default_action)
+            return
+        # Full re-compose when section structure changed.
         new_screen = MainScreen(self.ctx)
         new_screen._restore_focus_key = focus_key
         self.app.switch_screen(new_screen)

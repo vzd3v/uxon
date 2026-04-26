@@ -102,6 +102,7 @@ class TuiContext:
     server_status: ServerStatus = field(default_factory=ServerStatus)
     link_health_status: LinkHealthStatus = field(default_factory=LinkHealthStatus)
     tui_refresh_interval_seconds: float = 2.0
+    tui_ssh_refresh_interval_seconds: float = 10.0
 
     # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
     # "New session in current folder" can actually launch. Computed by

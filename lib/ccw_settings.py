@@ -78,6 +78,11 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "number",
         "Main TUI auto-refresh interval in seconds.",
     ),
+    SettingSpec(
+        "tui_ssh_refresh_interval_seconds",
+        "number",
+        "SSH link-health refresh interval in seconds.",
+    ),
     SettingSpec("git_create_enabled", "bool", "Enable the git-remote-on-new-project flow."),
     SettingSpec(
         "default_git_remote_profile",

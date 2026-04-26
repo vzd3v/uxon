@@ -120,9 +120,9 @@ class CcwApp(App):
             enabled_agents=self.ctx.enabled_agents,
         ):
             self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
-        self.set_timer(2.0, self._kick_link_health_probe)
+        self.set_timer(self.ctx.tui_ssh_refresh_interval_seconds, self._kick_link_health_probe)
         self.set_interval(
-            max(15.0, self.ctx.tui_refresh_interval_seconds * 5),
+            self.ctx.tui_ssh_refresh_interval_seconds,
             self._kick_link_health_probe,
         )
 
