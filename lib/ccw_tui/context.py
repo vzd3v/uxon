@@ -83,8 +83,8 @@ class ServerStatus:
 class LinkHealthStatus:
     """Async SSH-path health probe rendered on the main TUI screen."""
 
-    state: str = "pending"  # pending | ok | error | info
-    summary: str = "checking..."
+    state: str = "hidden"  # hidden | ok | error | info
+    summary: str = ""
 
 
 @dataclass
@@ -102,7 +102,6 @@ class TuiContext:
     server_status: ServerStatus = field(default_factory=ServerStatus)
     link_health_status: LinkHealthStatus = field(default_factory=LinkHealthStatus)
     tui_refresh_interval_seconds: float = 2.0
-    tui_ssh_health_target: str = ""
 
     # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
     # "New session in current folder" can actually launch. Computed by
@@ -132,6 +131,7 @@ class TuiContext:
     on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
     on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
     on_refresh: Callable[[], "TuiContext"] = lambda: None  # type: ignore[return-value]
+    on_probe_link_health: Callable[[], Any] = lambda: None
     on_launch_cwd: Callable[[str, str], "LaunchRequest"] = (
         lambda agent_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-cwd")
     )

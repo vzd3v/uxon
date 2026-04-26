@@ -107,8 +107,6 @@ class CcwApp(App):
         self._agents_popup_shown: bool = False
 
     def on_mount(self) -> None:
-        if not self._resolve_link_probe_target():
-            self.ctx.link_health_status = self._link_health_no_target_status()
         # Push the main screen as the first and only base screen.
         self.push_screen(MainScreen(self.ctx))
         if self.pending_status:
@@ -122,12 +120,11 @@ class CcwApp(App):
             enabled_agents=self.ctx.enabled_agents,
         ):
             self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
-        if self._resolve_link_probe_target():
-            self.set_timer(2.0, self._kick_link_health_probe)
-            self.set_interval(
-                max(15.0, self.ctx.tui_refresh_interval_seconds * 5),
-                self._kick_link_health_probe,
-            )
+        self.set_timer(2.0, self._kick_link_health_probe)
+        self.set_interval(
+            max(15.0, self.ctx.tui_refresh_interval_seconds * 5),
+            self._kick_link_health_probe,
+        )
 
     def _probe_agents_worker(self) -> None:
         """Background thread: probe each enabled agent's binary --version."""
@@ -150,20 +147,8 @@ class CcwApp(App):
         import ccw_tui
 
         try:
-            try:
-                import icmplib  # noqa: F401
-            except ImportError:
-                status = ccw_tui.LinkHealthStatus(
-                    state="info",
-                    summary="install icmplib for ssh-link probe",
-                )
-                self.post_message(_LinkHealthUpdated(status))
-                return
-            target = self._resolve_link_probe_target()
-            if not target:
-                status = self._link_health_no_target_status()
-            else:
-                status = self._run_link_probe(target)
+            probe = getattr(self.ctx, "on_probe_link_health", None)
+            status = probe() if callable(probe) else None
         except Exception as exc:  # pragma: no cover — defensive
             status = ccw_tui.LinkHealthStatus(
                 state="error",
@@ -171,50 +156,9 @@ class CcwApp(App):
             )
         finally:
             self._link_health_probe_running = False
+        if status is None:
+            status = ccw_tui.LinkHealthStatus()
         self.post_message(_LinkHealthUpdated(status))
-
-    def _resolve_link_probe_target(self) -> str:
-        target = (getattr(self.ctx, "tui_ssh_health_target", "") or "").strip()
-        if target:
-            return target
-        ssh_client = os.environ.get("SSH_CLIENT", "").strip()
-        if ssh_client:
-            return ssh_client.split()[0]
-        return ""
-
-    def _link_health_no_target_status(self) -> Any:
-        import ccw_tui
-
-        return ccw_tui.LinkHealthStatus(
-            state="info",
-            summary="set tui_ssh_health_target or connect via ssh",
-        )
-
-    def _run_link_probe(self, target: str) -> Any:
-        import ccw_tui
-
-        from icmplib import ping
-
-        host = ping(
-            target,
-            count=4,
-            interval=0.25,
-            timeout=1.5,
-            privileged=False,
-        )
-        if not host.packets_sent:
-            return ccw_tui.LinkHealthStatus(state="error", summary=f"{target} no samples")
-        avg_rtt = getattr(host, "avg_rtt", 0.0) or 0.0
-        jitter = getattr(host, "jitter", 0.0) or 0.0
-        packet_loss = float(getattr(host, "packet_loss", 1.0) or 0.0) * 100.0
-        alert = packet_loss >= 3.0 or avg_rtt >= 120.0 or jitter >= 35.0 or not host.is_alive
-        summary = (
-            f"{target} {avg_rtt:.0f}ms avg {jitter:.0f}ms jitter {packet_loss:.0f}% loss"
-        )
-        return ccw_tui.LinkHealthStatus(
-            state="error" if alert else "ok",
-            summary=summary,
-        )
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 

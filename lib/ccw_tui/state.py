@@ -256,9 +256,12 @@ class MainStatusLine:
 
 
 def main_status_line(server_status: ServerStatus, link_health_status: LinkHealthStatus) -> MainStatusLine:
-    summary = (link_health_status.summary or "").strip() or "checking..."
+    summary = (link_health_status.summary or "").strip()
+    text = f"CcwApp | {server_status_line(server_status)}"
+    if summary:
+        text += f" | ssh-link: {summary}"
     return MainStatusLine(
-        text=f"CcwApp | {server_status_line(server_status)} | ssh-link: {summary}",
+        text=text,
         alert=link_health_status.state == "error",
     )
 
