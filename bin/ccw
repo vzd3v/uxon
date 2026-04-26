@@ -50,6 +50,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "repeat_noninteractive_mode": "fail",
     "tmux_socket_template": "/tmp/ccw-{user}.sock",
     "tui_refresh_interval_seconds": 2.0,
+    "tui_ssh_health_target": "",
     "git_create_enabled": False,
     "default_git_remote_profile": "",
     "git_remote_profiles": [],
@@ -114,6 +115,7 @@ class Config:
     git_create_enabled: bool
     default_git_remote_profile: str
     git_remote_profiles: list  # list[GitRemoteProfile] — parsed once in load_config
+    tui_ssh_health_target: str = ""
 
 
 @dataclass
@@ -392,6 +394,9 @@ def load_config(cwd: str) -> Config:
         fail("tui_refresh_interval_seconds must be a number")
     if tui_refresh_interval_seconds <= 0:
         fail("tui_refresh_interval_seconds must be greater than 0")
+    tui_ssh_health_target = str(
+        merged.get("tui_ssh_health_target", DEFAULT_CONFIG["tui_ssh_health_target"])
+    ).strip()
 
     git_create_enabled = bool(merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"]))
     default_git_remote_profile = str(
@@ -426,6 +431,7 @@ def load_config(cwd: str) -> Config:
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,
         tui_refresh_interval_seconds=tui_refresh_interval_seconds,
+        tui_ssh_health_target=tui_ssh_health_target,
         git_create_enabled=git_create_enabled,
         default_git_remote_profile=default_git_remote_profile,
         git_remote_profiles=git_remote_profiles,
@@ -2374,6 +2380,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str) -> object:
         existing_projects=_list_existing_projects(cfg.new_project_root),
         server_status=_read_server_status(cfg.new_project_root),
         tui_refresh_interval_seconds=cfg.tui_refresh_interval_seconds,
+        tui_ssh_health_target=cfg.tui_ssh_health_target,
         cwd_allowed=cwd_allowed,
         current_user=launch_user,
         has_sudo=has_sudo,

@@ -3,7 +3,8 @@
 Public API re-exports only. Implementation lives in sibling modules:
 
   - ``context``  — pure data (``TuiContext``, ``TuiSession``, ``ServerStatus``,
-                   ``LaunchRequest``, ``Item``, ``build_items``, ``CallbackError``).
+                   ``LinkHealthStatus``, ``LaunchRequest``, ``Item``,
+                   ``build_items``, ``CallbackError``).
   - ``state``    — pure TUI state decisions (not public-re-exported).
   - ``events``   — JSONL event log (``LOG_DIR``, ``_log_event``).
   - ``launch``   — launch-handoff helpers (runs outside the TUI).
@@ -18,6 +19,7 @@ from __future__ import annotations
 from .context import (
     CallbackError,
     Item,
+    LinkHealthStatus,
     LaunchRequest,
     ServerStatus,
     TuiContext,
@@ -32,6 +34,7 @@ __all__ = [
     "CallbackError",
     "CcwApp",
     "Item",
+    "LinkHealthStatus",
     "LOG_DIR",
     "LaunchRequest",
     "ServerStatus",

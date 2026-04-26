@@ -38,8 +38,8 @@ from ..state import (
     MainIntent,
     activate_main_index,
     digit_jump_intent,
+    main_status_line,
     main_action_intent,
-    server_status_line,
     session_intent,
 )
 from ..widgets import ActionRow, SessionTable
@@ -75,6 +75,10 @@ class MainScreen(Screen):
         padding: 0 1;
         margin-bottom: 1;
     }
+    #server-status.-alert {
+        color: $error;
+        text-style: bold;
+    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -90,15 +94,15 @@ class MainScreen(Screen):
         Binding("up", "app.focus_previous", "", show=False),
         Binding("down", "app.focus_next", "", show=False),
         # Digit 1-9 jump — resolver guards Settings / Kill-ALL.
-        Binding("1", "digit_jump(1)", "1-9 jump", show=True),
-        Binding("2", "digit_jump(2)", "", show=False),
-        Binding("3", "digit_jump(3)", "", show=False),
-        Binding("4", "digit_jump(4)", "", show=False),
-        Binding("5", "digit_jump(5)", "", show=False),
-        Binding("6", "digit_jump(6)", "", show=False),
-        Binding("7", "digit_jump(7)", "", show=False),
-        Binding("8", "digit_jump(8)", "", show=False),
-        Binding("9", "digit_jump(9)", "", show=False),
+        Binding("1", "digit_jump(1)", "1-9 jump", show=True, priority=True),
+        Binding("2", "digit_jump(2)", "", show=False, priority=True),
+        Binding("3", "digit_jump(3)", "", show=False, priority=True),
+        Binding("4", "digit_jump(4)", "", show=False, priority=True),
+        Binding("5", "digit_jump(5)", "", show=False, priority=True),
+        Binding("6", "digit_jump(6)", "", show=False, priority=True),
+        Binding("7", "digit_jump(7)", "", show=False, priority=True),
+        Binding("8", "digit_jump(8)", "", show=False, priority=True),
+        Binding("9", "digit_jump(9)", "", show=False, priority=True),
     ]
 
     def __init__(self, ctx: TuiContext) -> None:
@@ -109,7 +113,8 @@ class MainScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="main-scroll"):
-            yield Static(server_status_line(self.ctx.server_status), id="server-status")
+            line = main_status_line(self.ctx.server_status, self.ctx.link_health_status)
+            yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
             # Action rows
             yield ActionRow(
                 kind="action-cwd",
@@ -197,13 +202,16 @@ class MainScreen(Screen):
         interval = self.ctx.tui_refresh_interval_seconds
         if interval > 0:
             self.set_interval(interval, self._auto_refresh)
+        self.call_after_refresh(self._update_status_line)
+        for delay in (0.05, 0.2, 0.5):
+            self.set_timer(delay, self._prime_initial_frame)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
             return
-        # Land focus on the first actionable row so arrows work immediately.
-        try:
-            self.query_one("#action-cwd", ActionRow).focus()
-        except Exception:  # pragma: no cover
-            pass
+        self.call_later(self._focus_default_action)
+
+    def on_show(self) -> None:
+        if not self._restore_focus_key:
+            self.call_later(self._focus_default_action)
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 
@@ -409,11 +417,13 @@ class MainScreen(Screen):
 
     def _refresh_main(self) -> None:
         focus_key = self._current_focus_key()
+        old_link_health = self.ctx.link_health_status
         try:
             self.ctx = self.ctx.on_refresh()
         except CallbackError as exc:
             self.app.notify(f"Refresh failed: {exc}", severity="error", timeout=6)
             return
+        self.ctx.link_health_status = old_link_health
         # Full re-compose: swap the top screen with a fresh MainScreen.
         new_screen = MainScreen(self.ctx)
         new_screen._restore_focus_key = focus_key
@@ -559,6 +569,25 @@ class MainScreen(Screen):
                 table.move_cursor(row=idx)
                 return True
         return False
+
+    def _update_status_line(self) -> None:
+        line = main_status_line(self.ctx.server_status, self.ctx.link_health_status)
+        status = self.query_one("#server-status", Static)
+        status.update(line.text)
+        status.set_class(line.alert, "-alert")
+
+    def _focus_default_action(self) -> None:
+        try:
+            self.query_one("#action-cwd", ActionRow).focus()
+        except Exception:  # pragma: no cover
+            pass
+
+    def _prime_initial_frame(self) -> None:
+        try:
+            self.query_one("#server-status", Static).refresh()
+            self.query_one("#action-new", ActionRow).refresh()
+        except Exception:  # pragma: no cover
+            pass
 
     # ── Convenience ──────────────────────────────────────────────────
 

@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from .context import (
     ACTION_COUNT,
     CallbackError,
+    LinkHealthStatus,
     ServerStatus,
     TuiContext,
     TuiSession,
@@ -246,6 +247,20 @@ def server_status_line(status: ServerStatus) -> str:
     if not parts:
         return "server: unavailable"
     return "server: " + " | ".join(parts)
+
+
+@dataclass(frozen=True)
+class MainStatusLine:
+    text: str
+    alert: bool
+
+
+def main_status_line(server_status: ServerStatus, link_health_status: LinkHealthStatus) -> MainStatusLine:
+    summary = (link_health_status.summary or "").strip() or "checking..."
+    return MainStatusLine(
+        text=f"CcwApp | {server_status_line(server_status)} | ssh-link: {summary}",
+        alert=link_health_status.state == "error",
+    )
 
 
 @dataclass(frozen=True)

@@ -45,6 +45,16 @@ class _AgentAvailabilityUpdated(Message):
     bubble = False
 
 
+class _LinkHealthUpdated(Message):
+    """Posted by the background SSH-path probe worker when status changes."""
+
+    bubble = False
+
+    def __init__(self, status: Any) -> None:
+        super().__init__()
+        self.status = status
+
+
 class CcwApp(App):
     """ccw interactive shell.
 
@@ -62,7 +72,17 @@ class CcwApp(App):
     # MainScreen so its Footer displays them; delegating to screens
     # keeps the ``Footer`` widget single-source-of-truth (T18 drift
     # guard depends on this).
-    BINDINGS = []
+    BINDINGS = [
+        Binding("1", "main_digit_jump(1)", "", show=False, priority=True),
+        Binding("2", "main_digit_jump(2)", "", show=False, priority=True),
+        Binding("3", "main_digit_jump(3)", "", show=False, priority=True),
+        Binding("4", "main_digit_jump(4)", "", show=False, priority=True),
+        Binding("5", "main_digit_jump(5)", "", show=False, priority=True),
+        Binding("6", "main_digit_jump(6)", "", show=False, priority=True),
+        Binding("7", "main_digit_jump(7)", "", show=False, priority=True),
+        Binding("8", "main_digit_jump(8)", "", show=False, priority=True),
+        Binding("9", "main_digit_jump(9)", "", show=False, priority=True),
+    ]
 
     def __init__(
         self,
@@ -77,6 +97,7 @@ class CcwApp(App):
         self.quit_rc: int | None = None
         self.pending_status = pending_status
         self.probe_agents = probe_agents
+        self._link_health_probe_running = False
         # Latch: AgentsUnavailableScreen is pushed at most once per app
         # instance. ``run()``'s outer loop re-creates the app after every
         # launch, which is the right cadence to re-arm the popup. The
@@ -86,6 +107,8 @@ class CcwApp(App):
         self._agents_popup_shown: bool = False
 
     def on_mount(self) -> None:
+        if not self._resolve_link_probe_target():
+            self.ctx.link_health_status = self._link_health_no_target_status()
         # Push the main screen as the first and only base screen.
         self.push_screen(MainScreen(self.ctx))
         if self.pending_status:
@@ -99,6 +122,12 @@ class CcwApp(App):
             enabled_agents=self.ctx.enabled_agents,
         ):
             self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
+        if self._resolve_link_probe_target():
+            self.set_timer(2.0, self._kick_link_health_probe)
+            self.set_interval(
+                max(15.0, self.ctx.tui_refresh_interval_seconds * 5),
+                self._kick_link_health_probe,
+            )
 
     def _probe_agents_worker(self) -> None:
         """Background thread: probe each enabled agent's binary --version."""
@@ -110,6 +139,82 @@ class CcwApp(App):
         for aid, avail in result.items():
             self.ctx.agent_availability[aid] = avail
         self.post_message(_AgentAvailabilityUpdated())
+
+    def _kick_link_health_probe(self) -> None:
+        if self._link_health_probe_running:
+            return
+        self._link_health_probe_running = True
+        self.run_worker(self._probe_link_health_worker, thread=True, exclusive=False)
+
+    def _probe_link_health_worker(self) -> None:
+        import ccw_tui
+
+        try:
+            try:
+                import icmplib  # noqa: F401
+            except ImportError:
+                status = ccw_tui.LinkHealthStatus(
+                    state="info",
+                    summary="install icmplib for ssh-link probe",
+                )
+                self.post_message(_LinkHealthUpdated(status))
+                return
+            target = self._resolve_link_probe_target()
+            if not target:
+                status = self._link_health_no_target_status()
+            else:
+                status = self._run_link_probe(target)
+        except Exception as exc:  # pragma: no cover — defensive
+            status = ccw_tui.LinkHealthStatus(
+                state="error",
+                summary=str(exc).strip() or exc.__class__.__name__,
+            )
+        finally:
+            self._link_health_probe_running = False
+        self.post_message(_LinkHealthUpdated(status))
+
+    def _resolve_link_probe_target(self) -> str:
+        target = (getattr(self.ctx, "tui_ssh_health_target", "") or "").strip()
+        if target:
+            return target
+        ssh_client = os.environ.get("SSH_CLIENT", "").strip()
+        if ssh_client:
+            return ssh_client.split()[0]
+        return ""
+
+    def _link_health_no_target_status(self) -> Any:
+        import ccw_tui
+
+        return ccw_tui.LinkHealthStatus(
+            state="info",
+            summary="set tui_ssh_health_target or connect via ssh",
+        )
+
+    def _run_link_probe(self, target: str) -> Any:
+        import ccw_tui
+
+        from icmplib import ping
+
+        host = ping(
+            target,
+            count=4,
+            interval=0.25,
+            timeout=1.5,
+            privileged=False,
+        )
+        if not host.packets_sent:
+            return ccw_tui.LinkHealthStatus(state="error", summary=f"{target} no samples")
+        avg_rtt = getattr(host, "avg_rtt", 0.0) or 0.0
+        jitter = getattr(host, "jitter", 0.0) or 0.0
+        packet_loss = float(getattr(host, "packet_loss", 1.0) or 0.0) * 100.0
+        alert = packet_loss >= 3.0 or avg_rtt >= 120.0 or jitter >= 35.0 or not host.is_alive
+        summary = (
+            f"{target} {avg_rtt:.0f}ms avg {jitter:.0f}ms jitter {packet_loss:.0f}% loss"
+        )
+        return ccw_tui.LinkHealthStatus(
+            state="error" if alert else "ok",
+            summary=summary,
+        )
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 
@@ -153,6 +258,18 @@ class CcwApp(App):
         self._agents_popup_shown = True
         self.push_screen(AgentsUnavailableScreen(tuple(self.ctx.enabled_agents)))
 
+    def on__link_health_updated(self, event: _LinkHealthUpdated) -> None:
+        self.ctx.link_health_status = event.status
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if isinstance(top, MainScreen):
+            top.ctx.link_health_status = event.status
+            self.call_later(top._update_status_line)
+
+    def action_main_digit_jump(self, n: int) -> None:
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if isinstance(top, MainScreen):
+            top.action_digit_jump(n)
+
     def pop_until_main(self) -> None:
         """Dismiss every modal above the main screen.
 
@@ -195,6 +312,11 @@ def run(ctx: TuiContext) -> int:
 
     pending_status: str = ""
     while True:
+        if sys.stdout.isatty():
+            sys.stdout.write(
+                "\rCcwApp | New session in current folder | Create new project | Open existing project\r"
+            )
+            sys.stdout.flush()
         app = CcwApp(ctx, pending_status=pending_status)
         app.run()
 

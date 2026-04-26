@@ -79,6 +79,14 @@ class ServerStatus:
     uptime: str = ""
 
 
+@dataclass(frozen=True)
+class LinkHealthStatus:
+    """Async SSH-path health probe rendered on the main TUI screen."""
+
+    state: str = "pending"  # pending | ok | error | info
+    summary: str = "checking..."
+
+
 @dataclass
 class TuiContext:
     """Everything the TUI needs from ccw to operate."""
@@ -92,7 +100,9 @@ class TuiContext:
     new_project_root: str
     existing_projects: list[tuple[str, str]]  # (name, compact_mtime) under new_project_root
     server_status: ServerStatus = field(default_factory=ServerStatus)
+    link_health_status: LinkHealthStatus = field(default_factory=LinkHealthStatus)
     tui_refresh_interval_seconds: float = 2.0
+    tui_ssh_health_target: str = ""
 
     # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
     # "New session in current folder" can actually launch. Computed by
