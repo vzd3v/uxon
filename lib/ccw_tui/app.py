@@ -114,7 +114,6 @@ class CcwApp(App):
         self.quit_rc: int | None = None
         self.pending_status = pending_status
         self.probe_agents = probe_agents
-        self._pending_main_digit_jump: int | None = None
         self._link_health_probe_running = False
         # Single in-flight latch for ctx refresh. Periodic timer, manual
         # ``r`` and the post-skeleton initial load all funnel through
@@ -133,9 +132,9 @@ class CcwApp(App):
     def on_mount(self) -> None:
         # Push the main screen as the first and only base screen.
         self.push_screen(MainScreen(self.ctx))
-        self.call_later(self._flush_pending_main_digit_jump)
-        for delay in (0.05, 0.2, 0.5):
-            self.set_timer(delay, self._flush_pending_main_digit_jump)
+        # MainScreen sits on the stack immediately after push_screen, so a
+        # digit press received during mount is dispatched directly via
+        # ``action_main_digit_jump`` — no pending-flush gymnastics needed.
         if self.pending_status:
             # T0a confirmed: a notify() raised on mount survives the app
             # re-create cycle when the outer loop stashes the message.
@@ -287,17 +286,6 @@ class CcwApp(App):
         top = self.screen_stack[-1] if self.screen_stack else None
         if isinstance(top, MainScreen):
             top.action_digit_jump(n)
-            return
-        self._pending_main_digit_jump = n
-
-    def _flush_pending_main_digit_jump(self) -> None:
-        pending = self._pending_main_digit_jump
-        if pending is None:
-            return
-        top = self.screen_stack[-1] if self.screen_stack else None
-        if isinstance(top, MainScreen):
-            self._pending_main_digit_jump = None
-            top.action_digit_jump(pending)
 
     def pop_until_main(self) -> None:
         """Dismiss every modal above the main screen.

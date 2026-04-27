@@ -206,8 +206,6 @@ class MainScreen(Screen):
             except Exception:  # pragma: no cover — defensive
                 pass
         self.call_after_refresh(self._update_status_line)
-        for delay in (0.05, 0.2, 0.5):
-            self.set_timer(delay, self._prime_initial_frame)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
             return
         self.call_later(self._focus_default_action)
@@ -653,13 +651,6 @@ class MainScreen(Screen):
     def _focus_default_action(self) -> None:
         try:
             self.query_one("#action-cwd", ActionRow).focus()
-        except Exception:  # pragma: no cover
-            pass
-
-    def _prime_initial_frame(self) -> None:
-        try:
-            self.query_one("#server-status", Static).refresh()
-            self.query_one("#action-new", ActionRow).refresh()
         except Exception:  # pragma: no cover
             pass
 
