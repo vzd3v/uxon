@@ -173,7 +173,13 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     async def _rebuild_agent_list(self) -> None:
         """Recompute visible agents from availability and repopulate the left
         ListView in place. Called on mount-time update and whenever a probe
-        result arrives after the screen is already showing."""
+        result arrives after the screen is already showing.
+
+        Defensive: ``call_later`` from the app-level probe handler can race
+        with screen dismiss — by the time this coroutine runs, the screen
+        may have been popped and its DOM detached. Bail out quietly when
+        the panels are no longer in the tree.
+        """
         avail = self.ctx.agent_availability
         update = update_launch_options_after_availability(
             enabled_agents=tuple(self.ctx.enabled_agents),
@@ -187,7 +193,10 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         self._single_agent = update.single_agent
         self._active_panel = update.active_panel
 
-        agent_panel = self.query_one("#agent-panel", Vertical)
+        try:
+            agent_panel = self.query_one("#agent-panel", Vertical)
+        except Exception:
+            return
         agent_panel.display = not self._single_agent
 
         agent_list = self.query_one("#agent-list", ListView)

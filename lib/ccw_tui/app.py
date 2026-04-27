@@ -55,6 +55,23 @@ class _LinkHealthUpdated(Message):
         self.status = status
 
 
+class _MainCtxLoaded(Message):
+    """Posted by the initial-load worker once on_refresh() returns the real ctx.
+
+    Applied via :meth:`MainScreen.apply_loaded_ctx`. The skeleton ctx flips
+    to ``loading=True``; this message hands in the loaded ctx (loading=False)
+    and the screen patches itself in place or swaps for a fresh MainScreen
+    when the layout changed.
+    """
+
+    bubble = False
+
+    def __init__(self, ctx: "TuiContext | None", error: str = "") -> None:
+        super().__init__()
+        self.ctx = ctx
+        self.error = error
+
+
 class CcwApp(App):
     """ccw interactive shell.
 
@@ -118,6 +135,10 @@ class CcwApp(App):
             # re-create cycle when the outer loop stashes the message.
             self.notify(self.pending_status, severity="error", timeout=6)
         self.pending_status = ""
+        # If the caller handed us a skeleton ctx, populate it asynchronously
+        # — keeps the first frame fast and the event loop unblocked.
+        if self.ctx.loading:
+            self.run_worker(self._initial_load_worker, thread=True, exclusive=False)
         # Kick off background agent availability probe.
         if should_start_agent_probe(
             probe_agents=self.probe_agents,
@@ -135,6 +156,33 @@ class CcwApp(App):
                 self.ctx.tui_ssh_refresh_interval_seconds,
                 self._kick_link_health_probe,
             )
+
+    def _initial_load_worker(self) -> None:
+        """Background thread: build the real TuiContext via ctx.on_refresh().
+
+        Called once at startup when we mounted with a skeleton ctx
+        (loading=True). The result is delivered to MainScreen via a
+        :class:`_MainCtxLoaded` message — never written from this thread.
+        """
+        try:
+            new_ctx = self.ctx.on_refresh()
+        except CallbackError as exc:
+            self.post_message(_MainCtxLoaded(None, error=str(exc)))
+            return
+        except Exception as exc:  # pragma: no cover — defensive
+            self.post_message(_MainCtxLoaded(None, error=str(exc) or exc.__class__.__name__))
+            return
+        self.post_message(_MainCtxLoaded(new_ctx))
+
+    def on__main_ctx_loaded(self, event: _MainCtxLoaded) -> None:
+        if event.error:
+            self.notify(f"Initial load failed: {event.error}", severity="error", timeout=6)
+            return
+        if event.ctx is None:
+            return
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if isinstance(top, MainScreen):
+            top.apply_loaded_ctx(event.ctx)
 
     def _probe_agents_worker(self) -> None:
         """Background thread: probe each enabled agent's binary --version."""

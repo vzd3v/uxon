@@ -117,6 +117,7 @@ class MainScreen(Screen):
                 self.ctx.server_status,
                 self.ctx.link_health_status,
                 self.ctx.refresh_tick,
+                loading=self.ctx.loading,
             )
             yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
             # Action rows
@@ -139,9 +140,12 @@ class MainScreen(Screen):
             yield ActionRow(
                 kind="action-open",
                 label="Open existing project",
-                detail=f"({self.ctx.new_project_root}/…)",
+                detail=self._open_detail(),
                 digit=3,
-                enabled=bool(self.ctx.existing_projects),
+                # While loading we don't yet know whether projects exist.
+                # Keep the row enabled so it isn't dimmed; activation falls
+                # through to the existing "no projects" notify path.
+                enabled=self.ctx.loading or bool(self.ctx.existing_projects),
                 id="action-open",
             )
             show_agent = len(self.ctx.enabled_agents) > 1
@@ -174,13 +178,19 @@ class MainScreen(Screen):
                 not self.ctx.sessions
                 and not (self.ctx.has_sudo and self.ctx.other_sessions)
             ):
-                yield Static("No active sessions.", classes="empty-note")
+                note = "Loading sessions…" if self.ctx.loading else "No active sessions."
+                yield Static(note, id="sessions-note", classes="empty-note")
         yield Footer()
 
     def _cwd_detail(self) -> str:
         if self.ctx.cwd_allowed:
             return f"({self.ctx.cwd_short})"
         return f"({self.ctx.cwd_short} — not under allowed_roots)"
+
+    def _open_detail(self) -> str:
+        if self.ctx.loading:
+            return f"({self.ctx.new_project_root}/… — loading)"
+        return f"({self.ctx.new_project_root}/…)"
 
     def on_mount(self) -> None:
         if self.ctx.sessions:
@@ -422,10 +432,11 @@ class MainScreen(Screen):
             self.query_one("#action-cwd", ActionRow)._render_text()
             self.query_one("#action-cwd", ActionRow).set_enabled(self.ctx.cwd_allowed)
             open_row = self.query_one("#action-open", ActionRow)
-            open_row.detail = f"({self.ctx.new_project_root}/…)"
-            open_row.set_enabled(bool(self.ctx.existing_projects))
+            open_row.detail = self._open_detail()
+            open_row.set_enabled(self.ctx.loading or bool(self.ctx.existing_projects))
             self.query_one("#action-new", ActionRow).detail = f"({self.ctx.new_project_root}/…)"
             self.query_one("#action-new", ActionRow)._render_text()
+            open_row._render_text()
         except Exception:
             return False
 
@@ -453,13 +464,20 @@ class MainScreen(Screen):
                 kill_row.label = f"⚡ Kill ALL ccw sessions (all users, {total_sessions} total)"
                 kill_row._render_text()
 
+        # Update the "Loading sessions…" / "No active sessions." placeholder
+        # in place when present (only rendered when both lists are empty).
+        try:
+            note = self.query_one("#sessions-note", Static)
+        except Exception:
+            note = None
+        if note is not None:
+            note.update("Loading sessions…" if self.ctx.loading else "No active sessions.")
+
         self._update_status_line()
         return True
 
     def _refresh_main(self) -> None:
         focus_key = self._current_focus_key()
-        old_signature = self._layout_signature(self.ctx)
-        old_link_health = self.ctx.link_health_status
         try:
             new_ctx = self.ctx.on_refresh()
         except CallbackError as exc:
@@ -467,7 +485,13 @@ class MainScreen(Screen):
             return
         if new_ctx is None:
             return
-        new_ctx.link_health_status = old_link_health
+        self.apply_loaded_ctx(new_ctx, focus_key=focus_key)
+
+    def apply_loaded_ctx(self, new_ctx: TuiContext, *, focus_key: str = "") -> None:
+        """Swap the screen's ctx in. Patches in place if the layout signature
+        matches, otherwise switches to a freshly composed MainScreen."""
+        old_signature = self._layout_signature(self.ctx)
+        new_ctx.link_health_status = self.ctx.link_health_status
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
         self.ctx = new_ctx
         if self._layout_signature(self.ctx) == old_signature and self._apply_ctx_refresh():
@@ -477,7 +501,7 @@ class MainScreen(Screen):
             return
         # Full re-compose when section structure changed.
         new_screen = MainScreen(self.ctx)
-        new_screen._restore_focus_key = focus_key
+        new_screen._restore_focus_key = focus_key or self._current_focus_key()
         self.app.switch_screen(new_screen)
 
     def action_kill(self) -> None:
@@ -626,6 +650,7 @@ class MainScreen(Screen):
             self.ctx.server_status,
             self.ctx.link_health_status,
             self.ctx.refresh_tick,
+            loading=self.ctx.loading,
         )
         status = self.query_one("#server-status", Static)
         status.update(line.text)

@@ -105,6 +105,12 @@ class TuiContext:
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
 
+    # True until the first real refresh lands. The TUI distinguishes this
+    # from a loaded-but-empty state — skeleton ctx renders "Loading…" in
+    # session areas, server status and existing-projects detail; a fully
+    # loaded ctx with no sessions renders "No active sessions." instead.
+    loading: bool = False
+
     # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
     # "New session in current folder" can actually launch. Computed by
     # ccw before constructing the context so the TUI itself stays off
