@@ -87,7 +87,7 @@ class PtyTrace:
 
 def run_pty(
     argv: "list[str]",
-    keys: "list[tuple[float, bytes]] | list[bytes]",
+    keys: "list[tuple[float, bytes]] | list[tuple[float, bytes, str]] | list[bytes]",
     *,
     env: "dict[str, str] | None" = None,
     rows: int = 40,
@@ -99,9 +99,13 @@ def run_pty(
 ) -> PtyTrace:
     """Spawn ``argv`` under a pty, send each key (with pauses), collect output.
 
-    ``keys`` may be either:
+    ``keys`` may be:
       * a list of ``bytes`` — each is sent with ``per_key_drain`` pause after,
-      * or a list of ``(delay_seconds, bytes)`` tuples for fine-grained control.
+      * a list of ``(delay_seconds, bytes)`` tuples,
+      * or ``(delay_seconds, bytes, wait_for_text)`` tuples — drain continues
+        past the idle window until ``wait_for_text`` appears in the rendered
+        trace or the budget is exhausted. Use this to synchronize on textual
+        rendering boundaries instead of guessing a fixed delay.
 
     ``initial_drain``, ``per_key_drain``, and ``final_drain`` are **upper
     bounds**, not fixed sleeps. Each drain waits for the full remaining budget
@@ -140,25 +144,30 @@ def run_pty(
     trace = PtyTrace()
     deadline_outer = time.monotonic() + timeout
 
-    def _drain(max_secs: float) -> None:
+    def _drain(max_secs: float, wait_for_text: str | None = None) -> None:
         idle = _IDLE_MS / 1000.0
         deadline = min(time.monotonic() + max_secs, deadline_outer)
         got_data = False
         while time.monotonic() < deadline:
+            # If caller asked for a specific text and it is already in the
+            # rendered trace, we are done — no point waiting further.
+            if wait_for_text and wait_for_text in trace.plain:
+                return
             remaining = deadline - time.monotonic()
-            if got_data:
+            if got_data and not wait_for_text:
                 # After first data: apply idle window so we exit quickly
                 # once the pty goes quiet instead of sleeping the full budget.
                 timeout_for_select = min(idle, remaining)
             else:
-                # Before any data: wait up to the full remaining budget so
-                # slow-starting processes (e.g. textual import) are not cut
-                # short before the TUI has produced any output.
+                # Before any data, OR while still waiting for a specific
+                # text marker, stay until the full remaining budget so slow
+                # processes (textual import 2–3s, modal mount under -n auto)
+                # are not cut short.
                 timeout_for_select = remaining
             rlist, _, _ = select.select([fd], [], [], timeout_for_select)
             if not rlist:
-                # select timed out — either truly idle for `idle` (after
-                # data was seen), or hit `remaining` near deadline. Stop.
+                # select timed out — either truly idle (no wait_for_text),
+                # or hit `remaining` near deadline. Stop.
                 return
             try:
                 chunk = os.read(fd, 8192)
@@ -174,15 +183,19 @@ def run_pty(
         trace.frames.append(trace.plain)
 
         for item in keys:
+            wait_for: str | None = None
             if isinstance(item, tuple):
-                delay, payload = item
+                if len(item) == 3:
+                    delay, payload, wait_for = item  # type: ignore[misc]
+                else:
+                    delay, payload = item  # type: ignore[misc]
             else:
                 delay, payload = per_key_drain, item
             try:
                 os.write(fd, payload)
             except OSError:
                 break
-            _drain(delay)
+            _drain(delay, wait_for)
             trace.frames.append(trace.plain)
 
         _drain(final_drain)

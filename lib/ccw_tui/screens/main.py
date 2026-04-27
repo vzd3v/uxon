@@ -24,7 +24,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
@@ -57,7 +57,7 @@ class MainScreen(Screen):
     MainScreen {
         layout: vertical;
     }
-    #main-scroll {
+    #main-body {
         width: 1fr;
         height: 1fr;
     }
@@ -112,7 +112,7 @@ class MainScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with VerticalScroll(id="main-scroll"):
+        with Vertical(id="main-body"):
             line = main_status_line(
                 self.ctx.server_status,
                 self.ctx.link_health_status,
@@ -183,14 +183,6 @@ class MainScreen(Screen):
         return f"({self.ctx.cwd_short} — not under allowed_roots)"
 
     def on_mount(self) -> None:
-        # VerticalScroll is focusable by default and swallows arrow keys
-        # for its own scroll. We want arrow keys to flow through to screen
-        # bindings (focus_next/focus_previous), so disable its focusability.
-        try:
-            scroll = self.query_one("#main-scroll")
-            scroll.can_focus = False
-        except Exception:  # pragma: no cover — defensive
-            pass
         if self.ctx.sessions:
             try:
                 self.query_one("#sessions-own", SessionTable).populate(self.ctx.sessions)

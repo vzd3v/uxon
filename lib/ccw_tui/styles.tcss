@@ -28,7 +28,7 @@ Footer {
 
 /* ── MainScreen ──────────────────────────────────────────────────── */
 
-#main-scroll {
+#main-body {
     width: 1fr;
     height: 1fr;
 }
@@ -80,9 +80,14 @@ ActionRow.destructive,
 
 /* ── SessionTable ────────────────────────────────────────────────── */
 
+/* height: 1fr — DataTable manages its own scroll viewport.
+ * `height: auto` (Textual #2959) makes the table grow past its container
+ * and the parent scrolls instead of the table — visually the whole table
+ * "moves as a single block" when the cursor advances. */
 SessionTable {
     width: 1fr;
-    height: auto;
+    height: 1fr;
+    min-height: 3;
 }
 
 SessionTable > .datatable--hover {

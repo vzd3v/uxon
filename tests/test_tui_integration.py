@@ -251,10 +251,24 @@ class DrainAfterLaunchTests(unittest.TestCase):
         # Send digit-2 immediately after the modal commit while the mocked
         # launch command is still sleeping. It must not open NewProjectScreen
         # after the app re-enters.
+        # Synchronize on rendered text instead of guessing delays — under
+        # -n auto CPU contention, a fixed sleep is racy. The 3-tuple form
+        # `(budget, payload, wait_for_text)` drains until the marker
+        # appears or the budget expires. We wait for "1 normal" (the
+        # first mode list item) — it renders only after the modal's
+        # async on_mount has populated the mode ListView, so Enter is
+        # guaranteed to land on a mounted, ready ListView.
         trace = run_python_snippet(
             code,
-            [(1.0, b"1"), (0.5, b"\r"), (0.1, b"2"), b"q"],
+            [
+                (8.0, b"1", "1 normal"),
+                (4.0, b"\r"),
+                (1.0, b"2"),
+                b"q",
+            ],
             extra_path=[str(_REPO / "lib")],
+            initial_drain=10.0,
+            timeout=60.0,
         )
         self.assertNotIn("Traceback", trace.plain)
         marker = Path(marker_path).read_text(encoding="utf-8")

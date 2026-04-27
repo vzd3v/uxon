@@ -38,7 +38,8 @@ class SessionTable(DataTable):
     DEFAULT_CSS = """
     SessionTable {
         width: 1fr;
-        height: auto;
+        height: 1fr;
+        min-height: 3;
     }
     SessionTable > .datatable--hover {
         background: $boost;
