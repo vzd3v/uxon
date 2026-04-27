@@ -92,6 +92,44 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.screen.focused.id, "action-open")
 
+    async def test_skeleton_swap_preserves_agent_availability(self) -> None:
+        """Probe results survive the skeleton→loaded ctx swap.
+
+        Regression for a bug where ``apply_loaded_ctx`` carried over
+        ``link_health_status`` but not ``agent_availability``: the probe
+        worker writes to ``app.ctx.agent_availability`` and after the
+        first refresh tick that dict was orphaned — every subsequent
+        ``LaunchOptionsScreen`` saw a fresh ``pending`` dict and rendered
+        ``(checking…)`` forever, blocking the agent commit path.
+        """
+        from ccw_tui.app import CcwApp
+        from ccw_agents import AgentAvailability
+
+        loaded = _mk_ctx()  # loaded ctx with its own fresh availability dict
+
+        def fake_refresh():
+            return _mk_ctx(on_refresh=fake_refresh)
+
+        skeleton = _mk_ctx(loading=True, on_refresh=fake_refresh)
+        # Pre-seed the skeleton's availability dict with a non-pending
+        # entry — emulates the probe completing before the swap.
+        skeleton.agent_availability["claude"] = AgentAvailability(status="ok")
+
+        app = CcwApp(skeleton, probe_agents=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # Force-trigger the swap (in real life kick_refresh fires in on_mount).
+            app.screen.apply_loaded_ctx(loaded)
+            await pilot.pause()
+            self.assertEqual(
+                app.screen.ctx.agent_availability["claude"].status, "ok",
+                msg="screen.ctx lost the probe result",
+            )
+            self.assertIs(
+                app.ctx, app.screen.ctx,
+                msg="app.ctx and screen.ctx must point to the same TuiContext",
+            )
+
     async def test_kill_calls_on_kill_callback(self) -> None:
         from ccw_tui.app import CcwApp
         from ccw_tui.context import TuiSession

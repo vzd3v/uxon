@@ -482,9 +482,20 @@ class MainScreen(Screen):
         if focus_key is None:
             focus_key = self._current_focus_key()
         old_signature = self._layout_signature(self.ctx)
+        # Carry over state that lives outside the on_refresh result: the
+        # link-health status comes from a separate worker, the agent
+        # availability dict is mutated in place by the probe worker (which
+        # writes to the *app's* ctx — see CcwApp._probe_agents_worker),
+        # and refresh_tick is a TUI-internal counter. Without this the
+        # probe results are lost after the first ctx swap and every
+        # LaunchOptionsScreen would render "(checking…)" forever.
         new_ctx.link_health_status = self.ctx.link_health_status
+        new_ctx.agent_availability = self.ctx.agent_availability
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
         self.ctx = new_ctx
+        # Keep app.ctx in lockstep so the probe worker's writes target the
+        # same dict that screens read from.
+        self.app.ctx = new_ctx  # type: ignore[attr-defined]
         if self._layout_signature(self.ctx) == old_signature and self._apply_ctx_refresh():
             if focus_key and self._focus_key(focus_key):
                 return
