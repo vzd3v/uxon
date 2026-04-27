@@ -116,6 +116,12 @@ class CcwApp(App):
         self.probe_agents = probe_agents
         self._pending_main_digit_jump: int | None = None
         self._link_health_probe_running = False
+        # Single in-flight latch for ctx refresh. Periodic timer, manual
+        # ``r`` and the post-skeleton initial load all funnel through
+        # :meth:`kick_refresh`; if a worker is still running we drop the
+        # next request rather than queueing — workers are idempotent and
+        # the next tick will catch up.
+        self._refresh_in_flight = False
         # Latch: AgentsUnavailableScreen is pushed at most once per app
         # instance. ``run()``'s outer loop re-creates the app after every
         # launch, which is the right cadence to re-arm the popup. The
@@ -138,7 +144,7 @@ class CcwApp(App):
         # If the caller handed us a skeleton ctx, populate it asynchronously
         # — keeps the first frame fast and the event loop unblocked.
         if self.ctx.loading:
-            self.run_worker(self._initial_load_worker, thread=True, exclusive=False)
+            self.kick_refresh()
         # Kick off background agent availability probe.
         if should_start_agent_probe(
             probe_agents=self.probe_agents,
@@ -149,7 +155,7 @@ class CcwApp(App):
         if timers_enabled:
             self.set_interval(
                 self.ctx.tui_refresh_interval_seconds,
-                self._kick_main_refresh,
+                self.kick_refresh,
             )
             self.set_timer(self.ctx.tui_ssh_refresh_interval_seconds, self._kick_link_health_probe)
             self.set_interval(
@@ -157,13 +163,22 @@ class CcwApp(App):
                 self._kick_link_health_probe,
             )
 
-    def _initial_load_worker(self) -> None:
-        """Background thread: build the real TuiContext via ctx.on_refresh().
+    def kick_refresh(self) -> None:
+        """Schedule a worker that calls ``on_refresh`` and posts the result.
 
-        Called once at startup when we mounted with a skeleton ctx
-        (loading=True). The result is delivered to MainScreen via a
-        :class:`_MainCtxLoaded` message — never written from this thread.
+        Used by the periodic timer, the ``r`` keybinding and the initial
+        load after a skeleton mount. No-op when a worker is already in
+        flight — workers are idempotent and the next periodic tick will
+        catch up. Result is delivered as a :class:`_MainCtxLoaded`
+        message; :meth:`on__main_ctx_loaded` clears the flag and applies.
         """
+        if self._refresh_in_flight:
+            return
+        self._refresh_in_flight = True
+        self.run_worker(self._refresh_worker, thread=True, exclusive=False)
+
+    def _refresh_worker(self) -> None:
+        """Background thread: rebuild the TuiContext via ctx.on_refresh()."""
         try:
             new_ctx = self.ctx.on_refresh()
         except CallbackError as exc:
@@ -175,8 +190,9 @@ class CcwApp(App):
         self.post_message(_MainCtxLoaded(new_ctx))
 
     def on__main_ctx_loaded(self, event: _MainCtxLoaded) -> None:
+        self._refresh_in_flight = False
         if event.error:
-            self.notify(f"Initial load failed: {event.error}", severity="error", timeout=6)
+            self.notify(f"Refresh failed: {event.error}", severity="error", timeout=6)
             return
         if event.ctx is None:
             return
@@ -200,11 +216,6 @@ class CcwApp(App):
             return
         self._link_health_probe_running = True
         self.run_worker(self._probe_link_health_worker, thread=True, exclusive=False)
-
-    def _kick_main_refresh(self) -> None:
-        top = self.screen_stack[-1] if self.screen_stack else None
-        if isinstance(top, MainScreen):
-            top._run_auto_refresh()
 
     def _probe_link_health_worker(self) -> None:
         import ccw_tui

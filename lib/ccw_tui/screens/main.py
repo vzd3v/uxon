@@ -411,12 +411,9 @@ class MainScreen(Screen):
         )
 
     def action_refresh(self) -> None:
-        self._refresh_main()
-
-    def _run_auto_refresh(self) -> None:
-        if self.app.screen is not self:
-            return
-        self._refresh_main()
+        # Dispatch through the app so the refresh runs in a worker
+        # thread and the event loop stays responsive.
+        self.app.kick_refresh()  # type: ignore[attr-defined]
 
     def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
         return (
@@ -476,20 +473,16 @@ class MainScreen(Screen):
         self._update_status_line()
         return True
 
-    def _refresh_main(self) -> None:
-        focus_key = self._current_focus_key()
-        try:
-            new_ctx = self.ctx.on_refresh()
-        except CallbackError as exc:
-            self.app.notify(f"Refresh failed: {exc}", severity="error", timeout=6)
-            return
-        if new_ctx is None:
-            return
-        self.apply_loaded_ctx(new_ctx, focus_key=focus_key)
-
-    def apply_loaded_ctx(self, new_ctx: TuiContext, *, focus_key: str = "") -> None:
+    def apply_loaded_ctx(self, new_ctx: TuiContext, *, focus_key: str | None = None) -> None:
         """Swap the screen's ctx in. Patches in place if the layout signature
-        matches, otherwise switches to a freshly composed MainScreen."""
+        matches, otherwise switches to a freshly composed MainScreen.
+
+        ``focus_key=None`` (default) captures the currently focused widget
+        before the swap so it can be restored after. Pass ``""`` to skip
+        focus restoration entirely (used by initial mount).
+        """
+        if focus_key is None:
+            focus_key = self._current_focus_key()
         old_signature = self._layout_signature(self.ctx)
         new_ctx.link_health_status = self.ctx.link_health_status
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
@@ -497,11 +490,12 @@ class MainScreen(Screen):
         if self._layout_signature(self.ctx) == old_signature and self._apply_ctx_refresh():
             if focus_key and self._focus_key(focus_key):
                 return
-            self.call_later(self._focus_default_action)
+            # Don't yank focus when the in-place patch leaves the DOM
+            # untouched; the focused widget still exists and is fine.
             return
         # Full re-compose when section structure changed.
         new_screen = MainScreen(self.ctx)
-        new_screen._restore_focus_key = focus_key or self._current_focus_key()
+        new_screen._restore_focus_key = focus_key
         self.app.switch_screen(new_screen)
 
     def action_kill(self) -> None:
