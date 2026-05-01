@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""ccw: readable tmux wrapper for Claude worktree sessions."""
+# SPDX-License-Identifier: MIT
+"""ccw: readable tmux wrapper for terminal AI coding agent sessions."""
 
 from __future__ import annotations
 
