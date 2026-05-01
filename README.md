@@ -110,9 +110,14 @@ uv tool install git+https://github.com/vzd3v/uxon.git
 
 **Use this when** you administer a server where several OS users
 launch agent sessions and you want them on a single shared `uxon`
-in `/usr/local/bin/uxon` (one version, one update path, one place
-to audit). Each OS user still gets their own `tmux` socket and
-their own `uxon-*` sessions — only the binary is shared.
+in `/usr/local/bin/uxon` — one version, one update path, one place
+to audit. With passwordless `sudo` between the operator and the
+other launch users, the operator additionally **sees and can attach
+to other users' sessions** from the same TUI (the Superuser block,
+described under [The TUI](#the-tui) below) — without that, every
+OS user is sandboxed to their own sessions only. Each OS user keeps
+their own `tmux` socket and their own `uxon-*` sessions; only the
+binary is shared.
 
 ```bash
 # Simple: pipx as a system installer (pipx 1.5+).
