@@ -33,12 +33,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "enable_all_users_list": False,
     "launch_user_by_caller": {},
     "session_users": [],
-    "allowed_roots": [
-        "/srv/apps/aiagent/workspace",
-        "/srv/agentdev",
-        "/srv/repos",
-        "/srv/work/repos",
-    ],
+    # Operators declare their own roots in config/config.toml. The
+    # launch user's home directory is implicitly allowed for `run`
+    # at launch time (see _augmented_allowed_roots), so an empty
+    # list is enough for first-run usability in $HOME.
+    "allowed_roots": [],
     "session_prefix": "ccw-",
     "agents": {
         "enabled": ["claude"],
@@ -47,7 +46,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "codex": {"default_args": []},
         "cursor": {"default_args": []},
     },
-    "new_project_root": "/srv/repos",
+    "new_project_root": str(Path.home() / "projects"),
     "repeat_noninteractive_mode": "fail",
     "tmux_socket_template": "/tmp/ccw-{user}.sock",
     "tui_refresh_interval_seconds": 2.0,
@@ -79,8 +78,8 @@ USAGE = """Usage:
                 [claude-flags...]
 
 Notes:
-  - Without '-w', 'new' creates /srv/repos/<name> (or configured root) and runs there.
-  - With '-w <branch>', 'new' uses repo inside /srv/repos/<name> (no cwd fallback).
+  - Without '-w', 'new' creates <new_project_root>/<name> (default ~/projects) and runs there.
+  - With '-w <branch>', 'new' uses repo inside <new_project_root>/<name> (no cwd fallback).
   - With '-w <branch>' on 'run', uses the git repo at cwd.
   - Repeating 'new' for the same plain project or worktree asks whether to attach or start a new parallel session.
   - Use '--attach-existing' or '--new-session' to bypass that prompt explicitly.
