@@ -167,7 +167,7 @@ class TuiContext:
     # Git remote on new project — display only. The TUI never edits these.
     git_create_enabled: bool = False
     default_git_remote_profile: str = ""
-    # Each entry: (profile_name, description string like "github.com/vzd3v via remdepl [gh]")
+    # Each entry: (profile_name, description string like "github.com/<owner> via <creds_user> [gh]")
     git_remote_profile_options: list[tuple[str, str]] = field(default_factory=list)
 
     # Settings (superuser-only). The TUI delegates all file I/O through these.
