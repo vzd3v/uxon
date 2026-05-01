@@ -28,14 +28,15 @@ shell with `sudo`.
   with their own keys and quotas, and never sees another user's tmux
   sessions by accident — every launch user gets a dedicated socket
   at `/tmp/uxon-<user>.sock`.
-- **Operator visibility and control.** Anyone with passwordless
-  `sudo` opens `uxon` and immediately sees every agent session on
-  the host — their own *and* other users' — with CPU, RAM, age,
-  last attach, attached-or-not. **`Enter` attaches to any user's
-  session** (you join their `tmux` as a guest via `sudo -iu`),
-  `d` kills a runaway, `kill-all-global` nukes everything on the
-  host with explicit confirmation. No more "who's that 38 GB
-  python on the dashboard?".
+- **Operator visibility and control.** With passwordless `sudo` to
+  the launch users listed in `session_users`, the operator opens
+  `uxon` and sees every agent session of those users — their own
+  *and* others' — with CPU, RAM, age, last attach, attached-or-not.
+  **`Enter` attaches to any of those sessions** (you join their
+  `tmux` as a guest via `sudo -iu`), `d` kills a runaway, and
+  `kill-all-global` reaps every session of every listed
+  `session_user` after explicit confirmation. No more "who's that
+  38 GB python on the dashboard?".
 - **Attach from anywhere.** Sessions live in `tmux`, so they survive
   every disconnect. Start at your desk, reattach from your phone over
   SSH on the train, switch to a tablet later — same session, same
@@ -43,18 +44,25 @@ shell with `sudo`.
 - **Predictable session names.** `uxon-<project>@<agent>` (`-2`,
   `-3` for parallels). No more hand-rolled `tmux new -s` strings or
   guessing what you called it yesterday.
-- **Permissive by default, lockable for ops.** Out of the box you
-  can launch an agent in any folder where the launch user has write
-  access. On a shared host, set `allowed_roots` in the config to
-  pin agents to specific directories. See
+- **Permissive defaults, OS-level locks for ops.** Out of the box,
+  the TUI's "new session in current folder" launches anywhere the
+  launch user can write (this gate is by design *not* tied to
+  `allowed_roots`); `uxon run` (CLI) launches in the launch user's
+  `$HOME` plus any path listed in `allowed_roots`. `allowed_roots`
+  also bounds where `uxon new` (and the TUI's create-project flow)
+  is allowed to create new project directories. To restrict what
+  the agent can reach on disk, sandbox launches under a
+  low-privilege OS user via `runtime_user`. See
   [`docs/configuration.md`](docs/configuration.md).
 - **One tool, every agent.** Flip a config switch to enable Claude
-  Code, Codex, Cursor — together or any subset. Built-in `--auto`
-  and `--dsp` (skip-permissions / "yolo") flags translate to whatever
-  the underlying agent uses today.
-- **Optional niceties.** Git worktrees, GitHub repo creation on a new
-  project (with a strict whitelist), per-project config overrides.
-  All off by default.
+  Code, Codex, Cursor — together or any subset. Built-in `--dsp`
+  (skip-permissions / "yolo") flag maps to each agent's native
+  equivalent across all three; `--auto` does the same for `claude`
+  and `codex` (cursor has no auto mode and errors out).
+- **Optional niceties.** Git worktrees (currently `claude`-only —
+  `codex` and `cursor` error if you pass `-w`), GitHub repo creation
+  on a new project (with a strict whitelist of named profiles),
+  per-project config overrides. All off by default.
 
 ---
 
@@ -113,13 +121,14 @@ uv tool install git+https://github.com/vzd3v/uxon.git
 **Use this when** you administer a server where several OS users
 launch agent sessions and you want them on a single shared `uxon`
 in `/usr/local/bin/uxon` — one version, one update path, one place
-to audit. With passwordless `sudo` between the operator and the
-other launch users, the operator additionally **sees and can attach
-to other users' sessions** from the same TUI (the Superuser block,
-described under [The TUI](#the-tui) below) — without that, every
-OS user is sandboxed to their own sessions only. Each OS user keeps
-their own `tmux` socket and their own `uxon-*` sessions; only the
-binary is shared.
+to audit. With (a) passwordless `sudo` to other launch users and
+(b) those users listed in `session_users` in `config.toml`, the
+operator additionally **sees and can attach to those users'
+sessions** from the same TUI (the Superuser block, described under
+[The TUI](#the-tui) below). Missing either piece — no `sudo`, or
+empty `session_users` — and every OS user is sandboxed to their
+own sessions only. Each OS user keeps their own `tmux` socket and
+their own `uxon-*` sessions; only the binary is shared.
 
 ```bash
 # Simple: pipx as a system installer (pipx 1.5+).
