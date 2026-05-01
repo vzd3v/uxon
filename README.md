@@ -68,6 +68,11 @@ the host has one shared `uxon` on `PATH` for everyone.
 
 ### Per-user install (recommended)
 
+**Use this when** each OS user manages their own copy of `uxon` —
+independently versioned, no `sudo` needed, easy `uninstall`. The
+common case for solo developers and small teams where everyone
+prefers full control over their tooling.
+
 Each OS user runs one of these in their own account:
 
 ```bash
@@ -103,24 +108,35 @@ uv tool install git+https://github.com/vzd3v/uxon.git
 
 ### Host-wide install (one `uxon` for all users on the host)
 
-For servers where several OS users need a single shared `uxon` on
-`/usr/local/bin/uxon` (one version, one update path), install into a
-dedicated venv and symlink the console script:
+**Use this when** you administer a server where several OS users
+launch agent sessions and you want them on a single shared `uxon`
+in `/usr/local/bin/uxon` (one version, one update path, one place
+to audit). Each OS user still gets their own `tmux` socket and
+their own `uxon-*` sessions — only the binary is shared.
 
 ```bash
+# Simple: pipx as a system installer (pipx 1.5+).
+sudo pipx install --global uxon
+# Updates: sudo pipx upgrade --global uxon
+```
+
+```bash
+# Explicit: bundled installer. Useful for fleet rollout (Ansible /
+# Puppet) and when ops conventions pin paths like /opt/uxon/venv.
 git clone https://github.com/vzd3v/uxon.git
 cd uxon
 sudo python3 install/install_uxon.py \
   --repo-dir "$(pwd)" \
   --install-path /usr/local/bin/uxon
 # (uses /opt/uxon/venv by default; override with --venv-dir)
+# Updates: re-run with --reinstall
 ```
 
-The installer creates a venv at `--venv-dir`, installs the package
-into it, and symlinks `/opt/uxon/venv/bin/uxon` to
-`/usr/local/bin/uxon`. Each OS user gets their own `tmux` socket and
-their own `uxon-*` sessions; only the binary is shared. Update by
-re-running with `--reinstall`.
+Both isolate `uxon`'s Python deps in a dedicated venv and put the
+console script on `PATH` via a `/usr/local/bin/uxon` shim. Don't use
+`sudo pip install uxon` — it dumps `textual` / `rich` / `tomlkit` /
+etc. into the system Python `site-packages` and conflicts with the
+distro's package manager (this is what PEP 668 protects against).
 
 For multi-host rollout, generated config from a JSON payload, and
 deployment topology, see [`docs/deployment.md`](docs/deployment.md).
