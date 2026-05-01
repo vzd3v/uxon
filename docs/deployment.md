@@ -63,14 +63,13 @@ The infra repo **must not** become a second canonical location for:
 ## Runtime dependencies
 
 - **Python ≥ 3.11.** Stdlib `tomllib` is used for config reads.
-- **`tomlkit`.** Required for config writes (TUI Settings screen).
-  Install via `apt install python3-tomlkit` or `pip install tomlkit`
-  into the Python environment `uxon` runs under. Without it, TUI saves
-  fail; CLI subcommands (`list`, `doctor`, `run`, `new`, `attach`,
-  `kill`) keep working.
-- **`textual >= 0.80, < 9`.** Required for the interactive TUI.
-  Lazy-imported inside `do_interactive`, so non-TUI subcommands run
-  without it.
+- **`textual >= 0.80, < 9`** and **`tomlkit`** — hard runtime
+  dependencies, pulled in automatically by `uv tool install` /
+  `pipx install` / `pip install` / `install/install_uxon.py`. No
+  manual setup needed. `textual` is lazy-imported inside the TUI
+  entrypoint, so non-TUI subcommands (`list`, `doctor`, `run`, `new`,
+  `attach`, `kill`) run even on a stripped Python without `textual`
+  importable.
 - **`gh` CLI.** Required on hosts that use `auth = "gh"` git-remote
   profiles. Run `gh auth login` once as the configured `creds_user`.
 

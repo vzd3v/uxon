@@ -14,14 +14,15 @@ flagged in each section.
 - `<id>` — session identifier. Resolution order: full name
   (`uxon-myproj@claude`), short name (`myproj@claude`), bare stem
   (`myproj`) when exactly one session matches, legacy-prefix name
-  (e.g. `ccw-myproj`), or active-pane PID.
+  (e.g. `old-myproj` when `old-` is in `legacy_session_prefixes`),
+  or active-pane PID.
 - `--dry-run` — print the `tmux` command that would be executed
   instead of executing it. Available on `run`, `new`, `kill`,
   `kill-all`.
 - Unknown flags after `run` / `new` are forwarded to the selected
   agent binary verbatim.
 - All subcommands honour the launch-user resolution described in
-  [README.md → Multi-user](../README.md#multi-user--launch-user)
+  [`docs/configuration.md`](configuration.md#use-case-dedicated-low-privilege-agent-user)
   and run `tmux` / `git` / `mkdir` under the launch user via
   `sudo -iu` when caller ≠ launch user.
 
@@ -88,7 +89,7 @@ Identifier resolution (first match wins):
 1. Full session name — `uxon-myproj@claude`.
 2. Short name without prefix — `myproj@claude`.
 3. Bare stem — `myproj` (only when exactly one session matches).
-4. Legacy-prefix name — e.g. `ccw-myproj` when `ccw-` is in
+4. Legacy-prefix name — e.g. `old-myproj` when `old-` is in
    `legacy_session_prefixes`.
 5. Active-pane PID.
 

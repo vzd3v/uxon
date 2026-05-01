@@ -6,20 +6,31 @@ to make and ship a change.
 ## Local setup
 
 `uxon` is a regular Python package (`pyproject.toml`, hatchling backend).
-For development, install editable into a venv:
+For development, install editable into a venv. Two equivalent paths:
 
 ```bash
 git clone https://github.com/vzd3v/uxon.git
 cd uxon
+
+# A) uv (recommended; faster, shared dep cache)
+uv venv
+uv pip install -e ".[dev]"
+source .venv/bin/activate
+
+# B) plain venv + pip
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -e ".[dev]"   # ruff, pyright, pytest, textual, tomlkit pulled automatically
+python3 -m pip install -e ".[dev]"
+
 uxon --version
 ```
 
+Both pull `ruff`, `pyright`, `pytest`, `textual`, `tomlkit`
+automatically.
+
 `uxon` requires Python 3.11+. The TUI uses `textual >=0.80,<9`; config
-writes use `tomlkit`. Both are now hard dependencies (pulled in by
-`pip install`/`pipx install`/`uv tool install`).
+writes use `tomlkit`. Both are hard runtime dependencies (pulled in by
+`pip install` / `pipx install` / `uv tool install`).
 
 ## Local checks
 

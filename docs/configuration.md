@@ -191,13 +191,12 @@ The error names which stage failed: `preflight` / `local_init` /
 
 ## Use case: migrating from a previous session prefix
 
-You upgraded from a build that used a different `session_prefix`
-(e.g. the old `ccw-`), and you have running sessions you don't
-want to lose track of.
+You changed `session_prefix` and have running sessions under the
+old value that you don't want to lose track of.
 
 ```toml
 session_prefix          = "uxon-"
-legacy_session_prefixes = ["ccw-"]
+legacy_session_prefixes = ["old-"]
 ```
 
 `list`, `attach`, `kill`, and `kill-all` recognise both prefixes.

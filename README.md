@@ -1,5 +1,6 @@
 # uxon
 
+[![PyPI](https://img.shields.io/pypi/v/uxon.svg)](https://pypi.org/project/uxon/)
 [![CI](https://github.com/vzd3v/uxon/actions/workflows/ci.yml/badge.svg)](https://github.com/vzd3v/uxon/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -62,27 +63,36 @@ Requires **Python 3.11+**, `tmux`, and Linux. Dependencies (`textual`,
 
 ### Single-user laptop (recommended)
 
-`uxon` is a regular Python CLI. The two community-standard installers
-both work:
-
 ```bash
-# 1. uv tool (fastest; uv is the 2026 default)
-uv tool install git+https://github.com/vzd3v/uxon.git
+# uv tool — recommended. uv is the 2026 default Python toolchain;
+# fast, uses uv-managed Python and a shared dep cache.
+uv tool install uxon
 
-# 2. pipx (equivalent; same console-script entrypoint)
-pipx install git+https://github.com/vzd3v/uxon.git
-
-# Once published to PyPI you'll be able to drop the git URL:
-#   uv tool install uxon  /  pipx install uxon
+# pipx — equivalent. Same console-script entrypoint.
+pipx install uxon
 ```
 
-Either one creates an isolated venv and puts `uxon` on your `PATH`.
+Either creates an isolated venv and puts `uxon` on your `PATH`.
+Update with `uv tool upgrade uxon` / `pipx upgrade uxon`.
+
+For the bleeding edge from `main` (before a release lands on PyPI):
 
 ```bash
-# 2. Verify and bootstrap a host config.
-uxon doctor
-cp $(python3 -c "import uxon, pathlib; print(pathlib.Path(uxon.__file__).resolve().parents[2])")/config/config.example.toml ./config.toml
-$EDITOR config.toml             # set allowed_roots, session_users, agents
+uv tool install git+https://github.com/vzd3v/uxon.git
+# or:  pipx install git+https://github.com/vzd3v/uxon.git
+```
+
+If you maintain your own Python (pyenv, asdf, uv-managed) and prefer
+no isolation, `pip install --user uxon` works too — `uxon` lands in
+`~/.local/bin/`. On Debian/Ubuntu/Fedora system Python, PEP 668 blocks
+plain `pip install`; use `pipx` (recommended) or know-what-you-do
+`pip install --user --break-system-packages uxon`.
+
+```bash
+uxon doctor                       # verify the install
+# Optional: bootstrap an example config (uxon runs in $HOME with defaults).
+curl -fsSL https://raw.githubusercontent.com/vzd3v/uxon/main/config/config.example.toml -o ./config.toml
+$EDITOR ./config.toml             # set allowed_roots, session_users, agents
 ```
 
 You'll also need at least one of the agent CLIs installed for the

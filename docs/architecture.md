@@ -7,7 +7,7 @@ like and why*.
 
 ## What `uxon` is
 
-`uxon` is a Python script that wraps `tmux` so a host can run several
+`uxon` is a Python package that wraps `tmux` so a host can run several
 terminal AI coding agents (`claude`, `codex`, `cursor-agent`)
 concurrently for one or more OS users, with predictable session
 naming, per-user tmux sockets, optional `git` worktree support,
