@@ -1,7 +1,7 @@
 """Textual-missing error hint for the uxon TUI.
 
-Shown by :func:`uxon_tui.app.run` when ``import textual`` fails. Kept as
-a plain string so non-TUI code paths (``bin/uxon list``, etc.) never
+Shown by :func:`uxon.tui.app.run` when ``import textual`` fails. Kept as
+a plain string so non-TUI code paths (``uxon list``, etc.) never
 import textual at module load.
 """
 

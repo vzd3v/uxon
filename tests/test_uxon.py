@@ -1,24 +1,14 @@
-import importlib.util
 import io
 import sys
 import tempfile
 import textwrap
 import unittest
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest import mock
 
-UXON_PATH = Path(__file__).resolve().parents[1] / "bin" / "uxon"
-_LIB_PATH = str(Path(__file__).resolve().parents[1] / "lib")
-if _LIB_PATH not in sys.path:
-    sys.path.insert(0, _LIB_PATH)
-LOADER = SourceFileLoader("uxon_module", str(UXON_PATH))
-SPEC = importlib.util.spec_from_loader("uxon_module", LOADER)
-if SPEC is None or SPEC.loader is None:
-    raise RuntimeError(f"failed to load spec for {UXON_PATH}")
-uxon = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = uxon
-SPEC.loader.exec_module(uxon)
+import uxon.cli as uxon
+
+UXON_PATH = Path(uxon.__file__).resolve()
 
 
 class _StubsChain:
@@ -407,10 +397,7 @@ class UxonTests(unittest.TestCase):
             "creds_user": "remdepl",
             "visibility": "private",
         }
-        import sys as _sys
-
-        _sys.path.insert(0, str(UXON_PATH.parent.parent / "lib"))
-        import uxon_git_profiles
+        from uxon import git_profiles as uxon_git_profiles
 
         cfg = self.make_config(
             allowed_roots=["/srv/repos"],
@@ -439,7 +426,7 @@ class UxonTests(unittest.TestCase):
                     "current_user": kwargs.get("current_user"),
                 }
             )
-            import uxon_git_create
+            from uxon import git_create as uxon_git_create
 
             return uxon_git_create.CreationResult(
                 profile_name=profile_arg.name,
@@ -447,7 +434,7 @@ class UxonTests(unittest.TestCase):
                 commands=["would run: git init"],
             )
 
-        import uxon_git_create
+        from uxon import git_create as uxon_git_create
 
         with mock.patch.object(uxon_git_create, "create_project_remote", side_effect=fake_create):
             with mock.patch.object(uxon, "collect_sessions", return_value=[]):
@@ -476,10 +463,7 @@ class UxonTests(unittest.TestCase):
                 uxon.do_new(args, cfg, "devagent")
 
     def test_do_new_git_remote_with_worktree_fails(self) -> None:
-        import sys as _sys
-
-        _sys.path.insert(0, str(UXON_PATH.parent.parent / "lib"))
-        import uxon_git_profiles
+        from uxon import git_profiles as uxon_git_profiles
 
         cfg = self.make_config(
             git_create_enabled=True,
@@ -699,7 +683,7 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(path, "/tmp/uxon-u-vz-1001.sock")
 
     def test_doctor_reports_socket_and_config(self) -> None:
-        import uxon_agents
+        from uxon import agents as uxon_agents
 
         cfg = self.make_config()
         output = io.StringIO()
@@ -750,7 +734,7 @@ class UxonTests(unittest.TestCase):
         self.assertIn("ok (1.2.3)", rendered)
 
     def test_doctor_reports_missing_agent(self) -> None:
-        import uxon_agents
+        from uxon import agents as uxon_agents
 
         cfg = self.make_config()
         output = io.StringIO()
@@ -1296,10 +1280,18 @@ class DoInteractiveTextualMissingTests(unittest.TestCase):
     install hint on stderr, no traceback, and return 1."""
 
     def test_prints_install_hint_when_textual_missing(self) -> None:
-        # Force `import uxon_tui` to raise ImportError even though lib/ is
-        # on sys.path.
-        saved_uxon_tui = sys.modules.get("uxon_tui")
-        sys.modules["uxon_tui"] = None  # type: ignore[assignment]
+        # Simulate a stripped install where ``uxon.tui`` (and its
+        # textual dep) is unavailable. A ``sys.modules`` sentinel alone
+        # is insufficient because the package may already be cached as
+        # an attribute on ``uxon``; we also clear that attribute and
+        # restore it on teardown.
+        import uxon as uxon_pkg
+
+        saved_uxon_tui_module = sys.modules.get("uxon.tui")
+        saved_uxon_tui_attr = getattr(uxon_pkg, "tui", None)
+        sys.modules["uxon.tui"] = None  # type: ignore[assignment]
+        if hasattr(uxon_pkg, "tui"):
+            delattr(uxon_pkg, "tui")
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 cfg = uxon.load_config(tmp)
@@ -1316,10 +1308,12 @@ class DoInteractiveTextualMissingTests(unittest.TestCase):
                 self.assertIn("textual", err_text)
                 self.assertNotIn("Traceback", err_text)
         finally:
-            if saved_uxon_tui is None:
-                sys.modules.pop("uxon_tui", None)
+            if saved_uxon_tui_module is None:
+                sys.modules.pop("uxon.tui", None)
             else:
-                sys.modules["uxon_tui"] = saved_uxon_tui
+                sys.modules["uxon.tui"] = saved_uxon_tui_module
+            if saved_uxon_tui_attr is not None:
+                uxon_pkg.tui = saved_uxon_tui_attr  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":

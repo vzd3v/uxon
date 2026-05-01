@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import unittest
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
-if _LIB not in sys.path:
-    sys.path.insert(0, _LIB)
 
 
 def _textual_available() -> bool:
@@ -24,7 +17,8 @@ def _textual_available() -> bool:
 class ActionRowTests(unittest.IsolatedAsyncioTestCase):
     async def test_enter_activates_and_posts_message(self) -> None:
         from textual.app import App, ComposeResult
-        from uxon_tui.widgets import ActionRow
+
+        from uxon.tui.widgets import ActionRow
 
         captured: list[str] = []
 
@@ -49,7 +43,7 @@ class ActionRowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured, ["action-cwd"])
 
     def test_disabled_row_tracks_enabled_state(self) -> None:
-        from uxon_tui.widgets.action_row import action_row_can_activate
+        from uxon.tui.widgets.action_row import action_row_can_activate
 
         self.assertFalse(action_row_can_activate(False))
         self.assertTrue(action_row_can_activate(True))
@@ -59,8 +53,9 @@ class ActionRowTests(unittest.IsolatedAsyncioTestCase):
 class SessionTableTests(unittest.IsolatedAsyncioTestCase):
     async def test_populate_adds_rows_and_preserves_cursor(self) -> None:
         from textual.app import App, ComposeResult
-        from uxon_tui.context import TuiSession
-        from uxon_tui.widgets import SessionTable
+
+        from uxon.tui.context import TuiSession
+        from uxon.tui.widgets import SessionTable
 
         sessions = [
             TuiSession(
@@ -106,8 +101,8 @@ class SessionTableTests(unittest.IsolatedAsyncioTestCase):
 
     def test_session_table_shows_stem_not_full_name(self) -> None:
         """Name cell renders session.stem, not the full tmux session name."""
-        from uxon_tui.context import TuiSession
-        from uxon_tui.widgets import SessionTable
+        from uxon.tui.context import TuiSession
+        from uxon.tui.widgets import SessionTable
 
         session = TuiSession(
             name="ccw-myproject@codex",
@@ -129,15 +124,15 @@ class SessionTableTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(SessionTable._display_name(session), "myproject")
 
     def test_session_table_show_user_column_labels(self) -> None:
-        from uxon_tui.widgets import SessionTable
+        from uxon.tui.widgets import SessionTable
 
         labels = SessionTable.column_labels(show_user=True, show_agent_column=False)
         self.assertEqual(labels[0], "USER")
 
     def test_session_table_agent_column_when_multi(self) -> None:
         """show_agent_column=True adds AGENT header and per-row agent labels."""
-        from uxon_tui.context import TuiSession
-        from uxon_tui.widgets import SessionTable
+        from uxon.tui.context import TuiSession
+        from uxon.tui.widgets import SessionTable
 
         def _s(name, stem, agent, legacy=False):
             return TuiSession(
@@ -168,8 +163,8 @@ class SessionTableTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_table_legacy_label(self) -> None:
         """Legacy cc-<stem> session shows 'claude (legacy)' in the agent cell."""
-        from uxon_tui.context import TuiSession
-        from uxon_tui.widgets import SessionTable
+        from uxon.tui.context import TuiSession
+        from uxon.tui.widgets import SessionTable
 
         s = TuiSession(
             name="cc-oldproject",

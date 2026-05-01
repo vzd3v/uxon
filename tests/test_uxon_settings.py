@@ -1,13 +1,10 @@
-import sys
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-
-import uxon_settings as cs
+from uxon import settings as cs
 
 DEFAULTS = {
     "runtime_user": "",

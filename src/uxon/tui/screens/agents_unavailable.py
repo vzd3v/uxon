@@ -48,7 +48,7 @@ class AgentsUnavailableScreen(ModalScreen[None]):
         self.body_text: str = self._render_body()
 
     def _render_body(self) -> str:
-        import uxon_agents
+        from uxon import agents as uxon_agents
 
         lines: list[str] = []
         for aid in self._enabled_agents:

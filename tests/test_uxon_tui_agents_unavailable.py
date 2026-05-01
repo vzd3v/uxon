@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import unittest
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
-if _LIB not in sys.path:
-    sys.path.insert(0, _LIB)
 
 
 def _textual_available() -> bool:
@@ -21,7 +14,7 @@ def _textual_available() -> bool:
 
 
 def _mk_ctx(**overrides):
-    from uxon_tui.context import LaunchRequest, TuiContext
+    from uxon.tui.context import LaunchRequest, TuiContext
 
     base = dict(
         sessions=[],
@@ -45,7 +38,7 @@ def _mk_ctx(**overrides):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class AgentsUnavailableScreenTests(unittest.TestCase):
     def test_lists_each_enabled_agent_with_install_hint(self) -> None:
-        from uxon_tui.screens.agents_unavailable import AgentsUnavailableScreen
+        from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
         screen = AgentsUnavailableScreen(
             enabled_agents=("claude", "codex", "cursor"),
@@ -59,7 +52,7 @@ class AgentsUnavailableScreenTests(unittest.TestCase):
         self.assertIn("cursor.com/install", text)
 
     def test_escape_binding_is_declared(self) -> None:
-        from uxon_tui.screens.agents_unavailable import AgentsUnavailableScreen
+        from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
         bindings = {binding.key: binding.action for binding in AgentsUnavailableScreen.BINDINGS}
         self.assertEqual(bindings.get("escape"), "dismiss_screen")
@@ -70,9 +63,9 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
     """End-to-end: UxonApp pushes AgentsUnavailableScreen iff all probes miss."""
 
     async def test_pushes_when_all_agents_missing(self) -> None:
-        import uxon_agents
-        from uxon_tui.app import UxonApp, _AgentAvailabilityUpdated
-        from uxon_tui.screens.agents_unavailable import AgentsUnavailableScreen
+        from uxon import agents as uxon_agents
+        from uxon.tui.app import UxonApp, _AgentAvailabilityUpdated
+        from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
         ctx = _mk_ctx(
             enabled_agents=("claude", "codex"),

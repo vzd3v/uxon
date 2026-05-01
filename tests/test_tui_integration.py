@@ -1,6 +1,6 @@
-"""pty-driven integration tests for uxon_tui.
+"""pty-driven integration tests for uxon.tui.
 
-These tests fork a child that imports ``uxon_tui`` with a minimal fake
+These tests fork a child that imports ``uxon.tui`` with a minimal fake
 ``TuiContext``, then drive it via keystrokes written to a controlling
 pseudo-terminal. They're intentionally coarse — a handful of end-to-end
 regression tests for bugs we've been bitten by. Fine-grained unit
@@ -21,7 +21,6 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "tests"))
-sys.path.insert(0, str(_REPO / "lib"))
 
 
 def locate_row(trace_plain: str, label_regex: str) -> int | None:
@@ -59,14 +58,13 @@ except ImportError:  # pragma: no cover
     _PTY_OK = False
 
 
-# Shared child-side script. Imports uxon_tui, builds a no-op TuiContext
+# Shared child-side script. Imports uxon.tui, builds a no-op TuiContext
 # shaped like what u-den would see on first launch (sudo, no sessions),
 # and enters run(). The test driver pipes keystrokes in, then reads the
 # rendered frames.
 _CHILD_SCRIPT = r"""
 import sys, os
-sys.path.insert(0, {lib_path!r})
-import uxon_tui
+from uxon import tui as uxon_tui
 
 ctx = uxon_tui.TuiContext(
     sessions=[],
@@ -99,11 +97,10 @@ class PtyTuiIntegrationTests(unittest.TestCase):
     def _run(self, keys: list[bytes], **kwargs):
         from harness.pty_tui import run_python_snippet
 
-        code = _CHILD_SCRIPT.format(lib_path=str(_REPO / "lib"))
+        code = _CHILD_SCRIPT
         return run_python_snippet(
             code,
             keys,
-            extra_path=[str(_REPO / "lib")],
             **kwargs,
         )
 
@@ -188,10 +185,9 @@ class PtyTuiIntegrationTests(unittest.TestCase):
 
 _DRAIN_CHILD_SCRIPT = r"""
 import sys, os
-sys.path.insert(0, {lib_path!r})
-import uxon_tui
-import uxon_agents
-from uxon_tui.context import LaunchRequest
+from uxon import tui as uxon_tui
+from uxon import agents as uxon_agents
+from uxon.tui.context import LaunchRequest
 
 MARKER = {marker_path!r}
 uxon_agents.probe_agents = lambda *args, **kwargs: {{}}
@@ -246,7 +242,6 @@ class DrainAfterLaunchTests(unittest.TestCase):
         self.addCleanup(lambda: os.path.exists(marker_path) and os.unlink(marker_path))
 
         code = _DRAIN_CHILD_SCRIPT.format(
-            lib_path=str(_REPO / "lib"),
             marker_path=marker_path,
         )
         # Sequence: digit-1 → permissions modal → pick regular →
@@ -270,7 +265,6 @@ class DrainAfterLaunchTests(unittest.TestCase):
                 (1.0, b"2"),
                 b"q",
             ],
-            extra_path=[str(_REPO / "lib")],
             initial_drain=10.0,
             timeout=60.0,
         )

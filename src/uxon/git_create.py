@@ -22,14 +22,14 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass, field
 
-from uxon_git_backend_gh import BackendError, RunResult, default_run
-from uxon_git_backend_gh import create_remote as gh_create_remote
-from uxon_git_backend_gh import describe_command as gh_describe
-from uxon_git_backend_gh import preflight as gh_preflight
-from uxon_git_backend_token import create_remote as token_create_remote
-from uxon_git_backend_token import describe_command as token_describe
-from uxon_git_backend_token import preflight as token_preflight
-from uxon_git_profiles import GitRemoteProfile
+from uxon.git_backend_gh import BackendError, RunResult, default_run
+from uxon.git_backend_gh import create_remote as gh_create_remote
+from uxon.git_backend_gh import describe_command as gh_describe
+from uxon.git_backend_gh import preflight as gh_preflight
+from uxon.git_backend_token import create_remote as token_create_remote
+from uxon.git_backend_token import describe_command as token_describe
+from uxon.git_backend_token import preflight as token_preflight
+from uxon.git_profiles import GitRemoteProfile
 
 STAGES = ("preflight", "local_init", "remote_create", "remote_config", "push")
 
@@ -189,7 +189,7 @@ def create_project_remote(
             gh_preflight(profile, repo_name, effective_creds_user, current_user, run=run)
         elif profile.auth == "token":
             if http is None:
-                from uxon_git_backend_token import default_http as _default_http
+                from uxon.git_backend_token import default_http as _default_http
 
                 http_impl = _default_http
             else:
@@ -284,7 +284,7 @@ def create_project_remote(
                 run=run,
             )
         else:  # token
-            from uxon_git_backend_token import default_http as _default_http
+            from uxon.git_backend_token import default_http as _default_http
 
             http_impl = http or _default_http
             ssh_url = token_create_remote(

@@ -12,11 +12,18 @@ Public API re-exports only. Implementation lives in sibling modules:
   - ``app``      — textual :class:`UxonApp` + :func:`run` outer loop.
   - ``screens/`` — one module per screen (MainScreen, modals, …).
   - ``widgets/`` — two custom widgets (ActionRow, SessionTable).
+
+Pure-data re-exports load eagerly. Textual-dependent names (``UxonApp``,
+``run``) are deferred via ``__getattr__`` so that
+``from uxon.tui import TuiContext`` and other pure-data imports do not
+pull ``textual`` at import time — required by the AGENTS.md hard rule
+that non-TUI subcommands stay textual-free.
 """
 
 from __future__ import annotations
 
-from .app import UxonApp, run
+from typing import TYPE_CHECKING, Any
+
 from .context import (
     CallbackError,
     Item,
@@ -29,6 +36,9 @@ from .context import (
 )
 from .events import LOG_DIR
 from .hints import TEXTUAL_MISSING_HINT
+
+if TYPE_CHECKING:
+    from .app import UxonApp, run
 
 __all__ = [
     "CallbackError",
@@ -44,3 +54,11 @@ __all__ = [
     "build_items",
     "run",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in ("UxonApp", "run"):
+        from . import app as _app
+
+        return getattr(_app, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

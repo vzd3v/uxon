@@ -2,7 +2,7 @@
 
 This module imports no UI framework (no blessed, no textual). The
 TUI's screens and the outer runner both depend on these types, but
-non-UI callers (tests, bin/uxon context builders) can import them
+non-UI callers (tests, ``uxon.cli`` context builders) can import them
 without pulling in any terminal dependency.
 """
 
@@ -23,7 +23,7 @@ class CallbackError(Exception):
     """Raised by a TUI callback when the underlying uxon operation failed.
 
     The message is user-facing: the main loop renders it on the status
-    line (or in the post-launch banner) in red. ``bin/uxon`` wraps every
+    line (or in the post-launch banner) in red. ``uxon.cli`` wraps every
     callback with ``_wrap_tui_callback`` so that ``fail() → SystemExit``
     paths inside uxon surface here with their stderr message intact,
     instead of killing the process silently under the fullscreen TUI.
@@ -147,7 +147,7 @@ class TuiContext:
     on_refresh: Callable[[], TuiContext] = lambda: None  # type: ignore[return-value]
     on_probe_link_health: Callable[[], Any] = lambda: None
     # Returns True if launch_user has write access to ``cwd``. Wired by
-    # bin/uxon — uses ``os.access`` when launch_user == caller, otherwise
+    # ``uxon.cli`` — uses ``os.access`` when launch_user == caller, otherwise
     # ``sudo -iu launch_user test -w <cwd>``. App runs it in a worker
     # thread on mount when ``cwd_writable`` is None; activation also
     # calls it synchronously as a fallback if the probe hasn't landed.

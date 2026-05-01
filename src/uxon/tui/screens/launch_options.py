@@ -103,7 +103,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         self._reflect_focus()
 
     async def _rebuild_mode_list(self, agent_id: str) -> None:
-        import uxon_agents
+        from uxon import agents as uxon_agents
 
         mode_list = self.query_one("#mode-list", ListView)
         # clear() and extend() are async — must be awaited, otherwise the

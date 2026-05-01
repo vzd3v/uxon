@@ -23,23 +23,25 @@ There is no daemon. There is no database. State lives in:
 ## Top-level layout
 
 ```
-bin/uxon                      Single-file CLI entrypoint.
-lib/
-  uxon_settings.py            Settings schema, layered TOML read/write.
-  uxon_agents.py              Pure-data agent catalog and probe.
-  uxon_git_profiles.py        [[git_remote_profiles]] schema.
-  uxon_git_backend_gh.py      `gh repo create` backend.
-  uxon_git_backend_token.py   GitHub REST + fine-grained PAT backend.
-  uxon_git_create.py          Orchestrator for the new-project git flow.
-  uxon_tui/                   Textual TUI (lazy-imported by bin/uxon).
+src/uxon/                     Python package (pipx / uv tool / pip installable).
+  __init__.py                 Package version (single source of truth).
+  __main__.py                 `python -m uxon` shim → cli.main().
+  cli.py                      Single-file CLI entrypoint.
+  settings.py                 Settings schema, layered TOML read/write.
+  agents.py                   Pure-data agent catalog and probe.
+  git_profiles.py             [[git_remote_profiles]] schema.
+  git_backend_gh.py           `gh repo create` backend.
+  git_backend_token.py        GitHub REST + fine-grained PAT backend.
+  git_create.py               Orchestrator for the new-project git flow.
+  tui/                        Textual TUI (lazy-imported by cli.py).
 install/
-  install_uxon.py             Symlink installer.
+  install_uxon.py             Multi-host venv-and-symlink installer.
   render_uxon_config.py       JSON-to-TOML config renderer.
 config/
-  config.example.toml        Tracked example. Real config.toml is gitignored.
+  config.example.toml         Tracked example. Real config.toml is gitignored.
 examples/
   uxon-config.json            Example payload for render_uxon_config.py.
-tests/                       unittest.TestCase, run via `pytest -n auto`.
+tests/                        unittest.TestCase, run via `pytest -n auto`.
 ```
 
 ## Data flow
@@ -59,13 +61,13 @@ $ uxon                  ──▶  │ TUI loop │──── attach ───
 
 The TUI runs **inside** a re-entrant outer loop. When the user picks
 an action, the TUI calls `App.exit()` returning a `LaunchRequest`.
-The outer loop in `lib/uxon_tui/app.py::run()` then forks `tmux`
+The outer loop in `src/uxon/tui/app.py::run()` then forks `tmux`
 **outside** the textual context (so the agent gets the real terminal),
 waits for it, and re-creates the `App` for the next round-trip.
 
 ## TUI internals
 
-Sub-modules under `lib/uxon_tui/`:
+Sub-modules under `src/uxon/tui/`:
 
 - `context.py` — pure data: `TuiContext`, `TuiSession`,
   `LaunchRequest`, `Item`, `build_items`, `CallbackError`.
@@ -89,9 +91,10 @@ Sub-modules under `lib/uxon_tui/`:
 
 These are enforced by tests and CI:
 
-- **`bin/uxon` may import from `lib/*`. `lib/*` may not import from
-  `bin/uxon`.** The CLI assembles pieces; pieces don't reach back.
-- **`lib/uxon_tui/*` may not import `subprocess` or `pwd`** or touch
+- **`src/uxon/cli.py` may import from `src/uxon/*`. Sibling modules
+  may not import from `cli`.** The CLI assembles pieces; pieces don't
+  reach back.
+- **`src/uxon/tui/*` may not import `subprocess` or `pwd`** or touch
   the filesystem directly. Side effects flow through callbacks on
   `TuiContext` / `SettingsCallbacks`. This keeps the TUI testable
   with Textual `Pilot` without spawning real processes.
@@ -101,11 +104,12 @@ These are enforced by tests and CI:
 - **All key handling goes through `BINDINGS`.** No `on_key`
   overrides on screen classes; a drift guard test
   (`tests/test_uxon_tui_bindings.py`) refuses any PR that adds one.
-- **One launch builder.** `_build_tmux_launch_request` in `bin/uxon`
-  is the single place that builds agent command lines. Don't add
-  direct `claude` / `codex` / `cursor-agent` exec calls anywhere else.
+- **One launch builder.** `_build_tmux_launch_request` in
+  `src/uxon/cli.py` is the single place that builds agent command
+  lines. Don't add direct `claude` / `codex` / `cursor-agent` exec
+  calls anywhere else.
 - **Config writes use `tomlkit`.** The round-trip writer in
-  `lib/uxon_settings.py` preserves comments and formatting. CLI read
+  `src/uxon/settings.py` preserves comments and formatting. CLI read
   paths stay on stdlib `tomllib`.
 - **One tmux socket per launch user.** No code path silently falls
   back to the default socket.
@@ -124,8 +128,8 @@ via `session_prefix`. Names matching any prefix listed in
 `kill` (so existing sessions stay reachable across renames) but
 are never *created*.
 
-`parse_session_name` and `candidate_session_name` in `bin/uxon` must
-move together. Don't touch one without the other.
+`parse_session_name` and `candidate_session_name` in `src/uxon/cli.py`
+must move together. Don't touch one without the other.
 
 ## Tests
 
@@ -139,7 +143,7 @@ move together. Don't touch one without the other.
   destructive bindings have `show=True`).
 - `tests/test_tui_integration.py` — end-to-end pty harness.
 
-Add a new branchy decision? Put it in `lib/uxon_tui/state.py` and
+Add a new branchy decision? Put it in `src/uxon/tui/state.py` and
 test it with plain `unittest`. Reach for `Pilot` only when the
 behaviour depends on Textual lifecycle.
 
@@ -153,9 +157,9 @@ Two layers, merged in order (later wins):
    project config.
 
 The single source of truth for known keys is
-`lib/uxon_settings.py::SETTINGS_SPECS`. Add a key there in the same
+`src/uxon/settings.py::SETTINGS_SPECS`. Add a key there in the same
 commit as the matching `DEFAULT_CONFIG` / `Config` / `load_config`
-changes in `bin/uxon`.
+changes in `src/uxon/cli.py`.
 
 ## Security boundaries
 

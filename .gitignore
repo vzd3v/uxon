@@ -2,6 +2,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Build artefacts (hatchling / python -m build)
+dist/
+build/
+*.egg-info/
+
 # Local config (gitignored except the example)
 config/*
 !config/config.example.toml

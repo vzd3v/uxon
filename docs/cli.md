@@ -138,8 +138,9 @@ Use this first whenever behaviour is unexpected.
 
 Aliases: `uxon -V`, `uxon --version`.
 
-Prints the version from `VERSION` and the short git commit (with
-a `-dirty` suffix when the checkout has uncommitted changes).
+Prints `__version__` from the installed `uxon` package and the short
+git commit (with a `-dirty` suffix when the checkout has uncommitted
+changes; the commit/dirty info is only available in dev checkouts).
 
 ---
 

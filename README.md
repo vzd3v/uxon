@@ -57,36 +57,53 @@ shell with `sudo`.
 
 ## Install
 
-Requires **Python 3.11+**, `tmux`, and Linux. Optional: `textual` for
-the TUI, `tomlkit` for in-TUI settings edits.
+Requires **Python 3.11+**, `tmux`, and Linux. Dependencies (`textual`,
+`tomlkit`) are pulled in automatically.
+
+### Single-user laptop (recommended)
+
+`uxon` is a regular Python CLI. The two community-standard installers
+both work:
+
+```bash
+# 1. uv tool (fastest; uv is the 2026 default)
+uv tool install git+https://github.com/vzd3v/uxon.git
+
+# 2. pipx (equivalent; same console-script entrypoint)
+pipx install git+https://github.com/vzd3v/uxon.git
+
+# Once published to PyPI you'll be able to drop the git URL:
+#   uv tool install uxon  /  pipx install uxon
+```
+
+Either one creates an isolated venv and puts `uxon` on your `PATH`.
+
+```bash
+# 2. Verify and bootstrap a host config.
+uxon doctor
+cp $(python3 -c "import uxon, pathlib; print(pathlib.Path(uxon.__file__).resolve().parents[2])")/config/config.example.toml ./config.toml
+$EDITOR config.toml             # set allowed_roots, session_users, agents
+```
+
+You'll also need at least one of the agent CLIs installed for the
+launch user — see [Supported agents](#supported-agents).
+
+### Shared host / multi-user VPS
+
+For a host where several Linux users need a single shared `uxon` on
+`PATH`, install into a dedicated venv and symlink the console script:
 
 ```bash
 git clone https://github.com/vzd3v/uxon.git
 cd uxon
-
-# 1. Symlink the entrypoint into PATH (root-writable location).
 sudo python3 install/install_uxon.py \
   --repo-dir "$(pwd)" \
   --install-path /usr/local/bin/uxon
-
-# 2. Create the host config from the example and edit it.
-cp config/config.example.toml config/config.toml
-$EDITOR config/config.toml      # set allowed_roots, session_users, agents
-
-# 3. Install the TUI (recommended). Without it, only the CLI works.
-pip install 'textual>=0.80,<9' tomlkit
-#   or, distro-managed:  apt install python3-tomlkit  +  pipx install textual
-
-# 4. Verify.
-uxon doctor
+# (uses /opt/uxon/venv by default; override with --venv-dir)
 ```
 
-That's it — the installer just creates a symlink, there's no Python
-package to build. To install for a single user without `sudo`, point
-`--install-path` at `~/.local/bin/uxon` instead.
-
-You'll also need at least one of the agent CLIs installed for the
-launch user — see [Supported agents](#supported-agents).
+The installer creates a venv at `--venv-dir`, installs the package
+into it, and symlinks `/opt/uxon/venv/bin/uxon` to `/usr/local/bin/uxon`.
 
 For multi-host rollout, generated config from a JSON payload, and
 deployment topology, see [`docs/deployment.md`](docs/deployment.md).

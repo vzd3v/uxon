@@ -5,30 +5,34 @@ to make and ship a change.
 
 ## Local setup
 
-`uxon` is a Python script tool. There is no `pip install uxon` step —
-you run the script directly out of a checkout.
+`uxon` is a regular Python package (`pyproject.toml`, hatchling backend).
+For development, install editable into a venv:
 
 ```bash
 git clone https://github.com/vzd3v/uxon.git
 cd uxon
-python3 -m pip install -e .[dev]   # ruff, pyright, pytest, textual, tomlkit
-# or, minimal: python3 -m pip install textual tomlkit pytest pytest-xdist
-./bin/uxon --version
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e ".[dev]"   # ruff, pyright, pytest, textual, tomlkit pulled automatically
+uxon --version
 ```
 
-`uxon` requires Python 3.11+. The TUI needs `textual >=0.80,<9`. Config
-writes need `tomlkit`. Both are optional for non-TUI subcommands.
+`uxon` requires Python 3.11+. The TUI uses `textual >=0.80,<9`; config
+writes use `tomlkit`. Both are now hard dependencies (pulled in by
+`pip install`/`pipx install`/`uv tool install`).
 
 ## Local checks
 
 Before opening a PR, run:
 
 ```bash
-python3 -m py_compile $(git ls-files '*.py' bin/uxon)
+python3 -m py_compile $(git ls-files '*.py')
 python3 -m pytest tests/ -n auto
 ruff check .
 ruff format --check .
 pyright
+python -m build               # smoke-test the wheel/sdist
+twine check dist/*            # README rendering on PyPI
 ```
 
 CI runs the same. If something passes locally but breaks CI, please
@@ -46,10 +50,12 @@ add a test that catches it.
 - Never bypass git hooks (`--no-verify`) and never amend a published
   commit.
 
-## When to bump `VERSION`
+## When to bump `__version__`
 
-Bump `VERSION` in the same commit as any user-visible behaviour
-change. Semver:
+Bump `__version__` in [`src/uxon/__init__.py`](src/uxon/__init__.py)
+in the same commit as any user-visible behaviour change. Hatch reads
+the same string at build time, so wheels and the in-tree CLI always
+agree. Semver:
 - **Major** for breaking changes to the CLI surface, the config
   schema, or the on-disk session-naming scheme.
 - **Minor** for new features that don't break existing config or
@@ -72,16 +78,17 @@ for the full picture. Quick list:
 - **Config writes use `tomlkit`** — round-trip preserves comments and
   formatting. CLI read paths stay on stdlib `tomllib`.
 - **One launch builder.** `uxon` is the single place that builds agent
-  command lines (`_build_tmux_launch_request` in `bin/uxon`). Don't
-  add direct agent exec calls anywhere else.
-- **Module boundaries.** `bin/uxon` may import from `lib/*`; nothing
-  in `lib/*` may import from `bin/uxon`. UI files under
-  `lib/uxon_tui/` must not import `subprocess`/`pwd` or touch the
-  filesystem directly — push that through callbacks on `TuiContext`.
+  command lines (`_build_tmux_launch_request` in `src/uxon/cli.py`).
+  Don't add direct agent exec calls anywhere else.
+- **Module boundaries.** `src/uxon/cli.py` may import from sibling
+  modules in `src/uxon/*`; those modules never import from `cli`. UI
+  files under `src/uxon/tui/` must not import `subprocess`/`pwd` or
+  touch the filesystem directly — push that through callbacks on
+  `TuiContext`.
 
 ## Tests
 
-- Prefer pure tests in `lib/uxon_tui/state.py` for branchy UI logic.
+- Prefer pure tests in `src/uxon/tui/state.py` for branchy UI logic.
   Pilot/pty tests are reserved for Textual wiring (mounting, key
   routing, `ListView`/`DataTable` events, async workers,
   `call_later`).
@@ -97,10 +104,10 @@ for the full picture. Quick list:
 ## Adding a config key
 
 1. Extend `DEFAULT_CONFIG`, `Config`, and `load_config` in
-   `bin/uxon`.
+   `src/uxon/cli.py`.
 2. Add validation if the value space is constrained.
 3. Add a matching `SettingSpec` in
-   `lib/uxon_settings.py::SETTINGS_SPECS` so the TUI Settings screen
+   `src/uxon/settings.py::SETTINGS_SPECS` so the TUI Settings screen
    exposes it.
 4. Document it in the README config table.
 5. Add a `load_config` test in `tests/test_uxon.py` and a

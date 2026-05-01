@@ -10,17 +10,10 @@ Screen / widget / integration tests live in:
 
 from __future__ import annotations
 
-import os
-import sys
 import unittest
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
-if _LIB not in sys.path:
-    sys.path.insert(0, _LIB)
-
-import uxon_tui  # noqa: E402
-from uxon_tui.context import (  # noqa: E402
+from uxon import tui as uxon_tui
+from uxon.tui.context import (
     _ACTION_KINDS,
     ACTION_COUNT,
     ServerStatus,
@@ -29,7 +22,7 @@ from uxon_tui.context import (  # noqa: E402
     _total_items,
     build_items,
 )
-from uxon_tui.state import (  # noqa: E402
+from uxon.tui.state import (
     CallbackFailure,
     LaunchCommitDecision,
     LaunchOptionsState,

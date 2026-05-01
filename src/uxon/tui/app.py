@@ -216,7 +216,7 @@ class UxonApp(App):
 
     def _probe_agents_worker(self) -> None:
         """Background thread: probe each enabled agent's binary --version."""
-        import uxon_agents
+        from uxon import agents as uxon_agents
 
         result = uxon_agents.probe_agents(
             list(self.ctx.enabled_agents),
@@ -250,7 +250,7 @@ class UxonApp(App):
         self.run_worker(self._probe_link_health_worker, thread=True, exclusive=False)
 
     def _probe_link_health_worker(self) -> None:
-        import uxon_tui
+        from uxon import tui as uxon_tui
 
         try:
             probe = getattr(self.ctx, "on_probe_link_health", None)

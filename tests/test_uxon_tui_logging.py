@@ -1,21 +1,15 @@
-"""Event-log tests for :func:`uxon_tui.events._log_event`."""
+"""Event-log tests for :func:`uxon.tui.events._log_event`."""
 
 from __future__ import annotations
 
 import json
 import os
 import pathlib
-import sys
 import tempfile
 import unittest
 from unittest import mock
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
-if _LIB not in sys.path:
-    sys.path.insert(0, _LIB)
-
-from uxon_tui.events import _log_event  # noqa: E402
+from uxon.tui.events import _log_event
 
 
 class LogEventTests(unittest.TestCase):

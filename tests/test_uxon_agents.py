@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import unittest
-from pathlib import Path
 from unittest import mock
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "lib"))
-
-import uxon_agents  # noqa: E402
+from uxon import agents as uxon_agents
 
 
 class CatalogTests(unittest.TestCase):
@@ -76,7 +71,7 @@ class CatalogTests(unittest.TestCase):
 
 class ProbeAgentsTests(unittest.TestCase):
     def test_probe_ok(self) -> None:
-        with mock.patch("uxon_agents.subprocess.run") as run:
+        with mock.patch("uxon.agents.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="1.0.1\n", stderr=""
             )
@@ -86,7 +81,7 @@ class ProbeAgentsTests(unittest.TestCase):
 
     def test_probe_missing_filenotfound(self) -> None:
         with mock.patch(
-            "uxon_agents.subprocess.run",
+            "uxon.agents.subprocess.run",
             side_effect=FileNotFoundError("no such binary"),
         ):
             result = uxon_agents.probe_agents(["codex"], launch_user=None)
@@ -94,7 +89,7 @@ class ProbeAgentsTests(unittest.TestCase):
         self.assertIsNone(result["codex"].version)
 
     def test_probe_missing_nonzero_exit(self) -> None:
-        with mock.patch("uxon_agents.subprocess.run") as run:
+        with mock.patch("uxon.agents.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=127, stdout="", stderr="not found"
             )
@@ -103,7 +98,7 @@ class ProbeAgentsTests(unittest.TestCase):
 
     def test_probe_timeout(self) -> None:
         with mock.patch(
-            "uxon_agents.subprocess.run",
+            "uxon.agents.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=1.5),
         ):
             result = uxon_agents.probe_agents(["claude"], launch_user=None)
@@ -116,13 +111,13 @@ class ProbeAgentsTests(unittest.TestCase):
             captured.append(cmd)
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="v\n", stderr="")
 
-        with mock.patch("uxon_agents.subprocess.run", side_effect=fake_run):
-            with mock.patch("uxon_agents._current_user", return_value="root"):
+        with mock.patch("uxon.agents.subprocess.run", side_effect=fake_run):
+            with mock.patch("uxon.agents._current_user", return_value="root"):
                 uxon_agents.probe_agents(["claude"], launch_user="devagent")
 
         self.assertEqual(len(captured), 1)
         # -iu loads the target user's login env (matches command_prefix_for_user
-        # in bin/uxon) so PATH picks up npm-global / nvm / ~/.local/bin.
+        # in uxon.cli) so PATH picks up npm-global / nvm / ~/.local/bin.
         self.assertEqual(captured[0][:4], ["sudo", "-niu", "devagent", "--"])
         self.assertIn("claude", captured[0])
 

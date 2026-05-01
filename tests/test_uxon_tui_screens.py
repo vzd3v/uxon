@@ -9,16 +9,9 @@ See ``tests/harness/pty_tui.py`` for end-to-end pty tests.
 
 from __future__ import annotations
 
-import os
-import sys
 import unittest
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
-if _LIB not in sys.path:
-    sys.path.insert(0, _LIB)
-
-from harness.textual_scenarios import ScreenScenario, press_keys, run_screen_scenarios  # noqa: E402
+from harness.textual_scenarios import ScreenScenario, press_keys, run_screen_scenarios
 
 
 def _textual_available() -> bool:
@@ -30,7 +23,7 @@ def _textual_available() -> bool:
 
 
 def _mk_ctx(**overrides):
-    from uxon_tui.context import LaunchRequest, TuiContext
+    from uxon.tui.context import LaunchRequest, TuiContext
 
     base = dict(
         sessions=[],
@@ -58,7 +51,7 @@ def _mk_ctx(**overrides):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class MainScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_q_quits(self) -> None:
-        from uxon_tui.app import UxonApp
+        from uxon.tui.app import UxonApp
 
         app = UxonApp(_mk_ctx(), probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
@@ -68,7 +61,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.quit_rc, 0)
 
     async def test_digit_1_activates_action_cwd(self) -> None:
-        from uxon_tui.app import UxonApp
+        from uxon.tui.app import UxonApp
 
         app = UxonApp(_mk_ctx(), probe_agents=False)
         calls: list[str] = []
@@ -81,8 +74,8 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["cwd"])
 
     async def test_refresh_preserves_action_focus(self) -> None:
-        from uxon_tui.app import UxonApp
-        from uxon_tui.widgets import ActionRow
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets import ActionRow
 
         def fake_refresh():
             return _mk_ctx(on_refresh=fake_refresh)
@@ -105,8 +98,8 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         ``LaunchOptionsScreen`` saw a fresh ``pending`` dict and rendered
         ``(checking…)`` forever, blocking the agent commit path.
         """
-        from uxon_agents import AgentAvailability
-        from uxon_tui.app import UxonApp
+        from uxon.agents import AgentAvailability
+        from uxon.tui.app import UxonApp
 
         loaded = _mk_ctx()  # loaded ctx with its own fresh availability dict
 
@@ -136,8 +129,8 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_kill_calls_on_kill_callback(self) -> None:
-        from uxon_tui.app import UxonApp
-        from uxon_tui.context import TuiSession
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import TuiSession
 
         kill_calls: list[tuple[str, str]] = []
         refresh_calls = []
@@ -175,7 +168,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             # Focus the session table and press 'd'.
-            from uxon_tui.widgets import SessionTable
+            from uxon.tui.widgets import SessionTable
 
             t = app.screen.query_one("#sessions-own", SessionTable)
             app.screen.action_refresh = lambda: None
@@ -196,7 +189,8 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 class ConfirmModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirm_modal_smoke_batch(self) -> None:
         from textual.widgets import Input
-        from uxon_tui.screens.confirm import ConfirmPhrase, ConfirmYesNo
+
+        from uxon.tui.screens.confirm import ConfirmPhrase, ConfirmYesNo
 
         async def phrase(app, pilot):
             app.screen.query_one("#confirm-input", Input).focus()
@@ -223,12 +217,12 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
     """Pilot tests for the two-panel agent × permission-mode modal."""
 
     def _make_avail(self, status: str):
-        from uxon_agents import AgentAvailability
+        from uxon.agents import AgentAvailability
 
         return AgentAvailability(status=status)
 
     async def test_launch_options_layout_smoke_batch(self) -> None:
-        from uxon_tui.screens.launch_options import LaunchOptionsScreen
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         async def assert_pending(app, pilot):
             screen = app.screen
@@ -270,7 +264,8 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         """
         from textual.app import App
         from textual.widgets import ListView
-        from uxon_tui.screens.launch_options import LaunchOptionsScreen
+
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         ctx = _mk_ctx(
             enabled_agents=("claude", "cursor"),
@@ -310,7 +305,8 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
 class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_project_smoke_batch(self) -> None:
         from textual.widgets import Input
-        from uxon_tui.screens.new_project import NewProjectScreen
+
+        from uxon.tui.screens.new_project import NewProjectScreen
 
         async def submit_foo(app, pilot):
             app.screen.query_one("#name-input", Input).focus()
@@ -335,7 +331,7 @@ class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class GitProfileScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_git_profile_smoke_batch(self) -> None:
-        from uxon_tui.screens.git_profile import GitProfileScreen
+        from uxon.tui.screens.git_profile import GitProfileScreen
 
         scenarios = [
             ScreenScenario(
@@ -358,7 +354,7 @@ class GitProfileScreenTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_project_smoke_batch(self) -> None:
-        from uxon_tui.screens.existing import ExistingProjectScreen
+        from uxon.tui.screens.existing import ExistingProjectScreen
 
         scenarios = [
             ScreenScenario(
@@ -387,7 +383,7 @@ class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
     async def _mk_cbs(self, entries_factory):
-        from uxon_tui.screens.settings import SettingsCallbacks
+        from uxon.tui.screens.settings import SettingsCallbacks
 
         saved: list = []
         removed: list = []
@@ -414,8 +410,9 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bool_toggle_saves_value(self):
         from textual.app import App
-        from uxon_settings import SettingEntry, SettingSpec
-        from uxon_tui.screens.settings import BoolToggleModal, SettingsScreen
+
+        from uxon.settings import SettingEntry, SettingSpec
+        from uxon.tui.screens.settings import BoolToggleModal, SettingsScreen
 
         spec = SettingSpec("git_create_enabled", "bool", "desc")
         entries = [SettingEntry(spec=spec, value=False, source="default", editable=True)]
@@ -434,7 +431,7 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
             # Click True button.
-            from uxon_tui.screens.settings import BoolToggleModal
+            from uxon.tui.screens.settings import BoolToggleModal
 
             modal = app.screen_stack[-1]
             self.assertIsInstance(modal, BoolToggleModal)
@@ -450,7 +447,8 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
 class GitRemotesScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_populates_and_esc_dismisses(self):
         from textual.app import App
-        from uxon_tui.screens.git_remotes import GitRemotesScreen
+
+        from uxon.tui.screens.git_remotes import GitRemotesScreen
 
         rows = [
             ("foo", "github.com", "alice", "gh", "alice", "private", ""),

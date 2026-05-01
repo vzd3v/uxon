@@ -179,7 +179,7 @@ def agent_list_label(index: int, agent_id: str, availability_obj: Any | None) ->
 
 
 def mode_item_ids(agent_id: str) -> tuple[str, ...]:
-    import uxon_agents
+    from uxon import agents as uxon_agents
 
     if agent_id not in uxon_agents.CATALOG:
         return ()
@@ -187,7 +187,7 @@ def mode_item_ids(agent_id: str) -> tuple[str, ...]:
 
 
 def launch_mode_id(agent_id: str, mode_index: int) -> str | None:
-    import uxon_agents
+    from uxon import agents as uxon_agents
 
     if agent_id not in uxon_agents.CATALOG:
         return None

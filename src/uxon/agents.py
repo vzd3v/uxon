@@ -1,6 +1,6 @@
 """Agent catalog: declarative data for claude / codex / cursor-agent.
 
-Pure data + small helpers. No textual, no TUI, no bin/uxon imports.
+Pure data + small helpers. No textual, no TUI, no cli imports.
 `probe_agents` uses subprocess locally but never at module scope.
 """
 
@@ -99,7 +99,7 @@ def _current_user() -> str:
 def _build_probe_cmd(binary: str, launch_user: str | None) -> list[str]:
     if launch_user and launch_user != _current_user():
         # Match the login-env semantics that ``command_prefix_for_user``
-        # in ``bin/uxon`` uses for the actual launch (``sudo -iu``). The
+        # in ``uxon.cli`` uses for the actual launch (``sudo -iu``). The
         # ``-i`` loads the target user's login shell so ``PATH`` picks
         # up npm-global / nvm / ``~/.local/bin`` entries where agents
         # like ``claude`` and ``cursor-agent`` are typically installed.

@@ -1,11 +1,7 @@
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-
-import uxon_git_backend_gh as gh
-import uxon_git_profiles as gp
+from uxon import git_backend_gh as gh
+from uxon import git_profiles as gp
 
 
 def _profile(**over):

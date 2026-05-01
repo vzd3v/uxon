@@ -6,6 +6,37 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (packaging)
+
+- **`uxon` is now a proper Python package** (`src/uxon/` layout with a
+  `pyproject.toml` declaring `[build-system] hatchling`). End users
+  install it like any other CLI:
+
+  ```bash
+  uv tool install git+https://github.com/vzd3v/uxon.git   # primary
+  pipx install   git+https://github.com/vzd3v/uxon.git   # equivalent
+  ```
+
+  Both pull `textual` and `tomlkit` automatically — no more "install
+  the TUI extra" step.
+- **`bin/uxon` removed.** The single-file script moved to
+  `src/uxon/cli.py`; the `uxon` console script is generated from
+  `[project.scripts]`. `python -m uxon` also works.
+- **`lib/uxon_*` modules moved into the package.**
+  `lib/uxon_settings.py` → `src/uxon/settings.py`, etc., and
+  `lib/uxon_tui/` → `src/uxon/tui/`. Import paths follow the move
+  (`from uxon.settings import ...`, `from uxon.tui.app import ...`).
+- **`install/install_uxon.py` rewritten.** It now creates a dedicated
+  venv at `--venv-dir` (default `/opt/uxon/venv`), installs the
+  package into it, and symlinks the venv's console script to
+  `--install-path`. Existing flags (`--repo-dir`, `--install-path`)
+  remain accepted; `--dry-run` and `--reinstall` added.
+- **`tui` extra removed.** Its contents (`textual`, `tomlkit`) are
+  hard runtime dependencies; the `dev` extra (pytest/ruff/pyright)
+  is unchanged.
+
+No user-facing CLI behaviour changed in this release.
+
 ## [3.0.0] — 2026-05-01
 
 Project rename: `ccw` → `uxon`. The CLI binary, Python modules,

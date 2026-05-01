@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """uxon: readable wrapper for terminal AI coding agent sessions."""
 
@@ -11,15 +10,25 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
+# Pure-data TUI types are safe to import eagerly: ``uxon.tui.context`` and
+# ``uxon.tui.__init__`` deliberately defer the textual-dependent ``app``
+# module behind a lazy ``__getattr__``. Non-TUI subcommands stay textual-free.
+from uxon.tui import (  # noqa: E402  (kept after the optional tomllib block)
+    CallbackError,
+    LinkHealthStatus,
+    ServerStatus,
+    TuiContext,
+    TuiSession,
+)
 
 # Known agent ids. Kept in sync with uxon_agents.CATALOG (verified by tests);
 # declared here as a literal so CLI parsing doesn't need the lazy lib import.
@@ -135,8 +144,8 @@ class SessionInfo:
     active_path: str
     cpu_pct: float = 0.0
     rss_kib: int = 0
-    agent: str = "claude"    # "claude" | "codex" | "cursor" | "unknown"
-    legacy: bool = False     # True iff name uses a non-current (legacy) prefix
+    agent: str = "claude"  # "claude" | "codex" | "cursor" | "unknown"
+    legacy: bool = False  # True iff name uses a non-current (legacy) prefix
 
 
 @dataclass
@@ -148,8 +157,8 @@ class ParsedArgs:
     dry_run: bool = False
     force: bool = False
     all_users: bool = False
-    agent: str | None = None                              # None = use cfg.default_agent
-    permission_mode: str = "normal"                       # "normal" | "auto" | "yolo"
+    agent: str | None = None  # None = use cfg.default_agent
+    permission_mode: str = "normal"  # "normal" | "auto" | "yolo"
     agent_args: list[str] = field(default_factory=list)
     git_remote: str | None = None  # profile name, or "default", or None
     no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
@@ -160,7 +169,7 @@ def eprint(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
-def fail(msg: str, code: int = 2) -> None:
+def fail(msg: str, code: int = 2) -> NoReturn:
     eprint(f"uxon: {msg}")
     raise SystemExit(code)
 
@@ -179,15 +188,15 @@ def _sanitize_callback_stderr(raw: str) -> str:
         if not line:
             continue
         if line.startswith("uxon:   - "):
-            out.append("  - " + line[len("uxon:   - "):])
+            out.append("  - " + line[len("uxon:   - ") :])
         elif line.startswith("uxon: "):
-            out.append(line[len("uxon: "):])
+            out.append(line[len("uxon: ") :])
         else:
             out.append(line)
     return "\n".join(out)
 
 
-def _wrap_tui_callback(fn: Any, callback_error_cls: type) -> Any:
+def _wrap_tui_callback(fn: Any, callback_error_cls: type[Exception]) -> Any:
     """Wrap a callback so exceptions surface on the TUI status line.
 
     Captures anything the callback writes to ``stderr`` (e.g. the message
@@ -314,17 +323,20 @@ def validate_repeat_mode(value: str, source: str) -> str:
 
 
 def load_config(cwd: str) -> Config:
-    sys.path.insert(0, str(repo_root() / "lib"))
-    import uxon_git_profiles
+    from uxon import git_profiles as uxon_git_profiles
 
     merged, _ = resolve_config_layers(cwd)
     # Load raw repo data (before merge with defaults) to detect legacy flat keys.
     _raw_repo = load_toml(repo_config_path())
     runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
-    default_launch_mode = str(merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])).strip()
+    default_launch_mode = str(
+        merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])
+    ).strip()
     if default_launch_mode not in {"fixed", "caller"}:
         fail(f"invalid default_launch_mode: {default_launch_mode!r} (expected 'fixed' or 'caller')")
-    launch_user_by_caller_raw = merged.get("launch_user_by_caller", DEFAULT_CONFIG["launch_user_by_caller"])
+    launch_user_by_caller_raw = merged.get(
+        "launch_user_by_caller", DEFAULT_CONFIG["launch_user_by_caller"]
+    )
     if not isinstance(launch_user_by_caller_raw, dict):
         fail("launch_user_by_caller must be a TOML table")
     launch_user_by_caller = {
@@ -338,13 +350,17 @@ def load_config(cwd: str) -> Config:
     session_users = normalize_user_list([str(x) for x in session_users_raw])
     if not session_users:
         session_users = [runtime_user] if runtime_user else []
-    enable_all_users_list = bool(merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"]))
+    enable_all_users_list = bool(
+        merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"])
+    )
     session_prefix = str(merged.get("session_prefix", DEFAULT_CONFIG["session_prefix"]))
     legacy_raw = merged.get("legacy_session_prefixes", DEFAULT_CONFIG["legacy_session_prefixes"])
     if not isinstance(legacy_raw, list) or not all(isinstance(p, str) for p in legacy_raw):
         fail("legacy_session_prefixes must be a list of strings")
     legacy_session_prefixes = tuple(p for p in legacy_raw if p and p != session_prefix)
-    allowed_roots = [canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
+    allowed_roots = [
+        canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])
+    ]
 
     # Hard-reject legacy flat key with a clear migration message.
     # Check raw repo config (not merged with defaults) so that the presence
@@ -366,8 +382,7 @@ def load_config(cwd: str) -> Config:
     enabled = tuple(str(x) for x in enabled_raw)
     for aid in enabled:
         if aid not in VALID_AGENT_IDS:
-            fail(f"unknown agent id in agents.enabled: {aid!r} "
-                 f"(expected one of {VALID_AGENT_IDS})")
+            fail(f"unknown agent id in agents.enabled: {aid!r} (expected one of {VALID_AGENT_IDS})")
     default_agent = str(agents_tbl.get("default", enabled[0]))
     if default_agent not in enabled:
         fail(f"agents.default={default_agent!r} is not in agents.enabled={list(enabled)}")
@@ -382,12 +397,16 @@ def load_config(cwd: str) -> Config:
             fail(f"'agents.{aid}.default_args' must be a list")
         agent_default_args[aid] = tuple(str(x) for x in args)
 
-    new_project_root = canonical(str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"])))
+    new_project_root = canonical(
+        str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"]))
+    )
     repeat_noninteractive_mode = validate_repeat_mode(
         str(merged.get("repeat_noninteractive_mode", DEFAULT_CONFIG["repeat_noninteractive_mode"])),
         "repeat_noninteractive_mode",
     )
-    tmux_socket_template = str(merged.get("tmux_socket_template", DEFAULT_CONFIG["tmux_socket_template"])).strip()
+    tmux_socket_template = str(
+        merged.get("tmux_socket_template", DEFAULT_CONFIG["tmux_socket_template"])
+    ).strip()
     if not tmux_socket_template:
         fail("tmux_socket_template must not be empty")
     try:
@@ -413,7 +432,9 @@ def load_config(cwd: str) -> Config:
     if tui_ssh_refresh_interval_seconds <= 0:
         fail("tui_ssh_refresh_interval_seconds must be greater than 0")
 
-    git_create_enabled = bool(merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"]))
+    git_create_enabled = bool(
+        merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"])
+    )
     default_git_remote_profile = str(
         merged.get("default_git_remote_profile", DEFAULT_CONFIG["default_git_remote_profile"])
     ).strip()
@@ -601,7 +622,7 @@ def fmt_epoch(ts: str) -> str:
     if not ts:
         return ""
     try:
-        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(int(ts), tz=UTC).isoformat()
     except (TypeError, ValueError, OSError):
         return ""
 
@@ -672,14 +693,11 @@ def _compact_duration(seconds: float) -> str:
     return f"{minutes}m"
 
 
-def _read_server_status(disk_path: str) -> object:
-    sys.path.insert(0, str(repo_root() / "lib"))
-    import uxon_tui
-
+def _read_server_status(disk_path: str) -> ServerStatus:
     load = ""
     cpu = ""
     try:
-        with open("/proc/loadavg", "r", encoding="utf-8") as fh:
+        with open("/proc/loadavg", encoding="utf-8") as fh:
             load = fh.read().split()[0]
         cores = os.cpu_count() or 1
         cpu = f"{(float(load) / cores) * 100:.0f}%"
@@ -689,7 +707,7 @@ def _read_server_status(disk_path: str) -> object:
     ram = ""
     try:
         meminfo: dict[str, int] = {}
-        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
             for line in fh:
                 key, _, rest = line.partition(":")
                 value = rest.strip().split()[0]
@@ -716,15 +734,15 @@ def _read_server_status(disk_path: str) -> object:
 
     uptime = ""
     try:
-        with open("/proc/uptime", "r", encoding="utf-8") as fh:
+        with open("/proc/uptime", encoding="utf-8") as fh:
             uptime = _compact_duration(float(fh.read().split()[0]))
     except (OSError, ValueError, IndexError):
         pass
 
-    return uxon_tui.ServerStatus(load=load, cpu=cpu, ram=ram, disk=disk, uptime=uptime)
+    return ServerStatus(load=load, cpu=cpu, ram=ram, disk=disk, uptime=uptime)
 
 
-def _read_ssh_link_health_status() -> object | None:
+def _read_ssh_link_health_status() -> LinkHealthStatus | None:
     ssh_connection = os.environ.get("SSH_CONNECTION", "").strip()
     if not ssh_connection:
         return None
@@ -743,9 +761,6 @@ def _read_ssh_link_health_status() -> object | None:
         return None
     if cp.returncode != 0:
         return None
-
-    sys.path.insert(0, str(repo_root() / "lib"))
-    import uxon_tui
 
     def parse_endpoint(endpoint: str) -> tuple[str, str] | None:
         endpoint = endpoint.strip()
@@ -780,7 +795,7 @@ def _read_ssh_link_health_status() -> object | None:
         retrans_now = int(retrans_match.group(1)) if retrans_match else 0
         summary = f"{rtt_ms:.0f}ms rtt | {var_ms:.0f}ms var | retrans {retrans_now}"
         alert = rtt_ms >= 180.0 or var_ms >= 25.0 or retrans_now > 0
-        return uxon_tui.LinkHealthStatus(
+        return LinkHealthStatus(
             state="error" if alert else "ok",
             summary=summary,
         )
@@ -929,9 +944,12 @@ def choose_attach_session(
                 return session
     return min(
         existing,
-        key=lambda session: parse_plain_session_index(
-            session.name, stem, agent, prefix=prefix, legacy_prefixes=legacy_prefixes
-        ) or 9999,
+        key=lambda session: (
+            parse_plain_session_index(
+                session.name, stem, agent, prefix=prefix, legacy_prefixes=legacy_prefixes
+            )
+            or 9999
+        ),
     )
 
 
@@ -939,7 +957,9 @@ def is_interactive_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def prompt_repeat_action(target_desc: str, attach_target: SessionInfo, existing: list[SessionInfo]) -> str:
+def prompt_repeat_action(
+    target_desc: str, attach_target: SessionInfo, existing: list[SessionInfo]
+) -> str:
     session_names = ", ".join(session.name for session in existing)
     print(f"uxon: compatible sessions already exist for {target_desc}: {session_names}")
     prompt = f"[Enter] attach {attach_target.name}, type 'new' for a parallel session, or 'q' to cancel: "
@@ -967,7 +987,9 @@ def allocate_session_name(
 ) -> str:
     exact_base = candidate_session_name(stem, 1, agent, prefix=prefix)
     exact_base_hits = [s for s in sessions if s.name == exact_base]
-    if exact_base_hits and not session_path_compatible(exact_base_hits[0].active_path, compatibility_root):
+    if exact_base_hits and not session_path_compatible(
+        exact_base_hits[0].active_path, compatibility_root
+    ):
         fail(
             "session conflict: "
             f"{exact_base} already points to {exact_base_hits[0].active_path or '<unknown>'}, "
@@ -1026,7 +1048,9 @@ def resolve_repeat_decision(
     raise AssertionError("unreachable")
 
 
-def legacy_compatible_sessions(cfg: Config, launch_user: str, stem: str, compatibility_root: str) -> list[SessionInfo]:
+def legacy_compatible_sessions(
+    cfg: Config, launch_user: str, stem: str, compatibility_root: str
+) -> list[SessionInfo]:
     sessions = collect_sessions_for_user(
         launch_user,
         cfg.session_prefix,
@@ -1134,7 +1158,9 @@ def collect_sessions_for_user(
             continue
 
         pane_fmt = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
-        pane_rows = run_cmd(base + ["list-panes", "-t", name, "-F", pane_fmt], check=False).stdout.splitlines()
+        pane_rows = run_cmd(
+            base + ["list-panes", "-t", name, "-F", pane_fmt], check=False
+        ).stdout.splitlines()
         pane_pids: list[int] = []
         active_pid: int | None = None
         active_cmd = ""
@@ -1216,7 +1242,11 @@ def resolve_session(
     # 2) normalized with current or any legacy prefix
     candidates: list[SessionInfo] = []
     for candidate_prefix in known_prefixes:
-        normalized = identifier if identifier.startswith(candidate_prefix) else f"{candidate_prefix}{identifier}"
+        normalized = (
+            identifier
+            if identifier.startswith(candidate_prefix)
+            else f"{candidate_prefix}{identifier}"
+        )
         candidates.extend(s for s in sessions if s.name == normalized)
     uniq: dict[str, SessionInfo] = {s.name: s for s in candidates}
     if len(uniq) == 1:
@@ -1247,7 +1277,7 @@ def resolve_session(
         short = s.name
         for p in known_prefixes:
             if short.startswith(p):
-                short = short[len(p):]
+                short = short[len(p) :]
                 break
         if s.name.startswith(identifier) or short.startswith(identifier):
             pref.append(s)
@@ -1264,7 +1294,9 @@ def resolve_session(
         if len(pid_hits) == 1:
             return pid_hits[0]
         if len(pid_hits) > 1:
-            fail(f"pid '{identifier}' matches multiple sessions: {', '.join(s.name for s in pid_hits)}")
+            fail(
+                f"pid '{identifier}' matches multiple sessions: {', '.join(s.name for s in pid_hits)}"
+            )
 
     fail(f"no session match for '{identifier}'")
     raise AssertionError("unreachable")
@@ -1304,7 +1336,9 @@ def launch_allowed_roots(cfg: Config, launch_user: str) -> list[str]:
     return roots
 
 
-def print_list(cfg: Config, sessions: list[SessionInfo], scope_users: list[str], show_user: bool = False) -> int:
+def print_list(
+    cfg: Config, sessions: list[SessionInfo], scope_users: list[str], show_user: bool = False
+) -> int:
     if not sessions:
         if show_user:
             print(f"uxon: no {cfg.session_prefix}* sessions for users: {', '.join(scope_users)}")
@@ -1314,7 +1348,9 @@ def print_list(cfg: Config, sessions: list[SessionInfo], scope_users: list[str],
 
     rows: list[dict[str, str]] = []
     for s in sessions:
-        short = s.name[len(cfg.session_prefix) :] if s.name.startswith(cfg.session_prefix) else s.name
+        short = (
+            s.name[len(cfg.session_prefix) :] if s.name.startswith(cfg.session_prefix) else s.name
+        )
         marker = "*" if s.attached == "1" else " "
         pid_s = str(s.active_pid) if s.active_pid is not None else "-"
         cpu_s = format_cpu_pct(s.cpu_pct)
@@ -1370,7 +1406,9 @@ def print_list(cfg: Config, sessions: list[SessionInfo], scope_users: list[str],
                 f"{row['last']:<5}  {row['cmd']:<{cmd_w}}  {row['path']}"
             )
     else:
-        print(f"{'ID':<{id_w}}  {'PID':<{pid_w}}  {'CPU':>{cpu_w}}  {'RAM':>{ram_w}}  {'NEW':<5}  {'LAST':<5}  {'CMD':<{cmd_w}}  PATH")
+        print(
+            f"{'ID':<{id_w}}  {'PID':<{pid_w}}  {'CPU':>{cpu_w}}  {'RAM':>{ram_w}}  {'NEW':<5}  {'LAST':<5}  {'CMD':<{cmd_w}}  PATH"
+        )
         for row in rows:
             print(
                 f"{row['id']:<{id_w}}  {row['pid']:<{pid_w}}  {row['cpu']:>{cpu_w}}  "
@@ -1576,10 +1614,12 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
 
 def _tui_launch_request_cls() -> type:
-    """Lazy-load ``LaunchRequest`` from lib/uxon_tui without importing blessed."""
-    sys.path.insert(0, str(repo_root() / "lib"))
-    import uxon_tui  # noqa: WPS433 — lazy import, module-top `blessed` dep is deferred
-    return uxon_tui.LaunchRequest
+    """Lazy-load ``LaunchRequest`` from ``uxon.tui.context`` (pure data;
+    no textual import). Kept as a function so the module-top import surface
+    of cli.py stays small."""
+    from uxon.tui.context import LaunchRequest
+
+    return LaunchRequest
 
 
 def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
@@ -1602,7 +1642,9 @@ def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: st
     return LaunchRequest(cmd=full, prelaunch=(), label=f"attach {target.name}")
 
 
-def attach_session(target: SessionInfo, cfg: Config, launch_user: str, dry_run: bool = False) -> int:
+def attach_session(
+    target: SessionInfo, cfg: Config, launch_user: str, dry_run: bool = False
+) -> int:
     req = _build_tmux_attach_request(target, cfg, launch_user)
     if dry_run:
         print(f"attach_user={shlex.quote(launch_user)}")
@@ -1647,9 +1689,13 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         return 0
     if not args.dry_run and not args.force:
         if not is_interactive_tty():
-            fail("kill-all is destructive; rerun with --force, or use 'uxon list' / 'uxon doctor' first")
+            fail(
+                "kill-all is destructive; rerun with --force, or use 'uxon list' / 'uxon doctor' first"
+            )
         names = ", ".join(s.name for s in sessions)
-        response = input(f"Kill all {len(sessions)} session(s) on {tmux_socket_path(cfg, launch_user)}: {names}\nType 'kill-all' to confirm: ")
+        response = input(
+            f"Kill all {len(sessions)} session(s) on {tmux_socket_path(cfg, launch_user)}: {names}\nType 'kill-all' to confirm: "
+        )
         if response.strip() != "kill-all":
             fail("cancelled", 130)
     for s in sessions:
@@ -1676,7 +1722,8 @@ def _build_tmux_launch_request(
     (see AGENTS.md "hard rules"). Both the CLI execvp path
     (:func:`launch_in_tmux`) and the TUI fork-and-wait path reuse it.
     """
-    import uxon_agents
+    from uxon import agents as uxon_agents
+
     LaunchRequest = _tui_launch_request_cls()
     agent_id = args.agent or cfg.default_agent
     if agent_id not in cfg.enabled_agents:
@@ -1697,7 +1744,9 @@ def _build_tmux_launch_request(
         final_cmd += ["-w", branch]
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
-    ensure_socket_parent = tuple(command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent])
+    ensure_socket_parent = tuple(
+        command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent]
+    )
     base = configured_tmux_base(cfg, launch_user)
     mode = tmux_nesting_mode(socket_path)
     if mode == "switch":
@@ -1706,9 +1755,7 @@ def _build_tmux_launch_request(
         # nest. Instead create the session detached (idempotent via
         # ``-dA``; claude is ignored when the session already exists)
         # and then switch the current client over to it.
-        create = tuple(
-            base + ["new-session", "-dA", "-s", session, "-c", target_dir] + final_cmd
-        )
+        create = tuple(base + ["new-session", "-dA", "-s", session, "-c", target_dir] + final_cmd)
         switch = tuple(base + ["switch-client", "-t", session])
         return LaunchRequest(
             cmd=switch,
@@ -1719,7 +1766,14 @@ def _build_tmux_launch_request(
     return LaunchRequest(cmd=full, prelaunch=(ensure_socket_parent,), label=f"launch {session}")
 
 
-def launch_in_tmux(target_dir: str, session: str, args: ParsedArgs, cfg: Config, branch: str | None, launch_user: str) -> int:
+def launch_in_tmux(
+    target_dir: str,
+    session: str,
+    args: ParsedArgs,
+    cfg: Config,
+    branch: str | None,
+    launch_user: str,
+) -> int:
     req = _build_tmux_launch_request(target_dir, session, args, cfg, branch, launch_user)
     if args.dry_run:
         print(f"launch_user={shlex.quote(launch_user)}")
@@ -1814,7 +1868,9 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             prefix=cfg.session_prefix,
             legacy_prefixes=cfg.legacy_session_prefixes,
         )
-        decision = resolve_repeat_decision(args.repeat_mode, cfg, target_desc, attach_target, existing)
+        decision = resolve_repeat_decision(
+            args.repeat_mode, cfg, target_desc, attach_target, existing
+        )
         if decision == "attach":
             return attach_session(attach_target, cfg, launch_user, args.dry_run)
     else:
@@ -1839,6 +1895,9 @@ def _do_create_git_remote(
     strictly non-interactive, so mismatches are surfaced as errors
     rather than prompts.
     """
+    # Callers gate on ``if args.git_remote:`` before dispatching here.
+    assert args.git_remote is not None, "_do_create_git_remote called without --git-remote"
+    git_remote_selector = args.git_remote
     if branch:
         fail("--git-remote is not supported together with -w <branch>")
     if not cfg.git_create_enabled:
@@ -1852,14 +1911,13 @@ def _do_create_git_remote(
             "[[git_remote_profiles]] entry to config/config.toml"
         )
 
-    sys.path.insert(0, str(repo_root() / "lib"))
-    import uxon_git_create
-    import uxon_git_profiles
+    from uxon import git_create as uxon_git_create
+    from uxon import git_profiles as uxon_git_profiles
 
     try:
         profile = uxon_git_profiles.resolve_profile_selector(
             cfg.git_remote_profiles,
-            args.git_remote,
+            git_remote_selector,
             cfg.default_git_remote_profile,
         )
     except uxon_git_profiles.ProfileError as exc:
@@ -1923,16 +1981,24 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
 
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    """Best-effort path to the repo root for in-tree dev runs.
+
+    For pipx / `uv tool` / wheel installs this points into site-packages
+    and the resulting paths (``config/config.toml`` etc.) won't exist —
+    callers must tolerate missing files.
+    """
+    return Path(__file__).resolve().parents[2]
 
 
 def read_repo_version() -> str:
-    version_path = repo_root() / "VERSION"
+    # Single source of truth: ``__version__`` in ``src/uxon/__init__.py``.
+    # Hatch reads the same string at build time, so wheels and dev
+    # checkouts always agree.
     try:
-        version = version_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return "0.0.0+unknown"
-    return version or "0.0.0+unknown"
+        from uxon import __version__ as pkg_version
+    except ImportError:
+        pkg_version = ""
+    return pkg_version or "0.0.0+unknown"
 
 
 def read_git_commit_short() -> str | None:
@@ -1958,7 +2024,16 @@ def repo_is_dirty() -> bool:
     if refresh.returncode != 0:
         return False
     cp = subprocess.run(
-        ["git", "-c", f"safe.directory={root}", "-C", root, "status", "--porcelain", "--untracked-files=no"],
+        [
+            "git",
+            "-c",
+            f"safe.directory={root}",
+            "-C",
+            root,
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        ],
         text=True,
         capture_output=True,
     )
@@ -2031,14 +2106,22 @@ def doctor_issues(
         if path is None:
             issues.append(f"'{aid}' agent binary is not resolvable for {launch_user}")
     if legacy_sessions and not current_sessions:
-        issues.append("legacy default-socket uxon sessions exist while the dedicated uxon socket has none")
-    if caller_user != launch_user and launch_user not in cfg.session_users and not cfg.enable_all_users_list:
-        issues.append(f"launch user {launch_user} is not present in session_users; list --all-users may omit it")
+        issues.append(
+            "legacy default-socket uxon sessions exist while the dedicated uxon socket has none"
+        )
+    if (
+        caller_user != launch_user
+        and launch_user not in cfg.session_users
+        and not cfg.enable_all_users_list
+    ):
+        issues.append(
+            f"launch user {launch_user} is not present in session_users; list --all-users may omit it"
+        )
     return issues
 
 
 def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
-    import uxon_agents
+    from uxon import agents as uxon_agents
 
     _, config_sources = resolve_config_layers(cwd)
     socket_path = tmux_socket_path(cfg, launch_user)
@@ -2083,7 +2166,9 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     print(f"tmux_socket={socket_path}")
     print(f"tmux_socket_parent={Path(socket_path).parent}")
     print(f"tmux_socket_parent_exists={'yes' if Path(socket_path).parent.is_dir() else 'no'}")
-    print(f"tmux_socket_parent_writable={'yes' if user_can_write_dir(str(Path(socket_path).parent), launch_user) else 'no'}")
+    print(
+        f"tmux_socket_parent_writable={'yes' if user_can_write_dir(str(Path(socket_path).parent), launch_user) else 'no'}"
+    )
     # Per-agent status block.
     for aid in cfg.enabled_agents:
         spec = uxon_agents.CATALOG[aid]
@@ -2097,10 +2182,16 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
             print(f"{aid}:  -  MISSING  ({spec.install_hint})")
     print(f"current_socket_sessions={len(current_sessions)}")
     if current_sessions:
-        print("current_socket_session_names=" + ", ".join(session.name for session in current_sessions))
+        print(
+            "current_socket_session_names="
+            + ", ".join(session.name for session in current_sessions)
+        )
     print(f"legacy_default_socket_sessions={len(legacy_sessions)}")
     if legacy_sessions:
-        print("legacy_default_socket_session_names=" + ", ".join(session.name for session in legacy_sessions))
+        print(
+            "legacy_default_socket_session_names="
+            + ", ".join(session.name for session in legacy_sessions)
+        )
     print(f"git_create_enabled={'yes' if cfg.git_create_enabled else 'no'}")
     print(f"default_git_remote_profile={cfg.default_git_remote_profile or '-'}")
     if cfg.git_remote_profiles:
@@ -2150,9 +2241,7 @@ def _probe_git_profile(profile, creds_user: str, current_user: str) -> str:
             return f"warn:passwordless sudo to {creds_user} unavailable"
 
     prefix = (
-        ["sudo", "-n", "-u", creds_user, "--"]
-        if creds_user and creds_user != current_user
-        else []
+        ["sudo", "-n", "-u", creds_user, "--"] if creds_user and creds_user != current_user else []
     )
     if profile.auth == "gh":
         which = subprocess.run(
@@ -2225,8 +2314,11 @@ def _list_existing_projects(root: str) -> list[tuple[str, str]]:
     when the stat call fails.
     """
     try:
-        entries = [(e.name, str(e)) for e in Path(root).iterdir()
-                   if e.is_dir() and not e.name.startswith(".")]
+        entries = [
+            (e.name, str(e))
+            for e in Path(root).iterdir()
+            if e.is_dir() and not e.name.startswith(".")
+        ]
     except OSError:
         return []
     entries.sort()
@@ -2243,21 +2335,18 @@ def _list_existing_projects(root: str) -> list[tuple[str, str]]:
 
 def _to_tui_session(
     s: SessionInfo, prefix: str, legacy_prefixes: tuple[str, ...] = ()
-) -> object:
-    sys.path.insert(0, str(repo_root() / "lib"))
-    import uxon_tui
-
-    short = s.name[len(prefix):] if s.name.startswith(prefix) else s.name
+) -> TuiSession:
+    short = s.name[len(prefix) :] if s.name.startswith(prefix) else s.name
     for lp in legacy_prefixes:
         if s.name.startswith(lp):
-            short = s.name[len(lp):]
+            short = s.name[len(lp) :]
             break
     parsed = parse_session_name(s.name, prefix=prefix, legacy_prefixes=legacy_prefixes)
     if parsed is not None:
         stem, agent, _idx, legacy = parsed
     else:
         stem, agent, legacy = s.name, "unknown", False
-    return uxon_tui.TuiSession(
+    return TuiSession(
         name=s.name,
         short=short,
         attached=s.attached == "1",
@@ -2275,7 +2364,7 @@ def _to_tui_session(
     )
 
 
-def _load_settings_sources(cwd: str) -> tuple[dict, dict, "Path | None"]:
+def _load_settings_sources(cwd: str) -> tuple[dict, dict, Path | None]:
     """Load raw repo + project config data (unmerged) plus the project path.
 
     Used by the TUI settings screen so it can show each value's origin and
@@ -2283,7 +2372,9 @@ def _load_settings_sources(cwd: str) -> tuple[dict, dict, "Path | None"]:
     """
     repo_cfg = repo_config_path()
     repo_data = load_toml(repo_cfg)
-    seed_allowed = [canonical(p) for p in repo_data.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
+    seed_allowed = [
+        canonical(p) for p in repo_data.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])
+    ]
     proj_cfg = find_project_config(cwd, seed_allowed)
     proj_data = load_toml(proj_cfg) if proj_cfg else {}
     return repo_data, proj_data, proj_cfg
@@ -2398,7 +2489,7 @@ def _plan_tui_existing_session_or_launch(
     launch_user: str,
     project_dir: str,
     name: str,
-    args: "ParsedArgs",
+    args: ParsedArgs,
 ):
     """Resolve to either an attach request (compatible session exists) or
     a fresh tmux launch request. Shared tail of both TUI project flows.
@@ -2490,18 +2581,18 @@ def _plan_tui_open_existing(
     return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
 
 
-def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: bool = False) -> object:
-    """Build a TuiContext from live session data. Lazy-imports uxon_tui.
+def _build_tui_context(
+    cfg: Config, launch_user: str, cwd: str, *, skeleton: bool = False
+) -> TuiContext:
+    """Build a TuiContext from live session data.
 
     When ``skeleton=True`` we skip every blocking I/O call (tmux, sudo
     probes, project directory scans) and return a minimal context with
     ``loading=True``. The TUI mounts immediately and a background worker
     calls this function again with ``skeleton=False`` to fill in the
-    real data — see :class:`uxon_tui.app.UxonApp._initial_load_worker`.
+    real data — see :class:`uxon.tui.app.UxonApp._initial_load_worker`.
     """
-    sys.path.insert(0, str(repo_root() / "lib"))
-    import uxon_settings
-    import uxon_tui
+    from uxon import settings as uxon_settings
 
     if skeleton:
         has_sudo = False
@@ -2513,7 +2604,9 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
 
         other = []
         if has_sudo:
-            other_users = [u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user]
+            other_users = [
+                u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user
+            ]
             if other_users:
                 other = collect_sessions(other_users, cfg)
 
@@ -2558,7 +2651,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
                 full = configured_tmux_base(cfg, u) + ["kill-session", "-t", s.name]
                 run_cmd(full, check=False)
 
-    def on_refresh() -> object:
+    def on_refresh() -> TuiContext:
         # Re-read config so settings edits take effect immediately.
         # Always returns a fully loaded ctx (skeleton=False) — even when
         # the calling ctx was a skeleton, the caller wants real data.
@@ -2626,7 +2719,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
 
     # Wrap all callbacks so failures surface on the TUI status line instead of
     # killing uxon silently (blessed's fullscreen context hides stderr + tracebacks).
-    _CbErr = uxon_tui.CallbackError
+    _CbErr = CallbackError
     on_attach = _wrap_tui_callback(on_attach, _CbErr)
     on_kill = _wrap_tui_callback(on_kill, _CbErr)
     on_kill_all = _wrap_tui_callback(on_kill_all, _CbErr)
@@ -2643,20 +2736,20 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
     on_setting_save_mapping = _wrap_tui_callback(on_setting_save_mapping, _CbErr)
     get_git_remote_profile_rows = _wrap_tui_callback(get_git_remote_profile_rows, _CbErr)
 
-    import uxon_agents as _uxon_agents
+    from uxon import agents as _uxon_agents
+
     agent_availability = {
-        aid: _uxon_agents.AgentAvailability(status="pending")
-        for aid in cfg.enabled_agents
+        aid: _uxon_agents.AgentAvailability(status="pending") for aid in cfg.enabled_agents
     }
 
     if skeleton:
         existing_projects: list[tuple[str, str]] = []
-        server_status = uxon_tui.ServerStatus()
+        server_status = ServerStatus()
     else:
         existing_projects = _list_existing_projects(cfg.new_project_root)
         server_status = _read_server_status(cfg.new_project_root)
 
-    return uxon_tui.TuiContext(
+    return TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,
         total_ram=total_ram,
@@ -2699,16 +2792,18 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
 
 
 def do_interactive(cfg: Config, launch_user: str) -> int:
-    sys.path.insert(0, str(repo_root() / "lib"))
     try:
-        import uxon_tui
+        from uxon import tui as uxon_tui
     except ImportError:
         try:
-            from uxon_tui import TEXTUAL_MISSING_HINT
+            from uxon.tui.hints import TEXTUAL_MISSING_HINT
+
             eprint(TEXTUAL_MISSING_HINT)
         except ImportError:
-            eprint("uxon: interactive mode requires the 'textual' package "
-                   "(pip install --user textual).")
+            eprint(
+                "uxon: interactive mode requires the 'textual' package "
+                "(pip install --user textual)."
+            )
         return 1
     cwd = canonical(os.getcwd())
     # Hand the TUI a skeleton ctx so the first frame paints immediately;
@@ -2717,11 +2812,15 @@ def do_interactive(cfg: Config, launch_user: str) -> int:
     return uxon_tui.run(ctx)
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
     try:
         args = parse_args(argv)
     except SystemExit as ex:
-        return int(ex.code)
+        # argparse always raises SystemExit with an int (0 for --help,
+        # 2 for parse errors); guard the typed-as-``str | int | None`` shape.
+        return int(ex.code) if isinstance(ex.code, int) else (0 if ex.code is None else 2)
     cfg = load_config(os.getcwd())
     caller_user = resolve_caller_user()
     launch_user = resolve_launch_user(cfg, caller_user)
@@ -2756,4 +2855,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())

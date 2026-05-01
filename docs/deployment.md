@@ -12,19 +12,35 @@ cd uxon
 sudo python3 install/install_uxon.py \
   --repo-dir "$(pwd)" \
   --install-path /usr/local/bin/uxon
+# (uses /opt/uxon/venv by default; override with --venv-dir; --dry-run
+# to preview)
 
 cp config/config.example.toml config/config.toml
 $EDITOR config/config.toml         # set allowed_roots, session_users, agents
 uxon doctor                         # verify
 ```
 
+`install/install_uxon.py` creates a dedicated venv at `--venv-dir`
+(default `/opt/uxon/venv`), `pip install`s the package into it, and
+symlinks `/opt/uxon/venv/bin/uxon` to `--install-path`. Dependencies
+(`textual`, `tomlkit`) are pulled into the venv automatically — no
+system-Python pollution.
+
+If `uv` is available you can skip the script and use it directly:
+
+```bash
+sudo uv tool install --force git+https://github.com/vzd3v/uxon.git@<tag>
+# uv places the entrypoint in /root/.local/bin or similar; symlink as needed
+```
+
 ## Multi-host topology
 
 When `uxon` runs on more than one host, decide up front:
 
-- **Canonical checkout location.** Pick one path, e.g. `/opt/uxon`
-  or `/srv/apps/uxon`, and use it on every host. `/usr/local/bin/uxon`
-  stays a symlink into that checkout.
+- **Canonical install location.** Pick one venv path, e.g.
+  `/opt/uxon/venv`, and use it on every host. `/usr/local/bin/uxon`
+  stays a symlink into that venv. The `install_uxon.py` defaults match
+  this convention.
 - **One source of config truth per host.** The repo ships
   `config/config.example.toml` as a starting point; host-local
   `config/config.toml` is gitignored and operator-owned.

@@ -1,9 +1,9 @@
-"""Drift-guard tests for uxon_tui screen BINDINGS.
+"""Drift-guard tests for uxon TUI screen BINDINGS.
 
 Two assertions (per plan T18):
   (a) Every destructive binding (action_kill*) carries ``show=True``
       and a non-empty description.
-  (b) No Screen subclass in ``lib/uxon_tui/screens/`` overrides ``on_key``.
+  (b) No Screen subclass in ``src/uxon/tui/screens/`` overrides ``on_key``.
       All keystroke handling must go through ``BINDINGS``. Catches the
       ``g`` footgun from PR 10 where a dev added ``if event.key == "g":
       ...`` in ``on_key``, bypassing the declarative registry.
@@ -15,13 +15,7 @@ import ast
 import inspect
 import os
 import pkgutil
-import sys
 import unittest
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_LIB = os.path.abspath(os.path.join(_HERE, "..", "lib"))
-if _LIB not in sys.path:
-    sys.path.insert(0, _LIB)
 
 
 def _textual_available() -> bool:
@@ -33,11 +27,12 @@ def _textual_available() -> bool:
 
 
 def _iter_screen_classes():
-    """Yield (module, cls) for every Screen/ModalScreen subclass under ``lib/uxon_tui/screens``."""
-    import uxon_tui.screens as screens_pkg
+    """Yield (module, cls) for every Screen/ModalScreen subclass under ``src/uxon/tui/screens``."""
     from textual.screen import ModalScreen, Screen
 
-    for modinfo in pkgutil.walk_packages(screens_pkg.__path__, prefix="uxon_tui.screens."):
+    import uxon.tui.screens as screens_pkg
+
+    for modinfo in pkgutil.walk_packages(screens_pkg.__path__, prefix="uxon.tui.screens."):
         mod = __import__(modinfo.name, fromlist=["*"])
         for name, obj in inspect.getmembers(mod, inspect.isclass):
             if obj.__module__ != modinfo.name:
@@ -81,7 +76,9 @@ class NoOnKeyOverrideTests(unittest.TestCase):
     """
 
     def test_no_on_key_override_in_screens(self) -> None:
-        screens_dir = os.path.join(_LIB, "uxon_tui", "screens")
+        import uxon.tui.screens as screens_pkg
+
+        screens_dir = os.path.dirname(screens_pkg.__file__)
         offenders: list[str] = []
         for fname in os.listdir(screens_dir):
             if not fname.endswith(".py") or fname == "__init__.py":
@@ -111,7 +108,7 @@ class SettingsGKeyRetiredTests(unittest.TestCase):
     """``g`` must not be bound on SettingsScreen (PR 10 footgun)."""
 
     def test_g_key_not_bound(self) -> None:
-        from uxon_tui.screens.settings import SettingsScreen
+        from uxon.tui.screens.settings import SettingsScreen
 
         keys = {_binding_key(b) for b in SettingsScreen.BINDINGS}
         self.assertNotIn("g", keys, "g must not be a SettingsScreen binding")

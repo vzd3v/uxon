@@ -15,7 +15,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 
-from uxon_git_profiles import GitRemoteProfile
+from uxon.git_profiles import GitRemoteProfile
 
 
 class BackendError(RuntimeError):
