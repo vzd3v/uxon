@@ -61,7 +61,14 @@ shell with `sudo`.
 Requires **Python 3.11+**, `tmux`, and Linux. Dependencies (`textual`,
 `tomlkit`) are pulled in automatically.
 
-### Single-user laptop (recommended)
+`uxon` is built for persistent Linux servers where one or several OS
+users run agent sessions that need to survive disconnects. Two install
+flavours, depending on whether each user installs their own copy or
+the host has one shared `uxon` on `PATH` for everyone.
+
+### Per-user install (recommended)
+
+Each OS user runs one of these in their own account:
 
 ```bash
 # uv tool — recommended. uv is the 2026 default Python toolchain;
@@ -70,38 +77,35 @@ uv tool install uxon
 
 # pipx — equivalent. Same console-script entrypoint.
 pipx install uxon
+
+# pip --user — no isolation. See PEP 668 caveat below.
+pip install --user uxon
 ```
 
-Either creates an isolated venv and puts `uxon` on your `PATH`.
-Update with `uv tool upgrade uxon` / `pipx upgrade uxon`.
+uv/pipx isolate `uxon` and its deps in a per-user venv; `pip --user`
+puts them under `~/.local/` shared with anything else installed that
+way. All three put a `uxon` console script on the user's `PATH`.
+Updates: `uv tool upgrade uxon` / `pipx upgrade uxon` /
+`pip install --user --upgrade uxon`.
 
-For the bleeding edge from `main` (before a release lands on PyPI):
+On Debian/Ubuntu/Fedora system Python, PEP 668 blocks
+`pip install --user`; use `pipx` (recommended) or
+`pip install --user --break-system-packages uxon` if you know what
+you're doing. With your own Python (pyenv/asdf/uv-managed) PEP 668
+doesn't apply.
+
+For unreleased changes from `main`:
 
 ```bash
 uv tool install git+https://github.com/vzd3v/uxon.git
 # or:  pipx install git+https://github.com/vzd3v/uxon.git
 ```
 
-If you maintain your own Python (pyenv, asdf, uv-managed) and prefer
-no isolation, `pip install --user uxon` works too — `uxon` lands in
-`~/.local/bin/`. On Debian/Ubuntu/Fedora system Python, PEP 668 blocks
-plain `pip install`; use `pipx` (recommended) or know-what-you-do
-`pip install --user --break-system-packages uxon`.
+### Host-wide install (one `uxon` for all users on the host)
 
-```bash
-uxon doctor                       # verify the install
-# Optional: bootstrap an example config (uxon runs in $HOME with defaults).
-curl -fsSL https://raw.githubusercontent.com/vzd3v/uxon/main/config/config.example.toml -o ./config.toml
-$EDITOR ./config.toml             # set allowed_roots, session_users, agents
-```
-
-You'll also need at least one of the agent CLIs installed for the
-launch user — see [Supported agents](#supported-agents).
-
-### Shared host / multi-user VPS
-
-For a host where several Linux users need a single shared `uxon` on
-`PATH`, install into a dedicated venv and symlink the console script:
+For servers where several OS users need a single shared `uxon` on
+`/usr/local/bin/uxon` (one version, one update path), install into a
+dedicated venv and symlink the console script:
 
 ```bash
 git clone https://github.com/vzd3v/uxon.git
@@ -113,10 +117,25 @@ sudo python3 install/install_uxon.py \
 ```
 
 The installer creates a venv at `--venv-dir`, installs the package
-into it, and symlinks `/opt/uxon/venv/bin/uxon` to `/usr/local/bin/uxon`.
+into it, and symlinks `/opt/uxon/venv/bin/uxon` to
+`/usr/local/bin/uxon`. Each OS user gets their own `tmux` socket and
+their own `uxon-*` sessions; only the binary is shared. Update by
+re-running with `--reinstall`.
 
 For multi-host rollout, generated config from a JSON payload, and
 deployment topology, see [`docs/deployment.md`](docs/deployment.md).
+
+### After install
+
+```bash
+uxon doctor                       # verify
+# Optional: bootstrap an example config (uxon also runs with defaults).
+curl -fsSL https://raw.githubusercontent.com/vzd3v/uxon/main/config/config.example.toml -o ./config.toml
+$EDITOR ./config.toml             # set allowed_roots, session_users, agents
+```
+
+You'll also need at least one of the agent CLIs installed for the
+launch user — see [Supported agents](#supported-agents).
 
 ## Quick start
 
