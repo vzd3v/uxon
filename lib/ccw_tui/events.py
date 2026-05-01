@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+
 def _default_log_dir() -> str:
     """Return the XDG-derived default log directory.
 

@@ -158,7 +158,7 @@ class SettingsScreen(Screen):
             return
         kind = entry.spec.kind
 
-        def after_edit(changed: bool) -> None:
+        def after_edit(changed: bool | None) -> None:
             if changed:
                 self._reload()
 

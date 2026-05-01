@@ -385,7 +385,7 @@ class MainScreen(Screen):
         if total == 0:
             return
 
-        def after_confirm(confirmed: bool) -> None:
+        def after_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
             try:
@@ -545,7 +545,7 @@ class MainScreen(Screen):
             return
         user = session.user or self.ctx.current_user
 
-        def after_confirm(ok: bool) -> None:
+        def after_confirm(ok: bool | None) -> None:
             if not ok:
                 return
             try:
@@ -570,7 +570,7 @@ class MainScreen(Screen):
             return
         n = len(self.ctx.sessions)
 
-        def after_confirm(ok: bool) -> None:
+        def after_confirm(ok: bool | None) -> None:
             if not ok:
                 return
             try:

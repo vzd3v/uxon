@@ -401,10 +401,10 @@ def remove_repo_key(path: Path | str, key: str) -> None:
         existing = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return
-    doc = tomlkit.parse(existing)
+    doc: Any = tomlkit.parse(existing)
     if "." in key:
         parts = key.split(".")
-        node = doc
+        node: Any = doc
         for part in parts[:-1]:
             if part not in node:
                 return
