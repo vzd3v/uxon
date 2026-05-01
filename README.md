@@ -28,12 +28,14 @@ shell with `sudo`.
   with their own keys and quotas, and never sees another user's tmux
   sessions by accident — every launch user gets a dedicated socket
   at `/tmp/uxon-<user>.sock`.
-- **Operator visibility.** Anyone with passwordless `sudo` opens
-  `uxon` and immediately sees every agent session on the host:
-  CPU, RAM, age, last attach, attached-or-not. Attach to any of
-  them with `Enter`, kill a runaway with `d`, nuke the lot with
-  a confirmed `kill-all-global`. No more "who's that 38 GB python
-  on the dashboard?".
+- **Operator visibility and control.** Anyone with passwordless
+  `sudo` opens `uxon` and immediately sees every agent session on
+  the host — their own *and* other users' — with CPU, RAM, age,
+  last attach, attached-or-not. **`Enter` attaches to any user's
+  session** (you join their `tmux` as a guest via `sudo -iu`),
+  `d` kills a runaway, `kill-all-global` nukes everything on the
+  host with explicit confirmation. No more "who's that 38 GB
+  python on the dashboard?".
 - **Attach from anywhere.** Sessions live in `tmux`, so they survive
   every disconnect. Start at your desk, reattach from your phone over
   SSH on the train, switch to a tablet later — same session, same
