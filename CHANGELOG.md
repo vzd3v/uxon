@@ -17,12 +17,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   TUI's "new session in current folder" all launch in any directory
   the launch user can write to. With `allowed_roots = [...]` set,
   the same three accept only paths under the listed directories —
-  `$HOME` is no longer implicitly added. Migration: add `$HOME` to
-  `allowed_roots` if you previously relied on the implicit
-  allowance.
+  no implicit `$HOME` or other side allowance.
 - The TUI and the CLI now apply identical rules to the launch
-  target. Previously the TUI ignored `allowed_roots` while `uxon run`
-  consulted it; both now follow the rule above.
+  target.
 
 ## [3.0.0] — 2026-05-01
 
