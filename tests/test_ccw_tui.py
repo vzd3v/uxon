@@ -21,9 +21,9 @@ if _LIB not in sys.path:
 
 import ccw_tui  # noqa: E402
 from ccw_tui.context import (  # noqa: E402
+    _ACTION_KINDS,
     ACTION_COUNT,
     ServerStatus,
-    _ACTION_KINDS,
     _digit_hinted_indices,
     _segments,
     _total_items,
@@ -54,14 +54,14 @@ from ccw_tui.state import (  # noqa: E402
     selected_setting_index,
     server_status_line,
     session_intent,
-    should_start_agent_probe,
     should_show_agents_unavailable,
+    should_start_agent_probe,
     update_launch_options_after_availability,
     visible_agent_ids,
 )
 
 
-def _ctx(**overrides) -> "ccw_tui.TuiContext":
+def _ctx(**overrides) -> ccw_tui.TuiContext:
     base = dict(
         sessions=[],
         total_cpu="0",
@@ -77,10 +77,19 @@ def _ctx(**overrides) -> "ccw_tui.TuiContext":
     return ccw_tui.TuiContext(**base)
 
 
-def _session(name: str = "a", user: str = "u") -> "ccw_tui.TuiSession":
+def _session(name: str = "a", user: str = "u") -> ccw_tui.TuiSession:
     return ccw_tui.TuiSession(
-        name=name, short=name, attached=False, pid="1", cpu="0", ram="0",
-        created="1s", last_activity="1s", cmd="claude", path="/", user=user,
+        name=name,
+        short=name,
+        attached=False,
+        pid="1",
+        cpu="0",
+        ram="0",
+        created="1s",
+        last_activity="1s",
+        cmd="claude",
+        path="/",
+        user=user,
     )
 
 
@@ -232,7 +241,9 @@ class LaunchOptionsStateTests(unittest.TestCase):
         self.assertFalse(agent_is_pending("claude", {}))
 
     def test_agent_list_label_marks_pending_agents(self) -> None:
-        self.assertEqual(agent_list_label(2, "codex", self._avail("pending")), "2 codex  (checking…)")
+        self.assertEqual(
+            agent_list_label(2, "codex", self._avail("pending")), "2 codex  (checking…)"
+        )
         self.assertEqual(agent_list_label(1, "claude", self._avail("ok")), "1 claude")
         self.assertEqual(agent_list_label(1, "claude", None), "1 claude")
 
@@ -392,7 +403,9 @@ class MainScreenIntentStateTests(unittest.TestCase):
 
     def test_session_intent_defaults_blank_user_to_current_user(self) -> None:
         s = _session("dev.foo", "")
-        self.assertEqual(session_intent(s, "dev"), MainIntent("attach", user="dev", session_name="dev.foo"))
+        self.assertEqual(
+            session_intent(s, "dev"), MainIntent("attach", user="dev", session_name="dev.foo")
+        )
 
 
 class ModalStateTests(unittest.TestCase):
@@ -532,9 +545,11 @@ class DigitHintedIndicesTests(unittest.TestCase):
 
 class LaunchRequestShapeTests(unittest.TestCase):
     def test_launch_request_is_hashable_and_immutable(self) -> None:
+        import dataclasses
+
         r = ccw_tui.LaunchRequest(cmd=("tmux", "attach"), label="a")
         self.assertEqual(hash(r), hash(r))
-        with self.assertRaises(Exception):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             r.cmd = ("other",)  # type: ignore[misc]
 
     def test_callback_error_is_exception(self) -> None:
