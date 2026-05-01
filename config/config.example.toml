@@ -1,3 +1,11 @@
+# uxon host config. Every key, with the use case for each, is
+# documented in docs/configuration.md
+# (https://github.com/vzd3v/vz_devagent_cli_tool/blob/main/docs/configuration.md).
+#
+# This example targets a shared host with a sandboxed "agent" user.
+# For a single-user laptop, leave allowed_roots empty and set
+# default_launch_mode = "caller".
+
 runtime_user = "agent"
 default_launch_mode = "fixed"
 enable_all_users_list = false

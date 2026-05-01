@@ -40,9 +40,11 @@ shell with `sudo`.
 - **Predictable session names.** `uxon-<project>@<agent>` (`-2`,
   `-3` for parallels). No more hand-rolled `tmux new -s` strings or
   guessing what you called it yesterday.
-- **Allowed-roots safety net.** `uxon` refuses to start an agent in
-  a directory you didn't whitelist. Typos and `cd ..` accidents stop
-  there.
+- **Permissive by default, lockable for ops.** Out of the box you
+  can launch an agent in any folder where the launch user has write
+  access. On a shared host, set `allowed_roots` in the config to
+  pin agents to specific directories. See
+  [`docs/configuration.md`](docs/configuration.md).
 - **One tool, every agent.** Flip a config switch to enable Claude
   Code, Codex, Cursor — together or any subset. Built-in `--auto`
   and `--dsp` (skip-permissions / "yolo") flags translate to whatever
@@ -214,58 +216,23 @@ launch user, the TUI shows a modal with install hints.
 
 ## Configuration
 
-Two layers, merged in order (later wins):
+`uxon` works out of the box with no configuration — the launch user
+can run an agent anywhere they have write access, and `uxon new`
+creates projects under `~/projects`.
+
+Configuration becomes useful once you're hosting more than one user,
+or want to restrict where agents may run, or want one-shot GitHub
+repo creation, or want to switch the default agent. All keys, with
+the **use case** for each, live in
+**[`docs/configuration.md`](docs/configuration.md)**.
+
+Two config layers (later wins):
 
 1. **Repo config** — `<repo>/config/config.toml`, host-wide.
-   `config/config.example.toml` is the starting point checked into
-   the repo.
-2. **Project config** — the nearest `.uxon.toml` in `cwd` or a parent
-   that is itself inside an `allowed_roots` entry. Useful to override
-   one or two keys per project. The TUI never writes `.uxon.toml`.
-
-The keys you'll most likely touch:
-
-| Key | Type | Default | Purpose |
-|-----|------|---------|---------|
-| `allowed_roots` | array | `[]` | Directories `uxon` may launch in. The launch user's home is implicitly allowed. |
-| `new_project_root` | string | `~/projects` | Base directory for `uxon new <name>`. Must live inside an `allowed_roots` entry (or under `$HOME`). |
-| `session_users` | array | `[]` | Users scanned by `list --all-users` and the TUI superuser block. |
-| `default_launch_mode` | `"caller"` / `"fixed"` | `"caller"` | Default for unmapped callers. |
-| `runtime_user` | string | `""` | Launch user when `default_launch_mode = "fixed"`. |
-| `launch_user_by_caller` | table | `{}` | Per-caller override of the launch user. |
-| `agents.enabled` | array | `["claude"]` | Ordered list of enabled agent ids. |
-| `agents.default` | string | `"claude"` | Agent picked when `--agent` is not passed. |
-| `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback when `uxon new` finds an existing matching session. |
-| `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
-
-The full list (sockets, refresh intervals, git-remote profiles, env
-overrides) lives in
-[`config/config.example.toml`](config/config.example.toml) with
-inline comments, and in [`docs/deployment.md`](docs/deployment.md).
-
-### Multi-user / launch user
-
-`uxon` distinguishes the **caller** (who invoked the command) from
-the **launch user** (who actually owns the tmux session and runs
-the agent). Resolution order:
-
-1. `launch_user_by_caller[<caller>]` — explicit per-caller override;
-2. `default_launch_mode = "caller"` → caller is the launch user;
-3. otherwise → `runtime_user`.
-
-When the two differ, `uxon` runs `tmux`, `git`, and `mkdir` under
-the launch user via `sudo -iu <user>`. Each launch user gets a
-private `tmux` socket — sessions never bleed between users.
-
-### Git remote on new project (optional)
-
-Off by default. When `git_create_enabled = true` and you've defined
-`[[git_remote_profiles]]` whitelisting hosts/owners, the TUI offers
-to create a fresh GitHub repo for new projects (via `gh` or a
-fine-grained PAT) before launching the agent. Tokens are held only
-for the duration of the API call, never logged, never printed in
-`--dry-run`. Configuration details and security model live in
-[`docs/deployment.md#git-remote-on-new-project`](docs/deployment.md#git-remote-on-new-project).
+   `config/config.example.toml` is the tracked starting point.
+2. **Project config** — the nearest `.uxon.toml` in `cwd` or a
+   parent inside an `allowed_roots` entry. Per-project overrides.
+   The TUI never writes `.uxon.toml`.
 
 ---
 
@@ -318,7 +285,11 @@ More edge cases (legacy session prefixes, failed-launch banner, the
 
 ## Documentation
 
-- [`docs/cli.md`](docs/cli.md) — full CLI reference.
+- [`docs/configuration.md`](docs/configuration.md) — all config keys
+  organised by use case (single-user laptop, shared multi-user host,
+  restricted launch directories, GitHub repo on new project, …).
+- [`docs/cli.md`](docs/cli.md) — full CLI reference (every flag,
+  exit code, identifier resolution, repeat behaviour).
 - [`docs/deployment.md`](docs/deployment.md) — multi-host rollout,
   config rendering from JSON, runtime dependencies.
 - [`docs/architecture.md`](docs/architecture.md) — module map, TUI
