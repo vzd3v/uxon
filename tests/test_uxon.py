@@ -267,9 +267,7 @@ class UxonTests(unittest.TestCase):
     def test_load_config_rejects_non_list_legacy_session_prefixes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit):
-                self._write_and_load_cfg(
-                    'legacy_session_prefixes = "ccw-"\n', tmpdir
-                )
+                self._write_and_load_cfg('legacy_session_prefixes = "ccw-"\n', tmpdir)
 
     def test_load_config_reads_tui_refresh_interval(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -557,7 +555,9 @@ class UxonTests(unittest.TestCase):
                 with mock.patch.object(uxon, "collect_sessions", return_value=existing):
                     with mock.patch.object(uxon, "is_interactive_tty", return_value=True):
                         with mock.patch("builtins.input", return_value=""):
-                            with mock.patch.object(uxon, "attach_session", return_value=0) as attach:
+                            with mock.patch.object(
+                                uxon, "attach_session", return_value=0
+                            ) as attach:
                                 with mock.patch.object(
                                     uxon, "launch_in_tmux", return_value=0
                                 ) as launch:
@@ -618,7 +618,9 @@ class UxonTests(unittest.TestCase):
                 with mock.patch.object(uxon, "collect_sessions", return_value=existing):
                     with mock.patch.object(uxon, "is_interactive_tty", return_value=True):
                         with mock.patch("builtins.input", return_value=""):
-                            with mock.patch.object(uxon, "attach_session", return_value=0) as attach:
+                            with mock.patch.object(
+                                uxon, "attach_session", return_value=0
+                            ) as attach:
                                 with mock.patch.object(
                                     uxon, "launch_in_tmux", return_value=0
                                 ) as launch:
@@ -643,7 +645,9 @@ class UxonTests(unittest.TestCase):
                         with mock.patch.object(
                             uxon, "allocate_session_name", return_value="uxon-demo-feature-x-2"
                         ) as allocate:
-                            with mock.patch.object(uxon, "launch_in_tmux", return_value=0) as launch:
+                            with mock.patch.object(
+                                uxon, "launch_in_tmux", return_value=0
+                            ) as launch:
                                 result = uxon.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
@@ -1149,7 +1153,9 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
         args = uxon.ParsedArgs(action="run", permission_mode="yolo")
         with self._stub_socket_path():
-            req = uxon._build_tmux_launch_request("/tmp/x", "uxon-x@cursor", args, cfg, None, "u-vz")
+            req = uxon._build_tmux_launch_request(
+                "/tmp/x", "uxon-x@cursor", args, cfg, None, "u-vz"
+            )
         self.assertIn("cursor-agent", req.cmd)
         self.assertIn("--yolo", req.cmd)
 
@@ -1185,7 +1191,9 @@ class UxonTests(unittest.TestCase):
         self.assertIsNone(parsed.agent)  # not explicitly set
         with self._stub_socket_path():
             with self.assertRaises(SystemExit):
-                uxon._build_tmux_launch_request("/tmp/x", "uxon-x@cursor", parsed, cfg, None, "u-vz")
+                uxon._build_tmux_launch_request(
+                    "/tmp/x", "uxon-x@cursor", parsed, cfg, None, "u-vz"
+                )
 
 
 def _mk_session(
@@ -1240,7 +1248,7 @@ class SessionNamingTests(unittest.TestCase):
     def test_parse_session_name_rejects_garbage(self) -> None:
         self.assertIsNone(uxon.parse_session_name("random-x"))
         self.assertIsNone(uxon.parse_session_name("uxon-foo"))  # missing @agent
-        self.assertIsNone(uxon.parse_session_name("cc-foo"))    # ancient format no longer recognised
+        self.assertIsNone(uxon.parse_session_name("cc-foo"))  # ancient format no longer recognised
 
     def test_candidate_session_name(self) -> None:
         self.assertEqual(uxon.candidate_session_name("foo", 1, "cursor"), "uxon-foo@cursor")
@@ -1251,7 +1259,9 @@ class SessionNamingTests(unittest.TestCase):
         compat_root = "/srv/repos/foo"
         s_claude = _mk_session("uxon-foo@claude", compat_root, agent="claude")
         s_codex = _mk_session("uxon-foo@codex", compat_root, agent="codex")
-        matches = uxon.compatible_indexed_sessions("foo", "claude", compat_root, [s_claude, s_codex])
+        matches = uxon.compatible_indexed_sessions(
+            "foo", "claude", compat_root, [s_claude, s_codex]
+        )
         self.assertEqual([m.name for m in matches], ["uxon-foo@claude"])
 
     def test_resolve_full_new(self) -> None:

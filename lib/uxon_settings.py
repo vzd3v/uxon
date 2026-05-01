@@ -49,7 +49,9 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "Users scanned by 'list --all-users' and the TUI superuser block.",
     ),
     SettingSpec("allowed_roots", "array", "Directories uxon is allowed to run in."),
-    SettingSpec("session_prefix", "string", "Tmux session name prefix used when creating new sessions."),
+    SettingSpec(
+        "session_prefix", "string", "Tmux session name prefix used when creating new sessions."
+    ),
     SettingSpec(
         "legacy_session_prefixes",
         "array",

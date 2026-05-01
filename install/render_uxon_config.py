@@ -83,9 +83,7 @@ def render_config(payload: dict[str, Any]) -> str:
     default_launch_mode = str(payload.get("default_launch_mode", "caller")).strip()
     enable_all_users_list = bool(payload.get("enable_all_users_list", False))
     session_prefix = str(payload.get("session_prefix", "uxon-")).strip() or "uxon-"
-    legacy_session_prefixes = normalize_string_list(
-        payload.get("legacy_session_prefixes", [])
-    )
+    legacy_session_prefixes = normalize_string_list(payload.get("legacy_session_prefixes", []))
     allowed_roots = normalize_string_list(payload.get("allowed_roots", []))
     session_users = normalize_string_list(payload.get("session_users", []))
     launch_user_by_caller = normalize_mapping(payload.get("launch_user_by_caller", {}))
