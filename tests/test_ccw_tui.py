@@ -71,7 +71,7 @@ def _ctx(**overrides) -> "ccw_tui.TuiContext":
         cwd_short="work",
         new_project_root="/srv/work",
         existing_projects=[],
-        cwd_allowed=True,
+        cwd_writable=True,
     )
     base.update(overrides)
     return ccw_tui.TuiContext(**base)

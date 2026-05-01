@@ -55,6 +55,16 @@ class _LinkHealthUpdated(Message):
         self.status = status
 
 
+class _CwdWritableUpdated(Message):
+    """Posted by the cwd-write probe worker when the result lands."""
+
+    bubble = False
+
+    def __init__(self, writable: bool) -> None:
+        super().__init__()
+        self.writable = writable
+
+
 class _MainCtxLoaded(Message):
     """Posted by the initial-load worker once on_refresh() returns the real ctx.
 
@@ -150,6 +160,11 @@ class CcwApp(App):
             enabled_agents=self.ctx.enabled_agents,
         ):
             self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
+        # Kick off cwd-write probe when the synchronous path didn't
+        # already resolve it (cross-user case: ccw left cwd_writable=None
+        # because the check would shell out via sudo).
+        if self.ctx.cwd_writable is None:
+            self.run_worker(self._probe_cwd_writable_worker, thread=True, exclusive=False)
         timers_enabled = not self.is_headless and "PYTEST_CURRENT_TEST" not in os.environ
         if timers_enabled:
             self.set_interval(
@@ -209,6 +224,23 @@ class CcwApp(App):
         for aid, avail in result.items():
             self.ctx.agent_availability[aid] = avail
         self.post_message(_AgentAvailabilityUpdated())
+
+    def _probe_cwd_writable_worker(self) -> None:
+        """Background thread: probe write access and post the result."""
+        try:
+            writable = bool(self.ctx.on_probe_cwd_writable())
+        except CallbackError:
+            writable = False
+        except Exception:  # pragma: no cover — defensive
+            writable = False
+        self.post_message(_CwdWritableUpdated(writable))
+
+    def on__cwd_writable_updated(self, event: _CwdWritableUpdated) -> None:
+        self.ctx.cwd_writable = event.writable
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if isinstance(top, MainScreen):
+            top.ctx.cwd_writable = event.writable
+            self.call_later(top._refresh_cwd_row)
 
     def _kick_link_health_probe(self) -> None:
         if self._link_health_probe_running:

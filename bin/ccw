@@ -487,6 +487,35 @@ def command_prefix_for_user(target_user: str) -> list[str]:
     return ["sudo", "-iu", target_user, "--"]
 
 
+def probe_cwd_writable(target_user: str, target_dir: str) -> bool:
+    """Return True if ``target_user`` has write access to ``target_dir``.
+
+    Same-user fast path uses ``os.access`` so the TUI common case
+    (no sudo, ccw running as the launch user) is instant. Cross-user
+    case shells out via :func:`command_prefix_for_user` so the same
+    ``sudo -iu`` mechanism that actually launches the agent is what
+    gates the row — if sudo isn't available the probe correctly
+    returns False, matching the launch behaviour. Treated as a yes/no:
+    any subprocess error is "no".
+    """
+    if not os.path.isdir(target_dir):
+        return False
+    if process_user() == target_user:
+        return os.access(target_dir, os.W_OK | os.X_OK)
+    cmd = command_prefix_for_user(target_user) + ["test", "-w", target_dir]
+    try:
+        cp = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return cp.returncode == 0
+
+
 def tmux_base(target_user: str, socket_path: str | None = None) -> list[str]:
     base = command_prefix_for_user(target_user) + ["tmux"]
     if socket_path:
@@ -2144,8 +2173,17 @@ def _load_settings_sources(cwd: str) -> tuple[dict, dict, "Path | None"]:
 
 
 def _plan_tui_run_agent(cfg: Config, launch_user: str, cwd: str, agent_id: str, mode_id: str):
-    """Agent-aware variant of ``_plan_tui_run``; used by the new callbacks."""
-    ensure_allowed_dir(cwd, launch_allowed_roots(cfg, launch_user))
+    """Agent-aware variant of ``_plan_tui_run``; used by the new callbacks.
+
+    No ``allowed_roots`` gate here: the TUI shows the row only when the
+    write-access probe succeeded (or hasn't completed yet, in which case
+    the TUI runs a synchronous fallback before invoking this). The
+    ``allowed_roots`` policy continues to apply to ``ccw new …``.
+    """
+    if not os.path.isdir(cwd):
+        fail(f"not a directory: {cwd}")
+    if not probe_cwd_writable(launch_user, cwd):
+        fail(f"no write access to {cwd} for {launch_user}")
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
     sessions = collect_sessions([launch_user], cfg)
@@ -2200,12 +2238,15 @@ def _plan_tui_open_existing_agent(
 def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     """Build a LaunchRequest for the TUI "New session in current folder" action.
 
-    Mirrors :func:`do_run` minus the terminal handoff: resolves the target
-    directory (cwd, under allowed_roots), allocates a session name, and
-    returns a LaunchRequest. No ``-w branch`` support — the TUI does not
-    expose that knob.
+    Mirrors :func:`do_run` minus the terminal handoff: validates write
+    access for ``launch_user``, allocates a session name, and returns
+    a LaunchRequest. No ``-w branch`` support — the TUI does not expose
+    that knob. ``allowed_roots`` is intentionally not consulted here.
     """
-    ensure_allowed_dir(cwd, launch_allowed_roots(cfg, launch_user))
+    if not os.path.isdir(cwd):
+        fail(f"not a directory: {cwd}")
+    if not probe_cwd_writable(launch_user, cwd):
+        fail(f"no write access to {cwd} for {launch_user}")
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
     _agent = cfg.default_agent
@@ -2432,7 +2473,16 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
         for p in cfg.git_remote_profiles
     ]
 
-    cwd_allowed = any(is_under(cwd, base) for base in launch_allowed_roots(cfg, launch_user))
+    # Same-user fast path is synchronous (os.access). Cross-user case
+    # leaves cwd_writable=None so the TUI ships the first frame fast and
+    # the app worker probes via sudo without blocking the event loop.
+    if process_user() == launch_user:
+        cwd_writable: bool | None = probe_cwd_writable(launch_user, cwd)
+    else:
+        cwd_writable = None
+
+    def on_probe_cwd_writable() -> bool:
+        return probe_cwd_writable(launch_user, cwd)
 
     # Wrap all callbacks so failures surface on the TUI status line instead of
     # killing ccw silently (blessed's fullscreen context hides stderr + tracebacks).
@@ -2443,6 +2493,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
     on_kill_all_global = _wrap_tui_callback(on_kill_all_global, _CbErr)
     on_refresh = _wrap_tui_callback(on_refresh, _CbErr)
     on_probe_link_health = _wrap_tui_callback(on_probe_link_health, _CbErr)
+    on_probe_cwd_writable = _wrap_tui_callback(on_probe_cwd_writable, _CbErr)
     on_launch_cwd = _wrap_tui_callback(on_launch_cwd, _CbErr)
     on_launch_new = _wrap_tui_callback(on_launch_new, _CbErr)
     on_launch_existing = _wrap_tui_callback(on_launch_existing, _CbErr)
@@ -2478,7 +2529,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
         loading=skeleton,
         tui_refresh_interval_seconds=cfg.tui_refresh_interval_seconds,
         tui_ssh_refresh_interval_seconds=cfg.tui_ssh_refresh_interval_seconds,
-        cwd_allowed=cwd_allowed,
+        cwd_writable=cwd_writable,
         current_user=launch_user,
         has_sudo=has_sudo,
         other_sessions=tui_other,
@@ -2492,6 +2543,7 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
         on_kill_all_global=on_kill_all_global,
         on_refresh=on_refresh,
         on_probe_link_health=on_probe_link_health,
+        on_probe_cwd_writable=on_probe_cwd_writable,
         on_launch_cwd=on_launch_cwd,
         on_launch_new=on_launch_new,
         on_launch_existing=on_launch_existing,

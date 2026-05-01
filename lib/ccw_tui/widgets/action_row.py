@@ -7,7 +7,7 @@ Activation (Enter or left-click) posts a :class:`Activated` message
 so the parent screen (``MainScreen``) routes it to the correct
 launch-callback.
 
-The ``disabled=True`` state (used when e.g. ``cwd_allowed=False``)
+The ``disabled=True`` state (used when e.g. ``cwd_writable=False``)
 greys the row and suppresses activation — the row still renders a
 hint describing why it's disabled.
 """

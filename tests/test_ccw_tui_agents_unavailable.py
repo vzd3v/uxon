@@ -30,7 +30,7 @@ def _mk_ctx(**overrides):
         cwd_short="work",
         new_project_root="/srv/work",
         existing_projects=[],
-        cwd_allowed=True,
+        cwd_writable=True,
         current_user="devagent",
         on_launch_cwd=lambda a, m: LaunchRequest(cmd=("/bin/true",), label="cwd"),
         on_launch_new=lambda n, a, m, g: LaunchRequest(cmd=("/bin/true",), label="new"),

@@ -795,10 +795,11 @@ class CcwTests(unittest.TestCase):
             project_dir = Path(tmpdir) / "demo"
             project_dir.mkdir()
             with self._stub_socket_path():
-                with mock.patch.object(ccw, "collect_sessions", return_value=[]):
-                    with mock.patch.object(ccw, "allocate_session_name", return_value="ccw-demo"):
-                        with mock.patch.object(ccw.os, "execvp") as execvp:
-                            req = ccw._plan_tui_run(cfg, "u-vz", str(project_dir), dsp=False)
+                with mock.patch.object(ccw, "probe_cwd_writable", return_value=True):
+                    with mock.patch.object(ccw, "collect_sessions", return_value=[]):
+                        with mock.patch.object(ccw, "allocate_session_name", return_value="ccw-demo"):
+                            with mock.patch.object(ccw.os, "execvp") as execvp:
+                                req = ccw._plan_tui_run(cfg, "u-vz", str(project_dir), dsp=False)
         self.assertIn("new-session", req.cmd)
         self.assertIn("ccw-demo", req.cmd)
         execvp.assert_not_called()

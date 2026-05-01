@@ -126,7 +126,7 @@ class MainScreen(Screen):
                 label="New session in current folder",
                 detail=self._cwd_detail(),
                 digit=1,
-                enabled=self.ctx.cwd_allowed,
+                enabled=self.ctx.cwd_writable is not False,
                 id="action-cwd",
             )
             yield ActionRow(
@@ -183,9 +183,10 @@ class MainScreen(Screen):
         yield Footer()
 
     def _cwd_detail(self) -> str:
-        if self.ctx.cwd_allowed:
-            return f"({self.ctx.cwd_short})"
-        return f"({self.ctx.cwd_short} — not under allowed_roots)"
+        if self.ctx.cwd_writable is False:
+            user = self.ctx.launch_user or self.ctx.current_user or "launch user"
+            return f"({self.ctx.cwd_short} — no write access for {user})"
+        return f"({self.ctx.cwd_short})"
 
     def _open_detail(self) -> str:
         if self.ctx.loading:
@@ -267,9 +268,20 @@ class MainScreen(Screen):
     # ── Activation handlers (modals stubbed — T14 replaces stubs) ────
 
     def _launch_cwd(self) -> None:
-        if not self.ctx.cwd_allowed:
+        # Async probe may not have landed yet (cross-user / sudo path).
+        # Run the fallback probe synchronously here so the user never
+        # gets to launch-time with an unknown answer.
+        if self.ctx.cwd_writable is None:
+            try:
+                self.ctx.cwd_writable = bool(self.ctx.on_probe_cwd_writable())
+            except CallbackError as exc:
+                self.app.notify(str(exc), severity="error", timeout=6)
+                return
+            self._refresh_cwd_row()
+        if self.ctx.cwd_writable is False:
+            user = self.ctx.launch_user or self.ctx.current_user or "launch user"
             self.app.notify(
-                f"cwd {self.ctx.cwd_short} is not under allowed_roots",
+                f"No write access to {self.ctx.cwd_short} for {user}",
                 severity="warning",
                 timeout=6,
             )
@@ -421,11 +433,19 @@ class MainScreen(Screen):
             ctx.has_sudo and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
         )
 
+    def _refresh_cwd_row(self) -> None:
+        """Re-render the cwd action row from the current ctx.cwd_writable."""
+        try:
+            row = self.query_one("#action-cwd", ActionRow)
+        except Exception:  # pragma: no cover — DOM not mounted yet
+            return
+        row.detail = self._cwd_detail()
+        row.set_enabled(self.ctx.cwd_writable is not False)
+        row._render_text()
+
     def _apply_ctx_refresh(self) -> bool:
         try:
-            self.query_one("#action-cwd", ActionRow).detail = self._cwd_detail()
-            self.query_one("#action-cwd", ActionRow)._render_text()
-            self.query_one("#action-cwd", ActionRow).set_enabled(self.ctx.cwd_allowed)
+            self._refresh_cwd_row()
             open_row = self.query_one("#action-open", ActionRow)
             open_row.detail = self._open_detail()
             open_row.set_enabled(self.ctx.loading or bool(self.ctx.existing_projects))
@@ -492,6 +512,13 @@ class MainScreen(Screen):
         new_ctx.link_health_status = self.ctx.link_health_status
         new_ctx.agent_availability = self.ctx.agent_availability
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
+        # Carry the cwd-writable result across refreshes too: same-user
+        # builds set it synchronously, cross-user builds leave None and
+        # the probe runs once on mount. Without this, every refresh in
+        # the cross-user case would drop back to None until the next
+        # probe, flicker-disabling the row.
+        if new_ctx.cwd_writable is None and new_ctx.cwd == self.ctx.cwd:
+            new_ctx.cwd_writable = self.ctx.cwd_writable
         self.ctx = new_ctx
         # Keep app.ctx in lockstep so the probe worker's writes target the
         # same dict that screens read from.

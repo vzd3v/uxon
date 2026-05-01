@@ -111,12 +111,17 @@ class TuiContext:
     # loaded ctx with no sessions renders "No active sessions." instead.
     loading: bool = False
 
-    # Whether ``cwd`` is under one of ``allowed_roots`` — i.e. whether
-    # "New session in current folder" can actually launch. Computed by
-    # ccw before constructing the context so the TUI itself stays off
-    # the filesystem. When False, the row is dimmed and activation
-    # shows a clear status-line hint instead of silently exiting ccw.
-    cwd_allowed: bool = True
+    # Whether ``launch_user`` has write access to ``cwd`` — i.e. whether
+    # "New session in current folder" can actually create files there.
+    # Three-valued:
+    #   None  — probe still in flight; row stays enabled, activation
+    #           runs a synchronous fallback check before launching.
+    #   True  — write access confirmed; row enabled, no detail hint.
+    #   False — no write access; row dimmed, detail says so.
+    # The probe replaces the old ``allowed_roots`` gate for the cwd flow:
+    # ccw policy is now "any folder where launch_user can write", with
+    # ``allowed_roots`` retained only for the new-project flow.
+    cwd_writable: bool | None = None
 
     current_user: str = ""
     has_sudo: bool = False
@@ -140,6 +145,12 @@ class TuiContext:
     on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
     on_refresh: Callable[[], "TuiContext"] = lambda: None  # type: ignore[return-value]
     on_probe_link_health: Callable[[], Any] = lambda: None
+    # Returns True if launch_user has write access to ``cwd``. Wired by
+    # bin/ccw — uses ``os.access`` when launch_user == caller, otherwise
+    # ``sudo -iu launch_user test -w <cwd>``. App runs it in a worker
+    # thread on mount when ``cwd_writable`` is None; activation also
+    # calls it synchronously as a fallback if the probe hasn't landed.
+    on_probe_cwd_writable: Callable[[], bool] = lambda: True
     on_launch_cwd: Callable[[str, str], "LaunchRequest"] = (
         lambda agent_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-cwd")
     )
@@ -219,7 +230,7 @@ def build_items(ctx: "TuiContext") -> list[Item]:
     items.append(Item(
         kind="action-cwd",
         label="New session in current folder",
-        enabled=ctx.cwd_allowed,
+        enabled=ctx.cwd_writable is not False,
         digit_hint=1,
     ))
     items.append(Item(
