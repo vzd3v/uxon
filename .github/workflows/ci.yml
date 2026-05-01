@@ -8,53 +8,59 @@ on:
 
 jobs:
   test:
+    name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install runtime + test deps
         run: python3 -m pip install tomlkit "textual>=0.80,<9" pytest pytest-xdist
 
       - name: Compile Python files
-        run: |
-          python3 -m py_compile bin/ccw \
-            lib/ccw_tui/__init__.py \
-            lib/ccw_tui/app.py lib/ccw_tui/context.py \
-            lib/ccw_tui/state.py \
-            lib/ccw_tui/events.py lib/ccw_tui/launch.py \
-            lib/ccw_tui/hints.py \
-            lib/ccw_tui/widgets/__init__.py \
-            lib/ccw_tui/widgets/action_row.py \
-            lib/ccw_tui/widgets/session_table.py \
-            lib/ccw_tui/screens/__init__.py \
-            lib/ccw_tui/screens/main.py \
-            lib/ccw_tui/screens/confirm.py \
-            lib/ccw_tui/screens/launch_options.py \
-            lib/ccw_tui/screens/new_project.py \
-            lib/ccw_tui/screens/git_profile.py \
-            lib/ccw_tui/screens/existing.py \
-            lib/ccw_tui/screens/settings.py \
-            lib/ccw_tui/screens/git_remotes.py \
-            lib/ccw_tui/screens/agents_unavailable.py \
-            lib/ccw_settings.py \
-            lib/ccw_agents.py \
-            lib/ccw_git_profiles.py lib/ccw_git_backend_gh.py \
-            lib/ccw_git_backend_token.py lib/ccw_git_create.py \
-            tests/harness/__init__.py tests/harness/pty_tui.py \
-            tests/harness/textual_scenarios.py \
-            tests/test_ccw.py tests/test_ccw_tui.py tests/test_ccw_settings.py \
-            tests/test_ccw_tui_screens.py tests/test_ccw_tui_widgets_textual.py \
-            tests/test_ccw_tui_bindings.py tests/test_ccw_tui_logging.py \
-            tests/test_ccw_git_profiles.py tests/test_ccw_git_backend_gh.py \
-            tests/test_ccw_git_backend_token.py tests/test_ccw_git_create.py \
-            tests/test_ccw_agents.py tests/test_ccw_tui_agents_unavailable.py \
-            install/install_ccw.py install/render_ccw_config.py
+        run: python3 -m py_compile $(git ls-files '*.py' bin/ccw)
 
       - name: Run unit tests
         run: pytest tests/ -n auto
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 -m pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  typecheck:
+    name: pyright
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 -m pip install pyright "textual>=0.80,<9" tomlkit
+      - run: pyright
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_LICENSE: ""
