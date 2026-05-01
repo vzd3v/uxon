@@ -1,6 +1,16 @@
 __pycache__/
 *.pyc
-config/
+.pytest_cache/
+
+# Local config (gitignored except the example)
+config/*
+!config/config.example.toml
+
+# Agent-only material — kept on local disk, never tracked in git
+.claude/
+AGENTS.md
+CLAUDE.md
+docs/agents/
+
+# Misc
 _external_sources/
-docs/plans/
-docs/superpowers/
