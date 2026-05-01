@@ -8,50 +8,66 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [2.0.0] — 2026-05-01
 
-First open-source release.
+First open-source release. Existing deployments that already set
+`allowed_roots`, `new_project_root`, and `CCW_LOG_DIR` in their
+own `config/config.toml` and launch environment are unaffected by
+the breaking-default changes below.
 
 ### Changed (breaking)
 
-- **Default config paths are no longer site-specific.**
-  `allowed_roots` defaults to `[]` (operators must declare their
-  own); `new_project_root` defaults to `~/projects`. Existing
-  deployments are unaffected because they override these in
-  `config/config.toml`. New installations will need to set both.
-- **TUI event log default location changed.**
+- **Default config values are no longer site-specific.**
+  `allowed_roots` now defaults to `[]` (operators must declare
+  their own writable roots) and `new_project_root` defaults to
+  `~/projects`. The launch user's home stays implicitly allowed
+  for `ccw run` so first-run usability in `$HOME` still works.
+  Hosts that already pin both keys in `config/config.toml` need
+  no action; fresh installs must set them.
+- **TUI event-log default location moved off `/srv`.**
   `lib/ccw_tui/events.py` now defaults to
   `${XDG_STATE_HOME:-~/.local/state}/ccw` instead of
-  `/srv/work/logs/ccw`. Set `CCW_LOG_DIR` in the launch user's
-  environment to keep the old location.
+  `/srv/work/logs/ccw`. The `CCW_LOG_DIR` environment override is
+  unchanged — set it in the launch user's environment to keep the
+  old path.
 
 ### Added
 
-- MIT [`LICENSE`](LICENSE),
-  [`SECURITY.md`](SECURITY.md),
-  [`CONTRIBUTING.md`](CONTRIBUTING.md),
+- MIT [`LICENSE`](LICENSE) (with `SPDX-License-Identifier` headers
+  on source files), [`SECURITY.md`](SECURITY.md) (threat model and
+  disclosure policy), [`CONTRIBUTING.md`](CONTRIBUTING.md), and
   this changelog.
-- `pyproject.toml` for tool configuration (ruff, pyright, pytest)
-  and project metadata.
-- GitHub issue and pull-request templates under `.github/`.
-- `CODEOWNERS`.
-- `config/config.example.toml` is now shipped next to the
-  gitignored real config; `examples/ccw-config.json` was refreshed
-  to the current schema.
-- `docs/architecture.md` — public architecture overview that
-  replaces the old `Repo structure` annex in `README.md` and the
-  agent-only `AGENTS.md`.
-- CI now runs `ruff` lint, `ruff format --check`, `pyright`, and
-  `gitleaks`. Tests run on Python 3.11, 3.12, and 3.13.
-- README badges (CI status, license, Python version).
+- `pyproject.toml` carrying project metadata and tool
+  configuration for `ruff`, `pyright`, and `pytest`.
+- `config/config.example.toml` shipped alongside the gitignored
+  real `config/config.toml` as a working starting point. Rendered
+  from `examples/ccw-config.json`, which was refreshed to the
+  current schema (removed `default_claude_args`, fixed
+  `session_prefix` to `ccw-`, switched to neutral `agent` user
+  and `/srv/projects` paths, switched to nested `[agents]`
+  tables).
+- `docs/architecture.md` — public architecture overview, replacing
+  the old "Repo structure" annex previously embedded in
+  `README.md`.
+- GitHub issue and pull-request templates under `.github/`, plus
+  a `CODEOWNERS` file.
+- CI matrix expanded to Python 3.11, 3.12, and 3.13, with new
+  jobs running `ruff check`, `ruff format --check`, `pyright`,
+  and `gitleaks`.
+- README badges for CI status, license, and Python version.
 
-### Removed
+### Changed
 
-- Internal agent material (`AGENTS.md`, `CLAUDE.md`, `.claude/`,
-  `docs/plans/`, `docs/superpowers/`, `docs/prototypes/`) is no
-  longer tracked. It still lives on disk in maintainers' working
-  copies under `docs/agents/`.
-- The hand-maintained explicit file list in
-  `.github/workflows/ci.yml` was replaced with
-  `python3 -m py_compile $(git ls-files '*.py' bin/ccw)`.
+- README rewritten for an open-source audience: neutral
+  "what/why" lead-in, quick start built around `~/projects`, and
+  install instructions based on `git clone` + symlink rather than
+  a fixed `/srv/apps/...` layout. Operator-only material moved to
+  `docs/deployment.md`; contributor checklists moved to
+  `CONTRIBUTING.md`.
+- `docs/deployment.md` rewritten to lead with single-host install
+  and treat multi-host topology as an extension; 1.x→2.0 and
+  multi-agent migration notes are now a labelled appendix.
+- The CI compile step now derives its file list from
+  `git ls-files` instead of a hand-maintained inline list in
+  `.github/workflows/ci.yml`.
 
 ## [1.3.3] and earlier
 
