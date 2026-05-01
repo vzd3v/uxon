@@ -184,7 +184,7 @@ class MainScreen(Screen):
     def _cwd_detail(self) -> str:
         if self.ctx.cwd_writable is False:
             user = self.ctx.launch_user or self.ctx.current_user or "launch user"
-            return f"({self.ctx.cwd_short} — no write access for {user})"
+            return f"({self.ctx.cwd_short} — not launchable for {user})"
         return f"({self.ctx.cwd_short})"
 
     def _open_detail(self) -> str:
@@ -278,7 +278,8 @@ class MainScreen(Screen):
         if self.ctx.cwd_writable is False:
             user = self.ctx.launch_user or self.ctx.current_user or "launch user"
             self.app.notify(
-                f"No write access to {self.ctx.cwd_short} for {user}",
+                f"Cannot launch in {self.ctx.cwd_short} as {user} "
+                "(no write access, or outside allowed_roots)",
                 severity="warning",
                 timeout=6,
             )

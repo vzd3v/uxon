@@ -27,10 +27,13 @@ boundaries are:
    `tmux` and the agent binary as a different OS user. Authorization
    is enforced by the operator's `sudoers` configuration; `uxon` never
    elevates beyond what `sudoers` already grants.
-2. **Allowed roots.** Sessions cannot be started outside
-   `allowed_roots` (config) plus the launch user's home directory.
-   New projects are created only under `new_project_root`, which
-   itself must be inside an allowed root.
+2. **Allowed roots.** When `allowed_roots` is non-empty, sessions
+   cannot be started outside those paths. When `allowed_roots` is
+   empty (default), sessions can be started in any directory the
+   launch user can write to — operators who need a directory
+   sandbox must set `allowed_roots` explicitly. New projects are
+   created only under `new_project_root`, which itself must be
+   inside an allowed root.
 3. **Git remote profiles.** Repo creation is limited to the explicit
    `git_remote_profiles` whitelist. With `auth = "token"`, `uxon`
    reads the PAT from `token_file` (read by `creds_user`), holds it

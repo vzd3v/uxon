@@ -598,17 +598,20 @@ class UxonTests(unittest.TestCase):
         existing = [self.make_session("uxon-demo-feature-x@claude", "/srv/repos/demo")]
 
         with mock.patch.object(uxon.os.path, "isdir", return_value=True):
-            with mock.patch.object(uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"):
-                with mock.patch.object(uxon, "collect_sessions", return_value=existing):
-                    with mock.patch.object(uxon, "is_interactive_tty", return_value=True):
-                        with mock.patch("builtins.input", return_value=""):
-                            with mock.patch.object(
-                                uxon, "attach_session", return_value=0
-                            ) as attach:
+            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+                with mock.patch.object(
+                    uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"
+                ):
+                    with mock.patch.object(uxon, "collect_sessions", return_value=existing):
+                        with mock.patch.object(uxon, "is_interactive_tty", return_value=True):
+                            with mock.patch("builtins.input", return_value=""):
                                 with mock.patch.object(
-                                    uxon, "launch_in_tmux", return_value=0
-                                ) as launch:
-                                    result = uxon.do_new(args, cfg, "u-vz")
+                                    uxon, "attach_session", return_value=0
+                                ) as attach:
+                                    with mock.patch.object(
+                                        uxon, "launch_in_tmux", return_value=0
+                                    ) as launch:
+                                        result = uxon.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
         attach.assert_called_once()
@@ -623,16 +626,21 @@ class UxonTests(unittest.TestCase):
         existing = [self.make_session("uxon-demo-feature-x@claude", "/srv/repos/demo")]
 
         with mock.patch.object(uxon.os.path, "isdir", return_value=True):
-            with mock.patch.object(uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"):
-                with mock.patch.object(uxon, "collect_sessions", return_value=existing):
-                    with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
-                        with mock.patch.object(
-                            uxon, "allocate_session_name", return_value="uxon-demo-feature-x-2"
-                        ) as allocate:
+            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+                with mock.patch.object(
+                    uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"
+                ):
+                    with mock.patch.object(uxon, "collect_sessions", return_value=existing):
+                        with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
                             with mock.patch.object(
-                                uxon, "launch_in_tmux", return_value=0
-                            ) as launch:
-                                result = uxon.do_new(args, cfg, "u-vz")
+                                uxon,
+                                "allocate_session_name",
+                                return_value="uxon-demo-feature-x-2",
+                            ) as allocate:
+                                with mock.patch.object(
+                                    uxon, "launch_in_tmux", return_value=0
+                                ) as launch:
+                                    result = uxon.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
         allocate.assert_called_once()
@@ -946,29 +954,63 @@ class UxonTests(unittest.TestCase):
             with mock.patch.object(Path, "exists", fake_exists):
                 self.assertIsNone(uxon.find_project_config(str(target), allowed))
 
-    # ── launch_allowed_roots (user home is implicit) ─────────────────
+    # ── is_launch_target_allowed / ensure_launch_target_allowed ──────
+    # Mirrors the TUI's "new session in current folder" gate so the CLI
+    # and the TUI behave identically. Predicate (in order):
+    #   1. target must be an existing directory
+    #   2. launch_user must be able to write to it
+    #   3. when allowed_roots is non-empty, target must sit under one
+    #      of them (no HOME-implicit, no other implicit allowance)
 
-    def test_launch_allowed_roots_adds_user_home(self) -> None:
+    def test_launch_target_rejects_nonexistent_directory(self) -> None:
+        cfg = self.make_config(allowed_roots=[])
+        self.assertFalse(
+            uxon.is_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here"),
+        )
+        with self.assertRaises(SystemExit):
+            uxon.ensure_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here")
+
+    def test_launch_target_rejects_unwritable_directory(self) -> None:
+        cfg = self.make_config(allowed_roots=[])
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(uxon, "probe_cwd_writable", return_value=False):
+                self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                with self.assertRaises(SystemExit):
+                    uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
+
+    def test_launch_target_writable_passes_when_allowed_roots_empty(self) -> None:
+        cfg = self.make_config(allowed_roots=[])
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+                self.assertTrue(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                # ensure_… is the raise-on-failure variant; passing case
+                # must not raise.
+                uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
+
+    def test_launch_target_strict_whitelist_when_allowed_roots_set(self) -> None:
         cfg = self.make_config(allowed_roots=["/srv/repos"])
-        fake_pw = mock.Mock(pw_dir="/home/u-ed")
-        with mock.patch.object(uxon.pwd, "getpwnam", return_value=fake_pw):
-            with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
-                roots = uxon.launch_allowed_roots(cfg, "u-ed")
-        self.assertEqual(roots, ["/srv/repos", "/home/u-ed"])
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+                # Writable but outside the whitelist → fail.
+                with mock.patch.object(uxon, "is_under", return_value=False):
+                    self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                    with self.assertRaises(SystemExit):
+                        uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
+                # Writable and inside the whitelist → pass.
+                with mock.patch.object(uxon, "is_under", return_value=True):
+                    self.assertTrue(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                    uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
 
-    def test_launch_allowed_roots_does_not_duplicate_existing_entry(self) -> None:
-        cfg = self.make_config(allowed_roots=["/srv/repos", "/home/u-ed"])
-        fake_pw = mock.Mock(pw_dir="/home/u-ed")
-        with mock.patch.object(uxon.pwd, "getpwnam", return_value=fake_pw):
-            with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
-                roots = uxon.launch_allowed_roots(cfg, "u-ed")
-        self.assertEqual(roots, ["/srv/repos", "/home/u-ed"])
-
-    def test_launch_allowed_roots_falls_back_gracefully_when_user_missing(self) -> None:
+    def test_launch_target_no_home_implicit_when_allowed_roots_set(self) -> None:
+        # Regression guard for the old behaviour where the launch user's
+        # $HOME was silently appended to allowed_roots: a writable dir
+        # outside the whitelist must NOT pass when allowed_roots is set.
         cfg = self.make_config(allowed_roots=["/srv/repos"])
-        with mock.patch.object(uxon.pwd, "getpwnam", side_effect=KeyError("nope")):
-            roots = uxon.launch_allowed_roots(cfg, "nosuchuser")
-        self.assertEqual(roots, ["/srv/repos"])
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+                self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                with self.assertRaises(SystemExit):
+                    uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
 
     # ── TUI callback error surfacing (0.10.3) ────────────────────────
 

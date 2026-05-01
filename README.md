@@ -44,15 +44,16 @@ shell with `sudo`.
 - **Predictable session names.** `uxon-<project>@<agent>` (`-2`,
   `-3` for parallels). No more hand-rolled `tmux new -s` strings or
   guessing what you called it yesterday.
-- **Permissive defaults, OS-level locks for ops.** Out of the box,
-  the TUI's "new session in current folder" launches anywhere the
-  launch user can write (this gate is by design *not* tied to
-  `allowed_roots`); `uxon run` (CLI) launches in the launch user's
-  `$HOME` plus any path listed in `allowed_roots`. `allowed_roots`
-  also bounds where `uxon new` (and the TUI's create-project flow)
-  is allowed to create new project directories. To restrict what
-  the agent can reach on disk, sandbox launches under a
-  low-privilege OS user via `runtime_user`. See
+- **Permissive defaults, strict-whitelist for ops.** With
+  `allowed_roots = []` (default), the TUI's "new session in current
+  folder" and `uxon run` (CLI) both launch anywhere the launch user
+  can write. With `allowed_roots = [...]` set, both switch to
+  strict whitelist — only those paths are accepted, with no
+  `$HOME`-implicit or any other side allowance. `allowed_roots`
+  also bounds `uxon new` (creating a new project directory). To
+  restrict what the agent can reach on disk regardless of where
+  `uxon` is invoked, sandbox launches under a low-privilege OS user
+  via `runtime_user`. See
   [`docs/configuration.md`](docs/configuration.md).
 - **One tool, every agent.** Flip a config switch to enable Claude
   Code, Codex, Cursor — together or any subset. Built-in `--dsp`
@@ -294,15 +295,17 @@ launch user, the TUI shows a modal with install hints.
 
 ## Configuration
 
-`uxon` works out of the box with no configuration — the launch user
-can run an agent anywhere they have write access, and `uxon new`
-creates projects under `~/projects`.
+`uxon run` and the TUI's "New session in current folder" work out of
+the box with no configuration — the launch user can run an agent
+anywhere they have write access. `uxon new <name>` (creating a
+project) requires `allowed_roots` to be non-empty and to cover
+`new_project_root`.
 
 Configuration becomes useful once you're hosting more than one user,
-or want to restrict where agents may run, or want one-shot GitHub
-repo creation, or want to switch the default agent. All keys, with
-the **use case** for each, live in
-**[`docs/configuration.md`](docs/configuration.md)**.
+or want to restrict where agents may run, or want `uxon new` to
+scaffold projects, or want one-shot GitHub repo creation, or want to
+switch the default agent. All keys, with the **use case** for each,
+live in **[`docs/configuration.md`](docs/configuration.md)**.
 
 Two config layers (later wins):
 

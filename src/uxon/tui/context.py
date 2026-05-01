@@ -112,16 +112,15 @@ class TuiContext:
     # loaded ctx with no sessions renders "No active sessions." instead.
     loading: bool = False
 
-    # Whether ``launch_user`` has write access to ``cwd`` — i.e. whether
-    # "New session in current folder" can actually create files there.
+    # Whether ``cwd`` is a valid launch target for ``launch_user`` under
+    # the current policy: write access, plus membership in
+    # ``allowed_roots`` when that whitelist is non-empty. Field name is
+    # historical — the predicate is broader than write-access alone.
     # Three-valued:
     #   None  — probe still in flight; row stays enabled, activation
     #           runs a synchronous fallback check before launching.
-    #   True  — write access confirmed; row enabled, no detail hint.
-    #   False — no write access; row dimmed, detail says so.
-    # The probe replaces the old ``allowed_roots`` gate for the cwd flow:
-    # uxon policy is now "any folder where launch_user can write", with
-    # ``allowed_roots`` retained only for the new-project flow.
+    #   True  — launchable; row enabled, no detail hint.
+    #   False — not launchable; row dimmed, detail says so.
     cwd_writable: bool | None = None
 
     current_user: str = ""

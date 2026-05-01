@@ -40,10 +40,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "enable_all_users_list": False,
     "launch_user_by_caller": {},
     "session_users": [],
-    # Operators declare their own roots in config/config.toml. The
-    # launch user's home directory is implicitly allowed for `run`
-    # at launch time (see _augmented_allowed_roots), so an empty
-    # list is enough for first-run usability in $HOME.
+    # Empty by default = "trust the OS write-access check" — `uxon run`
+    # / `uxon new -w` launch wherever the launch user can write
+    # (matching the TUI's "new session in current folder" gate). Set
+    # this to a non-empty list to switch to strict-whitelist mode:
+    # `uxon run` / `uxon new -w` then refuse anything outside the
+    # listed paths, including $HOME. `uxon new` (creating a new
+    # project directory) always uses strict-whitelist semantics and
+    # requires a non-empty allowed_roots.
     "allowed_roots": [],
     "session_prefix": "uxon-",
     # Empty by default. Operators upgrading from a host that ran a
@@ -1302,38 +1306,54 @@ def resolve_session(
     raise AssertionError("unreachable")
 
 
-def ensure_allowed_dir(target_dir: str, allowed_roots: list[str]) -> None:
+def is_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> bool:
+    """Return True if ``target_dir`` is a valid place to launch an agent.
+
+    The launch user must be able to write to it. When
+    ``cfg.allowed_roots`` is non-empty, the directory must additionally
+    sit under one of the listed roots — strict whitelist with no
+    implicit allowance for anywhere else (``$HOME`` included). When
+    ``cfg.allowed_roots`` is empty, write access is enough.
+
+    Used by both the CLI (gating ``uxon run`` / ``uxon new -w``) and
+    the TUI (deciding whether the "new session in current folder" row
+    is enabled). :func:`ensure_launch_target_allowed` is the raise-on-
+    failure variant with user-facing error messages.
+    """
+    if not os.path.isdir(target_dir):
+        return False
+    if not probe_cwd_writable(launch_user, target_dir):
+        return False
+    if cfg.allowed_roots:
+        return any(is_under(target_dir, base) for base in cfg.allowed_roots)
+    return True
+
+
+def ensure_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> None:
+    """Raise (via :func:`fail`) if ``target_dir`` isn't a valid launch
+    directory under ``cfg``'s policy.
+
+    Same predicate as :func:`is_launch_target_allowed`; this variant
+    emits a specific user-facing error describing exactly what failed
+    (not a directory / not writable / outside ``allowed_roots``).
+
+    The new-project flow (``uxon new …`` without ``-w``) creates a new
+    directory under :attr:`Config.new_project_root` and gates on a
+    non-empty ``cfg.allowed_roots`` directly, so projects continue to
+    be created only where the operator explicitly opted in.
+    """
     if not os.path.isdir(target_dir):
         fail(f"not a directory: {target_dir}")
-    for base in allowed_roots:
-        if is_under(target_dir, base):
-            return
-    eprint("uxon: directory must be under one of:")
-    for base in allowed_roots:
-        eprint(f"uxon:   - {base}")
-    fail(f"got: {target_dir}")
-
-
-def launch_allowed_roots(cfg: Config, launch_user: str) -> list[str]:
-    """Allowed roots for **launching** claude (as opposed to creating new
-    projects under :attr:`Config.new_project_root`).
-
-    On top of ``cfg.allowed_roots`` this also treats the launch user's
-    home directory as allowed: running ``claude`` in your own home is
-    a perfectly normal workflow and shouldn't require an explicit
-    config entry. The new-project flow (``uxon new …``) still uses
-    ``cfg.allowed_roots`` directly, so projects continue to be created
-    only where the operator opted in.
-    """
-    roots = list(cfg.allowed_roots)
-    try:
-        home = pwd.getpwnam(launch_user).pw_dir
-    except KeyError:
-        return roots
-    home_c = canonical(home)
-    if home_c and home_c not in roots:
-        roots.append(home_c)
-    return roots
+    if not probe_cwd_writable(launch_user, target_dir):
+        fail(f"no write access to {target_dir} for {launch_user}")
+    if cfg.allowed_roots:
+        for base in cfg.allowed_roots:
+            if is_under(target_dir, base):
+                return
+        eprint("uxon: directory must be under one of:")
+        for base in cfg.allowed_roots:
+            eprint(f"uxon:   - {base}")
+        fail(f"got: {target_dir}")
 
 
 def print_list(
@@ -1832,7 +1852,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 "new -w requires a git repository (checked as launch user "
                 f"{launch_user}) in {project_dir}"
             )
-        ensure_allowed_dir(repo_root, launch_allowed_roots(cfg, launch_user))
+        ensure_launch_target_allowed(cfg, launch_user, repo_root)
         target_dir = repo_root
         session_stem = session_stem_for_worktree(repo_root, branch)
         compatibility_root = repo_root
@@ -1957,14 +1977,13 @@ def _do_create_git_remote(
 
 def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     cwd = canonical(os.getcwd())
-    launch_roots = launch_allowed_roots(cfg, launch_user)
-    ensure_allowed_dir(cwd, launch_roots)
+    ensure_launch_target_allowed(cfg, launch_user, cwd)
     branch = args.worktree_branch
     if branch:
         repo_root = git_repo_root_as_user(cwd, launch_user)
         if not repo_root:
             fail(f"run -w must be run inside a git repository readable by {launch_user}")
-        ensure_allowed_dir(repo_root, launch_roots)
+        ensure_launch_target_allowed(cfg, launch_user, repo_root)
         target_dir = repo_root
         session_stem = session_stem_for_worktree(repo_root, branch)
         compatibility_root = repo_root
@@ -2383,15 +2402,11 @@ def _load_settings_sources(cwd: str) -> tuple[dict, dict, Path | None]:
 def _plan_tui_run_agent(cfg: Config, launch_user: str, cwd: str, agent_id: str, mode_id: str):
     """Agent-aware variant of ``_plan_tui_run``; used by the new callbacks.
 
-    No ``allowed_roots`` gate here: the TUI shows the row only when the
-    write-access probe succeeded (or hasn't completed yet, in which case
-    the TUI runs a synchronous fallback before invoking this). The
-    ``allowed_roots`` policy continues to apply to ``uxon new …``.
+    Gates on the same :func:`ensure_launch_target_allowed` predicate as
+    ``do_run`` so the TUI and CLI honour identical rules: writable
+    target, plus ``allowed_roots`` whitelist when configured.
     """
-    if not os.path.isdir(cwd):
-        fail(f"not a directory: {cwd}")
-    if not probe_cwd_writable(launch_user, cwd):
-        fail(f"no write access to {cwd} for {launch_user}")
+    ensure_launch_target_allowed(cfg, launch_user, cwd)
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
     sessions = collect_sessions([launch_user], cfg)
@@ -2448,15 +2463,13 @@ def _plan_tui_open_existing_agent(
 def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     """Build a LaunchRequest for the TUI "New session in current folder" action.
 
-    Mirrors :func:`do_run` minus the terminal handoff: validates write
-    access for ``launch_user``, allocates a session name, and returns
-    a LaunchRequest. No ``-w branch`` support — the TUI does not expose
-    that knob. ``allowed_roots`` is intentionally not consulted here.
+    Mirrors :func:`do_run` minus the terminal handoff: gates via
+    :func:`ensure_launch_target_allowed` (writable + ``allowed_roots``
+    whitelist when configured), allocates a session name, returns a
+    LaunchRequest. No ``-w branch`` support — the TUI does not expose
+    that knob.
     """
-    if not os.path.isdir(cwd):
-        fail(f"not a directory: {cwd}")
-    if not probe_cwd_writable(launch_user, cwd):
-        fail(f"no write access to {cwd} for {launch_user}")
+    ensure_launch_target_allowed(cfg, launch_user, cwd)
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
     _agent = cfg.default_agent
@@ -2706,16 +2719,19 @@ def _build_tui_context(
         for p in cfg.git_remote_profiles
     ]
 
-    # Same-user fast path is synchronous (os.access). Cross-user case
-    # leaves cwd_writable=None so the TUI ships the first frame fast and
-    # the app worker probes via sudo without blocking the event loop.
+    # Reflects whether the "new session in current folder" row should be
+    # enabled — same predicate the click handler will apply, so the row
+    # state never lies. Same-user fast path runs synchronously (os.access
+    # under the hood); cross-user case leaves the value None so the TUI
+    # ships the first frame fast and an app worker probes via sudo
+    # without blocking the event loop.
     if process_user() == launch_user:
-        cwd_writable: bool | None = probe_cwd_writable(launch_user, cwd)
+        cwd_writable: bool | None = is_launch_target_allowed(cfg, launch_user, cwd)
     else:
         cwd_writable = None
 
     def on_probe_cwd_writable() -> bool:
-        return probe_cwd_writable(launch_user, cwd)
+        return is_launch_target_allowed(cfg, launch_user, cwd)
 
     # Wrap all callbacks so failures surface on the TUI status line instead of
     # killing uxon silently (blessed's fullscreen context hides stderr + tracebacks).

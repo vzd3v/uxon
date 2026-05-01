@@ -84,8 +84,13 @@ host:
 - `tmux_socket_template` — absolute per-user socket template
   (default `/tmp/uxon-{user}.sock`; supports `{user}` and `{uid}`).
   Keep the default unless a different absolute path is required.
-- `allowed_roots` — declare every directory under which agents may
-  be launched. The launch user's home is always implicitly allowed.
+- `allowed_roots` — when empty, `uxon run` and the TUI's
+  "new session in current folder" gate on write access alone (any
+  writable folder works). When non-empty, switches both to strict
+  whitelist — only paths under one of the listed directories are
+  accepted, with no `$HOME`-implicit allowance. `uxon new`
+  (creating a project) always requires a non-empty whitelist that
+  covers `new_project_root`.
 - `new_project_root` — base directory for `uxon new <name>` (default
   `~/projects`). Must be inside an `allowed_roots` entry.
 

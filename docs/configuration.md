@@ -1,8 +1,9 @@
 # Configuration guide
 
-`uxon` works with **no configuration at all** — the launch user can
-run an agent in any folder they have write access to, and `uxon new`
-creates fresh projects under `~/projects`. This guide explains *when
+`uxon run` works with **no configuration at all** — the launch user
+can run an agent in any folder they have write access to. `uxon new`
+(creating a project) needs one config key set: `allowed_roots` must be
+non-empty and cover `new_project_root`. This guide explains *when
 and why* you'd want to change that.
 
 Two layers, merged in this order (later wins):
@@ -22,18 +23,26 @@ preserving comments and formatting.
 
 ## Use case: single user on a laptop
 
-You're the only user. You install `uxon`, type `uxon`, and it
-should just work.
+You're the only user. You install `uxon`, `cd` into a project,
+type `uxon`, and the TUI starts.
 
-What you need: nothing. Defaults are tuned for this case.
+What you need for `uxon run` and the TUI's "New session in current
+folder": nothing. Defaults gate on write access — any folder you can
+write to works.
 
 - `default_launch_mode = "caller"` — the agent runs as you.
-- `allowed_roots = []` — your `$HOME` is implicitly allowed for
-  `uxon run`, and the TUI's "New session in current folder"
-  action is gated on **write access**, not on `allowed_roots`. So
-  any folder you can write to works.
-- `new_project_root = "~/projects"` — `uxon new myproj` creates
-  `~/projects/myproj` and launches there.
+- `allowed_roots = []` (default) — write-access only. Set
+  `allowed_roots` to a non-empty list to switch to strict-whitelist
+  mode (see the next use case).
+
+If you also want `uxon new <name>` to scaffold projects, set
+`allowed_roots` and `new_project_root` so the resulting path falls
+inside an allowed root:
+
+```toml
+allowed_roots    = ["~/projects"]
+new_project_root = "~/projects"
+```
 
 Optional tweaks:
 
@@ -123,17 +132,13 @@ new_project_root = "/srv/projects"
 
 Effects:
 
-- `uxon run` requires `cwd` to be under one of these
-  (the launch user's `$HOME` is *additionally* implicit unless you
-  also drop `$HOME` from this set by leaving it absent — note
-  that `$HOME` is **always** implicit for `run`, by design).
+- `uxon run`, `uxon new -w`, and the TUI's "New session in current
+  folder" all require the target directory to be under one of these
+  paths. There is no `$HOME`-implicit and no other side allowance.
 - `uxon new <name>` requires `<new_project_root>/<name>` to be
-  under `allowed_roots`. There is no `$HOME` fallback for `new`.
+  under `allowed_roots`.
 - The TUI superuser action "Open existing project" lists folders
   under `new_project_root`.
-- The TUI's "New session in current folder" still works wherever
-  the launch user has write access — `allowed_roots` is enforced
-  at the CLI / `new` boundary, not in the TUI's launch action.
 
 ---
 
@@ -227,8 +232,8 @@ tui_ssh_refresh_interval_seconds  = 30.0
 | `launch_user_by_caller` | table | `{}` | Per-caller override (`<caller> = <launch user>`). |
 | `session_users` | array | `[]` | Users scanned by `list --all-users` and the TUI superuser block. |
 | `enable_all_users_list` | bool | `false` | Enables `list --all-users`. |
-| `allowed_roots` | array | `[]` | Directories `uxon` will launch agents in. The launch user's `$HOME` is implicitly allowed for `run`. The TUI's "New session in current folder" gates on write access, not on this list. |
-| `new_project_root` | string | `~/projects` | Base directory for `uxon new <name>`. Must be inside `allowed_roots` (or under `$HOME`). |
+| `allowed_roots` | array | `[]` | When empty: `uxon run` and the TUI's "New session in current folder" gate on **write access** alone. When non-empty: strict whitelist — `uxon run` / `uxon new -w` / the TUI's current-folder action all refuse anything outside the listed paths (no `$HOME`-implicit, no other implicit allowance). `uxon new` (creating a project) always requires a non-empty whitelist that covers `new_project_root`. |
+| `new_project_root` | string | `~/projects` | Base directory for `uxon new <name>`. Must be inside `allowed_roots`. |
 | `session_prefix` | string | `"uxon-"` | TMUX session-name prefix for new sessions. |
 | `legacy_session_prefixes` | array | `[]` | Extra prefixes recognised by `list`/`attach`/`kill`. Never used to create new sessions. |
 | `agents.enabled` | array | `["claude"]` | Ordered list of enabled agent ids (`claude`, `codex`, `cursor`). |

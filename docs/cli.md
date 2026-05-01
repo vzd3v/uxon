@@ -45,8 +45,12 @@ Start an agent in the **current working directory**.
 
 `--auto` and `--dsp` are mutually exclusive.
 
-The current directory must be inside an entry of `allowed_roots`
-(the launch user's `$HOME` is implicitly allowed).
+When `allowed_roots` is non-empty (strict-whitelist mode), the
+current directory must sit under one of the listed paths. When
+`allowed_roots` is empty (default), `uxon run` accepts any
+directory the launch user can write to — same gate the TUI's "new
+session in current folder" applies. There is no `$HOME`-implicit
+allowance: setting `allowed_roots` means *only* those paths.
 
 ## `uxon new <name> [-w <branch>] [...]`
 
