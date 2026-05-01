@@ -67,11 +67,11 @@ class AgentsUnavailableScreenTests(unittest.TestCase):
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
-    """End-to-end: CcwApp pushes AgentsUnavailableScreen iff all probes miss."""
+    """End-to-end: UxonApp pushes AgentsUnavailableScreen iff all probes miss."""
 
     async def test_pushes_when_all_agents_missing(self) -> None:
         import uxon_agents
-        from uxon_tui.app import CcwApp, _AgentAvailabilityUpdated
+        from uxon_tui.app import UxonApp, _AgentAvailabilityUpdated
         from uxon_tui.screens.agents_unavailable import AgentsUnavailableScreen
 
         ctx = _mk_ctx(
@@ -79,7 +79,7 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
             default_agent="claude",
         )
 
-        app = CcwApp(ctx, probe_agents=False)
+        app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             ctx.agent_availability.clear()

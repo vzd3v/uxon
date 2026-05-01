@@ -271,9 +271,9 @@ def main_status_line(
 ) -> MainStatusLine:
     summary = (link_health_status.summary or "").strip()
     if loading:
-        text = f"CcwApp {refresh_tick_glyph(refresh_tick)} | server: loading…"
+        text = f"uxon {refresh_tick_glyph(refresh_tick)} | server: loading…"
     else:
-        text = f"CcwApp {refresh_tick_glyph(refresh_tick)} | {server_status_line(server_status)}"
+        text = f"uxon {refresh_tick_glyph(refresh_tick)} | {server_status_line(server_status)}"
     if summary:
         text += f" | ssh-link: {summary}"
     return MainStatusLine(

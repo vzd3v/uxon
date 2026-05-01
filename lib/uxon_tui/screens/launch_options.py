@@ -80,7 +80,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
                     )
                 yield ListView(*items, id="agent-list")
             with Vertical(id="mode-panel"):
-                yield Static("Permission mode (CcwApp)", classes="panel-title")
+                yield Static("Permission mode", classes="panel-title")
                 yield ListView(id="mode-list")
 
     async def on_mount(self) -> None:

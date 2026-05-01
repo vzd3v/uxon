@@ -1,9 +1,7 @@
 """SettingsScreen + per-kind edit modals.
 
-Reuses :class:`SettingEntry` from the pre-existing ``uxon_settings``
-module — the TUI-facing I/O contract is unchanged; only the UI is
-rewritten. :class:`SettingsCallbacks` moved from the retired
-``ccw_tui_settings`` module.
+Reuses :class:`SettingEntry` from the ``uxon_settings`` module —
+the TUI-facing I/O contract lives there; this file owns the UI.
 """
 
 from __future__ import annotations
@@ -61,6 +59,12 @@ class SettingsScreen(Screen):
         color: $text-muted;
         padding: 0 1;
     }
+    #settings-credits {
+        height: 1;
+        color: $text-muted;
+        padding: 0 1;
+        text-align: right;
+    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -80,6 +84,10 @@ class SettingsScreen(Screen):
         yield Header()
         yield DataTable(id="settings-table", cursor_type="row")
         yield Static("", id="settings-description")
+        yield Static(
+            "uxon — Vasily Zakharov <vz@vz.team> · github.com/vzd3v",
+            id="settings-credits",
+        )
         yield Footer()
 
     def on_mount(self) -> None:

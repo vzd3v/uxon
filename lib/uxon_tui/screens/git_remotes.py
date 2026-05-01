@@ -1,6 +1,6 @@
 """GitRemotesScreen — read-only view of git_remote_profiles table.
 
-Row tuple shape (from legacy ``ccw_tui_settings._show_git_remotes``):
+Row tuple shape:
     (name, host, owner, auth, creds_user_display, visibility, token_file)
 """
 

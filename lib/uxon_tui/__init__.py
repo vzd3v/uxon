@@ -9,14 +9,14 @@ Public API re-exports only. Implementation lives in sibling modules:
   - ``events``   — JSONL event log (``LOG_DIR``, ``_log_event``).
   - ``launch``   — launch-handoff helpers (runs outside the TUI).
   - ``hints``    — ``TEXTUAL_MISSING_HINT`` install guidance.
-  - ``app``      — textual :class:`CcwApp` + :func:`run` outer loop.
+  - ``app``      — textual :class:`UxonApp` + :func:`run` outer loop.
   - ``screens/`` — one module per screen (MainScreen, modals, …).
   - ``widgets/`` — two custom widgets (ActionRow, SessionTable).
 """
 
 from __future__ import annotations
 
-from .app import CcwApp, run
+from .app import UxonApp, run
 from .context import (
     CallbackError,
     Item,
@@ -32,7 +32,7 @@ from .hints import TEXTUAL_MISSING_HINT
 
 __all__ = [
     "CallbackError",
-    "CcwApp",
+    "UxonApp",
     "Item",
     "LinkHealthStatus",
     "LOG_DIR",

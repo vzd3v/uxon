@@ -23,8 +23,8 @@ def _textual_available() -> bool:
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ActionRowTests(unittest.IsolatedAsyncioTestCase):
     async def test_enter_activates_and_posts_message(self) -> None:
-        from uxon_tui.widgets import ActionRow
         from textual.app import App, ComposeResult
+        from uxon_tui.widgets import ActionRow
 
         captured: list[str] = []
 
@@ -58,9 +58,9 @@ class ActionRowTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class SessionTableTests(unittest.IsolatedAsyncioTestCase):
     async def test_populate_adds_rows_and_preserves_cursor(self) -> None:
+        from textual.app import App, ComposeResult
         from uxon_tui.context import TuiSession
         from uxon_tui.widgets import SessionTable
-        from textual.app import App, ComposeResult
 
         sessions = [
             TuiSession(

@@ -4,7 +4,7 @@ These tests fork a child that imports ``uxon_tui`` with a minimal fake
 ``TuiContext``, then drive it via keystrokes written to a controlling
 pseudo-terminal. They're intentionally coarse — a handful of end-to-end
 regression tests for bugs we've been bitten by. Fine-grained unit
-tests stay in test_ccw_tui.py.
+tests stay in test_uxon_tui.py.
 
 Each test is guarded by ``@unittest.skipUnless(hasattr(pty, 'fork'),
 ...)`` so it skips cleanly on platforms without a working pty
@@ -234,7 +234,7 @@ class DrainAfterLaunchTests(unittest.TestCase):
 
     Historically the blessed loop needed ``_drain_stdin`` to flush the
     buffer between ``exit()`` and the next ``inkey()``. Under textual
-    each ``CcwApp()`` gets its own fresh input queue, so the drain is
+    each ``UxonApp()`` gets its own fresh input queue, so the drain is
     no longer needed — this test verifies that claim empirically.
     """
 
@@ -279,7 +279,7 @@ class DrainAfterLaunchTests(unittest.TestCase):
         self.assertIn("cwd:claude:normal", marker)
         self.assertNotIn("new:", marker)
         self.assertNotIn("project name", trace.plain)
-        self.assertIn("CcwApp", trace.plain)
+        self.assertIn("uxon | New session", trace.plain)
 
 
 if __name__ == "__main__":

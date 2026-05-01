@@ -1,12 +1,12 @@
 """Textual app shell for the uxon TUI.
 
-:class:`CcwApp` is a thin shell that, on T5, mounts a placeholder main
+:class:`UxonApp` is a thin shell that, on T5, mounts a placeholder main
 screen. Subsequent tasks (T6/T7*) replace the placeholder with the
 real :class:`MainScreen`.
 
 The outer :func:`run` loop is the non-textual controller. It creates a
-:class:`CcwApp`, waits for it to exit (either via quit binding or
-:meth:`CcwApp.request_launch`), and — on launch intent — executes the
+:class:`UxonApp`, waits for it to exit (either via quit binding or
+:meth:`UxonApp.request_launch`), and — on launch intent — executes the
 requested subprocess outside the textual render loop before creating a
 fresh app instance. This is the ``exit()``-based TTY handoff pattern
 described in the migration plan.
@@ -34,7 +34,7 @@ from .state import should_show_agents_unavailable, should_start_agent_probe
 class _AgentAvailabilityUpdated(Message):
     """Posted by the background probe worker when its dict update lands.
 
-    Handled only at the app level (:meth:`CcwApp.on__agent_availability_updated`).
+    Handled only at the app level (:meth:`UxonApp.on__agent_availability_updated`).
     Modals that need to refresh are invoked via ``call_later`` — no
     re-posting of this message. Re-posting to screens caused the message
     to bubble back up to the app and trigger a second dispatch, observed
@@ -82,7 +82,7 @@ class _MainCtxLoaded(Message):
         self.error = error
 
 
-class CcwApp(App):
+class UxonApp(App):
     """uxon interactive shell.
 
     Attributes set by bindings / screens and read by the outer loop:
@@ -95,7 +95,7 @@ class CcwApp(App):
 
     CSS_PATH = "styles.tcss"
 
-    # CcwApp has no per-app bindings — quit/help etc. live on the
+    # UxonApp has no per-app bindings — quit/help etc. live on the
     # MainScreen so its Footer displays them; delegating to screens
     # keeps the ``Footer`` widget single-source-of-truth (T18 drift
     # guard depends on this).
@@ -340,7 +340,7 @@ class CcwApp(App):
 def run(ctx: TuiContext) -> int:
     """Run the interactive uxon TUI.
 
-    Creates a :class:`CcwApp`, waits for it to exit, and on every
+    Creates a :class:`UxonApp`, waits for it to exit, and on every
     launch-triggered exit runs the requested subprocess and re-creates
     the app with a refreshed context. On ``CallbackError`` from
     ``on_refresh`` the error is stashed in ``pending_status`` and
@@ -364,10 +364,10 @@ def run(ctx: TuiContext) -> int:
     while True:
         if sys.stdout.isatty():
             sys.stdout.write(
-                "\rCcwApp | New session in current folder | Create new project | Open existing project\r"
+                "\ruxon | New session in current folder | Create new project | Open existing project\r"
             )
             sys.stdout.flush()
-        app = CcwApp(ctx, pending_status=pending_status)
+        app = UxonApp(ctx, pending_status=pending_status)
         app.run()
 
         if app.quit_rc is not None:

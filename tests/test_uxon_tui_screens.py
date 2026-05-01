@@ -58,9 +58,9 @@ def _mk_ctx(**overrides):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class MainScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_q_quits(self) -> None:
-        from uxon_tui.app import CcwApp
+        from uxon_tui.app import UxonApp
 
-        app = CcwApp(_mk_ctx(), probe_agents=False)
+        app = UxonApp(_mk_ctx(), probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             await pilot.press("q")
@@ -68,9 +68,9 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.quit_rc, 0)
 
     async def test_digit_1_activates_action_cwd(self) -> None:
-        from uxon_tui.app import CcwApp
+        from uxon_tui.app import UxonApp
 
-        app = CcwApp(_mk_ctx(), probe_agents=False)
+        app = UxonApp(_mk_ctx(), probe_agents=False)
         calls: list[str] = []
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
@@ -81,13 +81,13 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["cwd"])
 
     async def test_refresh_preserves_action_focus(self) -> None:
-        from uxon_tui.app import CcwApp
+        from uxon_tui.app import UxonApp
         from uxon_tui.widgets import ActionRow
 
         def fake_refresh():
             return _mk_ctx(on_refresh=fake_refresh)
 
-        app = CcwApp(_mk_ctx(on_refresh=fake_refresh), probe_agents=False)
+        app = UxonApp(_mk_ctx(on_refresh=fake_refresh), probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             app.screen.query_one("#action-open", ActionRow).focus()
@@ -106,7 +106,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         ``(checking…)`` forever, blocking the agent commit path.
         """
         from uxon_agents import AgentAvailability
-        from uxon_tui.app import CcwApp
+        from uxon_tui.app import UxonApp
 
         loaded = _mk_ctx()  # loaded ctx with its own fresh availability dict
 
@@ -118,7 +118,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         # entry — emulates the probe completing before the swap.
         skeleton.agent_availability["claude"] = AgentAvailability(status="ok")
 
-        app = CcwApp(skeleton, probe_agents=False)
+        app = UxonApp(skeleton, probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             # Force-trigger the swap (in real life kick_refresh fires in on_mount).
@@ -136,7 +136,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_kill_calls_on_kill_callback(self) -> None:
-        from uxon_tui.app import CcwApp
+        from uxon_tui.app import UxonApp
         from uxon_tui.context import TuiSession
 
         kill_calls: list[tuple[str, str]] = []
@@ -171,7 +171,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             on_kill=fake_kill,
             on_refresh=fake_refresh,
         )
-        app = CcwApp(ctx, probe_agents=False)
+        app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             # Focus the session table and press 'd'.
@@ -195,8 +195,8 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ConfirmModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirm_modal_smoke_batch(self) -> None:
-        from uxon_tui.screens.confirm import ConfirmPhrase, ConfirmYesNo
         from textual.widgets import Input
+        from uxon_tui.screens.confirm import ConfirmPhrase, ConfirmYesNo
 
         async def phrase(app, pilot):
             app.screen.query_one("#confirm-input", Input).focus()
@@ -268,9 +268,9 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         kept claude's three modes (normal/auto/yolo) in the right panel,
         so cursor's mode set was not shown.
         """
-        from uxon_tui.screens.launch_options import LaunchOptionsScreen
         from textual.app import App
         from textual.widgets import ListView
+        from uxon_tui.screens.launch_options import LaunchOptionsScreen
 
         ctx = _mk_ctx(
             enabled_agents=("claude", "cursor"),
@@ -309,8 +309,8 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_project_smoke_batch(self) -> None:
-        from uxon_tui.screens.new_project import NewProjectScreen
         from textual.widgets import Input
+        from uxon_tui.screens.new_project import NewProjectScreen
 
         async def submit_foo(app, pilot):
             app.screen.query_one("#name-input", Input).focus()
@@ -413,9 +413,9 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_bool_toggle_saves_value(self):
+        from textual.app import App
         from uxon_settings import SettingEntry, SettingSpec
         from uxon_tui.screens.settings import BoolToggleModal, SettingsScreen
-        from textual.app import App
 
         spec = SettingSpec("git_create_enabled", "bool", "desc")
         entries = [SettingEntry(spec=spec, value=False, source="default", editable=True)]
@@ -449,8 +449,8 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class GitRemotesScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_populates_and_esc_dismisses(self):
-        from uxon_tui.screens.git_remotes import GitRemotesScreen
         from textual.app import App
+        from uxon_tui.screens.git_remotes import GitRemotesScreen
 
         rows = [
             ("foo", "github.com", "alice", "gh", "alice", "private", ""),

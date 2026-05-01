@@ -1,6 +1,6 @@
 """AgentsUnavailableScreen — shown when no enabled agent is installed.
 
-Pushed by :class:`CcwApp` after the async availability probe completes
+Pushed by :class:`UxonApp` after the async availability probe completes
 iff every agent listed in ``ctx.enabled_agents`` resolved to
 ``missing`` / ``timeout``. Lists each enabled agent together with the
 install hint from :data:`uxon_agents.CATALOG`, plus a short "configured

@@ -1,11 +1,11 @@
 """Pure-data tests for ``uxon_tui.context``.
 
 Screen / widget / integration tests live in:
-  - ``tests/test_ccw_tui_screens.py``        (pilot tests)
-  - ``tests/test_ccw_tui_widgets_textual.py`` (pilot tests)
-  - ``tests/test_ccw_tui_bindings.py``       (drift guards)
+  - ``tests/test_uxon_tui_screens.py``        (pilot tests)
+  - ``tests/test_uxon_tui_widgets_textual.py`` (pilot tests)
+  - ``tests/test_uxon_tui_bindings.py``       (drift guards)
   - ``tests/test_tui_integration.py``        (pty end-to-end)
-  - ``tests/test_ccw_tui_logging.py``        (JSONL event log)
+  - ``tests/test_uxon_tui_logging.py``        (JSONL event log)
 """
 
 from __future__ import annotations

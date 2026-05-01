@@ -1,4 +1,4 @@
-"""MainScreen — the top-level menu rendered by :class:`CcwApp`.
+"""MainScreen — the top-level menu rendered by :class:`UxonApp`.
 
 Layout:
     ┌ Header ──────────────────────────────────────────┐
@@ -504,7 +504,7 @@ class MainScreen(Screen):
         # Carry over state that lives outside the on_refresh result: the
         # link-health status comes from a separate worker, the agent
         # availability dict is mutated in place by the probe worker (which
-        # writes to the *app's* ctx — see CcwApp._probe_agents_worker),
+        # writes to the *app's* ctx — see UxonApp._probe_agents_worker),
         # and refresh_tick is a TUI-internal counter. Without this the
         # probe results are lost after the first ctx swap and every
         # LaunchOptionsScreen would render "(checking…)" forever.
