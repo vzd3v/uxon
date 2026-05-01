@@ -1,7 +1,7 @@
 [project]
-name = "ccw"
-version = "2.0.0"
-description = "Multi-user tmux wrapper for terminal AI coding agents (claude, codex, cursor)"
+name = "uxon"
+version = "3.0.0"
+description = "Multi-user wrapper for managing terminal AI coding agent sessions (claude, codex, cursor)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -20,10 +20,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/vzd3v/vz_devagent_cli_tool"
-Issues   = "https://github.com/vzd3v/vz_devagent_cli_tool/issues"
-Source   = "https://github.com/vzd3v/vz_devagent_cli_tool"
-Changelog = "https://github.com/vzd3v/vz_devagent_cli_tool/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/vzd3v/uxon"
+Issues   = "https://github.com/vzd3v/uxon/issues"
+Source   = "https://github.com/vzd3v/uxon"
+Changelog = "https://github.com/vzd3v/uxon/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 tui = ["textual>=0.80,<9", "tomlkit"]

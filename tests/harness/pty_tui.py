@@ -1,4 +1,4 @@
-"""pty-driven TUI test harness for ccw.
+"""pty-driven TUI test harness for uxon.
 
 Forks a child process running a given Python script under a controlling
 pseudo-terminal, writes keystrokes into it, reads back the rendered
@@ -224,8 +224,8 @@ def run_python_snippet(
     **kwargs,
 ) -> PtyTrace:
     """Convenience: spawn ``python3 -c <code>`` under a pty with extra sys.path
-    entries prepended. Used by tests to drive ``ccw_tui.run(ctx)`` with a
-    fake TuiContext without involving the full ccw binary.
+    entries prepended. Used by tests to drive ``uxon_tui.run(ctx)`` with a
+    fake TuiContext without involving the full uxon binary.
     """
     env = dict(os.environ)
     if extra_path:

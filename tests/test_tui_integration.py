@@ -1,6 +1,6 @@
-"""pty-driven integration tests for ccw_tui.
+"""pty-driven integration tests for uxon_tui.
 
-These tests fork a child that imports ``ccw_tui`` with a minimal fake
+These tests fork a child that imports ``uxon_tui`` with a minimal fake
 ``TuiContext``, then drive it via keystrokes written to a controlling
 pseudo-terminal. They're intentionally coarse — a handful of end-to-end
 regression tests for bugs we've been bitten by. Fine-grained unit
@@ -59,16 +59,16 @@ except ImportError:  # pragma: no cover
     _PTY_OK = False
 
 
-# Shared child-side script. Imports ccw_tui, builds a no-op TuiContext
+# Shared child-side script. Imports uxon_tui, builds a no-op TuiContext
 # shaped like what u-den would see on first launch (sudo, no sessions),
 # and enters run(). The test driver pipes keystrokes in, then reads the
 # rendered frames.
 _CHILD_SCRIPT = r"""
 import sys, os
 sys.path.insert(0, {lib_path!r})
-import ccw_tui
+import uxon_tui
 
-ctx = ccw_tui.TuiContext(
+ctx = uxon_tui.TuiContext(
     sessions=[],
     total_cpu="0",
     total_ram="0",
@@ -82,7 +82,7 @@ ctx = ccw_tui.TuiContext(
     has_sudo=True,
     other_sessions=[],
 )
-rc = ccw_tui.run(ctx)
+rc = uxon_tui.run(ctx)
 sys.exit(rc)
 """
 
@@ -189,12 +189,12 @@ class PtyTuiIntegrationTests(unittest.TestCase):
 _DRAIN_CHILD_SCRIPT = r"""
 import sys, os
 sys.path.insert(0, {lib_path!r})
-import ccw_tui
-import ccw_agents
-from ccw_tui.context import LaunchRequest
+import uxon_tui
+import uxon_agents
+from uxon_tui.context import LaunchRequest
 
 MARKER = {marker_path!r}
-ccw_agents.probe_agents = lambda *args, **kwargs: {{}}
+uxon_agents.probe_agents = lambda *args, **kwargs: {{}}
 
 def fake_launch_cwd(agent_id, mode_id):
     with open(MARKER, "a", encoding="utf-8") as f:
@@ -206,7 +206,7 @@ def fake_launch_new(name, agent_id, mode_id, git_profile):
         f.write(f"new:{{name}}:{{agent_id}}:{{mode_id}}:{{git_profile}}\n")
     return LaunchRequest(cmd=("/bin/true",), label="mock-new")
 
-ctx = ccw_tui.TuiContext(
+ctx = uxon_tui.TuiContext(
     sessions=[],
     total_cpu="0",
     total_ram="0",
@@ -222,7 +222,7 @@ ctx = ccw_tui.TuiContext(
     on_launch_new=fake_launch_new,
     on_refresh=lambda: ctx,
 )
-rc = ccw_tui.run(ctx)
+rc = uxon_tui.run(ctx)
 sys.exit(rc)
 """
 

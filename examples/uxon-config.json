@@ -1,0 +1,20 @@
+{
+  "runtime_user": "agent",
+  "default_launch_mode": "fixed",
+  "enable_all_users_list": false,
+  "session_prefix": "uxon-",
+  "legacy_session_prefixes": [],
+  "allowed_roots": ["/srv/projects"],
+  "session_users": ["agent"],
+  "new_project_root": "/srv/projects",
+  "repeat_noninteractive_mode": "fail",
+  "tmux_socket_template": "/tmp/uxon-{user}.sock",
+  "agents": {
+    "enabled": ["claude"],
+    "default": "claude",
+    "claude": { "default_args": [] },
+    "codex":  { "default_args": [] },
+    "cursor": { "default_args": [] }
+  },
+  "launch_user_by_caller": {}
+}
