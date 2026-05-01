@@ -1,6 +1,6 @@
 # uxon
 
-[![PyPI](https://img.shields.io/pypi/v/uxon.svg)](https://pypi.org/project/uxon/)
+[![PyPI](https://img.shields.io/pypi/v/uxon)](https://pypi.org/project/uxon/)
 [![CI](https://github.com/vzd3v/uxon/actions/workflows/ci.yml/badge.svg)](https://github.com/vzd3v/uxon/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
