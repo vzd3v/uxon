@@ -1,12 +1,12 @@
 ---
 name: Feature request
-about: Suggest a change to ccw's behaviour or interface
+about: Suggest a change to uxon's behaviour or interface
 labels: enhancement
 ---
 
 ### Problem
 
-<!-- What workflow are you trying to support? What does ccw do today that
+<!-- What workflow are you trying to support? What does uxon do today that
 gets in the way, or what is missing entirely? -->
 
 ### Proposal

@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def fail(msg: str) -> int:
-    print(f"install_ccw.py: {msg}", file=sys.stderr)
+    print(f"install_uxon.py: {msg}", file=sys.stderr)
     return 2
 
 

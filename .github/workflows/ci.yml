@@ -26,7 +26,7 @@ jobs:
         run: python3 -m pip install tomlkit "textual>=0.80,<9" pytest pytest-xdist
 
       - name: Compile Python files
-        run: python3 -m py_compile $(git ls-files '*.py' bin/ccw)
+        run: python3 -m py_compile $(git ls-files '*.py' bin/uxon)
 
       - name: Run unit tests
         run: pytest tests/ -n auto

@@ -1,13 +1,13 @@
 # Architecture
 
-Public architectural overview of `ccw`. Read
+Public architectural overview of `uxon`. Read
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) first for setup and the
 contribution workflow; this document focuses on *what the code looks
 like and why*.
 
-## What `ccw` is
+## What `uxon` is
 
-`ccw` is a Python script that wraps `tmux` so a host can run several
+`uxon` is a Python script that wraps `tmux` so a host can run several
 terminal AI coding agents (`claude`, `codex`, `cursor-agent`)
 concurrently for one or more OS users, with predictable session
 naming, per-user tmux sockets, optional `git` worktree support,
@@ -16,29 +16,29 @@ TUI session picker.
 
 There is no daemon. There is no database. State lives in:
 - `tmux` sessions on a per-user dedicated socket;
-- `config/config.toml` (host config) and `.ccw.toml` (per-project);
-- `${XDG_STATE_HOME:-~/.local/state}/ccw/` (best-effort JSONL event
-  log; override with `CCW_LOG_DIR`).
+- `config/config.toml` (host config) and `.uxon.toml` (per-project);
+- `${XDG_STATE_HOME:-~/.local/state}/uxon/` (best-effort JSONL event
+  log; override with `UXON_LOG_DIR`).
 
 ## Top-level layout
 
 ```
-bin/ccw                      Single-file CLI entrypoint.
+bin/uxon                      Single-file CLI entrypoint.
 lib/
-  ccw_settings.py            Settings schema, layered TOML read/write.
-  ccw_agents.py              Pure-data agent catalog and probe.
-  ccw_git_profiles.py        [[git_remote_profiles]] schema.
-  ccw_git_backend_gh.py      `gh repo create` backend.
-  ccw_git_backend_token.py   GitHub REST + fine-grained PAT backend.
-  ccw_git_create.py          Orchestrator for the new-project git flow.
-  ccw_tui/                   Textual TUI (lazy-imported by bin/ccw).
+  uxon_settings.py            Settings schema, layered TOML read/write.
+  uxon_agents.py              Pure-data agent catalog and probe.
+  uxon_git_profiles.py        [[git_remote_profiles]] schema.
+  uxon_git_backend_gh.py      `gh repo create` backend.
+  uxon_git_backend_token.py   GitHub REST + fine-grained PAT backend.
+  uxon_git_create.py          Orchestrator for the new-project git flow.
+  uxon_tui/                   Textual TUI (lazy-imported by bin/uxon).
 install/
-  install_ccw.py             Symlink installer.
-  render_ccw_config.py       JSON-to-TOML config renderer.
+  install_uxon.py             Symlink installer.
+  render_uxon_config.py       JSON-to-TOML config renderer.
 config/
   config.example.toml        Tracked example. Real config.toml is gitignored.
 examples/
-  ccw-config.json            Example payload for render_ccw_config.py.
+  uxon-config.json            Example payload for render_uxon_config.py.
 tests/                       unittest.TestCase, run via `pytest -n auto`.
 ```
 
@@ -47,25 +47,25 @@ tests/                       unittest.TestCase, run via `pytest -n auto`.
 ```
 caller user                                       launch user
 ─────────────                                    ──────────────
-$ ccw run             ──▶  parse args      ──▶  sudo -iu <launch_user> tmux ...
+$ uxon run             ──▶  parse args      ──▶  sudo -iu <launch_user> tmux ...
                                                                   │
                                                                   ▼
                                                           fork(claude|codex|cursor)
                             ┌──────────┐                          │
-$ ccw                  ──▶  │ TUI loop │──── attach ──────────────┘
+$ uxon                  ──▶  │ TUI loop │──── attach ──────────────┘
 (no args, TTY)              │ (textual)│
                             └──────────┘
 ```
 
 The TUI runs **inside** a re-entrant outer loop. When the user picks
 an action, the TUI calls `App.exit()` returning a `LaunchRequest`.
-The outer loop in `lib/ccw_tui/app.py::run()` then forks `tmux`
+The outer loop in `lib/uxon_tui/app.py::run()` then forks `tmux`
 **outside** the textual context (so the agent gets the real terminal),
 waits for it, and re-creates the `App` for the next round-trip.
 
 ## TUI internals
 
-Sub-modules under `lib/ccw_tui/`:
+Sub-modules under `lib/uxon_tui/`:
 
 - `context.py` — pure data: `TuiContext`, `TuiSession`,
   `LaunchRequest`, `Item`, `build_items`, `CallbackError`.
@@ -89,23 +89,23 @@ Sub-modules under `lib/ccw_tui/`:
 
 These are enforced by tests and CI:
 
-- **`bin/ccw` may import from `lib/*`. `lib/*` may not import from
-  `bin/ccw`.** The CLI assembles pieces; pieces don't reach back.
-- **`lib/ccw_tui/*` may not import `subprocess` or `pwd`** or touch
+- **`bin/uxon` may import from `lib/*`. `lib/*` may not import from
+  `bin/uxon`.** The CLI assembles pieces; pieces don't reach back.
+- **`lib/uxon_tui/*` may not import `subprocess` or `pwd`** or touch
   the filesystem directly. Side effects flow through callbacks on
   `TuiContext` / `SettingsCallbacks`. This keeps the TUI testable
   with Textual `Pilot` without spawning real processes.
 - **`textual` is imported lazily inside `do_interactive`.** Non-TUI
-  subcommands (`ccw list`, `ccw doctor`, `ccw version`) must run
+  subcommands (`uxon list`, `uxon doctor`, `uxon version`) must run
   with `textual` absent.
 - **All key handling goes through `BINDINGS`.** No `on_key`
   overrides on screen classes; a drift guard test
-  (`tests/test_ccw_tui_bindings.py`) refuses any PR that adds one.
-- **One launch builder.** `_build_tmux_launch_request` in `bin/ccw`
+  (`tests/test_uxon_tui_bindings.py`) refuses any PR that adds one.
+- **One launch builder.** `_build_tmux_launch_request` in `bin/uxon`
   is the single place that builds agent command lines. Don't add
   direct `claude` / `codex` / `cursor-agent` exec calls anywhere else.
 - **Config writes use `tomlkit`.** The round-trip writer in
-  `lib/ccw_settings.py` preserves comments and formatting. CLI read
+  `lib/uxon_settings.py` preserves comments and formatting. CLI read
   paths stay on stdlib `tomllib`.
 - **One tmux socket per launch user.** No code path silently falls
   back to the default socket.
@@ -113,32 +113,32 @@ These are enforced by tests and CI:
 ## Session naming
 
 ```
-ccw-<stem>@<agent>           plain sessions
-ccw-<repo>-<branch>@<agent>  worktree sessions (claude only)
+uxon-<stem>@<agent>           plain sessions
+uxon-<repo>-<branch>@<agent>  worktree sessions (claude only)
 ```
 
 Parallels append `-2`, `-3`, … *after* the agent suffix:
-`ccw-myproj@codex-2`. The `ccw-` prefix is hardcoded for new
+`uxon-myproj@codex-2`. The `uxon-` prefix is hardcoded for new
 sessions; legacy `cc-<stem>` / `cc-<stem>-N` sessions (pre-2026-04-21)
-are still recognised as read-only `claude` sessions but `ccw` does
+are still recognised as read-only `claude` sessions but `uxon` does
 not create them.
 
-`parse_session_name` and `candidate_session_name` in `bin/ccw` must
+`parse_session_name` and `candidate_session_name` in `bin/uxon` must
 move together. Don't touch one without the other.
 
 ## Tests
 
-- `tests/test_ccw*.py` — pure unit tests; the bulk of branchy logic
+- `tests/test_uxon*.py` — pure unit tests; the bulk of branchy logic
   lives here.
-- `tests/test_ccw_tui*.py` — Textual `Pilot` and `pty` tests; one
+- `tests/test_uxon_tui*.py` — Textual `Pilot` and `pty` tests; one
   smoke path per feature, batched via
   `tests/harness/textual_scenarios.py::run_screen_scenarios` where
   possible.
-- `tests/test_ccw_tui_bindings.py` — drift guards (`BINDINGS`,
+- `tests/test_uxon_tui_bindings.py` — drift guards (`BINDINGS`,
   destructive bindings have `show=True`).
 - `tests/test_tui_integration.py` — end-to-end pty harness.
 
-Add a new branchy decision? Put it in `lib/ccw_tui/state.py` and
+Add a new branchy decision? Put it in `lib/uxon_tui/state.py` and
 test it with plain `unittest`. Reach for `Pilot` only when the
 behaviour depends on Textual lifecycle.
 
@@ -147,19 +147,19 @@ behaviour depends on Textual lifecycle.
 Two layers, merged in order (later wins):
 
 1. **Repo config** — `config/config.toml`, host-wide.
-2. **Project config** — nearest `.ccw.toml` in cwd or a parent that
+2. **Project config** — nearest `.uxon.toml` in cwd or a parent that
    is itself inside an `allowed_roots` entry. The TUI never writes
    project config.
 
 The single source of truth for known keys is
-`lib/ccw_settings.py::SETTINGS_SPECS`. Add a key there in the same
+`lib/uxon_settings.py::SETTINGS_SPECS`. Add a key there in the same
 commit as the matching `DEFAULT_CONFIG` / `Config` / `load_config`
-changes in `bin/ccw`.
+changes in `bin/uxon`.
 
 ## Security boundaries
 
 See [`SECURITY.md`](../SECURITY.md) for the threat model. The short
 version: the operator's `sudoers` config is the authorisation model;
-`ccw` enforces `allowed_roots`, the `git_remote_profiles` whitelist,
+`uxon` enforces `allowed_roots`, the `git_remote_profiles` whitelist,
 and atomic config writes; everything inside the launched agent
 binary is out of scope.

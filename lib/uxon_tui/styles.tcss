@@ -1,4 +1,4 @@
-/* ccw TUI — root stylesheet.
+/* uxon TUI — root stylesheet.
  *
  * Tokens pinned per T0c: textual 8.x provides $error / $warning /
  * $text-muted / $accent / $surface / $boost. Renaming requires a
@@ -6,12 +6,12 @@
  */
 
 /* Theme tokens (aliases over textual built-ins). */
-$ccw-attached: green;
-$ccw-danger: $error;
-$ccw-sudo: $warning;
-$ccw-dim: $text-muted;
-$ccw-hot: red;      /* CPU hot */
-$ccw-warm: yellow;  /* CPU warm */
+$uxon-attached: green;
+$uxon-danger: $error;
+$uxon-sudo: $warning;
+$uxon-dim: $text-muted;
+$uxon-hot: red;      /* CPU hot */
+$uxon-warm: yellow;  /* CPU warm */
 
 Screen {
     layout: vertical;
@@ -34,14 +34,14 @@ Footer {
 }
 
 .segment-header {
-    color: $ccw-dim;
+    color: $uxon-dim;
     padding: 0 1;
     margin-top: 1;
     text-style: dim;
 }
 
 .empty-note {
-    color: $ccw-dim;
+    color: $uxon-dim;
     padding: 1 2;
     text-style: italic;
 }
@@ -65,17 +65,17 @@ ActionRow:hover {
 }
 
 ActionRow.-disabled {
-    color: $ccw-dim;
+    color: $uxon-dim;
     text-style: dim;
 }
 
 ActionRow.destructive,
 #action-kill-all-global {
-    color: $ccw-danger;
+    color: $uxon-danger;
 }
 
 #action-settings {
-    color: $ccw-sudo;
+    color: $uxon-sudo;
 }
 
 /* ── SessionTable ────────────────────────────────────────────────── */
@@ -100,21 +100,21 @@ SessionTable > .datatable--cursor {
 }
 
 SessionTable .attached {
-    color: $ccw-attached;
+    color: $uxon-attached;
     text-style: bold;
 }
 
 SessionTable .cpu-hot {
-    color: $ccw-hot;
+    color: $uxon-hot;
     text-style: bold;
 }
 
 SessionTable .cpu-warm {
-    color: $ccw-warm;
+    color: $uxon-warm;
 }
 
 SessionTable .sudo-only {
-    color: $ccw-sudo;
+    color: $uxon-sudo;
     text-style: bold;
 }
 
@@ -130,12 +130,12 @@ ModalScreen {
 }
 
 .prompt {
-    color: $ccw-danger;
+    color: $uxon-danger;
 }
 
 /* Phrase modals get the heavier danger border. */
 ConfirmPhrase > Vertical {
-    border: round $ccw-danger;
+    border: round $uxon-danger;
 }
 
 .buttons {

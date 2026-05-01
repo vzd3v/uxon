@@ -9,7 +9,7 @@ labels: bug
 <!-- Exact symptom and the command that triggered it. -->
 
 ```
-$ ccw <args>
+$ uxon <args>
 <output>
 ```
 
@@ -17,16 +17,16 @@ $ ccw <args>
 
 <!-- One or two sentences. -->
 
-### `ccw doctor` output
+### `uxon doctor` output
 
 ```
-$ ccw doctor
+$ uxon doctor
 <paste output>
 ```
 
 ### Environment
 
-- `ccw --version`:
+- `uxon --version`:
 - OS / distro:
 - Python version (`python3 --version`):
 - `tmux -V`:
@@ -35,4 +35,4 @@ $ ccw doctor
 
 ### Anything else
 
-<!-- Logs (`~/.local/state/ccw/...`), config snippets, screenshots. Redact secrets. -->
+<!-- Logs (`~/.local/state/uxon/...`), config snippets, screenshots. Redact secrets. -->

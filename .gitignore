@@ -14,3 +14,12 @@ docs/agents/
 
 # Misc
 _external_sources/
+
+# Local environments and editor / OS junk
+.venv/
+.env
+.envrc
+.DS_Store
+*.swp
+.idea/
+.vscode/

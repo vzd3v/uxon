@@ -1,6 +1,6 @@
 # uxon
 
-[![CI](https://github.com/vzd3v/vz_devagent_cli_tool/actions/workflows/ci.yml/badge.svg)](https://github.com/vzd3v/vz_devagent_cli_tool/actions/workflows/ci.yml)
+[![CI](https://github.com/vzd3v/uxon/actions/workflows/ci.yml/badge.svg)](https://github.com/vzd3v/uxon/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)
@@ -61,8 +61,8 @@ Requires **Python 3.11+**, `tmux`, and Linux. Optional: `textual` for
 the TUI, `tomlkit` for in-TUI settings edits.
 
 ```bash
-git clone https://github.com/vzd3v/vz_devagent_cli_tool.git
-cd vz_devagent_cli_tool
+git clone https://github.com/vzd3v/uxon.git
+cd uxon
 
 # 1. Symlink the entrypoint into PATH (root-writable location).
 sudo python3 install/install_uxon.py \

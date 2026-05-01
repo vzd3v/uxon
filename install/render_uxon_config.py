@@ -11,7 +11,7 @@ from typing import Any
 
 
 def fail(msg: str) -> int:
-    print(f"render_ccw_config.py: {msg}", file=sys.stderr)
+    print(f"render_uxon_config.py: {msg}", file=sys.stderr)
     return 2
 
 

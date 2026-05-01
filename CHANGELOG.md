@@ -6,6 +6,59 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-05-01
+
+Project rename: `ccw` → `uxon`. The CLI binary, Python modules,
+session prefix, environment variables, and project-level config
+filename all change. Existing deployments need a one-time config
+update; running tmux sessions started under the old prefix remain
+reachable via `legacy_session_prefixes`.
+
+### Changed (breaking)
+
+- **CLI binary renamed.** `bin/ccw` → `bin/uxon`; default install
+  path is now `/usr/local/bin/uxon`. The `bin/ccw` back-compat
+  symlink has been removed. Re-run `install/install_uxon.py` to
+  refresh the system symlink.
+- **Default tmux session prefix renamed.** `ccw-` → `uxon-`. To keep
+  pre-rename tmux sessions visible to `uxon list` / `attach` /
+  `kill`, add the old prefix to the new `legacy_session_prefixes`
+  config key (e.g. `legacy_session_prefixes = ["ccw-"]`). New
+  sessions are always created under `session_prefix`.
+- **Environment variables renamed.** `CCW_LOG_DIR` → `UXON_LOG_DIR`,
+  `CCW_REPEAT_NONINTERACTIVE_POLICY` →
+  `UXON_REPEAT_NONINTERACTIVE_POLICY`. The default log directory
+  base is `${XDG_STATE_HOME:-~/.local/state}/uxon`.
+- **Project config filename renamed.** `.ccw.toml` → `.uxon.toml`
+  (the per-project override file picked up beneath
+  `allowed_roots`). Rename existing files in checked-out projects.
+- **Python modules renamed.** `lib/ccw_*` → `lib/uxon_*`,
+  `lib/ccw_tui/` → `lib/uxon_tui/`. Tests and import paths
+  updated. Out-of-tree consumers importing these modules need to
+  update imports.
+- **Tmux socket path default changed.** `/tmp/ccw-{user}.sock` →
+  `/tmp/uxon-{user}.sock` (configurable via `tmux_socket_template`).
+- **Outbound HTTP `User-Agent` changed** for the GitHub REST API
+  backend: `ccw-git-remote` → `uxon-git-remote`.
+
+### Added
+
+- `legacy_session_prefixes` config key — array of additional tmux
+  prefixes that `uxon list` / `attach` / `kill` recognise. Used to
+  keep pre-rename sessions reachable. New sessions are never
+  created under a legacy prefix.
+- `docs/cli.md` — full CLI reference (every flag, exit code,
+  identifier resolution, repeat behaviour).
+- `docs/configuration.md` — use-case-driven configuration guide
+  (single-user laptop, multi-user host, sandboxed agent user,
+  pinning agents to directories, GitHub repo creation, prefix
+  migration). Linked from the top of `config/config.example.toml`.
+
+### Changed
+
+- `README.md` rewritten around the TUI as the primary interface,
+  with a compact CLI summary linking to `docs/cli.md`.
+
 ## [2.0.0] — 2026-05-01
 
 First open-source release. Existing deployments that already set
@@ -23,7 +76,7 @@ the breaking-default changes below.
   Hosts that already pin both keys in `config/config.toml` need
   no action; fresh installs must set them.
 - **TUI event-log default location moved off `/srv`.**
-  `lib/ccw_tui/events.py` now defaults to
+  `lib/uxon_tui/events.py` now defaults to
   `${XDG_STATE_HOME:-~/.local/state}/ccw` instead of
   `/srv/work/logs/ccw`. The `CCW_LOG_DIR` environment override is
   unchanged — set it in the launch user's environment to keep the
@@ -39,7 +92,7 @@ the breaking-default changes below.
   configuration for `ruff`, `pyright`, and `pytest`.
 - `config/config.example.toml` shipped alongside the gitignored
   real `config/config.toml` as a working starting point. Rendered
-  from `examples/ccw-config.json`, which was refreshed to the
+  from `examples/uxon-config.json`, which was refreshed to the
   current schema (removed `default_claude_args`, fixed
   `session_prefix` to `ccw-`, switched to neutral `agent` user
   and `/srv/projects` paths, switched to nested `[agents]`

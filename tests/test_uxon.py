@@ -713,7 +713,7 @@ class UxonTests(unittest.TestCase):
         with mock.patch.object(
             uxon,
             "resolve_config_layers",
-            return_value=({}, [Path("/srv/apps/vz_devagent_cli_tool/config/config.toml")]),
+            return_value=({}, [Path("/srv/apps/uxon/config/config.toml")]),
         ):
             with mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
                 with mock.patch.object(
@@ -744,7 +744,7 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         rendered = output.getvalue()
         self.assertIn("uxon doctor", rendered)
-        self.assertIn("config_paths=/srv/apps/vz_devagent_cli_tool/config/config.toml", rendered)
+        self.assertIn("config_paths=/srv/apps/uxon/config/config.toml", rendered)
         self.assertIn("tmux_socket=/tmp/uxon-u-vz.sock", rendered)
         self.assertIn("claude:", rendered)
         self.assertIn("ok (1.2.3)", rendered)
