@@ -8,11 +8,12 @@ without pulling in any terminal dependency.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ccw_agents import AgentAvailability
+    pass
 
 
 # ── Errors ───────────────────────────────────────────────────────────
@@ -63,8 +64,8 @@ class TuiSession:
     path: str
     user: str
     # Multi-agent fields (default to backward-compatible values).
-    stem: str = ""        # bare project stem, e.g. "myproject"
-    agent: str = "claude" # agent id, e.g. "claude", "codex", "cursor"
+    stem: str = ""  # bare project stem, e.g. "myproject"
+    agent: str = "claude"  # agent id, e.g. "claude", "codex", "cursor"
     legacy: bool = False  # True when parsed from old cc-<stem> naming
 
 
@@ -137,13 +138,13 @@ class TuiContext:
     # Callbacks — TUI calls these, ccw provides them.
     # Launch/attach callbacks return a LaunchRequest; the outer run() loop
     # runs the command and re-enters the TUI main screen on exit.
-    on_attach: Callable[[str, str], "LaunchRequest"] = (
-        lambda user, name: LaunchRequest(cmd=("true",), label="noop-attach")
+    on_attach: Callable[[str, str], LaunchRequest] = lambda user, name: LaunchRequest(
+        cmd=("true",), label="noop-attach"
     )
     on_kill: Callable[[str, str], None] = lambda user, name: None  # (user, session) -> kill
     on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
     on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
-    on_refresh: Callable[[], "TuiContext"] = lambda: None  # type: ignore[return-value]
+    on_refresh: Callable[[], TuiContext] = lambda: None  # type: ignore[return-value]
     on_probe_link_health: Callable[[], Any] = lambda: None
     # Returns True if launch_user has write access to ``cwd``. Wired by
     # bin/ccw — uses ``os.access`` when launch_user == caller, otherwise
@@ -151,14 +152,16 @@ class TuiContext:
     # thread on mount when ``cwd_writable`` is None; activation also
     # calls it synchronously as a fallback if the probe hasn't landed.
     on_probe_cwd_writable: Callable[[], bool] = lambda: True
-    on_launch_cwd: Callable[[str, str], "LaunchRequest"] = (
-        lambda agent_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-cwd")
+    on_launch_cwd: Callable[[str, str], LaunchRequest] = lambda agent_id, mode_id: LaunchRequest(
+        cmd=("true",), label="noop-launch-cwd"
     )
-    on_launch_new: Callable[[str, str, str, str], "LaunchRequest"] = (
-        lambda name, agent_id, mode_id, git_profile: LaunchRequest(cmd=("true",), label="noop-launch-new")
+    on_launch_new: Callable[[str, str, str, str], LaunchRequest] = (
+        lambda name, agent_id, mode_id, git_profile: LaunchRequest(
+            cmd=("true",), label="noop-launch-new"
+        )
     )
-    on_launch_existing: Callable[[str, str, str], "LaunchRequest"] = (
-        lambda name, agent_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-existing")
+    on_launch_existing: Callable[[str, str, str], LaunchRequest] = lambda name, agent_id, mode_id: (
+        LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
 
     # Git remote on new project — display only. The TUI never edits these.
@@ -207,11 +210,11 @@ class Item:
     label: str
     enabled: bool = True
     # Payloads (only one is populated per kind):
-    session: "TuiSession | None" = None
-    digit_hint: "int | None" = None  # 1..9, or None if not digit-reachable
+    session: TuiSession | None = None
+    digit_hint: int | None = None  # 1..9, or None if not digit-reachable
 
 
-def build_items(ctx: "TuiContext") -> list[Item]:
+def build_items(ctx: TuiContext) -> list[Item]:
     """Materialise the main-screen row list as a typed list of :class:`Item`.
 
     The returned list is the source of truth for what's on the main
@@ -227,61 +230,75 @@ def build_items(ctx: "TuiContext") -> list[Item]:
     """
     items: list[Item] = []
     # Actions (indices 0..ACTION_COUNT-1). Digit hints are 1..3.
-    items.append(Item(
-        kind="action-cwd",
-        label="New session in current folder",
-        enabled=ctx.cwd_writable is not False,
-        digit_hint=1,
-    ))
-    items.append(Item(
-        kind="action-new",
-        label="Create new project",
-        enabled=True,
-        digit_hint=2,
-    ))
-    items.append(Item(
-        kind="action-open",
-        label="Open existing project",
-        enabled=bool(ctx.existing_projects),
-        digit_hint=3,
-    ))
+    items.append(
+        Item(
+            kind="action-cwd",
+            label="New session in current folder",
+            enabled=ctx.cwd_writable is not False,
+            digit_hint=1,
+        )
+    )
+    items.append(
+        Item(
+            kind="action-new",
+            label="Create new project",
+            enabled=True,
+            digit_hint=2,
+        )
+    )
+    items.append(
+        Item(
+            kind="action-open",
+            label="Open existing project",
+            enabled=bool(ctx.existing_projects),
+            digit_hint=3,
+        )
+    )
     # Own sessions
     for i, s in enumerate(ctx.sessions):
         pos = ACTION_COUNT + i  # 0-based position in the final list
         hint = pos + 1 if 1 <= pos + 1 <= 9 else None
-        items.append(Item(
-            kind="own-session",
-            label=s.short,
-            enabled=True,
-            session=s,
-            digit_hint=hint,
-        ))
+        items.append(
+            Item(
+                kind="own-session",
+                label=s.short,
+                enabled=True,
+                session=s,
+                digit_hint=hint,
+            )
+        )
     # Superuser block: other-user sessions, settings, kill-all-global.
     if ctx.has_sudo:
         for i, s in enumerate(ctx.other_sessions):
             pos = ACTION_COUNT + len(ctx.sessions) + i
             hint = pos + 1 if 1 <= pos + 1 <= 9 else None
-            items.append(Item(
-                kind="other-session",
-                label=f"{s.user}/{s.short}",
-                enabled=True,
-                session=s,
-                digit_hint=hint,
-            ))
+            items.append(
+                Item(
+                    kind="other-session",
+                    label=f"{s.user}/{s.short}",
+                    enabled=True,
+                    session=s,
+                    digit_hint=hint,
+                )
+            )
         # Settings: no digit_hint — PR 2 invariant.
-        items.append(Item(
-            kind="settings",
-            label="⚙ Settings",
-            enabled=True,
-        ))
+        items.append(
+            Item(
+                kind="settings",
+                label="⚙ Settings",
+                enabled=True,
+            )
+        )
         total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
         if total_sessions > 0:
             # Kill-ALL: no digit_hint — PR 2 invariant.
-            items.append(Item(
-                kind="kill-all-global",
-                label=f"⚡ Kill ALL ({total_sessions})",
-                enabled=True,
-            ))
+            items.append(
+                Item(
+                    kind="kill-all-global",
+                    label=f"⚡ Kill ALL ({total_sessions})",
+                    enabled=True,
+                )
+            )
     return items
 
 

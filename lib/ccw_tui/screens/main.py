@@ -38,8 +38,8 @@ from ..state import (
     MainIntent,
     activate_main_index,
     digit_jump_intent,
-    main_status_line,
     main_action_intent,
+    main_status_line,
     session_intent,
 )
 from ..widgets import ActionRow, SessionTable
@@ -155,7 +155,9 @@ class MainScreen(Screen):
             if self.ctx.has_sudo:
                 yield Static("── superuser ──", classes="segment-header")
                 if self.ctx.other_sessions:
-                    yield SessionTable(show_user=True, show_agent_column=show_agent, id="sessions-other")
+                    yield SessionTable(
+                        show_user=True, show_agent_column=show_agent, id="sessions-other"
+                    )
                 yield ActionRow(
                     kind="settings",
                     label="⚙ Settings",
@@ -174,10 +176,7 @@ class MainScreen(Screen):
                         enabled=True,
                         id="action-kill-all-global",
                     )
-            if (
-                not self.ctx.sessions
-                and not (self.ctx.has_sudo and self.ctx.other_sessions)
-            ):
+            if not self.ctx.sessions and not (self.ctx.has_sudo and self.ctx.other_sessions):
                 note = "Loading sessions…" if self.ctx.loading else "No active sessions."
                 yield Static(note, id="sessions-note", classes="empty-note")
         yield Footer()
@@ -201,9 +200,7 @@ class MainScreen(Screen):
                 pass
         if self.ctx.has_sudo and self.ctx.other_sessions:
             try:
-                self.query_one("#sessions-other", SessionTable).populate(
-                    self.ctx.other_sessions
-                )
+                self.query_one("#sessions-other", SessionTable).populate(self.ctx.other_sessions)
             except Exception:  # pragma: no cover — defensive
                 pass
         self.call_after_refresh(self._update_status_line)
@@ -287,7 +284,7 @@ class MainScreen(Screen):
             )
             return
 
-        def after_opts(result: "tuple[str, str] | None") -> None:
+        def after_opts(result: tuple[str, str] | None) -> None:
             if result is None:
                 return
             agent_id, mode_id = result
@@ -302,7 +299,7 @@ class MainScreen(Screen):
 
     def _launch_new(self) -> None:
         def after_opts(name: str, git_profile: str):
-            def _on_opts(result: "tuple[str, str] | None") -> None:
+            def _on_opts(result: tuple[str, str] | None) -> None:
                 if result is None:
                     return
                 agent_id, mode_id = result
@@ -312,6 +309,7 @@ class MainScreen(Screen):
                     self.app.notify(str(exc), severity="error", timeout=6)
                     return
                 self.app.request_launch(req)  # type: ignore[attr-defined]
+
             return _on_opts
 
         def after_git(name: str):
@@ -319,6 +317,7 @@ class MainScreen(Screen):
                 if git_profile is None:
                     return  # user cancelled the whole chain
                 self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts(name, git_profile))
+
             return _on_git
 
         def after_name(name: str | None) -> None:
@@ -350,7 +349,7 @@ class MainScreen(Screen):
             if not name:
                 return
 
-            def after_opts(result: "tuple[str, str] | None") -> None:
+            def after_opts(result: tuple[str, str] | None) -> None:
                 if result is None:
                     return
                 agent_id, mode_id = result
@@ -578,9 +577,7 @@ class MainScreen(Screen):
                 self.ctx.on_kill_all()
                 self.app.notify(f"Killed all {n} sessions")
             except CallbackError as exc:
-                self.app.notify(
-                    f"Kill all failed: {exc}", severity="error", timeout=6
-                )
+                self.app.notify(f"Kill all failed: {exc}", severity="error", timeout=6)
                 return
             self.action_refresh()
 

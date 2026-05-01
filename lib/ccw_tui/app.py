@@ -76,7 +76,7 @@ class _MainCtxLoaded(Message):
 
     bubble = False
 
-    def __init__(self, ctx: "TuiContext | None", error: str = "") -> None:
+    def __init__(self, ctx: TuiContext | None, error: str = "") -> None:
         super().__init__()
         self.ctx = ctx
         self.error = error
@@ -217,6 +217,7 @@ class CcwApp(App):
     def _probe_agents_worker(self) -> None:
         """Background thread: probe each enabled agent's binary --version."""
         import ccw_agents
+
         result = ccw_agents.probe_agents(
             list(self.ctx.enabled_agents),
             launch_user=self.ctx.launch_user or None,

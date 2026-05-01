@@ -61,9 +61,7 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         Binding("9", "pick_digit(9)", "", show=False),
     ]
 
-    def __init__(
-        self, projects: list[tuple[str, str]], project_root: str
-    ) -> None:
+    def __init__(self, projects: list[tuple[str, str]], project_root: str) -> None:
         super().__init__()
         # Each entry: (name, compact_mtime). See _list_existing_projects.
         self.projects = list(projects)

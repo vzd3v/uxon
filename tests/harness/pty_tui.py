@@ -24,7 +24,6 @@ import termios
 import time
 from dataclasses import dataclass, field
 
-
 # ANSI / terminal control sequences we want to strip before matching.
 _ANSI_CSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 _ANSI_CHARSET = re.compile(rb"\x1b\([AB0]")
@@ -86,10 +85,10 @@ class PtyTrace:
 
 
 def run_pty(
-    argv: "list[str]",
-    keys: "list[tuple[float, bytes]] | list[tuple[float, bytes, str]] | list[bytes]",
+    argv: list[str],
+    keys: list[tuple[float, bytes]] | list[tuple[float, bytes, str]] | list[bytes],
     *,
-    env: "dict[str, str] | None" = None,
+    env: dict[str, str] | None = None,
     rows: int = 40,
     cols: int = 140,
     initial_drain: float = 6.0,
@@ -219,9 +218,9 @@ def run_pty(
 
 def run_python_snippet(
     code: str,
-    keys: "list[bytes]",
+    keys: list[bytes],
     *,
-    extra_path: "list[str] | None" = None,
+    extra_path: list[str] | None = None,
     **kwargs,
 ) -> PtyTrace:
     """Convenience: spawn ``python3 -c <code>`` under a pty with extra sys.path

@@ -119,9 +119,7 @@ class PreflightTokenTests(unittest.TestCase):
                 _resp(404),  # repo doesn't exist
             ]
         )
-        tok.preflight(
-            _profile(owner="acme"), "r", "remdepl", "devagent", run=runner, http=http
-        )
+        tok.preflight(_profile(owner="acme"), "r", "remdepl", "devagent", run=runner, http=http)
 
     def test_owner_not_in_orgs_fails(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET)])
@@ -132,9 +130,7 @@ class PreflightTokenTests(unittest.TestCase):
             ]
         )
         with self.assertRaisesRegex(gh.BackendError, "cannot create repos under owner"):
-            tok.preflight(
-                _profile(owner="acme"), "r", "remdepl", "devagent", run=runner, http=http
-            )
+            tok.preflight(_profile(owner="acme"), "r", "remdepl", "devagent", run=runner, http=http)
 
     def test_existing_repo_fails(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET)])

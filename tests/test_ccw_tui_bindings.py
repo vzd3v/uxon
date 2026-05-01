@@ -87,7 +87,7 @@ class NoOnKeyOverrideTests(unittest.TestCase):
             if not fname.endswith(".py") or fname == "__init__.py":
                 continue
             path = os.path.join(screens_dir, fname)
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 src = fh.read()
             tree = ast.parse(src)
             for node in ast.walk(tree):
@@ -102,8 +102,7 @@ class NoOnKeyOverrideTests(unittest.TestCase):
                             )
         self.assertFalse(
             offenders,
-            "Screen classes must not override on_key — use BINDINGS instead; "
-            f"found: {offenders}",
+            f"Screen classes must not override on_key — use BINDINGS instead; found: {offenders}",
         )
 
 

@@ -65,7 +65,7 @@ class ActionRow(Static):
     class Activated(Message):
         """Posted when the row is activated (Enter or click release)."""
 
-        def __init__(self, row: "ActionRow") -> None:
+        def __init__(self, row: ActionRow) -> None:
             super().__init__()
             self.row = row
 

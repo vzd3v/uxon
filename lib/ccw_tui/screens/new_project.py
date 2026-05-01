@@ -13,7 +13,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.validation import Function, ValidationResult, Validator
+from textual.validation import ValidationResult, Validator
 from textual.widgets import Button, Input, Static
 
 from ..state import project_name_error, project_name_valid

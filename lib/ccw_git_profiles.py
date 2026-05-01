@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 AUTH_CHOICES: tuple[str, ...] = ("gh", "token")
 VISIBILITY_CHOICES: tuple[str, ...] = ("private", "public")
 
@@ -66,53 +65,38 @@ def _validate_profile(raw: dict, index: int, seen_names: set[str]) -> GitRemoteP
     def _req(field: str) -> str:
         value = raw.get(field)
         if not isinstance(value, str) or not value.strip():
-            raise ProfileError(
-                f"git_remote_profiles[{index}]: missing or empty '{field}'"
-            )
+            raise ProfileError(f"git_remote_profiles[{index}]: missing or empty '{field}'")
         return value.strip()
 
     name = _req("name")
     if name in seen_names:
-        raise ProfileError(
-            f"git_remote_profiles: duplicate name {name!r}"
-        )
+        raise ProfileError(f"git_remote_profiles: duplicate name {name!r}")
     host = _req("host")
     owner = _req("owner")
     auth = _req("auth")
     if auth not in AUTH_CHOICES:
         raise ProfileError(
-            f"git_remote_profiles[{name}]: auth must be one of "
-            f"{AUTH_CHOICES}, got {auth!r}"
+            f"git_remote_profiles[{name}]: auth must be one of {AUTH_CHOICES}, got {auth!r}"
         )
 
     creds_user = raw.get("creds_user", "")
     if not isinstance(creds_user, str):
-        raise ProfileError(
-            f"git_remote_profiles[{name}]: creds_user must be a string"
-        )
+        raise ProfileError(f"git_remote_profiles[{name}]: creds_user must be a string")
     creds_user = creds_user.strip()
 
     token_file = raw.get("token_file", "")
     if not isinstance(token_file, str):
-        raise ProfileError(
-            f"git_remote_profiles[{name}]: token_file must be a string"
-        )
+        raise ProfileError(f"git_remote_profiles[{name}]: token_file must be a string")
     token_file = token_file.strip()
 
     if auth == "token" and not token_file:
-        raise ProfileError(
-            f"git_remote_profiles[{name}]: token_file is required for auth=\"token\""
-        )
+        raise ProfileError(f'git_remote_profiles[{name}]: token_file is required for auth="token"')
     if auth != "token" and token_file:
-        raise ProfileError(
-            f"git_remote_profiles[{name}]: token_file only applies to auth=\"token\""
-        )
+        raise ProfileError(f'git_remote_profiles[{name}]: token_file only applies to auth="token"')
 
     visibility = raw.get("visibility", "private")
     if not isinstance(visibility, str):
-        raise ProfileError(
-            f"git_remote_profiles[{name}]: visibility must be a string"
-        )
+        raise ProfileError(f"git_remote_profiles[{name}]: visibility must be a string")
     visibility = visibility.strip() or "private"
     if visibility not in VISIBILITY_CHOICES:
         raise ProfileError(
@@ -152,9 +136,7 @@ def load_profiles(raw_list: object) -> list[GitRemoteProfile]:
     return profiles
 
 
-def find_profile(
-    profiles: list[GitRemoteProfile], name: str
-) -> GitRemoteProfile | None:
+def find_profile(profiles: list[GitRemoteProfile], name: str) -> GitRemoteProfile | None:
     """Return the profile with ``name`` or ``None``."""
     for p in profiles:
         if p.name == name:
@@ -174,20 +156,16 @@ def resolve_profile_selector(
     if selector == "default":
         if not default_name:
             raise ProfileError(
-                "no default_git_remote_profile configured; "
-                "pass --git-remote <name> instead"
+                "no default_git_remote_profile configured; pass --git-remote <name> instead"
             )
         found = find_profile(profiles, default_name)
         if found is None:
             raise ProfileError(
-                f"default_git_remote_profile={default_name!r} does not exist "
-                f"in git_remote_profiles"
+                f"default_git_remote_profile={default_name!r} does not exist in git_remote_profiles"
             )
         return found
     found = find_profile(profiles, selector)
     if found is None:
         names = ", ".join(p.name for p in profiles) or "<none>"
-        raise ProfileError(
-            f"git remote profile {selector!r} not found; available: {names}"
-        )
+        raise ProfileError(f"git remote profile {selector!r} not found; available: {names}")
     return found

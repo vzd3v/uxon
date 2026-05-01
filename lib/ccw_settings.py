@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 # ── Schema ───────────────────────────────────────────────────────────
 
 
@@ -30,7 +29,7 @@ class SettingSpec:
     key: str
     kind: str  # "string" | "number" | "bool" | "enum" | "array" | "table"
     description: str = ""
-    choices: "tuple[str, ...] | None" = None  # for "enum"
+    choices: tuple[str, ...] | None = None  # for "enum"
 
 
 VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
@@ -58,9 +57,13 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "Default agent when --agent is not passed.",
         choices=("claude", "codex", "cursor"),
     ),
-    SettingSpec("agents.claude.default_args", "array", "Flags prepended to every claude invocation."),
+    SettingSpec(
+        "agents.claude.default_args", "array", "Flags prepended to every claude invocation."
+    ),
     SettingSpec("agents.codex.default_args", "array", "Flags prepended to every codex invocation."),
-    SettingSpec("agents.cursor.default_args", "array", "Flags prepended to every cursor-agent invocation."),
+    SettingSpec(
+        "agents.cursor.default_args", "array", "Flags prepended to every cursor-agent invocation."
+    ),
     SettingSpec("new_project_root", "string", "Base directory for 'ccw new <name>'."),
     SettingSpec(
         "repeat_noninteractive_mode",
@@ -101,6 +104,7 @@ SCHEMA_KEYS: tuple[str, ...] = tuple(spec.key for spec in SETTINGS_SPECS)
 def _set_dotted(doc: Any, dotted_key: str, value: Any) -> None:
     """Walk/create nested tomlkit tables and set the leaf value."""
     import tomlkit
+
     parts = dotted_key.split(".")
     node = doc
     for part in parts[:-1]:
@@ -136,7 +140,7 @@ class SettingEntry:
 def resolve_setting_entries(
     repo_data: dict,
     project_data: dict,
-    project_path: "Path | None",
+    project_path: Path | None,
     defaults: dict,
 ) -> list[SettingEntry]:
     """Merge the three layers and return one entry per schema key with source info."""
@@ -290,7 +294,7 @@ def update_repo_config_text(existing_text: str, updates: dict) -> str:
 # ── Persistence ──────────────────────────────────────────────────────
 
 
-def write_repo_config_toml(content: str, path: "Path | str") -> None:
+def write_repo_config_toml(content: str, path: Path | str) -> None:
     """Write ``content`` to ``path``. Tries a direct atomic write first; falls
     back to ``sudo tee`` when the destination is not writable by the current
     process (typical for a repo checkout owned by another service user).
@@ -317,7 +321,7 @@ def write_repo_config_toml(content: str, path: "Path | str") -> None:
         raise RuntimeError(f"failed to write {path}: {stderr or 'unknown error'}")
 
 
-def persist_repo_config_updates(path: "Path | str", updates: dict) -> None:
+def persist_repo_config_updates(path: Path | str, updates: dict) -> None:
     """Read ``path`` (if it exists), apply ``updates`` via
     :func:`update_repo_config_text`, and write the result back.
 
@@ -341,6 +345,7 @@ def apply_setting(repo_data: dict, key: str, new_value: Any) -> dict:
     if key not in SCHEMA_KEYS:
         raise KeyError(f"unknown setting key: {key}")
     import copy
+
     out = copy.deepcopy(repo_data)
     if "." in key:
         _set_dotted(out, key, new_value)
@@ -354,6 +359,7 @@ def remove_setting(repo_data: dict, key: str) -> dict:
     if key not in SCHEMA_KEYS:
         raise KeyError(f"unknown setting key: {key}")
     import copy
+
     out = copy.deepcopy(repo_data)
     if "." in key:
         parts = key.split(".")
@@ -382,7 +388,7 @@ def replace_mapping(repo_data: dict, key: str, new_mapping: dict) -> dict:
     return out
 
 
-def remove_repo_key(path: "Path | str", key: str) -> None:
+def remove_repo_key(path: Path | str, key: str) -> None:
     """Drop ``key`` from the repo-level config.toml. Preserves comments
     and formatting of untouched parts. No-op if file or key is missing.
     """

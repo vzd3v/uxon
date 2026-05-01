@@ -8,7 +8,6 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest import mock
 
-
 CCW_PATH = Path(__file__).resolve().parents[1] / "bin" / "ccw"
 _LIB_PATH = str(Path(__file__).resolve().parents[1] / "lib")
 if _LIB_PATH not in sys.path:
@@ -121,7 +120,9 @@ class CcwTests(unittest.TestCase):
             session_prefix=kw.get("session_prefix", "ccw-"),
             enabled_agents=kw.get("enabled_agents", ("claude",)),
             default_agent=kw.get("default_agent", "claude"),
-            agent_default_args=kw.get("agent_default_args", {"claude": (), "codex": (), "cursor": ()}),
+            agent_default_args=kw.get(
+                "agent_default_args", {"claude": (), "codex": (), "cursor": ()}
+            ),
             new_project_root=kw.get("new_project_root", "/srv/agentdev"),
             repeat_noninteractive_mode=kw.get("repeat_noninteractive_mode", "fail"),
             tmux_socket_template=kw.get("tmux_socket_template", "/tmp/ccw-{user}.sock"),
@@ -132,26 +133,36 @@ class CcwTests(unittest.TestCase):
         )
 
     def test_resolve_launch_user_fixed_mode_uses_runtime_user(self) -> None:
-        cfg = self._make_config_explicit(runtime_user="devagent", default_launch_mode="fixed",
-                                         session_users=["devagent"])
+        cfg = self._make_config_explicit(
+            runtime_user="devagent", default_launch_mode="fixed", session_users=["devagent"]
+        )
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "devagent")
 
     def test_resolve_launch_user_caller_mode_uses_caller(self) -> None:
-        cfg = self._make_config_explicit(runtime_user="devagent", default_launch_mode="caller",
-                                         session_users=["devagent", "remdepl"])
+        cfg = self._make_config_explicit(
+            runtime_user="devagent",
+            default_launch_mode="caller",
+            session_users=["devagent", "remdepl"],
+        )
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "remdepl")
 
     def test_resolve_launch_user_mapping_overrides_default(self) -> None:
-        cfg = self._make_config_explicit(runtime_user="devagent", default_launch_mode="caller",
-                                         enable_all_users_list=True,
-                                         launch_user_by_caller={"remdepl": "devagent"},
-                                         session_users=["devagent", "remdepl"])
+        cfg = self._make_config_explicit(
+            runtime_user="devagent",
+            default_launch_mode="caller",
+            enable_all_users_list=True,
+            launch_user_by_caller={"remdepl": "devagent"},
+            session_users=["devagent", "remdepl"],
+        )
         self.assertEqual(ccw.resolve_launch_user(cfg, "remdepl"), "devagent")
 
     def test_resolve_all_session_users_keeps_current_user_present(self) -> None:
-        cfg = self._make_config_explicit(runtime_user="devagent", default_launch_mode="fixed",
-                                         enable_all_users_list=True,
-                                         session_users=["devagent"])
+        cfg = self._make_config_explicit(
+            runtime_user="devagent",
+            default_launch_mode="fixed",
+            enable_all_users_list=True,
+            session_users=["devagent"],
+        )
         self.assertEqual(ccw.resolve_all_session_users(cfg, "remdepl"), ["devagent", "remdepl"])
 
     def test_parse_args_supports_all_users_listing(self) -> None:
@@ -214,7 +225,8 @@ class CcwTests(unittest.TestCase):
 
                     [launch_user_by_caller]
                     remdepl = "devagent"
-                """).strip() + "\n",
+                """).strip()
+                + "\n",
                 tmpdir,
             )
 
@@ -261,7 +273,8 @@ class CcwTests(unittest.TestCase):
                     auth = "token"
                     creds_user = "remdepl"
                     token_file = "/home/remdepl/.secrets/acme.token"
-                """).strip() + "\n",
+                """).strip()
+                + "\n",
                 tmpdir,
             )
 
@@ -298,7 +311,8 @@ class CcwTests(unittest.TestCase):
 
                     [agents.cursor]
                     default_args = []
-                """).strip() + "\n",
+                """).strip()
+                + "\n",
                 tmpdir,
             )
         self.assertEqual(cfg.enabled_agents, ("claude", "cursor"))
@@ -366,8 +380,10 @@ class CcwTests(unittest.TestCase):
             "visibility": "private",
         }
         import sys as _sys
+
         _sys.path.insert(0, str(CCW_PATH.parent.parent / "lib"))
         import ccw_git_profiles
+
         cfg = self.make_config(
             allowed_roots=["/srv/repos"],
             git_create_enabled=True,
@@ -396,6 +412,7 @@ class CcwTests(unittest.TestCase):
                 }
             )
             import ccw_git_create
+
             return ccw_git_create.CreationResult(
                 profile_name=profile_arg.name,
                 ssh_url=f"git@github.com:vzd3v/{repo_name}.git",
@@ -403,6 +420,7 @@ class CcwTests(unittest.TestCase):
             )
 
         import ccw_git_create
+
         with mock.patch.object(ccw_git_create, "create_project_remote", side_effect=fake_create):
             with mock.patch.object(ccw, "collect_sessions", return_value=[]):
                 with mock.patch.object(ccw, "launch_in_tmux", return_value=0):
@@ -431,8 +449,10 @@ class CcwTests(unittest.TestCase):
 
     def test_do_new_git_remote_with_worktree_fails(self) -> None:
         import sys as _sys
+
         _sys.path.insert(0, str(CCW_PATH.parent.parent / "lib"))
         import ccw_git_profiles
+
         cfg = self.make_config(
             git_create_enabled=True,
             default_git_remote_profile="prof-a",
@@ -508,7 +528,9 @@ class CcwTests(unittest.TestCase):
                     with mock.patch.object(ccw, "is_interactive_tty", return_value=True):
                         with mock.patch("builtins.input", return_value=""):
                             with mock.patch.object(ccw, "attach_session", return_value=0) as attach:
-                                with mock.patch.object(ccw, "launch_in_tmux", return_value=0) as launch:
+                                with mock.patch.object(
+                                    ccw, "launch_in_tmux", return_value=0
+                                ) as launch:
                                     result = ccw.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
@@ -524,7 +546,9 @@ class CcwTests(unittest.TestCase):
         with mock.patch.object(ccw, "canonical", side_effect=lambda value: str(value)):
             with mock.patch.object(ccw, "run_cmd") as run_cmd:
                 with mock.patch.object(ccw, "collect_sessions", return_value=existing):
-                    with mock.patch.object(ccw, "allocate_session_name", return_value="ccw-demo-2") as allocate:
+                    with mock.patch.object(
+                        ccw, "allocate_session_name", return_value="ccw-demo-2"
+                    ) as allocate:
                         with mock.patch.object(ccw, "launch_in_tmux", return_value=0) as launch:
                             result = ccw.do_new(args, cfg, "u-vz")
 
@@ -554,7 +578,9 @@ class CcwTests(unittest.TestCase):
 
     def test_do_new_existing_worktree_session_defaults_to_attach_in_tty(self) -> None:
         cfg = self.make_config()
-        args = ccw.ParsedArgs(action="new", target_id="demo", worktree_branch="feature-x", agent_args=[])
+        args = ccw.ParsedArgs(
+            action="new", target_id="demo", worktree_branch="feature-x", agent_args=[]
+        )
         existing = [self.make_session("ccw-demo-feature-x@claude", "/srv/repos/demo")]
 
         with mock.patch.object(ccw.os.path, "isdir", return_value=True):
@@ -563,7 +589,9 @@ class CcwTests(unittest.TestCase):
                     with mock.patch.object(ccw, "is_interactive_tty", return_value=True):
                         with mock.patch("builtins.input", return_value=""):
                             with mock.patch.object(ccw, "attach_session", return_value=0) as attach:
-                                with mock.patch.object(ccw, "launch_in_tmux", return_value=0) as launch:
+                                with mock.patch.object(
+                                    ccw, "launch_in_tmux", return_value=0
+                                ) as launch:
                                     result = ccw.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
@@ -573,14 +601,18 @@ class CcwTests(unittest.TestCase):
     def test_do_new_existing_worktree_session_uses_configured_noninteractive_new(self) -> None:
         cfg = self.make_config()
         cfg.repeat_noninteractive_mode = "new"
-        args = ccw.ParsedArgs(action="new", target_id="demo", worktree_branch="feature-x", agent_args=[])
+        args = ccw.ParsedArgs(
+            action="new", target_id="demo", worktree_branch="feature-x", agent_args=[]
+        )
         existing = [self.make_session("ccw-demo-feature-x@claude", "/srv/repos/demo")]
 
         with mock.patch.object(ccw.os.path, "isdir", return_value=True):
             with mock.patch.object(ccw, "git_repo_root_as_user", return_value="/srv/repos/demo"):
                 with mock.patch.object(ccw, "collect_sessions", return_value=existing):
                     with mock.patch.object(ccw, "is_interactive_tty", return_value=False):
-                        with mock.patch.object(ccw, "allocate_session_name", return_value="ccw-demo-feature-x-2") as allocate:
+                        with mock.patch.object(
+                            ccw, "allocate_session_name", return_value="ccw-demo-feature-x-2"
+                        ) as allocate:
                             with mock.patch.object(ccw, "launch_in_tmux", return_value=0) as launch:
                                 result = ccw.do_new(args, cfg, "u-vz")
 
@@ -597,7 +629,9 @@ class CcwTests(unittest.TestCase):
             with mock.patch.object(ccw, "run_cmd"):
                 with mock.patch.object(ccw, "collect_sessions", return_value=[]):
                     with mock.patch.object(ccw, "collect_sessions_for_user", return_value=legacy):
-                        with mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-u-vz.sock"):
+                        with mock.patch.object(
+                            ccw, "tmux_socket_path", return_value="/tmp/ccw-u-vz.sock"
+                        ):
                             with mock.patch.object(ccw, "eprint") as eprint:
                                 with self.assertRaises(SystemExit) as ctx:
                                     ccw.do_new(args, cfg, "u-vz")
@@ -611,8 +645,12 @@ class CcwTests(unittest.TestCase):
         session = self.make_session("ccw-demo", "/srv/repos/demo")
 
         with mock.patch.object(ccw, "is_interactive_tty", return_value=False):
-            with mock.patch.dict(ccw.os.environ, {"CCW_REPEAT_NONINTERACTIVE_POLICY": "attach"}, clear=False):
-                decision = ccw.resolve_repeat_decision("none" if False else None, cfg, "/srv/repos/demo", session, [session])
+            with mock.patch.dict(
+                ccw.os.environ, {"CCW_REPEAT_NONINTERACTIVE_POLICY": "attach"}, clear=False
+            ):
+                decision = ccw.resolve_repeat_decision(
+                    "none" if False else None, cfg, "/srv/repos/demo", session, [session]
+                )
 
         self.assertEqual(decision, "attach")
 
@@ -638,16 +676,36 @@ class CcwTests(unittest.TestCase):
                 return "/usr/bin/tmux"
             return "/usr/local/bin/claude"
 
-        with mock.patch.object(ccw, "resolve_config_layers", return_value=({}, [Path("/srv/apps/vz_devagent_cli_tool/config/config.toml")])):
+        with mock.patch.object(
+            ccw,
+            "resolve_config_layers",
+            return_value=({}, [Path("/srv/apps/vz_devagent_cli_tool/config/config.toml")]),
+        ):
             with mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-u-vz.sock"):
-                with mock.patch.object(ccw, "command_path_for_user", side_effect=_command_path_side_effect):
-                    with mock.patch.object(ccw_agents, "probe_agents", return_value={"claude": ok_avail}):
-                        with mock.patch.object(ccw, "collect_sessions", return_value=[self.make_session("ccw-demo@claude", "/srv/repos/demo")]):
-                            with mock.patch.object(ccw, "collect_sessions_for_user", return_value=[]):
-                                with mock.patch.object(ccw, "user_can_write_dir", return_value=True):
-                                    with mock.patch.object(ccw, "format_version", return_value="ccw 0.4.0 (abc1234)"):
+                with mock.patch.object(
+                    ccw, "command_path_for_user", side_effect=_command_path_side_effect
+                ):
+                    with mock.patch.object(
+                        ccw_agents, "probe_agents", return_value={"claude": ok_avail}
+                    ):
+                        with mock.patch.object(
+                            ccw,
+                            "collect_sessions",
+                            return_value=[self.make_session("ccw-demo@claude", "/srv/repos/demo")],
+                        ):
+                            with mock.patch.object(
+                                ccw, "collect_sessions_for_user", return_value=[]
+                            ):
+                                with mock.patch.object(
+                                    ccw, "user_can_write_dir", return_value=True
+                                ):
+                                    with mock.patch.object(
+                                        ccw, "format_version", return_value="ccw 0.4.0 (abc1234)"
+                                    ):
                                         with mock.patch("sys.stdout", output):
-                                            rc = ccw.do_doctor(cfg, "remdepl", "u-vz", "/srv/repos/demo")
+                                            rc = ccw.do_doctor(
+                                                cfg, "remdepl", "u-vz", "/srv/repos/demo"
+                                            )
 
         self.assertEqual(rc, 0)
         rendered = output.getvalue()
@@ -667,13 +725,23 @@ class CcwTests(unittest.TestCase):
         with mock.patch.object(ccw, "resolve_config_layers", return_value=({}, [])):
             with mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-u-vz.sock"):
                 with mock.patch.object(ccw, "command_path_for_user", return_value="/usr/bin/tmux"):
-                    with mock.patch.object(ccw_agents, "probe_agents", return_value={"claude": missing_avail}):
+                    with mock.patch.object(
+                        ccw_agents, "probe_agents", return_value={"claude": missing_avail}
+                    ):
                         with mock.patch.object(ccw, "collect_sessions", return_value=[]):
-                            with mock.patch.object(ccw, "collect_sessions_for_user", return_value=[]):
-                                with mock.patch.object(ccw, "user_can_write_dir", return_value=True):
-                                    with mock.patch.object(ccw, "format_version", return_value="ccw 0.4.0"):
+                            with mock.patch.object(
+                                ccw, "collect_sessions_for_user", return_value=[]
+                            ):
+                                with mock.patch.object(
+                                    ccw, "user_can_write_dir", return_value=True
+                                ):
+                                    with mock.patch.object(
+                                        ccw, "format_version", return_value="ccw 0.4.0"
+                                    ):
                                         with mock.patch("sys.stdout", output):
-                                            rc = ccw.do_doctor(cfg, "u-vz", "u-vz", "/srv/repos/demo")
+                                            rc = ccw.do_doctor(
+                                                cfg, "u-vz", "u-vz", "/srv/repos/demo"
+                                            )
 
         rendered = output.getvalue()
         self.assertEqual(rc, 0)
@@ -714,10 +782,14 @@ class CcwTests(unittest.TestCase):
         self.assertIn("attach", req.label)
 
     def test_build_tmux_launch_request_includes_claude_and_mkdir(self) -> None:
-        cfg = self.make_config(agent_default_args={"claude": ("--model", "sonnet"), "codex": (), "cursor": ()})
+        cfg = self.make_config(
+            agent_default_args={"claude": ("--model", "sonnet"), "codex": (), "cursor": ()}
+        )
         args = ccw.ParsedArgs(action="run", permission_mode="yolo", agent_args=["--foo"])
         with self._stub_socket_path():
-            req = ccw._build_tmux_launch_request("/srv/repos/demo", "ccw-demo@claude", args, cfg, None, "u-vz")
+            req = ccw._build_tmux_launch_request(
+                "/srv/repos/demo", "ccw-demo@claude", args, cfg, None, "u-vz"
+            )
         self.assertIn("new-session", req.cmd)
         self.assertIn("-As", req.cmd)
         self.assertIn("ccw-demo@claude", req.cmd)
@@ -750,7 +822,9 @@ class CcwTests(unittest.TestCase):
         with self._stub_socket_path():
             with mock.patch.object(ccw.subprocess, "call", side_effect=[0, 0]) as call:
                 with mock.patch.object(ccw.os, "execvp") as execvp:
-                    rc = ccw.launch_in_tmux_blocking("/srv/repos/demo", "ccw-demo", args, cfg, None, "u-vz")
+                    rc = ccw.launch_in_tmux_blocking(
+                        "/srv/repos/demo", "ccw-demo", args, cfg, None, "u-vz"
+                    )
         self.assertEqual(rc, 0)
         self.assertEqual(call.call_count, 2)
         first_cmd = call.call_args_list[0][0][0]
@@ -764,7 +838,9 @@ class CcwTests(unittest.TestCase):
         args = ccw.ParsedArgs(action="run", agent_args=[])
         with self._stub_socket_path():
             with mock.patch.object(ccw.subprocess, "call", side_effect=[7]) as call:
-                rc = ccw.launch_in_tmux_blocking("/srv/repos/demo", "ccw-demo", args, cfg, None, "u-vz")
+                rc = ccw.launch_in_tmux_blocking(
+                    "/srv/repos/demo", "ccw-demo", args, cfg, None, "u-vz"
+                )
         self.assertEqual(rc, 7)
         call.assert_called_once()  # main cmd never ran
 
@@ -797,7 +873,9 @@ class CcwTests(unittest.TestCase):
             with self._stub_socket_path():
                 with mock.patch.object(ccw, "probe_cwd_writable", return_value=True):
                     with mock.patch.object(ccw, "collect_sessions", return_value=[]):
-                        with mock.patch.object(ccw, "allocate_session_name", return_value="ccw-demo"):
+                        with mock.patch.object(
+                            ccw, "allocate_session_name", return_value="ccw-demo"
+                        ):
                             with mock.patch.object(ccw.os, "execvp") as execvp:
                                 req = ccw._plan_tui_run(cfg, "u-vz", str(project_dir), dsp=False)
         self.assertIn("new-session", req.cmd)
@@ -812,7 +890,9 @@ class CcwTests(unittest.TestCase):
                 with mock.patch.object(ccw, "run_cmd"):
                     with mock.patch.object(ccw, "collect_sessions", return_value=existing):
                         with mock.patch.object(ccw.os, "execvp") as execvp:
-                            req = ccw._plan_tui_create_new(cfg, "u-vz", "demo", dsp=False, git_profile="")
+                            req = ccw._plan_tui_create_new(
+                                cfg, "u-vz", "demo", dsp=False, git_profile=""
+                            )
         # Existing session → attach request, not launch
         self.assertIn("attach-session", req.cmd)
         self.assertIn("ccw-demo@claude", req.cmd)
@@ -881,12 +961,7 @@ class CcwTests(unittest.TestCase):
             "ccw:   - /home/u-ed\n"
             "ccw: got: /tmp\n"
         )
-        expected = (
-            "directory must be under one of:\n"
-            "  - /srv/repos\n"
-            "  - /home/u-ed\n"
-            "got: /tmp"
-        )
+        expected = "directory must be under one of:\n  - /srv/repos\n  - /home/u-ed\ngot: /tmp"
         self.assertEqual(ccw._sanitize_callback_stderr(raw), expected)
 
     def test_sanitize_callback_stderr_passes_through_non_ccw_lines(self) -> None:
@@ -913,15 +988,14 @@ class CcwTests(unittest.TestCase):
             self.assertRegex(mtime, r"^\d\d[:-]\d\d$")
 
     def test_list_existing_projects_missing_root_returns_empty(self) -> None:
-        self.assertEqual(
-            ccw._list_existing_projects("/nonexistent/path/for/ccw/test"), []
-        )
+        self.assertEqual(ccw._list_existing_projects("/nonexistent/path/for/ccw/test"), [])
 
     def test_wrap_tui_callback_passes_return_value(self) -> None:
         class _Err(Exception):
             pass
 
             # pragma: no cover — marker only
+
         wrapped = ccw._wrap_tui_callback(lambda x, y: x + y, _Err)
         self.assertEqual(wrapped(2, 3), 5)
 
@@ -930,7 +1004,7 @@ class CcwTests(unittest.TestCase):
             pass
 
         def inner() -> None:
-            ccw.fail("directory must be under one of:\n" "ccw:   - /srv/repos")
+            ccw.fail("directory must be under one of:\nccw:   - /srv/repos")
 
         wrapped = ccw._wrap_tui_callback(inner, _Err)
         with self.assertRaises(_Err) as cm:
@@ -995,7 +1069,9 @@ class CcwTests(unittest.TestCase):
         self.assertIn("switch-client", req.label)
 
     def test_build_tmux_launch_request_uses_switch_client_when_nested(self) -> None:
-        cfg = self.make_config(agent_default_args={"claude": ("--model", "sonnet"), "codex": (), "cursor": ()})
+        cfg = self.make_config(
+            agent_default_args={"claude": ("--model", "sonnet"), "codex": (), "cursor": ()}
+        )
         args = ccw.ParsedArgs(action="run", permission_mode="yolo", agent_args=["--foo"])
         stubs = _StubsChain(
             mock.patch.object(ccw, "tmux_socket_path", return_value="/tmp/ccw-test.sock"),
@@ -1066,7 +1142,9 @@ class CcwTests(unittest.TestCase):
         args = ccw.ParsedArgs(action="run", agent="codex")
         with self._stub_socket_path():
             with self.assertRaises(SystemExit):
-                ccw._build_tmux_launch_request("/tmp/x", "ccw-x@codex", args, cfg, branch="b", launch_user="u-vz")
+                ccw._build_tmux_launch_request(
+                    "/tmp/x", "ccw-x@codex", args, cfg, branch="b", launch_user="u-vz"
+                )
 
     def test_auto_with_cursor_default_fails_at_launch(self) -> None:
         # Full-stack check: parser accepts --auto without knowing the resolved agent;
@@ -1080,7 +1158,9 @@ class CcwTests(unittest.TestCase):
                 ccw._build_tmux_launch_request("/tmp/x", "ccw-x@cursor", parsed, cfg, None, "u-vz")
 
 
-def _mk_session(name: str, path: str = "/srv/repos/x", agent: str = "claude", legacy: bool = False) -> ccw.SessionInfo:
+def _mk_session(
+    name: str, path: str = "/srv/repos/x", agent: str = "claude", legacy: bool = False
+) -> ccw.SessionInfo:
     return ccw.SessionInfo(
         user="u",
         name=name,
@@ -1103,7 +1183,10 @@ class SessionNamingTests(unittest.TestCase):
     def test_parse_session_name_new(self) -> None:
         self.assertEqual(ccw.parse_session_name("ccw-foo@codex"), ("foo", "codex", 1, False))
         self.assertEqual(ccw.parse_session_name("ccw-foo@codex-3"), ("foo", "codex", 3, False))
-        self.assertEqual(ccw.parse_session_name("ccw-my-repo-branch@claude"), ("my-repo-branch", "claude", 1, False))
+        self.assertEqual(
+            ccw.parse_session_name("ccw-my-repo-branch@claude"),
+            ("my-repo-branch", "claude", 1, False),
+        )
 
     def test_parse_session_name_legacy(self) -> None:
         self.assertEqual(ccw.parse_session_name("cc-foo"), ("foo", "claude", 1, True))
@@ -1171,8 +1254,10 @@ class DoInteractiveTextualMissingTests(unittest.TestCase):
                 cfg = ccw.load_config(tmp)
                 buf_err = io.StringIO()
                 buf_out = io.StringIO()
-                with mock.patch.object(sys, "stderr", buf_err), \
-                     mock.patch.object(sys, "stdout", buf_out):
+                with (
+                    mock.patch.object(sys, "stderr", buf_err),
+                    mock.patch.object(sys, "stdout", buf_out),
+                ):
                     rc = ccw.do_interactive(cfg, "nobody")
                 self.assertEqual(rc, 1)
                 err_text = buf_err.getvalue()

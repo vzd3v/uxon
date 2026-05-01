@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
 import ccw_settings as cs
 
-
 DEFAULTS = {
     "runtime_user": "",
     "default_launch_mode": "caller",
@@ -70,8 +69,14 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
         content = cs.render_repo_config_toml(data)
         parsed = tomllib.loads(content)
         # Scalars round-trip
-        for key in ("runtime_user", "default_launch_mode", "session_prefix",
-                    "new_project_root", "repeat_noninteractive_mode", "tmux_socket_template"):
+        for key in (
+            "runtime_user",
+            "default_launch_mode",
+            "session_prefix",
+            "new_project_root",
+            "repeat_noninteractive_mode",
+            "tmux_socket_template",
+        ):
             self.assertEqual(parsed[key], data[key])
         self.assertTrue(parsed["enable_all_users_list"])
         self.assertEqual(parsed["session_users"], ["devagent", "remdepl"])
@@ -84,7 +89,9 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
         }
         content = cs.render_repo_config_toml(data)
         parsed = tomllib.loads(content)
-        self.assertEqual(parsed["launch_user_by_caller"], {"caller1": "devagent", "caller2": "remdepl"})
+        self.assertEqual(
+            parsed["launch_user_by_caller"], {"caller1": "devagent", "caller2": "remdepl"}
+        )
 
     def test_escapes_quotes_in_strings(self) -> None:
         data = {"runtime_user": 'quote"here'}
@@ -128,21 +135,21 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
     def test_preserves_comments_and_unrelated_keys(self) -> None:
         original = (
             "# top comment\n"
-            "runtime_user = \"devagent\"  # inline comment\n"
+            'runtime_user = "devagent"  # inline comment\n'
             "\n"
             "# section about session_prefix\n"
-            "session_prefix = \"cc-\"\n"
+            'session_prefix = "cc-"\n'
             "\n"
             "[launch_user_by_caller]\n"
             "# who launches what\n"
-            "alice = \"devagent\"\n"
+            'alice = "devagent"\n'
         )
         new = cs.update_repo_config_text(original, {"runtime_user": "remdepl"})
         self.assertIn("# top comment", new)
         self.assertIn("# inline comment", new)
         self.assertIn("# section about session_prefix", new)
         self.assertIn("# who launches what", new)
-        self.assertIn("runtime_user = \"remdepl\"", new)
+        self.assertIn('runtime_user = "remdepl"', new)
         # Untouched keys round-trip.
         parsed = tomllib.loads(new)
         self.assertEqual(parsed["runtime_user"], "remdepl")
@@ -151,15 +158,13 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
 
     def test_updates_table_preserving_header_comment(self) -> None:
         original = (
-            "runtime_user = \"a\"\n"
+            'runtime_user = "a"\n'
             "\n"
             "# per-caller overrides live here\n"
             "[launch_user_by_caller]\n"
-            "alice = \"devagent\"\n"
+            'alice = "devagent"\n'
         )
-        new = cs.update_repo_config_text(
-            original, {"launch_user_by_caller": {"bob": "remdepl"}}
-        )
+        new = cs.update_repo_config_text(original, {"launch_user_by_caller": {"bob": "remdepl"}})
         self.assertIn("# per-caller overrides live here", new)
         parsed = tomllib.loads(new)
         self.assertEqual(parsed["launch_user_by_caller"], {"bob": "remdepl"})
@@ -183,7 +188,7 @@ class PersistRepoConfigUpdatesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             path.write_text(
-                "# hello\nruntime_user = \"a\"\nsession_prefix = \"cc-\"\n",
+                '# hello\nruntime_user = "a"\nsession_prefix = "cc-"\n',
                 encoding="utf-8",
             )
             cs.persist_repo_config_updates(path, {"runtime_user": "b"})
@@ -206,7 +211,7 @@ class RemoveRepoKeyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             path.write_text(
-                "# keep me\nruntime_user = \"a\"\nsession_prefix = \"cc-\"\n",
+                '# keep me\nruntime_user = "a"\nsession_prefix = "cc-"\n',
                 encoding="utf-8",
             )
             cs.remove_repo_key(path, "runtime_user")
@@ -225,8 +230,8 @@ class WriteRepoConfigTomlTests(unittest.TestCase):
     def test_direct_write_when_writable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            cs.write_repo_config_toml("runtime_user = \"x\"\n", path)
-            self.assertEqual(path.read_text(encoding="utf-8"), "runtime_user = \"x\"\n")
+            cs.write_repo_config_toml('runtime_user = "x"\n', path)
+            self.assertEqual(path.read_text(encoding="utf-8"), 'runtime_user = "x"\n')
 
     def test_falls_back_to_sudo_tee_on_permission_error(self) -> None:
         target = Path("/tmp/ccw_test_dummy_config.toml")

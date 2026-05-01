@@ -84,7 +84,14 @@ class SessionTable(DataTable):
         super().action_cursor_down()
 
     COLUMN_KEYS: ClassVar[list[str]] = [
-        "name", "pid", "cpu", "ram", "new", "last", "cmd", "path",
+        "name",
+        "pid",
+        "cpu",
+        "ram",
+        "new",
+        "last",
+        "cmd",
+        "path",
     ]
 
     @staticmethod
@@ -134,15 +141,17 @@ class SessionTable(DataTable):
             row.append(name_text)
             if self.show_agent_column:
                 row.append(self._agent_label(s))
-            row.extend([
-                s.pid,
-                cpu_text,
-                s.ram,
-                s.created,
-                s.last_activity,
-                s.cmd,
-                s.path,
-            ])
+            row.extend(
+                [
+                    s.pid,
+                    cpu_text,
+                    s.ram,
+                    s.created,
+                    s.last_activity,
+                    s.cmd,
+                    s.path,
+                ]
+            )
             self.add_row(*row)
         # Restore cursor within bounds.
         if sessions:
@@ -162,7 +171,7 @@ class SessionTable(DataTable):
             return Text(cpu, style="yellow")
         return Text(cpu)
 
-    def session_at(self, row: int) -> "TuiSession | None":
+    def session_at(self, row: int) -> TuiSession | None:
         if 0 <= row < len(self._session_index):
             return self._session_index[row]
         return None

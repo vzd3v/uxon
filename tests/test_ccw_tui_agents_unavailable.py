@@ -1,4 +1,5 @@
 """Pilot tests for AgentsUnavailableScreen and the app-level gate."""
+
 from __future__ import annotations
 
 import os
@@ -21,6 +22,7 @@ def _textual_available() -> bool:
 
 def _mk_ctx(**overrides):
     from ccw_tui.context import LaunchRequest, TuiContext
+
     base = dict(
         sessions=[],
         total_cpu="0",
@@ -68,9 +70,9 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
     """End-to-end: CcwApp pushes AgentsUnavailableScreen iff all probes miss."""
 
     async def test_pushes_when_all_agents_missing(self) -> None:
+        import ccw_agents
         from ccw_tui.app import CcwApp, _AgentAvailabilityUpdated
         from ccw_tui.screens.agents_unavailable import AgentsUnavailableScreen
-        import ccw_agents
 
         ctx = _mk_ctx(
             enabled_agents=("claude", "codex"),
@@ -81,10 +83,12 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             ctx.agent_availability.clear()
-            ctx.agent_availability.update({
-                aid: ccw_agents.AgentAvailability(status="missing", error="not found")
-                for aid in ctx.enabled_agents
-            })
+            ctx.agent_availability.update(
+                {
+                    aid: ccw_agents.AgentAvailability(status="missing", error="not found")
+                    for aid in ctx.enabled_agents
+                }
+            )
             app.post_message(_AgentAvailabilityUpdated())
             await pilot.pause()
             self.assertTrue(
@@ -93,6 +97,7 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
             )
             await pilot.press("q")
             await pilot.pause()
+
 
 if __name__ == "__main__":
     unittest.main()

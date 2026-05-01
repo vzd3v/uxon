@@ -20,19 +20,16 @@ orchestrator can translate failures into a single
 from __future__ import annotations
 
 import shlex
-import subprocess
 from dataclasses import dataclass, field
 
 from ccw_git_backend_gh import BackendError, RunResult, default_run
 from ccw_git_backend_gh import create_remote as gh_create_remote
 from ccw_git_backend_gh import describe_command as gh_describe
 from ccw_git_backend_gh import preflight as gh_preflight
-from ccw_git_backend_gh import sudo_prefix
 from ccw_git_backend_token import create_remote as token_create_remote
 from ccw_git_backend_token import describe_command as token_describe
 from ccw_git_backend_token import preflight as token_preflight
 from ccw_git_profiles import GitRemoteProfile
-
 
 STAGES = ("preflight", "local_init", "remote_create", "remote_config", "push")
 
@@ -143,9 +140,7 @@ def _wire_remote_and_push(
         launch_user, current_user, project_dir, "remote", "add", "origin", ssh_url
     )
     _run_or_raise(remote_add, "remote_config", run=run)
-    push = _git_cmd(
-        launch_user, current_user, project_dir, "push", "-u", "origin", "main"
-    )
+    push = _git_cmd(launch_user, current_user, project_dir, "push", "-u", "origin", "main")
     _run_or_raise(push, "push", run=run)
     return [shlex.join(remote_add), shlex.join(push)]
 
@@ -191,9 +186,7 @@ def create_project_remote(
     # 1. Preflight (backend-specific)
     try:
         if profile.auth == "gh":
-            gh_preflight(
-                profile, repo_name, effective_creds_user, current_user, run=run
-            )
+            gh_preflight(profile, repo_name, effective_creds_user, current_user, run=run)
         elif profile.auth == "token":
             if http is None:
                 from ccw_git_backend_token import default_http as _default_http
@@ -210,18 +203,14 @@ def create_project_remote(
                 http=http_impl,
             )
         else:  # defensive; load_profiles rejects this already
-            raise CreationError(
-                f"unsupported auth mode: {profile.auth!r}", stage="preflight"
-            )
+            raise CreationError(f"unsupported auth mode: {profile.auth!r}", stage="preflight")
     except BackendError as exc:
         raise CreationError(str(exc), stage=exc.stage or "preflight") from exc
 
     if dry_run:
         # Report what we *would* do.
         trace = [
-            shlex.join(
-                _git_cmd(launch_user, current_user, project_dir, "init", "-b", "main")
-            ),
+            shlex.join(_git_cmd(launch_user, current_user, project_dir, "init", "-b", "main")),
             shlex.join(
                 _git_cmd(
                     launch_user,
@@ -237,9 +226,7 @@ def create_project_remote(
         if profile.auth == "gh":
             trace.append(
                 shlex.join(
-                    gh_describe(
-                        profile, repo_name, project_dir, effective_creds_user, current_user
-                    )
+                    gh_describe(profile, repo_name, project_dir, effective_creds_user, current_user)
                 )
             )
         else:
@@ -278,9 +265,7 @@ def create_project_remote(
 
     # 2. Local init
     try:
-        commands_trace.extend(
-            _local_init(project_dir, launch_user, current_user, run=run)
-        )
+        commands_trace.extend(_local_init(project_dir, launch_user, current_user, run=run))
     except CreationError:
         raise
     except Exception as exc:  # pragma: no cover — very defensive
@@ -316,11 +301,7 @@ def create_project_remote(
 
     # 4. Wire remote URL and push (always under launch_user).
     commands_trace.extend(
-        _wire_remote_and_push(
-            project_dir, launch_user, current_user, ssh_url, run=run
-        )
+        _wire_remote_and_push(project_dir, launch_user, current_user, ssh_url, run=run)
     )
 
-    return CreationResult(
-        profile_name=profile.name, ssh_url=ssh_url, commands=commands_trace
-    )
+    return CreationResult(profile_name=profile.name, ssh_url=ssh_url, commands=commands_trace)

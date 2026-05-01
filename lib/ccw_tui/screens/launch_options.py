@@ -12,6 +12,7 @@ arrows switch panels. No h/j/k/l bindings — those letters are free on
 ``MainScreen`` but avoided here to prevent misfires when the modal sits
 above the main screen.
 """
+
 from __future__ import annotations
 
 from typing import ClassVar
@@ -69,10 +70,14 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
                 yield Static("Agent", classes="panel-title")
                 items = []
                 for idx, aid in enumerate(self._visible_agents, start=1):
-                    items.append(ListItem(
-                        Static(agent_list_label(idx, aid, self.ctx.agent_availability.get(aid))),
-                        id=f"agent-{aid}",
-                    ))
+                    items.append(
+                        ListItem(
+                            Static(
+                                agent_list_label(idx, aid, self.ctx.agent_availability.get(aid))
+                            ),
+                            id=f"agent-{aid}",
+                        )
+                    )
                 yield ListView(*items, id="agent-list")
             with Vertical(id="mode-panel"):
                 yield Static("Permission mode (CcwApp)", classes="panel-title")
@@ -99,6 +104,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
 
     async def _rebuild_mode_list(self, agent_id: str) -> None:
         import ccw_agents
+
         mode_list = self.query_one("#mode-list", ListView)
         # clear() and extend() are async — must be awaited, otherwise the
         # removal of the previous agent's modes can race with mounting the
@@ -203,10 +209,12 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         await agent_list.clear()
         new_items = []
         for idx, aid in enumerate(visible, start=1):
-            new_items.append(ListItem(
-                Static(agent_list_label(idx, aid, avail.get(aid))),
-                id=f"agent-{aid}",
-            ))
+            new_items.append(
+                ListItem(
+                    Static(agent_list_label(idx, aid, avail.get(aid))),
+                    id=f"agent-{aid}",
+                )
+            )
         if new_items:
             # extend() returns AwaitMount — must be awaited before we set
             # .index on the list, otherwise the index points into a

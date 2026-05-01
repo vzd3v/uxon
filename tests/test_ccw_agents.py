@@ -1,4 +1,5 @@
 """Tests for the agent catalog and availability probe."""
+
 from __future__ import annotations
 
 import subprocess
@@ -65,9 +66,7 @@ class CatalogTests(unittest.TestCase):
             ccw_agents.permission_mode_for(ccw_agents.CATALOG["codex"], "auto").flags,
             ("--full-auto",),
         )
-        self.assertIsNone(
-            ccw_agents.permission_mode_for(ccw_agents.CATALOG["cursor"], "auto")
-        )
+        self.assertIsNone(ccw_agents.permission_mode_for(ccw_agents.CATALOG["cursor"], "auto"))
 
     def test_normal_has_no_flags(self) -> None:
         for agent in ccw_agents.CATALOG.values():

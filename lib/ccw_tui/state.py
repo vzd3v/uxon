@@ -7,11 +7,11 @@ without running a Textual event loop.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from .context import (
-    ACTION_COUNT,
     CallbackError,
     LinkHealthStatus,
     ServerStatus,
@@ -91,7 +91,8 @@ def visible_agent_ids(
     availability: Mapping[str, Any],
 ) -> tuple[str, ...]:
     return tuple(
-        aid for aid in enabled_agents
+        aid
+        for aid in enabled_agents
         if availability.get(aid) is None
         or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
     )
@@ -144,7 +145,9 @@ def launch_options_state(
         availability=availability,
     )
     single = len(visible) <= 1
-    current = default_agent if default_agent in visible else (visible[0] if visible else default_agent)
+    current = (
+        default_agent if default_agent in visible else (visible[0] if visible else default_agent)
+    )
     return LaunchOptionsState(
         visible_agents=visible,
         single_agent=single,
@@ -324,7 +327,9 @@ def activate_main_index(ctx: TuiContext, idx: int) -> MainIntent | None:
         return MainIntent("attach", index=idx, user=ctx.current_user, session_name=session.name)
     if has_super and idx < settings_idx:
         intent = session_intent(ctx.other_sessions[idx - other_start], ctx.current_user)
-        return MainIntent(intent.kind, index=idx, user=intent.user, session_name=intent.session_name)
+        return MainIntent(
+            intent.kind, index=idx, user=intent.user, session_name=intent.session_name
+        )
     if has_super and idx == settings_idx:
         return MainIntent("open-settings", index=idx)
     if has_super and idx == kill_idx:

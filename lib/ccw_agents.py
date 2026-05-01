@@ -3,6 +3,7 @@
 Pure data + small helpers. No textual, no TUI, no bin/ccw imports.
 `probe_agents` uses subprocess locally but never at module scope.
 """
+
 from __future__ import annotations
 
 import os
@@ -14,18 +15,18 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class PermissionMode:
-    id: str            # "normal" | "auto" | "yolo"
-    label: str         # user-facing in TUI
+    id: str  # "normal" | "auto" | "yolo"
+    label: str  # user-facing in TUI
     flags: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class AgentSpec:
-    id: str                      # "claude" | "codex" | "cursor"
-    binary: str                  # executable name on PATH
-    session_suffix: str          # "@<id>"
+    id: str  # "claude" | "codex" | "cursor"
+    binary: str  # executable name on PATH
+    session_suffix: str  # "@<id>"
     permission_modes: tuple[PermissionMode, ...]
-    install_hint: str            # shown by doctor
+    install_hint: str  # shown by doctor
 
 
 CATALOG: dict[str, AgentSpec] = {
@@ -77,15 +78,18 @@ def permission_mode_for(agent: AgentSpec, mode_id: str) -> PermissionMode | None
 
 # ── Availability probe ───────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class AgentAvailability:
-    status: str                  # "pending" | "ok" | "missing" | "timeout"
+    status: str  # "pending" | "ok" | "missing" | "timeout"
     path: str | None = None
     version: str | None = None
     error: str | None = None
 
 
-PROBE_TIMEOUT_SEC = 10.0  # cursor-agent --version is slow (~5-8s); probe is async + parallel, non-blocking
+PROBE_TIMEOUT_SEC = (
+    10.0  # cursor-agent --version is slow (~5-8s); probe is async + parallel, non-blocking
+)
 
 
 def _current_user() -> str:
@@ -140,10 +144,7 @@ def probe_agents(
         return {}
     results: dict[str, AgentAvailability] = {}
     with ThreadPoolExecutor(max_workers=max(1, len(valid))) as ex:
-        futures = {
-            ex.submit(_probe_one, CATALOG[aid].binary, launch_user): aid
-            for aid in valid
-        }
+        futures = {ex.submit(_probe_one, CATALOG[aid].binary, launch_user): aid for aid in valid}
         for fut in futures:
             aid = futures[fut]
             try:

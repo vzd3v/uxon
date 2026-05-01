@@ -36,6 +36,7 @@ def locate_row(trace_plain: str, label_regex: str) -> int | None:
     the MainScreen layout drift without breaking click-based tests.
     """
     import re
+
     pattern = re.compile(label_regex)
     for i, line in enumerate(trace_plain.splitlines(), start=1):
         if pattern.search(line):
@@ -49,8 +50,10 @@ def sgr_click(x: int, y: int) -> tuple[bytes, bytes]:
     release = f"\x1b[<0;{x};{y}m".encode()
     return press, release
 
+
 try:
     import pty  # type: ignore[import]
+
     _PTY_OK = hasattr(pty, "fork")
 except ImportError:  # pragma: no cover
     _PTY_OK = False
@@ -124,7 +127,8 @@ class PtyTuiIntegrationTests(unittest.TestCase):
         if it did, 'g' must not open the git remotes screen."""
         trace = self._run([b"4", b"g", b"q"])
         self.assertNotIn(
-            "Git remote profiles", trace.plain,
+            "Git remote profiles",
+            trace.plain,
             msg=f"git remotes reachable via '4g': last frame:\n{trace.last_frame()[-1500:]}",
         )
 

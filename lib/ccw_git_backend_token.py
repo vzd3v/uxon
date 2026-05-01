@@ -16,14 +16,12 @@ This backend assumes GitHub-compatible REST semantics:
 from __future__ import annotations
 
 import json
-import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from ccw_git_backend_gh import BackendError, RunResult, default_run, sudo_prefix
+from ccw_git_backend_gh import BackendError, default_run, sudo_prefix
 from ccw_git_profiles import GitRemoteProfile
-
 
 # ── Token file I/O (under creds_user) ────────────────────────────────
 
@@ -55,8 +53,7 @@ def read_token(
     token = res.stdout.strip()
     if not token:
         raise BackendError(
-            f"token_file={token_file!r} is empty under "
-            f"{effective_creds_user or current_user!r}",
+            f"token_file={token_file!r} is empty under {effective_creds_user or current_user!r}",
             stage="preflight",
         )
     return token
@@ -108,9 +105,7 @@ def default_http(
         # to a BackendError so the caller's "except BackendError" catches it
         # and the token never ends up in an uncaught traceback.
         host = url.split("://", 1)[-1].split("/", 1)[0]
-        raise BackendError(
-            f"network error reaching {host}: {exc.reason}", stage=""
-        ) from None
+        raise BackendError(f"network error reaching {host}: {exc.reason}", stage="") from None
 
 
 def _api_error_message(resp: HttpResponse, fallback: str) -> str:
@@ -160,8 +155,7 @@ def _preflight_with_token(
     me = http("GET", f"{base}/user", token)
     if me.status != 200:
         raise BackendError(
-            f"token rejected by {profile.host}: "
-            + _api_error_message(me, "GET /user failed"),
+            f"token rejected by {profile.host}: " + _api_error_message(me, "GET /user failed"),
             stage="preflight",
         )
     login = (me.json() or {}).get("login", "") if me.body else ""
@@ -227,17 +221,14 @@ def create_remote(
         del token
 
 
-def _create_with_token(
-    profile: GitRemoteProfile, repo_name: str, token: str, *, http
-) -> str:
+def _create_with_token(profile: GitRemoteProfile, repo_name: str, token: str, *, http) -> str:
     base = profile.api_base()
     # Determine endpoint: user's own repo vs org repo. Cheap re-query so
     # callers don't have to pass login alongside the profile.
     me = http("GET", f"{base}/user", token)
     if me.status != 200:
         raise BackendError(
-            f"token rejected by {profile.host}: "
-            + _api_error_message(me, "GET /user failed"),
+            f"token rejected by {profile.host}: " + _api_error_message(me, "GET /user failed"),
             stage="remote_create",
         )
     login = (me.json() or {}).get("login", "")
@@ -268,9 +259,7 @@ def _create_with_token(
     return profile.ssh_remote_url(repo_name)
 
 
-def describe_command(
-    profile: GitRemoteProfile, repo_name: str
-) -> str:
+def describe_command(profile: GitRemoteProfile, repo_name: str) -> str:
     """Return a one-line, token-free description for ``--dry-run`` output."""
     return (
         f"POST {profile.api_base()}/user/repos "

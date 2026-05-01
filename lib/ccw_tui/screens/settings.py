@@ -8,8 +8,9 @@ rewritten. :class:`SettingsCallbacks` moved from the retired
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -29,7 +30,6 @@ from textual.widgets import (
 
 from ..context import CallbackError
 
-
 GIT_REMOTES_VIEW_LABEL = "Git remote profiles (view)"
 
 
@@ -42,7 +42,7 @@ class SettingsCallbacks:
     remove_setting: Callable[[str], None]  # (key) — revert to default
     save_mapping: Callable[[str, dict], None]  # (key, new_mapping)
     # Optional: returns full profile rows for a read-only subscreen.
-    get_git_remote_profile_rows: "Callable[[], list[tuple]] | None" = None
+    get_git_remote_profile_rows: Callable[[], list[tuple]] | None = None
 
 
 class SettingsScreen(Screen):
@@ -88,9 +88,7 @@ class SettingsScreen(Screen):
         self._reload()
         t.focus()
 
-    def on_data_table_row_selected(
-        self, event: DataTable.RowSelected
-    ) -> None:
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Delegate ``Enter`` on the table to :meth:`action_edit`."""
         self.action_edit()
 
@@ -102,13 +100,9 @@ class SettingsScreen(Screen):
             self._entries = list(self.cbs.get_entries())
         except CallbackError as exc:
             self._entries = []
-            self.app.notify(
-                f"Settings load failed: {exc}", severity="error", timeout=6
-            )
+            self.app.notify(f"Settings load failed: {exc}", severity="error", timeout=6)
             return
-        self._has_git_view = (
-            getattr(self.cbs, "get_git_remote_profile_rows", None) is not None
-        )
+        self._has_git_view = getattr(self.cbs, "get_git_remote_profile_rows", None) is not None
         if self._has_git_view:
             t.add_row(GIT_REMOTES_VIEW_LABEL, "(Enter to view)", "")
         for entry in self._entries:
@@ -122,7 +116,7 @@ class SettingsScreen(Screen):
         if total > 0:
             t.move_cursor(row=min(cursor, total - 1))
 
-    def _selected_entry(self) -> "Any | None":
+    def _selected_entry(self) -> Any | None:
         t = self.query_one("#settings-table", DataTable)
         row = t.cursor_row
         if self._has_git_view:
@@ -145,6 +139,7 @@ class SettingsScreen(Screen):
         if self._has_git_view and t.cursor_row == 0:
             # Virtual row → open git remotes read-only screen.
             from .git_remotes import GitRemotesScreen
+
             try:
                 rows = self.cbs.get_git_remote_profile_rows()
             except CallbackError as exc:
@@ -197,9 +192,7 @@ class SettingsScreen(Screen):
         self.app.notify(f"Reset {entry.spec.key}")
         self._reload()
 
-    def on_data_table_row_highlighted(
-        self, event: DataTable.RowHighlighted
-    ) -> None:
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         entry = self._selected_entry()
         desc = self.query_one("#settings-description", Static)
         t = self.query_one("#settings-table", DataTable)
@@ -429,9 +422,7 @@ class TableMappingModal(_EditModalBase):
     """Edit a ``table`` setting as ``key=value,key=value`` CSV."""
 
     def compose(self) -> ComposeResult:
-        current = ", ".join(
-            f"{k}={v}" for k, v in sorted((self.entry.value or {}).items())
-        )
+        current = ", ".join(f"{k}={v}" for k, v in sorted((self.entry.value or {}).items()))
         with Vertical():
             yield Static(self._title(), classes="title")
             yield Static(

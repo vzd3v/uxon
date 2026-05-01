@@ -16,11 +16,12 @@ Public API re-exports only. Implementation lives in sibling modules:
 
 from __future__ import annotations
 
+from .app import CcwApp, run
 from .context import (
     CallbackError,
     Item,
-    LinkHealthStatus,
     LaunchRequest,
+    LinkHealthStatus,
     ServerStatus,
     TuiContext,
     TuiSession,
@@ -28,7 +29,6 @@ from .context import (
 )
 from .events import LOG_DIR
 from .hints import TEXTUAL_MISSING_HINT
-from .app import CcwApp, run
 
 __all__ = [
     "CallbackError",

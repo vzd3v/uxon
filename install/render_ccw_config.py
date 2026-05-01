@@ -87,16 +87,16 @@ def render_config(payload: dict[str, Any]) -> str:
     session_users = normalize_string_list(payload.get("session_users", []))
     launch_user_by_caller = normalize_mapping(payload.get("launch_user_by_caller", {}))
     new_project_root = str(payload.get("new_project_root", "")).strip()
-    repeat_noninteractive_mode = normalize_repeat_mode(payload.get("repeat_noninteractive_mode", "fail"))
+    repeat_noninteractive_mode = normalize_repeat_mode(
+        payload.get("repeat_noninteractive_mode", "fail")
+    )
     tmux_socket_template = str(payload.get("tmux_socket_template", "/tmp/ccw-{user}.sock")).strip()
 
     # Agent configuration (replaces legacy default_claude_args).
     agents_payload = payload.get("agents", {})
     if not isinstance(agents_payload, dict):
         raise ValueError("'agents' must be an object")
-    agents_enabled: list[str] = normalize_string_list(
-        agents_payload.get("enabled", ["claude"])
-    )
+    agents_enabled: list[str] = normalize_string_list(agents_payload.get("enabled", ["claude"]))
     if not agents_enabled:
         raise ValueError("agents.enabled must not be empty")
     for aid in agents_enabled:
@@ -104,7 +104,9 @@ def render_config(payload: dict[str, Any]) -> str:
             raise ValueError(f"unknown agent id in agents.enabled: {aid!r}")
     agents_default: str = str(agents_payload.get("default", agents_enabled[0])).strip()
     if agents_default not in agents_enabled:
-        raise ValueError(f"agents.default={agents_default!r} is not in agents.enabled={agents_enabled}")
+        raise ValueError(
+            f"agents.default={agents_default!r} is not in agents.enabled={agents_enabled}"
+        )
     per_agent_args: dict[str, list[str]] = {}
     for aid in VALID_AGENT_IDS:
         sub = agents_payload.get(aid, {})

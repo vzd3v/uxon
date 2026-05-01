@@ -15,12 +15,11 @@ from typing import Any
 
 from .context import LaunchRequest
 
-
 #: Threshold below which an rc=0 launch is treated as a silent fast-exit.
 FAST_EXIT_THRESHOLD_SEC = 1.0
 
 
-def _run_launch_request(req: "LaunchRequest") -> tuple[int, str, float]:
+def _run_launch_request(req: LaunchRequest) -> tuple[int, str, float]:
     """Execute a LaunchRequest via fork-and-wait.
 
     Runs each prelaunch command in order, aborting if any returns non-zero,

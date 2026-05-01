@@ -26,7 +26,6 @@ from __future__ import annotations
 import os
 from typing import Any
 
-
 LOG_DIR = "/srv/work/logs/ccw"
 
 
@@ -45,7 +44,7 @@ def _log_event(
     key: str = "",
     item_kind: str = "",
     outcome: str = "",
-    extra: "dict[str, Any] | None" = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Append one JSON line to today's ccw TUI log.
 
@@ -57,7 +56,7 @@ def _log_event(
         import datetime
         import json
 
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         record: dict[str, Any] = {
             "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "event": event,

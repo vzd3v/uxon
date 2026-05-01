@@ -8,6 +8,7 @@ in agents.enabled" footer so the operator knows which knob to look at.
 
 Pure informational — dismiss returns ``None``.
 """
+
 from __future__ import annotations
 
 from typing import ClassVar

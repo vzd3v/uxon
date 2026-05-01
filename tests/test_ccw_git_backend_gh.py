@@ -93,9 +93,7 @@ class CreateRemoteTests(unittest.TestCase):
 
     def test_success_returns_ssh_url(self) -> None:
         runner = FakeRunner([_ok("Created")])
-        url = gh.create_remote(
-            _profile(), "r", "/tmp/r", "remdepl", "devagent", run=runner
-        )
+        url = gh.create_remote(_profile(), "r", "/tmp/r", "remdepl", "devagent", run=runner)
         self.assertEqual(url, "git@github.com:vzd3v/r.git")
         cmd = runner.calls[0]
         self.assertIn("--private", cmd)
@@ -119,9 +117,7 @@ class CreateRemoteTests(unittest.TestCase):
     def test_failure_includes_stderr(self) -> None:
         runner = FakeRunner([_fail("422 name already taken")])
         with self.assertRaisesRegex(gh.BackendError, "gh repo create failed"):
-            gh.create_remote(
-                _profile(), "r", "/tmp/r", "remdepl", "devagent", run=runner
-            )
+            gh.create_remote(_profile(), "r", "/tmp/r", "remdepl", "devagent", run=runner)
 
 
 class DescribeCommandTests(unittest.TestCase):

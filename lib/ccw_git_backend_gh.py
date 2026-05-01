@@ -37,12 +37,8 @@ class RunResult:
 
 def default_run(cmd: list[str], *, timeout: int = 20) -> RunResult:
     """Real subprocess runner. Tests override via the ``run`` parameter."""
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, check=False
-    )
-    return RunResult(
-        returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr
-    )
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    return RunResult(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
 
 def sudo_prefix(creds_user: str, current_user: str) -> list[str]:
@@ -96,8 +92,7 @@ def preflight(
     )
     if view.returncode == 0:
         raise BackendError(
-            f"repository {profile.owner}/{repo_name} already exists on "
-            f"{profile.host}",
+            f"repository {profile.owner}/{repo_name} already exists on {profile.host}",
             stage="preflight",
         )
 

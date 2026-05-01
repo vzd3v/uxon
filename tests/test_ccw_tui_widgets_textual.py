@@ -23,8 +23,8 @@ def _textual_available() -> bool:
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ActionRowTests(unittest.IsolatedAsyncioTestCase):
     async def test_enter_activates_and_posts_message(self) -> None:
-        from textual.app import App, ComposeResult
         from ccw_tui.widgets import ActionRow
+        from textual.app import App, ComposeResult
 
         captured: list[str] = []
 
@@ -58,9 +58,9 @@ class ActionRowTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class SessionTableTests(unittest.IsolatedAsyncioTestCase):
     async def test_populate_adds_rows_and_preserves_cursor(self) -> None:
-        from textual.app import App, ComposeResult
         from ccw_tui.context import TuiSession
         from ccw_tui.widgets import SessionTable
+        from textual.app import App, ComposeResult
 
         sessions = [
             TuiSession(
@@ -141,10 +141,20 @@ class SessionTableTests(unittest.IsolatedAsyncioTestCase):
 
         def _s(name, stem, agent, legacy=False):
             return TuiSession(
-                name=name, short=stem, attached=False,
-                pid="1", cpu="0", ram="1M", created="1s",
-                last_activity="1s", cmd=agent, path="/srv/work", user="dev",
-                stem=stem, agent=agent, legacy=legacy,
+                name=name,
+                short=stem,
+                attached=False,
+                pid="1",
+                cpu="0",
+                ram="1M",
+                created="1s",
+                last_activity="1s",
+                cmd=agent,
+                path="/srv/work",
+                user="dev",
+                stem=stem,
+                agent=agent,
+                legacy=legacy,
             )
 
         sessions = [_s("ccw-foo@claude", "foo", "claude"), _s("ccw-foo@codex", "foo", "codex")]
@@ -158,8 +168,8 @@ class SessionTableTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_table_legacy_label(self) -> None:
         """Legacy cc-<stem> session shows 'claude (legacy)' in the agent cell."""
-        from ccw_tui.widgets import SessionTable
         from ccw_tui.context import TuiSession
+        from ccw_tui.widgets import SessionTable
 
         s = TuiSession(
             name="cc-oldproject",

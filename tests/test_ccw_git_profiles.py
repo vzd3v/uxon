@@ -122,14 +122,10 @@ class SelectorTests(unittest.TestCase):
         self.profiles = gp.load_profiles([_gh(name="a"), _gh(name="b", owner="other")])
 
     def test_by_name(self) -> None:
-        self.assertEqual(
-            gp.resolve_profile_selector(self.profiles, "a", "b").name, "a"
-        )
+        self.assertEqual(gp.resolve_profile_selector(self.profiles, "a", "b").name, "a")
 
     def test_default_ok(self) -> None:
-        self.assertEqual(
-            gp.resolve_profile_selector(self.profiles, "default", "b").name, "b"
-        )
+        self.assertEqual(gp.resolve_profile_selector(self.profiles, "default", "b").name, "b")
 
     def test_default_not_set(self) -> None:
         with self.assertRaisesRegex(gp.ProfileError, "no default_git_remote_profile"):

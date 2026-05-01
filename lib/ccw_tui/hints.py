@@ -7,7 +7,6 @@ import textual at module load.
 
 from __future__ import annotations
 
-
 TEXTUAL_MISSING_HINT = (
     "ccw: interactive mode requires the 'textual' package.\n"
     "  Install per-user:     pip install --user textual\n"
