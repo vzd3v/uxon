@@ -23,6 +23,13 @@ except ModuleNotFoundError:  # pragma: no cover
 
 LEGACY_CLAUDE_PREFIX = "cc-"
 
+# Modern-format prefixes (``<prefix><stem>@<agent>``) that we recognize but
+# do not create new sessions under. Empty by default; populated when the
+# tool is renamed to keep listing/attach working for already-running
+# sessions on the host. Ancient ``cc-<stem>`` (no ``@agent``) is handled
+# separately via ``LEGACY_CLAUDE_PREFIX``.
+LEGACY_AT_PREFIXES: tuple[str, ...] = ()
+
 # Known agent ids. Kept in sync with ccw_agents.CATALOG (verified by tests);
 # declared here as a literal so CLI parsing doesn't need the lazy lib import.
 VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
@@ -827,23 +834,28 @@ def session_stem_for_worktree(repo_root: str, branch: str) -> str:
     return f"{repo_slug}-{workspace_slug}"
 
 
-_NEW_SESSION_RE = re.compile(
-    r"^ccw-(?P<stem>.+?)@(?P<agent>[a-z][a-z0-9_]*)(?:-(?P<index>\d+))?$"
-)
 _LEGACY_SESSION_RE = re.compile(r"^cc-(?P<stem>.+?)(?:-(?P<index>\d+))?$")
 
 
-def parse_session_name(name: str) -> tuple[str, str, int, bool] | None:
+def _modern_re(prefix: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^{re.escape(prefix)}(?P<stem>.+?)@(?P<agent>[a-z][a-z0-9_]*)(?:-(?P<index>\d+))?$"
+    )
+
+
+def parse_session_name(name: str, *, prefix: str = "ccw-") -> tuple[str, str, int, bool] | None:
     """Return (stem, agent, index, legacy) or None if the name is not ours.
 
-    For the new scheme the agent may be any id; callers that need to
-    match CATALOG validate separately. Legacy ``cc-<stem>`` returns
-    agent='claude', legacy=True.
+    Recognizes the current ``prefix`` plus any ``LEGACY_AT_PREFIXES``
+    in the modern ``<prefix><stem>@<agent>[-N]`` shape, and ancient
+    ``cc-<stem>[-N]`` via ``LEGACY_CLAUDE_PREFIX``. ``legacy=True`` is
+    returned for any non-current prefix.
     """
-    m = _NEW_SESSION_RE.match(name)
-    if m:
-        idx = int(m.group("index")) if m.group("index") else 1
-        return m.group("stem"), m.group("agent"), idx, False
+    for p in (prefix, *LEGACY_AT_PREFIXES):
+        m = _modern_re(p).match(name)
+        if m:
+            idx = int(m.group("index")) if m.group("index") else 1
+            return m.group("stem"), m.group("agent"), idx, p != prefix
     m = _LEGACY_SESSION_RE.match(name)
     if m:
         idx = int(m.group("index")) if m.group("index") else 1
@@ -851,15 +863,15 @@ def parse_session_name(name: str) -> tuple[str, str, int, bool] | None:
     return None
 
 
-def candidate_session_name(stem: str, index: int, agent: str) -> str:
-    base = f"ccw-{stem}@{agent}"
+def candidate_session_name(stem: str, index: int, agent: str, *, prefix: str = "ccw-") -> str:
+    base = f"{prefix}{stem}@{agent}"
     if index <= 1:
         return base
     return f"{base}-{index}"
 
 
-def parse_plain_session_index(name: str, stem: str, agent: str) -> int | None:
-    parsed = parse_session_name(name)
+def parse_plain_session_index(name: str, stem: str, agent: str, *, prefix: str = "ccw-") -> int | None:
+    parsed = parse_session_name(name, prefix=prefix)
     if parsed is None:
         return None
     p_stem, p_agent, p_index, _legacy = parsed
@@ -868,10 +880,17 @@ def parse_plain_session_index(name: str, stem: str, agent: str) -> int | None:
     return p_index
 
 
-def compatible_indexed_sessions(stem: str, agent: str, compatibility_root: str, sessions: list[SessionInfo]) -> list[SessionInfo]:
+def compatible_indexed_sessions(
+    stem: str,
+    agent: str,
+    compatibility_root: str,
+    sessions: list[SessionInfo],
+    *,
+    prefix: str = "ccw-",
+) -> list[SessionInfo]:
     matches: list[SessionInfo] = []
     for session in sessions:
-        idx = parse_plain_session_index(session.name, stem, agent)
+        idx = parse_plain_session_index(session.name, stem, agent, prefix=prefix)
         if idx is None:
             continue
         if not session_path_compatible(session.active_path, compatibility_root):
@@ -884,16 +903,21 @@ def compatible_indexed_sessions(stem: str, agent: str, compatibility_root: str, 
     return matches
 
 
-def choose_attach_session(existing: list[SessionInfo], stem: str, agent: str) -> SessionInfo:
+def choose_attach_session(
+    existing: list[SessionInfo], stem: str, agent: str, *, prefix: str = "ccw-"
+) -> SessionInfo:
     if not existing:
         raise ValueError("expected at least one existing session")
-    base_name = candidate_session_name(stem, 1, agent)
+    base_name = candidate_session_name(stem, 1, agent, prefix=prefix)
     attached = [s for s in existing if s.attached == "1"]
     for bucket in (attached, existing):
         for session in bucket:
             if session.name == base_name:
                 return session
-    return min(existing, key=lambda session: parse_plain_session_index(session.name, stem, agent) or 9999)
+    return min(
+        existing,
+        key=lambda session: parse_plain_session_index(session.name, stem, agent, prefix=prefix) or 9999,
+    )
 
 
 def is_interactive_tty() -> bool:
@@ -918,8 +942,15 @@ def prompt_repeat_action(target_desc: str, attach_target: SessionInfo, existing:
     raise AssertionError("unreachable")
 
 
-def allocate_session_name(stem: str, agent: str, compatibility_root: str, sessions: list[SessionInfo]) -> str:
-    exact_base = candidate_session_name(stem, 1, agent)
+def allocate_session_name(
+    stem: str,
+    agent: str,
+    compatibility_root: str,
+    sessions: list[SessionInfo],
+    *,
+    prefix: str = "ccw-",
+) -> str:
+    exact_base = candidate_session_name(stem, 1, agent, prefix=prefix)
     exact_base_hits = [s for s in sessions if s.name == exact_base]
     if exact_base_hits and not session_path_compatible(exact_base_hits[0].active_path, compatibility_root):
         fail(
@@ -930,7 +961,7 @@ def allocate_session_name(stem: str, agent: str, compatibility_root: str, sessio
 
     index = 1
     while True:
-        candidate = candidate_session_name(stem, index, agent)
+        candidate = candidate_session_name(stem, index, agent, prefix=prefix)
         existing = [s for s in sessions if s.name == candidate]
         if not existing:
             return candidate
@@ -982,7 +1013,9 @@ def resolve_repeat_decision(
 
 def legacy_compatible_sessions(cfg: Config, launch_user: str, stem: str, compatibility_root: str) -> list[SessionInfo]:
     sessions = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
-    return compatible_indexed_sessions(stem, cfg.default_agent, compatibility_root, sessions)
+    return compatible_indexed_sessions(
+        stem, cfg.default_agent, compatibility_root, sessions, prefix=cfg.session_prefix
+    )
 
 
 def legacy_socket_conflict_hint(cfg: Config, launch_user: str, existing: list[SessionInfo]) -> str:
@@ -1065,7 +1098,8 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
         if len(parts) != 5:
             continue
         name, attached, windows, created_ts, activity_ts = parts
-        if not (name.startswith("ccw-") or name.startswith(LEGACY_CLAUDE_PREFIX)):
+        known_prefixes = (session_prefix, *LEGACY_AT_PREFIXES, LEGACY_CLAUDE_PREFIX)
+        if not any(name.startswith(p) for p in known_prefixes):
             continue
 
         pane_fmt = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
@@ -1091,7 +1125,7 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
             active_cmd = cmd
             active_path = path
 
-        _parsed = parse_session_name(name)
+        _parsed = parse_session_name(name, prefix=session_prefix)
         if _parsed is None:
             continue  # dual-prefix filter matched but parser disagreed — skip
         _, _agent, _, _legacy = _parsed
@@ -1126,16 +1160,18 @@ def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
 
 def resolve_session(identifier: str, sessions: list[SessionInfo], prefix: str) -> SessionInfo:
     if not sessions:
-        fail("no ccw-* sessions found")
+        fail(f"no {prefix}* sessions found")
+
+    known_prefixes = (prefix, *LEGACY_AT_PREFIXES, LEGACY_CLAUDE_PREFIX)
 
     # 1) exact name
     exact = [s for s in sessions if s.name == identifier]
     if len(exact) == 1:
         return exact[0]
 
-    # 2) normalized with either modern or legacy prefix
+    # 2) normalized with current or any legacy prefix
     candidates: list[SessionInfo] = []
-    for candidate_prefix in ("ccw-", LEGACY_CLAUDE_PREFIX):
+    for candidate_prefix in known_prefixes:
         normalized = identifier if identifier.startswith(candidate_prefix) else f"{candidate_prefix}{identifier}"
         candidates.extend(s for s in sessions if s.name == normalized)
     uniq: dict[str, SessionInfo] = {s.name: s for s in candidates}
@@ -1147,7 +1183,7 @@ def resolve_session(identifier: str, sessions: list[SessionInfo], prefix: str) -
     # 3) stem match across all agents (both legacy and new)
     stem_hits: list[SessionInfo] = []
     for s in sessions:
-        parsed = parse_session_name(s.name)
+        parsed = parse_session_name(s.name, prefix=prefix)
         if parsed is None:
             continue
         p_stem, _agent, _idx, _legacy = parsed
@@ -1161,11 +1197,11 @@ def resolve_session(identifier: str, sessions: list[SessionInfo], prefix: str) -
             + ", ".join(sorted(s.name for s in stem_hits))
         )
 
-    # 4) unique prefix match (as before, both prefix variants)
+    # 4) unique prefix match (as before, all known prefix variants)
     pref: list[SessionInfo] = []
     for s in sessions:
         short = s.name
-        for p in ("ccw-", LEGACY_CLAUDE_PREFIX):
+        for p in known_prefixes:
             if short.startswith(p):
                 short = short[len(p):]
                 break
@@ -1709,15 +1745,19 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
     _agent = args.agent or cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
-    existing = compatible_indexed_sessions(session_stem, _agent, compatibility_root, sessions)
+    existing = compatible_indexed_sessions(
+        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+    )
     if existing:
-        attach_target = choose_attach_session(existing, session_stem, _agent)
+        attach_target = choose_attach_session(existing, session_stem, _agent, prefix=cfg.session_prefix)
         decision = resolve_repeat_decision(args.repeat_mode, cfg, target_desc, attach_target, existing)
         if decision == "attach":
             return attach_session(attach_target, cfg, launch_user, args.dry_run)
     else:
         repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
-    session = allocate_session_name(session_stem, _agent, compatibility_root, sessions)
+    session = allocate_session_name(
+        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+    )
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
 
@@ -1812,7 +1852,9 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         compatibility_root = target_dir
     _agent = args.agent or cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
-    session = allocate_session_name(session_stem, _agent, compatibility_root, sessions)
+    session = allocate_session_name(
+        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+    )
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
 
@@ -2187,7 +2229,9 @@ def _plan_tui_run_agent(cfg: Config, launch_user: str, cwd: str, agent_id: str, 
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
     sessions = collect_sessions([launch_user], cfg)
-    session = allocate_session_name(session_stem, agent_id, target_dir, sessions)
+    session = allocate_session_name(
+        session_stem, agent_id, target_dir, sessions, prefix=cfg.session_prefix
+    )
     args = ParsedArgs(action="run", agent=agent_id, permission_mode=mode_id)
     return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
 
@@ -2251,7 +2295,9 @@ def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
     session_stem = session_stem_for_path(target_dir)
     _agent = cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
-    session = allocate_session_name(session_stem, _agent, target_dir, sessions)
+    session = allocate_session_name(
+        session_stem, _agent, target_dir, sessions, prefix=cfg.session_prefix
+    )
     args = ParsedArgs(action="run", permission_mode="yolo" if dsp else "normal")
     return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
 
@@ -2286,13 +2332,17 @@ def _plan_tui_existing_session_or_launch(
     compatibility_root = project_dir
     _agent = (args.agent if args.agent else None) or cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
-    existing = compatible_indexed_sessions(session_stem, _agent, compatibility_root, sessions)
+    existing = compatible_indexed_sessions(
+        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+    )
     if existing:
-        attach_target = choose_attach_session(existing, session_stem, _agent)
+        attach_target = choose_attach_session(existing, session_stem, _agent, prefix=cfg.session_prefix)
         return _build_tmux_attach_request(attach_target, cfg, launch_user)
 
     repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
-    session = allocate_session_name(session_stem, _agent, compatibility_root, sessions)
+    session = allocate_session_name(
+        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+    )
     return _build_tmux_launch_request(project_dir, session, args, cfg, None, launch_user)
 
 
