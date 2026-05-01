@@ -1,10 +1,11 @@
 """Structured JSONL event log for the ccw TUI.
 
 Every user-visible transition in the TUI writes one JSON line to
-``/srv/work/logs/ccw/tui-{launch_user}-YYYYMMDD.log``. Format is
-newline-delimited JSON; each line is self-describing. Log writes are
-best-effort — a failure here must NEVER crash the TUI or propagate
-into the fullscreen TUI context.
+``${XDG_STATE_HOME:-~/.local/state}/ccw/tui-{launch_user}-YYYYMMDD.log``
+(override with ``CCW_LOG_DIR``). Format is newline-delimited JSON;
+each line is self-describing. Log writes are best-effort — a failure
+here must NEVER crash the TUI or propagate into the fullscreen TUI
+context.
 
 Fields (all optional except ``ts`` and ``event``):
   ts              ISO-8601 UTC timestamp with seconds precision
@@ -26,12 +27,26 @@ from __future__ import annotations
 import os
 from typing import Any
 
-LOG_DIR = "/srv/work/logs/ccw"
+def _default_log_dir() -> str:
+    """Return the XDG-derived default log directory.
+
+    Honours ``XDG_STATE_HOME``; falls back to ``~/.local/state``.
+    """
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state"
+    )
+    return os.path.join(base, "ccw")
+
+
+# Snapshot of the default at import time. Kept for backward-compat
+# with code that imports the constant directly; live lookups go
+# through ``_log_dir()``.
+LOG_DIR = _default_log_dir()
 
 
 def _log_dir() -> str:
-    """Return the log directory, honouring an env-var override for tests."""
-    return os.environ.get("CCW_LOG_DIR", LOG_DIR)
+    """Return the log directory, honouring ``CCW_LOG_DIR``."""
+    return os.environ.get("CCW_LOG_DIR") or _default_log_dir()
 
 
 def _log_event(
