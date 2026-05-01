@@ -50,6 +50,7 @@ class CcwTests(unittest.TestCase):
             session_users=[],
             allowed_roots=["/srv/repos"],
             session_prefix="ccw-",
+            legacy_session_prefixes=(),
             enabled_agents=("claude",),
             default_agent="claude",
             agent_default_args={"claude": (), "codex": (), "cursor": ()},
@@ -118,6 +119,7 @@ class CcwTests(unittest.TestCase):
             session_users=kw.get("session_users", []),
             allowed_roots=kw.get("allowed_roots", ["/srv"]),
             session_prefix=kw.get("session_prefix", "ccw-"),
+            legacy_session_prefixes=kw.get("legacy_session_prefixes", ()),
             enabled_agents=kw.get("enabled_agents", ("claude",)),
             default_agent=kw.get("default_agent", "claude"),
             agent_default_args=kw.get(
@@ -1181,29 +1183,44 @@ class SessionNamingTests(unittest.TestCase):
     """Tests for the new ccw-<stem>@<agent> session naming scheme."""
 
     def test_parse_session_name_new(self) -> None:
-        self.assertEqual(ccw.parse_session_name("ccw-foo@codex"), ("foo", "codex", 1, False))
-        self.assertEqual(ccw.parse_session_name("ccw-foo@codex-3"), ("foo", "codex", 3, False))
+        self.assertEqual(ccw.parse_session_name("uxon-foo@codex"), ("foo", "codex", 1, False))
+        self.assertEqual(ccw.parse_session_name("uxon-foo@codex-3"), ("foo", "codex", 3, False))
         self.assertEqual(
-            ccw.parse_session_name("ccw-my-repo-branch@claude"),
+            ccw.parse_session_name("uxon-my-repo-branch@claude"),
             ("my-repo-branch", "claude", 1, False),
         )
 
+    def test_parse_session_name_legacy_at_prefix(self) -> None:
+        # ``ccw-`` sessions still parse when listed in ``legacy_prefixes`` and
+        # are flagged ``legacy=True``.
+        self.assertEqual(
+            ccw.parse_session_name("ccw-foo@codex", legacy_prefixes=("ccw-",)),
+            ("foo", "codex", 1, True),
+        )
+        # When ``ccw-`` is the configured current prefix, the same name is not legacy.
+        self.assertEqual(
+            ccw.parse_session_name("ccw-foo@codex", prefix="ccw-"),
+            ("foo", "codex", 1, False),
+        )
+        # Without a matching legacy prefix, ``ccw-`` is not recognised.
+        self.assertIsNone(ccw.parse_session_name("ccw-foo@codex"))
+
     def test_parse_session_name_rejects_garbage(self) -> None:
         self.assertIsNone(ccw.parse_session_name("random-x"))
-        self.assertIsNone(ccw.parse_session_name("ccw-foo"))  # missing @agent
-        self.assertIsNone(ccw.parse_session_name("cc-foo"))   # ancient format no longer recognised
+        self.assertIsNone(ccw.parse_session_name("uxon-foo"))  # missing @agent
+        self.assertIsNone(ccw.parse_session_name("cc-foo"))    # ancient format no longer recognised
 
     def test_candidate_session_name(self) -> None:
-        self.assertEqual(ccw.candidate_session_name("foo", 1, "cursor"), "ccw-foo@cursor")
-        self.assertEqual(ccw.candidate_session_name("foo", 2, "cursor"), "ccw-foo@cursor-2")
+        self.assertEqual(ccw.candidate_session_name("foo", 1, "cursor"), "uxon-foo@cursor")
+        self.assertEqual(ccw.candidate_session_name("foo", 2, "cursor"), "uxon-foo@cursor-2")
 
     def test_compatible_indexed_sessions_agent_specific(self) -> None:
         # Two sessions same stem different agents are NOT siblings.
         compat_root = "/srv/repos/foo"
-        s_claude = _mk_session("ccw-foo@claude", compat_root, agent="claude")
-        s_codex = _mk_session("ccw-foo@codex", compat_root, agent="codex")
+        s_claude = _mk_session("uxon-foo@claude", compat_root, agent="claude")
+        s_codex = _mk_session("uxon-foo@codex", compat_root, agent="codex")
         matches = ccw.compatible_indexed_sessions("foo", "claude", compat_root, [s_claude, s_codex])
-        self.assertEqual([m.name for m in matches], ["ccw-foo@claude"])
+        self.assertEqual([m.name for m in matches], ["uxon-foo@claude"])
 
     def test_resolve_full_new(self) -> None:
         sessions = [_mk_session("ccw-foo@claude"), _mk_session("ccw-foo@codex", agent="codex")]

@@ -82,7 +82,10 @@ def render_config(payload: dict[str, Any]) -> str:
     runtime_user = str(payload.get("runtime_user", "")).strip()
     default_launch_mode = str(payload.get("default_launch_mode", "caller")).strip()
     enable_all_users_list = bool(payload.get("enable_all_users_list", False))
-    session_prefix = str(payload.get("session_prefix", "ccw-")).strip() or "ccw-"
+    session_prefix = str(payload.get("session_prefix", "uxon-")).strip() or "uxon-"
+    legacy_session_prefixes = normalize_string_list(
+        payload.get("legacy_session_prefixes", [])
+    )
     allowed_roots = normalize_string_list(payload.get("allowed_roots", []))
     session_users = normalize_string_list(payload.get("session_users", []))
     launch_user_by_caller = normalize_mapping(payload.get("launch_user_by_caller", {}))
@@ -90,7 +93,7 @@ def render_config(payload: dict[str, Any]) -> str:
     repeat_noninteractive_mode = normalize_repeat_mode(
         payload.get("repeat_noninteractive_mode", "fail")
     )
-    tmux_socket_template = str(payload.get("tmux_socket_template", "/tmp/ccw-{user}.sock")).strip()
+    tmux_socket_template = str(payload.get("tmux_socket_template", "/tmp/uxon-{user}.sock")).strip()
 
     # Agent configuration (replaces legacy default_claude_args).
     agents_payload = payload.get("agents", {})
@@ -127,6 +130,8 @@ def render_config(payload: dict[str, Any]) -> str:
     lines.append(f"default_launch_mode = {toml_string(default_launch_mode)}")
     lines.append(f"enable_all_users_list = {toml_bool(enable_all_users_list)}")
     lines.append(f"session_prefix = {toml_string(session_prefix)}")
+    lines.append("legacy_session_prefixes = " + toml_string_list(legacy_session_prefixes)[0])
+    lines.extend(toml_string_list(legacy_session_prefixes)[1:])
     lines.append("allowed_roots = " + toml_string_list(allowed_roots)[0])
     lines.extend(toml_string_list(allowed_roots)[1:])
     lines.append("session_users = " + toml_string_list(session_users)[0])

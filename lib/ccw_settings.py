@@ -49,7 +49,12 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "Users scanned by 'list --all-users' and the TUI superuser block.",
     ),
     SettingSpec("allowed_roots", "array", "Directories ccw is allowed to run in."),
-    SettingSpec("session_prefix", "string", "Tmux session name prefix."),
+    SettingSpec("session_prefix", "string", "Tmux session name prefix used when creating new sessions."),
+    SettingSpec(
+        "legacy_session_prefixes",
+        "array",
+        "Additional prefixes recognised for list/attach/kill (never used to create new sessions).",
+    ),
     SettingSpec("agents.enabled", "array", "Enabled agents (subset of claude/codex/cursor)."),
     SettingSpec(
         "agents.default",

@@ -1,7 +1,11 @@
 runtime_user = "agent"
 default_launch_mode = "fixed"
 enable_all_users_list = false
-session_prefix = "ccw-"
+session_prefix = "uxon-"
+# Empty by default. If you upgraded from a previous prefix and still
+# have running sessions under it, list it here (e.g. ["ccw-"]) so
+# list/attach/kill see them. New installs leave this empty.
+legacy_session_prefixes = []
 allowed_roots = [
   "/srv/projects",
 ]
@@ -10,7 +14,7 @@ session_users = [
 ]
 new_project_root = "/srv/projects"
 repeat_noninteractive_mode = "fail"
-tmux_socket_template = "/tmp/ccw-{user}.sock"
+tmux_socket_template = "/tmp/uxon-{user}.sock"
 
 [agents]
 enabled = [

@@ -21,12 +21,6 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
 
-# Session-name prefixes we recognize for list/attach/kill but do not
-# create new sessions under. Populated when the tool is renamed so
-# already-running sessions on the host stay reachable through one or two
-# release cycles. New sessions are always created with ``cfg.session_prefix``.
-LEGACY_AT_PREFIXES: tuple[str, ...] = ()
-
 # Known agent ids. Kept in sync with ccw_agents.CATALOG (verified by tests);
 # declared here as a literal so CLI parsing doesn't need the lazy lib import.
 VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
@@ -42,7 +36,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # at launch time (see _augmented_allowed_roots), so an empty
     # list is enough for first-run usability in $HOME.
     "allowed_roots": [],
-    "session_prefix": "ccw-",
+    "session_prefix": "uxon-",
+    # Empty by default. Operators upgrading from a host that ran a
+    # different ``session_prefix`` add the previous value here to keep
+    # already-running sessions reachable; new installs leave it empty.
+    "legacy_session_prefixes": [],
     "agents": {
         "enabled": ["claude"],
         "default": "claude",
@@ -52,7 +50,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "new_project_root": str(Path.home() / "projects"),
     "repeat_noninteractive_mode": "fail",
-    "tmux_socket_template": "/tmp/ccw-{user}.sock",
+    "tmux_socket_template": "/tmp/uxon-{user}.sock",
     "tui_refresh_interval_seconds": 2.0,
     "tui_ssh_refresh_interval_seconds": 10.0,
     "git_create_enabled": False,
@@ -109,6 +107,7 @@ class Config:
     session_users: list[str]
     allowed_roots: list[str]
     session_prefix: str
+    legacy_session_prefixes: tuple[str, ...]
     enabled_agents: tuple[str, ...]
     default_agent: str
     agent_default_args: dict[str, tuple[str, ...]]
@@ -137,7 +136,7 @@ class SessionInfo:
     cpu_pct: float = 0.0
     rss_kib: int = 0
     agent: str = "claude"    # "claude" | "codex" | "cursor" | "unknown"
-    legacy: bool = False     # True iff name uses a LEGACY_AT_PREFIXES prefix
+    legacy: bool = False     # True iff name uses a non-current (legacy) prefix
 
 
 @dataclass
@@ -341,6 +340,10 @@ def load_config(cwd: str) -> Config:
         session_users = [runtime_user] if runtime_user else []
     enable_all_users_list = bool(merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"]))
     session_prefix = str(merged.get("session_prefix", DEFAULT_CONFIG["session_prefix"]))
+    legacy_raw = merged.get("legacy_session_prefixes", DEFAULT_CONFIG["legacy_session_prefixes"])
+    if not isinstance(legacy_raw, list) or not all(isinstance(p, str) for p in legacy_raw):
+        fail("legacy_session_prefixes must be a list of strings")
+    legacy_session_prefixes = tuple(p for p in legacy_raw if p and p != session_prefix)
     allowed_roots = [canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])]
 
     # Hard-reject legacy flat key with a clear migration message.
@@ -436,6 +439,7 @@ def load_config(cwd: str) -> Config:
         session_users=session_users,
         allowed_roots=allowed_roots,
         session_prefix=session_prefix,
+        legacy_session_prefixes=legacy_session_prefixes,
         enabled_agents=enabled,
         default_agent=default_agent,
         agent_default_args=agent_default_args,
@@ -837,14 +841,19 @@ def _modern_re(prefix: str) -> re.Pattern[str]:
     )
 
 
-def parse_session_name(name: str, *, prefix: str = "ccw-") -> tuple[str, str, int, bool] | None:
+def parse_session_name(
+    name: str,
+    *,
+    prefix: str = "uxon-",
+    legacy_prefixes: tuple[str, ...] = (),
+) -> tuple[str, str, int, bool] | None:
     """Return (stem, agent, index, legacy) or None if the name is not ours.
 
-    Recognizes the current ``prefix`` plus any ``LEGACY_AT_PREFIXES`` in
-    the ``<prefix><stem>@<agent>[-N]`` shape. ``legacy=True`` for names
-    parsed via a non-current prefix.
+    Recognises the current ``prefix`` plus any ``legacy_prefixes`` in the
+    ``<prefix><stem>@<agent>[-N]`` shape. ``legacy=True`` is returned for
+    names matched via a non-current prefix.
     """
-    for p in (prefix, *LEGACY_AT_PREFIXES):
+    for p in (prefix, *legacy_prefixes):
         m = _modern_re(p).match(name)
         if m:
             idx = int(m.group("index")) if m.group("index") else 1
@@ -852,15 +861,22 @@ def parse_session_name(name: str, *, prefix: str = "ccw-") -> tuple[str, str, in
     return None
 
 
-def candidate_session_name(stem: str, index: int, agent: str, *, prefix: str = "ccw-") -> str:
+def candidate_session_name(stem: str, index: int, agent: str, *, prefix: str = "uxon-") -> str:
     base = f"{prefix}{stem}@{agent}"
     if index <= 1:
         return base
     return f"{base}-{index}"
 
 
-def parse_plain_session_index(name: str, stem: str, agent: str, *, prefix: str = "ccw-") -> int | None:
-    parsed = parse_session_name(name, prefix=prefix)
+def parse_plain_session_index(
+    name: str,
+    stem: str,
+    agent: str,
+    *,
+    prefix: str = "uxon-",
+    legacy_prefixes: tuple[str, ...] = (),
+) -> int | None:
+    parsed = parse_session_name(name, prefix=prefix, legacy_prefixes=legacy_prefixes)
     if parsed is None:
         return None
     p_stem, p_agent, p_index, _legacy = parsed
@@ -875,11 +891,14 @@ def compatible_indexed_sessions(
     compatibility_root: str,
     sessions: list[SessionInfo],
     *,
-    prefix: str = "ccw-",
+    prefix: str = "uxon-",
+    legacy_prefixes: tuple[str, ...] = (),
 ) -> list[SessionInfo]:
     matches: list[SessionInfo] = []
     for session in sessions:
-        idx = parse_plain_session_index(session.name, stem, agent, prefix=prefix)
+        idx = parse_plain_session_index(
+            session.name, stem, agent, prefix=prefix, legacy_prefixes=legacy_prefixes
+        )
         if idx is None:
             continue
         if not session_path_compatible(session.active_path, compatibility_root):
@@ -893,7 +912,12 @@ def compatible_indexed_sessions(
 
 
 def choose_attach_session(
-    existing: list[SessionInfo], stem: str, agent: str, *, prefix: str = "ccw-"
+    existing: list[SessionInfo],
+    stem: str,
+    agent: str,
+    *,
+    prefix: str = "uxon-",
+    legacy_prefixes: tuple[str, ...] = (),
 ) -> SessionInfo:
     if not existing:
         raise ValueError("expected at least one existing session")
@@ -905,7 +929,9 @@ def choose_attach_session(
                 return session
     return min(
         existing,
-        key=lambda session: parse_plain_session_index(session.name, stem, agent, prefix=prefix) or 9999,
+        key=lambda session: parse_plain_session_index(
+            session.name, stem, agent, prefix=prefix, legacy_prefixes=legacy_prefixes
+        ) or 9999,
     )
 
 
@@ -937,7 +963,7 @@ def allocate_session_name(
     compatibility_root: str,
     sessions: list[SessionInfo],
     *,
-    prefix: str = "ccw-",
+    prefix: str = "uxon-",
 ) -> str:
     exact_base = candidate_session_name(stem, 1, agent, prefix=prefix)
     exact_base_hits = [s for s in sessions if s.name == exact_base]
@@ -1001,9 +1027,19 @@ def resolve_repeat_decision(
 
 
 def legacy_compatible_sessions(cfg: Config, launch_user: str, stem: str, compatibility_root: str) -> list[SessionInfo]:
-    sessions = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
+    sessions = collect_sessions_for_user(
+        launch_user,
+        cfg.session_prefix,
+        socket_path=None,
+        legacy_prefixes=cfg.legacy_session_prefixes,
+    )
     return compatible_indexed_sessions(
-        stem, cfg.default_agent, compatibility_root, sessions, prefix=cfg.session_prefix
+        stem,
+        cfg.default_agent,
+        compatibility_root,
+        sessions,
+        prefix=cfg.session_prefix,
+        legacy_prefixes=cfg.legacy_session_prefixes,
     )
 
 
@@ -1073,7 +1109,13 @@ def enrich_session_usage(sessions: list[SessionInfo]) -> None:
         session.cpu_pct = total_cpu_pct
 
 
-def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str | None) -> list[SessionInfo]:
+def collect_sessions_for_user(
+    user: str,
+    session_prefix: str,
+    socket_path: str | None,
+    *,
+    legacy_prefixes: tuple[str, ...] = (),
+) -> list[SessionInfo]:
     base = tmux_base(user, socket_path)
     probe = subprocess.run(base + ["list-sessions"], text=True, capture_output=True)
     if probe.returncode != 0:
@@ -1082,12 +1124,12 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
     fmt = "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_created}\t#{session_activity}"
     rows = run_cmd(base + ["list-sessions", "-F", fmt]).stdout.splitlines()
     sessions: list[SessionInfo] = []
+    known_prefixes = (session_prefix, *legacy_prefixes)
     for row in rows:
         parts = row.split("\t")
         if len(parts) != 5:
             continue
         name, attached, windows, created_ts, activity_ts = parts
-        known_prefixes = (session_prefix, *LEGACY_AT_PREFIXES)
         if not any(name.startswith(p) for p in known_prefixes):
             continue
 
@@ -1114,7 +1156,7 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
             active_cmd = cmd
             active_path = path
 
-        _parsed = parse_session_name(name, prefix=session_prefix)
+        _parsed = parse_session_name(name, prefix=session_prefix, legacy_prefixes=legacy_prefixes)
         if _parsed is None:
             continue  # dual-prefix filter matched but parser disagreed — skip
         _, _agent, _, _legacy = _parsed
@@ -1143,15 +1185,28 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
 def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
     sessions: list[SessionInfo] = []
     for user in normalize_user_list(users):
-        sessions.extend(collect_sessions_for_user(user, cfg.session_prefix, tmux_socket_path(cfg, user)))
+        sessions.extend(
+            collect_sessions_for_user(
+                user,
+                cfg.session_prefix,
+                tmux_socket_path(cfg, user),
+                legacy_prefixes=cfg.legacy_session_prefixes,
+            )
+        )
     return sessions
 
 
-def resolve_session(identifier: str, sessions: list[SessionInfo], prefix: str) -> SessionInfo:
+def resolve_session(
+    identifier: str,
+    sessions: list[SessionInfo],
+    prefix: str,
+    *,
+    legacy_prefixes: tuple[str, ...] = (),
+) -> SessionInfo:
     if not sessions:
         fail(f"no {prefix}* sessions found")
 
-    known_prefixes = (prefix, *LEGACY_AT_PREFIXES)
+    known_prefixes = (prefix, *legacy_prefixes)
 
     # 1) exact name
     exact = [s for s in sessions if s.name == identifier]
@@ -1172,7 +1227,7 @@ def resolve_session(identifier: str, sessions: list[SessionInfo], prefix: str) -
     # 3) stem match across all agents (both legacy and new)
     stem_hits: list[SessionInfo] = []
     for s in sessions:
-        parsed = parse_session_name(s.name, prefix=prefix)
+        parsed = parse_session_name(s.name, prefix=prefix, legacy_prefixes=legacy_prefixes)
         if parsed is None:
             continue
         p_stem, _agent, _idx, _legacy = parsed
@@ -1503,13 +1558,20 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         fail("attach requires an identifier")
     sessions = collect_sessions([launch_user], cfg)
     if not sessions:
-        legacy = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
+        legacy = collect_sessions_for_user(
+            launch_user,
+            cfg.session_prefix,
+            socket_path=None,
+            legacy_prefixes=cfg.legacy_session_prefixes,
+        )
         if legacy:
             fail(
                 f"no sessions found on dedicated socket {tmux_socket_path(cfg, launch_user)}, "
                 f"but legacy default-socket sessions still exist. Use 'ccw doctor' for details."
             )
-    target = resolve_session(args.target_id, sessions, cfg.session_prefix)
+    target = resolve_session(
+        args.target_id, sessions, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
+    )
     return attach_session(target, cfg, launch_user, args.dry_run)
 
 
@@ -1566,7 +1628,9 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("kill requires an identifier")
     sessions = collect_sessions([launch_user], cfg)
-    target = resolve_session(args.target_id, sessions, cfg.session_prefix)
+    target = resolve_session(
+        args.target_id, sessions, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
+    )
     full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
     if args.dry_run:
         print(f"dry-run: {shlex.join(full)}")
@@ -1735,10 +1799,21 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     _agent = args.agent or cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
     existing = compatible_indexed_sessions(
-        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+        session_stem,
+        _agent,
+        compatibility_root,
+        sessions,
+        prefix=cfg.session_prefix,
+        legacy_prefixes=cfg.legacy_session_prefixes,
     )
     if existing:
-        attach_target = choose_attach_session(existing, session_stem, _agent, prefix=cfg.session_prefix)
+        attach_target = choose_attach_session(
+            existing,
+            session_stem,
+            _agent,
+            prefix=cfg.session_prefix,
+            legacy_prefixes=cfg.legacy_session_prefixes,
+        )
         decision = resolve_repeat_decision(args.repeat_mode, cfg, target_desc, attach_target, existing)
         if decision == "attach":
             return attach_session(attach_target, cfg, launch_user, args.dry_run)
@@ -1975,7 +2050,12 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
         for aid in cfg.enabled_agents
     }
     current_sessions = collect_sessions([launch_user], cfg)
-    legacy_sessions = collect_sessions_for_user(launch_user, cfg.session_prefix, socket_path=None)
+    legacy_sessions = collect_sessions_for_user(
+        launch_user,
+        cfg.session_prefix,
+        socket_path=None,
+        legacy_prefixes=cfg.legacy_session_prefixes,
+    )
     config_paths = [str(path) for path in config_sources]
     env_repeat_mode = get_env_repeat_noninteractive_mode()
     issues = doctor_issues(
@@ -2322,10 +2402,21 @@ def _plan_tui_existing_session_or_launch(
     _agent = (args.agent if args.agent else None) or cfg.default_agent
     sessions = collect_sessions([launch_user], cfg)
     existing = compatible_indexed_sessions(
-        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+        session_stem,
+        _agent,
+        compatibility_root,
+        sessions,
+        prefix=cfg.session_prefix,
+        legacy_prefixes=cfg.legacy_session_prefixes,
     )
     if existing:
-        attach_target = choose_attach_session(existing, session_stem, _agent, prefix=cfg.session_prefix)
+        attach_target = choose_attach_session(
+            existing,
+            session_stem,
+            _agent,
+            prefix=cfg.session_prefix,
+            legacy_prefixes=cfg.legacy_session_prefixes,
+        )
         return _build_tmux_attach_request(attach_target, cfg, launch_user)
 
     repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
@@ -2434,12 +2525,16 @@ def _build_tui_context(cfg: Config, launch_user: str, cwd: str, *, skeleton: boo
 
     def on_attach(user: str, name: str):
         fresh = collect_sessions([user], cfg)
-        target = resolve_session(name, fresh, cfg.session_prefix)
+        target = resolve_session(
+            name, fresh, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
+        )
         return _build_tmux_attach_request(target, cfg, user)
 
     def on_kill(user: str, name: str) -> None:
         fresh = collect_sessions([user], cfg)
-        target = resolve_session(name, fresh, cfg.session_prefix)
+        target = resolve_session(
+            name, fresh, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
+        )
         full = configured_tmux_base(cfg, user) + ["kill-session", "-t", target.name]
         run_cmd(full, check=True)
 
