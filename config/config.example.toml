@@ -1,0 +1,33 @@
+runtime_user = "agent"
+default_launch_mode = "fixed"
+enable_all_users_list = false
+session_prefix = "ccw-"
+allowed_roots = [
+  "/srv/projects",
+]
+session_users = [
+  "agent",
+]
+new_project_root = "/srv/projects"
+repeat_noninteractive_mode = "fail"
+tmux_socket_template = "/tmp/ccw-{user}.sock"
+
+[agents]
+enabled = [
+  "claude",
+]
+default = "claude"
+
+[agents.claude]
+default_args = [
+]
+
+[agents.codex]
+default_args = [
+]
+
+[agents.cursor]
+default_args = [
+]
+
+[launch_user_by_caller]
