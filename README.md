@@ -117,8 +117,8 @@ picker. One screen, three blocks:
    `$PWD` (gated on the allowed-roots check).
 2. **Create new project** — prompt for a name, create
    `<new_project_root>/<name>`, optionally create a GitHub remote
-   (if [git-remote profiles](#git-remote-on-new-project) are
-   configured), launch the agent.
+   (if [git-remote profiles](docs/configuration.md#use-case-github-repo-creation-on-new-project)
+   are configured), launch the agent.
 3. **Open existing project** — pick a directory under
    `new_project_root` and launch.
 

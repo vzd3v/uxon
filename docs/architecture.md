@@ -77,7 +77,7 @@ Sub-modules under `lib/uxon_tui/`:
 - `launch.py` — fork-and-wait helper plus the failure-pause banner.
   Runs **outside** the Textual `App` between round-trips.
 - `hints.py` — `TEXTUAL_MISSING_HINT` install guidance.
-- `app.py` — `CcwApp(App)` and the outer `run(ctx)` re-entrant loop.
+- `app.py` — `UxonApp(App)` and the outer `run(ctx)` re-entrant loop.
 - `screens/` — one module per screen: `main`, `confirm`,
   `launch_options`, `new_project`, `git_profile`, `existing`,
   `settings`, `git_remotes`, `agents_unavailable`.
@@ -118,10 +118,11 @@ uxon-<repo>-<branch>@<agent>  worktree sessions (claude only)
 ```
 
 Parallels append `-2`, `-3`, … *after* the agent suffix:
-`uxon-myproj@codex-2`. The `uxon-` prefix is hardcoded for new
-sessions; legacy `cc-<stem>` / `cc-<stem>-N` sessions (pre-2026-04-21)
-are still recognised as read-only `claude` sessions but `uxon` does
-not create them.
+`uxon-myproj@codex-2`. The default prefix is `uxon-`, configurable
+via `session_prefix`. Names matching any prefix listed in
+`legacy_session_prefixes` are recognised by `list` / `attach` /
+`kill` (so existing sessions stay reachable across renames) but
+are never *created*.
 
 `parse_session_name` and `candidate_session_name` in `bin/uxon` must
 move together. Don't touch one without the other.

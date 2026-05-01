@@ -14,7 +14,7 @@ flagged in each section.
 - `<id>` — session identifier. Resolution order: full name
   (`uxon-myproj@claude`), short name (`myproj@claude`), bare stem
   (`myproj`) when exactly one session matches, legacy-prefix name
-  (e.g. `cc-myproj`), or active-pane PID.
+  (e.g. `ccw-myproj`), or active-pane PID.
 - `--dry-run` — print the `tmux` command that would be executed
   instead of executing it. Available on `run`, `new`, `kill`,
   `kill-all`.
@@ -61,7 +61,7 @@ be a git repo — `uxon` never creates worktrees for you).
 | Flag | Effect |
 |------|--------|
 | `--attach-existing` / `--new-session` | Bypass the repeat prompt (see [Repeat behaviour](#repeat-behaviour)). |
-| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../README.md#git-remote-on-new-project-optional). `default` uses `default_git_remote_profile`. Incompatible with `-w`. Without this flag, no git is touched (CLI is non-interactive). |
+| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](configuration.md#use-case-github-repo-creation-on-new-project). `default` uses `default_git_remote_profile`. Incompatible with `-w`. Without this flag, no git is touched (CLI is non-interactive). |
 | `--git-visibility private\|public` | Override the profile's visibility default for this one call. |
 | `--no-git` | Explicit "don't touch git" (same as omitting `--git-remote`). |
 
@@ -88,7 +88,7 @@ Identifier resolution (first match wins):
 1. Full session name — `uxon-myproj@claude`.
 2. Short name without prefix — `myproj@claude`.
 3. Bare stem — `myproj` (only when exactly one session matches).
-4. Legacy-prefix name — e.g. `cc-myproj` when `cc-` is in
+4. Legacy-prefix name — e.g. `ccw-myproj` when `ccw-` is in
    `legacy_session_prefixes`.
 5. Active-pane PID.
 

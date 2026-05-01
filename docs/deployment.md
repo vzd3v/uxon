@@ -82,7 +82,7 @@ they are intentionally not part of the
 `install/render_uxon_config.py` JSON-to-TOML flow because profiles
 reference `creds_user` and `token_file`, and infra shouldn't
 hard-code those across hosts. The TUI shows them read-only. See
-[`README.md` § Git remote on new project](../README.md#git-remote-on-new-project)
+[`docs/configuration.md` § GitHub repo creation on new project](configuration.md#use-case-github-repo-creation-on-new-project)
 for field reference and examples.
 
 ## Verification checklist
