@@ -1188,13 +1188,10 @@ class SessionNamingTests(unittest.TestCase):
             ("my-repo-branch", "claude", 1, False),
         )
 
-    def test_parse_session_name_legacy(self) -> None:
-        self.assertEqual(ccw.parse_session_name("cc-foo"), ("foo", "claude", 1, True))
-        self.assertEqual(ccw.parse_session_name("cc-foo-2"), ("foo", "claude", 2, True))
-
     def test_parse_session_name_rejects_garbage(self) -> None:
         self.assertIsNone(ccw.parse_session_name("random-x"))
         self.assertIsNone(ccw.parse_session_name("ccw-foo"))  # missing @agent
+        self.assertIsNone(ccw.parse_session_name("cc-foo"))   # ancient format no longer recognised
 
     def test_candidate_session_name(self) -> None:
         self.assertEqual(ccw.candidate_session_name("foo", 1, "cursor"), "ccw-foo@cursor")
@@ -1233,11 +1230,6 @@ class SessionNamingTests(unittest.TestCase):
         sessions = [_mk_session("ccw-foo@claude"), _mk_session("ccw-foo@codex", agent="codex")]
         with self.assertRaises(SystemExit):
             ccw.resolve_session("foo", sessions, "ccw-")
-
-    def test_resolve_legacy(self) -> None:
-        sessions = [_mk_session("cc-foo", legacy=True)]
-        self.assertEqual(ccw.resolve_session("cc-foo", sessions, "ccw-").name, "cc-foo")
-        self.assertEqual(ccw.resolve_session("foo", sessions, "ccw-").name, "cc-foo")
 
 
 class DoInteractiveTextualMissingTests(unittest.TestCase):

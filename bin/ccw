@@ -21,13 +21,10 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
 
-LEGACY_CLAUDE_PREFIX = "cc-"
-
-# Modern-format prefixes (``<prefix><stem>@<agent>``) that we recognize but
-# do not create new sessions under. Empty by default; populated when the
-# tool is renamed to keep listing/attach working for already-running
-# sessions on the host. Ancient ``cc-<stem>`` (no ``@agent``) is handled
-# separately via ``LEGACY_CLAUDE_PREFIX``.
+# Session-name prefixes we recognize for list/attach/kill but do not
+# create new sessions under. Populated when the tool is renamed so
+# already-running sessions on the host stay reachable through one or two
+# release cycles. New sessions are always created with ``cfg.session_prefix``.
 LEGACY_AT_PREFIXES: tuple[str, ...] = ()
 
 # Known agent ids. Kept in sync with ccw_agents.CATALOG (verified by tests);
@@ -140,7 +137,7 @@ class SessionInfo:
     cpu_pct: float = 0.0
     rss_kib: int = 0
     agent: str = "claude"    # "claude" | "codex" | "cursor" | "unknown"
-    legacy: bool = False     # True iff name matches LEGACY_CLAUDE_PREFIX
+    legacy: bool = False     # True iff name uses a LEGACY_AT_PREFIXES prefix
 
 
 @dataclass
@@ -834,9 +831,6 @@ def session_stem_for_worktree(repo_root: str, branch: str) -> str:
     return f"{repo_slug}-{workspace_slug}"
 
 
-_LEGACY_SESSION_RE = re.compile(r"^cc-(?P<stem>.+?)(?:-(?P<index>\d+))?$")
-
-
 def _modern_re(prefix: str) -> re.Pattern[str]:
     return re.compile(
         rf"^{re.escape(prefix)}(?P<stem>.+?)@(?P<agent>[a-z][a-z0-9_]*)(?:-(?P<index>\d+))?$"
@@ -846,20 +840,15 @@ def _modern_re(prefix: str) -> re.Pattern[str]:
 def parse_session_name(name: str, *, prefix: str = "ccw-") -> tuple[str, str, int, bool] | None:
     """Return (stem, agent, index, legacy) or None if the name is not ours.
 
-    Recognizes the current ``prefix`` plus any ``LEGACY_AT_PREFIXES``
-    in the modern ``<prefix><stem>@<agent>[-N]`` shape, and ancient
-    ``cc-<stem>[-N]`` via ``LEGACY_CLAUDE_PREFIX``. ``legacy=True`` is
-    returned for any non-current prefix.
+    Recognizes the current ``prefix`` plus any ``LEGACY_AT_PREFIXES`` in
+    the ``<prefix><stem>@<agent>[-N]`` shape. ``legacy=True`` for names
+    parsed via a non-current prefix.
     """
     for p in (prefix, *LEGACY_AT_PREFIXES):
         m = _modern_re(p).match(name)
         if m:
             idx = int(m.group("index")) if m.group("index") else 1
             return m.group("stem"), m.group("agent"), idx, p != prefix
-    m = _LEGACY_SESSION_RE.match(name)
-    if m:
-        idx = int(m.group("index")) if m.group("index") else 1
-        return m.group("stem"), "claude", idx, True
     return None
 
 
@@ -1098,7 +1087,7 @@ def collect_sessions_for_user(user: str, session_prefix: str, socket_path: str |
         if len(parts) != 5:
             continue
         name, attached, windows, created_ts, activity_ts = parts
-        known_prefixes = (session_prefix, *LEGACY_AT_PREFIXES, LEGACY_CLAUDE_PREFIX)
+        known_prefixes = (session_prefix, *LEGACY_AT_PREFIXES)
         if not any(name.startswith(p) for p in known_prefixes):
             continue
 
@@ -1162,7 +1151,7 @@ def resolve_session(identifier: str, sessions: list[SessionInfo], prefix: str) -
     if not sessions:
         fail(f"no {prefix}* sessions found")
 
-    known_prefixes = (prefix, *LEGACY_AT_PREFIXES, LEGACY_CLAUDE_PREFIX)
+    known_prefixes = (prefix, *LEGACY_AT_PREFIXES)
 
     # 1) exact name
     exact = [s for s in sessions if s.name == identifier]
