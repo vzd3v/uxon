@@ -1,0 +1,81 @@
+[project]
+name = "ccw"
+version = "2.0.0"
+description = "Multi-user tmux wrapper for terminal AI coding agents (claude, codex, cursor)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Vasily Zakharov", email = "vz@vz.team" }]
+keywords = ["tmux", "claude", "codex", "cursor", "ai-agents", "cli"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Terminals",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Developers",
+]
+
+[project.urls]
+Homepage = "https://github.com/vzd3v/vz_devagent_cli_tool"
+Issues   = "https://github.com/vzd3v/vz_devagent_cli_tool/issues"
+Source   = "https://github.com/vzd3v/vz_devagent_cli_tool"
+Changelog = "https://github.com/vzd3v/vz_devagent_cli_tool/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+tui = ["textual>=0.80,<9", "tomlkit"]
+dev = [
+    "textual>=0.80,<9",
+    "tomlkit",
+    "pytest",
+    "pytest-xdist",
+    "ruff",
+    "pyright",
+]
+
+# ---------------------------------------------------------------------------
+# Tool configuration
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+    "docs/agents",
+    "**/__pycache__",
+]
+
+[tool.ruff.lint]
+# Conservative initial set; SIM/RET ratchet-up tracked as follow-up.
+select = ["E", "F", "W", "I", "B", "UP"]
+# E501 — long lines are allowed; the formatter handles wrapping.
+# B008 — argparse default factories trigger this in CLI code.
+# B007 — unused loop variable in tests is sometimes deliberate.
+ignore = ["E501", "B008", "B007"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyright]
+include = ["bin", "lib", "install"]
+exclude = [
+    "**/__pycache__",
+    "docs/agents",
+    "tests/harness/__pycache__",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+# textual / tomlkit are optional runtime deps; missing imports must not
+# break a stripped install.
+reportMissingImports = "warning"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:textual.*",
+]
