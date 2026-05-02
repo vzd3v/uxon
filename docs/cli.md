@@ -118,9 +118,14 @@ This **only** kills sessions for the current launch user. The
 TUI-only, requires passwordless `sudo`, and prompts for
 `kill-all-global` to confirm.
 
-## `uxon doctor`
+## `uxon doctor` <a id="doctor"></a>
 
 Read-only diagnostics. Always safe to run.
+
+The TUI now surfaces `tmux` and per-agent issues in line, so most
+users won't need this. Use `uxon doctor` when an in-line hint is not
+enough — for example to script host inspection, capture a snapshot for
+a bug report, or audit several launch users at once.
 
 Prints:
 - caller user vs launch user;

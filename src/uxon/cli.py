@@ -2141,16 +2141,31 @@ def doctor_issues(
 
 def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
     from uxon import agents as uxon_agents
+    from uxon import probes as uxon_probes
 
     _, config_sources = resolve_config_layers(cwd)
     socket_path = tmux_socket_path(cfg, launch_user)
-    tmux_path = command_path_for_user("tmux", launch_user)
-    # Probe all enabled agents in parallel.
-    availability = uxon_agents.probe_agents(list(cfg.enabled_agents), launch_user)
+    # Single-round-trip probe for tmux + every enabled / catalogued agent.
+    report = uxon_probes.probe_host(cfg, launch_user)
+    tmux_path = report.tmux.path
     agent_paths: dict[str, str | None] = {
-        aid: command_path_for_user(uxon_agents.CATALOG[aid].binary, launch_user)
-        for aid in cfg.enabled_agents
+        aid: report.enabled[aid].path for aid in cfg.enabled_agents if aid in report.enabled
     }
+    # Per-present-binary version detail. Skip the slow `<bin> --version`
+    # call for binaries the host probe could not find; for present ones
+    # it costs at most ``agents.PROBE_TIMEOUT_SEC`` per agent (cursor's
+    # ``--version`` is the slowest at 5–8 s).
+    availability: dict[str, uxon_agents.AgentAvailability] = {}
+    for aid in cfg.enabled_agents:
+        if agent_paths.get(aid):
+            availability[aid] = uxon_agents._probe_one(
+                uxon_agents.CATALOG[aid].binary,
+                launch_user,
+            )
+        else:
+            availability[aid] = uxon_agents.AgentAvailability(
+                status="missing", error="not on PATH"
+            )
     current_sessions = collect_sessions([launch_user], cfg)
     legacy_sessions = collect_sessions_for_user(
         launch_user,

@@ -161,11 +161,14 @@ deployment topology, see [`docs/deployment.md`](docs/deployment.md).
 ### After install
 
 ```bash
-uxon doctor                       # verify
+uxon                              # launch the TUI; it self-diagnoses
 # Optional: bootstrap an example config (uxon also runs with defaults).
 curl -fsSL https://raw.githubusercontent.com/vzd3v/uxon/main/config/config.example.toml -o ./config.toml
 $EDITOR ./config.toml             # set allowed_roots, session_users, agents
 ```
+
+For deeper, scriptable host inspection see
+[`docs/cli.md`](docs/cli.md#doctor).
 
 You'll also need at least one of the agent CLIs installed for the
 launch user — see [Supported agents](#supported-agents).
@@ -353,10 +356,11 @@ is in **[`docs/cli.md`](docs/cli.md)**.
 - **TUI errors render as a red toast.** Tmux-gone, permission
   denied, allowed-roots mismatch, git remote failure, config-write
   conflict — all caught and shown in-place rather than crashing.
-- **Always run `uxon doctor` first.** It prints the resolved caller /
-  launch user, active config paths, allowed roots, agent paths,
-  socket details, current sessions, and any detected configuration
-  issues.
+- **TUI surfaces tmux/agent issues in line.** Missing `tmux` or
+  missing agent binaries trigger a friendly preflight error from the
+  CLI and an in-line hint in the TUI; freshly-installed agents are
+  auto-detected and offered for one-keypress enabling. For deeper
+  diagnostics see [`docs/cli.md`](docs/cli.md#doctor).
 
 More edge cases (legacy session prefixes, failed-launch banner, the
 `--dsp` flag and its legacy aliases) are documented in

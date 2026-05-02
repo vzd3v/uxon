@@ -697,10 +697,16 @@ class UxonTests(unittest.TestCase):
         output = io.StringIO()
         ok_avail = uxon_agents.AgentAvailability(status="ok", version="1.2.3")
 
-        def _command_path_side_effect(command, user):
-            if command == "tmux":
-                return "/usr/bin/tmux"
-            return "/usr/local/bin/claude"
+        from uxon import probes as uxon_probes
+
+        host_report = uxon_probes.HostReport(
+            tmux=uxon_probes.BinaryStatus("tmux", "/usr/bin/tmux", "apt"),
+            enabled={
+                "claude": uxon_probes.BinaryStatus("claude", "/usr/local/bin/claude", "npm"),
+            },
+            detected={},
+            launch_user="u-vz",
+        )
 
         with mock.patch.object(
             uxon,
@@ -708,12 +714,8 @@ class UxonTests(unittest.TestCase):
             return_value=({}, [Path("/srv/apps/uxon/config/config.toml")]),
         ):
             with mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
-                with mock.patch.object(
-                    uxon, "command_path_for_user", side_effect=_command_path_side_effect
-                ):
-                    with mock.patch.object(
-                        uxon_agents, "probe_agents", return_value={"claude": ok_avail}
-                    ):
+                with mock.patch("uxon.probes.probe_host", return_value=host_report):
+                    with mock.patch.object(uxon_agents, "_probe_one", return_value=ok_avail):
                         with mock.patch.object(
                             uxon,
                             "collect_sessions",
@@ -742,32 +744,34 @@ class UxonTests(unittest.TestCase):
         self.assertIn("ok (1.2.3)", rendered)
 
     def test_doctor_reports_missing_agent(self) -> None:
-        from uxon import agents as uxon_agents
+        from uxon import probes as uxon_probes
 
         cfg = self.make_config()
         output = io.StringIO()
-        missing_avail = uxon_agents.AgentAvailability(status="missing", error="not found")
+        host_report = uxon_probes.HostReport(
+            tmux=uxon_probes.BinaryStatus("tmux", "/usr/bin/tmux", "apt"),
+            enabled={"claude": uxon_probes.BinaryStatus("claude", None, "npm install ...")},
+            detected={},
+            launch_user="u-vz",
+        )
 
         with mock.patch.object(uxon, "resolve_config_layers", return_value=({}, [])):
             with mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
-                with mock.patch.object(uxon, "command_path_for_user", return_value="/usr/bin/tmux"):
-                    with mock.patch.object(
-                        uxon_agents, "probe_agents", return_value={"claude": missing_avail}
-                    ):
-                        with mock.patch.object(uxon, "collect_sessions", return_value=[]):
+                with mock.patch("uxon.probes.probe_host", return_value=host_report):
+                    with mock.patch.object(uxon, "collect_sessions", return_value=[]):
+                        with mock.patch.object(
+                            uxon, "collect_sessions_for_user", return_value=[]
+                        ):
                             with mock.patch.object(
-                                uxon, "collect_sessions_for_user", return_value=[]
+                                uxon, "user_can_write_dir", return_value=True
                             ):
                                 with mock.patch.object(
-                                    uxon, "user_can_write_dir", return_value=True
+                                    uxon, "format_version", return_value="uxon 0.4.0"
                                 ):
-                                    with mock.patch.object(
-                                        uxon, "format_version", return_value="uxon 0.4.0"
-                                    ):
-                                        with mock.patch("sys.stdout", output):
-                                            rc = uxon.do_doctor(
-                                                cfg, "u-vz", "u-vz", "/srv/repos/demo"
-                                            )
+                                    with mock.patch("sys.stdout", output):
+                                        rc = uxon.do_doctor(
+                                            cfg, "u-vz", "u-vz", "/srv/repos/demo"
+                                        )
 
         rendered = output.getvalue()
         self.assertEqual(rc, 0)
