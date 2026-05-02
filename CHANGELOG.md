@@ -61,25 +61,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [3.0.0] — 2026-05-01
 
-### Added
-
-- First release on PyPI as
-  [`uxon`](https://pypi.org/project/uxon/). Install via
-  `uv tool install uxon`, `pipx install uxon`, or
-  `pip install --user uxon`.
-- `legacy_session_prefixes` — recognise additional `tmux` prefixes
-  in `uxon list` / `attach` / `kill`, for migrating from a previous
-  `session_prefix`. New sessions are always created under the
-  current `session_prefix`.
-- `docs/cli.md` — full CLI reference (flags, exit codes, identifier
-  resolution, repeat behaviour). `docs/configuration.md` —
-  use-case-driven configuration guide.
-
-### Changed
-
-- README leads with the TUI as the primary interface; the
-  non-interactive CLI is summarised separately and detailed in
-  `docs/cli.md`.
-- `install/install_uxon.py` now installs into a dedicated venv at
-  `--venv-dir` and symlinks the console script to `--install-path`.
-  Adds `--dry-run` and `--reinstall`.
+First release on PyPI as
+[`uxon`](https://pypi.org/project/uxon/). Install via
+`uv tool install uxon`, `pipx install uxon`, or
+`pip install --user uxon`.
