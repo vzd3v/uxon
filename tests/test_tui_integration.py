@@ -194,7 +194,7 @@ MARKER = {marker_path!r}
 uxon_agents.probe_agents = lambda *args, **kwargs: {{}}
 # The new TUI worker calls ``probes.probe_host`` instead of the
 # legacy per-agent driver. Without this stub the pty child runs a
-# real ``sudo -niu USER -- sh -lc 'command -v …'`` on the CI host,
+# real ``sudo -nHu USER -- sh -lc 'command -v …'`` on the CI host,
 # finds nothing, and pushes ``AgentsUnavailableScreen`` over the
 # main screen — the digit press the test sends then lands on the
 # modal instead of the action row, and the marker file stays empty.

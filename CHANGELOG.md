@@ -8,6 +8,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Cross-user host probe (`uxon doctor`, the TUI agent banner) wrongly
+  reported every binary as missing whenever the caller and launch
+  user differed. The probe wrapped its `command -v` script in
+  `sudo -iu USER -- sh -lc …`; with `-i`, sudo runs the target's
+  login shell which expanded `$c` in the inner for-loop before the
+  script reached `sh`. Switched to `sudo -nHu USER --` so the inner
+  `sh -l` still gets correct `HOME` / `PATH` semantics without the
+  double shell-wrap.
+
 ## [3.2.0] — 2026-05-02
 
 ### Added

@@ -89,13 +89,23 @@ def _resolve_paths_remote(
 ) -> dict[str, str | None]:
     """Resolve paths for binaries on a different user via sudo.
 
-    Uses a single batched `sudo -niu USER -- sh -lc ...` call with
+    Uses a single batched `sudo -nHu USER -- sh -lc ...` call with
     `command -v` for each binary name. Timeout is PROBE_TIMEOUT_SEC (2.0 s).
 
     The timeout applies to the entire sudo + sh subprocess, not to
     detect_passwordless_sudo. If sudo needs a password (no NOPASSWD),
     `sudo -n` fails in ~10 ms (with non-zero exit code), so the 2s budget
     is only ever consumed by an actual hung shell command.
+
+    Why ``-Hu`` and not ``-iu`` (unlike ``command_prefix_for_user`` and
+    ``agents._probe_one``): with ``-i`` sudo concatenates everything after
+    ``--`` into a single string and runs it via the target's login shell
+    ``-c``. The login bash then expands the script BEFORE it reaches the
+    inner ``sh -lc``, so loop variables like ``$c`` get substituted in the
+    wrong scope (empty) and ``command -v`` returns nothing for every name.
+    Dropping ``-i`` removes that double-shell wrap; ``-H`` still pins
+    ``HOME`` to the target so the inner ``sh -l`` sources the correct
+    ``~/.profile`` and PATH ends up with ``~/.local/bin``, ``nvm`` etc.
     """
     if not names:
         return {}
@@ -108,7 +118,7 @@ def _resolve_paths_remote(
 
     try:
         cp = subprocess.run(
-            ["sudo", "-n", "-iu", launch_user, "--", "sh", "-lc", script],
+            ["sudo", "-n", "-H", "-u", launch_user, "--", "sh", "-lc", script],
             capture_output=True,
             text=True,
             timeout=PROBE_TIMEOUT_SEC,

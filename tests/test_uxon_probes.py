@@ -92,11 +92,16 @@ class ResolvePathsRemoteTests(unittest.TestCase):
             result,
             {"tmux": "/usr/bin/tmux", "claude": "/home/user/.npm/claude"},
         )
-        # Verify the sudo call.
+        # Verify the sudo call. ``-H`` (no ``-i``) avoids the double
+        # shell-wrap that ate ``$c`` inside the for-loop script; the
+        # inner ``sh -lc`` still gives login-shell PATH semantics.
         args = run.call_args[0][0]
         self.assertIn("sudo", args)
         self.assertIn("-n", args)
-        self.assertIn("-iu", args)
+        self.assertIn("-H", args)
+        self.assertIn("-u", args)
+        self.assertNotIn("-iu", args)
+        self.assertNotIn("-i", args)
         self.assertIn("otheruser", args)
 
     def test_resolve_sudo_nonzero_exit(self) -> None:
