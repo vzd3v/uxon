@@ -8,6 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-05-02
+
 ### Added
 
 - TUI auto-detects coding agents installed on the host but not yet
