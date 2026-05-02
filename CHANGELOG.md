@@ -10,14 +10,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Cross-user host probe (`uxon doctor`, the TUI agent banner) wrongly
-  reported every binary as missing whenever the caller and launch
-  user differed. The probe wrapped its `command -v` script in
-  `sudo -iu USER -- sh -lc …`; with `-i`, sudo runs the target's
-  login shell which expanded `$c` in the inner for-loop before the
-  script reached `sh`. Switched to `sudo -nHu USER --` so the inner
-  `sh -l` still gets correct `HOME` / `PATH` semantics without the
-  double shell-wrap.
+- `uxon doctor` and the TUI no longer report `tmux` and every agent
+  as missing when the caller and launch user differ — cross-user
+  host detection now finds binaries installed for the launch user.
 
 ## [3.2.0] — 2026-05-02
 
