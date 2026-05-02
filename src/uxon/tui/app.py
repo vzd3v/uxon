@@ -31,7 +31,6 @@ from .screens.main import MainScreen
 from .state import (
     compute_all_missing,
     should_push_agents_unavailable,
-    should_start_agent_probe,
 )
 
 
@@ -179,10 +178,12 @@ class UxonApp(App):
         if self.ctx.loading:
             self.kick_refresh()
         # Kick off background host probe (tmux + all known agents).
-        if should_start_agent_probe(
-            probe_agents=self.probe_agents,
-            enabled_agents=self.ctx.enabled_agents,
-        ):
+        # Probe even with an empty ``enabled_agents`` so the
+        # detected-agents banner can surface CATALOG agents that the
+        # user has never enabled (e.g., fresh install with the default
+        # config). The per-tick gate inside ``_kick_host_probe``
+        # honours ``self.probe_agents`` (the test-mode kill switch).
+        if self.probe_agents:
             self._kick_host_probe()
         # Kick off cwd-write probe when the synchronous path didn't
         # already resolve it (cross-user case: uxon left cwd_writable=None
@@ -204,11 +205,10 @@ class UxonApp(App):
             # installed tmux/agents surface without restarting uxon.
             # Same cadence as ``kick_refresh`` keeps the two streams in
             # lockstep — banner state and agent_availability advance
-            # together.
-            if should_start_agent_probe(
-                probe_agents=self.probe_agents,
-                enabled_agents=self.ctx.enabled_agents,
-            ):
+            # together. Gated only on ``self.probe_agents`` so the
+            # detection path keeps working when the user enables their
+            # first agent at runtime via Settings.
+            if self.probe_agents:
                 self.set_interval(
                     self.ctx.tui_refresh_interval_seconds,
                     self._kick_host_probe,
@@ -290,32 +290,36 @@ class UxonApp(App):
         # contexts), which is both slower and prone to false-negatives.
         target_user = self.ctx.launch_user or uxon_probes._current_user()
 
+        # Single try/finally so the latch is always cleared — even if
+        # the BinaryStatus → AgentAvailability mapping below raises
+        # (e.g., a future CATALOG entry returning a malformed status).
+        # A leaked latch would silently disable the periodic probe for
+        # the rest of the session.
         try:
-            report = uxon_probes.probe_host(_Cfg(), target_user)
-        except Exception:  # pragma: no cover — defensive
+            try:
+                report = uxon_probes.probe_host(_Cfg(), target_user)
+            except Exception:  # pragma: no cover — defensive
+                return
+
+            # Map BinaryStatus → AgentAvailability for enabled agents.
+            for aid, status in report.enabled.items():
+                if status.path is not None:
+                    self.ctx.agent_availability[aid] = uxon_agents.AgentAvailability(
+                        status="ok",
+                        path=status.path,
+                    )
+                else:
+                    self.ctx.agent_availability[aid] = uxon_agents.AgentAvailability(
+                        status="missing",
+                        error=f"{status.name} not found on PATH",
+                    )
+
+            # Update detected agents (installed but not enabled).
+            self.ctx.detected_agents.clear()
+            self.ctx.detected_agents.update(report.detected)
+        finally:
             self._host_probe_running = False
             self.post_message(_HostReportUpdated())
-            return
-
-        # Map BinaryStatus → AgentAvailability for enabled agents.
-        for aid, status in report.enabled.items():
-            if status.path is not None:
-                self.ctx.agent_availability[aid] = uxon_agents.AgentAvailability(
-                    status="ok",
-                    path=status.path,
-                )
-            else:
-                self.ctx.agent_availability[aid] = uxon_agents.AgentAvailability(
-                    status="missing",
-                    error=f"{status.name} not found on PATH",
-                )
-
-        # Update detected agents (installed but not enabled).
-        self.ctx.detected_agents.clear()
-        self.ctx.detected_agents.update(report.detected)
-
-        self._host_probe_running = False
-        self.post_message(_HostReportUpdated())
 
     def _probe_cwd_writable_worker(self) -> None:
         """Background thread: probe write access and post the result."""
