@@ -1,7 +1,10 @@
 """Agent catalog: declarative data for claude / codex / cursor-agent.
 
 Pure data + small helpers. No textual, no TUI, no cli imports.
-`probe_agents` uses subprocess locally but never at module scope.
+``_probe_one`` uses subprocess locally but never at module scope; it is
+only called by ``do_doctor`` to fetch the per-agent ``--version`` line
+shown for present binaries (the host-wide "is this installed" probe
+lives in ``uxon.probes`` since 0.5.x).
 """
 
 from __future__ import annotations
@@ -9,7 +12,6 @@ from __future__ import annotations
 import os
 import pwd
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 
@@ -96,7 +98,16 @@ def _current_user() -> str:
     return pwd.getpwuid(os.getuid()).pw_name
 
 
-def _build_probe_cmd(binary: str, launch_user: str | None) -> list[str]:
+def _probe_one(binary: str, launch_user: str | None) -> AgentAvailability:
+    """Run ``<binary> --version`` (under sudo if launch_user differs from caller)
+    and return a status-tagged :class:`AgentAvailability`.
+
+    Used by ``do_doctor`` to render the version line for binaries that
+    ``uxon.probes.probe_host`` already confirmed are present. The
+    parallel multi-agent driver (``probe_agents``) was removed in 0.5.x
+    once the host-wide probe replaced it everywhere except the doctor's
+    per-binary version detail.
+    """
     if launch_user and launch_user != _current_user():
         # Match the login-env semantics that ``command_prefix_for_user``
         # in ``uxon.cli`` uses for the actual launch (``sudo -iu``). The
@@ -106,12 +117,9 @@ def _build_probe_cmd(binary: str, launch_user: str | None) -> list[str]:
         # Without ``-i``, sudo's ``secure_path`` hides them and the
         # probe reports "missing" for agents that the launch can
         # actually run.
-        return ["sudo", "-niu", launch_user, "--", binary, "--version"]
-    return [binary, "--version"]
-
-
-def _probe_one(binary: str, launch_user: str | None) -> AgentAvailability:
-    cmd = _build_probe_cmd(binary, launch_user)
+        cmd = ["sudo", "-niu", launch_user, "--", binary, "--version"]
+    else:
+        cmd = [binary, "--version"]
     try:
         cp = subprocess.run(
             cmd,
@@ -128,27 +136,3 @@ def _probe_one(binary: str, launch_user: str | None) -> AgentAvailability:
         return AgentAvailability(status="missing", error=err or f"exit {cp.returncode}")
     version = (cp.stdout or "").strip().splitlines()[0] if cp.stdout else None
     return AgentAvailability(status="ok", version=version)
-
-
-def probe_agents(
-    agent_ids: list[str],
-    launch_user: str | None,
-) -> dict[str, AgentAvailability]:
-    """Probe `<binary> --version` for each known agent id, in parallel.
-
-    Unknown ids are silently dropped. Runs under ``launch_user`` when
-    different from the caller, via ``sudo -n -u <user>``.
-    """
-    valid = [aid for aid in agent_ids if aid in CATALOG]
-    if not valid:
-        return {}
-    results: dict[str, AgentAvailability] = {}
-    with ThreadPoolExecutor(max_workers=max(1, len(valid))) as ex:
-        futures = {ex.submit(_probe_one, CATALOG[aid].binary, launch_user): aid for aid in valid}
-        for fut in futures:
-            aid = futures[fut]
-            try:
-                results[aid] = fut.result()
-            except Exception as exc:  # pragma: no cover — defensive
-                results[aid] = AgentAvailability(status="missing", error=str(exc))
-    return results

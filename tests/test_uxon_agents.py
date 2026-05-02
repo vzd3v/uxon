@@ -69,40 +69,46 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(mode.flags, ())
 
 
-class ProbeAgentsTests(unittest.TestCase):
+class ProbeOneTests(unittest.TestCase):
+    """Tests for the per-binary ``--version`` probe used by ``do_doctor``.
+
+    The parallel multi-agent ``probe_agents`` driver was removed in 0.5.x
+    once the host-wide probe in ``uxon.probes`` replaced it.
+    """
+
     def test_probe_ok(self) -> None:
         with mock.patch("uxon.agents.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="1.0.1\n", stderr=""
             )
-            result = uxon_agents.probe_agents(["claude"], launch_user=None)
-        self.assertEqual(result["claude"].status, "ok")
-        self.assertEqual(result["claude"].version, "1.0.1")
+            result = uxon_agents._probe_one("claude", launch_user=None)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.version, "1.0.1")
 
     def test_probe_missing_filenotfound(self) -> None:
         with mock.patch(
             "uxon.agents.subprocess.run",
             side_effect=FileNotFoundError("no such binary"),
         ):
-            result = uxon_agents.probe_agents(["codex"], launch_user=None)
-        self.assertEqual(result["codex"].status, "missing")
-        self.assertIsNone(result["codex"].version)
+            result = uxon_agents._probe_one("codex", launch_user=None)
+        self.assertEqual(result.status, "missing")
+        self.assertIsNone(result.version)
 
     def test_probe_missing_nonzero_exit(self) -> None:
         with mock.patch("uxon.agents.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=127, stdout="", stderr="not found"
             )
-            result = uxon_agents.probe_agents(["cursor"], launch_user=None)
-        self.assertEqual(result["cursor"].status, "missing")
+            result = uxon_agents._probe_one("cursor-agent", launch_user=None)
+        self.assertEqual(result.status, "missing")
 
     def test_probe_timeout(self) -> None:
         with mock.patch(
             "uxon.agents.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=1.5),
         ):
-            result = uxon_agents.probe_agents(["claude"], launch_user=None)
-        self.assertEqual(result["claude"].status, "timeout")
+            result = uxon_agents._probe_one("claude", launch_user=None)
+        self.assertEqual(result.status, "timeout")
 
     def test_probe_uses_sudo_when_launch_user_differs(self) -> None:
         captured: list[list[str]] = []
@@ -113,17 +119,13 @@ class ProbeAgentsTests(unittest.TestCase):
 
         with mock.patch("uxon.agents.subprocess.run", side_effect=fake_run):
             with mock.patch("uxon.agents._current_user", return_value="root"):
-                uxon_agents.probe_agents(["claude"], launch_user="devagent")
+                uxon_agents._probe_one("claude", launch_user="devagent")
 
         self.assertEqual(len(captured), 1)
         # -iu loads the target user's login env (matches command_prefix_for_user
         # in uxon.cli) so PATH picks up npm-global / nvm / ~/.local/bin.
         self.assertEqual(captured[0][:4], ["sudo", "-niu", "devagent", "--"])
         self.assertIn("claude", captured[0])
-
-    def test_probe_unknown_agent_id_ignored(self) -> None:
-        result = uxon_agents.probe_agents(["nosuch"], launch_user=None)
-        self.assertNotIn("nosuch", result)
 
 
 if __name__ == "__main__":
