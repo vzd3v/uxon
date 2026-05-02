@@ -1378,6 +1378,19 @@ class CliPreflightTests(unittest.TestCase):
             # Probe should never have been called.
             probe.assert_not_called()
 
+    def test_preflight_skipped_on_interactive_action(self) -> None:
+        """interactive (TUI) action skips the CLI preflight.
+
+        Regression: a wider gate that included ``interactive`` made every
+        no-arg ``uxon`` invocation block on a sudo round-trip before the
+        TUI mounted, defeating the fast-first-frame design. The TUI runs
+        its own async probe in the background.
+        """
+        with mock.patch("uxon.probes.probe_host") as probe:
+            with mock.patch("uxon.cli.do_interactive", return_value=0):
+                uxon.main([])
+            probe.assert_not_called()
+
     def test_preflight_passes_on_run_both_ok(self) -> None:
         """When tmux and agent are both present, run action should proceed past preflight."""
         with mock.patch("uxon.probes.probe_host") as probe:

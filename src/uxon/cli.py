@@ -2893,8 +2893,11 @@ def main(argv: list[str] | None = None) -> int:
     caller_user = resolve_caller_user()
     launch_user = resolve_launch_user(cfg, caller_user)
 
-    # CLI preflight: probe for tmux and required agents on non-doctor/non-version actions.
-    if args.action not in {"version", "doctor"}:
+    # CLI preflight: probe for tmux and required agents on actions that
+    # actually shell out to tmux. ``interactive`` is excluded so the TUI
+    # mount stays fast — the TUI runs its own async probe in the
+    # background and surfaces the same hints in line.
+    if args.action in {"run", "new", "attach", "list", "kill", "kill-all"}:
         from uxon import probes as uxon_probes
 
         report = uxon_probes.probe_host(cfg, launch_user)
