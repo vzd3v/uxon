@@ -284,19 +284,32 @@ def is_under(path: str, base: str) -> bool:
 
 
 def find_project_config(cwd: str, allowed_roots: list[str]) -> Path | None:
+    """Walk up from ``cwd`` looking for a ``.uxon.toml``.
+
+    With a non-empty ``allowed_roots`` whitelist, the file is only
+    accepted when it lives under one of the listed roots — same strict-
+    whitelist semantics as :func:`is_launch_target_allowed`. With an
+    empty list the whitelist is bypassed and the first ``.uxon.toml``
+    found while walking up is returned (matches the "empty = no
+    restriction beyond the launch user's filesystem" policy used
+    everywhere else for ``allowed_roots``).
+    """
     cur = Path(cwd)
-    allowed = [Path(p) for p in allowed_roots]
+    allowed = [str(Path(p)) for p in allowed_roots]
     for parent in [cur] + list(cur.parents):
         candidate = parent / ".uxon.toml"
         try:
             exists = candidate.exists()
         except PermissionError:
             continue
-        if exists:
-            for root in allowed:
-                if is_under(str(parent), str(root)):
-                    return candidate
-            return None
+        if not exists:
+            continue
+        if not allowed:
+            return candidate
+        for root in allowed:
+            if is_under(str(parent), root):
+                return candidate
+        return None
     return None
 
 
@@ -1306,6 +1319,23 @@ def resolve_session(
     raise AssertionError("unreachable")
 
 
+def is_under_allowed_roots(cfg: Config, path: str) -> bool:
+    """Single source of truth for the ``allowed_roots`` whitelist policy.
+
+    Empty ``cfg.allowed_roots`` → no whitelist; any path passes (the
+    caller is expected to have its own write/existence gate). Non-empty
+    → strict whitelist: ``path`` must sit under one of the listed roots.
+
+    Consumed by every site that gates on ``allowed_roots`` so the
+    "empty list = any writable directory" semantics introduced in 3.1.0
+    behave uniformly across the launch flow, the new-project flow, the
+    project-config discovery walk, and the doctor diagnostics.
+    """
+    if not cfg.allowed_roots:
+        return True
+    return any(is_under(path, base) for base in cfg.allowed_roots)
+
+
 def is_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> bool:
     """Return True if ``target_dir`` is a valid place to launch an agent.
 
@@ -1324,9 +1354,7 @@ def is_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> 
         return False
     if not probe_cwd_writable(launch_user, target_dir):
         return False
-    if cfg.allowed_roots:
-        return any(is_under(target_dir, base) for base in cfg.allowed_roots)
-    return True
+    return is_under_allowed_roots(cfg, target_dir)
 
 
 def ensure_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> None:
@@ -1336,24 +1364,49 @@ def ensure_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str)
     Same predicate as :func:`is_launch_target_allowed`; this variant
     emits a specific user-facing error describing exactly what failed
     (not a directory / not writable / outside ``allowed_roots``).
-
-    The new-project flow (``uxon new …`` without ``-w``) creates a new
-    directory under :attr:`Config.new_project_root` and gates on a
-    non-empty ``cfg.allowed_roots`` directly, so projects continue to
-    be created only where the operator explicitly opted in.
     """
     if not os.path.isdir(target_dir):
         fail(f"not a directory: {target_dir}")
     if not probe_cwd_writable(launch_user, target_dir):
         fail(f"no write access to {target_dir} for {launch_user}")
-    if cfg.allowed_roots:
-        for base in cfg.allowed_roots:
-            if is_under(target_dir, base):
-                return
+    if not is_under_allowed_roots(cfg, target_dir):
         eprint("uxon: directory must be under one of:")
         for base in cfg.allowed_roots:
             eprint(f"uxon:   - {base}")
         fail(f"got: {target_dir}")
+
+
+def is_new_project_target_allowed(cfg: Config, launch_user: str, project_dir: str) -> bool:
+    """Return True if ``project_dir`` may be created by ``uxon new``.
+
+    Variant of :func:`is_launch_target_allowed` for the create-new
+    flow: the target itself does not exist yet, so we check the
+    parent's write access (typically ``cfg.new_project_root``) plus
+    the same whitelist policy. With empty ``cfg.allowed_roots`` the
+    whitelist is bypassed and a writable parent suffices.
+    """
+    parent = os.path.dirname(project_dir) or "/"
+    if not probe_cwd_writable(launch_user, parent):
+        return False
+    return is_under_allowed_roots(cfg, project_dir)
+
+
+def ensure_new_project_target_allowed(
+    cfg: Config, launch_user: str, project_dir: str
+) -> None:
+    """Raise variant of :func:`is_new_project_target_allowed`.
+
+    Splits the failure reasons so the user sees whether the parent is
+    unwritable or whether the path is outside ``allowed_roots``.
+    """
+    parent = os.path.dirname(project_dir) or "/"
+    if not probe_cwd_writable(launch_user, parent):
+        fail(f"no write access to {parent} for {launch_user}")
+    if not is_under_allowed_roots(cfg, project_dir):
+        eprint("uxon: new project directory must be under one of:")
+        for base in cfg.allowed_roots:
+            eprint(f"uxon:   - {base}")
+        fail(f"got: {project_dir}")
 
 
 def print_list(
@@ -1836,9 +1889,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
     project_dir = canonical(os.path.join(cfg.new_project_root, name))
-    allowed = any(is_under(project_dir, base) for base in cfg.allowed_roots)
-    if not allowed:
-        fail(f"new target must be under allowed_roots; got: {project_dir}")
+    ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     branch = args.worktree_branch
     if branch:
         if not os.path.isdir(project_dir):
@@ -2112,7 +2163,7 @@ def doctor_issues(
     issues: list[str] = []
     if cfg.default_launch_mode == "fixed" and not cfg.runtime_user:
         issues.append("default_launch_mode is 'fixed' but runtime_user is empty")
-    if not any(is_under(cfg.new_project_root, base) for base in cfg.allowed_roots):
+    if not is_under_allowed_roots(cfg, cfg.new_project_root):
         issues.append(f"new_project_root {cfg.new_project_root} is outside allowed_roots")
     socket_parent = str(Path(socket_path).parent)
     if not os.path.isdir(socket_parent):
@@ -2500,14 +2551,13 @@ def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
     """Shared validation + directory creation for both TUI project flows.
 
     Returns the canonical absolute path; raises via ``fail()`` if ``name``
-    is malformed or the resulting path is not under ``allowed_roots``.
+    is malformed, the parent is not writable, or the path violates a
+    non-empty ``allowed_roots`` whitelist.
     """
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
     project_dir = canonical(os.path.join(cfg.new_project_root, name))
-    allowed = any(is_under(project_dir, base) for base in cfg.allowed_roots)
-    if not allowed:
-        fail(f"new target must be under allowed_roots; got: {project_dir}")
+    ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     run_cmd(command_prefix_for_user(launch_user) + ["mkdir", "-p", project_dir])
     return project_dir
 

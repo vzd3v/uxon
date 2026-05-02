@@ -34,6 +34,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `doctor` reference still lives in
   [`docs/cli.md`](docs/cli.md#doctor).
 
+### Fixed
+
+- `allowed_roots = []` (the default) now means "any writable directory"
+  uniformly across `uxon new`, the TUI new-project flow,
+  `find_project_config`, and `uxon doctor`. Previously the 3.1.0 fix
+  reached only `uxon run` and `uxon new -w`; the four other sites kept
+  the strict-whitelist branch and rejected every path on an empty
+  list (so `uxon new demo --dry-run` failed with "new target must be
+  under allowed_roots", `uxon doctor` flagged a fake
+  `new_project_root … is outside allowed_roots` issue, and project
+  `.uxon.toml` files were silently ignored).
+
 ## [3.1.0] — 2026-05-01
 
 ### Changed (breaking)

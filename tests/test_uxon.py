@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import tempfile
 import textwrap
@@ -31,6 +32,20 @@ class _StubsChain:
 
 
 class UxonTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # ``ensure_new_project_target_allowed`` (introduced when the
+        # ``allowed_roots`` semantics were unified) calls
+        # ``probe_cwd_writable`` on the parent of every new project
+        # path. The fixtures use placeholder paths like ``/srv/repos``
+        # that don't exist on CI/dev hosts, so default the probe to
+        # True here. Tests that need to assert the unwritable path is
+        # rejected wrap their own ``mock.patch.object(uxon,
+        # "probe_cwd_writable", return_value=False)`` block — the
+        # inner ``with`` overrides this default for its scope.
+        patcher = mock.patch.object(uxon, "probe_cwd_writable", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def make_config(self, **overrides) -> uxon.Config:
         defaults = dict(
             runtime_user="",
@@ -1243,6 +1258,128 @@ def _mk_session(
         agent=agent,
         legacy=legacy,
     )
+
+
+class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
+    """Regression: empty ``allowed_roots`` must mean "any writable" everywhere.
+
+    The 3.1.0 fix introduced this semantics for ``is_launch_target_allowed``
+    but missed ``do_new``, ``_resolve_tui_project_dir``,
+    ``do_doctor`` and ``find_project_config``. After the unification
+    refactor every consumer routes through
+    :func:`uxon.cli.is_under_allowed_roots` so the four sites behave
+    identically.
+    """
+
+    def _cfg(self, **overrides) -> uxon.Config:
+        defaults = dict(
+            runtime_user="",
+            default_launch_mode="caller",
+            enable_all_users_list=False,
+            launch_user_by_caller={},
+            session_users=[],
+            allowed_roots=[],
+            session_prefix="uxon-",
+            legacy_session_prefixes=(),
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_default_args={"claude": (), "codex": (), "cursor": ()},
+            new_project_root="/srv/work",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/uxon-{user}.sock",
+            tui_refresh_interval_seconds=2.0,
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
+        )
+        defaults.update(overrides)
+        return uxon.Config(**defaults)
+
+    def test_is_under_allowed_roots_empty_list_returns_true(self) -> None:
+        cfg = self._cfg(allowed_roots=[])
+        self.assertTrue(uxon.is_under_allowed_roots(cfg, "/anything/at/all"))
+
+    def test_is_under_allowed_roots_non_empty_strict(self) -> None:
+        cfg = self._cfg(allowed_roots=["/srv/work"])
+        self.assertTrue(uxon.is_under_allowed_roots(cfg, "/srv/work/proj"))
+        self.assertFalse(uxon.is_under_allowed_roots(cfg, "/home/u/proj"))
+
+    def test_do_new_empty_allowed_roots_passes_writable_parent(self) -> None:
+        """Regression for the original bug report: ``uxon new x --dry-run``
+        used to fail with "new target must be under allowed_roots" even
+        when ``allowed_roots=[]``.
+        """
+        cfg = self._cfg(allowed_roots=[])
+        args = uxon.ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
+
+        with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+            with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
+                with mock.patch.object(uxon.os, "getcwd", return_value="/home/u-vz"):
+                    with mock.patch.object(uxon, "collect_sessions", return_value=[]):
+                        with mock.patch.object(
+                            uxon, "allocate_session_name", return_value="uxon-demo"
+                        ):
+                            with mock.patch.object(uxon, "launch_in_tmux", return_value=0):
+                                rc = uxon.do_new(args, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+
+    def test_do_new_empty_allowed_roots_rejects_unwritable_parent(self) -> None:
+        """Empty ``allowed_roots`` doesn't mean "anything goes" — the
+        parent of the new project still has to be writable for the
+        launch user."""
+        cfg = self._cfg(allowed_roots=[])
+        args = uxon.ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
+
+        with mock.patch.object(uxon, "probe_cwd_writable", return_value=False):
+            with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
+                with mock.patch.object(uxon, "eprint"):
+                    with self.assertRaises(SystemExit) as exc:
+                        uxon.do_new(args, cfg, "u-vz")
+        self.assertEqual(exc.exception.code, 2)
+
+    def test_do_new_non_empty_allowed_roots_rejects_outside(self) -> None:
+        cfg = self._cfg(allowed_roots=["/srv/work"], new_project_root="/home/u-vz")
+        args = uxon.ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
+
+        with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+            with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
+                with mock.patch.object(uxon, "eprint"):
+                    with self.assertRaises(SystemExit) as exc:
+                        uxon.do_new(args, cfg, "u-vz")
+        self.assertEqual(exc.exception.code, 2)
+
+    def test_doctor_no_issue_when_allowed_roots_empty(self) -> None:
+        """Doctor should not flag ``new_project_root outside allowed_roots``
+        when ``allowed_roots`` is empty — the whitelist is bypassed
+        and the path is vacuously fine."""
+        cfg = self._cfg(allowed_roots=[], new_project_root="/anywhere")
+        # Direct unit test of the predicate that drives the doctor
+        # warning; the full doctor flow is exercised elsewhere.
+        self.assertTrue(uxon.is_under_allowed_roots(cfg, cfg.new_project_root))
+
+    def test_find_project_config_empty_list_returns_any_uxon_toml(self) -> None:
+        """Regression: with ``allowed_roots=[]``, ``find_project_config``
+        used to silently return ``None`` (empty for-loop never matched),
+        so project configs were ignored on default-config hosts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_real = os.path.realpath(tmp)
+            (Path(tmp_real) / ".uxon.toml").write_text("# stub\n")
+            sub = Path(tmp_real) / "sub"
+            sub.mkdir()
+            found = uxon.find_project_config(str(sub), allowed_roots=[])
+            self.assertIsNotNone(found)
+            self.assertEqual(str(found), str(Path(tmp_real) / ".uxon.toml"))
+
+    def test_find_project_config_non_empty_list_still_strict(self) -> None:
+        """Non-empty ``allowed_roots`` still constrains the walk — a
+        ``.uxon.toml`` outside the listed roots is rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_real = os.path.realpath(tmp)
+            (Path(tmp_real) / ".uxon.toml").write_text("# stub\n")
+            sub = Path(tmp_real) / "sub"
+            sub.mkdir()
+            found = uxon.find_project_config(str(sub), allowed_roots=["/some/other/root"])
+            self.assertIsNone(found)
 
 
 class SessionNamingTests(unittest.TestCase):
