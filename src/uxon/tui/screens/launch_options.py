@@ -85,7 +85,14 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
 
     async def on_mount(self) -> None:
         if not self._visible_agents:
-            # No usable agent — let the app-level gate handle the hint.
+            # No usable agent — surface a toast and dismiss; do NOT
+            # force-push the unavailable modal here. The host probe
+            # worker re-arms the gate via the transition path.
+            self.app.notify(
+                "No agents installed — install one and press 'r' to retry.",
+                severity="warning",
+                timeout=6,
+            )
             self.dismiss(None)
             return
         agent_panel = self.query_one("#agent-panel", Vertical)
@@ -224,6 +231,13 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         if update.dismiss:
             mode_list = self.query_one("#mode-list", ListView)
             await mode_list.clear()
+            # Same toast pattern as on_mount: surface a hint and let the
+            # background host probe re-arm the unavailable modal.
+            self.app.notify(
+                "No agents installed — install one and press 'r' to retry.",
+                severity="warning",
+                timeout=6,
+            )
             self.dismiss(None)
             return
 

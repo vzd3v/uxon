@@ -52,6 +52,63 @@ def should_start_agent_probe(*, probe_agents: bool, enabled_agents: tuple[str, .
     return probe_agents and bool(enabled_agents)
 
 
+def compute_all_missing(
+    *,
+    enabled_agents: tuple[str, ...],
+    availability: Mapping[str, Any],
+) -> bool:
+    """Return True when every enabled agent has a resolved missing/timeout status.
+
+    Distinct from :func:`should_show_agents_unavailable` because the new
+    transition-based push gate (``should_push_agents_unavailable``) needs the
+    raw "is this state all-missing now" predicate, decoupled from the
+    previously-shown latch.
+    """
+    if not enabled_agents:
+        return False
+    resolved = all(
+        aid in availability and getattr(availability[aid], "status", "pending") != "pending"
+        for aid in enabled_agents
+    )
+    if not resolved:
+        return False
+    return all(
+        getattr(availability[aid], "status", None) in ("missing", "timeout")
+        for aid in enabled_agents
+    )
+
+
+def should_push_agents_unavailable(
+    *,
+    last_all_missing: bool | None,
+    current_all_missing: bool,
+    modal_already_on_stack: bool,
+    pending_launch: bool,
+) -> bool:
+    """Decide whether to push ``AgentsUnavailableScreen`` on this tick.
+
+    Replaces the per-app-instance ``_agents_popup_shown`` latch with a
+    transition-based gate:
+
+    - Push only on the False/None → True transition (no spam if the state
+      keeps being "all missing").
+    - Never push when the modal is already on the screen stack (defensive).
+    - Never push during a launch handoff (``pending_launch`` is set) — the
+      launch is taking the user to a TTY and racing a modal push is rude.
+    - We deliberately do **not** auto-pop when state recovers; closing a
+      modal under the user is hostile and races with concurrent
+      ``pop_screen`` paths.
+    """
+    if not current_all_missing:
+        return False
+    if modal_already_on_stack:
+        return False
+    if pending_launch:
+        return False
+    # Transition gate: only push on (False|None) → True.
+    return last_all_missing in (False, None)
+
+
 @dataclass(frozen=True)
 class CallbackFailure:
     message: str

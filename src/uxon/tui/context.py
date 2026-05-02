@@ -133,6 +133,14 @@ class TuiContext:
     launch_user: str = ""
     # Maps agent_id → AgentAvailability (status: "pending"|"ok"|"missing"|"timeout")
     agent_availability: dict[str, Any] = field(default_factory=dict)
+    # Maps agent_id → BinaryStatus for agents installed on the host but not
+    # listed in ``enabled_agents``. Populated by the ``probe_host`` worker so
+    # the main screen can suggest enabling them.
+    detected_agents: dict[str, Any] = field(default_factory=dict)
+    # Whether the repo-config file is writable by the current user (directly
+    # via ``os.access`` or indirectly via passwordless sudo). Used by the
+    # detected-agents banner to decide whether the ``[a]`` action is live.
+    repo_config_writable: bool = False
 
     # Callbacks — TUI calls these, uxon provides them.
     # Launch/attach callbacks return a LaunchRequest; the outer run() loop

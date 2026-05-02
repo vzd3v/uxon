@@ -28,7 +28,11 @@ from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
 from .screens.agents_unavailable import AgentsUnavailableScreen
 from .screens.main import MainScreen
-from .state import should_show_agents_unavailable, should_start_agent_probe
+from .state import (
+    compute_all_missing,
+    should_push_agents_unavailable,
+    should_start_agent_probe,
+)
 
 
 class _AgentAvailabilityUpdated(Message):
@@ -40,6 +44,21 @@ class _AgentAvailabilityUpdated(Message):
     to bubble back up to the app and trigger a second dispatch, observed
     as an infinitely-flashing agent list with the selection resetting
     each tick.
+
+    Kept for backward compatibility with existing tests that synthesise
+    this message; the worker now posts :class:`_HostReportUpdated` and
+    derives the same dispatch from there.
+    """
+
+    bubble = False
+
+
+class _HostReportUpdated(Message):
+    """Posted by ``_probe_host_worker`` once a fresh :class:`HostReport` lands.
+
+    Carries no payload — the worker mutates ``ctx.agent_availability`` and
+    ``ctx.detected_agents`` in place before posting (mirroring the
+    pre-existing pattern for ``_AgentAvailabilityUpdated``).
     """
 
     bubble = False
@@ -131,13 +150,13 @@ class UxonApp(App):
         # next request rather than queueing — workers are idempotent and
         # the next tick will catch up.
         self._refresh_in_flight = False
-        # Latch: AgentsUnavailableScreen is pushed at most once per app
-        # instance. ``run()``'s outer loop re-creates the app after every
-        # launch, which is the right cadence to re-arm the popup. The
-        # in-session ``r`` refresh does NOT re-run the probe (it only
-        # rebuilds ctx), so it intentionally does not re-arm either —
-        # the popup copy tells the user to quit and restart.
-        self._agents_popup_shown: bool = False
+        # Transition gate: ``AgentsUnavailableScreen`` is pushed only on
+        # the (False|None) → True transition of the "all enabled agents
+        # are missing" predicate. ``None`` means we have not seen a probe
+        # result yet. We deliberately do not auto-pop the modal when the
+        # state recovers — see ``should_push_agents_unavailable`` in
+        # ``state.py`` for the rationale.
+        self._last_all_missing: bool | None = None
 
     def on_mount(self) -> None:
         # Push the main screen as the first and only base screen.
@@ -154,12 +173,12 @@ class UxonApp(App):
         # — keeps the first frame fast and the event loop unblocked.
         if self.ctx.loading:
             self.kick_refresh()
-        # Kick off background agent availability probe.
+        # Kick off background host probe (tmux + all known agents).
         if should_start_agent_probe(
             probe_agents=self.probe_agents,
             enabled_agents=self.ctx.enabled_agents,
         ):
-            self.run_worker(self._probe_agents_worker, thread=True, exclusive=True)
+            self.run_worker(self._probe_host_worker, thread=True, exclusive=True)
         # Kick off cwd-write probe when the synchronous path didn't
         # already resolve it (cross-user case: uxon left cwd_writable=None
         # because the check would shell out via sudo).
@@ -214,17 +233,56 @@ class UxonApp(App):
         if isinstance(top, MainScreen):
             top.apply_loaded_ctx(event.ctx)
 
-    def _probe_agents_worker(self) -> None:
-        """Background thread: probe each enabled agent's binary --version."""
-        from uxon import agents as uxon_agents
+    def _probe_host_worker(self) -> None:
+        """Background thread: probe tmux + all known agent binaries.
 
-        result = uxon_agents.probe_agents(
-            list(self.ctx.enabled_agents),
-            launch_user=self.ctx.launch_user or None,
-        )
-        for aid, avail in result.items():
-            self.ctx.agent_availability[aid] = avail
-        self.post_message(_AgentAvailabilityUpdated())
+        Uses ``probes.probe_host`` rather than the older per-agent
+        ``probe_agents`` driver so that one ``sh -lc`` round-trip covers
+        every binary, and so detected-but-not-enabled agents surface in
+        ``ctx.detected_agents`` for the suggestion banner.
+
+        ``BinaryStatus`` (path-based) is mapped to ``AgentAvailability``
+        (status-based) for backward compatibility with existing
+        consumers like ``LaunchOptionsScreen``.
+        """
+        from uxon import agents as uxon_agents
+        from uxon import probes as uxon_probes
+
+        # Build a minimal cfg-shaped object with what probe_host needs.
+        class _Cfg:
+            enabled_agents = self.ctx.enabled_agents
+
+        # Default to the current OS user when ``launch_user`` is unset so
+        # ``probe_host`` runs the local (no-sudo) code path. Falling back
+        # to ``ctx.current_user`` would force a sudo wrap whenever the
+        # caller fed us a placeholder value (test fixtures, skeleton
+        # contexts), which is both slower and prone to false-negatives.
+        target_user = self.ctx.launch_user or uxon_probes._current_user()
+
+        try:
+            report = uxon_probes.probe_host(_Cfg(), target_user)
+        except Exception:  # pragma: no cover — defensive
+            self.post_message(_HostReportUpdated())
+            return
+
+        # Map BinaryStatus → AgentAvailability for enabled agents.
+        for aid, status in report.enabled.items():
+            if status.path is not None:
+                self.ctx.agent_availability[aid] = uxon_agents.AgentAvailability(
+                    status="ok",
+                    path=status.path,
+                )
+            else:
+                self.ctx.agent_availability[aid] = uxon_agents.AgentAvailability(
+                    status="missing",
+                    error=f"{status.name} not found on PATH",
+                )
+
+        # Update detected agents (installed but not enabled).
+        self.ctx.detected_agents.clear()
+        self.ctx.detected_agents.update(report.detected)
+
+        self.post_message(_HostReportUpdated())
 
     def _probe_cwd_writable_worker(self) -> None:
         """Background thread: probe write access and post the result."""
@@ -281,15 +339,11 @@ class UxonApp(App):
         self.pending_launch = req
         self.exit()
 
-    def on__agent_availability_updated(self, event: _AgentAvailabilityUpdated) -> None:
-        """Gate: on every probe update, decide whether to pop the install hint.
-
-        Also directly kicks the active modal (if it's the one that reads
-        availability state — :class:`LaunchOptionsScreen`) so its
-        ``(checking…)`` labels resolve. We intentionally do NOT post a
-        second message at the screen here: re-posting caused the message
-        to bubble back up to the app and trigger a second dispatch,
-        flashing the list.
+    def _dispatch_availability_change(self) -> None:
+        """Common dispatch shared between ``_AgentAvailabilityUpdated`` and
+        ``_HostReportUpdated``: refresh the active modal if it consumes
+        availability, then run the transition-based gate for
+        ``AgentsUnavailableScreen``.
         """
         from .screens.launch_options import LaunchOptionsScreen
 
@@ -299,14 +353,44 @@ class UxonApp(App):
             # does not go through the message-pump / bubbling path.
             self.call_later(top._rebuild_agent_list)
 
-        if not should_show_agents_unavailable(
+        current_all_missing = compute_all_missing(
             enabled_agents=self.ctx.enabled_agents,
             availability=self.ctx.agent_availability,
-            already_shown=self._agents_popup_shown,
-        ):
-            return
-        self._agents_popup_shown = True
-        self.push_screen(AgentsUnavailableScreen(tuple(self.ctx.enabled_agents)))
+        )
+        modal_on_stack = any(isinstance(s, AgentsUnavailableScreen) for s in self.screen_stack)
+        push = should_push_agents_unavailable(
+            last_all_missing=self._last_all_missing,
+            current_all_missing=current_all_missing,
+            modal_already_on_stack=modal_on_stack,
+            pending_launch=self.pending_launch is not None,
+        )
+        if push:
+            self.push_screen(AgentsUnavailableScreen(tuple(self.ctx.enabled_agents)))
+        # Update the transition tracker only after we have observed at
+        # least one resolved availability set; ``compute_all_missing``
+        # returns False both for "all ok" and for "still pending" — we
+        # don't want a single pending tick to clear ``_last_all_missing``
+        # back to False and re-arm a push when the next tick lands.
+        if self._availability_resolved():
+            self._last_all_missing = current_all_missing
+
+    def _availability_resolved(self) -> bool:
+        """True iff every enabled agent has a non-pending availability entry."""
+        if not self.ctx.enabled_agents:
+            return False
+        return all(
+            aid in self.ctx.agent_availability
+            and getattr(self.ctx.agent_availability[aid], "status", "pending") != "pending"
+            for aid in self.ctx.enabled_agents
+        )
+
+    def on__agent_availability_updated(self, event: _AgentAvailabilityUpdated) -> None:
+        """Backward-compatible handler. Dispatches via the shared path."""
+        self._dispatch_availability_change()
+
+    def on__host_report_updated(self, event: _HostReportUpdated) -> None:
+        """Handler for the new probe_host worker. Same dispatch path."""
+        self._dispatch_availability_change()
 
     def on__link_health_updated(self, event: _LinkHealthUpdated) -> None:
         self.ctx.link_health_status = event.status

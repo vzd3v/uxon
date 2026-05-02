@@ -32,6 +32,7 @@ from uxon.tui.state import (
     agent_is_pending,
     agent_list_label,
     callback_failure_to_toast,
+    compute_all_missing,
     confirm_phrase_matches,
     digit_jump_intent,
     launch_commit_decision,
@@ -47,6 +48,7 @@ from uxon.tui.state import (
     selected_setting_index,
     server_status_line,
     session_intent,
+    should_push_agents_unavailable,
     should_show_agents_unavailable,
     should_start_agent_probe,
     update_launch_options_after_availability,
@@ -172,6 +174,107 @@ class AgentsUnavailableGateStateTests(unittest.TestCase):
             already_shown=False,
         )
         self.assertTrue(result)
+
+
+class ComputeAllMissingTests(unittest.TestCase):
+    def test_false_without_enabled(self) -> None:
+        self.assertFalse(compute_all_missing(enabled_agents=(), availability={}))
+
+    def test_false_when_pending(self) -> None:
+        self.assertFalse(
+            compute_all_missing(
+                enabled_agents=("claude",),
+                availability={"claude": type("A", (), {"status": "pending"})()},
+            )
+        )
+
+    def test_false_when_any_ok(self) -> None:
+        self.assertFalse(
+            compute_all_missing(
+                enabled_agents=("claude", "codex"),
+                availability={
+                    "claude": type("A", (), {"status": "ok"})(),
+                    "codex": type("A", (), {"status": "missing"})(),
+                },
+            )
+        )
+
+    def test_true_when_all_missing(self) -> None:
+        self.assertTrue(
+            compute_all_missing(
+                enabled_agents=("claude", "codex"),
+                availability={
+                    "claude": type("A", (), {"status": "missing"})(),
+                    "codex": type("A", (), {"status": "timeout"})(),
+                },
+            )
+        )
+
+
+class ShouldPushAgentsUnavailableTests(unittest.TestCase):
+    """Transition-based push gate."""
+
+    def test_no_push_when_state_is_ok(self) -> None:
+        self.assertFalse(
+            should_push_agents_unavailable(
+                last_all_missing=True,
+                current_all_missing=False,
+                modal_already_on_stack=False,
+                pending_launch=False,
+            )
+        )
+
+    def test_no_push_when_modal_already_up(self) -> None:
+        self.assertFalse(
+            should_push_agents_unavailable(
+                last_all_missing=False,
+                current_all_missing=True,
+                modal_already_on_stack=True,
+                pending_launch=False,
+            )
+        )
+
+    def test_no_push_when_pending_launch(self) -> None:
+        self.assertFalse(
+            should_push_agents_unavailable(
+                last_all_missing=False,
+                current_all_missing=True,
+                modal_already_on_stack=False,
+                pending_launch=True,
+            )
+        )
+
+    def test_push_on_first_observation_all_missing(self) -> None:
+        self.assertTrue(
+            should_push_agents_unavailable(
+                last_all_missing=None,
+                current_all_missing=True,
+                modal_already_on_stack=False,
+                pending_launch=False,
+            )
+        )
+
+    def test_push_on_transition_false_to_true(self) -> None:
+        self.assertTrue(
+            should_push_agents_unavailable(
+                last_all_missing=False,
+                current_all_missing=True,
+                modal_already_on_stack=False,
+                pending_launch=False,
+            )
+        )
+
+    def test_no_push_when_state_steady_true(self) -> None:
+        # Don't spam: same all-missing state on consecutive ticks should
+        # not re-push the modal once the user dismissed it.
+        self.assertFalse(
+            should_push_agents_unavailable(
+                last_all_missing=True,
+                current_all_missing=True,
+                modal_already_on_stack=False,
+                pending_launch=False,
+            )
+        )
 
 
 class LaunchOptionsStateTests(unittest.TestCase):
