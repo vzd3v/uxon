@@ -241,6 +241,94 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class WorkerGateTests(unittest.TestCase):
+    """Regression coverage for the worker-handle in-flight gate.
+
+    The previous bool-latch implementation wedged when a refresh worker
+    was cancelled before it ran (an ``exclusive=True`` host probe in the
+    same default group did exactly this), because ``_refresh_in_flight``
+    stayed True forever. The handle-based gate must self-heal: once a
+    worker leaves PENDING/RUNNING (cancelled, errored, or succeeded),
+    the next kick spawns a fresh one.
+    """
+
+    def test_worker_active_helper(self) -> None:
+        from textual.worker import WorkerState
+
+        from uxon.tui.app import _worker_active
+
+        class _FakeWorker:
+            def __init__(self, state: WorkerState) -> None:
+                self.state = state
+
+        self.assertFalse(_worker_active(None))
+        self.assertTrue(_worker_active(_FakeWorker(WorkerState.PENDING)))
+        self.assertTrue(_worker_active(_FakeWorker(WorkerState.RUNNING)))
+        for done in (WorkerState.CANCELLED, WorkerState.ERROR, WorkerState.SUCCESS):
+            self.assertFalse(_worker_active(_FakeWorker(done)))
+
+    def test_kick_refresh_heals_after_worker_cancellation(self) -> None:
+        """Cancelled worker must not wedge the refresh stream."""
+        from textual.worker import WorkerState
+
+        from uxon.tui.app import UxonApp
+
+        class _FakeWorker:
+            def __init__(self) -> None:
+                self.state = WorkerState.RUNNING
+
+        spawned: list[_FakeWorker] = []
+
+        def fake_run_worker(*_args, **_kwargs):
+            w = _FakeWorker()
+            spawned.append(w)
+            return w
+
+        app = UxonApp(_mk_ctx(), probe_agents=False)
+        app.run_worker = fake_run_worker  # type: ignore[method-assign]
+
+        app.kick_refresh()
+        self.assertEqual(len(spawned), 1)
+        app.kick_refresh()  # still RUNNING — must skip
+        self.assertEqual(len(spawned), 1)
+
+        spawned[0].state = WorkerState.CANCELLED  # simulate exclusive-cancel
+        app.kick_refresh()  # must self-heal and spawn
+        self.assertEqual(len(spawned), 2)
+
+    def test_kick_helpers_use_distinct_groups(self) -> None:
+        """Each periodic stream pins its worker to its own group.
+
+        Without distinct groups, ``run_worker(exclusive=True)`` from one
+        stream cancels workers from any other stream that happens to
+        share the default group.
+        """
+        from uxon.tui.app import UxonApp
+
+        captured: list[dict] = []
+
+        class _FakeWorker:
+            def __init__(self) -> None:
+                from textual.worker import WorkerState
+
+                self.state = WorkerState.RUNNING
+
+        def fake_run_worker(*_args, **kwargs):
+            captured.append(kwargs)
+            return _FakeWorker()
+
+        app = UxonApp(_mk_ctx(), probe_agents=True)
+        app.run_worker = fake_run_worker  # type: ignore[method-assign]
+
+        app.kick_refresh()
+        app._kick_host_probe()
+        app._kick_link_health_probe()
+
+        groups = [k.get("group") for k in captured]
+        self.assertEqual(sorted(groups), sorted({"refresh", "host_probe", "link_health"}))
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class ConfirmModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirm_modal_smoke_batch(self) -> None:
         from textual.widgets import Input

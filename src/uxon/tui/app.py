@@ -22,6 +22,7 @@ from typing import Any
 from textual.app import App
 from textual.binding import Binding
 from textual.message import Message
+from textual.worker import Worker, WorkerState
 
 from .context import CallbackError, LaunchRequest, TuiContext
 from .events import _log_event
@@ -34,6 +35,18 @@ from .state import (
     compute_all_missing,
     should_push_agents_unavailable,
 )
+
+_ACTIVE_STATES = (WorkerState.PENDING, WorkerState.RUNNING)
+
+
+def _worker_active(w: Worker | None) -> bool:
+    """True iff ``w`` is queued or running.
+
+    Used as the in-flight gate for periodic kick-X helpers — derives
+    from worker state rather than a separate bool, so a cancelled or
+    crashed worker frees its slot automatically.
+    """
+    return w is not None and w.state in _ACTIVE_STATES
 
 
 class _AgentAvailabilityUpdated(Message):
@@ -144,18 +157,13 @@ class UxonApp(App):
         self.quit_rc: int | None = None
         self.pending_status = pending_status
         self.probe_agents = probe_agents
-        self._link_health_probe_running = False
-        # Mirror of ``_link_health_probe_running`` for the host probe so
-        # the periodic tick (and the manual ``r`` keybinding via
-        # ``kick_refresh``) can re-run ``probe_host`` without piling up
-        # concurrent workers.
-        self._host_probe_running = False
-        # Single in-flight latch for ctx refresh. Periodic timer, manual
-        # ``r`` and the post-skeleton initial load all funnel through
-        # :meth:`kick_refresh`; if a worker is still running we drop the
-        # next request rather than queueing — workers are idempotent and
-        # the next tick will catch up.
-        self._refresh_in_flight = False
+        # Worker-handle in-flight gates (see :func:`_worker_active`).
+        # Each kick also pins its worker to a dedicated group so an
+        # ``exclusive=True`` call cancels only siblings, never workers
+        # from another stream.
+        self._refresh_handle: Worker | None = None
+        self._host_probe_handle: Worker | None = None
+        self._link_health_handle: Worker | None = None
         # Transition gate: ``AgentsUnavailableScreen`` is pushed only on
         # the (False|None) → True transition of the "all enabled agents
         # are missing" predicate. ``None`` means we have not seen a probe
@@ -191,7 +199,12 @@ class UxonApp(App):
         # already resolve it (cross-user case: uxon left cwd_writable=None
         # because the check would shell out via sudo).
         if self.ctx.cwd_writable is None:
-            self.run_worker(self._probe_cwd_writable_worker, thread=True, exclusive=False)
+            self.run_worker(
+                self._probe_cwd_writable_worker,
+                thread=True,
+                exclusive=False,
+                group="cwd_writable",
+            )
         timers_enabled = not self.is_headless and "PYTEST_CURRENT_TEST" not in os.environ
         if timers_enabled:
             self.set_interval(
@@ -220,17 +233,19 @@ class UxonApp(App):
         """Schedule a worker that calls ``on_refresh`` and posts the result.
 
         Used by the periodic timer, the ``r`` keybinding and the initial
-        load after a skeleton mount. No-op when a worker is already in
-        flight — workers are idempotent and the next periodic tick will
-        catch up. Result is delivered as a :class:`_MainCtxLoaded`
-        message; :meth:`on__main_ctx_loaded` clears the flag and applies.
+        load after a skeleton mount. No-op when a prior worker is still
+        PENDING/RUNNING — workers are idempotent and the next periodic
+        tick will catch up. Result is delivered as a
+        :class:`_MainCtxLoaded` message; :meth:`on__main_ctx_loaded`
+        applies it to the screen.
         """
-        if self._refresh_in_flight:
+        if _worker_active(self._refresh_handle):
             _debug("refresh", at="kick_refresh", action="skip", reason="in_flight")
             return
-        self._refresh_in_flight = True
         _debug("refresh", at="kick_refresh", action="spawn")
-        self.run_worker(self._refresh_worker, thread=True, exclusive=False)
+        self._refresh_handle = self.run_worker(
+            self._refresh_worker, thread=True, exclusive=False, group="refresh"
+        )
 
     def _refresh_worker(self) -> None:
         """Background thread: rebuild the TuiContext via ctx.on_refresh()."""
@@ -270,7 +285,6 @@ class UxonApp(App):
         self.post_message(_MainCtxLoaded(new_ctx))
 
     def on__main_ctx_loaded(self, event: _MainCtxLoaded) -> None:
-        self._refresh_in_flight = False
         top = self.screen_stack[-1] if self.screen_stack else None
         top_kind = type(top).__name__ if top else "None"
         _debug(
@@ -301,10 +315,11 @@ class UxonApp(App):
         """
         if not self.probe_agents:
             return
-        if self._host_probe_running:
+        if _worker_active(self._host_probe_handle):
             return
-        self._host_probe_running = True
-        self.run_worker(self._probe_host_worker, thread=True, exclusive=True)
+        self._host_probe_handle = self.run_worker(
+            self._probe_host_worker, thread=True, exclusive=True, group="host_probe"
+        )
 
     def _probe_host_worker(self) -> None:
         """Background thread: probe tmux + all known agent binaries.
@@ -332,11 +347,11 @@ class UxonApp(App):
         # contexts), which is both slower and prone to false-negatives.
         target_user = self.ctx.launch_user or uxon_probes._current_user()
 
-        # Single try/finally so the latch is always cleared — even if
-        # the BinaryStatus → AgentAvailability mapping below raises
-        # (e.g., a future CATALOG entry returning a malformed status).
-        # A leaked latch would silently disable the periodic probe for
-        # the rest of the session.
+        # Worker-state-derived gate (see ``__init__``) means we don't
+        # need a try/finally to clear a bool latch — a worker that
+        # exits or crashes drops out of RUNNING state automatically.
+        # We still post ``_HostReportUpdated`` in finally so a partial
+        # mapping failure doesn't suppress the badge update.
         try:
             try:
                 report = uxon_probes.probe_host(_Cfg(), target_user)
@@ -360,7 +375,6 @@ class UxonApp(App):
             self.ctx.detected_agents.clear()
             self.ctx.detected_agents.update(report.detected)
         finally:
-            self._host_probe_running = False
             self.post_message(_HostReportUpdated())
 
     def _probe_cwd_writable_worker(self) -> None:
@@ -381,10 +395,11 @@ class UxonApp(App):
             self.call_later(top._refresh_cwd_row)
 
     def _kick_link_health_probe(self) -> None:
-        if self._link_health_probe_running:
+        if _worker_active(self._link_health_handle):
             return
-        self._link_health_probe_running = True
-        self.run_worker(self._probe_link_health_worker, thread=True, exclusive=False)
+        self._link_health_handle = self.run_worker(
+            self._probe_link_health_worker, thread=True, exclusive=False, group="link_health"
+        )
 
     def _probe_link_health_worker(self) -> None:
         from uxon import tui as uxon_tui
@@ -397,8 +412,6 @@ class UxonApp(App):
                 state="error",
                 summary=str(exc).strip() or exc.__class__.__name__,
             )
-        finally:
-            self._link_health_probe_running = False
         if status is None:
             status = uxon_tui.LinkHealthStatus()
         self.post_message(_LinkHealthUpdated(status))

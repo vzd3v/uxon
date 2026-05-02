@@ -5,4 +5,4 @@ The single source of truth for the package version. Hatch reads this via
 ``uxon version`` all agree without a separate ``VERSION`` file.
 """
 
-__version__ = "3.2.1"
+__version__ = "3.2.2"

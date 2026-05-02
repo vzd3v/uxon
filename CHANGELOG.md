@@ -8,6 +8,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.2] — 2026-05-02
+
+### Fixed
+
+- The TUI session list and metrics no longer freeze a few seconds
+  after launch while the rest of the interface stays responsive.
+
 ## [3.2.1] — 2026-05-02
 
 ### Fixed
