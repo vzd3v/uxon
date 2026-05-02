@@ -41,8 +41,9 @@ from ..state import (
     main_action_intent,
     main_status_line,
     session_intent,
+    visible_detected_agents,
 )
-from ..widgets import ActionRow, SessionTable
+from ..widgets import ActionRow, DetectedAgentsBanner, SessionTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
 from .git_profile import GitProfileScreen
@@ -88,6 +89,12 @@ class MainScreen(Screen):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
+        # Detected-agents banner: only does something when the banner is
+        # visible (``visible_detected_agents(...)`` is non-empty). When the
+        # banner is hidden these bindings are no-ops; the footer hides
+        # them via ``show=False`` to avoid clutter.
+        Binding("a", "enable_detected", "Enable detected", show=False),
+        Binding("x", "dismiss_detected", "Dismiss detected", show=False),
         # Arrow navigation across focusable widgets. DataTable consumes
         # up/down internally for row navigation, so these only fire when
         # focus sits on an ActionRow — crossing widget boundaries.
@@ -120,6 +127,10 @@ class MainScreen(Screen):
                 loading=self.ctx.loading,
             )
             yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
+            # Detected-agents banner. Hidden by default; the host probe
+            # worker populates ctx.detected_agents and triggers
+            # ``_refresh_detected_banner``.
+            yield DetectedAgentsBanner("", id="detected-banner", classes="-hidden")
             # Action rows
             yield ActionRow(
                 kind="action-cwd",
@@ -424,6 +435,64 @@ class MainScreen(Screen):
         # Dispatch through the app so the refresh runs in a worker
         # thread and the event loop stays responsive.
         self.app.kick_refresh()  # type: ignore[attr-defined]
+
+    def action_enable_detected(self) -> None:
+        """Banner action: add the first detected agent to ``[agents].enabled``."""
+        ids = self._visible_detected()
+        if not ids:
+            return
+        if not self.ctx.repo_config_writable:
+            self.app.notify(
+                "Repo config is read-only; ask your operator to enable in [agents].enabled.",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        agent_id = ids[0]
+        try:
+            self.ctx.on_enable_detected_agent(agent_id)
+        except CallbackError as exc:
+            self.app.notify(f"Enable failed: {exc}", severity="error", timeout=6)
+            return
+        self.app.notify(f"Enabled '{agent_id}' in [agents].enabled.")
+        # Trigger a full refresh so cfg.enabled_agents picks up the new
+        # agent and the banner re-evaluates.
+        self.app.kick_refresh()  # type: ignore[attr-defined]
+
+    def action_dismiss_detected(self) -> None:
+        """Banner action: dismiss the first detected agent (per-user state file)."""
+        ids = self._visible_detected()
+        if not ids:
+            return
+        agent_id = ids[0]
+        try:
+            self.ctx.on_dismiss_detected_agent(agent_id)
+        except CallbackError as exc:
+            self.app.notify(f"Dismiss failed: {exc}", severity="error", timeout=6)
+            return
+        self._refresh_detected_banner()
+
+    def _visible_detected(self) -> list[str]:
+        try:
+            dismissed = self.ctx.get_dismissed_detected_agents()
+        except CallbackError:
+            dismissed = []
+        return visible_detected_agents(
+            detected=self.ctx.detected_agents,
+            enabled_agents=tuple(self.ctx.enabled_agents),
+            dismissed=dismissed,
+        )
+
+    def _refresh_detected_banner(self) -> None:
+        """Recompute and apply the banner text. No-op if banner not mounted."""
+        try:
+            banner = self.query_one("#detected-banner", DetectedAgentsBanner)
+        except Exception:  # pragma: no cover — DOM not mounted yet
+            return
+        banner.update_from(
+            self._visible_detected(),
+            repo_config_writable=self.ctx.repo_config_writable,
+        )
 
     def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
         return (

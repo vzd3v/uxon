@@ -352,6 +352,11 @@ class UxonApp(App):
             # call_later schedules the coroutine on the event loop and
             # does not go through the message-pump / bubbling path.
             self.call_later(top._rebuild_agent_list)
+        # Refresh the detected-agents banner on the main screen if we
+        # have one — does nothing when the screen has not mounted yet.
+        main = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
+        if main is not None:
+            self.call_later(main._refresh_detected_banner)
 
         current_all_missing = compute_all_missing(
             enabled_agents=self.ctx.enabled_agents,

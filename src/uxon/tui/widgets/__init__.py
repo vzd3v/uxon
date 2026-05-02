@@ -8,6 +8,7 @@ sessions and other-user sessions).
 """
 
 from .action_row import ActionRow
+from .detected_banner import DetectedAgentsBanner
 from .session_table import SessionTable
 
-__all__ = ["ActionRow", "SessionTable"]
+__all__ = ["ActionRow", "DetectedAgentsBanner", "SessionTable"]

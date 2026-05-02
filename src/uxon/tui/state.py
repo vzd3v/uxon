@@ -78,6 +78,30 @@ def compute_all_missing(
     )
 
 
+def visible_detected_agents(
+    *,
+    detected: Mapping[str, Any],
+    enabled_agents: tuple[str, ...],
+    dismissed: list[str],
+) -> list[str]:
+    """Return the agent ids that should appear in the detected banner.
+
+    An entry is shown when it is detected on the host (``detected``
+    map populated by ``probe_host``), is **not** already in
+    ``enabled_agents`` (defensive — the worker should have filtered
+    these out), and the user has not dismissed it.
+    """
+    enabled_set = set(enabled_agents)
+    out: list[str] = []
+    for aid in detected:
+        if aid in enabled_set:
+            continue
+        if aid in dismissed:
+            continue
+        out.append(aid)
+    return out
+
+
 def should_push_agents_unavailable(
     *,
     last_all_missing: bool | None,

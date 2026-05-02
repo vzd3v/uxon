@@ -53,6 +53,7 @@ from uxon.tui.state import (
     should_start_agent_probe,
     update_launch_options_after_availability,
     visible_agent_ids,
+    visible_detected_agents,
 )
 
 
@@ -275,6 +276,72 @@ class ShouldPushAgentsUnavailableTests(unittest.TestCase):
                 pending_launch=False,
             )
         )
+
+
+class VisibleDetectedAgentsTests(unittest.TestCase):
+    def test_empty_when_nothing_detected(self) -> None:
+        self.assertEqual(
+            visible_detected_agents(detected={}, enabled_agents=("claude",), dismissed=[]),
+            [],
+        )
+
+    def test_filters_already_enabled(self) -> None:
+        self.assertEqual(
+            visible_detected_agents(
+                detected={"claude": object(), "codex": object()},
+                enabled_agents=("claude",),
+                dismissed=[],
+            ),
+            ["codex"],
+        )
+
+    def test_filters_dismissed(self) -> None:
+        self.assertEqual(
+            visible_detected_agents(
+                detected={"codex": object(), "cursor": object()},
+                enabled_agents=("claude",),
+                dismissed=["codex"],
+            ),
+            ["cursor"],
+        )
+
+    def test_keeps_order_of_detected_iter(self) -> None:
+        from collections import OrderedDict
+
+        det = OrderedDict()
+        det["cursor"] = object()
+        det["codex"] = object()
+        self.assertEqual(
+            visible_detected_agents(
+                detected=det,
+                enabled_agents=("claude",),
+                dismissed=[],
+            ),
+            ["cursor", "codex"],
+        )
+
+
+class DetectedBannerRenderTests(unittest.TestCase):
+    def test_empty_when_no_detected(self) -> None:
+        from uxon.tui.widgets.detected_banner import render_banner_text
+
+        self.assertEqual(render_banner_text([], repo_config_writable=True), "")
+
+    def test_single_agent_writable(self) -> None:
+        from uxon.tui.widgets.detected_banner import render_banner_text
+
+        text = render_banner_text(["codex"], repo_config_writable=True)
+        self.assertIn("codex is installed", text)
+        self.assertIn("[a]", text)
+        self.assertIn("[x] dismiss", text)
+
+    def test_multi_agent_readonly(self) -> None:
+        from uxon.tui.widgets.detected_banner import render_banner_text
+
+        text = render_banner_text(["codex", "cursor"], repo_config_writable=False)
+        self.assertIn("codex", text)
+        self.assertIn("cursor", text)
+        self.assertIn("read-only", text)
 
 
 class LaunchOptionsStateTests(unittest.TestCase):

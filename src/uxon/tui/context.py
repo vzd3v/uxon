@@ -184,6 +184,14 @@ class TuiContext:
     on_setting_save_mapping: Callable[[str, dict], None] = lambda key, mapping: None
     get_git_remote_profile_rows: Callable[[], list] = lambda: []
 
+    # Detected-agents banner callbacks. ``on_enable_detected_agent`` mutates
+    # ``[agents].enabled`` in repo config; ``on_dismiss_detected_agent``
+    # appends to the per-user dismissed-list state file. ``get_dismissed``
+    # is read each tick so external state edits show up after a refresh.
+    on_enable_detected_agent: Callable[[str], None] = lambda agent_id: None
+    on_dismiss_detected_agent: Callable[[str], None] = lambda agent_id: None
+    get_dismissed_detected_agents: Callable[[], list[str]] = list
+
 
 # Number of action items at the top of the main list.
 #

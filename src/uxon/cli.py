@@ -2688,6 +2688,28 @@ def _build_tui_context(
     def on_setting_save_mapping(key: str, mapping: dict) -> None:
         uxon_settings.persist_repo_config_updates(repo_config_path(), {key: mapping})
 
+    def on_enable_detected_agent(agent_id: str) -> None:
+        # Append to the existing enabled list and write back via the
+        # round-trip writer so comments / sibling keys survive.
+        current = list(cfg.enabled_agents)
+        if agent_id in current:
+            return
+        new = [*current, agent_id]
+        uxon_settings.persist_repo_config_updates(
+            repo_config_path(),
+            {"agents.enabled": new},
+        )
+
+    def on_dismiss_detected_agent(agent_id: str) -> None:
+        from uxon import dismissed as uxon_dismissed
+
+        uxon_dismissed.add_dismissed(agent_id)
+
+    def get_dismissed_detected_agents() -> list[str]:
+        from uxon import dismissed as uxon_dismissed
+
+        return uxon_dismissed.load_dismissed()
+
     def get_git_remote_profile_rows() -> list:
         return [
             (
@@ -2751,6 +2773,17 @@ def _build_tui_context(
     on_setting_remove = _wrap_tui_callback(on_setting_remove, _CbErr)
     on_setting_save_mapping = _wrap_tui_callback(on_setting_save_mapping, _CbErr)
     get_git_remote_profile_rows = _wrap_tui_callback(get_git_remote_profile_rows, _CbErr)
+    on_enable_detected_agent = _wrap_tui_callback(on_enable_detected_agent, _CbErr)
+    on_dismiss_detected_agent = _wrap_tui_callback(on_dismiss_detected_agent, _CbErr)
+    get_dismissed_detected_agents = _wrap_tui_callback(get_dismissed_detected_agents, _CbErr)
+
+    # Repo-config write gate: same predicate as ``write_repo_config_toml``.
+    # Direct-write fast path covers operator-owned-checkout case;
+    # ``sudo tee`` fallback covers passwordless-sudo-to-root case.
+    try:
+        repo_cfg_writable = os.access(str(repo_config_path()), os.W_OK) or has_sudo
+    except OSError:
+        repo_cfg_writable = has_sudo
 
     from uxon import agents as _uxon_agents
 
@@ -2804,6 +2837,10 @@ def _build_tui_context(
         git_create_enabled=cfg.git_create_enabled,
         default_git_remote_profile=cfg.default_git_remote_profile,
         git_remote_profile_options=git_profile_options,
+        repo_config_writable=repo_cfg_writable,
+        on_enable_detected_agent=on_enable_detected_agent,
+        on_dismiss_detected_agent=on_dismiss_detected_agent,
+        get_dismissed_detected_agents=get_dismissed_detected_agents,
     )
 
 

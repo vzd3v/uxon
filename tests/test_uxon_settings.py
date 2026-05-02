@@ -281,6 +281,29 @@ class NestedAgentKeysTests(unittest.TestCase):
         self.assertEqual(parsed["agents"]["default"], "codex")
         self.assertIn("# top comment", new)
 
+    def test_round_trip_agents_enabled_list(self) -> None:
+        """List-of-strings under [agents] table writes via persist_repo_config_updates.
+
+        The detected-agents banner relies on this round-trip to add a newly
+        discovered agent to ``[agents].enabled`` in repo config. Cover the
+        list-write path explicitly since none of the existing TUI write
+        call-sites round-trip a list-of-strings under a dotted-key table.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(self._src(), encoding="utf-8")
+            cs.persist_repo_config_updates(
+                path,
+                {"agents.enabled": ["claude", "codex"]},
+            )
+            text = path.read_text(encoding="utf-8")
+            parsed = tomllib.loads(text)
+            self.assertEqual(parsed["agents"]["enabled"], ["claude", "codex"])
+            # Sibling keys + leading comment survive.
+            self.assertEqual(parsed["agents"]["default"], "claude")
+            self.assertIn("# top comment", text)
+            self.assertEqual(parsed["agents"]["claude"]["default_args"], [])
+
     def test_resolve_entries_dotted_key_from_repo(self) -> None:
         repo_data = {"agents": {"enabled": ["claude", "cursor"], "default": "cursor"}}
         entries = cs.resolve_setting_entries(repo_data, {}, None, {})
