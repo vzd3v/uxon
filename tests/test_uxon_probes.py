@@ -130,7 +130,9 @@ class BinaryStatusTests(unittest.TestCase):
             bs.path = "/new/path"  # type: ignore
 
     def test_binary_status_creation(self) -> None:
-        bs = probes.BinaryStatus(name="claude", path=None, install_hint="npm i -g @anthropic-ai/claude-code")
+        bs = probes.BinaryStatus(
+            name="claude", path=None, install_hint="npm i -g @anthropic-ai/claude-code"
+        )
         self.assertEqual(bs.name, "claude")
         self.assertIsNone(bs.path)
         self.assertIn("claude-code", bs.install_hint)

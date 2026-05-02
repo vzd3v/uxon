@@ -1317,6 +1317,93 @@ class SessionNamingTests(unittest.TestCase):
             uxon.resolve_session("foo", sessions, "uxon-")
 
 
+class CliPreflightTests(unittest.TestCase):
+    """Tests for CLI preflight probe in main()."""
+
+    def test_preflight_tmux_missing_on_run_action(self) -> None:
+        """When tmux is missing, run action should fail with friendly message."""
+        buf_err = io.StringIO()
+        with mock.patch.object(sys, "stderr", buf_err):
+            with mock.patch("uxon.probes.probe_host") as probe:
+                mock_tmux_missing = mock.MagicMock()
+                mock_tmux_missing.tmux.path = None
+                mock_tmux_missing.tmux.install_hint = "apt install tmux"
+                mock_tmux_missing.enabled = {"claude": mock.MagicMock(path="/usr/bin/claude")}
+                probe.return_value = mock_tmux_missing
+
+                with self.assertRaises(SystemExit) as ctx:
+                    uxon.main(["run"])
+                self.assertEqual(ctx.exception.code, 1)
+                err = buf_err.getvalue()
+                self.assertIn("tmux is not installed", err)
+                self.assertIn("apt install tmux", err)
+
+    def test_preflight_agent_missing_on_run_action(self) -> None:
+        """When default agent is missing on run action, should fail with friendly message."""
+        buf_err = io.StringIO()
+        with mock.patch.object(sys, "stderr", buf_err):
+            with mock.patch("uxon.probes.probe_host") as probe:
+                mock_report = mock.MagicMock()
+                mock_report.tmux.path = "/usr/bin/tmux"
+                mock_claude = mock.MagicMock()
+                mock_claude.path = None
+                mock_claude.install_hint = "npm install -g @anthropic-ai/claude-code"
+                mock_report.enabled = {"claude": mock_claude}
+                probe.return_value = mock_report
+
+                with self.assertRaises(SystemExit) as ctx:
+                    uxon.main(["run"])
+                self.assertEqual(ctx.exception.code, 1)
+                err = buf_err.getvalue()
+                self.assertIn("claude is not installed", err)
+                self.assertIn("npm install", err)
+
+    def test_preflight_skipped_on_version_action(self) -> None:
+        """version action should skip the preflight probe."""
+        with mock.patch("uxon.probes.probe_host") as probe:
+            with mock.patch("sys.stdout", new_callable=io.StringIO):
+                uxon.main(["version"])
+            # Probe should never have been called.
+            probe.assert_not_called()
+
+    def test_preflight_skipped_on_doctor_action(self) -> None:
+        """doctor action should skip the preflight probe."""
+        with mock.patch("uxon.probes.probe_host") as probe:
+            with mock.patch("uxon.cli.do_doctor", return_value=0):
+                uxon.main(["doctor"])
+            # Probe should never have been called.
+            probe.assert_not_called()
+
+    def test_preflight_passes_on_run_both_ok(self) -> None:
+        """When tmux and agent are both present, run action should proceed past preflight."""
+        with mock.patch("uxon.probes.probe_host") as probe:
+            mock_report = mock.MagicMock()
+            mock_report.tmux.path = "/usr/bin/tmux"
+            mock_claude = mock.MagicMock()
+            mock_claude.path = "/home/user/.npm/claude"
+            mock_report.enabled = {"claude": mock_claude}
+            probe.return_value = mock_report
+
+            with mock.patch("uxon.cli.do_run", return_value=0):
+                rc = uxon.main(["run"])
+            self.assertEqual(rc, 0)
+
+    def test_preflight_list_action_does_not_need_agents(self) -> None:
+        """list action should check tmux but not any specific agent."""
+        with mock.patch("uxon.probes.probe_host") as probe:
+            mock_report = mock.MagicMock()
+            mock_report.tmux.path = "/usr/bin/tmux"
+            # Agent can be missing; list doesn't care.
+            mock_report.enabled = {"claude": mock.MagicMock(path=None)}
+            probe.return_value = mock_report
+
+            with mock.patch("uxon.cli.print_list", return_value=0):
+                with mock.patch("uxon.cli.collect_sessions", return_value=[]):
+                    rc = uxon.main(["list"])
+                # Should not have failed; list doesn't require agents.
+                self.assertEqual(rc, 0)
+
+
 class DoInteractiveTextualMissingTests(unittest.TestCase):
     """With textual unavailable, ``uxon`` (interactive) must print a single
     install hint on stderr, no traceback, and return 1."""

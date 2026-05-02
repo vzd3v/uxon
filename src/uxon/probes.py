@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import os
 import pwd
-import subprocess
 import shlex
+import subprocess
 from dataclasses import dataclass
 
 
@@ -213,7 +213,7 @@ def probe_host(cfg, launch_user: str) -> HostReport:
 
     # Build enabled agents dict.
     enabled: dict[str, BinaryStatus] = {}
-    for aid, binary_name in zip(enabled_agent_ids, enabled_agent_names):
+    for aid, binary_name in zip(enabled_agent_ids, enabled_agent_names, strict=True):
         path = paths.get(binary_name)
         enabled[aid] = BinaryStatus(
             name=aid,

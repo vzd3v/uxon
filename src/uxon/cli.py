@@ -2841,6 +2841,21 @@ def main(argv: list[str] | None = None) -> int:
     caller_user = resolve_caller_user()
     launch_user = resolve_launch_user(cfg, caller_user)
 
+    # CLI preflight: probe for tmux and required agents on non-doctor/non-version actions.
+    if args.action not in {"version", "doctor"}:
+        from uxon import probes as uxon_probes
+
+        report = uxon_probes.probe_host(cfg, launch_user)
+        if report.tmux.path is None:
+            fail(f"tmux is not installed.\n{report.tmux.install_hint}", 1)
+        if args.action in {"run", "new"}:
+            agent_id = args.agent or cfg.default_agent
+            if agent_id in report.enabled and report.enabled[agent_id].path is None:
+                fail(
+                    f"{agent_id} is not installed for {launch_user}.\n{report.enabled[agent_id].install_hint}",
+                    1,
+                )
+
     if args.action == "interactive":
         return do_interactive(cfg, launch_user)
     if args.action == "version":
