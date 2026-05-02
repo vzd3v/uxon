@@ -8,6 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.1] — 2026-05-02
+
 ### Fixed
 
 - `uxon doctor` and the TUI no longer report `tmux` and every agent
