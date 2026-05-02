@@ -1391,9 +1391,7 @@ def is_new_project_target_allowed(cfg: Config, launch_user: str, project_dir: st
     return is_under_allowed_roots(cfg, project_dir)
 
 
-def ensure_new_project_target_allowed(
-    cfg: Config, launch_user: str, project_dir: str
-) -> None:
+def ensure_new_project_target_allowed(cfg: Config, launch_user: str, project_dir: str) -> None:
     """Raise variant of :func:`is_new_project_target_allowed`.
 
     Splits the failure reasons so the user sees whether the parent is
@@ -2214,9 +2212,7 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
                 launch_user,
             )
         else:
-            availability[aid] = uxon_agents.AgentAvailability(
-                status="missing", error="not on PATH"
-            )
+            availability[aid] = uxon_agents.AgentAvailability(status="missing", error="not on PATH")
     current_sessions = collect_sessions([launch_user], cfg)
     legacy_sessions = collect_sessions_for_user(
         launch_user,

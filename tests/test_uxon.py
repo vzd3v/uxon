@@ -774,19 +774,13 @@ class UxonTests(unittest.TestCase):
             with mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
                 with mock.patch("uxon.probes.probe_host", return_value=host_report):
                     with mock.patch.object(uxon, "collect_sessions", return_value=[]):
-                        with mock.patch.object(
-                            uxon, "collect_sessions_for_user", return_value=[]
-                        ):
-                            with mock.patch.object(
-                                uxon, "user_can_write_dir", return_value=True
-                            ):
+                        with mock.patch.object(uxon, "collect_sessions_for_user", return_value=[]):
+                            with mock.patch.object(uxon, "user_can_write_dir", return_value=True):
                                 with mock.patch.object(
                                     uxon, "format_version", return_value="uxon 0.4.0"
                                 ):
                                     with mock.patch("sys.stdout", output):
-                                        rc = uxon.do_doctor(
-                                            cfg, "u-vz", "u-vz", "/srv/repos/demo"
-                                        )
+                                        rc = uxon.do_doctor(cfg, "u-vz", "u-vz", "/srv/repos/demo")
 
         rendered = output.getvalue()
         self.assertEqual(rc, 0)
