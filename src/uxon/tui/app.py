@@ -257,8 +257,13 @@ class UxonApp(App):
         Wired into ``on_mount`` (initial), the periodic refresh interval
         (so freshly-installed binaries surface without restart) and
         ``MainScreen.action_refresh`` (so the manual ``r`` keybinding
-        does the same).
+        does the same). Honours ``self.probe_agents`` so tests that
+        opt out of probing (Pilot tests with ``probe_agents=False``,
+        the pty integration suite that stubs ``probes.probe_host``)
+        do not start a real subprocess from the manual-refresh path.
         """
+        if not self.probe_agents:
+            return
         if self._host_probe_running:
             return
         self._host_probe_running = True

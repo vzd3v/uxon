@@ -187,10 +187,24 @@ _DRAIN_CHILD_SCRIPT = r"""
 import sys, os
 from uxon import tui as uxon_tui
 from uxon import agents as uxon_agents
+from uxon import probes as uxon_probes
 from uxon.tui.context import LaunchRequest
 
 MARKER = {marker_path!r}
 uxon_agents.probe_agents = lambda *args, **kwargs: {{}}
+# The new TUI worker calls ``probes.probe_host`` instead of the
+# legacy per-agent driver. Without this stub the pty child runs a
+# real ``sudo -niu USER -- sh -lc 'command -v …'`` on the CI host,
+# finds nothing, and pushes ``AgentsUnavailableScreen`` over the
+# main screen — the digit press the test sends then lands on the
+# modal instead of the action row, and the marker file stays empty.
+class _StubReport:
+    def __init__(self):
+        self.tmux = type("S", (), {{"name": "tmux", "path": "/usr/bin/tmux", "install_hint": ""}})()
+        self.enabled = {{}}
+        self.detected = {{}}
+        self.launch_user = "u-den"
+uxon_probes.probe_host = lambda *args, **kwargs: _StubReport()
 
 def fake_launch_cwd(agent_id, mode_id):
     with open(MARKER, "a", encoding="utf-8") as f:
