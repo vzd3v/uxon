@@ -8,6 +8,30 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- TUI auto-detects coding agents installed on the host but not yet
+  listed in `[agents].enabled`. A non-intrusive banner on the main
+  screen offers `[a]` to add the agent to the repo config and `[x]`
+  to dismiss the suggestion. Dismissals are stored per-user under
+  `${XDG_STATE_HOME:-$HOME/.local/state}/uxon/dismissed.json` so they
+  do not silence the banner for other users on a shared host.
+- Friendly preflight on `uxon run` / `uxon new` / `uxon attach` /
+  `uxon list`: if `tmux` or the requested coding agent is not on the
+  launch user's `PATH`, `uxon` now exits with a one-line install hint
+  instead of a Python `FileNotFoundError` traceback.
+
+### Changed
+
+- The TUI re-runs its host probe on every refresh tick, so installing
+  an agent and pressing `r` (or just waiting) is enough to recover
+  from the "all agents missing" modal — no longer requires quitting
+  and restarting.
+- `uxon doctor` is no longer mentioned in README's "After install"
+  quick-start; the TUI surfaces the same issues in line. The full
+  `doctor` reference still lives in
+  [`docs/cli.md`](docs/cli.md#doctor).
+
 ## [3.1.0] — 2026-05-01
 
 ### Changed (breaking)
