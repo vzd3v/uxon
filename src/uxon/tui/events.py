@@ -50,6 +50,73 @@ def _log_dir() -> str:
     return os.environ.get("UXON_LOG_DIR") or _default_log_dir()
 
 
+# ── Debug logging (off by default; enable via UXON_DEBUG env) ────────
+#
+# Internal-only diagnostic channel. Off in production; instrumentation
+# call sites stay in place and cost a single ``frozenset`` truthiness
+# check when disabled. Goes to ``tui-debug-{user}-{date}.log`` next to
+# the user-facing event log. Full design and conventions:
+# ``docs/agents/debug-logging.md``.
+
+
+def _parse_debug_topics() -> frozenset[str]:
+    """Resolve ``UXON_DEBUG`` once at import. Empty → channel off."""
+    raw = os.environ.get("UXON_DEBUG", "").strip().lower()
+    if not raw:
+        return frozenset()
+    if raw in {"1", "true", "all", "*", "yes", "on"}:
+        return frozenset({"*"})
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())
+
+
+_DEBUG_TOPICS: frozenset[str] = _parse_debug_topics()
+
+
+def debug(topic: str, **fields: Any) -> None:
+    """Append one JSON line to the debug log iff ``UXON_DEBUG`` enables ``topic``.
+
+    No-op when ``UXON_DEBUG`` is unset (one ``frozenset`` truthiness
+    check), so call sites can be left in place after a bug is fixed —
+    they cost nothing in production. Never raises.
+
+    Output: ``${XDG_STATE_HOME:-~/.local/state}/uxon/tui-debug-{user}-{YYYYMMDD}.log``
+    (honours ``UXON_LOG_DIR`` like the event log).
+
+    Topic is required; arbitrary keyword fields merge into the JSON
+    record. See ``docs/agents/debug-logging.md`` for conventions and
+    the topic registry.
+    """
+    if not _DEBUG_TOPICS:
+        return
+    if "*" not in _DEBUG_TOPICS and topic not in _DEBUG_TOPICS:
+        return
+    try:
+        import datetime
+        import json
+
+        now = datetime.datetime.now(datetime.UTC)
+        record: dict[str, Any] = {
+            "ts": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "topic": topic,
+        }
+        record.update(fields)
+
+        log_dir = _log_dir()
+        try:
+            os.makedirs(log_dir, mode=0o2775, exist_ok=True)
+        except OSError:
+            pass
+
+        user = os.environ.get("SUDO_USER") or os.environ.get("USER", "unknown")
+        date_str = now.strftime("%Y%m%d")
+        path = os.path.join(log_dir, f"tui-debug-{user}-{date_str}.log")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        # Telemetry, not a correctness path — never crash the TUI.
+        return
+
+
 def _log_event(
     event: str,
     *,

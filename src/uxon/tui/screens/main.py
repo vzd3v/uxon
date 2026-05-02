@@ -34,6 +34,7 @@ from ..context import (
     TuiContext,
     _segments,
 )
+from ..events import debug as _debug
 from ..state import (
     MainIntent,
     activate_main_index,
@@ -574,6 +575,14 @@ class MainScreen(Screen):
         before the swap so it can be restored after. Pass ``""`` to skip
         focus restoration entirely (used by initial mount).
         """
+        _debug(
+            "refresh",
+            at="apply_loaded_ctx",
+            action="enter",
+            sessions=len(new_ctx.sessions),
+            other=len(new_ctx.other_sessions),
+            tick=new_ctx.refresh_tick,
+        )
         if focus_key is None:
             focus_key = self._current_focus_key()
         old_signature = self._layout_signature(self.ctx)

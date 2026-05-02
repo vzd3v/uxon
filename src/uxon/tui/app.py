@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Any
 
 from textual.app import App
@@ -24,6 +25,7 @@ from textual.message import Message
 
 from .context import CallbackError, LaunchRequest, TuiContext
 from .events import _log_event
+from .events import debug as _debug
 from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
 from .screens.agents_unavailable import AgentsUnavailableScreen
@@ -224,30 +226,65 @@ class UxonApp(App):
         message; :meth:`on__main_ctx_loaded` clears the flag and applies.
         """
         if self._refresh_in_flight:
+            _debug("refresh", at="kick_refresh", action="skip", reason="in_flight")
             return
         self._refresh_in_flight = True
+        _debug("refresh", at="kick_refresh", action="spawn")
         self.run_worker(self._refresh_worker, thread=True, exclusive=False)
 
     def _refresh_worker(self) -> None:
         """Background thread: rebuild the TuiContext via ctx.on_refresh()."""
+        t0 = time.monotonic()
+        _debug("refresh", at="worker", action="enter")
         try:
             new_ctx = self.ctx.on_refresh()
         except CallbackError as exc:
+            _debug(
+                "refresh",
+                at="worker",
+                action="error",
+                error=str(exc),
+                elapsed_ms=int((time.monotonic() - t0) * 1000),
+            )
             self.post_message(_MainCtxLoaded(None, error=str(exc)))
             return
         except Exception as exc:  # pragma: no cover — defensive
+            _debug(
+                "refresh",
+                at="worker",
+                action="error",
+                error=str(exc) or exc.__class__.__name__,
+                elapsed_ms=int((time.monotonic() - t0) * 1000),
+            )
             self.post_message(_MainCtxLoaded(None, error=str(exc) or exc.__class__.__name__))
             return
+        _debug(
+            "refresh",
+            at="worker",
+            action="done",
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+            ctx_is_none=new_ctx is None,
+            sessions=(len(new_ctx.sessions) if new_ctx is not None else 0),
+            other=(len(new_ctx.other_sessions) if new_ctx is not None else 0),
+        )
         self.post_message(_MainCtxLoaded(new_ctx))
 
     def on__main_ctx_loaded(self, event: _MainCtxLoaded) -> None:
         self._refresh_in_flight = False
+        top = self.screen_stack[-1] if self.screen_stack else None
+        top_kind = type(top).__name__ if top else "None"
+        _debug(
+            "refresh",
+            at="on_ctx_loaded",
+            error=event.error or "",
+            ctx_is_none=event.ctx is None,
+            top=top_kind,
+        )
         if event.error:
             self.notify(f"Refresh failed: {event.error}", severity="error", timeout=6)
             return
         if event.ctx is None:
             return
-        top = self.screen_stack[-1] if self.screen_stack else None
         if isinstance(top, MainScreen):
             top.apply_loaded_ctx(event.ctx)
 
