@@ -128,6 +128,61 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
                 msg="app.ctx and screen.ctx must point to the same TuiContext",
             )
 
+    async def test_skeleton_swap_preserves_detected_agents(self) -> None:
+        """``detected_agents`` survives ``apply_loaded_ctx``.
+
+        Regression for a bug where the periodic refresh tick wiped the
+        suggestion banner one tick after it appeared: the probe worker
+        writes detected agents to ``app.ctx.detected_agents`` and the
+        next ctx swap clobbered that dict with a fresh empty one.
+        """
+        from uxon.probes import BinaryStatus
+        from uxon.tui.app import UxonApp
+
+        loaded = _mk_ctx()  # loaded ctx with its own fresh detected dict
+
+        def fake_refresh():
+            return _mk_ctx(on_refresh=fake_refresh)
+
+        skeleton = _mk_ctx(loading=True, on_refresh=fake_refresh)
+        # Pre-seed the skeleton's detected dict — emulates the probe
+        # finding codex installed but not yet in [agents].enabled.
+        skeleton.detected_agents["codex"] = BinaryStatus(
+            name="codex",
+            path="/usr/bin/codex",
+            install_hint="npm install -g @openai/codex",
+        )
+
+        app = UxonApp(skeleton, probe_agents=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.screen.apply_loaded_ctx(loaded)
+            await pilot.pause()
+            self.assertIn(
+                "codex",
+                app.screen.ctx.detected_agents,
+                msg="detected_agents was dropped on ctx swap",
+            )
+
+    async def test_refresh_keypress_kicks_host_probe(self) -> None:
+        """Pressing ``r`` re-runs the host probe.
+
+        Regression: without this, the periodic timer only kicked
+        ``kick_refresh`` (which rebuilds the ctx) but the host probe
+        ran exactly once on mount, so the missing-agents modal never
+        recovered after the user installed an agent.
+        """
+        from uxon.tui.app import UxonApp
+
+        kicks: list[None] = []
+        app = UxonApp(_mk_ctx(), probe_agents=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._kick_host_probe = lambda: kicks.append(None)  # type: ignore[method-assign]
+            await pilot.press("r")
+            await pilot.pause()
+        self.assertEqual(len(kicks), 1, msg="action_refresh did not kick the host probe")
+
     async def test_kill_calls_on_kill_callback(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.context import TuiSession

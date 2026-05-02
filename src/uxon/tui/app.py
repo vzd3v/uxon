@@ -144,6 +144,11 @@ class UxonApp(App):
         self.pending_status = pending_status
         self.probe_agents = probe_agents
         self._link_health_probe_running = False
+        # Mirror of ``_link_health_probe_running`` for the host probe so
+        # the periodic tick (and the manual ``r`` keybinding via
+        # ``kick_refresh``) can re-run ``probe_host`` without piling up
+        # concurrent workers.
+        self._host_probe_running = False
         # Single in-flight latch for ctx refresh. Periodic timer, manual
         # ``r`` and the post-skeleton initial load all funnel through
         # :meth:`kick_refresh`; if a worker is still running we drop the
@@ -178,7 +183,7 @@ class UxonApp(App):
             probe_agents=self.probe_agents,
             enabled_agents=self.ctx.enabled_agents,
         ):
-            self.run_worker(self._probe_host_worker, thread=True, exclusive=True)
+            self._kick_host_probe()
         # Kick off cwd-write probe when the synchronous path didn't
         # already resolve it (cross-user case: uxon left cwd_writable=None
         # because the check would shell out via sudo).
@@ -195,6 +200,19 @@ class UxonApp(App):
                 self.ctx.tui_ssh_refresh_interval_seconds,
                 self._kick_link_health_probe,
             )
+            # Re-run the host probe on each ctx-refresh tick so freshly
+            # installed tmux/agents surface without restarting uxon.
+            # Same cadence as ``kick_refresh`` keeps the two streams in
+            # lockstep — banner state and agent_availability advance
+            # together.
+            if should_start_agent_probe(
+                probe_agents=self.probe_agents,
+                enabled_agents=self.ctx.enabled_agents,
+            ):
+                self.set_interval(
+                    self.ctx.tui_refresh_interval_seconds,
+                    self._kick_host_probe,
+                )
 
     def kick_refresh(self) -> None:
         """Schedule a worker that calls ``on_refresh`` and posts the result.
@@ -233,6 +251,19 @@ class UxonApp(App):
         if isinstance(top, MainScreen):
             top.apply_loaded_ctx(event.ctx)
 
+    def _kick_host_probe(self) -> None:
+        """Schedule the host probe iff one isn't already in flight.
+
+        Wired into ``on_mount`` (initial), the periodic refresh interval
+        (so freshly-installed binaries surface without restart) and
+        ``MainScreen.action_refresh`` (so the manual ``r`` keybinding
+        does the same).
+        """
+        if self._host_probe_running:
+            return
+        self._host_probe_running = True
+        self.run_worker(self._probe_host_worker, thread=True, exclusive=True)
+
     def _probe_host_worker(self) -> None:
         """Background thread: probe tmux + all known agent binaries.
 
@@ -262,6 +293,7 @@ class UxonApp(App):
         try:
             report = uxon_probes.probe_host(_Cfg(), target_user)
         except Exception:  # pragma: no cover — defensive
+            self._host_probe_running = False
             self.post_message(_HostReportUpdated())
             return
 
@@ -282,6 +314,7 @@ class UxonApp(App):
         self.ctx.detected_agents.clear()
         self.ctx.detected_agents.update(report.detected)
 
+        self._host_probe_running = False
         self.post_message(_HostReportUpdated())
 
     def _probe_cwd_writable_worker(self) -> None:

@@ -433,8 +433,14 @@ class MainScreen(Screen):
 
     def action_refresh(self) -> None:
         # Dispatch through the app so the refresh runs in a worker
-        # thread and the event loop stays responsive.
+        # thread and the event loop stays responsive. Also re-run the
+        # host probe so newly-installed tmux/agents show up after a
+        # manual refresh — without this, ``r`` would only re-fetch
+        # session state and the missing-agents modal would never recover.
         self.app.kick_refresh()  # type: ignore[attr-defined]
+        kick = getattr(self.app, "_kick_host_probe", None)
+        if callable(kick):
+            kick()
 
     def action_enable_detected(self) -> None:
         """Banner action: add the first detected agent to ``[agents].enabled``."""
@@ -580,6 +586,10 @@ class MainScreen(Screen):
         # LaunchOptionsScreen would render "(checking…)" forever.
         new_ctx.link_health_status = self.ctx.link_health_status
         new_ctx.agent_availability = self.ctx.agent_availability
+        # detected_agents is mutated in place by the same probe worker;
+        # without this carry-over the periodic ctx refresh would clear
+        # the suggestion banner one tick after it appeared.
+        new_ctx.detected_agents = self.ctx.detected_agents
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
         # Carry the cwd-writable result across refreshes too: same-user
         # builds set it synchronously, cross-user builds leave None and
