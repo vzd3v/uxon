@@ -460,5 +460,132 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         self.assertGreaterEqual(DEFAULT_TOTAL_TIMEOUT_SEC, DEFAULT_CONNECT_TIMEOUT_SEC)
 
 
+class DefaultTemplateTests(unittest.TestCase):
+    """Stage 5 step 3: default ssh argv template includes ControlMaster
+    and the closed placeholder set."""
+
+    def test_default_template_has_controlmaster(self) -> None:
+        from uxon.remote_collector import _default_template
+
+        tmpl = _default_template()
+        flat = " ".join(tmpl)
+        self.assertIn("ControlMaster=auto", flat)
+        self.assertIn("ControlPath={xdg_cache}/uxon/ssh-%C", flat)
+        self.assertIn("ControlPersist=60s", flat)
+        self.assertIn("ServerAliveInterval=15", flat)
+
+    def test_default_template_uses_only_closed_placeholders(self) -> None:
+        from uxon.remote_collector import PLACEHOLDER_CLOSED_SET, _default_template
+
+        for token in _default_template():
+            i = 0
+            while i < len(token):
+                start = token.find("{", i)
+                if start == -1:
+                    break
+                end = token.find("}", start)
+                if end == -1:
+                    break
+                placeholder = token[start : end + 1]
+                self.assertIn(
+                    placeholder,
+                    PLACEHOLDER_CLOSED_SET,
+                    msg=f"unexpected placeholder {placeholder!r} in default template",
+                )
+                i = end + 1
+
+
+class RenderArgvTests(unittest.TestCase):
+    """Stage 5 step 3: _render_argv substitutes placeholders cleanly."""
+
+    def test_renders_full_default_template(self) -> None:
+        from uxon.remote_collector import _default_template, _render_argv
+
+        argv = _render_argv(
+            _default_template(),
+            ssh_alias="peer1",
+            remote_uxon="uxon",
+            connect_timeout=5,
+            xdg_cache="/home/me/.cache",
+            remote_command="uxon list --all-users --json",
+        )
+        self.assertEqual(argv[0], "ssh")
+        self.assertIn("peer1", argv)
+        self.assertIn("uxon list --all-users --json", argv)
+        self.assertIn("ControlPath=/home/me/.cache/uxon/ssh-%C", argv)
+        # No unresolved placeholders.
+        for token in argv:
+            self.assertNotRegex(token, r"\{[a-z_]+\}")
+
+    def test_kubectl_recipe(self) -> None:
+        from uxon.remote_collector import _render_argv
+
+        template = [
+            "kubectl",
+            "exec",
+            "uxon-pod",
+            "--",
+            "/bin/sh",
+            "-c",
+            "{remote_command}",
+        ]
+        argv = _render_argv(
+            template,
+            ssh_alias="ignored",
+            remote_uxon="uxon",
+            connect_timeout=5,
+            xdg_cache="/tmp",
+            remote_command="uxon list --json",
+        )
+        self.assertEqual(argv[-1], "uxon list --json")
+        self.assertEqual(argv[0], "kubectl")
+
+
+class ValidateCommandTemplateTests(unittest.TestCase):
+    """Stage 5 step 3: validate_command_template enforces the closed
+    placeholder set and {remote_command}/{remote_uxon} mutual exclusion."""
+
+    def test_default_template_validates(self) -> None:
+        from uxon.remote_collector import _default_template, validate_command_template
+
+        validate_command_template(_default_template())  # must not raise
+
+    def test_kubectl_template_validates(self) -> None:
+        from uxon.remote_collector import validate_command_template
+
+        validate_command_template(
+            ["kubectl", "exec", "uxon-pod", "--", "/bin/sh", "-c", "{remote_command}"]
+        )
+
+    def test_docker_template_validates(self) -> None:
+        from uxon.remote_collector import validate_command_template
+
+        validate_command_template(
+            ["docker", "exec", "uxon-container", "/bin/sh", "-c", "{remote_command}"]
+        )
+
+    def test_unknown_placeholder_rejected(self) -> None:
+        from uxon.remote_collector import validate_command_template
+
+        with self.assertRaises(ValueError) as cm:
+            validate_command_template(["ssh", "{ssh_alias}", "{bad}"])
+        self.assertIn("{bad}", str(cm.exception))
+
+    def test_remote_command_and_remote_uxon_mutually_exclusive(self) -> None:
+        from uxon.remote_collector import validate_command_template
+
+        with self.assertRaises(ValueError) as cm:
+            validate_command_template(
+                ["ssh", "{ssh_alias}", "{remote_uxon}", "list", "{remote_command}"]
+            )
+        self.assertIn("mutually exclusive", str(cm.exception))
+
+    def test_empty_template_rejected(self) -> None:
+        from uxon.remote_collector import validate_command_template
+
+        with self.assertRaises(ValueError):
+            validate_command_template([])
+
+
 if __name__ == "__main__":
     unittest.main()

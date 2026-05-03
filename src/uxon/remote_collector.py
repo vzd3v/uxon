@@ -135,6 +135,135 @@ def snapshot_cache_path(name: str, *, override_dir: Path | None = None) -> Path:
     return state_dir(override=override_dir) / f"{name}.json"
 
 
+# ── Argv template (stage 5 step 3, additive — _build_ssh_argv stays alive
+# until step 4 migrates the call site) ───────────────────────────────────
+
+PLACEHOLDER_CLOSED_SET: frozenset[str] = frozenset(
+    {
+        "{ssh_alias}",
+        "{remote_uxon}",
+        "{connect_timeout}",
+        "{xdg_cache}",
+        "{remote_command}",
+    }
+)
+
+
+def _xdg_cache_home() -> str:
+    """Return the operator's XDG cache root.
+
+    Honours ``$XDG_CACHE_HOME``; falls back to ``~/.cache``. Used as the
+    parent of the SSH ``ControlPath`` socket so multiplexed connections
+    survive across uxon invocations.
+    """
+    base = os.environ.get("XDG_CACHE_HOME")
+    if base:
+        return base
+    return str(Path.home() / ".cache")
+
+
+def _default_template() -> list[str]:
+    """The default SSH argv template.
+
+    Tokens in ``{...}`` are placeholders resolved by :func:`_render_argv`.
+    The template includes ``ControlMaster=auto`` so the second-and-later
+    fetches against the same peer reuse a multiplexed session — first
+    tick costs 200-500 ms (TCP+auth), warm ticks 5-20 ms.
+    """
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "ConnectTimeout={connect_timeout}",
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        "ControlPath={xdg_cache}/uxon/ssh-%C",
+        "-o",
+        "ControlPersist=60s",
+        "{ssh_alias}",
+        "{remote_command}",
+    ]
+
+
+def validate_command_template(template: list[str]) -> None:
+    """Raise :class:`ValueError` if ``template`` contains unknown
+    placeholders or violates the ``{remote_command}`` / ``{remote_uxon}``
+    mutual-exclusion rule.
+
+    Mutual exclusion: ``{remote_command}`` is the rendered
+    ``"<remote_uxon> list ..."`` string; using both in the same template
+    would produce two competing remote-shell invocations.
+    """
+    if not template:
+        raise ValueError("command_template must be non-empty")
+    seen: set[str] = set()
+    for token in template:
+        if not isinstance(token, str) or not token:
+            raise ValueError(f"command_template tokens must be non-empty strings, got {token!r}")
+        # Scan for placeholders in this token. We deliberately don't
+        # support nested or repeated placeholders within a single token
+        # — that's a code smell in argv construction.
+        i = 0
+        while i < len(token):
+            start = token.find("{", i)
+            if start == -1:
+                break
+            end = token.find("}", start)
+            if end == -1:
+                # Lone "{" without "}" — treat as literal, skip.
+                break
+            placeholder = token[start : end + 1]
+            seen.add(placeholder)
+            if placeholder not in PLACEHOLDER_CLOSED_SET:
+                raise ValueError(
+                    f"command_template contains unknown placeholder {placeholder!r}; "
+                    f"valid placeholders are {sorted(PLACEHOLDER_CLOSED_SET)}"
+                )
+            i = end + 1
+    if "{remote_command}" in seen and "{remote_uxon}" in seen:
+        raise ValueError(
+            "command_template uses both {remote_command} and {remote_uxon} — "
+            "they are mutually exclusive ({remote_command} already includes "
+            "the rendered remote uxon invocation)"
+        )
+
+
+def _render_argv(
+    template: list[str],
+    *,
+    ssh_alias: str,
+    remote_uxon: str,
+    connect_timeout: int,
+    xdg_cache: str,
+    remote_command: str,
+) -> list[str]:
+    """Substitute placeholders in ``template``. Empty tokens after
+    substitution are dropped (e.g. an empty extra-options list).
+    """
+    mapping = {
+        "{ssh_alias}": ssh_alias,
+        "{remote_uxon}": remote_uxon,
+        "{connect_timeout}": str(connect_timeout),
+        "{xdg_cache}": xdg_cache,
+        "{remote_command}": remote_command,
+    }
+    rendered: list[str] = []
+    for token in template:
+        out = token
+        for placeholder, value in mapping.items():
+            if placeholder in out:
+                out = out.replace(placeholder, value)
+        if out:
+            rendered.append(out)
+    return rendered
+
+
 def _build_ssh_argv(host: RemoteHost, *, connect_timeout: int, all_users: bool = True) -> list[str]:
     """Assemble the ``ssh`` argv for one fetch.
 
