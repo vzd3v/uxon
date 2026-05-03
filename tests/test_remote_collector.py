@@ -582,6 +582,97 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         self.assertEqual(captured["timeout"], 8)
 
 
+class CacheScopeRoundtripTests(unittest.TestCase):
+    """Stage 5 step 8: cache persists/restores scope_limited/scope_skipped."""
+
+    def _runner_returning(self, returncode: int, stdout: str = "", stderr: str = "") -> Any:
+        def runner(argv, **kwargs):
+            cp = mock.Mock()
+            cp.returncode = returncode
+            cp.stdout = stdout
+            cp.stderr = stderr
+            return cp
+
+        return runner
+
+    def test_write_then_read_preserves_scope_flags(self) -> None:
+        with TemporaryDirectory() as tmp:
+            snap = RemoteSnapshot(
+                host_name="vz-prod1",
+                fetched_at_epoch=100.0,
+                from_cache=False,
+                error=None,
+                sessions=[{"name": "uxon-x@claude"}],
+                cached_at_epoch=100.0,
+                scope_limited=True,
+                scope_skipped=["alice", "bob"],
+            )
+            write_cached_snapshot(snap, override_dir=Path(tmp))
+            loaded = read_cached_snapshot("vz-prod1", override_dir=Path(tmp))
+            assert loaded is not None
+            self.assertTrue(loaded.scope_limited)
+            self.assertEqual(loaded.scope_skipped, ["alice", "bob"])
+
+    def test_old_cache_without_scope_keys_treated_as_defaults(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Synthesise a pre-stage-5 cache file (no scope_* fields).
+            old_blob = {
+                "host_name": "legacy",
+                "cached_at_epoch": 50.0,
+                "sessions": [{"name": "uxon-y@codex"}],
+            }
+            cache_path = snapshot_cache_path("legacy", override_dir=Path(tmp))
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(old_blob), encoding="utf-8")
+
+            loaded = read_cached_snapshot("legacy", override_dir=Path(tmp))
+            assert loaded is not None
+            self.assertFalse(loaded.scope_limited)
+            self.assertEqual(loaded.scope_skipped, [])
+
+    def test_failure_path_with_cache_returns_cached_scope_flags(self) -> None:
+        """Live fetch fails; cache fallback must carry the cached flags
+        — NOT the failed live-fetch's intermediate values."""
+        with TemporaryDirectory() as tmp:
+            cached = RemoteSnapshot(
+                host_name="vz-prod1",
+                fetched_at_epoch=99.0,
+                from_cache=False,
+                error=None,
+                sessions=[{"name": "uxon-cached@claude"}],
+                cached_at_epoch=99.0,
+                scope_limited=True,
+                scope_skipped=["carol"],
+            )
+            write_cached_snapshot(cached, override_dir=Path(tmp))
+
+            # Simulate live failure — non-zero exit, no payload.
+            failing = self._runner_returning(returncode=255, stderr="connect: timed out")
+            snap = fetch_remote_snapshot(
+                _host(),
+                override_state_dir=Path(tmp),
+                _runner=failing,
+            )
+            self.assertTrue(snap.from_cache)
+            self.assertIsNotNone(snap.error)
+            # Critical: cached flags survive the failure-with-cache path.
+            self.assertTrue(snap.scope_limited)
+            self.assertEqual(snap.scope_skipped, ["carol"])
+
+    def test_failure_path_without_cache_returns_empty_scope_skipped(self) -> None:
+        """No cache file; returned snapshot has scope_skipped=[] (no info)."""
+        with TemporaryDirectory() as tmp:
+            failing = self._runner_returning(returncode=255, stderr="connect: timed out")
+            snap = fetch_remote_snapshot(
+                _host(name="never-cached"),
+                override_state_dir=Path(tmp),
+                _runner=failing,
+            )
+            self.assertFalse(snap.from_cache)
+            self.assertIsNotNone(snap.error)
+            self.assertEqual(snap.scope_skipped, [])
+
+
 class DefaultTemplateTests(unittest.TestCase):
     """Stage 5 step 3: default ssh argv template includes ControlMaster
     and the closed placeholder set."""

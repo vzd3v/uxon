@@ -426,6 +426,15 @@ def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> Remo
     cached_at = blob.get("cached_at_epoch")
     if not isinstance(sessions, list) or not isinstance(cached_at, (int, float)):
         return None
+    # Forward-compat: pre-stage-5 caches don't carry scope flags.
+    # Treat as defaults rather than discarding the cache file.
+    raw_limited = blob.get("scope_limited", False)
+    scope_limited = bool(raw_limited) if isinstance(raw_limited, bool) else False
+    raw_skipped = blob.get("scope_skipped", [])
+    if isinstance(raw_skipped, list):
+        scope_skipped = [str(u) for u in raw_skipped if isinstance(u, str)]
+    else:
+        scope_skipped = []
     return RemoteSnapshot(
         host_name=name,
         fetched_at_epoch=float(cached_at),
@@ -433,6 +442,8 @@ def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> Remo
         error=None,
         sessions=sessions,
         cached_at_epoch=float(cached_at),
+        scope_limited=scope_limited,
+        scope_skipped=scope_skipped,
     )
 
 
@@ -468,6 +479,13 @@ def write_cached_snapshot(snapshot: RemoteSnapshot, *, override_dir: Path | None
         "host_name": snapshot.host_name,
         "cached_at_epoch": snapshot.fetched_at_epoch,
         "sessions": snapshot.sessions,
+        # Stage 5 step 8: persist scope flags. Without them, a peer
+        # that flipped enable_all_users_list = false (or a peer that
+        # accumulated scope_skipped users) would lose that signal on
+        # the next cache-fallback path and the TUI would surface a
+        # misleading "full visibility" badge.
+        "scope_limited": bool(snapshot.scope_limited),
+        "scope_skipped": list(snapshot.scope_skipped),
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
@@ -579,7 +597,13 @@ def fetch_remote_snapshot(
                 pass
             return snap
 
-    # Failure path: try to fall back to the on-disk cache.
+    # Failure path: try to fall back to the on-disk cache. The cache
+    # carries the previously-observed scope flags so a peer that went
+    # offline after flipping enable_all_users_list (or after building
+    # up scope_skipped users) still surfaces the right badge in the
+    # TUI — falling back to the live-fetch's intermediate flags would
+    # invent a "full visibility" view that the cached payload does
+    # not actually represent.
     cached = read_cached_snapshot(host.name, override_dir=override_state_dir)
     if cached is not None:
         return RemoteSnapshot(
@@ -589,7 +613,8 @@ def fetch_remote_snapshot(
             error=error,
             sessions=cached.sessions,
             cached_at_epoch=cached.cached_at_epoch,
-            scope_limited=scope_limited,
+            scope_limited=cached.scope_limited,
+            scope_skipped=cached.scope_skipped,
         )
     return RemoteSnapshot(
         host_name=host.name,
@@ -599,4 +624,5 @@ def fetch_remote_snapshot(
         sessions=[],
         cached_at_epoch=None,
         scope_limited=scope_limited,
+        scope_skipped=[],
     )
