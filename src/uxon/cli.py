@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -173,6 +174,8 @@ class ParsedArgs:
     no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
     git_visibility: str | None = None  # "private" | "public" | None (use profile default)
     json_output: bool = False  # --json: emit machine-readable wire-schema envelope on stdout
+    host: str | None = None  # --host <name>: route 'list' to one configured remote peer
+    all_hosts: bool = False  # --all-hosts: aggregate local + every configured remote peer
 
 
 def eprint(msg: str) -> None:
@@ -1463,6 +1466,192 @@ def _list_data(
     }
 
 
+def _emit_json_with_host(kind: str, data: dict[str, Any], *, host: str) -> None:
+    """Emit a JSON envelope with the optional ``host`` field set.
+
+    Used by ``list --host <name>``: the local CLI is not running on
+    the peer, so the envelope is *attributed* to the named host
+    rather than implying a local origin. The field follows the
+    optional shape documented in :class:`uxon.wire_schema.Envelope`.
+    """
+    from uxon.wire_schema import make_envelope
+
+    env = make_envelope(
+        kind,  # type: ignore[arg-type]
+        data,
+        uxon_version=read_repo_version(),
+        host=host,
+    )
+    print(json.dumps(env, indent=2, sort_keys=False))
+
+
+def _list_data_from_records(
+    sessions: list[Any],
+    scope_users: list[str],
+    *,
+    session_prefix: str,
+    all_users: bool,
+) -> dict[str, Any]:
+    """Build the ``list`` envelope ``data`` from already-prepared
+    wire-schema records (i.e. data fetched from a peer rather than
+    collected locally).
+
+    Used by the ``--host`` path so the local CLI's JSON output for a
+    remote-host listing has the same shape as a local one — the
+    only delta is the envelope-level ``host`` field set by the
+    caller.
+    """
+    return {
+        "all_users": all_users,
+        "scope_users": list(scope_users),
+        "session_prefix": session_prefix,
+        "sessions": list(sessions),
+    }
+
+
+def _print_remote_table(
+    cfg: Config,
+    host_name: str,
+    sessions: Sequence[dict[str, Any]] | Sequence[Any],
+    *,
+    cached: bool,
+) -> None:
+    """Render a remote host's ``list --json`` payload as a human
+    table.
+
+    The wire-schema dicts carry the same fields :func:`print_list`
+    needs, so we synthesise enough of a ``SessionInfo`` to reuse the
+    existing renderer. Only ``user``, ``name``, ``attached``,
+    ``windows``, ``created``, ``last_attached``, ``active_pid``,
+    ``active_cmd``, ``active_path``, ``cpu_pct``, ``rss_kib``,
+    ``agent``, ``legacy`` are read; ``pane_pids`` is informational
+    on local rows and not rendered, so we leave it empty.
+    """
+    synth = []
+    for r in sessions:
+        synth.append(
+            SessionInfo(
+                user=str(r.get("user", "")),
+                name=str(r.get("name", "")),
+                attached="1" if r.get("attached") else "0",
+                windows=str(r.get("windows", "")),
+                created=str(r.get("created", "")),
+                last_attached=str(r.get("last_attached", "")),
+                pane_pids=(),
+                active_pid=r.get("active_pid"),
+                active_cmd=str(r.get("active_cmd", "")),
+                active_path=str(r.get("active_path", "")),
+                cpu_pct=float(r.get("cpu_pct", 0.0) or 0.0),
+                rss_kib=int(r.get("rss_kib", 0) or 0),
+                agent=str(r.get("agent", "claude")),
+                legacy=bool(r.get("legacy", False)),
+            )
+        )
+    cache_marker = "  (CACHED — peer unreachable)" if cached else ""
+    print(f"── remote: {host_name}{cache_marker} ──")
+    users_in_payload = sorted({s.user for s in synth}) or ["?"]
+    show_user = len(users_in_payload) > 1
+    print_list(cfg, synth, users_in_payload, show_user=show_user)
+
+
+def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
+    """Handle ``uxon list --host <name>``.
+
+    Looks up the configured peer, runs the SSH-driven collector,
+    and prints either the JSON envelope (with the ``host`` field
+    set) or a human table. When the live fetch fails but the disk
+    cache is populated, the result is rendered with a "(CACHED)"
+    marker; no fallback exits with a non-zero code so the caller
+    knows to investigate.
+    """
+    from uxon.remote_collector import fetch_remote_snapshot
+    from uxon.remote_hosts import find_host
+
+    if not cfg.remote_hosts:
+        fail("no [[remote_hosts]] configured; --host requires at least one peer")
+    target = find_host(cfg.remote_hosts, args.host or "")
+    if target is None:
+        names = ", ".join(h.name for h in cfg.remote_hosts) or "<none>"
+        fail(f"unknown --host {args.host!r}; configured: {names}")
+    snap = fetch_remote_snapshot(target)
+    if args.json_output:
+        _emit_json_with_host(
+            "list",
+            _list_data_from_records(
+                snap.sessions,
+                # The peer's payload carried scope_users on its own
+                # envelope; we lost that during collector parsing
+                # because the wire schema there only kept ``sessions``.
+                # Surface what we can derive.
+                scope_users=sorted({s.get("user", "") for s in snap.sessions if s.get("user")}),
+                session_prefix=cfg.session_prefix,
+                all_users=False,
+            ),
+            host=target.name,
+        )
+        if snap.error and not snap.from_cache:
+            eprint(f"uxon: --host {target.name}: {snap.error}")
+            return 1
+        return 0
+    _print_remote_table(cfg, target.name, snap.sessions, cached=snap.from_cache)
+    if snap.error and not snap.from_cache:
+        eprint(f"uxon: --host {target.name}: {snap.error}")
+        return 1
+    return 0
+
+
+def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+    """Handle ``uxon list --all-hosts``.
+
+    Prints the local listing first, then one block per configured
+    peer. With ``--json`` emits a JSON Lines stream — one envelope
+    per source (local + each peer) — so a consumer can split by
+    newline and parse each independently. Exits non-zero iff any
+    peer failed AND its cache was empty; partial results are still
+    rendered.
+    """
+    from uxon.remote_collector import fetch_remote_snapshot
+
+    rc = 0
+    if args.all_users:
+        if not cfg.enable_all_users_list:
+            fail("list --all-users is disabled in config")
+        scope_users = resolve_all_session_users(cfg, launch_user)
+    else:
+        scope_users = [launch_user]
+    local_sessions = collect_sessions(scope_users, cfg)
+
+    if args.json_output:
+        _emit_json("list", _list_data(cfg, local_sessions, scope_users, all_users=args.all_users))
+        for host in cfg.remote_hosts:
+            snap = fetch_remote_snapshot(host)
+            _emit_json_with_host(
+                "list",
+                _list_data_from_records(
+                    snap.sessions,
+                    scope_users=sorted({s.get("user", "") for s in snap.sessions if s.get("user")}),
+                    session_prefix=cfg.session_prefix,
+                    all_users=False,
+                ),
+                host=host.name,
+            )
+            if snap.error and not snap.from_cache:
+                eprint(f"uxon: --host {host.name}: {snap.error}")
+                rc = 1
+        return rc
+
+    # Human-readable: local block first, then peers.
+    print_list(cfg, local_sessions, scope_users, show_user=args.all_users)
+    for host in cfg.remote_hosts:
+        snap = fetch_remote_snapshot(host)
+        print()
+        _print_remote_table(cfg, host.name, snap.sessions, cached=snap.from_cache)
+        if snap.error and not snap.from_cache:
+            eprint(f"uxon: --host {host.name}: {snap.error}")
+            rc = 1
+    return rc
+
+
 def _emit_json(kind: str, data: dict[str, Any]) -> None:
     """Print one wire-schema envelope to stdout as JSON.
 
@@ -1574,12 +1763,39 @@ SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version", "d
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
-    all_users = "--all-users" in argv
-    json_out = "--json" in argv
-    extras = [a for a in argv if a not in {"--all-users", "--json"}]
+    all_users = False
+    json_out = False
+    all_hosts = False
+    host: str | None = None
+    i = 0
+    extras: list[str] = []
+    while i < len(argv):
+        token = argv[i]
+        if token == "--all-users":
+            all_users = True
+        elif token == "--json":
+            json_out = True
+        elif token == "--all-hosts":
+            all_hosts = True
+        elif token == "--host":
+            i += 1
+            if i >= len(argv):
+                fail("--host requires a host name")
+            host = argv[i]
+        else:
+            extras.append(token)
+        i += 1
     if extras:
         fail(f"unknown args for list: {' '.join(extras)}")
-    return ParsedArgs(action="list", all_users=all_users, json_output=json_out)
+    if host is not None and all_hosts:
+        fail("--host and --all-hosts are mutually exclusive")
+    return ParsedArgs(
+        action="list",
+        all_users=all_users,
+        json_output=json_out,
+        host=host,
+        all_hosts=all_hosts,
+    )
 
 
 def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -> ParsedArgs:
@@ -3217,6 +3433,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "run":
         return do_run(args, cfg, launch_user)
     if args.action == "list":
+        if args.host is not None:
+            return _do_list_host(args, cfg)
+        if args.all_hosts:
+            return _do_list_all_hosts(args, cfg, launch_user)
         if args.all_users:
             if not cfg.enable_all_users_list:
                 fail("list --all-users is disabled in config")
