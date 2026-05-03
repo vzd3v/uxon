@@ -3894,6 +3894,26 @@ def _build_tui_context(
     # peer can never stall the local-sessions stream or another
     # peer's poll. Cadence is the dedicated SSH interval — peers
     # are polled less aggressively than the local tmux stream.
+    # Fleet-wide fetch-concurrency cap. Without this a 50-host peer
+    # set recovering from an outage launches 50 concurrent
+    # ``subprocess.Popen`` calls (each holding ≥3 pipe FDs), which
+    # saturates the default 1024-FD ulimit before scheduling becomes
+    # the bottleneck. Scope is per-``TuiContext`` instance — matches
+    # the spec's "no worker survives App teardown" contract.
+    import threading as _threading
+
+    _fetch_sem = _threading.Semaphore(cfg.fetch_concurrency)
+
+    def _make_remote_fetch(h, sem, multiplex):
+        def _fetch():
+            sem.acquire()
+            try:
+                return fetch_remote_snapshot(h, ssh_multiplex=multiplex)
+            finally:
+                sem.release()
+
+        return _fetch
+
     for host in cfg.remote_hosts:
         # Per-host cadence: ``host.interval`` (if set) wins over the
         # fleet-global ``tui_ssh_refresh_interval_seconds``. We pass
@@ -3907,9 +3927,7 @@ def _build_tui_context(
         refresh_sources.append(
             SourceSpec(
                 name=f"remote:{host.name}",
-                fetch=lambda h=host, mux=cfg.ssh_multiplex: fetch_remote_snapshot(
-                    h, ssh_multiplex=mux
-                ),
+                fetch=_make_remote_fetch(host, _fetch_sem, cfg.ssh_multiplex),
                 cadence_seconds_attr=None,
                 cadence_seconds=host_cadence,
                 kick_on_mount=True,
