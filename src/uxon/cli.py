@@ -1730,7 +1730,7 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     if target is None:
         names = ", ".join(h.name for h in cfg.remote_hosts) or "<none>"
         fail(f"unknown --host {args.host!r}; configured: {names}")
-    snap = fetch_remote_snapshot(target)
+    snap = fetch_remote_snapshot(target, ssh_multiplex=cfg.ssh_multiplex)
     if args.json_output:
         _emit_json_with_host(
             "list",
@@ -1795,7 +1795,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             compact=True,
         )
         for host in cfg.remote_hosts:
-            snap = fetch_remote_snapshot(host)
+            snap = fetch_remote_snapshot(host, ssh_multiplex=cfg.ssh_multiplex)
             _emit_json_with_host(
                 "list",
                 _list_data_from_records(
@@ -1817,7 +1817,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if scope_skipped:
         _emit_scope_skipped_hint(scope_skipped)
     for host in cfg.remote_hosts:
-        snap = fetch_remote_snapshot(host)
+        snap = fetch_remote_snapshot(host, ssh_multiplex=cfg.ssh_multiplex)
         print()
         _print_remote_table(cfg, host.name, snap.sessions, cached=snap.from_cache)
         if snap.error and not snap.from_cache:

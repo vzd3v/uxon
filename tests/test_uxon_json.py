@@ -444,7 +444,7 @@ class AllHostsJsonLinesTests(unittest.TestCase):
         ]
         args = uxon.ParsedArgs(action="list", all_hosts=True, json_output=True)
 
-        def _fake_fetch(host) -> RemoteSnapshot:
+        def _fake_fetch(host, **_kwargs) -> RemoteSnapshot:
             return RemoteSnapshot(
                 host_name=host.name,
                 fetched_at_epoch=1.0,

@@ -560,6 +560,32 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
             argv = captured[0]
             self.assertIn("ConnectTimeout=2", argv)
 
+    def test_sub_second_connect_timeout_ceil_rounds_to_one(self) -> None:
+        """``connect_timeout = "500ms"`` must NOT produce ssh ``ConnectTimeout=0``.
+
+        ssh treats 0 as "system default" (minutes). The collector
+        ceil-rounds sub-second durations to 1 so the operator's intent
+        ("tight cap") is preserved.
+        """
+        with TemporaryDirectory() as tmp:
+            captured: list[list[str]] = []
+
+            def runner(argv, **kwargs):
+                captured.append(argv)
+                cp = mock.Mock()
+                cp.returncode = 0
+                cp.stdout = _good_envelope([])
+                cp.stderr = ""
+                return cp
+
+            fetch_remote_snapshot(
+                _host(connect_timeout=0.5),
+                override_state_dir=Path(tmp),
+                _runner=runner,
+            )
+            self.assertIn("ConnectTimeout=1", captured[0])
+            self.assertNotIn("ConnectTimeout=0", captured[0])
+
     def test_per_host_total_timeout_overrides_default(self) -> None:
         """``host.total_timeout`` overrides the subprocess timeout=."""
         captured: dict = {}

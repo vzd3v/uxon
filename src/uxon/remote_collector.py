@@ -528,10 +528,21 @@ def fetch_remote_snapshot(
 
     # Per-host override precedence: ``host.connect_timeout`` /
     # ``host.total_timeout`` (if set) win over the keyword-supplied
-    # fleet-global defaults. Operators can tighten or relax the
-    # budget for one specific peer without changing global config.
-    eff_connect = int(host.connect_timeout) if host.connect_timeout is not None else connect_timeout
-    eff_total = int(host.total_timeout) if host.total_timeout is not None else total_timeout
+    # fleet-global defaults. Sub-second durations are ceil-rounded to
+    # 1 because ssh's ``ConnectTimeout`` accepts whole seconds only and
+    # treats 0 as "system default" (which can be minutes); ``int(0.5)``
+    # would silently disable the operator's intended cap. We ceil the
+    # subprocess ``timeout=`` too (could be float) for symmetry.
+    import math as _math  # noqa: PLC0415
+
+    eff_connect = (
+        max(1, _math.ceil(host.connect_timeout))
+        if host.connect_timeout is not None
+        else connect_timeout
+    )
+    eff_total = (
+        max(1, _math.ceil(host.total_timeout)) if host.total_timeout is not None else total_timeout
+    )
 
     def _run_one(all_users: bool) -> tuple[str | None, str | None, str]:
         """Run one ssh attempt. Returns ``(error, payload, stderr)``."""
