@@ -25,6 +25,7 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.lazy import Lazy
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
@@ -132,7 +133,10 @@ class MainScreen(Screen):
             # Detected-agents banner. Hidden by default; the host probe
             # worker populates ctx.detected_agents and triggers
             # ``_refresh_detected_banner``.
-            yield DetectedAgentsBanner("", id="detected-banner", classes="-hidden")
+            # Wrapped in Lazy so it does not contend with first paint;
+            # the banner is hidden at mount and only becomes visible after
+            # the host probe lands and ``_refresh_detected_banner`` runs.
+            yield Lazy(DetectedAgentsBanner("", id="detected-banner", classes="-hidden"))
             # Action rows
             yield ActionRow(
                 kind="action-cwd",
@@ -211,7 +215,10 @@ class MainScreen(Screen):
                     classes="segment-header",
                     id="remote-section-header",
                 )
-                yield RemoteSessionTable(show_host=show_host, id="sessions-remote")
+                # Lazy: the table is empty at first paint anyway (the
+                # first SSH tick has not landed yet); deferring its mount
+                # frees the first frame for the local-sessions content.
+                yield Lazy(RemoteSessionTable(show_host=show_host, id="sessions-remote"))
         yield Footer()
 
     def _superuser_header(self) -> str:
