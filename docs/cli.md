@@ -82,8 +82,16 @@ Lists `uxon-*` sessions (and any sessions matching configured
 attach, current command, and path.
 
 - Default scope: the current launch user only.
-- `--all-users`: scope all `session_users` from config. Requires
-  `enable_all_users_list = true`.
+- `--all-users`: scope `session_users` from config — but only the
+  **reachable** subset (users the caller can `sudo -niu` to without
+  a password). Unreachable users are listed once on stderr as
+  `# N user(s) skipped (no sudo): <names>`; stdout stays parseable.
+  In `--json`, the same names are surfaced in the new field
+  `data.scope_skipped: list[str]` (forward-compatible — older peers
+  omit it). Requires `enable_all_users_list = true` to be enabled at
+  all; if disabled, exits with code 1 and the stable error tag
+  `uxon-error: all-users-disabled`, which the multi-host aggregator
+  uses to fall back to per-peer "own only" mode.
 - `--host <name>`: route to a configured peer over SSH (see
   `[[remote_hosts]]` in `docs/deployment.md`). Mutually exclusive
   with `--all-hosts`.

@@ -92,10 +92,12 @@ friction.
 - **Multi-user on one box.** Every launch user runs on a dedicated
   socket at `/tmp/uxon-<user>.sock` with their own authenticated
   agents and quotas; nobody sees another user's `tmux` by accident.
-- **Operator visibility.** With `sudo` to listed `session_users`, the
-  TUI shows every agent session of those users with CPU/RAM/age and
-  last-attach. `Enter` attaches as a guest, `d` kills, `kill-all-global`
-  reaps the host — one screen, every runaway process, no SSH tour.
+- **Operator visibility.** With per-target sudo (or root NOPASSWD)
+  to listed `session_users`, the TUI shows every reachable user's
+  sessions with CPU/RAM/age and last-attach. `Enter` attaches as a
+  guest, `d` kills, `kill-all-reachable` reaps every reachable user —
+  one screen, every runaway process, no SSH tour. The probe is
+  one-shot at startup; new sudo grants → restart `uxon`.
 - **Multi-host aggregation.** `[[remote_hosts]]` blocks turn the same
   TUI into a fleet view: per-peer remote-sessions table over SSH,
   fail-soft snapshot cache, no cluster coordinator. Destructive
@@ -172,13 +174,15 @@ uv tool install git+https://github.com/vzd3v/uxon.git
 **Use this when** you administer a server where several OS users
 launch agent sessions and you want them on a single shared `uxon`
 in `/usr/local/bin/uxon` — one version, one update path, one place
-to audit. With (a) passwordless `sudo` to other launch users and
+to audit. With (a) passwordless `sudo` to other launch users
+(per-target NOPASSWD on each `<user>_agent`, or root NOPASSWD) and
 (b) those users listed in `session_users` in `config.toml`, the
 operator additionally **sees and can attach to those users'
 sessions** from the same TUI (the Superuser block, described under
-[The TUI](#the-tui) below). Missing either piece — no `sudo`, or
-empty `session_users` — and every OS user is sandboxed to their
-own sessions only. Each OS user keeps their own `tmux` socket and
+[The TUI](#the-tui) below) — visibility is scoped to the users you
+can actually sudo into. Missing either piece — no `sudo`, or empty
+`session_users` — and every OS user is sandboxed to their own
+sessions only. Each OS user keeps their own `tmux` socket and
 their own `uxon-*` sessions; only the binary is shared.
 
 ```bash
@@ -291,21 +295,40 @@ the agent or the network.
 
 ### ⚡ Superuser block (only when passwordless `sudo` is detected)
 
-Appears below your own sessions whenever the host trusts you with
-`sudo`:
+Visibility falls out of your sudo rules per-target. At TUI startup
+`uxon` probes `sudo -niu <U> -- true` for each user in
+`session_users` and shows the block scoped to the **reachable**
+subset:
+
+- **`<caller> ALL=(ALL) NOPASSWD: ALL`** (root NOPASSWD) — full
+  block, every user in `session_users` listed.
+- **`<caller> ALL=(alice_agent,bob_agent) NOPASSWD: ALL`**
+  (per-target NOPASSWD) — block shows alice/bob; the section header
+  carries a `(2/N users reachable)` hint when `session_users` lists
+  more.
+- **No passwordless sudo** — block hidden; you see only your own
+  sessions.
+
+The probe runs **once at startup**; new sudoers grants are picked
+up by quitting (`q`) and re-launching `uxon`.
+
+Inside the block:
 
 - **Other users' sessions** with a yellow `USER` column. `Enter`
-  attaches via `sudo -iu <user>` (read-only-ish — you're a guest in
-  their tmux); `d` kills the highlighted one.
+  attaches via `sudo -niu <user>` (read-only-ish — you're a guest
+  in their tmux); `d` kills the highlighted one.
 - **⚙ Settings** — repo-level `config.toml` editor. Bool keys
   toggle, enums cycle, strings open an input, arrays use
   comma-separated input. Saves rewrite the file via a `tomlkit`
   round-trip (using `sudo tee` automatically when needed) and
-  preserve untouched comments and formatting. Project-level
-  `.uxon.toml` keys are read-only here — edit them in the project.
-- **Kill ALL uxon sessions (all users)** — appears when at least
-  one session exists anywhere; requires typing `kill-all-global`
-  to confirm. The "fire alarm" button.
+  preserve untouched comments and formatting. Visible only when the
+  caller has root NOPASSWD or the file is locally writable.
+  Project-level `.uxon.toml` keys are read-only here — edit them in
+  the project.
+- **Kill ALL uxon sessions (reachable users)** — appears when at
+  least one session exists across reachable users; requires typing
+  `kill-all-reachable` to confirm. The "fire alarm" button. Acts
+  only on users you can sudo into.
 
 ### Keys
 

@@ -177,7 +177,7 @@ The collector runs the literal command:
 
 ```
 ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 \
-    <ssh_alias> '<remote_uxon>' list --json
+    <ssh_alias> '<remote_uxon>' list --all-users --json
 ```
 
 `BatchMode=yes` forbids password / TOFU prompts — the operator's
@@ -186,6 +186,30 @@ already be known. `StrictHostKeyChecking` is left at the user's
 configured default; if you want first-connect auto-accept, set
 `StrictHostKeyChecking accept-new` in the per-host `ssh_config`
 stanza.
+
+### Operator view across hosts
+
+`--all-users` makes the peer enumerate *its own* reachable users for
+the SSH user — same per-target sudo gate as the local TUI. Two
+config requirements must hold on the peer for cross-user sessions
+to come back over the wire:
+
+1. The peer's `config.toml` sets `enable_all_users_list = true`.
+2. The SSH user has passwordless sudo (per-target NOPASSWD or root
+   NOPASSWD) to the launch users in the peer's `session_users`.
+
+If the peer's config has `enable_all_users_list = false`, the peer
+exits with code 1 and the stable stderr tag
+`uxon-error: all-users-disabled`. The collector detects that tag
+and retries once with the legacy `list --json` (own-only) command,
+stamping the snapshot with `scope_limited = True`. The TUI labels
+that peer `(own only)` in the remote-sessions block — single-host
+case appends to the section header, multi-host case appends to the
+peer's name in the HOST column. No silent partial data: the badge
+is always shown when a peer's view is degraded.
+
+Anything other than the documented marker is a hard error → cache
+fallback path. Operators fix peer config and retry.
 
 ### Cache
 
@@ -216,8 +240,9 @@ emits locally:
   "uxon_version": "<peer's uxon version>",
   "kind": "list",
   "data": {
-    "all_users": false,
-    "scope_users": ["uxonops"],
+    "all_users": true,
+    "scope_users": ["alice_agent", "bob_agent"],
+    "scope_skipped": ["carol_agent"],
     "session_prefix": "uxon-",
     "sessions": [...]
   }
@@ -226,7 +251,9 @@ emits locally:
 
 A `schema_version` mismatch between peers fails the parse loud
 rather than silently dropping fields — bump the local install
-when peers are upgraded.
+when peers are upgraded. `data.scope_skipped` is optional — older
+peers without per-target sudo support omit it; the collector
+treats missing/null as `[]`.
 
 ### CLI
 

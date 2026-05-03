@@ -58,6 +58,18 @@ from uxon.tui.state import (
 
 
 def _ctx(**overrides) -> uxon_tui.TuiContext:
+    """Build a TuiContext for tests.
+
+    Translates the legacy ``has_sudo=True/False`` kwarg into the new
+    per-target ``sudo_caps`` shape: ``has_sudo=True`` is modelled as
+    "one synthetic reachable user" so the visibility predicate
+    (``bool(sudo_caps.reachable_users)``) flips on. Tests that need
+    fine-grained control pass ``sudo_caps=...`` directly and skip
+    ``has_sudo``.
+    """
+    from uxon.tui.context import SudoCapability
+
+    has_sudo = overrides.pop("has_sudo", None)
     base = dict(
         sessions=[],
         total_cpu="0",
@@ -70,6 +82,11 @@ def _ctx(**overrides) -> uxon_tui.TuiContext:
         cwd_writable=True,
     )
     base.update(overrides)
+    if has_sudo is not None and "sudo_caps" not in base:
+        base["sudo_caps"] = SudoCapability(
+            reachable_users=frozenset({"_synthetic_reachable_"} if has_sudo else set()),
+            can_root=bool(has_sudo),
+        )
     return uxon_tui.TuiContext(**base)
 
 

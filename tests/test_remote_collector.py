@@ -102,7 +102,11 @@ class BuildSshArgvTests(unittest.TestCase):
         # The alias is the host token; remote command is one shell-string
         # argument (so the remote side gets a single shell command line).
         self.assertEqual(argv[-2], "edge-eu")
-        self.assertEqual(argv[-1], "uxon list --json")
+        # Default invocation now requests the per-target ``--all-users``
+        # view; the collector falls back to plain ``list --json`` only
+        # when the peer rejects the flag (see
+        # ``ALL_USERS_DISABLED_MARKER``).
+        self.assertEqual(argv[-1], "uxon list --all-users --json")
 
     def test_remote_uxon_is_shell_quoted(self) -> None:
         argv = _build_ssh_argv(_host(remote_uxon="/opt/u xon/uxon"), connect_timeout=5)
@@ -113,19 +117,24 @@ class BuildSshArgvTests(unittest.TestCase):
 
 class ParseEnvelopeTests(unittest.TestCase):
     def test_happy_path(self) -> None:
-        sessions, err = _parse_envelope(_good_envelope([{"name": "uxon-foo@claude"}]))
+        sessions, scope_skipped, err = _parse_envelope(
+            _good_envelope([{"name": "uxon-foo@claude"}])
+        )
         self.assertIsNone(err)
         self.assertEqual(sessions, [{"name": "uxon-foo@claude"}])
+        # Older envelopes that omit ``scope_skipped`` parse as an
+        # empty list (forward-compatible per-target-sudo addition).
+        self.assertEqual(scope_skipped, [])
 
     def test_invalid_json(self) -> None:
-        sessions, err = _parse_envelope("{not json")
+        sessions, _scope_skipped, err = _parse_envelope("{not json")
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("invalid JSON", err)
 
     def test_schema_version_mismatch_rejected(self) -> None:
         bad = json.dumps({"schema_version": "2", "kind": "list", "data": {"sessions": []}})
-        sessions, err = _parse_envelope(bad)
+        sessions, _scope_skipped, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("schema_version mismatch", err)
@@ -134,23 +143,39 @@ class ParseEnvelopeTests(unittest.TestCase):
         bad = json.dumps(
             {"schema_version": WIRE_SCHEMA_VERSION, "kind": "version", "data": {"sessions": []}}
         )
-        sessions, err = _parse_envelope(bad)
+        sessions, _scope_skipped, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("unexpected envelope kind", err)
 
     def test_missing_sessions_list(self) -> None:
         bad = json.dumps({"schema_version": WIRE_SCHEMA_VERSION, "kind": "list", "data": {}})
-        sessions, err = _parse_envelope(bad)
+        sessions, _scope_skipped, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("sessions", err)
 
     def test_top_level_must_be_object(self) -> None:
-        sessions, err = _parse_envelope("[]")
+        sessions, _scope_skipped, err = _parse_envelope("[]")
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("not a JSON object", err)
+
+    def test_scope_skipped_extracted_when_present(self) -> None:
+        env = json.dumps(
+            {
+                "schema_version": WIRE_SCHEMA_VERSION,
+                "kind": "list",
+                "data": {
+                    "sessions": [],
+                    "scope_skipped": ["carol_agent", "dave_agent"],
+                },
+            }
+        )
+        sessions, scope_skipped, err = _parse_envelope(env)
+        self.assertIsNone(err)
+        self.assertEqual(sessions, [])
+        self.assertEqual(scope_skipped, ["carol_agent", "dave_agent"])
 
 
 class CacheRoundTripTests(unittest.TestCase):

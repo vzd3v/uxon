@@ -640,7 +640,11 @@ def run(ctx: TuiContext) -> int:
         "tui_start",
         caller_user=caller_user,
         launch_user=ctx.current_user,
-        extra={"version": ctx.version, "has_sudo": ctx.has_sudo},
+        extra={
+            "version": ctx.version,
+            "sudo_reachable_count": len(ctx.sudo_caps.reachable_users),
+            "sudo_can_root": ctx.sudo_caps.can_root,
+        },
     )
 
     pending_status: str = ""

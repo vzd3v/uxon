@@ -16,6 +16,28 @@ if TYPE_CHECKING:
     pass
 
 
+@dataclass(frozen=True)
+class SudoCapability:
+    """Per-target sudo snapshot consumed by the TUI.
+
+    ``reachable_users`` is the subset of ``session_users`` the caller
+    can sudo into via ``sudo -niu <U>`` (probed once at startup).
+    ``can_root`` is the root-NOPASSWD flag used to gate the
+    Settings-screen write fallback (``sudo tee`` of root-owned
+    config). The set is frozen so consumers can hash / store it
+    safely.
+
+    This class lives in ``tui.context`` (rather than alongside the
+    probe machinery in ``uxon.sudo_probe``) so the TUI module is
+    importable without pulling in ``subprocess``. ``uxon.sudo_probe``
+    re-exports the same name so call sites can import it from the
+    natural place; both names resolve to this single class.
+    """
+
+    reachable_users: frozenset[str] = frozenset()
+    can_root: bool = False
+
+
 # ── Errors ───────────────────────────────────────────────────────────
 
 
@@ -124,7 +146,15 @@ class TuiContext:
     cwd_writable: bool | None = None
 
     current_user: str = ""
-    has_sudo: bool = False
+    # Per-target sudo capability. ``reachable_users`` gates the "Other
+    # users' sessions" block + ``kill-all-reachable`` action;
+    # ``can_root`` gates the Settings-screen write fallback. Replaces
+    # the legacy single-boolean ``has_sudo`` gate.
+    sudo_caps: SudoCapability = field(default_factory=SudoCapability)
+    # Users in ``session_users`` the per-target probe could not reach.
+    # Surfaced in the TUI's "(N/M users reachable)" hint and on
+    # ``uxon list --all-users`` stderr / JSON.
+    scope_skipped_users: tuple[str, ...] = ()
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
 
     # Multi-agent fields (Task 7+)
@@ -305,8 +335,14 @@ def build_items(ctx: TuiContext) -> list[Item]:
                 digit_hint=hint,
             )
         )
-    # Superuser block: other-user sessions, settings, kill-all-global.
-    if ctx.has_sudo:
+    # Superuser block: other-user sessions, settings, kill-all-reachable.
+    # Visibility gate is now per-target sudo: any reachable peer user
+    # exposes the block. Settings remains gated on the same predicate
+    # for backward layout compatibility — its writability separately
+    # depends on ``sudo_caps.can_root`` and is wired through
+    # ``repo_config_writable`` in ``cli._build_tui_context``.
+    has_super = bool(ctx.sudo_caps.reachable_users)
+    if has_super:
         for i, s in enumerate(ctx.other_sessions):
             pos = ACTION_COUNT + len(ctx.sessions) + i
             hint = pos + 1 if 1 <= pos + 1 <= 9 else None
@@ -329,7 +365,10 @@ def build_items(ctx: TuiContext) -> list[Item]:
         )
         total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
         if total_sessions > 0:
-            # Kill-ALL: no digit_hint — PR 2 invariant.
+            # Kill-ALL (reachable users): no digit_hint — PR 2 invariant.
+            # ``kind`` is kept as the legacy ``"kill-all-global"`` string
+            # so the screen / state dispatch tables don't all need to
+            # rename in lock-step with the user-visible relabel.
             items.append(
                 Item(
                     kind="kill-all-global",
@@ -353,12 +392,14 @@ def build_items(ctx: TuiContext) -> list[Item]:
 def _segments(ctx: TuiContext) -> tuple[int, int, int, int, bool]:
     """Return (own_start, other_start, settings_idx, kill_global_idx, has_super).
 
-    Indexes that don't apply return -1. ``has_super`` is True iff
-    ``ctx.has_sudo``.
+    Indexes that don't apply return -1. ``has_super`` is True iff the
+    caller has at least one reachable peer user via per-target sudo
+    (``ctx.sudo_caps.reachable_users``).
     """
     own_start = ACTION_COUNT
     other_start = own_start + len(ctx.sessions)
-    if not ctx.has_sudo:
+    has_super = bool(ctx.sudo_caps.reachable_users)
+    if not has_super:
         return own_start, other_start, -1, -1, False
     settings_idx = other_start + len(ctx.other_sessions)
     total_sessions = len(ctx.sessions) + len(ctx.other_sessions)

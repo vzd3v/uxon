@@ -8,6 +8,40 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-05-03
+
+### Changed
+
+- TUI superuser block visibility is now scoped to the users you can
+  actually `sudo -niu` into, not to a single root-NOPASSWD gate.
+  Operators with per-target NOPASSWD (e.g.
+  `lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL`) finally see the
+  block they couldn't see before; the section header carries a
+  `(N/M users reachable)` hint when `session_users` lists more
+  candidates than the caller can sudo to. Sudo capability is probed
+  once at TUI startup — new sudoers grants are picked up by quitting
+  and re-launching `uxon`. The Settings screen still gates on root
+  NOPASSWD because writing a root-owned `config.toml` needs `sudo
+  tee`.
+- `kill ALL uxon sessions` action renamed to `kill all reachable
+  users` and now scopes to the same per-target sudo set. The
+  confirmation phrase is `kill-all-reachable` (was `kill-all-global`).
+- `uxon list --all-users` now scopes to the reachable subset of
+  `session_users`. Unreachable candidates surface on stderr in human
+  mode and as a new optional `data.scope_skipped: list[str]` field
+  in the JSON envelope (forward-compatible — older peers omit it).
+
+### Added
+
+- Multi-host aggregator (`uxon list --all-hosts`, the TUI remote-
+  sessions block) now requests `list --all-users --json` from each
+  peer so cross-user sessions surface across hosts. When a peer has
+  `enable_all_users_list = false`, it returns the stable error tag
+  `uxon-error: all-users-disabled` and the aggregator falls back to
+  per-peer "own only" mode. The TUI labels the degraded peer
+  `(own only)` in the section header (single-host case) or in the
+  HOST column (multi-host case).
+
 ## [3.2.2] — 2026-05-02
 
 ### Fixed

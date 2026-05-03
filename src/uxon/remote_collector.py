@@ -83,6 +83,17 @@ class RemoteSnapshot:
             payload was originally collected. For a fresh fetch this
             equals :attr:`fetched_at_epoch`; for a cache fallback it
             is older.
+        scope_limited: ``True`` when the peer rejected
+            ``list --all-users`` (because its
+            ``enable_all_users_list = false``) and the collector fell
+            back to the legacy own-only ``list --json``. The TUI
+            badges the section header with ``(own only)`` so the
+            operator knows the per-peer view is partial. Default
+            ``False`` — fresh peers serve the all-users view.
+        scope_skipped: Users the peer probed for sudo reachability
+            and could not reach. Forward-compatible: missing on older
+            peers that don't emit the field — the collector treats
+            that as ``[]``.
     """
 
     host_name: str
@@ -91,6 +102,8 @@ class RemoteSnapshot:
     error: str | None
     sessions: list[SessionRecord] = field(default_factory=list)
     cached_at_epoch: float | None = None
+    scope_limited: bool = False
+    scope_skipped: list[str] = field(default_factory=list)
 
 
 def state_dir(*, override: Path | None = None) -> Path:
@@ -122,7 +135,7 @@ def snapshot_cache_path(name: str, *, override_dir: Path | None = None) -> Path:
     return state_dir(override=override_dir) / f"{name}.json"
 
 
-def _build_ssh_argv(host: RemoteHost, *, connect_timeout: int) -> list[str]:
+def _build_ssh_argv(host: RemoteHost, *, connect_timeout: int, all_users: bool = True) -> list[str]:
     """Assemble the ``ssh`` argv for one fetch.
 
     ``BatchMode=yes`` turns off every interactive prompt (password,
@@ -133,11 +146,20 @@ def _build_ssh_argv(host: RemoteHost, *, connect_timeout: int) -> list[str]:
     that policy.
 
     The remote command is built from ``host.remote_uxon`` (validated
-    non-empty) followed by ``list --json``. ``shlex.quote`` is
-    applied to ``remote_uxon`` even though the validator forbids
-    obvious metacharacters, because ssh joins remote args with
-    spaces and runs them through the remote shell.
+    non-empty) followed by ``list --all-users --json`` (or just
+    ``list --json`` when ``all_users=False`` — used by the
+    ``ALL_USERS_DISABLED_MARKER`` fallback path so peers with
+    ``enable_all_users_list = false`` still report their own
+    sessions). ``shlex.quote`` is applied to ``remote_uxon`` even
+    though the validator forbids obvious metacharacters, because ssh
+    joins remote args with spaces and runs them through the remote
+    shell.
     """
+    remote_cmd = (
+        f"{shlex.quote(host.remote_uxon)} list --all-users --json"
+        if all_users
+        else f"{shlex.quote(host.remote_uxon)} list --json"
+    )
     return [
         "ssh",
         "-o",
@@ -147,15 +169,26 @@ def _build_ssh_argv(host: RemoteHost, *, connect_timeout: int) -> list[str]:
         "-o",
         "ServerAliveInterval=5",
         host.ssh_alias,
-        f"{shlex.quote(host.remote_uxon)} list --json",
+        remote_cmd,
     ]
 
 
-def _parse_envelope(payload: str) -> tuple[list[SessionRecord] | None, str | None]:
+# Stable substring emitted by a peer whose ``enable_all_users_list =
+# false`` rejects ``list --all-users``. The collector greps stderr for
+# this marker to decide whether to retry with the legacy
+# ``list --json`` (own-only) command. Producer side: see
+# ``cli.py``'s ``--all-users`` failure paths.
+ALL_USERS_DISABLED_MARKER = "uxon-error: all-users-disabled"
+
+
+def _parse_envelope(
+    payload: str,
+) -> tuple[list[SessionRecord] | None, list[str], str | None]:
     """Validate and unpack an ``uxon list --json`` envelope.
 
-    Returns ``(sessions, None)`` on success, or ``(None, error)``
-    when the payload is malformed. Failure modes:
+    Returns ``(sessions, scope_skipped, None)`` on success, or
+    ``(None, [], error)`` when the payload is malformed. Failure
+    modes:
 
     - JSON parse error.
     - Top-level shape is not a dict.
@@ -167,6 +200,11 @@ def _parse_envelope(payload: str) -> tuple[list[SessionRecord] | None, str | Non
       ``list``; anything else is a remote bug or a wrong binary).
     - ``data.sessions`` is missing or not a list.
 
+    ``scope_skipped`` is the optional per-target-sudo skipped-users
+    list emitted by peers that ran the per-target probe. Older peers
+    omit the field — we treat that as ``[]`` (forward-compatible
+    addition to the schema, no version bump).
+
     No deep validation of individual session records — they're
     treated as opaque dicts. If a peer renames a session field, the
     TUI will surface the absence; we don't want to fail the whole
@@ -175,24 +213,33 @@ def _parse_envelope(payload: str) -> tuple[list[SessionRecord] | None, str | Non
     try:
         env: Any = json.loads(payload)
     except json.JSONDecodeError as exc:
-        return None, f"invalid JSON: {exc.msg}"
+        return None, [], f"invalid JSON: {exc.msg}"
     if not isinstance(env, dict):
-        return None, "envelope is not a JSON object"
+        return None, [], "envelope is not a JSON object"
     schema_version = env.get("schema_version")
     if schema_version != WIRE_SCHEMA_VERSION:
-        return None, (
-            f"schema_version mismatch: peer reports {schema_version!r}, "
-            f"local expects {WIRE_SCHEMA_VERSION!r}"
+        return (
+            None,
+            [],
+            (
+                f"schema_version mismatch: peer reports {schema_version!r}, "
+                f"local expects {WIRE_SCHEMA_VERSION!r}"
+            ),
         )
     if env.get("kind") != "list":
-        return None, f"unexpected envelope kind {env.get('kind')!r}"
+        return None, [], f"unexpected envelope kind {env.get('kind')!r}"
     data = env.get("data")
     if not isinstance(data, dict):
-        return None, "envelope.data is not an object"
+        return None, [], "envelope.data is not an object"
     sessions = data.get("sessions")
     if not isinstance(sessions, list):
-        return None, "envelope.data.sessions is not a list"
-    return sessions, None
+        return None, [], "envelope.data.sessions is not a list"
+    raw_skipped = data.get("scope_skipped", [])
+    if isinstance(raw_skipped, list):
+        scope_skipped = [str(u) for u in raw_skipped if isinstance(u, str)]
+    else:
+        scope_skipped = []
+    return sessions, scope_skipped, None
 
 
 def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> RemoteSnapshot | None:
@@ -297,33 +344,44 @@ def fetch_remote_snapshot(
     ``_runner`` exists for tests — production callers leave it at
     its default. ``override_state_dir`` is also a test seam.
     """
-    argv = _build_ssh_argv(host, connect_timeout=connect_timeout)
     fetched_at = time.time()
-    error: str | None = None
-    payload: str | None = None
-    try:
-        cp = _runner(argv, capture_output=True, text=True, timeout=total_timeout)
-    except subprocess.TimeoutExpired:
-        error = f"ssh timeout after {total_timeout}s"
-    except FileNotFoundError:
-        error = "ssh not installed on local host"
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception as exc:  # pragma: no cover — defensive only
-        error = f"{exc.__class__.__name__}: {exc}"
-    else:
+
+    def _run_one(all_users: bool) -> tuple[str | None, str | None, str]:
+        """Run one ssh attempt. Returns ``(error, payload, stderr)``."""
+        argv = _build_ssh_argv(host, connect_timeout=connect_timeout, all_users=all_users)
+        try:
+            cp = _runner(argv, capture_output=True, text=True, timeout=total_timeout)
+        except subprocess.TimeoutExpired:
+            return f"ssh timeout after {total_timeout}s", None, ""
+        except FileNotFoundError:
+            return "ssh not installed on local host", None, ""
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:  # pragma: no cover — defensive only
+            return f"{exc.__class__.__name__}: {exc}", None, ""
         if cp.returncode != 0:
             stderr = (cp.stderr or "").strip()
-            error = (
+            err = (
                 f"ssh exited {cp.returncode}: {stderr.splitlines()[0]}"
                 if stderr
                 else f"ssh exited {cp.returncode}"
             )
-        else:
-            payload = cp.stdout
+            return err, None, stderr
+        return None, cp.stdout, ""
+
+    error, payload, stderr = _run_one(all_users=True)
+    scope_limited = False
+    # Fallback: peer rejected ``--all-users`` (its
+    # ``enable_all_users_list = false``). Retry with the legacy
+    # own-only command so the TUI still sees something for that peer.
+    # The marker is the stable substring documented in
+    # ``ALL_USERS_DISABLED_MARKER``; anything else is a hard error.
+    if error is not None and ALL_USERS_DISABLED_MARKER in stderr:
+        scope_limited = True
+        error, payload, _ = _run_one(all_users=False)
 
     if error is None and payload is not None:
-        sessions, parse_err = _parse_envelope(payload)
+        sessions, scope_skipped, parse_err = _parse_envelope(payload)
         if parse_err is not None:
             error = parse_err
         else:
@@ -335,6 +393,8 @@ def fetch_remote_snapshot(
                 error=None,
                 sessions=sessions,
                 cached_at_epoch=fetched_at,
+                scope_limited=scope_limited,
+                scope_skipped=scope_skipped,
             )
             # A cache-write failure (disk full, perms) must not taint
             # a fresh in-memory snapshot — we still have valid data.
@@ -355,6 +415,7 @@ def fetch_remote_snapshot(
             error=error,
             sessions=cached.sessions,
             cached_at_epoch=cached.cached_at_epoch,
+            scope_limited=scope_limited,
         )
     return RemoteSnapshot(
         host_name=host.name,
@@ -363,4 +424,5 @@ def fetch_remote_snapshot(
         error=error,
         sessions=[],
         cached_at_epoch=None,
+        scope_limited=scope_limited,
     )

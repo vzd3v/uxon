@@ -547,9 +547,39 @@ def resolve_all_session_users(cfg: Config, current_launch_user: str) -> list[str
 
 
 def command_prefix_for_user(target_user: str) -> list[str]:
+    """Interactive sudo prefix used by the launch path.
+
+    Used by ``run`` / ``new`` / ``attach`` and the launch-time
+    helpers that run while a TTY is available — sudo's ``-i`` runs the
+    target's login shell so PATH / HOME / nvm / direnv set up the same
+    way they would for a real interactive login. Without ``-n``, an
+    unreachable target prompts for a password (or fails with a clear
+    "a password is required" message), which is the correct UX at
+    launch time.
+
+    For background work where no TTY exists — listing, probing, the
+    TUI's session-collection passes — use
+    :func:`nonint_command_prefix_for_user` instead so a missing
+    NOPASSWD grant fails fast rather than blocking on a prompt.
+    """
     if process_user() == target_user:
         return []
     return ["sudo", "-iu", target_user, "--"]
+
+
+def nonint_command_prefix_for_user(target_user: str) -> list[str]:
+    """Non-interactive sudo prefix for listing / probing / TUI polling.
+
+    Same as :func:`command_prefix_for_user` but adds ``-n`` so sudo
+    refuses to prompt. Used wherever the caller does not have a TTY
+    available — listing other users' sessions, the TUI background
+    refresh, capability probes — so a missing NOPASSWD grant returns
+    a non-zero exit immediately rather than blocking on a hidden
+    password prompt.
+    """
+    if process_user() == target_user:
+        return []
+    return ["sudo", "-niu", target_user, "--"]
 
 
 def probe_cwd_writable(target_user: str, target_dir: str) -> bool:
@@ -581,8 +611,26 @@ def probe_cwd_writable(target_user: str, target_dir: str) -> bool:
     return cp.returncode == 0
 
 
-def tmux_base(target_user: str, socket_path: str | None = None) -> list[str]:
-    base = command_prefix_for_user(target_user) + ["tmux"]
+def tmux_base(
+    target_user: str, socket_path: str | None = None, *, nonint: bool = False
+) -> list[str]:
+    """Build the tmux command base for ``target_user``.
+
+    ``nonint=False`` (default, launch path): wraps tmux with the
+    interactive sudo prefix (``sudo -iu``). The launch path has a TTY,
+    so an unreachable target prompts/fails with a clear sudo error.
+
+    ``nonint=True`` (listing / probing / TUI background polling): wraps
+    tmux with the non-interactive prefix (``sudo -niu``). A missing
+    NOPASSWD grant returns a non-zero exit immediately rather than
+    blocking on a hidden password prompt.
+    """
+    prefix = (
+        nonint_command_prefix_for_user(target_user)
+        if nonint
+        else command_prefix_for_user(target_user)
+    )
+    base = prefix + ["tmux"]
     if socket_path:
         base.extend(["-S", socket_path])
     return base
@@ -603,8 +651,8 @@ def tmux_socket_path(cfg: Config, target_user: str) -> str:
     return socket_path
 
 
-def configured_tmux_base(cfg: Config, target_user: str) -> list[str]:
-    return tmux_base(target_user, tmux_socket_path(cfg, target_user))
+def configured_tmux_base(cfg: Config, target_user: str, *, nonint: bool = False) -> list[str]:
+    return tmux_base(target_user, tmux_socket_path(cfg, target_user), nonint=nonint)
 
 
 def tmux_host_socket() -> str | None:
@@ -1176,7 +1224,11 @@ def collect_sessions_for_user(
     *,
     legacy_prefixes: tuple[str, ...] = (),
 ) -> list[SessionInfo]:
-    base = tmux_base(user, socket_path)
+    # Listing runs without a TTY (CLI ``list``, TUI background poll,
+    # remote aggregator). Use the non-interactive sudo prefix so a
+    # missing NOPASSWD grant returns non-zero immediately rather than
+    # blocking on a hidden password prompt.
+    base = tmux_base(user, socket_path, nonint=True)
     probe = subprocess.run(base + ["list-sessions"], text=True, capture_output=True)
     if probe.returncode != 0:
         return []
@@ -1442,12 +1494,55 @@ def _version_data() -> dict[str, Any]:
     }
 
 
+def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], list[str]]:
+    """Probe per-target sudo and split ``session_users`` into reachable / skipped.
+
+    Returns ``(scope_users, scope_skipped)``:
+
+    - ``scope_users`` = ``launch_user`` plus every user from
+      ``resolve_all_session_users(cfg, launch_user)`` that the caller
+      can reach via ``sudo -niu <U>``. The list is deterministically
+      ordered (stable, sorted by user where it matters).
+    - ``scope_skipped`` = the rest of ``session_users`` (excluding
+      self) — users in config that the caller cannot reach. Surfaced
+      separately so ``--json`` callers and human stderr both see what
+      was filtered.
+
+    The launch user itself is always in ``scope_users`` and never in
+    ``scope_skipped``: there's no sudo step for "see my own
+    sessions".
+    """
+    from uxon.sudo_probe import probe_sudo_capability
+
+    all_users = resolve_all_session_users(cfg, launch_user)
+    candidates = [u for u in all_users if u != launch_user]
+    caps = probe_sudo_capability(candidates)
+    reachable = [u for u in candidates if u in caps.reachable_users]
+    skipped = [u for u in candidates if u not in caps.reachable_users]
+    scope_users = normalize_user_list([launch_user, *reachable])
+    return scope_users, skipped
+
+
+def _emit_scope_skipped_hint(scope_skipped: list[str] | None) -> None:
+    """Print a single-line stderr hint when ``--all-users`` filtered users.
+
+    Format mirrors the spec:
+    ``# 2 users skipped (no sudo): carol_agent, dave_agent``.
+    No-op when the skipped list is empty / None — stdout stays
+    parseable and human output stays uncluttered.
+    """
+    if not scope_skipped:
+        return
+    eprint(f"# {len(scope_skipped)} users skipped (no sudo): {', '.join(scope_skipped)}")
+
+
 def _list_data(
     cfg: Config,
     sessions: list[SessionInfo],
     scope_users: list[str],
     *,
     all_users: bool,
+    scope_skipped: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the ``data`` body for ``uxon list --json``.
 
@@ -1455,15 +1550,25 @@ def _list_data(
     remote consumer needs to label the snapshot: which OS users were
     scoped, whether ``--all-users`` was on, and the session prefix
     that ``short_id`` was stripped against.
+
+    ``scope_skipped`` (optional) is the per-target-sudo "users in
+    ``session_users`` we probed but couldn't reach" list. It is
+    omitted from the envelope when ``None`` so legacy single-user
+    listings stay byte-identical to their previous shape; callers
+    that performed an ``--all-users`` probe pass the (possibly empty)
+    list to surface it in the envelope.
     """
     from uxon.wire_schema import build_session_records
 
-    return {
+    body: dict[str, Any] = {
         "all_users": all_users,
         "scope_users": list(scope_users),
         "session_prefix": cfg.session_prefix,
         "sessions": build_session_records(sessions, session_prefix=cfg.session_prefix),
     }
+    if scope_skipped is not None:
+        body["scope_skipped"] = list(scope_skipped)
+    return body
 
 
 def _emit_json_with_host(
@@ -1501,6 +1606,7 @@ def _list_data_from_records(
     *,
     session_prefix: str,
     all_users: bool,
+    scope_skipped: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the ``list`` envelope ``data`` from already-prepared
     wire-schema records (i.e. data fetched from a peer rather than
@@ -1510,13 +1616,20 @@ def _list_data_from_records(
     remote-host listing has the same shape as a local one — the
     only delta is the envelope-level ``host`` field set by the
     caller.
+
+    ``scope_skipped`` (optional) propagates the per-target-sudo
+    skipped-users list through; omitted when ``None`` to keep the
+    envelope shape stable for legacy callers.
     """
-    return {
+    body: dict[str, Any] = {
         "all_users": all_users,
         "scope_users": list(scope_users),
         "session_prefix": session_prefix,
         "sessions": list(sessions),
     }
+    if scope_skipped is not None:
+        body["scope_skipped"] = list(scope_skipped)
+    return body
 
 
 def _print_remote_table(
@@ -1623,12 +1736,14 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     from uxon.remote_collector import fetch_remote_snapshot
 
     rc = 0
+    scope_skipped: list[str] | None
     if args.all_users:
         if not cfg.enable_all_users_list:
-            fail("list --all-users is disabled in config")
-        scope_users = resolve_all_session_users(cfg, launch_user)
+            fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
+        scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
     else:
         scope_users = [launch_user]
+        scope_skipped = None
     local_sessions = collect_sessions(scope_users, cfg)
 
     if args.json_output:
@@ -1636,7 +1751,13 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         # ``\n`` and parses each line independently.
         _emit_json(
             "list",
-            _list_data(cfg, local_sessions, scope_users, all_users=args.all_users),
+            _list_data(
+                cfg,
+                local_sessions,
+                scope_users,
+                all_users=args.all_users,
+                scope_skipped=scope_skipped,
+            ),
             compact=True,
         )
         for host in cfg.remote_hosts:
@@ -1659,6 +1780,8 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
     # Human-readable: local block first, then peers.
     print_list(cfg, local_sessions, scope_users, show_user=args.all_users)
+    if scope_skipped:
+        _emit_scope_skipped_hint(scope_skipped)
     for host in cfg.remote_hosts:
         snap = fetch_remote_snapshot(host)
         print()
@@ -2795,8 +2918,8 @@ def _probe_git_profile(profile, creds_user: str, current_user: str) -> str:
     return "warn:unknown auth"
 
 
-def detect_passwordless_sudo() -> bool:
-    """Fast non-interactive check for passwordless sudo.
+def detect_root_nopasswd() -> bool:
+    """Fast non-interactive check for *root* NOPASSWD.
 
     Returns True if:
       - the process is already root (euid==0), or
@@ -2810,6 +2933,10 @@ def detect_passwordless_sudo() -> bool:
 
     Timeout is intentionally tight (0.5s) so the TUI never blocks on startup.
     False on timeout / OSError / non-zero exit.
+
+    Used for the Settings-screen writability gate (``sudo tee`` of a
+    root-owned config file). The "see other users' sessions" gate is
+    now per-target — see :func:`uxon.sudo_probe.probe_sudo_capability`.
     """
     if os.geteuid() == 0:
         return True
@@ -2824,6 +2951,14 @@ def detect_passwordless_sudo() -> bool:
     except (subprocess.TimeoutExpired, OSError):
         return False
     return cp.returncode == 0
+
+
+# Backwards-compatible alias for any out-of-tree caller. The renamed
+# :func:`detect_root_nopasswd` is the canonical name; the old name is
+# preserved so a stale import doesn't crash ``uxon``. New code must
+# use the canonical name (or :func:`uxon.sudo_probe.probe_sudo_capability`
+# for the per-target gate).
+detect_passwordless_sudo = detect_root_nopasswd
 
 
 def _list_existing_projects(root: str) -> list[tuple[str, str]]:
@@ -3095,7 +3230,12 @@ def _plan_tui_open_existing(
 
 
 def _build_tui_context(
-    cfg: Config, launch_user: str, cwd: str, *, skeleton: bool = False
+    cfg: Config,
+    launch_user: str,
+    cwd: str,
+    *,
+    skeleton: bool = False,
+    sudo_caps_override: "SudoCapability | None" = None,
 ) -> TuiContext:
     """Build a TuiContext from live session data.
 
@@ -3104,24 +3244,47 @@ def _build_tui_context(
     ``loading=True``. The TUI mounts immediately and a background worker
     calls this function again with ``skeleton=False`` to fill in the
     real data — see :class:`uxon.tui.app.UxonApp._initial_load_worker`.
+
+    ``sudo_caps_override`` lets the caller (typically ``on_refresh``)
+    reuse a previously-probed :class:`SudoCapability` instead of
+    re-running the probe. Probing is one-shot at startup — the spec
+    forbids per-refresh re-probing because new sudo grants are picked
+    up by restarting ``uxon``, not by polling. When ``None`` and
+    ``skeleton=False``, the function probes once.
     """
     from uxon import settings as uxon_settings
+    from uxon.sudo_probe import SudoCapability, probe_sudo_capability
 
     if skeleton:
-        has_sudo = False
+        # Skeleton ctx skips the per-target probe — it's the fast first
+        # frame, and the real probe runs below when the worker calls
+        # back with skeleton=False.
+        sudo_caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         own: list[SessionInfo] = []
         other: list[SessionInfo] = []
+        skipped_users: tuple[str, ...] = ()
     else:
-        has_sudo = detect_passwordless_sudo()
+        # One-shot probe: the candidate set is ``session_users \ {self}``.
+        # Self is filtered before probing because ``sudo -niu <self>``
+        # trivially succeeds and would inflate ``reachable_users``
+        # with a meaningless entry.
+        candidates = [
+            u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user
+        ]
+        if sudo_caps_override is not None:
+            sudo_caps = sudo_caps_override
+        else:
+            sudo_caps = probe_sudo_capability(candidates)
         own = collect_sessions([launch_user], cfg)
 
-        other = []
-        if has_sudo:
-            other_users = [
-                u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user
-            ]
-            if other_users:
-                other = collect_sessions(other_users, cfg)
+        # Other-user sessions are scoped to the *reachable* subset.
+        # Unreachable candidates are surfaced separately so the TUI
+        # can show the "(2/4 users reachable)" hint.
+        if sudo_caps.reachable_users:
+            other = collect_sessions(sorted(sudo_caps.reachable_users), cfg)
+        else:
+            other = []
+        skipped_users = tuple(sorted(u for u in candidates if u not in sudo_caps.reachable_users))
 
         own.sort(key=lambda s: s.name)
         other.sort(key=lambda s: (s.user, s.name))
@@ -3147,29 +3310,63 @@ def _build_tui_context(
         target = resolve_session(
             name, fresh, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
         )
-        full = configured_tmux_base(cfg, user) + ["kill-session", "-t", target.name]
+        # TUI-driven kill: no TTY available, use non-interactive sudo.
+        full = configured_tmux_base(cfg, user, nonint=True) + ["kill-session", "-t", target.name]
         run_cmd(full, check=True)
 
     def on_kill_all() -> None:
         fresh = collect_sessions([launch_user], cfg)
         for s in fresh:
-            full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
+            full = configured_tmux_base(cfg, launch_user, nonint=True) + [
+                "kill-session",
+                "-t",
+                s.name,
+            ]
             run_cmd(full, check=False)
 
-    def on_kill_all_global() -> None:
-        users = resolve_all_session_users(cfg, launch_user) if has_sudo else [launch_user]
+    def on_kill_all_reachable() -> None:
+        # Iterate the launch user plus every reachable peer user. An
+        # empty ``reachable_users`` collapses to "kill all my own
+        # sessions", which is the same behaviour the legacy
+        # ``kill-all-global`` had when sudo was unavailable.
+        users = sorted({launch_user, *sudo_caps.reachable_users})
         for u in users:
             fresh = collect_sessions([u], cfg)
             for s in fresh:
-                full = configured_tmux_base(cfg, u) + ["kill-session", "-t", s.name]
+                full = configured_tmux_base(cfg, u, nonint=True) + [
+                    "kill-session",
+                    "-t",
+                    s.name,
+                ]
                 run_cmd(full, check=False)
+
+    # Legacy alias kept for any out-of-tree caller. The TUI dispatches
+    # via ``on_kill_all_global`` (the field name on TuiContext); the
+    # implementation now scopes to the reachable set.
+    on_kill_all_global = on_kill_all_reachable
+
+    # Capture the caps probed for *this* ctx so subsequent ``on_refresh``
+    # calls reuse them. Probing is one-shot at startup (spec § Non-goals
+    # "Per-refresh re-probing"); new sudo grants are picked up by
+    # restarting uxon, not by polling.
+    #
+    # Subtlety: a *skeleton* ctx has empty placeholder caps, not real
+    # ones. If we captured those, the first real load would reuse the
+    # empty placeholder and never probe. So skeleton's on_refresh
+    # passes None, which forces the probe on the first non-skeleton
+    # load. Every refresh after that reuses the captured real caps.
+    captured_sudo_caps: "SudoCapability | None" = None if skeleton else sudo_caps
 
     def on_refresh() -> TuiContext:
         # Re-read config so settings edits take effect immediately.
         # Always returns a fully loaded ctx (skeleton=False) — even when
         # the calling ctx was a skeleton, the caller wants real data.
+        # We pass the captured caps (or None on the very first load)
+        # so the probe runs at most once per process.
         fresh_cfg = load_config(cwd)
-        return _build_tui_context(fresh_cfg, launch_user, cwd)
+        return _build_tui_context(
+            fresh_cfg, launch_user, cwd, sudo_caps_override=captured_sudo_caps
+        )
 
     def on_probe_link_health() -> object | None:
         return _read_ssh_link_health_status()
@@ -3279,11 +3476,14 @@ def _build_tui_context(
 
     # Repo-config write gate: same predicate as ``write_repo_config_toml``.
     # Direct-write fast path covers operator-owned-checkout case;
-    # ``sudo tee`` fallback covers passwordless-sudo-to-root case.
+    # ``sudo tee`` fallback covers root-NOPASSWD case. Per-target
+    # sudo doesn't help here — there is no ``<user>`` to sudo into;
+    # we need to write a root-owned file via ``sudo tee`` (i.e. the
+    # caller must have ``can_root``).
     try:
-        repo_cfg_writable = os.access(str(repo_config_path()), os.W_OK) or has_sudo
+        repo_cfg_writable = os.access(str(repo_config_path()), os.W_OK) or sudo_caps.can_root
     except OSError:
-        repo_cfg_writable = has_sudo
+        repo_cfg_writable = sudo_caps.can_root
 
     from uxon import agents as _uxon_agents
 
@@ -3361,7 +3561,8 @@ def _build_tui_context(
         tui_ssh_refresh_interval_seconds=cfg.tui_ssh_refresh_interval_seconds,
         cwd_writable=cwd_writable,
         current_user=launch_user,
-        has_sudo=has_sudo,
+        sudo_caps=sudo_caps,
+        scope_skipped_users=skipped_users,
         other_sessions=tui_other,
         enabled_agents=cfg.enabled_agents,
         default_agent=cfg.default_agent,
@@ -3467,13 +3668,28 @@ def main(argv: list[str] | None = None) -> int:
             return _do_list_all_hosts(args, cfg, launch_user)
         if args.all_users:
             if not cfg.enable_all_users_list:
-                fail("list --all-users is disabled in config")
-            scope_users = resolve_all_session_users(cfg, launch_user)
+                # Stable error tag. The remote-host aggregator's
+                # fallback detector greps for this exact substring to
+                # decide whether to retry with the legacy ``list
+                # --json`` (own-only) command.
+                fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
+            scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
             sessions = collect_sessions(scope_users, cfg)
             if args.json_output:
-                _emit_json("list", _list_data(cfg, sessions, scope_users, all_users=True))
+                _emit_json(
+                    "list",
+                    _list_data(
+                        cfg,
+                        sessions,
+                        scope_users,
+                        all_users=True,
+                        scope_skipped=scope_skipped,
+                    ),
+                )
                 return 0
-            return print_list(cfg, sessions, scope_users, show_user=True)
+            rc = print_list(cfg, sessions, scope_users, show_user=True)
+            _emit_scope_skipped_hint(scope_skipped)
+            return rc
         scope_users = [launch_user]
         sessions = collect_sessions(scope_users, cfg)
         if args.json_output:

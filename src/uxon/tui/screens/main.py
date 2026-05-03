@@ -164,8 +164,8 @@ class MainScreen(Screen):
             if self.ctx.sessions:
                 yield Static("── sessions ──", classes="segment-header")
                 yield SessionTable(show_agent_column=show_agent, id="sessions-own")
-            if self.ctx.has_sudo:
-                yield Static("── superuser ──", classes="segment-header")
+            if bool(self.ctx.sudo_caps.reachable_users):
+                yield Static(self._superuser_header(), classes="segment-header")
                 if self.ctx.other_sessions:
                     yield SessionTable(
                         show_user=True, show_agent_column=show_agent, id="sessions-other"
@@ -180,15 +180,20 @@ class MainScreen(Screen):
                 )
                 total_sessions = len(self.ctx.sessions) + len(self.ctx.other_sessions)
                 if total_sessions > 0:
+                    reachable_users = sorted(self.ctx.sudo_caps.reachable_users)
                     yield ActionRow(
                         kind="kill-all-global",
-                        label=f"⚡ Kill ALL uxon sessions (all users, {total_sessions} total)",
-                        detail="",
+                        label=(
+                            f"⚡ Kill ALL uxon sessions (reachable users, {total_sessions} total)"
+                        ),
+                        detail=f"({', '.join(reachable_users)} + self)",
                         digit=None,
                         enabled=True,
                         id="action-kill-all-global",
                     )
-            if not self.ctx.sessions and not (self.ctx.has_sudo and self.ctx.other_sessions):
+            if not self.ctx.sessions and not (
+                bool(self.ctx.sudo_caps.reachable_users) and self.ctx.other_sessions
+            ):
                 note = "Loading sessions…" if self.ctx.loading else "No active sessions."
                 yield Static(note, id="sessions-note", classes="empty-note")
             # Multi-host: a separate Remote-sessions block. Rendered
@@ -200,18 +205,39 @@ class MainScreen(Screen):
             # implicit from the section header.
             if self.ctx.remote_hosts:
                 show_host = len(self.ctx.remote_hosts) > 1
-                yield Static(self._remote_header(), classes="segment-header")
+                yield Static(
+                    self._remote_header(),
+                    classes="segment-header",
+                    id="remote-section-header",
+                )
                 yield RemoteSessionTable(show_host=show_host, id="sessions-remote")
         yield Footer()
 
+    def _superuser_header(self) -> str:
+        """Header for the "Other users' sessions" / superuser block.
+
+        When the per-target probe filtered any candidates (caller's
+        sudoers rule covers some users in ``session_users`` but not
+        all), append a ``(N/M users reachable)`` hint so the operator
+        notices a colleague is missing rather than silently absent.
+        """
+        reachable = sorted(self.ctx.sudo_caps.reachable_users)
+        skipped = list(self.ctx.scope_skipped_users)
+        total = len(reachable) + len(skipped)
+        if skipped and total:
+            return f"── superuser ── ({len(reachable)}/{total} users reachable)"
+        return "── superuser ──"
+
     def _remote_header(self) -> str:
-        # When polling fails, ``remote_snapshots`` still contains the
-        # last-good entries (cached) plus any errors; keep the header
-        # quiet here and surface per-host status in a future commit
-        # (the data is already available on the snapshots).
+        # Single-host case: peer name + "(own only)" badge if the peer
+        # rejected --all-users (e.g. enable_all_users_list = false on
+        # the peer's config). Multi-host case: badges go onto the
+        # per-row HOST column in ``_flatten_remote_rows`` instead.
         if len(self.ctx.remote_hosts) == 1:
             host = self.ctx.remote_hosts[0]
-            return f"── remote sessions ── {host.name}"
+            snap = self.ctx.remote_snapshots.get(host.name)
+            badge = " (own only)" if snap is not None and getattr(snap, "scope_limited", False) else ""
+            return f"── remote sessions ── {host.name}{badge}"
         return f"── remote sessions ── {len(self.ctx.remote_hosts)} hosts"
 
     def _cwd_detail(self) -> str:
@@ -231,7 +257,7 @@ class MainScreen(Screen):
                 self.query_one("#sessions-own", SessionTable).populate(self.ctx.sessions)
             except Exception:  # pragma: no cover — defensive
                 pass
-        if self.ctx.has_sudo and self.ctx.other_sessions:
+        if bool(self.ctx.sudo_caps.reachable_users) and self.ctx.other_sessions:
             try:
                 self.query_one("#sessions-other", SessionTable).populate(self.ctx.other_sessions)
             except Exception:  # pragma: no cover — defensive
@@ -259,15 +285,25 @@ class MainScreen(Screen):
         Iteration follows ``ctx.remote_hosts`` order so the displayed
         order is config-defined, not snapshot-arrival-defined. Within
         a host the session order is whatever the peer reported (the
-        wire schema preserves it).
+        wire schema preserves it). Peers whose snapshot reports
+        ``scope_limited=True`` (the peer fell back to "own only" because
+        ``enable_all_users_list`` is disabled there) get a ``(own only)``
+        badge appended to the displayed host name. Single-host case
+        puts the badge in the section header instead — see
+        :meth:`_remote_header`.
         """
         rows: list[tuple[str, dict]] = []
+        multi_host = len(self.ctx.remote_hosts) > 1
         for host in self.ctx.remote_hosts:
             snap = self.ctx.remote_snapshots.get(host.name)
             if snap is None:
                 continue
+            limited = bool(getattr(snap, "scope_limited", False))
+            display_name = (
+                f"{host.name} (own only)" if multi_host and limited else host.name
+            )
             for rec in snap.sessions:
-                rows.append((host.name, rec))
+                rows.append((display_name, rec))
         return rows
 
     def _populate_remote_table(self) -> None:
@@ -280,7 +316,9 @@ class MainScreen(Screen):
 
         Updates ``ctx.remote_snapshots`` in place and re-populates the
         table. Called from ``UxonApp.on__refresh_source_landed`` for
-        ``remote:*`` events.
+        ``remote:*`` events. Also re-renders the section header so a
+        single-host "(own only)" badge appears as soon as the peer's
+        ``scope_limited`` flag arrives.
         """
         self.ctx.remote_snapshots[host_name] = snapshot
         if self.ctx.remote_hosts:
@@ -288,6 +326,18 @@ class MainScreen(Screen):
                 self._populate_remote_table()
             except Exception:  # pragma: no cover — table not yet mounted
                 pass
+            # Single-host header carries the (own only) badge — refresh
+            # it whenever a snapshot lands. Multi-host header is fixed
+            # ("N hosts") and doesn't change.
+            if len(self.ctx.remote_hosts) == 1:
+                try:
+                    from textual.widgets import Static
+
+                    self.query_one("#remote-section-header", Static).update(
+                        self._remote_header()
+                    )
+                except Exception:  # pragma: no cover — header not yet mounted
+                    pass
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 
@@ -462,16 +512,23 @@ class MainScreen(Screen):
         total = len(self.ctx.sessions) + len(self.ctx.other_sessions)
         if total == 0:
             return
+        reachable = sorted(self.ctx.sudo_caps.reachable_users)
+        # User-visible scope summary: name the reachable users
+        # explicitly so the operator can't confuse "all reachable"
+        # with "all users on the host" — those diverge under the
+        # per-target sudo model.
+        scope_summary = f"{', '.join(reachable)} (+ self)" if reachable else "self only"
+        n_users = len(reachable) + 1  # + launch_user
 
         def after_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
             try:
                 self.ctx.on_kill_all_global()
-                self.app.notify(f"Killed all {total} sessions (all users)")
+                self.app.notify(f"Killed all {total} sessions across {n_users} reachable users")
             except CallbackError as exc:
                 self.app.notify(
-                    f"Kill all (global) failed: {exc}",
+                    f"Kill all (reachable) failed: {exc}",
                     severity="error",
                     timeout=6,
                 )
@@ -480,8 +537,8 @@ class MainScreen(Screen):
 
         self.app.push_screen(
             ConfirmPhrase(
-                f"Kill ALL {total} sessions across ALL users?",
-                "kill-all-global",
+                (f"Kill ALL {total} sessions for {n_users} reachable users? [{scope_summary}]"),
+                "kill-all-reachable",
             ),
             after_confirm,
         )
@@ -567,11 +624,12 @@ class MainScreen(Screen):
         )
 
     def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
+        has_super = bool(ctx.sudo_caps.reachable_users)
         return (
             bool(ctx.sessions),
-            ctx.has_sudo,
+            has_super,
             bool(ctx.other_sessions),
-            ctx.has_sudo and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
+            has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
         )
 
     def _refresh_cwd_row(self) -> None:
@@ -616,14 +674,16 @@ class MainScreen(Screen):
             except Exception:  # pragma: no cover — DOM not mounted yet
                 pass
 
-        if self.ctx.has_sudo:
+        if bool(self.ctx.sudo_caps.reachable_users):
             try:
                 kill_row = self.query_one("#action-kill-all-global", ActionRow)
             except Exception:
                 kill_row = None
             if kill_row is not None:
                 total_sessions = len(self.ctx.sessions) + len(self.ctx.other_sessions)
-                kill_row.label = f"⚡ Kill ALL uxon sessions (all users, {total_sessions} total)"
+                kill_row.label = (
+                    f"⚡ Kill ALL uxon sessions (reachable users, {total_sessions} total)"
+                )
                 kill_row._render_text()
 
         # Update the "Loading sessions…" / "No active sessions." placeholder

@@ -269,6 +269,34 @@ For any of the three modes:
    user;
 3. else → `runtime_user`.
 
+### Operator view (who sees whose sessions)
+
+`uxon` doesn't have an "operator role" config knob. Visibility falls
+out of the caller's sudo rules, **per target**:
+
+- **`<caller> ALL=(ALL) NOPASSWD: ALL`** (root NOPASSWD). The TUI
+  shows every user listed in `session_users` in the "Other users'
+  sessions" block; `Enter` attaches via `sudo -niu <user>`; the
+  `kill-all-reachable` action covers every reachable user; the
+  Settings screen can write a root-owned `config.toml` via
+  `sudo tee`.
+- **`<caller> ALL=(alice_agent,bob_agent) NOPASSWD: ALL`**
+  (per-target NOPASSWD, no root). The TUI shows only `alice_agent`
+  and `bob_agent`; the section header gets a
+  `(2/N users reachable)` hint when `session_users` lists more.
+  `kill-all-reachable` covers exactly that subset. The Settings
+  screen marks itself read-only — there's no root sudo to write the
+  config file with.
+- **No passwordless sudo to anyone in `session_users`.** No
+  superuser block, no `--all-users` data, no `kill-all-reachable`
+  action. The caller sees only their own (i.e. their `<user>_agent`'s)
+  sessions.
+
+The probe runs **once at TUI startup**. New entries in
+`/etc/sudoers.d/` are picked up by quitting (`q`) and re-launching
+`uxon`; there is no daemon, no `r`-key re-probe, no SIGHUP. This is
+deliberate — the TUI must not get slower for capability detection.
+
 ### Defensive perimeter — `allowed_roots`
 
 `allowed_roots` switches `uxon run`, `uxon new -w`, and the TUI's
@@ -321,6 +349,18 @@ Operating model:
 - Destructive actions stay strictly local. Reaping an agent on a
   peer means SSHing in. The rationale is in
   [`docs/deployment.md` § Multi-host](deployment.md#multi-host).
+
+**Cross-user visibility on peers.** The aggregator runs
+`uxon list --all-users --json` on every peer. For the peer to
+return other users' sessions, its own config must have
+`enable_all_users_list = true` AND the SSH user on that peer must
+have per-target sudo (or root NOPASSWD) to those users — same gate
+as the local TUI describes in the
+[Operator view](#team-on-a-single-host) section above. If a peer
+has `enable_all_users_list = false`, the aggregator falls back to
+that peer's own-only sessions and the TUI labels the peer
+`(own only)` in the remote-sessions block. No silent partial data:
+the badge is always shown when a peer's view is degraded.
 
 For the multi-host install / rollout pattern (one venv path per
 host, JSON-rendered configs, pinned refs), see
