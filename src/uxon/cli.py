@@ -2859,6 +2859,36 @@ def _build_tui_context(
         existing_projects = _list_existing_projects(cfg.new_project_root)
         server_status = _read_server_status(cfg.new_project_root)
 
+    # Pluggable refresh sources. PR1 ships a single source that wraps
+    # ``on_refresh()`` so the existing kick-refresh path runs through the
+    # registry — same wall behaviour, but now extensible. PR3 will add
+    # one source per configured remote host alongside this one. The
+    # skeleton ctx skips wiring (no I/O until the app is mounted).
+    if skeleton:
+        refresh_sources: list = []
+    else:
+        from uxon.tui.refresh import SourceSpec
+
+        # ``main_ctx_rebuild`` returns a fresh ``TuiContext``. The app's
+        # source-result handler routes this into ``apply_loaded_ctx``,
+        # which is the same swap-or-recompose path the legacy
+        # ``_MainCtxLoaded`` message used.
+        # The lambda captures ``on_refresh`` by name; by the time the
+        # registry runs the fetch on a worker thread, ``on_refresh`` has
+        # already been replaced (a few lines above) by its
+        # ``_wrap_tui_callback`` shim. So a SystemExit / ``fail()`` from
+        # inside the rebuild surfaces as ``CallbackError``, which
+        # ``run_source`` captures into ``SourceResult.error`` for
+        # fail-soft delivery.
+        refresh_sources = [
+            SourceSpec(
+                name="main_ctx_rebuild",
+                fetch=lambda: on_refresh(),
+                cadence_seconds_attr="tui_refresh_interval_seconds",
+                kick_on_mount=True,
+            ),
+        ]
+
     return TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,
@@ -2902,6 +2932,7 @@ def _build_tui_context(
         on_enable_detected_agent=on_enable_detected_agent,
         on_dismiss_detected_agent=on_dismiss_detected_agent,
         get_dismissed_detected_agents=get_dismissed_detected_agents,
+        refresh_sources=refresh_sources,
     )
 
 

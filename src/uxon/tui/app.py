@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 from typing import Any
 
 from textual.app import App
@@ -99,12 +98,17 @@ class _CwdWritableUpdated(Message):
 
 
 class _MainCtxLoaded(Message):
-    """Posted by the initial-load worker once on_refresh() returns the real ctx.
+    """Posted when the ``main_ctx_rebuild`` source returns a fresh ctx.
 
     Applied via :meth:`MainScreen.apply_loaded_ctx`. The skeleton ctx flips
     to ``loading=True``; this message hands in the loaded ctx (loading=False)
     and the screen patches itself in place or swaps for a fresh MainScreen
     when the layout changed.
+
+    Driven from :class:`_RefreshSourceLanded` for the ``main_ctx_rebuild``
+    source, so the dispatch path matches every other registry source.
+    Kept as a separate message for backward compatibility with tests that
+    synthesise it directly.
     """
 
     bubble = False
@@ -113,6 +117,26 @@ class _MainCtxLoaded(Message):
         super().__init__()
         self.ctx = ctx
         self.error = error
+
+
+class _RefreshSourceLanded(Message):
+    """Posted by every registered refresh source when its worker finishes.
+
+    The handler dispatches on :attr:`name` to the per-source apply logic.
+    Sources are fail-soft: ``error`` may be set and ``value`` may be
+    ``None`` — the handler is responsible for that case (typically: log
+    via ``UXON_DEBUG=refresh`` and otherwise leave state untouched, so
+    a transient source failure does not corrupt previously-good data).
+    """
+
+    bubble = False
+
+    def __init__(self, name: str, value: object, error: str = "", elapsed_ms: int = 0) -> None:
+        super().__init__()
+        self.name = name
+        self.value = value
+        self.error = error
+        self.elapsed_ms = elapsed_ms
 
 
 class UxonApp(App):
@@ -161,7 +185,11 @@ class UxonApp(App):
         # Each kick also pins its worker to a dedicated group so an
         # ``exclusive=True`` call cancels only siblings, never workers
         # from another stream.
-        self._refresh_handle: Worker | None = None
+        #
+        # Registry sources gate per-source: ``self._source_handles[name]``
+        # holds the in-flight worker for that source so a slow source
+        # never blocks a faster sibling's next tick.
+        self._source_handles: dict[str, Worker | None] = {}
         self._host_probe_handle: Worker | None = None
         self._link_health_handle: Worker | None = None
         # Transition gate: ``AgentsUnavailableScreen`` is pushed only on
@@ -183,10 +211,13 @@ class UxonApp(App):
             # re-create cycle when the outer loop stashes the message.
             self.notify(self.pending_status, severity="error", timeout=6)
         self.pending_status = ""
-        # If the caller handed us a skeleton ctx, populate it asynchronously
-        # — keeps the first frame fast and the event loop unblocked.
+        # If the caller handed us a skeleton ctx, populate it
+        # asynchronously — keeps the first frame fast and the event
+        # loop unblocked. ``_kick_initial_sources`` honours
+        # ``SourceSpec.kick_on_mount`` so future one-shot or interval-only
+        # sources can opt out of the initial fan-out.
         if self.ctx.loading:
-            self.kick_refresh()
+            self._kick_initial_sources()
         # Kick off background host probe (tmux + all known agents).
         # Probe even with an empty ``enabled_agents`` so the
         # detected-agents banner can surface CATALOG agents that the
@@ -207,10 +238,21 @@ class UxonApp(App):
             )
         timers_enabled = not self.is_headless and "PYTEST_CURRENT_TEST" not in os.environ
         if timers_enabled:
-            self.set_interval(
-                self.ctx.tui_refresh_interval_seconds,
-                self.kick_refresh,
-            )
+            # Per-source periodic timers, driven from the registry.
+            # Each source advances independently so a slow source can't
+            # stall the others — e.g. a future remote-host source over
+            # SSH won't block the local-sessions stream.
+            for spec in self.ctx.refresh_sources or ():
+                cadence_attr = spec.cadence_seconds_attr
+                if cadence_attr is None:
+                    continue
+                cadence = getattr(self.ctx, cadence_attr, None)
+                if not isinstance(cadence, (int, float)) or cadence <= 0:
+                    continue
+                self.set_interval(
+                    float(cadence),
+                    lambda spec=spec: self._kick_source(spec),
+                )
             self.set_timer(self.ctx.tui_ssh_refresh_interval_seconds, self._kick_link_health_probe)
             self.set_interval(
                 self.ctx.tui_ssh_refresh_interval_seconds,
@@ -218,71 +260,117 @@ class UxonApp(App):
             )
             # Re-run the host probe on each ctx-refresh tick so freshly
             # installed tmux/agents surface without restarting uxon.
-            # Same cadence as ``kick_refresh`` keeps the two streams in
-            # lockstep — banner state and agent_availability advance
-            # together. Gated only on ``self.probe_agents`` so the
-            # detection path keeps working when the user enables their
-            # first agent at runtime via Settings.
+            # Same cadence as the local-sessions source keeps the two
+            # streams in lockstep — banner state and agent_availability
+            # advance together. Gated only on ``self.probe_agents`` so
+            # the detection path keeps working when the user enables
+            # their first agent at runtime via Settings.
             if self.probe_agents:
                 self.set_interval(
                     self.ctx.tui_refresh_interval_seconds,
                     self._kick_host_probe,
                 )
 
-    def kick_refresh(self) -> None:
-        """Schedule a worker that calls ``on_refresh`` and posts the result.
+    def _kick_initial_sources(self) -> None:
+        """Kick every refresh source whose ``kick_on_mount`` is True.
 
-        Used by the periodic timer, the ``r`` keybinding and the initial
-        load after a skeleton mount. No-op when a prior worker is still
-        PENDING/RUNNING — workers are idempotent and the next periodic
-        tick will catch up. Result is delivered as a
-        :class:`_MainCtxLoaded` message; :meth:`on__main_ctx_loaded`
-        applies it to the screen.
+        Called once from :meth:`on_mount` when the ctx is a skeleton.
+        Distinct from :meth:`kick_refresh` (which fans out
+        unconditionally for the manual-refresh / steady-state path)
+        so a future "lazy" source can opt out of the startup wave
+        without affecting the user-visible ``r`` keybinding.
         """
-        if _worker_active(self._refresh_handle):
-            _debug("refresh", at="kick_refresh", action="skip", reason="in_flight")
+        for spec in self.ctx.refresh_sources or ():
+            if spec.kick_on_mount:
+                self._kick_source(spec)
+
+    def kick_refresh(self) -> None:
+        """Fan out: kick every registered refresh source.
+
+        Used by the ``r`` keybinding, the initial load after a skeleton
+        mount, and any other "manual refresh" path. Each source is
+        gated independently — a source whose worker is still in flight
+        is skipped without affecting siblings. Per-source periodic
+        timers (set up in :meth:`on_mount`) drive the steady-state
+        cadence; this method is the synchronous fan-out for explicit
+        refreshes.
+        """
+        sources = self.ctx.refresh_sources or ()
+        if not sources:
+            _debug("refresh", at="kick_refresh", action="skip", reason="no_sources")
             return
-        _debug("refresh", at="kick_refresh", action="spawn")
-        self._refresh_handle = self.run_worker(
-            self._refresh_worker, thread=True, exclusive=False, group="refresh"
+        _debug("refresh", at="kick_refresh", action="fanout", count=len(sources))
+        for spec in sources:
+            self._kick_source(spec)
+
+    def _kick_source(self, spec: Any) -> None:
+        """Schedule one source's fetcher in a worker if not already running.
+
+        Worker group is namespaced ``refresh:<name>`` so an ``exclusive``
+        call from one source can never cancel another source's worker
+        (the same per-stream isolation that the 3.2.2 fix established).
+        """
+        handle = self._source_handles.get(spec.name)
+        if _worker_active(handle):
+            _debug("refresh", at="kick_source", source=spec.name, action="skip", reason="in_flight")
+            return
+        _debug("refresh", at="kick_source", source=spec.name, action="spawn")
+        self._source_handles[spec.name] = self.run_worker(
+            lambda spec=spec: self._source_worker(spec),
+            thread=True,
+            exclusive=False,
+            group=f"refresh:{spec.name}",
         )
 
-    def _refresh_worker(self) -> None:
-        """Background thread: rebuild the TuiContext via ctx.on_refresh()."""
-        t0 = time.monotonic()
-        _debug("refresh", at="worker", action="enter")
-        try:
-            new_ctx = self.ctx.on_refresh()
-        except CallbackError as exc:
-            _debug(
-                "refresh",
-                at="worker",
-                action="error",
-                error=str(exc),
-                elapsed_ms=int((time.monotonic() - t0) * 1000),
-            )
-            self.post_message(_MainCtxLoaded(None, error=str(exc)))
-            return
-        except Exception as exc:  # pragma: no cover — defensive
-            _debug(
-                "refresh",
-                at="worker",
-                action="error",
-                error=str(exc) or exc.__class__.__name__,
-                elapsed_ms=int((time.monotonic() - t0) * 1000),
-            )
-            self.post_message(_MainCtxLoaded(None, error=str(exc) or exc.__class__.__name__))
-            return
+    def _source_worker(self, spec: Any) -> None:
+        """Background thread: run a source's fetcher with fail-soft semantics.
+
+        ``run_source`` never raises — exceptions are captured into the
+        result. We post the outcome as :class:`_RefreshSourceLanded`;
+        the handler dispatches on ``name``.
+        """
+        from .refresh import run_source
+
+        result = run_source(spec)
         _debug(
             "refresh",
-            at="worker",
-            action="done",
-            elapsed_ms=int((time.monotonic() - t0) * 1000),
-            ctx_is_none=new_ctx is None,
-            sessions=(len(new_ctx.sessions) if new_ctx is not None else 0),
-            other=(len(new_ctx.other_sessions) if new_ctx is not None else 0),
+            at="source_worker",
+            source=result.name,
+            action="done" if result.error is None else "error",
+            error=result.error or "",
+            elapsed_ms=result.elapsed_ms,
         )
-        self.post_message(_MainCtxLoaded(new_ctx))
+        self.post_message(
+            _RefreshSourceLanded(
+                name=result.name,
+                value=result.value,
+                error=result.error or "",
+                elapsed_ms=result.elapsed_ms,
+            )
+        )
+
+    def on__refresh_source_landed(self, event: _RefreshSourceLanded) -> None:
+        """Dispatch a source's result to the per-name apply handler.
+
+        ``main_ctx_rebuild`` is dispatched into the legacy
+        :class:`_MainCtxLoaded` path so the existing
+        :meth:`on__main_ctx_loaded` swap-or-recompose logic stays the
+        single render entry point. Future sources register their own
+        names + handlers without touching this dispatch.
+        """
+        if event.name == "main_ctx_rebuild":
+            ctx = event.value if isinstance(event.value, TuiContext) else None
+            self.post_message(_MainCtxLoaded(ctx, error=event.error))
+            return
+        # Unknown source name — log and drop. Adding a new source means
+        # adding a name → handler mapping here in the same change.
+        _debug(
+            "refresh",
+            at="source_landed",
+            source=event.name,
+            action="drop",
+            reason="no_handler",
+        )
 
     def on__main_ctx_loaded(self, event: _MainCtxLoaded) -> None:
         top = self.screen_stack[-1] if self.screen_stack else None
