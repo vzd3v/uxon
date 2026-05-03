@@ -70,6 +70,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "git_create_enabled": False,
     "default_git_remote_profile": "",
     "git_remote_profiles": [],
+    "remote_hosts": [],
 }
 
 
@@ -133,6 +134,9 @@ class Config:
     default_git_remote_profile: str
     git_remote_profiles: list  # list[GitRemoteProfile] — parsed once in load_config
     tui_ssh_refresh_interval_seconds: float = 10.0
+    remote_hosts: list = field(
+        default_factory=list
+    )  # list[RemoteHost] — parsed once in load_config
 
 
 @dataclass
@@ -463,6 +467,15 @@ def load_config(cwd: str) -> Config:
         )
     except uxon_git_profiles.ProfileError as exc:
         fail(str(exc))
+
+    from uxon import remote_hosts as uxon_remote_hosts
+
+    try:
+        remote_hosts = uxon_remote_hosts.load_remote_hosts(
+            merged.get("remote_hosts", DEFAULT_CONFIG["remote_hosts"])
+        )
+    except uxon_remote_hosts.RemoteHostError as exc:
+        fail(str(exc))
     if default_git_remote_profile and not uxon_git_profiles.find_profile(
         git_remote_profiles, default_git_remote_profile
     ):
@@ -491,6 +504,7 @@ def load_config(cwd: str) -> Config:
         git_create_enabled=git_create_enabled,
         default_git_remote_profile=default_git_remote_profile,
         git_remote_profiles=git_remote_profiles,
+        remote_hosts=remote_hosts,
     )
 
 

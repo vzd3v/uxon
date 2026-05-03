@@ -324,6 +324,45 @@ class UxonTests(unittest.TestCase):
                     tmpdir,
                 )
 
+    def test_load_config_reads_remote_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [[remote_hosts]]
+                    name = "vz-prod1"
+                    ssh_alias = "vz-prod1"
+                    description = "primary EU"
+
+                    [[remote_hosts]]
+                    name = "edge.eu"
+                    ssh_alias = "edge-eu"
+                    remote_uxon = "/opt/uxon/bin/uxon"
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        self.assertEqual([h.name for h in cfg.remote_hosts], ["vz-prod1", "edge.eu"])
+        self.assertEqual(cfg.remote_hosts[0].description, "primary EU")
+        self.assertEqual(cfg.remote_hosts[1].remote_uxon, "/opt/uxon/bin/uxon")
+
+    def test_load_config_remote_hosts_default_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("", tmpdir)
+        self.assertEqual(cfg.remote_hosts, [])
+
+    def test_load_config_rejects_invalid_remote_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [[remote_hosts]]
+                        name = "vz prod"
+                        ssh_alias = "vz-prod"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+
     def test_load_config_defaults_enable_claude_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("", tmpdir)
