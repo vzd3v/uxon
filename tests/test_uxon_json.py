@@ -427,5 +427,96 @@ class HostDispatchTests(unittest.TestCase):
         self.assertEqual(len(env["data"]["sessions"]), 1)
 
 
+class AllHostsJsonLinesTests(unittest.TestCase):
+    """``--all-hosts --json`` MUST emit valid JSON Lines (one envelope
+    per line, no internal newlines) so a downstream consumer can
+    split on ``\\n`` and parse each record independently."""
+
+    def test_each_envelope_is_one_line(self) -> None:
+        from uxon.cli import _do_list_all_hosts
+        from uxon.remote_collector import RemoteSnapshot
+        from uxon.remote_hosts import RemoteHost
+
+        cfg = _make_config()
+        cfg.remote_hosts = [
+            RemoteHost(name="a", ssh_alias="a", description="", remote_uxon="uxon"),
+            RemoteHost(name="b", ssh_alias="b", description="", remote_uxon="uxon"),
+        ]
+        args = uxon.ParsedArgs(action="list", all_hosts=True, json_output=True)
+
+        def _fake_fetch(host) -> RemoteSnapshot:
+            return RemoteSnapshot(
+                host_name=host.name,
+                fetched_at_epoch=1.0,
+                from_cache=False,
+                error=None,
+                sessions=[{"name": f"uxon-{host.name}@claude", "user": "alice"}],
+                cached_at_epoch=1.0,
+            )
+
+        with (
+            mock.patch.object(uxon, "collect_sessions", return_value=[]),
+            mock.patch("uxon.remote_collector.fetch_remote_snapshot", side_effect=_fake_fetch),
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = _do_list_all_hosts(args, cfg, "alice")
+        self.assertEqual(rc, 0)
+        # Must be one envelope per non-empty line. No interior
+        # newlines inside an envelope (that would make json.loads on
+        # a single line fail).
+        lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+        self.assertEqual(
+            len(lines), 3, msg=f"expected 3 envelopes (local + 2 hosts), got {len(lines)}"
+        )
+        envs = [json.loads(ln) for ln in lines]
+        self.assertEqual(envs[0]["kind"], "list")
+        self.assertNotIn("host", envs[0])  # local envelope has no host attribute
+        self.assertEqual(envs[1]["host"], "a")
+        self.assertEqual(envs[2]["host"], "b")
+
+
+class WireRoundTripTests(unittest.TestCase):
+    """End-to-end producer ↔ consumer test: emit an envelope the way
+    ``_emit_json`` / ``_list_data`` actually does, then feed the
+    captured stdout through the collector's ``_parse_envelope``. This
+    catches drift between the two sides of the wire that the
+    producer-only and consumer-only test suites would miss."""
+
+    def test_local_list_payload_parses_in_collector(self) -> None:
+        from uxon.remote_collector import _parse_envelope
+
+        cfg = _make_config()
+        sessions = [_make_session("uxon-foo@claude"), _make_session("uxon-bar@claude")]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            uxon._emit_json("list", uxon._list_data(cfg, sessions, ["u-vz"], all_users=False))
+        parsed, err = _parse_envelope(buf.getvalue())
+        self.assertIsNone(err)
+        assert parsed is not None
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0]["short_id"], "foo@claude")
+        self.assertEqual(parsed[1]["short_id"], "bar@claude")
+
+    def test_compact_local_list_payload_parses_in_collector(self) -> None:
+        # The JSON Lines compact form must also parse — the same
+        # bytes a peer would emit when invoked with ``--all-hosts
+        # --json`` from the local side.
+        from uxon.remote_collector import _parse_envelope
+
+        cfg = _make_config()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            uxon._emit_json(
+                "list",
+                uxon._list_data(cfg, [_make_session()], ["u-vz"], all_users=False),
+                compact=True,
+            )
+        parsed, err = _parse_envelope(buf.getvalue())
+        self.assertIsNone(err)
+        assert parsed is not None
+        self.assertEqual(len(parsed), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

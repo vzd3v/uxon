@@ -1466,13 +1466,20 @@ def _list_data(
     }
 
 
-def _emit_json_with_host(kind: str, data: dict[str, Any], *, host: str) -> None:
+def _emit_json_with_host(
+    kind: str, data: dict[str, Any], *, host: str, compact: bool = False
+) -> None:
     """Emit a JSON envelope with the optional ``host`` field set.
 
     Used by ``list --host <name>``: the local CLI is not running on
     the peer, so the envelope is *attributed* to the named host
     rather than implying a local origin. The field follows the
     optional shape documented in :class:`uxon.wire_schema.Envelope`.
+
+    ``compact=True`` emits the envelope on a single line (no
+    indentation) so a sequence of calls produces a valid JSON
+    Lines stream — used by ``--all-hosts --json`` so a consumer
+    can split on ``\\n`` and parse each record independently.
     """
     from uxon.wire_schema import make_envelope
 
@@ -1482,7 +1489,10 @@ def _emit_json_with_host(kind: str, data: dict[str, Any], *, host: str) -> None:
         uxon_version=read_repo_version(),
         host=host,
     )
-    print(json.dumps(env, indent=2, sort_keys=False))
+    if compact:
+        print(json.dumps(env, sort_keys=False))
+    else:
+        print(json.dumps(env, indent=2, sort_keys=False))
 
 
 def _list_data_from_records(
@@ -1622,7 +1632,13 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     local_sessions = collect_sessions(scope_users, cfg)
 
     if args.json_output:
-        _emit_json("list", _list_data(cfg, local_sessions, scope_users, all_users=args.all_users))
+        # JSON Lines: one envelope per line. A consumer splits on
+        # ``\n`` and parses each line independently.
+        _emit_json(
+            "list",
+            _list_data(cfg, local_sessions, scope_users, all_users=args.all_users),
+            compact=True,
+        )
         for host in cfg.remote_hosts:
             snap = fetch_remote_snapshot(host)
             _emit_json_with_host(
@@ -1634,6 +1650,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                     all_users=False,
                 ),
                 host=host.name,
+                compact=True,
             )
             if snap.error and not snap.from_cache:
                 eprint(f"uxon: --host {host.name}: {snap.error}")
@@ -1652,7 +1669,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     return rc
 
 
-def _emit_json(kind: str, data: dict[str, Any]) -> None:
+def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> None:
     """Print one wire-schema envelope to stdout as JSON.
 
     Centralises envelope construction so every ``--json`` exit path
@@ -1661,6 +1678,11 @@ def _emit_json(kind: str, data: dict[str, Any]) -> None:
     accepts any string but only the documented set
     (``list``/``doctor``/``version``/``kill``/``kill-all``) is part
     of the contract.
+
+    ``compact=True`` emits a single-line record (used by the
+    ``--all-hosts --json`` JSON Lines stream). Default is the
+    pretty-printed form so a human-piped ``uxon list --json`` is
+    readable.
     """
     from uxon.wire_schema import make_envelope
 
@@ -1669,7 +1691,10 @@ def _emit_json(kind: str, data: dict[str, Any]) -> None:
         data,
         uxon_version=read_repo_version(),
     )
-    print(json.dumps(env, indent=2, sort_keys=False))
+    if compact:
+        print(json.dumps(env, sort_keys=False))
+    else:
+        print(json.dumps(env, indent=2, sort_keys=False))
 
 
 def print_list(
