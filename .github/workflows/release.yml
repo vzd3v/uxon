@@ -1,9 +1,12 @@
 name: Release
 
 # Triggered by pushing a tag matching `v*` (e.g. `v3.0.0`, `v3.0.1rc1`,
-# `v3.0.0.post1`). PEP 440 pre-releases are supported. The tagged commit
-# must already be green on the main CI workflow — release workflow does
-# not re-run tests, only builds + publishes.
+# `v3.0.0.post1`). PEP 440 pre-releases are supported. The full check
+# suite (tests, lint, typecheck, secrets scan) runs against the tagged
+# commit before any artifact is built or published — a red commit can
+# never be released. Tests run on a single Python version here for
+# speed; CI on `main` covers the full matrix. To run the matrix on a
+# release too, pass `python-versions` to the `checks` job below.
 
 on:
   push:
@@ -11,8 +14,14 @@ on:
       - "v*"
 
 jobs:
+  checks:
+    uses: ./.github/workflows/_checks.yml
+    with:
+      python-versions: '["3.11"]'
+
   build:
     name: Build sdist + wheel
+    needs: checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
