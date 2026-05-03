@@ -72,6 +72,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tmux_socket_template": "/tmp/uxon-{user}.sock",
     "tui_refresh_interval_seconds": 2.0,
     "tui_ssh_refresh_interval_seconds": 10.0,
+    # Stage 5: ssh transport hardening.
+    # ``ssh_multiplex = "auto"`` adds ControlMaster/Path/Persist to the
+    # default fetch template (warm tick: 5-20 ms vs cold 200-500 ms).
+    # ``"off"`` strips them — for environments that prohibit the socket.
+    "ssh_multiplex": "auto",
+    # ``fetch_concurrency`` caps concurrent SSH fetch workers fleet-wide
+    # so a 50-host post-outage stampede doesn't exhaust the FD ulimit.
+    # Stage 5 step 7 wires the semaphore.
+    "fetch_concurrency": 16,
     "git_create_enabled": False,
     "default_git_remote_profile": "",
     "git_remote_profiles": [],
@@ -142,6 +151,8 @@ class Config:
     remote_hosts: list = field(
         default_factory=list
     )  # list[RemoteHost] — parsed once in load_config
+    ssh_multiplex: str = "auto"  # "auto" | "off"
+    fetch_concurrency: int = 16
 
 
 @dataclass
@@ -463,6 +474,18 @@ def load_config(cwd: str) -> Config:
     if tui_ssh_refresh_interval_seconds <= 0:
         fail("tui_ssh_refresh_interval_seconds must be greater than 0")
 
+    ssh_multiplex = str(merged.get("ssh_multiplex", DEFAULT_CONFIG["ssh_multiplex"]))
+    if ssh_multiplex not in ("auto", "off"):
+        fail(f"ssh_multiplex must be 'auto' or 'off', got {ssh_multiplex!r}")
+    try:
+        fetch_concurrency = int(
+            merged.get("fetch_concurrency", DEFAULT_CONFIG["fetch_concurrency"])
+        )
+    except (TypeError, ValueError):
+        fail("fetch_concurrency must be an integer")
+    if fetch_concurrency <= 0:
+        fail("fetch_concurrency must be greater than 0")
+
     git_create_enabled = bool(
         merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"])
     )
@@ -513,6 +536,8 @@ def load_config(cwd: str) -> Config:
         default_git_remote_profile=default_git_remote_profile,
         git_remote_profiles=git_remote_profiles,
         remote_hosts=remote_hosts,
+        ssh_multiplex=ssh_multiplex,
+        fetch_concurrency=fetch_concurrency,
     )
 
 
@@ -3873,7 +3898,9 @@ def _build_tui_context(
         refresh_sources.append(
             SourceSpec(
                 name=f"remote:{host.name}",
-                fetch=lambda h=host: fetch_remote_snapshot(h),
+                fetch=lambda h=host, mux=cfg.ssh_multiplex: fetch_remote_snapshot(
+                    h, ssh_multiplex=mux
+                ),
                 cadence_seconds_attr="tui_ssh_refresh_interval_seconds",
                 kick_on_mount=True,
             )

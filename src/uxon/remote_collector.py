@@ -135,8 +135,7 @@ def snapshot_cache_path(name: str, *, override_dir: Path | None = None) -> Path:
     return state_dir(override=override_dir) / f"{name}.json"
 
 
-# ── Argv template (stage 5 step 3, additive — _build_ssh_argv stays alive
-# until step 4 migrates the call site) ───────────────────────────────────
+# ── Argv template & fetch-argv builder ───────────────────────────────────
 
 PLACEHOLDER_CLOSED_SET: frozenset[str] = frozenset(
     {
@@ -264,42 +263,75 @@ def _render_argv(
     return rendered
 
 
-def _build_ssh_argv(host: RemoteHost, *, connect_timeout: int, all_users: bool = True) -> list[str]:
-    """Assemble the ``ssh`` argv for one fetch.
+def _strip_multiplex(template: list[str]) -> list[str]:
+    """Drop ``-o ControlMaster/ControlPath/ControlPersist`` token pairs.
 
-    ``BatchMode=yes`` turns off every interactive prompt (password,
-    keyboard-interactive, host-key TOFU). ``StrictHostKeyChecking``
-    is left at the user's configured default — typically ``ask`` in
-    interactive sessions and ``accept-new`` if the operator opted in
-    via ssh_config. The collector deliberately does not override
-    that policy.
-
-    The remote command is built from ``host.remote_uxon`` (validated
-    non-empty) followed by ``list --all-users --json`` (or just
-    ``list --json`` when ``all_users=False`` — used by the
-    ``ALL_USERS_DISABLED_MARKER`` fallback path so peers with
-    ``enable_all_users_list = false`` still report their own
-    sessions). ``shlex.quote`` is applied to ``remote_uxon`` even
-    though the validator forbids obvious metacharacters, because ssh
-    joins remote args with spaces and runs them through the remote
-    shell.
+    Operators that prohibit ControlPersist sockets (e.g. paranoid
+    ProxyCommand topologies, fleet without writable XDG cache) set
+    ``ssh_multiplex = "off"`` in config; we strip the three options
+    from the default template at render time. No effect on a
+    user-supplied ``command_template`` (operator owns that argv).
     """
-    remote_cmd = (
+    out: list[str] = []
+    i = 0
+    while i < len(template):
+        tok = template[i]
+        nxt = template[i + 1] if i + 1 < len(template) else ""
+        if tok == "-o" and nxt.startswith(("ControlMaster=", "ControlPath=", "ControlPersist=")):
+            i += 2
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
+def _build_fetch_argv(
+    host: RemoteHost,
+    *,
+    connect_timeout: int,
+    all_users: bool,
+    ssh_multiplex: str,
+) -> list[str]:
+    """Assemble the fetch argv for one host.
+
+    Selection of template:
+      - ``host.command_template`` set → render that directly. Operator
+        owns the argv; ``extra_ssh_options`` and ``ssh_multiplex`` are
+        ignored because both target the default ssh template.
+      - Otherwise → start from :func:`_default_template`, optionally
+        strip multiplex options, and insert ``host.extra_ssh_options``
+        immediately before ``{ssh_alias}``.
+
+    Then render the placeholders. The remote command is the standard
+    ``<remote_uxon> list [--all-users] --json`` invocation; the
+    ``ALL_USERS_DISABLED_MARKER`` fallback path still works because
+    ``all_users=False`` rebuilds the argv with the legacy form.
+    """
+    remote_command = (
         f"{shlex.quote(host.remote_uxon)} list --all-users --json"
         if all_users
         else f"{shlex.quote(host.remote_uxon)} list --json"
     )
-    return [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={connect_timeout}",
-        "-o",
-        "ServerAliveInterval=5",
-        host.ssh_alias,
-        remote_cmd,
-    ]
+    if host.command_template:
+        template: list[str] = list(host.command_template)
+    else:
+        template = _default_template()
+        if ssh_multiplex == "off":
+            template = _strip_multiplex(template)
+        if host.extra_ssh_options:
+            try:
+                idx = template.index("{ssh_alias}")
+            except ValueError:
+                idx = len(template)
+            template = template[:idx] + list(host.extra_ssh_options) + template[idx:]
+    return _render_argv(
+        template,
+        ssh_alias=host.ssh_alias,
+        remote_uxon=host.remote_uxon,
+        connect_timeout=connect_timeout,
+        xdg_cache=_xdg_cache_home(),
+        remote_command=remote_command,
+    )
 
 
 # Stable substring emitted by a peer whose ``enable_all_users_list =
@@ -457,6 +489,7 @@ def fetch_remote_snapshot(
     *,
     connect_timeout: int = DEFAULT_CONNECT_TIMEOUT_SEC,
     total_timeout: int = DEFAULT_TOTAL_TIMEOUT_SEC,
+    ssh_multiplex: str = "auto",
     override_state_dir: Path | None = None,
     _runner: Any = subprocess.run,
 ) -> RemoteSnapshot:
@@ -477,7 +510,12 @@ def fetch_remote_snapshot(
 
     def _run_one(all_users: bool) -> tuple[str | None, str | None, str]:
         """Run one ssh attempt. Returns ``(error, payload, stderr)``."""
-        argv = _build_ssh_argv(host, connect_timeout=connect_timeout, all_users=all_users)
+        argv = _build_fetch_argv(
+            host,
+            connect_timeout=connect_timeout,
+            all_users=all_users,
+            ssh_multiplex=ssh_multiplex,
+        )
         try:
             cp = _runner(argv, capture_output=True, text=True, timeout=total_timeout)
         except subprocess.TimeoutExpired:

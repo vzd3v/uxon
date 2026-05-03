@@ -26,7 +26,7 @@ from uxon.remote_collector import (
     DEFAULT_CONNECT_TIMEOUT_SEC,
     DEFAULT_TOTAL_TIMEOUT_SEC,
     RemoteSnapshot,
-    _build_ssh_argv,
+    _build_fetch_argv,
     _parse_envelope,
     fetch_remote_snapshot,
     read_cached_snapshot,
@@ -91,9 +91,14 @@ class SnapshotCachePathTests(unittest.TestCase):
             self.assertEqual(p.parent, Path(tmp))
 
 
-class BuildSshArgvTests(unittest.TestCase):
+class BuildFetchArgvTests(unittest.TestCase):
     def test_passes_alias_and_constructs_remote_command(self) -> None:
-        argv = _build_ssh_argv(_host(ssh_alias="edge-eu"), connect_timeout=7)
+        argv = _build_fetch_argv(
+            _host(ssh_alias="edge-eu"),
+            connect_timeout=7,
+            all_users=True,
+            ssh_multiplex="auto",
+        )
         self.assertEqual(argv[0], "ssh")
         # Hardening options that disable interactive prompts and bound
         # the connect phase to ConnectTimeout.
@@ -107,12 +112,86 @@ class BuildSshArgvTests(unittest.TestCase):
         # when the peer rejects the flag (see
         # ``ALL_USERS_DISABLED_MARKER``).
         self.assertEqual(argv[-1], "uxon list --all-users --json")
+        # ControlMaster=auto is the default in stage 5+
+        self.assertIn("ControlMaster=auto", argv)
 
     def test_remote_uxon_is_shell_quoted(self) -> None:
-        argv = _build_ssh_argv(_host(remote_uxon="/opt/u xon/uxon"), connect_timeout=5)
+        argv = _build_fetch_argv(
+            _host(remote_uxon="/opt/u xon/uxon"),
+            connect_timeout=5,
+            all_users=True,
+            ssh_multiplex="auto",
+        )
         # shlex.quote should produce a single-quoted form so the space
         # in the path doesn't split into two tokens on the remote shell.
         self.assertIn("'/opt/u xon/uxon'", argv[-1])
+
+    def test_ssh_multiplex_off_strips_control_options(self) -> None:
+        argv = _build_fetch_argv(
+            _host(),
+            connect_timeout=5,
+            all_users=True,
+            ssh_multiplex="off",
+        )
+        joined = " ".join(argv)
+        self.assertNotIn("ControlMaster", joined)
+        self.assertNotIn("ControlPath", joined)
+        self.assertNotIn("ControlPersist", joined)
+
+    def test_extra_ssh_options_inserted_before_alias(self) -> None:
+        argv = _build_fetch_argv(
+            _host(extra_ssh_options=("-o", "ProxyJump=bastion")),
+            connect_timeout=5,
+            all_users=True,
+            ssh_multiplex="auto",
+        )
+        # extra_ssh_options come immediately before the alias; alias
+        # is followed only by the remote command string.
+        alias_idx = argv.index("vz-prod1")
+        self.assertEqual(argv[alias_idx - 2 : alias_idx], ["-o", "ProxyJump=bastion"])
+
+    def test_command_template_overrides_default(self) -> None:
+        argv = _build_fetch_argv(
+            _host(
+                command_template=(
+                    "kubectl",
+                    "exec",
+                    "uxon-pod",
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    "{remote_command}",
+                )
+            ),
+            connect_timeout=5,
+            all_users=True,
+            ssh_multiplex="auto",
+        )
+        self.assertEqual(argv[0], "kubectl")
+        self.assertNotIn("ssh", argv)
+        self.assertEqual(argv[-1], "uxon list --all-users --json")
+
+    def test_command_template_ignores_extra_ssh_options(self) -> None:
+        argv = _build_fetch_argv(
+            _host(
+                command_template=("ssh", "{ssh_alias}", "{remote_command}"),
+                extra_ssh_options=("-o", "ShouldBeIgnored=1"),
+            ),
+            connect_timeout=5,
+            all_users=True,
+            ssh_multiplex="auto",
+        )
+        self.assertNotIn("-o", argv)
+        self.assertNotIn("ShouldBeIgnored=1", argv)
+
+    def test_all_users_false_uses_legacy_command(self) -> None:
+        argv = _build_fetch_argv(
+            _host(),
+            connect_timeout=5,
+            all_users=False,
+            ssh_multiplex="auto",
+        )
+        self.assertEqual(argv[-1], "uxon list --json")
 
 
 class ParseEnvelopeTests(unittest.TestCase):
