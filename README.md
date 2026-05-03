@@ -376,7 +376,9 @@ More edge cases (legacy session prefixes, failed-launch banner, the
 - [`docs/cli.md`](docs/cli.md) — full CLI reference (every flag,
   exit code, identifier resolution, repeat behaviour).
 - [`docs/deployment.md`](docs/deployment.md) — multi-host rollout,
-  config rendering from JSON, runtime dependencies.
+  config rendering from JSON, runtime dependencies, peer-host
+  aggregation over SSH (`[[remote_hosts]]`, `--host`,
+  `--all-hosts`).
 - [`docs/architecture.md`](docs/architecture.md) — module map, TUI
   internals, code boundaries.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — local checks, branch

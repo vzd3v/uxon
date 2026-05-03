@@ -73,7 +73,7 @@ be a git repo — `uxon` never creates worktrees for you).
 All flags from `run` (`--agent`, `--auto`, `--dsp`, `--dry-run`,
 forwarded agent flags) also apply.
 
-## `uxon list [--all-users]`
+## `uxon list [--all-users] [--host <name> | --all-hosts] [--json]`
 
 Short form: `uxon -l [--all-users]`.
 
@@ -84,6 +84,13 @@ attach, current command, and path.
 - Default scope: the current launch user only.
 - `--all-users`: scope all `session_users` from config. Requires
   `enable_all_users_list = true`.
+- `--host <name>`: route to a configured peer over SSH (see
+  `[[remote_hosts]]` in `docs/deployment.md`). Mutually exclusive
+  with `--all-hosts`.
+- `--all-hosts`: print local block first, then one block per
+  configured peer.
+- `--json`: emit a wire-schema envelope (or JSON Lines stream for
+  `--all-hosts`) instead of the human table.
 
 ## `uxon attach <id>`
 

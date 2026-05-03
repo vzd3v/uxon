@@ -122,6 +122,153 @@ Run after each rollout:
    `uxon -n <throwaway> --git-remote <profile> --dry-run` prints the
    full command plan without executing.
 
+## Multi-host
+
+`uxon` can poll peer machines over SSH and surface their session
+lists alongside the local ones — both in the TUI's "Remote
+sessions" block and via the CLI (`uxon list --host`,
+`uxon list --all-hosts`).
+
+The model is **read-mostly aggregation**. Each peer runs its own
+`uxon` install with its own users, sockets, allowed-roots, and
+agents; the local machine only reads what `uxon list --json`
+returns over SSH. There is no shared state, no cluster
+coordinator, no remote auth handshake — just `ssh <alias> uxon
+list --json` parsed locally.
+
+### Configuration
+
+Add one `[[remote_hosts]]` block per peer to `config/config.toml`:
+
+```toml
+[[remote_hosts]]
+name = "vz-prod1"            # required, ASCII; cache filename + UI label
+ssh_alias = "vz-prod1"       # required, passed verbatim to ssh
+description = "primary EU"   # optional, shown in TUI tooltips
+remote_uxon = "uxon"         # optional, default "uxon"
+```
+
+Required fields: `name` and `ssh_alias`. `name` must be unique
+across the array and match `[A-Za-z0-9_.-]+` — it ends up in a
+filename (see Cache below). `description` is free-form; an unknown
+key in the block is rejected at config load with a clear error so
+typos like `ssh_alaias` fail loud rather than silently disabling
+the host.
+
+`uxon doctor` does not currently probe remote hosts; that block is
+intentionally read-only here so a TUI startup can surface peer
+data without `doctor` triggering an SSH wave.
+
+### SSH config is the source of truth
+
+`uxon` deliberately does not accept `ssh_user`, `port`,
+`identity_file`, or `proxy_command` in `[[remote_hosts]]`. Put
+those in `~/.ssh/config` for the launch user instead:
+
+```
+Host vz-prod1
+    HostName 10.0.0.42
+    User uxonops
+    IdentityFile ~/.ssh/id_ed25519_uxon
+    ProxyJump bastion.example.org
+```
+
+The collector runs the literal command:
+
+```
+ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 \
+    <ssh_alias> '<remote_uxon>' list --json
+```
+
+`BatchMode=yes` forbids password / TOFU prompts — the operator's
+agent must already hold the relevant key, and the host key must
+already be known. `StrictHostKeyChecking` is left at the user's
+configured default; if you want first-connect auto-accept, set
+`StrictHostKeyChecking accept-new` in the per-host `ssh_config`
+stanza.
+
+### Cache
+
+The last successful payload per peer is cached at:
+
+```
+${XDG_STATE_HOME:-~/.local/state}/uxon/remote/<name>.json
+```
+
+The directory is created with mode `0o700`. The file is rewritten
+atomically (temp + rename); a write failure is best-effort
+cleaned up so the directory does not accumulate `.tmp` orphans.
+
+When a live fetch fails, the collector falls back to the cache and
+returns the last-good sessions with a `from_cache=True` marker so
+the TUI can show "(stale)" hints. The disk file is **only**
+written by a fresh successful fetch — a failed poll never
+overwrites the last good data.
+
+### Wire schema
+
+The collector consumes the same wire envelope `uxon list --json`
+emits locally:
+
+```json
+{
+  "schema_version": "1",
+  "uxon_version": "<peer's uxon version>",
+  "kind": "list",
+  "data": {
+    "all_users": false,
+    "scope_users": ["uxonops"],
+    "session_prefix": "uxon-",
+    "sessions": [...]
+  }
+}
+```
+
+A `schema_version` mismatch between peers fails the parse loud
+rather than silently dropping fields — bump the local install
+when peers are upgraded.
+
+### CLI
+
+```bash
+uxon list --host vz-prod1            # human table for one peer
+uxon list --host vz-prod1 --json     # machine envelope for one peer
+uxon list --all-hosts                # local + every configured peer
+uxon list --all-hosts --json         # JSON Lines: one envelope per source
+```
+
+Exit codes:
+
+- `0` — fresh fetch succeeded, OR cache fallback (peer briefly
+  unreachable but cache populated).
+- `1` — live fetch failed AND no cache available; stderr carries
+  the SSH error.
+- `2` — config error: unknown `--host <name>`, mutually exclusive
+  flags, no `[[remote_hosts]]` configured.
+
+`kill-all` is **strictly local** — there is no
+`uxon kill-all --host <name>`. Destructive actions never cross
+hosts; SSH-into-the-peer-and-run-it-there is the deliberate
+gesture.
+
+### TUI
+
+When at least one `[[remote_hosts]]` entry is configured, the
+main screen renders a "── remote sessions ──" header below the
+local block, with a `RemoteSessionTable` filled from the latest
+snapshots. The `HOST` column appears only when more than one
+peer is configured; the single-host case puts the host name in
+the section header and skips the column.
+
+Per-host pollers run on the existing pluggable refresh registry —
+each peer in its own worker group, so a slow or dead peer never
+stalls the local-sessions stream or another peer's poll. Cadence
+is `tui_ssh_refresh_interval_seconds` (default 10s), separate
+from the local-tmux cadence.
+
+Activating a remote row is currently a no-op; remote attach /
+kill needs an SSH gesture not yet wired.
+
 ## Migration notes
 
 ### 1.x → 2.0
