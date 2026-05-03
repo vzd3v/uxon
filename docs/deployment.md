@@ -198,6 +198,16 @@ to come back over the wire:
 2. The SSH user has passwordless sudo (per-target NOPASSWD or root
    NOPASSWD) to the launch users in the peer's `session_users`.
 
+**Supervision without impersonation, on each peer.** Requirement (2)
+targets the peer's `*_agent` launch users, not the developers' shell
+accounts on that peer. An operator account `opsuser` with
+`opsuser ALL=(alice_agent,bob_agent) NOPASSWD: ALL` on the peer can
+list, attach to, and `kill --host <peer> --user alice_agent` — but
+cannot become `alice` on that machine. Each peer evaluates its own
+sudoers independently; there is no implicit trust delegation across
+hosts. See [`docs/configuration.md` § Operator view](configuration.md#operator-view-who-sees-whose-sessions)
+for the same property locally.
+
 If the peer's config has `enable_all_users_list = false`, the peer
 exits with code 1 and the stable stderr tag
 `uxon-error: all-users-disabled`. The collector detects that tag

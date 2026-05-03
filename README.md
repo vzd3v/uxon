@@ -100,6 +100,14 @@ friction.
   user on the local box — one screen, every runaway process, no SSH
   tour. The probe is one-shot at startup; new sudo grants →
   restart `uxon`.
+- **Supervision without impersonation (paired sandbox).** The
+  sudoers grant targets the agent's launch user (`<dev>_agent`), not
+  the developer's shell account. A team lead with
+  `lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL` can attach to and
+  reap Alice and Bob's agent sessions, but cannot `sudo -iu alice`
+  or `sudo -iu bob` — the lead never gains the developer's identity
+  or what only that identity can unlock (SSH keys gated by passphrase
+  prompt, gh/aws sessions tied to the developer's keychain, etc.).
 - **Multi-host aggregation.** `[[remote_hosts]]` blocks turn the same
   TUI into a fleet view: per-peer remote-sessions table over SSH,
   fail-soft snapshot cache, no cluster coordinator. Destructive
@@ -307,7 +315,10 @@ subset:
 - **`<caller> ALL=(alice_agent,bob_agent) NOPASSWD: ALL`**
   (per-target NOPASSWD) — block shows alice/bob; the section header
   carries a `(2/N users reachable)` hint when `session_users` lists
-  more.
+  more. Note the grant targets `*_agent` accounts, **not** `alice` /
+  `bob` shell users — the operator gets visibility into the agents'
+  tmux sockets without the ability to log in as the developers
+  themselves.
 - **No passwordless sudo** — block hidden; you see only your own
   sessions.
 

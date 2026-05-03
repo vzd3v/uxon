@@ -6,7 +6,9 @@
 # the agent's runtime — e.g. `vz` (you) + `vz_agent`. The agent
 # runs as `<user>_agent` via `sudo -iu`. With `--dsp` ("yolo"), the
 # blast radius of a runaway tool is `<user>_agent`'s sandbox, not
-# your home directory or your team's filesystem.
+# your home directory or your team's filesystem. In team setups
+# this also gives the operator supervision without impersonation —
+# see docs/configuration.md#operator-view-who-sees-whose-sessions.
 #
 # This file ships in the SIMPLEST mode (agent runs as the caller),
 # so it copies and runs without any extra OS setup. To switch to

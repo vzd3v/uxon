@@ -124,9 +124,14 @@ Without `--user` / `--host`, behaves exactly as before: kills a
 session owned by the current launch user on the local box.
 
 **`--user <name>`** kills a session belonging to a different launch
-user on the same host. Requires per-target NOPASSWD (`sudo -niu
-<name>`) — exactly the same gating the TUI applies to the
-"superuser" block. Probed once for the single target; an
+user on the same host. `<name>` is a **launch user** — the OS
+account that owns the tmux socket (typically `<dev>_agent` in the
+recommended paired-sandbox setup), not the developer's shell user.
+The grant `<caller> ALL=(<name>) NOPASSWD: ALL` lets the caller
+sudo into `<name>`, but does not give them any access to the
+developer's personal account. Requires per-target NOPASSWD
+(`sudo -niu <name>`) — exactly the same gating the TUI applies to
+the "superuser" block. Probed once for the single target; an
 unreachable target fails fast with the stable error tag
 `uxon-error: not-reachable` on stderr and exit code `1`. Passing
 `--user <self>` is a no-op (no probe, same as omitting the flag).

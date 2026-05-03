@@ -48,6 +48,14 @@ injection" is whatever the launch user can write to. With the
 paired sandbox, that radius is `<user>_agent`'s files — not your
 home directory, your SSH keys, or your team's shared filesystem.
 
+The boundary works in both directions: `<user>_agent` is a separate
+OS user with its own home, so the agent has no implicit access to
+your shell user's files. Anything you want it to see (the project
+working tree, an SSH agent socket, a credentials file) you opt in
+to explicitly via group ACLs, bind-mounts, or the `sudo -iu` step
+itself. Unix permissions enforce this — `uxon` doesn't add a
+sandbox of its own.
+
 The simpler `default_launch_mode = "caller"` (agent runs as you) is
 supported in every scenario for setups that don't intend to use
 `--dsp` and accept the larger blast radius.
@@ -219,6 +227,13 @@ echo 'alice ALL=(alice_agent) NOPASSWD: ALL' \
 sudo chmod 440 /etc/sudoers.d/uxon-alice-agent
 ```
 
+The sudoers grant lets `alice` become **`alice_agent`**, not the
+other way round. `alice_agent` cannot impersonate `alice`, and a
+team-lead grant like `lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL`
+gives the lead control of agent sandboxes without any access to the
+developers' personal accounts. See [Operator view](#operator-view-who-sees-whose-sessions)
+below for the full property.
+
 Each launch user automatically gets a private `tmux` socket
 (`/tmp/uxon-<user>.sock`) — no cross-user session leakage. Yolo
 blasts stay inside the offending `<user>_agent` account.
@@ -272,7 +287,24 @@ For any of the three modes:
 ### Operator view (who sees whose sessions)
 
 `uxon` doesn't have an "operator role" config knob. Visibility falls
-out of the caller's sudo rules, **per target**:
+out of the caller's sudo rules, **per target**.
+
+**Supervision without impersonation.** All grants in this section
+target the agents' launch users (the `<dev>_agent` accounts), not
+the developers' shell accounts. A team lead with
+`lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL` can attach to and
+reap Alice and Bob's agent sessions (including the TUI's
+`kill-all-reachable` action) — but cannot `sudo -iu alice` or
+`sudo -iu bob`. The grant is over agent sandboxes only; it does not
+let the lead become the developer, so anything that only the
+developer's logged-in identity can unlock (SSH keys behind a
+passphrase prompt, gh/aws sessions tied to the developer's
+keychain, an unlocked browser profile) stays out of reach via this
+path. This is a deliberate property of the paired-sandbox model and
+the reason it's the recommended team setup. The same contract holds
+across hosts via `[[remote_hosts]]` — see
+[`docs/deployment.md` § Operator view across hosts](deployment.md#operator-view-across-hosts).
+
 
 - **`<caller> ALL=(ALL) NOPASSWD: ALL`** (root NOPASSWD). The TUI
   shows every user listed in `session_users` in the "Other users'
