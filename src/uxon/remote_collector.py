@@ -508,18 +508,25 @@ def fetch_remote_snapshot(
     """
     fetched_at = time.time()
 
+    # Per-host override precedence: ``host.connect_timeout`` /
+    # ``host.total_timeout`` (if set) win over the keyword-supplied
+    # fleet-global defaults. Operators can tighten or relax the
+    # budget for one specific peer without changing global config.
+    eff_connect = int(host.connect_timeout) if host.connect_timeout is not None else connect_timeout
+    eff_total = int(host.total_timeout) if host.total_timeout is not None else total_timeout
+
     def _run_one(all_users: bool) -> tuple[str | None, str | None, str]:
         """Run one ssh attempt. Returns ``(error, payload, stderr)``."""
         argv = _build_fetch_argv(
             host,
-            connect_timeout=connect_timeout,
+            connect_timeout=eff_connect,
             all_users=all_users,
             ssh_multiplex=ssh_multiplex,
         )
         try:
-            cp = _runner(argv, capture_output=True, text=True, timeout=total_timeout)
+            cp = _runner(argv, capture_output=True, text=True, timeout=eff_total)
         except subprocess.TimeoutExpired:
-            return f"ssh timeout after {total_timeout}s", None, ""
+            return f"ssh timeout after {eff_total}s", None, ""
         except FileNotFoundError:
             return "ssh not installed on local host", None, ""
         except (KeyboardInterrupt, SystemExit):

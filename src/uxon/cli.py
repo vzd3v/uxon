@@ -3895,13 +3895,23 @@ def _build_tui_context(
     # peer's poll. Cadence is the dedicated SSH interval — peers
     # are polled less aggressively than the local tmux stream.
     for host in cfg.remote_hosts:
+        # Per-host cadence: ``host.interval`` (if set) wins over the
+        # fleet-global ``tui_ssh_refresh_interval_seconds``. We pass
+        # cadence_seconds_attr=None so the timer reads the explicit
+        # value and does not fall through to the legacy attribute path.
+        host_cadence = (
+            float(host.interval)
+            if host.interval is not None
+            else float(cfg.tui_ssh_refresh_interval_seconds)
+        )
         refresh_sources.append(
             SourceSpec(
                 name=f"remote:{host.name}",
                 fetch=lambda h=host, mux=cfg.ssh_multiplex: fetch_remote_snapshot(
                     h, ssh_multiplex=mux
                 ),
-                cadence_seconds_attr="tui_ssh_refresh_interval_seconds",
+                cadence_seconds_attr=None,
+                cadence_seconds=host_cadence,
                 kick_on_mount=True,
             )
         )

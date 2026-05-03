@@ -538,6 +538,49 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         self.assertGreaterEqual(DEFAULT_CONNECT_TIMEOUT_SEC, 1)
         self.assertGreaterEqual(DEFAULT_TOTAL_TIMEOUT_SEC, DEFAULT_CONNECT_TIMEOUT_SEC)
 
+    def test_per_host_connect_timeout_overrides_default(self) -> None:
+        """``host.connect_timeout`` (if set) overrides the keyword default."""
+        with TemporaryDirectory() as tmp:
+            captured: list[list[str]] = []
+
+            def runner(argv, **kwargs):
+                captured.append(argv)
+                cp = mock.Mock()
+                cp.returncode = 0
+                cp.stdout = _good_envelope([])
+                cp.stderr = ""
+                return cp
+
+            fetch_remote_snapshot(
+                _host(connect_timeout=2.0),
+                connect_timeout=10,
+                override_state_dir=Path(tmp),
+                _runner=runner,
+            )
+            argv = captured[0]
+            self.assertIn("ConnectTimeout=2", argv)
+
+    def test_per_host_total_timeout_overrides_default(self) -> None:
+        """``host.total_timeout`` overrides the subprocess timeout=."""
+        captured: dict = {}
+
+        def runner(argv, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            cp = mock.Mock()
+            cp.returncode = 0
+            cp.stdout = _good_envelope([])
+            cp.stderr = ""
+            return cp
+
+        with TemporaryDirectory() as tmp:
+            fetch_remote_snapshot(
+                _host(total_timeout=8.0),
+                total_timeout=30,
+                override_state_dir=Path(tmp),
+                _runner=runner,
+            )
+        self.assertEqual(captured["timeout"], 8)
+
 
 class DefaultTemplateTests(unittest.TestCase):
     """Stage 5 step 3: default ssh argv template includes ControlMaster

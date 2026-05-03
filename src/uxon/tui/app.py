@@ -243,10 +243,17 @@ class UxonApp(App):
             # stall the others — e.g. a future remote-host source over
             # SSH won't block the local-sessions stream.
             for spec in self.ctx.refresh_sources or ():
-                cadence_attr = spec.cadence_seconds_attr
-                if cadence_attr is None:
-                    continue
-                cadence = getattr(self.ctx, cadence_attr, None)
+                # Precedence: explicit ``spec.cadence_seconds`` first
+                # (per-source override, e.g. per-host
+                # ``[[remote_hosts]].interval``). Fall back to the
+                # named ctx attribute only when no explicit value is
+                # supplied. Both ``None`` means "no periodic timer".
+                cadence: float | int | None = spec.cadence_seconds
+                if cadence is None:
+                    cadence_attr = spec.cadence_seconds_attr
+                    if cadence_attr is None:
+                        continue
+                    cadence = getattr(self.ctx, cadence_attr, None)
                 if not isinstance(cadence, (int, float)) or cadence <= 0:
                     continue
                 self.set_interval(

@@ -47,11 +47,19 @@ class SourceSpec:
             knows how to interpret it. May raise; ``run_source``
             catches and stores into :attr:`SourceResult.error`.
         cadence_seconds_attr: Name of a :class:`TuiContext` attribute
-            holding the refresh interval in seconds. The app reads
-            this attribute at mount time to schedule a ``set_interval``
-            timer that re-kicks the source. ``None`` means "no
-            periodic timer" — useful for one-shot sources that only
-            run once on mount.
+            holding the refresh interval in seconds. Used when the
+            cadence comes from a fleet-global config knob (e.g.
+            ``tui_refresh_interval_seconds``). ``None`` means "this
+            source's cadence is supplied directly via
+            ``cadence_seconds`` instead" — set to ``None`` for
+            per-host sources where the operator may override the
+            interval per ``[[remote_hosts]]``.
+        cadence_seconds: Explicit per-source cadence in seconds.
+            **Takes precedence** over ``cadence_seconds_attr`` when
+            set: the timer reads ``cadence_seconds`` first; only
+            falls through to ``cadence_seconds_attr`` when this is
+            ``None``. ``None`` and ``cadence_seconds_attr`` both
+            ``None`` means "no periodic timer".
         kick_on_mount: Whether the source should be kicked once at
             mount time, before the first periodic tick. Defaults to
             True (matches the legacy ``kick_refresh`` initial-load
@@ -61,6 +69,7 @@ class SourceSpec:
     name: str
     fetch: Callable[[], object]
     cadence_seconds_attr: str | None = "tui_refresh_interval_seconds"
+    cadence_seconds: float | None = None
     kick_on_mount: bool = True
 
 
