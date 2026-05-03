@@ -260,6 +260,40 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class LazyWidgetsTests(unittest.IsolatedAsyncioTestCase):
+    """Lazy-mounted MainScreen children resolve post first paint.
+
+    ``DetectedAgentsBanner`` and ``RemoteSessionTable`` are wrapped in
+    ``textual.lazy.Lazy`` so they do not block first paint. Verify
+    (a) they ARE present after Pilot's ``pause()`` ticks, and
+    (b) focus did not jump to the deferred-mounted widgets.
+    """
+
+    async def test_lazy_children_mount_after_pause_and_keep_focus(self) -> None:
+        from uxon.remote_hosts import RemoteHost
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets import DetectedAgentsBanner, RemoteSessionTable
+
+        ctx = _mk_ctx(
+            remote_hosts=(
+                RemoteHost(name="peer", ssh_alias="peer", description="", remote_uxon="uxon"),
+            )
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await pilot.pause()  # second tick: Lazy wrappers swap in their children
+            screen = app.screen
+            # Inner widgets resolve by their original ids (Lazy wrapper
+            # removes itself after mounting the child).
+            screen.query_one("#sessions-remote", RemoteSessionTable)
+            screen.query_one("#detected-banner", DetectedAgentsBanner)
+            # Focus stayed on a non-remote, non-banner row.
+            focused_id = screen.focused.id if screen.focused else None
+            self.assertNotIn(focused_id, ("sessions-remote", "detected-banner"))
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class WorkerGateTests(unittest.TestCase):
     """Regression coverage for the worker-handle in-flight gate.
 
