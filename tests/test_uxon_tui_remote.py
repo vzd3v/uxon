@@ -376,5 +376,200 @@ class ActionKillRemoteBindingTests(unittest.TestCase):
         self.assertEqual(kill_calls, [("vz-prod1", "alice", "uxon-foo@claude")])
 
 
+class ApplyLoadedCtxRemoteCarryTests(unittest.TestCase):
+    """``apply_loaded_ctx`` must carry ``remote_snapshots`` across the
+    local ctx-rebuild tick.
+
+    The local rebuild source ticks roughly every
+    ``tui_refresh_interval_seconds`` (~2 s) and produces a fresh
+    :class:`TuiContext` with an empty ``remote_snapshots`` dict; the
+    per-host SSH workers tick on their own, slower cadence
+    (``remote_interval``, ~10 s) and write into the live dict. Without
+    the carry-over each fast tick would wipe the remote-sessions
+    table for the gap until the next per-host poll lands (the
+    "remote table mig­ает" symptom).
+    """
+
+    def _ctx(self, *, snapshots=None) -> object:
+        from uxon.tui.context import TuiContext
+
+        return TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="/tmp",
+            cwd_short="/tmp",
+            new_project_root="/tmp",
+            existing_projects=[],
+            remote_hosts=[
+                RemoteHost(
+                    name="vz-prod1", ssh_alias="vz-prod1", description="", remote_uxon="uxon"
+                )
+            ],
+            remote_snapshots=snapshots if snapshots is not None else {},
+        )
+
+    def _snap(self) -> RemoteSnapshot:
+        return RemoteSnapshot(
+            host_name="vz-prod1",
+            fetched_at_epoch=1.0,
+            from_cache=False,
+            error=None,
+            sessions=[{"name": "uxon-foo@claude", "user": "alice"}],
+            cached_at_epoch=1.0,
+        )
+
+    def test_remote_snapshots_carry_across_rebuild(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        snap = self._snap()
+        old = self._ctx(snapshots={"vz-prod1": snap})
+        new = self._ctx(snapshots={})  # fresh rebuild — empty by default
+
+        class _FakeApp:
+            ctx = None
+
+        fake_app = _FakeApp()
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            focused = None
+            app = fake_app
+
+        screen = _StubScreen.__new__(_StubScreen)
+        screen.ctx = old
+        screen._restore_focus_key = ""
+        screen._apply_ctx_refresh = lambda: True  # type: ignore[method-assign]
+
+        screen.apply_loaded_ctx(new, focus_key="")
+
+        self.assertIs(screen.ctx, new)
+        self.assertIn("vz-prod1", screen.ctx.remote_snapshots)
+        self.assertIs(screen.ctx.remote_snapshots["vz-prod1"], snap)
+        # Same dict reference flows through so subsequent
+        # ``apply_remote_snapshot`` writes target the live state.
+        self.assertIs(screen.ctx.remote_snapshots, old.remote_snapshots)
+
+    def test_carry_does_not_overwrite_when_new_ctx_brings_snapshots(self) -> None:
+        """If the rebuild ever starts pre-populating ``remote_snapshots``
+        (e.g. from on-disk cache), the carry-over must not silently
+        clobber the fresher data. The current behavior is "always carry";
+        this test pins it so a future change of intent is deliberate."""
+        from uxon.tui.screens.main import MainScreen
+
+        old_snap = self._snap()
+        new_snap = RemoteSnapshot(
+            host_name="vz-prod1",
+            fetched_at_epoch=2.0,
+            from_cache=True,
+            error=None,
+            sessions=[],
+            cached_at_epoch=2.0,
+        )
+        old = self._ctx(snapshots={"vz-prod1": old_snap})
+        new = self._ctx(snapshots={"vz-prod1": new_snap})
+
+        class _FakeApp:
+            ctx = None
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            focused = None
+            app = _FakeApp()
+
+        screen = _StubScreen.__new__(_StubScreen)
+        screen.ctx = old
+        screen._restore_focus_key = ""
+        screen._apply_ctx_refresh = lambda: True  # type: ignore[method-assign]
+
+        screen.apply_loaded_ctx(new, focus_key="")
+        # Carry wins: the in-memory live dict is preserved.
+        self.assertIs(screen.ctx.remote_snapshots["vz-prod1"], old_snap)
+
+
+class RemoteFocusKeyTests(unittest.TestCase):
+    """``_current_focus_key`` / ``_focus_key`` round-trip for a focused
+    :class:`RemoteSessionTable` row.
+
+    Focus on a remote row is preserved across an in-place patch (the
+    DOM is untouched), but a layout-signature change forces a full
+    re-compose; on that path the captured key is what restores the
+    cursor onto the right row.
+    """
+
+    def _stub_table(self, rows):
+        from uxon.tui.widgets.remote_session_table import RemoteSessionTable
+
+        class _StubTable(RemoteSessionTable):  # type: ignore[misc]
+            cursor_row = 0
+
+        table = _StubTable.__new__(_StubTable)
+        table._row_index = list(rows)
+        return table
+
+    def test_current_focus_key_for_remote_row(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        table = self._stub_table([("vz-prod1", {"user": "alice", "name": "uxon-foo@claude"})])
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            focused = table
+
+        screen = _StubScreen.__new__(_StubScreen)
+        self.assertEqual(screen._current_focus_key(), "remote:vz-prod1/alice/uxon-foo@claude")
+
+    def test_current_focus_key_strips_own_only_badge(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        table = self._stub_table(
+            [("vz-prod1 (own only)", {"user": "alice", "name": "uxon-foo@claude"})]
+        )
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            focused = table
+
+        screen = _StubScreen.__new__(_StubScreen)
+        self.assertEqual(screen._current_focus_key(), "remote:vz-prod1/alice/uxon-foo@claude")
+
+    def test_focus_key_restores_remote_row(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        table = self._stub_table(
+            [
+                ("vz-prod1", {"user": "alice", "name": "uxon-a@claude"}),
+                ("vz-prod1", {"user": "bob", "name": "uxon-b@claude"}),
+                ("vz-prod2", {"user": "carol", "name": "uxon-c@claude"}),
+            ]
+        )
+        moved: list[int] = []
+        focused: list[bool] = []
+        table.move_cursor = lambda row=None, **_kw: moved.append(row)  # type: ignore[method-assign]
+        table.focus = lambda *_a, **_kw: focused.append(True)  # type: ignore[method-assign]
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            focused = None
+
+        screen = _StubScreen.__new__(_StubScreen)
+        screen.query_one = lambda selector, _cls: table  # type: ignore[method-assign]
+
+        ok = screen._focus_key("remote:vz-prod1/bob/uxon-b@claude")
+        self.assertTrue(ok)
+        self.assertEqual(moved, [1])
+        self.assertEqual(focused, [True])
+
+    def test_focus_key_returns_false_when_row_gone(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        # Peer dropped the session between focus capture and restore.
+        table = self._stub_table([("vz-prod1", {"user": "alice", "name": "uxon-other@claude"})])
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            focused = None
+
+        screen = _StubScreen.__new__(_StubScreen)
+        screen.query_one = lambda selector, _cls: table  # type: ignore[method-assign]
+
+        self.assertFalse(screen._focus_key("remote:vz-prod1/alice/uxon-foo@claude"))
+
+
 if __name__ == "__main__":
     unittest.main()

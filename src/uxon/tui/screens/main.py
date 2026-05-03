@@ -667,11 +667,12 @@ class MainScreen(Screen):
         if other_table is not None:
             other_table.populate(self.ctx.other_sessions)
 
-        if self.ctx.remote_hosts:
-            try:
-                self._populate_remote_table()
-            except Exception:  # pragma: no cover — DOM not mounted yet
-                pass
+        # Remote-sessions table is owned by the per-host SSH workers via
+        # ``apply_remote_snapshot``. The local ctx-rebuild path does not
+        # contribute rows to it (the snapshots dict is carried across
+        # rebuilds, see ``apply_loaded_ctx``), so re-populating here on
+        # every local tick would clear+re-add identical rows and produce
+        # a visible flicker.
 
         if bool(self.ctx.sudo_caps.reachable_users):
             try:
@@ -729,6 +730,15 @@ class MainScreen(Screen):
         # without this carry-over the periodic ctx refresh would clear
         # the suggestion banner one tick after it appeared.
         new_ctx.detected_agents = self.ctx.detected_agents
+        # remote_snapshots is owned by the per-host SSH workers (their
+        # cadence is `remote_interval`, ~10 s). The local ctx-rebuild
+        # source ticks much faster (`tui_refresh_interval_seconds`,
+        # ~2 s) and produces a fresh ctx with an empty snapshots dict;
+        # without this carry-over each local tick would wipe the
+        # remote-sessions table for the gap until the next per-host
+        # poll lands. Same dict reference flows through, so subsequent
+        # `apply_remote_snapshot` writes target the live state.
+        new_ctx.remote_snapshots = self.ctx.remote_snapshots
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
         # Carry the cwd-writable result across refreshes too: same-user
         # builds set it synchronously, cross-user builds leave None and
@@ -921,6 +931,17 @@ class MainScreen(Screen):
             if focused.id == "sessions-other":
                 return f"other:{session.user}/{session.name}"
             return f"own:{session.name}"
+        if isinstance(focused, RemoteSessionTable):
+            entry = focused.row_at(focused.cursor_row)
+            if entry is None:
+                return ""
+            host_name, rec = entry
+            # Strip any trailing ``" (own only)"`` badge — focus identity
+            # is the bare host name, mirroring ``action_kill_remote``.
+            clean_host = host_name.split(" ", 1)[0]
+            user = str(rec.get("user") or "")
+            name = str(rec.get("name") or "")
+            return f"remote:{clean_host}/{user}/{name}"
         return ""
 
     def _focus_key(self, key: str) -> bool:
@@ -938,6 +959,37 @@ class MainScreen(Screen):
         if key.startswith("other:"):
             _, _, session_name = key.removeprefix("other:").partition("/")
             return self._focus_session_key("#sessions-other", session_name)
+        if key.startswith("remote:"):
+            return self._focus_remote_key(key.removeprefix("remote:"))
+        return False
+
+    def _focus_remote_key(self, suffix: str) -> bool:
+        """Restore focus on a ``RemoteSessionTable`` row keyed by ``host/user/name``.
+
+        Suffix shape mirrors :meth:`_current_focus_key`: ``host/user/name``.
+        Falls back gracefully when the table is not mounted, the row no
+        longer exists (peer dropped the session between the focus
+        capture and the restore), or the suffix is malformed.
+        """
+        host, _, rest = suffix.partition("/")
+        user, _, name = rest.partition("/")
+        if not (host and name):
+            return False
+        try:
+            table = self.query_one("#sessions-remote", RemoteSessionTable)
+        except Exception:
+            return False
+        for idx, (row_host, rec) in enumerate(table._row_index):
+            clean_host = row_host.split(" ", 1)[0]
+            if clean_host != host:
+                continue
+            if name and str(rec.get("name") or "") != name:
+                continue
+            if user and str(rec.get("user") or "") != user:
+                continue
+            table.focus()
+            table.move_cursor(row=idx)
+            return True
         return False
 
     def _focus_session_key(self, selector: str, session_name: str) -> bool:

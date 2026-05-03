@@ -8,6 +8,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- TUI remote-sessions table no longer flickers or temporarily empties
+  on every local refresh tick. Per-host snapshot state is now carried
+  across the local ctx rebuild; only the per-host SSH worker writes
+  rows. Focus on a remote row is preserved across full re-composes.
+
 ## [3.4.0] — 2026-05-03
 
 ### Added
