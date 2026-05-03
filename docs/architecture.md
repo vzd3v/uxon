@@ -29,6 +29,9 @@ src/uxon/                     Python package (pipx / uv tool / pip installable).
   cli.py                      Single-file CLI entrypoint.
   settings.py                 Settings schema, layered TOML read/write.
   agents.py                   Pure-data agent catalog and probe.
+  wire_schema.py              Versioned JSON envelope for `--json` output.
+  remote_hosts.py             [[remote_hosts]] schema and validation.
+  remote_collector.py         SSH transport + on-disk snapshot cache for peers.
   git_profiles.py             [[git_remote_profiles]] schema.
   git_backend_gh.py           `gh repo create` backend.
   git_backend_token.py        GitHub REST + fine-grained PAT backend.
@@ -80,11 +83,15 @@ Sub-modules under `src/uxon/tui/`:
   Runs **outside** the Textual `App` between round-trips.
 - `hints.py` — `TEXTUAL_MISSING_HINT` install guidance.
 - `app.py` — `UxonApp(App)` and the outer `run(ctx)` re-entrant loop.
+- `refresh.py` — pluggable refresh-source registry (`SourceSpec`,
+  `SourceResult`, `run_source`). One source per stream — local
+  tmux, each `[[remote_hosts]]` peer — runs in its own worker
+  group so a slow peer never stalls the others.
 - `screens/` — one module per screen: `main`, `confirm`,
   `launch_options`, `new_project`, `git_profile`, `existing`,
   `settings`, `git_remotes`, `agents_unavailable`.
-- `widgets/` — `ActionRow` and `SessionTable`. Everything else is
-  stock `textual`.
+- `widgets/` — `ActionRow`, `SessionTable`, and `RemoteSessionTable`
+  (multi-host block). Everything else is stock `textual`.
 - `styles.tcss` — Textual CSS for the whole app.
 
 ## Module boundaries

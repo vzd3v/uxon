@@ -220,7 +220,18 @@ Live list of `uxon-*` sessions for the current user with:
 `Enter` attaches. `d` kills (with confirmation). `D` kills *all your
 own* sessions after typing `kill-all`.
 
-### 3. Server status (bottom)
+### 3. Remote sessions (only when `[[remote_hosts]]` is configured)
+
+A separate `── remote sessions ──` block aggregates `uxon list --json`
+output from peer hosts over SSH. One section per host, with an extra
+`HOST` column when more than one peer is configured. The collector is
+fail-soft: a dead or slow peer falls back to the on-disk snapshot
+(`~/.local/state/uxon/remote/<name>.json`) and never stalls the local
+view. Destructive actions stay local — there is no remote `kill` or
+`kill-all`. See [`docs/deployment.md`](docs/deployment.md#multi-host)
+for the full SSH model and config schema.
+
+### 4. Server status (bottom)
 
 Load average, normalised CPU load, RAM, disk, uptime. When you're
 inside an SSH session, an async `ssh-link` probe shows RTT, jitter,

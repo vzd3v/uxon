@@ -240,12 +240,13 @@ tui_ssh_refresh_interval_seconds  = 30.0
 | `agents.default` | string | `"claude"` | Default agent when `--agent` is not passed. Must be in `agents.enabled`. |
 | `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of that agent. |
 | `tmux_socket_template` | string | `/tmp/uxon-{user}.sock` | Per-user socket path. Placeholders: `{user}`, `{uid}`. |
-| `tui_refresh_interval_seconds` | number | `2.0` | TUI auto-refresh interval. |
-| `tui_ssh_refresh_interval_seconds` | number | `10.0` | `ssh-link` probe interval (only visible inside SSH). |
+| `tui_refresh_interval_seconds` | number | `2.0` | Local-tmux refresh cadence. |
+| `tui_ssh_refresh_interval_seconds` | number | `10.0` | Cadence for SSH-driven streams: the `ssh-link` probe (visible inside SSH) and the per-peer remote-sessions poller (when `[[remote_hosts]]` is configured). |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback when `uxon new` finds an existing matching session. |
 | `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
 | `default_git_remote_profile` | string | `""` | Profile picked by `--git-remote default` and the TUI default. |
 | `git_remote_profiles` | array of tables | `[]` | Whitelist of allowed targets (see above). |
+| `remote_hosts` | array of tables | `[]` | Peer hosts polled over SSH for the multi-host TUI block and `uxon list --host`/`--all-hosts`. See [`docs/deployment.md` § Multi-host](deployment.md#multi-host). |
 
 ## Reference: environment variables
 
