@@ -1,0 +1,45 @@
+name: Bug report
+description: Something doesn't behave the way the docs say it should.
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Exact symptom and the command that triggered it.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: One or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: uxon doctor output
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: |
+        - `uxon --version`
+        - OS / distro
+        - Python version (`python3 --version`)
+        - `tmux -V`
+        - Agent involved (`claude` / `codex` / `cursor-agent`) and its version
+        - Inside another `tmux` / `screen` / `mosh` session? (yes/no)
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Logs (`~/.local/state/uxon/...`), config snippets, screenshots. Redact secrets.
