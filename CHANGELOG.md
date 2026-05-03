@@ -8,6 +8,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `uxon doctor` now probes agent binaries in parallel (up to 4 concurrent
+  workers) with a 2 s per-probe deadline. Slow agents (cold
+  `cursor-agent --version`, ~5–8 s) surface as `TIMEOUT (>2.0s)` instead
+  of inflating doctor's wall time. Wall time drops from ~10 s to ~2–3 s.
+  Output order remains deterministic (follows `cfg.enabled_agents`).
+
 ### Fixed
 
 - TUI remote-sessions table no longer flickers or temporarily empties

@@ -2983,19 +2983,27 @@ def do_doctor(
     agent_paths: dict[str, str | None] = {
         aid: report.enabled[aid].path for aid in cfg.enabled_agents if aid in report.enabled
     }
-    # Per-present-binary version detail. Skip the slow `<bin> --version`
-    # call for binaries the host probe could not find; for present ones
-    # it costs at most ``agents.PROBE_TIMEOUT_SEC`` per agent (cursor's
-    # ``--version`` is the slowest at 5–8 s).
+    # Per-present-binary version detail. Probes run in parallel with a
+    # 2 s per-probe deadline — slow agents (e.g. cold ``cursor-agent``)
+    # surface as TIMEOUT instead of inflating doctor's wall time. The
+    # host probe above already established presence; ``--version`` is
+    # informational. Output order follows ``cfg.enabled_agents`` so the
+    # rendered report is deterministic regardless of thread arrival.
+    import concurrent.futures  # noqa: PLC0415
+
+    def _probe(aid: str) -> tuple[str, uxon_agents.AgentAvailability]:
+        if not agent_paths.get(aid):
+            return aid, uxon_agents.AgentAvailability(status="missing", error="not on PATH")
+        return aid, uxon_agents._probe_one(
+            uxon_agents.CATALOG[aid].binary,
+            launch_user,
+            timeout_override=2.0,
+        )
+
     availability: dict[str, uxon_agents.AgentAvailability] = {}
-    for aid in cfg.enabled_agents:
-        if agent_paths.get(aid):
-            availability[aid] = uxon_agents._probe_one(
-                uxon_agents.CATALOG[aid].binary,
-                launch_user,
-            )
-        else:
-            availability[aid] = uxon_agents.AgentAvailability(status="missing", error="not on PATH")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        for aid, result in pool.map(_probe, cfg.enabled_agents):
+            availability[aid] = result
     current_sessions = collect_sessions([launch_user], cfg)
     legacy_sessions = collect_sessions_for_user(
         launch_user,
@@ -3085,7 +3093,7 @@ def do_doctor(
         if avail and avail.status == "ok":
             print(f"{aid}:  {path}  ok ({avail.version or '?'})")
         elif avail and avail.status == "timeout":
-            print(f"{aid}:  {path}  TIMEOUT (>{uxon_agents.PROBE_TIMEOUT_SEC}s)")
+            print(f"{aid}:  {path}  TIMEOUT (>2.0s)")
         else:
             print(f"{aid}:  -  MISSING  ({spec.install_hint})")
     print(f"current_socket_sessions={len(current_sessions)}")
