@@ -144,6 +144,114 @@ class LoadRemoteHostsValidationTests(unittest.TestCase):
             load_remote_hosts([{"name": "x", "ssh_alias": "x", "ssh_alaias": "y"}])
 
 
+class OptionalFieldsTests(unittest.TestCase):
+    """Stage 5: per-host interval / timeouts / extra_ssh_options /
+    command_template are optional and validated when present."""
+
+    def test_defaults_when_absent(self) -> None:
+        host = load_remote_hosts([{"name": "a", "ssh_alias": "a"}])[0]
+        self.assertIsNone(host.interval)
+        self.assertIsNone(host.connect_timeout)
+        self.assertIsNone(host.total_timeout)
+        self.assertEqual(host.extra_ssh_options, ())
+        self.assertIsNone(host.command_template)
+
+    def test_duration_strings_parsed(self) -> None:
+        host = load_remote_hosts(
+            [
+                {
+                    "name": "a",
+                    "ssh_alias": "a",
+                    "interval": "5s",
+                    "connect_timeout": "500ms",
+                    "total_timeout": "30s",
+                }
+            ]
+        )[0]
+        self.assertEqual(host.interval, 5.0)
+        self.assertEqual(host.connect_timeout, 0.5)
+        self.assertEqual(host.total_timeout, 30.0)
+
+    def test_bare_numbers_accepted_as_seconds(self) -> None:
+        host = load_remote_hosts(
+            [{"name": "a", "ssh_alias": "a", "interval": 10, "connect_timeout": 1.5}]
+        )[0]
+        self.assertEqual(host.interval, 10.0)
+        self.assertEqual(host.connect_timeout, 1.5)
+
+    def test_zero_interval_rejected(self) -> None:
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts([{"name": "a", "ssh_alias": "a", "interval": "0s"}])
+
+    def test_negative_interval_rejected(self) -> None:
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts([{"name": "a", "ssh_alias": "a", "interval": "-5s"}])
+
+    def test_invalid_duration_rejected(self) -> None:
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts([{"name": "a", "ssh_alias": "a", "interval": "1h"}])
+
+    def test_extra_ssh_options_list(self) -> None:
+        host = load_remote_hosts(
+            [
+                {
+                    "name": "a",
+                    "ssh_alias": "a",
+                    "extra_ssh_options": ["-o", "ProxyJump=bastion"],
+                }
+            ]
+        )[0]
+        self.assertEqual(host.extra_ssh_options, ("-o", "ProxyJump=bastion"))
+
+    def test_extra_ssh_options_must_be_list_of_strings(self) -> None:
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts([{"name": "a", "ssh_alias": "a", "extra_ssh_options": "not-a-list"}])
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts([{"name": "a", "ssh_alias": "a", "extra_ssh_options": [1, 2]}])
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts([{"name": "a", "ssh_alias": "a", "extra_ssh_options": [""]}])
+
+    def test_command_template_accepts_list(self) -> None:
+        host = load_remote_hosts(
+            [
+                {
+                    "name": "k",
+                    "ssh_alias": "k",
+                    "command_template": ["ssh", "{ssh_alias}", "{remote_command}"],
+                }
+            ]
+        )[0]
+        self.assertEqual(host.command_template, ("ssh", "{ssh_alias}", "{remote_command}"))
+
+    def test_command_template_must_be_non_empty(self) -> None:
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts([{"name": "a", "ssh_alias": "a", "command_template": []}])
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts([{"name": "a", "ssh_alias": "a", "command_template": "ssh"}])
+
+    def test_existing_4key_config_still_works(self) -> None:
+        # Backwards-compat: configs that pre-date stage 5 still parse.
+        hosts = load_remote_hosts(
+            [
+                {
+                    "name": "peer1",
+                    "ssh_alias": "peer1",
+                    "description": "lab1",
+                    "remote_uxon": "/usr/local/bin/uxon",
+                }
+            ]
+        )
+        self.assertEqual(hosts[0].description, "lab1")
+        self.assertEqual(hosts[0].remote_uxon, "/usr/local/bin/uxon")
+
+    def test_unknown_key_still_rejected_with_widened_set(self) -> None:
+        # Sanity: typos in the *new* keys also fail loudly.
+        with self.assertRaises(RemoteHostError):
+            load_remote_hosts(
+                [{"name": "a", "ssh_alias": "a", "intervall": "5s"}]  # typo: intervall
+            )
+
+
 class FindHostTests(unittest.TestCase):
     def test_returns_match_or_none(self) -> None:
         hosts = load_remote_hosts(
