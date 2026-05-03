@@ -8,16 +8,40 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-05-03
+
+### Added
+
+- SSH `ControlMaster=auto` is now the default for `[[remote_hosts]]`
+  fetches. First tick still costs 200–500 ms (TCP+auth); subsequent
+  ticks reuse the multiplexed session at 5–20 ms. The control socket
+  lives under `${XDG_CACHE_HOME:-~/.cache}/uxon/ssh-%C` and persists
+  60 s. Set `ssh_multiplex = "off"` to opt out.
+- Per-host overrides in `[[remote_hosts]]`: `interval`,
+  `connect_timeout`, `total_timeout` (durations: `"5s"`, `"500ms"`,
+  `"2m"`, or bare seconds), `extra_ssh_options` (tokens inserted
+  before `{ssh_alias}` in the default template), and `command_template`
+  (full-argv override using a closed placeholder set — see
+  `docs/configuration.md` for kubectl-exec / docker-exec recipes).
+- `fetch_concurrency` config key (default `16`) caps concurrent SSH
+  fetch workers fleet-wide so a 50-host post-outage stampede cannot
+  exhaust the FD `ulimit`.
+
 ### Changed
 
-- `uxon doctor` now probes agent binaries in parallel (up to 4 concurrent
-  workers) with a 2 s per-probe deadline. Slow agents (cold
-  `cursor-agent --version`, ~5–8 s) surface as `TIMEOUT (>2.0s)` instead
-  of inflating doctor's wall time. Wall time drops from ~10 s to ~2–3 s.
+- `uxon doctor` now probes agent binaries in parallel (up to 4
+  concurrent workers) with a 2 s per-probe deadline. Slow agents
+  (cold `cursor-agent --version`, ~5–8 s) surface as `TIMEOUT (>2.0s)`
+  instead of inflating doctor's wall time from ~10 s to ~2–3 s.
   Output order remains deterministic (follows `cfg.enabled_agents`).
 
 ### Fixed
 
+- Remote-host on-disk cache now round-trips `scope_limited` and
+  `scope_skipped`. A peer that went offline after flipping
+  `enable_all_users_list = false` (or after accumulating
+  `scope_skipped` users) no longer surfaces a misleading "full
+  visibility" badge from the cache fallback path.
 - TUI remote-sessions table no longer flickers or temporarily empties
   on every local refresh tick. Per-host snapshot state is now carried
   across the local ctx rebuild; only the per-host SSH worker writes

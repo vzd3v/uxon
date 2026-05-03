@@ -488,6 +488,56 @@ tui_ssh_refresh_interval_seconds  = 30.0
 
 ---
 
+## Use case: per-host transport overrides
+
+Each `[[remote_hosts]]` entry accepts five optional knobs. Mix and
+match them per peer.
+
+```toml
+# A nearby peer — tighter SSH budget, faster polling.
+[[remote_hosts]]
+name       = "lab-fast"
+ssh_alias  = "lab-fast"
+interval         = "3s"
+connect_timeout  = "1s"
+total_timeout    = "5s"
+
+# A peer reachable through a bastion. extra_ssh_options is inserted
+# immediately before {ssh_alias} in the default template.
+[[remote_hosts]]
+name       = "edge-bastioned"
+ssh_alias  = "edge1"
+extra_ssh_options = ["-o", "ProxyJump=bastion.example.com"]
+
+# A Kubernetes pod running uxon. command_template replaces the entire
+# argv — extra_ssh_options and ssh_multiplex are ignored when set
+# because the operator owns the transport. The collector substitutes
+# {remote_command} with the standard "<remote_uxon> list ..." string.
+[[remote_hosts]]
+name       = "k8s-east"
+ssh_alias  = "ignored"          # required by schema; unused with command_template
+remote_uxon = "/usr/local/bin/uxon"
+command_template = [
+  "kubectl", "exec", "-n", "ops", "uxon-pod-0", "--",
+  "/bin/sh", "-c", "{remote_command}",
+]
+
+# A Docker container.
+[[remote_hosts]]
+name             = "docker-staging"
+ssh_alias        = "ignored"
+remote_uxon      = "uxon"
+command_template = [
+  "docker", "exec", "uxon-container", "/bin/sh", "-c", "{remote_command}",
+]
+```
+
+The fleet-wide `ssh_multiplex = "off"` opt-out is for environments
+that disallow `ControlPersist` sockets entirely. Default `"auto"`
+gives ~5–20 ms warm-tick SSH cost (vs 200–500 ms cold).
+
+---
+
 ## Use case: sizing the host for a team
 
 uxon does not enforce per-user resource limits — agents and their
@@ -553,7 +603,9 @@ remain the operator's responsibility.
 | `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
 | `default_git_remote_profile` | string | `""` | Profile picked by `--git-remote default` and the TUI default. |
 | `git_remote_profiles` | array of tables | `[]` | Whitelist of allowed targets (see above). |
-| `remote_hosts` | array of tables | `[]` | Peer hosts polled over SSH for the multi-host TUI block and `uxon list --host`/`--all-hosts`. See [`docs/deployment.md` § Multi-host](deployment.md#multi-host). |
+| `remote_hosts` | array of tables | `[]` | Peer hosts polled over SSH for the multi-host TUI block and `uxon list --host`/`--all-hosts`. See [`docs/deployment.md` § Multi-host](deployment.md#multi-host). Per-host options: `interval`, `connect_timeout`, `total_timeout` (durations: `"5s"`, `"500ms"`, `"2m"`, or bare seconds), `extra_ssh_options` (list of extra ssh tokens inserted before `{ssh_alias}`), `command_template` (full-argv override using placeholders `{ssh_alias}`/`{remote_uxon}`/`{connect_timeout}`/`{xdg_cache}`/`{remote_command}` — for kubectl-exec / docker-exec recipes). |
+| `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=60s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
+| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. |
 
 ## Reference: environment variables
 
