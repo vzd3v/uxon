@@ -32,7 +32,8 @@ to parse rather than guess.
 
 from __future__ import annotations
 
-from typing import Protocol, TypedDict
+from collections.abc import Sequence
+from typing import Any, Literal, Protocol, TypedDict
 
 WIRE_SCHEMA_VERSION = "1"
 """Current wire-schema version. Bump on incompatible changes only."""
@@ -119,7 +120,7 @@ class _SessionLike(Protocol):
 
 
 def build_session_records(
-    sessions: list[_SessionLike],
+    sessions: Sequence[_SessionLike],
     *,
     session_prefix: str,
 ) -> list[SessionRecord]:
@@ -166,3 +167,47 @@ def build_session_records(
             )
         )
     return records
+
+
+EnvelopeKind = Literal["list", "doctor", "version", "kill", "kill-all"]
+
+
+class Envelope(TypedDict):
+    """Top-level wrapper for every ``--json`` payload.
+
+    Carries the schema version, the producing uxon's own version, and
+    the kind discriminator that tells a consumer which ``data`` shape
+    to expect. ``host`` is an optional top-level field added later by
+    the multi-host RemoteCollector to attribute a snapshot to its
+    source host; local ``--json`` output omits it.
+    """
+
+    schema_version: str
+    uxon_version: str
+    kind: EnvelopeKind
+    data: dict[str, Any]
+
+
+def make_envelope(
+    kind: EnvelopeKind,
+    data: dict[str, Any],
+    *,
+    uxon_version: str,
+    host: str | None = None,
+) -> Envelope:
+    """Construct a versioned envelope for one ``--json`` payload.
+
+    ``kind`` discriminates the data shape; ``data`` is the kind-specific
+    body. ``uxon_version`` is supplied by the caller (``cli.read_repo_version``)
+    so this module stays free of cli imports. ``host`` is added only
+    when given — local invocations leave it absent.
+    """
+    env: Envelope = {
+        "schema_version": WIRE_SCHEMA_VERSION,
+        "uxon_version": uxon_version,
+        "kind": kind,
+        "data": data,
+    }
+    if host is not None:
+        env["host"] = host  # type: ignore[typeddict-unknown-key]
+    return env

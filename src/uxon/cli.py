@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
 import re
@@ -167,6 +168,7 @@ class ParsedArgs:
     git_remote: str | None = None  # profile name, or "default", or None
     no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
     git_visibility: str | None = None  # "private" | "public" | None (use profile default)
+    json_output: bool = False  # --json: emit machine-readable wire-schema envelope on stdout
 
 
 def eprint(msg: str) -> None:
@@ -1407,6 +1409,66 @@ def ensure_new_project_target_allowed(cfg: Config, launch_user: str, project_dir
         fail(f"got: {project_dir}")
 
 
+def _version_data() -> dict[str, Any]:
+    """Build the ``data`` body for ``uxon version --json``.
+
+    Mirrors :func:`format_version`: the package version, the short
+    git commit (when running from a checkout), and the dirty bit.
+    Fields use ``null`` rather than ``"-"`` so consumers see a clear
+    "not available" signal instead of a placeholder string.
+    """
+    commit = read_git_commit_short()
+    return {
+        "uxon_version": read_repo_version(),
+        "commit": commit,
+        "commit_dirty": repo_is_dirty() if commit else False,
+    }
+
+
+def _list_data(
+    cfg: Config,
+    sessions: list[SessionInfo],
+    scope_users: list[str],
+    *,
+    all_users: bool,
+) -> dict[str, Any]:
+    """Build the ``data`` body for ``uxon list --json``.
+
+    Wraps :func:`build_session_records` and exposes the inputs a
+    remote consumer needs to label the snapshot: which OS users were
+    scoped, whether ``--all-users`` was on, and the session prefix
+    that ``short_id`` was stripped against.
+    """
+    from uxon.wire_schema import build_session_records
+
+    return {
+        "all_users": all_users,
+        "scope_users": list(scope_users),
+        "session_prefix": cfg.session_prefix,
+        "sessions": build_session_records(sessions, session_prefix=cfg.session_prefix),
+    }
+
+
+def _emit_json(kind: str, data: dict[str, Any]) -> None:
+    """Print one wire-schema envelope to stdout as JSON.
+
+    Centralises envelope construction so every ``--json`` exit path
+    uses the same shape (``schema_version``, ``uxon_version``,
+    ``kind``, ``data``). ``kind`` is the action name; the runtime
+    accepts any string but only the documented set
+    (``list``/``doctor``/``version``/``kill``/``kill-all``) is part
+    of the contract.
+    """
+    from uxon.wire_schema import make_envelope
+
+    env = make_envelope(
+        kind,  # type: ignore[arg-type]
+        data,
+        uxon_version=read_repo_version(),
+    )
+    print(json.dumps(env, indent=2, sort_keys=False))
+
+
 def print_list(
     cfg: Config, sessions: list[SessionInfo], scope_users: list[str], show_user: bool = False
 ) -> int:
@@ -1499,10 +1561,11 @@ SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version", "d
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
     all_users = "--all-users" in argv
-    extras = [a for a in argv if a != "--all-users"]
+    json_out = "--json" in argv
+    extras = [a for a in argv if a not in {"--all-users", "--json"}]
     if extras:
         fail(f"unknown args for list: {' '.join(extras)}")
-    return ParsedArgs(action="list", all_users=all_users)
+    return ParsedArgs(action="list", all_users=all_users, json_output=json_out)
 
 
 def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -> ParsedArgs:
@@ -1580,12 +1643,17 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
 def parse_subcommand(argv: list[str]) -> ParsedArgs:
     cmd = argv[0]
     if cmd == "version":
-        return ParsedArgs(action="version")
+        json_out = "--json" in argv[1:]
+        extras = [a for a in argv[1:] if a != "--json"]
+        if extras:
+            fail(f"unknown args for version: {' '.join(extras)}")
+        return ParsedArgs(action="version", json_output=json_out)
     if cmd == "doctor":
-        extras = argv[1:]
+        json_out = "--json" in argv[1:]
+        extras = [a for a in argv[1:] if a != "--json"]
         if extras:
             fail(f"unknown args for doctor: {' '.join(extras)}")
-        return ParsedArgs(action="doctor")
+        return ParsedArgs(action="doctor", json_output=json_out)
     if cmd == "run":
         return parse_run_like(argv[1:], "run")
     if cmd == "list":
@@ -1593,19 +1661,22 @@ def parse_subcommand(argv: list[str]) -> ParsedArgs:
     if cmd == "kill-all":
         dry = "--dry-run" in argv[1:]
         force = "--force" in argv[1:]
-        extras = [a for a in argv[1:] if a not in {"--dry-run", "--force"}]
+        json_out = "--json" in argv[1:]
+        extras = [a for a in argv[1:] if a not in {"--dry-run", "--force", "--json"}]
         if extras:
             fail(f"unknown args for kill-all: {' '.join(extras)}")
-        return ParsedArgs(action="kill-all", dry_run=dry, force=force)
+        return ParsedArgs(action="kill-all", dry_run=dry, force=force, json_output=json_out)
     if cmd in ("attach", "kill"):
         if len(argv) < 2:
             fail(f"{cmd} requires an identifier")
         target = argv[1]
         dry = "--dry-run" in argv[2:] if cmd == "kill" else False
-        extras = [a for a in argv[2:] if not (cmd == "kill" and a == "--dry-run")]
+        json_out = "--json" in argv[2:] if cmd == "kill" else False
+        allowed = {"--dry-run", "--json"} if cmd == "kill" else set()
+        extras = [a for a in argv[2:] if a not in allowed]
         if extras:
             fail(f"unknown args for {cmd}: {' '.join(extras)}")
-        return ParsedArgs(action=cmd, target_id=target, dry_run=dry)
+        return ParsedArgs(action=cmd, target_id=target, dry_run=dry, json_output=json_out)
     if cmd == "new":
         if len(argv) < 2:
             fail("new requires a name")
@@ -1625,7 +1696,11 @@ def parse_args(argv: list[str]) -> ParsedArgs:
         print(USAGE)
         raise SystemExit(0)
     if argv[0] in ("-V", "--version"):
-        return ParsedArgs(action="version")
+        json_out = "--json" in argv[1:]
+        extras = [a for a in argv[1:] if a != "--json"]
+        if extras:
+            fail(f"unknown args for version: {' '.join(extras)}")
+        return ParsedArgs(action="version", json_output=json_out)
     if argv[0] in ("-l", "--list"):
         return parse_list_args(argv[1:])
     if argv[0] in ("-a", "--attach"):
@@ -1639,17 +1714,19 @@ def parse_args(argv: list[str]) -> ParsedArgs:
         if len(argv) < 2:
             fail("kill requires an identifier")
         dry = "--dry-run" in argv[2:]
-        extras = [a for a in argv[2:] if a != "--dry-run"]
+        json_out = "--json" in argv[2:]
+        extras = [a for a in argv[2:] if a not in {"--dry-run", "--json"}]
         if extras:
             fail(f"unknown args for kill: {' '.join(extras)}")
-        return ParsedArgs(action="kill", target_id=argv[1], dry_run=dry)
+        return ParsedArgs(action="kill", target_id=argv[1], dry_run=dry, json_output=json_out)
     if argv[0] in ("--killall",):
         dry = "--dry-run" in argv[1:]
         force = "--force" in argv[1:]
-        extras = [a for a in argv[1:] if a not in {"--dry-run", "--force"}]
+        json_out = "--json" in argv[1:]
+        extras = [a for a in argv[1:] if a not in {"--dry-run", "--force", "--json"}]
         if extras:
             fail(f"unknown args for kill-all: {' '.join(extras)}")
-        return ParsedArgs(action="kill-all", dry_run=dry, force=force)
+        return ParsedArgs(action="kill-all", dry_run=dry, force=force, json_output=json_out)
     if argv[0] in ("-n", "--new"):
         if len(argv) < 2:
             fail("new requires a name")
@@ -1746,19 +1823,58 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     )
     full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
     if args.dry_run:
-        print(f"dry-run: {shlex.join(full)}")
+        if args.json_output:
+            _emit_json(
+                "kill",
+                {
+                    "target": target.name,
+                    "user": launch_user,
+                    "socket": tmux_socket_path(cfg, launch_user),
+                    "action": "would-kill",
+                    "dry_run": True,
+                },
+            )
+        else:
+            print(f"dry-run: {shlex.join(full)}")
         return 0
     run_cmd(full, check=True)
-    print(f"killed: {target.name}")
+    if args.json_output:
+        _emit_json(
+            "kill",
+            {
+                "target": target.name,
+                "user": launch_user,
+                "socket": tmux_socket_path(cfg, launch_user),
+                "action": "killed",
+                "dry_run": False,
+            },
+        )
+    else:
+        print(f"killed: {target.name}")
     return 0
 
 
 def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     sessions = collect_sessions([launch_user], cfg)
     if not sessions:
-        print(f"uxon: no {cfg.session_prefix}* sessions for {launch_user}")
+        if args.json_output:
+            _emit_json(
+                "kill-all",
+                {
+                    "user": launch_user,
+                    "socket": tmux_socket_path(cfg, launch_user),
+                    "dry_run": args.dry_run,
+                    "sessions": [],
+                },
+            )
+        else:
+            print(f"uxon: no {cfg.session_prefix}* sessions for {launch_user}")
         return 0
     if not args.dry_run and not args.force:
+        if args.json_output:
+            # --json is a non-interactive surface; we never prompt with
+            # JSON enabled. Force the caller to be explicit.
+            fail("kill-all --json requires --force or --dry-run")
         if not is_interactive_tty():
             fail(
                 "kill-all is destructive; rerun with --force, or use 'uxon list' / 'uxon doctor' first"
@@ -1769,13 +1885,29 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         )
         if response.strip() != "kill-all":
             fail("cancelled", 130)
+    results: list[dict[str, Any]] = []
     for s in sessions:
         full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
         if args.dry_run:
-            print(f"dry-run: {shlex.join(full)}")
+            if not args.json_output:
+                print(f"dry-run: {shlex.join(full)}")
+            results.append({"name": s.name, "action": "would-kill"})
             continue
-        run_cmd(full, check=False)
-        print(f"killed: {s.name}")
+        cp = run_cmd(full, check=False)
+        ok = cp.returncode == 0
+        if not args.json_output:
+            print(f"killed: {s.name}" if ok else f"failed: {s.name}")
+        results.append({"name": s.name, "action": "killed" if ok else "failed"})
+    if args.json_output:
+        _emit_json(
+            "kill-all",
+            {
+                "user": launch_user,
+                "socket": tmux_socket_path(cfg, launch_user),
+                "dry_run": args.dry_run,
+                "sessions": results,
+            },
+        )
     return 0
 
 
@@ -2188,9 +2320,17 @@ def doctor_issues(
     return issues
 
 
-def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
+def do_doctor(
+    cfg: Config,
+    caller_user: str,
+    launch_user: str,
+    cwd: str,
+    *,
+    json_output: bool = False,
+) -> int:
     from uxon import agents as uxon_agents
     from uxon import probes as uxon_probes
+    from uxon.wire_schema import build_session_records
 
     _, config_sources = resolve_config_layers(cwd)
     socket_path = tmux_socket_path(cfg, launch_user)
@@ -2232,6 +2372,50 @@ def do_doctor(cfg: Config, caller_user: str, launch_user: str, cwd: str) -> int:
         current_sessions,
         legacy_sessions,
     )
+
+    if json_output:
+        agents_block: dict[str, dict[str, Any]] = {}
+        for aid in cfg.enabled_agents:
+            avail = availability.get(aid)
+            agents_block[aid] = {
+                "path": agent_paths.get(aid),
+                "status": (avail.status if avail else "missing"),
+                "version": (avail.version if avail else None),
+                "error": (avail.error if avail else None),
+            }
+        socket_parent = str(Path(socket_path).parent)
+        data: dict[str, Any] = {
+            "cwd": cwd,
+            "caller_user": caller_user,
+            "launch_user": launch_user,
+            "config_paths": config_paths,
+            "allowed_roots": list(cfg.allowed_roots),
+            "new_project_root": cfg.new_project_root,
+            "repeat_noninteractive_mode": cfg.repeat_noninteractive_mode,
+            "repeat_noninteractive_env": env_repeat_mode or None,
+            "tmux": {
+                "path": tmux_path,
+                "socket": socket_path,
+                "socket_parent": socket_parent,
+                "socket_parent_exists": Path(socket_parent).is_dir(),
+                "socket_parent_writable": user_can_write_dir(socket_parent, launch_user),
+            },
+            "agents": agents_block,
+            "current_socket_sessions": build_session_records(
+                current_sessions, session_prefix=cfg.session_prefix
+            ),
+            "legacy_default_socket_sessions": build_session_records(
+                legacy_sessions, session_prefix=cfg.session_prefix
+            ),
+            "git_create_enabled": cfg.git_create_enabled,
+            "default_git_remote_profile": cfg.default_git_remote_profile or None,
+            "git_remote_profiles": _doctor_git_profile_rows(cfg, launch_user)
+            if cfg.git_remote_profiles
+            else [],
+            "issues": list(issues),
+        }
+        _emit_json("doctor", data)
+        return 0
 
     print("uxon doctor")
     print(f"version={format_version()}")
@@ -2991,10 +3175,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "interactive":
         return do_interactive(cfg, launch_user)
     if args.action == "version":
+        if args.json_output:
+            _emit_json("version", _version_data())
+            return 0
         print(format_version())
         return 0
     if args.action == "doctor":
-        return do_doctor(cfg, caller_user, launch_user, canonical(os.getcwd()))
+        return do_doctor(
+            cfg, caller_user, launch_user, canonical(os.getcwd()), json_output=args.json_output
+        )
     if args.action == "run":
         return do_run(args, cfg, launch_user)
     if args.action == "list":
@@ -3002,9 +3191,17 @@ def main(argv: list[str] | None = None) -> int:
             if not cfg.enable_all_users_list:
                 fail("list --all-users is disabled in config")
             scope_users = resolve_all_session_users(cfg, launch_user)
-            return print_list(cfg, collect_sessions(scope_users, cfg), scope_users, show_user=True)
+            sessions = collect_sessions(scope_users, cfg)
+            if args.json_output:
+                _emit_json("list", _list_data(cfg, sessions, scope_users, all_users=True))
+                return 0
+            return print_list(cfg, sessions, scope_users, show_user=True)
         scope_users = [launch_user]
-        return print_list(cfg, collect_sessions(scope_users, cfg), scope_users, show_user=False)
+        sessions = collect_sessions(scope_users, cfg)
+        if args.json_output:
+            _emit_json("list", _list_data(cfg, sessions, scope_users, all_users=False))
+            return 0
+        return print_list(cfg, sessions, scope_users, show_user=False)
     if args.action == "attach":
         return do_attach(args, cfg, launch_user)
     if args.action == "kill":
