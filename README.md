@@ -110,10 +110,10 @@ friction.
   predictable session names (`uxon-<project>@<agent>`) replace
   hand-rolled `tmux new -s` strings.
 
-Configuration use cases — strict-whitelist mode, dedicated low-priv
-agent user, per-project overrides, GitHub repo creation on new
-project — live in
-[`docs/configuration.md`](docs/configuration.md).
+Configuration use cases — deployment scenarios (solo / team ×
+single-host / multi-host), strict-whitelist mode, sandbox launch
+user, per-project overrides, GitHub repo creation on new project —
+live in [`docs/configuration.md`](docs/configuration.md).
 
 ---
 
@@ -212,9 +212,10 @@ deployment topology, see [`docs/deployment.md`](docs/deployment.md).
 
 ```bash
 uxon                              # launch the TUI; it self-diagnoses
-# Optional: bootstrap an example config (uxon also runs with defaults).
+# Optional: bootstrap an example config. The file ships as a working
+# "solo on a single host" config — works as-is, no edits needed.
+# Uncomment a scenario block at the bottom for team / multi-host setups.
 curl -fsSL https://raw.githubusercontent.com/vzd3v/uxon/main/config/config.example.toml -o ./config.toml
-$EDITOR ./config.toml             # set allowed_roots, session_users, agents
 ```
 
 For deeper, scriptable host inspection see
@@ -432,8 +433,9 @@ More edge cases (legacy session prefixes, failed-launch banner, the
 ## Documentation
 
 - [`docs/configuration.md`](docs/configuration.md) — all config keys
-  organised by use case (single-user laptop, shared multi-user host,
-  restricted launch directories, GitHub repo on new project, …).
+  organised by deployment scenario (solo / team × single-host /
+  multi-host), plus orthogonal use cases (GitHub repo on new
+  project, refresh cadence, session-prefix migration, …).
 - [`docs/cli.md`](docs/cli.md) — full CLI reference (every flag,
   exit code, identifier resolution, repeat behaviour).
 - [`docs/deployment.md`](docs/deployment.md) — multi-host rollout,

@@ -22,7 +22,7 @@ flagged in each section.
 - Unknown flags after `run` / `new` are forwarded to the selected
   agent binary verbatim.
 - All subcommands honour the launch-user resolution described in
-  [`docs/configuration.md`](configuration.md#use-case-dedicated-low-privilege-agent-user)
+  [`docs/configuration.md`](configuration.md#team-on-a-single-host)
   and run `tmux` / `git` / `mkdir` under the launch user via
   `sudo -iu` when caller ≠ launch user.
 
