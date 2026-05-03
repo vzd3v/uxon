@@ -24,6 +24,7 @@ def _textual_available() -> bool:
 
 def _mk_ctx(**overrides):
     from uxon.tui.context import LaunchRequest, TuiContext
+    from uxon.tui.refresh import SourceSpec
 
     base = dict(
         sessions=[],
@@ -45,7 +46,25 @@ def _mk_ctx(**overrides):
         ),
     )
     base.update(overrides)
-    return TuiContext(**base)
+    ctx = TuiContext(**base)
+    # Default source mirrors the production wiring: one
+    # ``main_ctx_rebuild`` source whose fetcher delegates to
+    # ``ctx.on_refresh()``. The lambda closes over the ``ctx`` already
+    # built from ``base`` (which includes any caller-supplied
+    # ``on_refresh=`` from ``overrides``), so the registry path
+    # invokes the test-supplied fake when 'r' is pressed. Tests that
+    # need to suppress refresh spawning can override with
+    # ``refresh_sources=[]``.
+    if "refresh_sources" not in overrides:
+        ctx.refresh_sources = [
+            SourceSpec(
+                name="main_ctx_rebuild",
+                fetch=lambda ctx=ctx: ctx.on_refresh(),
+                cadence_seconds_attr="tui_refresh_interval_seconds",
+                kick_on_mount=True,
+            )
+        ]
+    return ctx
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -296,6 +315,45 @@ class WorkerGateTests(unittest.TestCase):
         app.kick_refresh()  # must self-heal and spawn
         self.assertEqual(len(spawned), 2)
 
+    def test_mount_skips_kick_for_sources_opting_out(self) -> None:
+        """``SourceSpec.kick_on_mount=False`` is honoured at mount time.
+
+        Regression guard for the ``kick_on_mount`` flag: it is a
+        load-bearing knob future one-shot or lazy interval-only
+        sources rely on (e.g. a remote-host probe that only fires on
+        the first periodic tick, not at startup). The mount-time
+        kick path must filter sources by this flag.
+        """
+        from textual.worker import WorkerState
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.refresh import SourceSpec
+
+        class _FakeWorker:
+            def __init__(self) -> None:
+                self.state = WorkerState.RUNNING
+
+        captured: list[str] = []
+
+        def fake_run_worker(*_args, **kwargs):
+            captured.append(kwargs.get("group", ""))
+            return _FakeWorker()
+
+        ctx = _mk_ctx(loading=True)
+        ctx.refresh_sources = [
+            SourceSpec(name="eager", fetch=lambda: None, kick_on_mount=True),
+            SourceSpec(name="lazy", fetch=lambda: None, kick_on_mount=False),
+        ]
+        app = UxonApp(ctx, probe_agents=False)
+        app.run_worker = fake_run_worker  # type: ignore[method-assign]
+
+        # Exercise the mount-time kick path directly — calling
+        # ``on_mount`` would also touch ``push_screen`` and other DOM
+        # state that requires a running Textual loop, which this pure
+        # gate test deliberately avoids.
+        app._kick_initial_sources()
+        self.assertEqual([g for g in captured if g.startswith("refresh:")], ["refresh:eager"])
+
     def test_kick_helpers_use_distinct_groups(self) -> None:
         """Each periodic stream pins its worker to its own group.
 
@@ -325,7 +383,14 @@ class WorkerGateTests(unittest.TestCase):
         app._kick_link_health_probe()
 
         groups = [k.get("group") for k in captured]
-        self.assertEqual(sorted(groups), sorted({"refresh", "host_probe", "link_health"}))
+        # Registry sources carry a ``refresh:<name>`` group prefix so
+        # ``exclusive=True`` from one source can never cancel another's
+        # worker. Bespoke streams (host_probe, link_health) keep their
+        # legacy group names.
+        self.assertEqual(
+            sorted(groups),
+            sorted({"refresh:main_ctx_rebuild", "host_probe", "link_health"}),
+        )
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")

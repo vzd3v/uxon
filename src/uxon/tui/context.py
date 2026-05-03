@@ -192,6 +192,19 @@ class TuiContext:
     on_dismiss_detected_agent: Callable[[str], None] = lambda agent_id: None
     get_dismissed_detected_agents: Callable[[], list[str]] = list
 
+    # Pluggable refresh sources. Each entry is a ``SourceSpec`` (see
+    # ``uxon.tui.refresh``) describing one asynchronous data stream:
+    # a fetcher, a cadence-attribute name, and a per-source worker
+    # identity. The app fans out ``kick_refresh`` across this list, so
+    # adding a new stream (e.g. a remote-host session collector) is a
+    # declarative append rather than a wiring change in ``app.py``.
+    #
+    # ``None`` (the default) means "no registered sources" — used by
+    # tests and the skeleton context. The CLI's ``_build_tui_context``
+    # populates this with the ``main_ctx_rebuild`` source that wraps
+    # ``on_refresh()``; future hosts add more entries here.
+    refresh_sources: list = field(default_factory=list)
+
 
 # Number of action items at the top of the main list.
 #
