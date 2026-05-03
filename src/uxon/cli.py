@@ -24,16 +24,17 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
-# Pure-data TUI types are safe to import eagerly: ``uxon.tui.context`` and
-# ``uxon.tui.__init__`` deliberately defer the textual-dependent ``app``
-# module behind a lazy ``__getattr__``. Non-TUI subcommands stay textual-free.
-from uxon.tui import (  # noqa: E402  (kept after the optional tomllib block)
-    CallbackError,
-    LinkHealthStatus,
-    ServerStatus,
-    TuiContext,
-    TuiSession,
-)
+# TUI-context types are imported lazily inside the four functions that
+# construct them at runtime (`_read_server_status`, `_read_ssh_link_health_status`,
+# `_to_tui_session`, `_build_tui_context`). Module-load of `uxon.cli` no longer
+# pulls `uxon.tui.context` (~90 ms saved on `uxon version` / `uxon list`).
+if TYPE_CHECKING:
+    from uxon.tui.context import (
+        LinkHealthStatus,
+        ServerStatus,
+        TuiContext,
+        TuiSession,
+    )
 
 # Known agent ids. Kept in sync with uxon_agents.CATALOG (verified by tests);
 # declared here as a literal so CLI parsing doesn't need the lazy lib import.
@@ -782,6 +783,8 @@ def _compact_duration(seconds: float) -> str:
 
 
 def _read_server_status(disk_path: str) -> ServerStatus:
+    from uxon.tui.context import ServerStatus  # noqa: PLC0415
+
     load = ""
     cpu = ""
     try:
@@ -831,6 +834,8 @@ def _read_server_status(disk_path: str) -> ServerStatus:
 
 
 def _read_ssh_link_health_status() -> LinkHealthStatus | None:
+    from uxon.tui.context import LinkHealthStatus  # noqa: PLC0415
+
     ssh_connection = os.environ.get("SSH_CONNECTION", "").strip()
     if not ssh_connection:
         return None
@@ -3251,6 +3256,8 @@ def _list_existing_projects(root: str) -> list[tuple[str, str]]:
 def _to_tui_session(
     s: SessionInfo, prefix: str, legacy_prefixes: tuple[str, ...] = ()
 ) -> TuiSession:
+    from uxon.tui.context import TuiSession  # noqa: PLC0415
+
     short = s.name[len(prefix) :] if s.name.startswith(prefix) else s.name
     for lp in legacy_prefixes:
         if s.name.startswith(lp):
@@ -3514,6 +3521,11 @@ def _build_tui_context(
     """
     from uxon import settings as uxon_settings
     from uxon.sudo_probe import SudoCapability, probe_sudo_capability
+    from uxon.tui.context import (  # noqa: PLC0415
+        CallbackError,
+        ServerStatus,
+        TuiContext,
+    )
 
     if skeleton:
         # Skeleton ctx skips the per-target probe — it's the fast first
