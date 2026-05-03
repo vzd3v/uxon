@@ -45,7 +45,7 @@ This matters more with each rung of agent autonomy: plain mode asks
 before every tool use; `--auto` skips a class of prompts; `--dsp`
 ("yolo") skips them all. The blast radius of "yolo + bug + prompt
 injection" is whatever the launch user can write to. With the
-paired sandbox, that radius is `<user>_agent`'s files — not your
+paired-account, that radius is `<user>_agent`'s files — not your
 home directory, your SSH keys, or your team's shared filesystem.
 
 The boundary works in both directions: `<user>_agent` is a separate
@@ -53,18 +53,25 @@ OS user with its own home, so the agent has no implicit access to
 your shell user's files. Anything you want it to see (the project
 working tree, an SSH agent socket, a credentials file) you opt in
 to explicitly via group ACLs, bind-mounts, or the `sudo -iu` step
-itself. Unix permissions enforce this — `uxon` doesn't add a
-sandbox of its own.
+itself.
+
+> **uxon does not add a sandbox of its own.** Isolation between
+> `<user>_agent` and the rest of the host is whatever ordinary Unix
+> UID separation provides — file permissions, process ownership,
+> per-user `tmux` sockets. uxon does not configure cgroups,
+> AppArmor, seccomp, or kernel namespaces. The "paired-account"
+> term throughout these docs is shorthand for the OS-account-pair
+> pattern, not a claim of containerised isolation.
 
 The simpler `default_launch_mode = "caller"` (agent runs as you) is
-supported in every scenario for setups that don't intend to use
-`--dsp` and accept the larger blast radius.
+supported in every scenario for setups that don't intend to run
+yolo-mode (`--dsp`) and accept the larger blast radius.
 
 Capabilities by scenario:
 
 | Capability | solo·1 | solo·N | team·1 | team·N |
 |---|:---:|:---:|:---:|:---:|
-| Paired sandbox (`<user>_agent`, `sudo -iu`)                       | recommended | recommended | recommended | recommended |
+| Paired-account (`<user>_agent`, `sudo -iu`)                       | recommended | recommended | recommended | recommended |
 | Launch as caller (`default_launch_mode = "caller"`)              | ✓ | ✓ | ✓ | ✓ |
 | Per-caller mapping (`[launch_user_by_caller]`)                   | — | — | ✓ | ✓ |
 | `session_users` + `--all-users` cross-user listing               | — | — | ✓ | ✓ |
@@ -82,13 +89,13 @@ You're the only user. The recommended setup pairs your shell user
 agent runs as `vz_agent` via `sudo -iu`. The simpler caller mode
 (agent runs as you) is documented below as an alternative.
 
-### Recommended: paired sandbox user
+### Recommended: paired-account setup
 
 One-time host setup:
 
 ```bash
 sudo useradd -m -s /bin/bash vz_agent
-# Allow your shell user to sudo into the sandbox without a password:
+# Allow your shell user to sudo into the agent account without a password:
 echo 'vz ALL=(vz_agent) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/uxon-vz-agent
 sudo chmod 440 /etc/sudoers.d/uxon-vz-agent
 # Give vz_agent a workspace it owns:
@@ -110,7 +117,7 @@ What you get:
 - The agent runs entirely as `vz_agent`, with its own home, its
   own `~/.claude/`, its own `~/.gitconfig`. Your dotfiles, SSH
   keys, and credentials are not in reach.
-- `--dsp` ("yolo") runs blow up `vz_agent`'s sandbox, not your
+- A yolo-mode run (`--dsp`) blows up `vz_agent`'s files, not your
   account.
 - Same primitive scales 1:1 to teams (one `<user>_agent` per
   developer via `[launch_user_by_caller]`).
@@ -122,8 +129,8 @@ agent forwarding inside the `sudo -iu` step).
 
 ### Simplest: agent runs as you
 
-If you don't intend to run with `--dsp` and accept that the agent
-shares your trust boundary, skip the sandbox account:
+If you don't intend to run yolo-mode (`--dsp`) and accept that the
+agent shares your trust boundary, skip the agent account:
 
 ```toml
 default_launch_mode = "caller"
@@ -156,7 +163,7 @@ driver — aggregates the others over SSH.
 
 On each peer: configure as
 [solo on a single host](#solo-on-a-single-host) — the recommended
-paired-sandbox setup applies per host (`vz_agent` on each peer, or
+paired-account setup applies per host (`vz_agent` on each peer, or
 a host-specific name like `vz_agent_prod1`). The aggregator host
 itself uses the same pattern locally.
 
@@ -192,13 +199,13 @@ the SSH model, snapshot cache, and wire schema.
 Several developers SSH into the same box and launch agents there.
 `uxon` gives the operator a single TUI that sees every agent on the
 host (with `sudo`) plus the option to confine each agent to a
-sandbox OS user, so a runaway tool can't write outside its corner.
+low-priv OS user, so a runaway tool can't write outside its corner.
 
 Three caller-to-launch-user mappings below; (a) is the recommended
-extension of the [solo paired-sandbox pattern](#solo-on-a-single-host)
+extension of the [solo paired-account pattern](#solo-on-a-single-host)
 to a team.
 
-### (a) Recommended: per-caller paired sandbox
+### (a) Recommended: per-caller paired-account
 
 Each developer keeps their own shell user and gets a paired
 `<user>_agent` account. The agent runs there via `sudo -iu`; the
@@ -230,7 +237,7 @@ sudo chmod 440 /etc/sudoers.d/uxon-alice-agent
 The sudoers grant lets `alice` become **`alice_agent`**, not the
 other way round. `alice_agent` cannot impersonate `alice`, and a
 team-lead grant like `lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL`
-gives the lead control of agent sandboxes without any access to the
+gives the lead control of agent accounts without any access to the
 developers' personal accounts. See [Operator view](#operator-view-who-sees-whose-sessions)
 below for the full property.
 
@@ -238,11 +245,11 @@ Each launch user automatically gets a private `tmux` socket
 (`/tmp/uxon-<user>.sock`) — no cross-user session leakage. Yolo
 blasts stay inside the offending `<user>_agent` account.
 
-### (b) Shared sandbox user
+### (b) Shared low-priv account
 
-Every agent runs as the same sandbox account (e.g. `team_agent`),
+Every agent runs as the same low-priv account (e.g. `team_agent`),
 regardless of who logged in. The caller stays themselves; the agent
-runs as the shared sandbox via `sudo -iu team_agent`. Useful when
+runs as the shared account via `sudo -iu team_agent`. Useful when
 the agent needs shared state — a common workspace, a common cache —
 across developers.
 
@@ -259,7 +266,7 @@ caller who's allowed to launch. Note: with this mode every
 developer's agent shares one `~/.claude/`, one `~/.gitconfig`, one
 session pool — a runaway agent affects everybody.
 
-### (c) Each developer runs as themselves (no sandbox)
+### (c) Each developer runs as themselves (no separate account)
 
 The simplest setup; accept that each agent has the same trust as
 its caller. Same caveat as the [solo "agent runs as you"
@@ -295,12 +302,12 @@ the developers' shell accounts. A team lead with
 `lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL` can attach to and
 reap Alice and Bob's agent sessions (including the TUI's
 `kill-all-reachable` action) — but cannot `sudo -iu alice` or
-`sudo -iu bob`. The grant is over agent sandboxes only; it does not
+`sudo -iu bob`. The grant is over agent accounts only; it does not
 let the lead become the developer, so anything that only the
 developer's logged-in identity can unlock (SSH keys behind a
 passphrase prompt, gh/aws sessions tied to the developer's
 keychain, an unlocked browser profile) stays out of reach via this
-path. This is a deliberate property of the paired-sandbox model and
+path. This is a deliberate property of the paired-account model and
 the reason it's the recommended team setup. The same contract holds
 across hosts via `[[remote_hosts]]` — see
 [`docs/deployment.md` § Operator view across hosts](deployment.md#operator-view-across-hosts).
@@ -354,7 +361,7 @@ lists folders under `new_project_root`.
 
 Several developers, several hosts. Each host is configured as
 [team on a single host](#team-on-a-single-host) with its own users,
-its own sandbox account, its own allowed-roots. One designated host
+its own low-priv account, its own allowed-roots. One designated host
 (typically the operator's workstation) aggregates the rest over SSH
 via `[[remote_hosts]]`, exactly as in
 [solo on multiple hosts](#solo-on-multiple-hosts):
@@ -478,6 +485,48 @@ both down to keep the screen calm.
 tui_refresh_interval_seconds      = 5.0
 tui_ssh_refresh_interval_seconds  = 30.0
 ```
+
+---
+
+## Use case: sizing the host for a team
+
+uxon does not enforce per-user resource limits — agents and their
+child processes consume what the host gives them. Rough planning
+numbers, for Node/Python/Go-shaped projects without heavy local
+services:
+
+- ~2 GB RAM per active agent session (the agent CLI, its tool
+  invocations, and one or two child processes it leaves running);
+- a disciplined developer keeps about 3 sessions open in parallel
+  (one writing a feature, one fixing tests, one investigating a
+  bug or doing a refactor);
+- add headroom for project dev-services (DBs, watchers, build
+  caches), plus 20–30 % for spikes during test runs and builds.
+
+Translating that:
+
+| Team shape | RAM (Node/Python) | Notes |
+|---|---|---|
+| 1 developer, light services | 10–16 GB | Daily-driver laptop class. |
+| 2–3 developers on one host | 32 GB | Comfortable; tighter on monorepos. |
+| 3–6 developers on one host | 64 GB | Recommended for shared dev-server. |
+| 6+ developers, or heavy stacks (Java, large Docker, big tests, monorepos) | 128 GB+ or per-developer hosts | Re-do the math against your stack. |
+
+CPU: budget 2–4 vCPU per active developer for light backend / web
+work; more for heavy builds, integration tests, or container-heavy
+workflows.
+
+Disk: NVMe only. Each developer ends up with several copies of
+project trees (worktrees, scratch checkouts), `node_modules` /
+`.venv` / Docker layers, agent state, and logs. Start at
+100–200 GB on a small server; do not economise here.
+
+If you need hard limits, configure them at the OS layer:
+`pam_limits` for memory / file-descriptor caps per user,
+`systemd-run --scope --uid=<user> --property=MemoryMax=…` for
+ad-hoc per-process limits, or per-UID `cpu` / `memory` cgroup
+slices via `systemd`. uxon does not configure any of these — they
+remain the operator's responsibility.
 
 ---
 

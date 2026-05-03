@@ -171,7 +171,19 @@ Host vz-prod1
     User uxonops
     IdentityFile ~/.ssh/id_ed25519_uxon
     ProxyJump bastion.example.org
+    # Reuse one TCP connection per peer for the periodic poller:
+    ControlMaster auto
+    ControlPath  ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
 ```
+
+`ControlMaster` / `ControlPersist` are recommended whenever more
+than two or three peers are configured. Without connection
+multiplexing every refresh tick opens a fresh TCP + auth handshake
+to every peer, which is slow on first paint, noisy in the peer's
+`auth.log`, and a measurable battery drain on the operator's
+laptop. With multiplexing each peer keeps one warm SSH socket and
+the per-tick command is dispatched over it.
 
 The collector runs the literal command:
 
@@ -238,6 +250,15 @@ returns the last-good sessions with a `from_cache=True` marker so
 the TUI can show "(stale)" hints. The disk file is **only**
 written by a fresh successful fetch — a failed poll never
 overwrites the last good data.
+
+The cache file's `mtime` is the snapshot age. The TUI currently
+surfaces only `(stale)` when serving from cache — the absolute
+age (e.g. "snapshot 14m old") is not yet rendered in the UI; an
+operator who needs it reads `stat ~/.local/state/uxon/remote/<name>.json`
+directly. Surfacing snapshot age in the TUI is a known follow-up:
+the difference between "the runaway is gone" and "the SSH path
+is broken and we are looking at half-hour-old data" matters for
+incident response.
 
 ### Wire schema
 
