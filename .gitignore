@@ -16,6 +16,7 @@ config/*
 AGENTS.md
 CLAUDE.md
 docs/agents/
+experiments/
 
 # Misc
 _external_sources/
