@@ -363,6 +363,29 @@ class UxonTests(unittest.TestCase):
                     tmpdir,
                 )
 
+    def test_skeleton_ctx_carries_main_ctx_rebuild_source(self) -> None:
+        # MainScreen.on_mount fans out across ctx.refresh_sources only.
+        # If the skeleton ctx ships an empty list the "Loading sessions…"
+        # placeholder never gets replaced — the worker that produces the
+        # real ctx is never spawned. Pin that the skeleton carries the
+        # ``main_ctx_rebuild`` source so the initial fan-out kicks the
+        # rebuild even before any periodic timer fires.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [[remote_hosts]]
+                    name = "peer1"
+                    ssh_alias = "peer1"
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+            ctx = uxon._build_tui_context(cfg, "devagent", tmpdir, skeleton=True)
+        self.assertTrue(ctx.loading)
+        names = [s.name for s in ctx.refresh_sources]
+        self.assertIn("main_ctx_rebuild", names)
+        self.assertIn("remote:peer1", names)
+
     def test_load_config_defaults_enable_claude_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("", tmpdir)

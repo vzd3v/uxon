@@ -3300,48 +3300,51 @@ def _build_tui_context(
 
     # Pluggable refresh sources. PR1 ships a single source that wraps
     # ``on_refresh()`` so the existing kick-refresh path runs through the
-    # registry — same wall behaviour, but now extensible. PR3 will add
-    # one source per configured remote host alongside this one. The
-    # skeleton ctx skips wiring (no I/O until the app is mounted).
-    if skeleton:
-        refresh_sources: list = []
-    else:
-        from uxon.remote_collector import fetch_remote_snapshot
-        from uxon.tui.refresh import SourceSpec
+    # registry — same wall behaviour, but now extensible. PR3 adds one
+    # source per configured remote host alongside this one.
+    #
+    # The skeleton ctx still gets the full source list. SourceSpec
+    # construction is pure (just stores names + lambdas), no I/O, so
+    # there is no cost to wiring it on the fast-path. The ctx is what
+    # ``MainScreen.on_mount`` reads to fan out the initial refresh —
+    # an empty list there means the "Loading sessions…" placeholder
+    # never gets replaced.
+    from uxon.remote_collector import fetch_remote_snapshot
+    from uxon.tui.refresh import SourceSpec
 
-        # ``main_ctx_rebuild`` returns a fresh ``TuiContext``. The app's
-        # source-result handler routes this into ``apply_loaded_ctx``,
-        # which is the same swap-or-recompose path the legacy
-        # ``_MainCtxLoaded`` message used.
-        # The lambda captures ``on_refresh`` by name; by the time the
-        # registry runs the fetch on a worker thread, ``on_refresh`` has
-        # already been replaced (a few lines above) by its
-        # ``_wrap_tui_callback`` shim. So a SystemExit / ``fail()`` from
-        # inside the rebuild surfaces as ``CallbackError``, which
-        # ``run_source`` captures into ``SourceResult.error`` for
-        # fail-soft delivery.
-        refresh_sources = [
+    # ``main_ctx_rebuild`` returns a fresh ``TuiContext``. The app's
+    # source-result handler routes this into ``apply_loaded_ctx``,
+    # which is the same swap-or-recompose path the legacy
+    # ``_MainCtxLoaded`` message used.
+    # The lambda captures ``on_refresh`` by name; by the time the
+    # registry runs the fetch on a worker thread, ``on_refresh`` has
+    # already been replaced (a few lines above) by its
+    # ``_wrap_tui_callback`` shim. So a SystemExit / ``fail()`` from
+    # inside the rebuild surfaces as ``CallbackError``, which
+    # ``run_source`` captures into ``SourceResult.error`` for
+    # fail-soft delivery.
+    refresh_sources: list = [
+        SourceSpec(
+            name="main_ctx_rebuild",
+            fetch=lambda: on_refresh(),
+            cadence_seconds_attr="tui_refresh_interval_seconds",
+            kick_on_mount=True,
+        ),
+    ]
+    # One source per configured remote host. Each runs in its own
+    # worker group (``refresh:remote:<name>``) so a slow / dead
+    # peer can never stall the local-sessions stream or another
+    # peer's poll. Cadence is the dedicated SSH interval — peers
+    # are polled less aggressively than the local tmux stream.
+    for host in cfg.remote_hosts:
+        refresh_sources.append(
             SourceSpec(
-                name="main_ctx_rebuild",
-                fetch=lambda: on_refresh(),
-                cadence_seconds_attr="tui_refresh_interval_seconds",
+                name=f"remote:{host.name}",
+                fetch=lambda h=host: fetch_remote_snapshot(h),
+                cadence_seconds_attr="tui_ssh_refresh_interval_seconds",
                 kick_on_mount=True,
-            ),
-        ]
-        # One source per configured remote host. Each runs in its own
-        # worker group (``refresh:remote:<name>``) so a slow / dead
-        # peer can never stall the local-sessions stream or another
-        # peer's poll. Cadence is the dedicated SSH interval — peers
-        # are polled less aggressively than the local tmux stream.
-        for host in cfg.remote_hosts:
-            refresh_sources.append(
-                SourceSpec(
-                    name=f"remote:{host.name}",
-                    fetch=lambda h=host: fetch_remote_snapshot(h),
-                    cadence_seconds_attr="tui_ssh_refresh_interval_seconds",
-                    kick_on_mount=True,
-                )
             )
+        )
 
     return TuiContext(
         sessions=tui_own,
