@@ -90,6 +90,7 @@ class MainScreen(Screen):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
+        Binding("k", "kill_remote", "Kill remote", show=True),
         # Detected-agents banner: only does something when the banner is
         # visible (``visible_detected_agents(...)`` is non-empty). When the
         # banner is hidden these bindings are no-ops; the footer hides
@@ -236,7 +237,9 @@ class MainScreen(Screen):
         if len(self.ctx.remote_hosts) == 1:
             host = self.ctx.remote_hosts[0]
             snap = self.ctx.remote_snapshots.get(host.name)
-            badge = " (own only)" if snap is not None and getattr(snap, "scope_limited", False) else ""
+            badge = (
+                " (own only)" if snap is not None and getattr(snap, "scope_limited", False) else ""
+            )
             return f"── remote sessions ── {host.name}{badge}"
         return f"── remote sessions ── {len(self.ctx.remote_hosts)} hosts"
 
@@ -299,9 +302,7 @@ class MainScreen(Screen):
             if snap is None:
                 continue
             limited = bool(getattr(snap, "scope_limited", False))
-            display_name = (
-                f"{host.name} (own only)" if multi_host and limited else host.name
-            )
+            display_name = f"{host.name} (own only)" if multi_host and limited else host.name
             for rec in snap.sessions:
                 rows.append((display_name, rec))
         return rows
@@ -333,9 +334,7 @@ class MainScreen(Screen):
                 try:
                     from textual.widgets import Static
 
-                    self.query_one("#remote-section-header", Static).update(
-                        self._remote_header()
-                    )
+                    self.query_one("#remote-section-header", Static).update(self._remote_header())
                 except Exception:  # pragma: no cover — header not yet mounted
                     pass
 
@@ -803,6 +802,67 @@ class MainScreen(Screen):
 
         self.app.push_screen(
             ConfirmPhrase(f"Kill ALL {n} sessions?", "kill-all"),
+            after_confirm,
+        )
+
+    def action_kill_remote(self) -> None:
+        """Confirm then kill the remote session under focus.
+
+        Only fires when focus sits on the :class:`RemoteSessionTable`.
+        Resolves the row to ``(host_name, record)`` via
+        :meth:`RemoteSessionTable.row_at` and dispatches via
+        ``ctx.on_remote_kill(host, user, name)`` — the local CLI runs
+        ``uxon kill --force --host <h> --user <u> <name>`` over SSH on
+        the peer. The peer's own ``uxon kill`` does the per-target
+        sudo gating; the local TUI never needs the peer's user table.
+
+        After a successful kill we kick the existing refresh — the
+        per-host poller will repull on its next cadence tick. There
+        is no force-single-host repoll path today; the cadence is
+        seconds, not minutes, so the lag is short.
+        """
+        focused = self.focused
+        if not isinstance(focused, RemoteSessionTable):
+            self.app.notify("Select a remote session first.", severity="warning")
+            return
+        row = focused.cursor_row
+        entry = focused.row_at(row)
+        if entry is None:
+            return
+        host_name, record = entry
+        # Strip any trailing ``" (own only)"`` badge from the displayed
+        # host name so the dispatcher receives the bare ``RemoteHost.name``
+        # — the badge is a TUI display detail.
+        clean_host = host_name.split(" ", 1)[0]
+        user = str(record.get("user") or "").strip()
+        name = str(record.get("name") or "").strip()
+        if not user or not name:
+            self.app.notify(
+                "Remote row is missing user/name; cannot dispatch kill.",
+                severity="error",
+                timeout=6,
+            )
+            return
+
+        def after_confirm(ok: bool | None) -> None:
+            if not ok:
+                return
+            try:
+                self.ctx.on_remote_kill(clean_host, user, name)
+                self.app.notify(
+                    f"Killed {name} on {clean_host}; remote table will update on next poll"
+                )
+            except CallbackError as exc:
+                self.app.notify(
+                    f"Remote kill failed: {exc}",
+                    severity="error",
+                    timeout=6,
+                )
+                return
+            self.action_refresh()
+
+        self.app.push_screen(
+            ConfirmYesNo(f"Kill {name} on {clean_host} (user={user})?"),
             after_confirm,
         )
 

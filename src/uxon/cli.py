@@ -14,7 +14,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
+
+if TYPE_CHECKING:
+    from uxon.sudo_probe import SudoCapability
 
 try:
     import tomllib
@@ -85,12 +88,12 @@ USAGE = """Usage:
   uxon list [--all-users]
   uxon version
   uxon attach <id>
-  uxon kill <id> [--dry-run]
+  uxon kill <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]
   uxon kill-all [--force] [--dry-run]
   uxon --killall [--force] [--dry-run]
   uxon -l [--all-users]
   uxon -a <id>
-  uxon -k <id> [--dry-run]
+  uxon -k <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]
   uxon -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp]
                 [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
                 [claude-flags...]
@@ -174,8 +177,9 @@ class ParsedArgs:
     no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
     git_visibility: str | None = None  # "private" | "public" | None (use profile default)
     json_output: bool = False  # --json: emit machine-readable wire-schema envelope on stdout
-    host: str | None = None  # --host <name>: route 'list' to one configured remote peer
+    host: str | None = None  # --host <name>: route 'list' / 'kill' to one configured remote peer
     all_hosts: bool = False  # --all-hosts: aggregate local + every configured remote peer
+    user: str | None = None  # --user <name>: target a different launch user (kill)
 
 
 def eprint(msg: str) -> None:
@@ -2018,6 +2022,66 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
     return parsed
 
 
+def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
+    """Parse the arg tail of ``uxon kill <id> [...]``.
+
+    Shared between the subcommand form and the ``-k`` / ``--kill`` short
+    form so both surfaces accept exactly the same flag set.
+
+    Recognised flags:
+        --dry-run        : print the would-be argv (or SSH command),
+                           do not execute.
+        --force          : skip the interactive confirmation prompt.
+        --json           : emit a wire-schema envelope on stdout.
+        --user <name>    : kill a session belonging to a different
+                           launch user (per-target NOPASSWD required).
+        --host <alias>   : route the kill to a configured remote peer
+                           over SSH.
+
+    Unknown flags fail loudly. Returns a fully populated
+    :class:`ParsedArgs` with ``action="kill"``.
+    """
+    dry = False
+    force = False
+    json_out = False
+    user: str | None = None
+    host: str | None = None
+    extras: list[str] = []
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token == "--dry-run":
+            dry = True
+        elif token == "--force":
+            force = True
+        elif token == "--json":
+            json_out = True
+        elif token == "--user":
+            i += 1
+            if i >= len(rest):
+                fail("--user requires a name")
+            user = rest[i]
+        elif token == "--host":
+            i += 1
+            if i >= len(rest):
+                fail("--host requires a host name")
+            host = rest[i]
+        else:
+            extras.append(token)
+        i += 1
+    if extras:
+        fail(f"unknown args for kill: {' '.join(extras)}")
+    return ParsedArgs(
+        action="kill",
+        target_id=target_id,
+        dry_run=dry,
+        force=force,
+        json_output=json_out,
+        user=user,
+        host=host,
+    )
+
+
 def parse_subcommand(argv: list[str]) -> ParsedArgs:
     cmd = argv[0]
     if cmd == "version":
@@ -2048,13 +2112,12 @@ def parse_subcommand(argv: list[str]) -> ParsedArgs:
         if len(argv) < 2:
             fail(f"{cmd} requires an identifier")
         target = argv[1]
-        dry = "--dry-run" in argv[2:] if cmd == "kill" else False
-        json_out = "--json" in argv[2:] if cmd == "kill" else False
-        allowed = {"--dry-run", "--json"} if cmd == "kill" else set()
-        extras = [a for a in argv[2:] if a not in allowed]
+        if cmd == "kill":
+            return _parse_kill_extras(argv[2:], target)
+        extras = list(argv[2:])
         if extras:
             fail(f"unknown args for {cmd}: {' '.join(extras)}")
-        return ParsedArgs(action=cmd, target_id=target, dry_run=dry, json_output=json_out)
+        return ParsedArgs(action=cmd, target_id=target)
     if cmd == "new":
         if len(argv) < 2:
             fail("new requires a name")
@@ -2091,12 +2154,7 @@ def parse_args(argv: list[str]) -> ParsedArgs:
     if argv[0] in ("-k", "--kill"):
         if len(argv) < 2:
             fail("kill requires an identifier")
-        dry = "--dry-run" in argv[2:]
-        json_out = "--json" in argv[2:]
-        extras = [a for a in argv[2:] if a not in {"--dry-run", "--json"}]
-        if extras:
-            fail(f"unknown args for kill: {' '.join(extras)}")
-        return ParsedArgs(action="kill", target_id=argv[1], dry_run=dry, json_output=json_out)
+        return _parse_kill_extras(argv[2:], argv[1])
     if argv[0] in ("--killall",):
         dry = "--dry-run" in argv[1:]
         force = "--force" in argv[1:]
@@ -2192,9 +2250,211 @@ def attach_session_blocking(target: SessionInfo, cfg: Config, launch_user: str) 
     return subprocess.call(list(req.cmd))
 
 
+def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
+    """Common confirmation gate for cross-user / cross-host kills.
+
+    ``--json`` is non-interactive — refuse unless ``--force`` or
+    ``--dry-run`` was passed (mirrors the ``kill-all`` precedent).
+    On a TTY without ``--force``, prompt for the literal phrase
+    ``kill``. Non-TTY without ``--force`` fails fast with a hint.
+    """
+    if args.force or args.dry_run:
+        return
+    if args.json_output:
+        fail("kill --json requires --force or --dry-run")
+    if not is_interactive_tty():
+        fail(
+            "kill is destructive; rerun with --force, or omit --user/--host for the local self path"
+        )
+    response = input(f"{prompt} Type 'kill' to confirm: ")
+    if response.strip() != "kill":
+        fail("cancelled", 130)
+
+
+def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
+    """Handle ``uxon kill <id> --host <alias>`` (optionally with ``--user``).
+
+    Looks up the configured peer, optionally confirms with the user
+    locally, then dispatches the kill to the peer over SSH. The
+    peer's own ``uxon kill`` does the per-target sudo gating, so
+    the local side does not need to know the peer's user table —
+    this matches the design constraint that bulk destructive ops
+    stay local while per-session kill may cross hosts.
+
+    Confirmation shape mirrors :func:`do_kill` for the local case:
+    ``--json`` requires ``--force`` or ``--dry-run``; an interactive
+    TTY without ``--force`` prompts for the literal phrase ``kill``.
+
+    On the wire we always pass ``--force`` to the peer — local
+    confirmation is a UI gesture, not a wire concern; the peer
+    must not re-prompt.
+    """
+    from uxon.remote_collector import (
+        DEFAULT_CONNECT_TIMEOUT_SEC,
+        DEFAULT_TOTAL_TIMEOUT_SEC,
+    )
+    from uxon.remote_hosts import find_host
+
+    if not cfg.remote_hosts:
+        fail("no [[remote_hosts]] configured; --host requires at least one peer")
+    target_host = find_host(cfg.remote_hosts, args.host or "")
+    if target_host is None:
+        names = ", ".join(h.name for h in cfg.remote_hosts) or "<none>"
+        fail(f"unknown --host {args.host!r}; configured: {names}")
+
+    target_user_part = f" (user={args.user})" if args.user else ""
+    prompt = f"Kill {args.target_id}@{target_host.name}{target_user_part}?"
+    _confirm_kill_or_fail(prompt, args)
+
+    remote_cmd_parts = [
+        shlex.quote(target_host.remote_uxon),
+        "kill",
+        "--force",
+        shlex.quote(str(args.target_id)),
+    ]
+    if args.user:
+        remote_cmd_parts.extend(["--user", shlex.quote(args.user)])
+    if args.json_output:
+        remote_cmd_parts.append("--json")
+    remote_cmd = " ".join(remote_cmd_parts)
+    ssh_argv = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"ConnectTimeout={DEFAULT_CONNECT_TIMEOUT_SEC}",
+        "-o",
+        "ServerAliveInterval=5",
+        target_host.ssh_alias,
+        remote_cmd,
+    ]
+
+    if args.dry_run:
+        if args.json_output:
+            _emit_json_with_host(
+                "kill",
+                {
+                    "target": args.target_id,
+                    "target_user": args.user,
+                    "action": "would-kill",
+                    "dry_run": True,
+                    "ssh_argv": ssh_argv,
+                },
+                host=target_host.name,
+            )
+        else:
+            print(f"dry-run: {shlex.join(ssh_argv)}")
+        return 0
+
+    try:
+        cp = subprocess.run(
+            ssh_argv,
+            capture_output=True,
+            text=True,
+            timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        eprint(f"uxon: --host {target_host.name}: ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s")
+        return 1
+    except FileNotFoundError:
+        eprint("uxon: ssh not installed on local host")
+        return 1
+
+    if cp.stdout:
+        sys.stdout.write(cp.stdout)
+    if cp.stderr:
+        sys.stderr.write(cp.stderr)
+    return 0 if cp.returncode == 0 else 1
+
+
 def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("kill requires an identifier")
+
+    # Remote dispatch: --host routes to a configured peer over SSH.
+    # Per-target sudo gating happens on the peer (its own ``uxon kill``
+    # runs the probe), so the local side does not need to know the
+    # peer's user table. Bulk kill stays strictly local.
+    if args.host is not None:
+        return _do_kill_remote(args, cfg)
+
+    # Local cross-user kill: --user X where X != launch_user requires
+    # per-target NOPASSWD. Probe once for the single target (the same
+    # probe machinery the TUI uses on startup, but a single-target
+    # subset). Matches the TUI's per-target sudo gating.
+    target_user = args.user or launch_user
+    if target_user != launch_user:
+        from uxon.sudo_probe import probe_sudo_capability
+
+        caps = probe_sudo_capability([target_user])
+        reachable = target_user in caps.reachable_users
+        if not reachable:
+            # Stable error tag — mirrors the ``all-users-disabled``
+            # precedent. Callers (and the SSH peer-aggregator) parse
+            # this exact substring. Surface the verdict on dry-run too:
+            # without sudo we cannot resolve the session name, so the
+            # honest answer is "this would fail" rather than a faked
+            # would-kill envelope.
+            eprint(
+                f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
+                "check /etc/sudoers.d for a NOPASSWD rule for this target)"
+            )
+            return 1
+
+        prompt = f"Kill {args.target_id} (user={target_user})?"
+        _confirm_kill_or_fail(prompt, args)
+
+        sessions = collect_sessions([target_user], cfg)
+        target = resolve_session(
+            args.target_id,
+            sessions,
+            cfg.session_prefix,
+            legacy_prefixes=cfg.legacy_session_prefixes,
+        )
+        # Non-interactive sudo: there's no TTY in the kill path even
+        # for the CLI; if NOPASSWD is missing we want a fast failure
+        # rather than a blocked password prompt.
+        full = configured_tmux_base(cfg, target_user, nonint=True) + [
+            "kill-session",
+            "-t",
+            target.name,
+        ]
+        if args.dry_run:
+            if args.json_output:
+                _emit_json(
+                    "kill",
+                    {
+                        "target": target.name,
+                        "user": launch_user,
+                        "target_user": target_user,
+                        "reachable": reachable,
+                        "socket": tmux_socket_path(cfg, target_user),
+                        "action": "would-kill",
+                        "dry_run": True,
+                    },
+                )
+            else:
+                print(f"dry-run: {shlex.join(full)}")
+            return 0
+        run_cmd(full, check=True)
+        if args.json_output:
+            _emit_json(
+                "kill",
+                {
+                    "target": target.name,
+                    "user": launch_user,
+                    "target_user": target_user,
+                    "reachable": True,
+                    "socket": tmux_socket_path(cfg, target_user),
+                    "action": "killed",
+                    "dry_run": False,
+                },
+            )
+        else:
+            print(f"killed: {target.name}")
+        return 0
+
+    # Self-only path: unchanged from the pre-3.4.0 behaviour.
     sessions = collect_sessions([launch_user], cfg)
     target = resolve_session(
         args.target_id, sessions, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
@@ -3235,7 +3495,7 @@ def _build_tui_context(
     cwd: str,
     *,
     skeleton: bool = False,
-    sudo_caps_override: "SudoCapability | None" = None,
+    sudo_caps_override: SudoCapability | None = None,
 ) -> TuiContext:
     """Build a TuiContext from live session data.
 
@@ -3268,9 +3528,7 @@ def _build_tui_context(
         # Self is filtered before probing because ``sudo -niu <self>``
         # trivially succeeds and would inflate ``reachable_users``
         # with a meaningless entry.
-        candidates = [
-            u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user
-        ]
+        candidates = [u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user]
         if sudo_caps_override is not None:
             sudo_caps = sudo_caps_override
         else:
@@ -3324,6 +3582,60 @@ def _build_tui_context(
             ]
             run_cmd(full, check=False)
 
+    def on_remote_kill(host_name: str, user: str, name: str) -> None:
+        """TUI dispatch: kill ``name`` belonging to ``user`` on peer ``host_name``.
+
+        Reuses the same SSH gesture as the CLI's ``uxon kill --host
+        <alias> --user <user> --force <id>``: the peer's own ``uxon
+        kill`` runs the per-target sudo probe, so the local side does
+        not need to know the peer's user table. ``--force`` is passed
+        on the wire because confirmation is a local-UI concern (the TUI
+        already prompted before this callback fires).
+
+        Failures surface as :class:`CallbackError` via the
+        ``_wrap_tui_callback`` shim — :meth:`MainScreen.action_kill_remote`
+        renders them as a red toast.
+        """
+        from uxon.remote_collector import (
+            DEFAULT_CONNECT_TIMEOUT_SEC,
+            DEFAULT_TOTAL_TIMEOUT_SEC,
+        )
+        from uxon.remote_hosts import find_host
+
+        peer = find_host(cfg.remote_hosts, host_name)
+        if peer is None:
+            fail(f"unknown remote host: {host_name}", 1)
+        remote_cmd = (
+            f"{shlex.quote(peer.remote_uxon)} kill --force "
+            f"--user {shlex.quote(user)} {shlex.quote(name)}"
+        )
+        ssh_argv = [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={DEFAULT_CONNECT_TIMEOUT_SEC}",
+            "-o",
+            "ServerAliveInterval=5",
+            peer.ssh_alias,
+            remote_cmd,
+        ]
+        try:
+            cp = subprocess.run(
+                ssh_argv,
+                capture_output=True,
+                text=True,
+                timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
+            )
+        except subprocess.TimeoutExpired:
+            fail(f"ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s talking to {host_name}", 1)
+        except FileNotFoundError:
+            fail("ssh not installed on local host", 1)
+        if cp.returncode != 0:
+            stderr = (cp.stderr or "").strip().splitlines()
+            tail = stderr[-1] if stderr else f"ssh exited {cp.returncode}"
+            fail(f"remote kill on {host_name} failed: {tail}", 1)
+
     def on_kill_all_reachable() -> None:
         # Iterate the launch user plus every reachable peer user. An
         # empty ``reachable_users`` collapses to "kill all my own
@@ -3355,7 +3667,7 @@ def _build_tui_context(
     # empty placeholder and never probe. So skeleton's on_refresh
     # passes None, which forces the probe on the first non-skeleton
     # load. Every refresh after that reuses the captured real caps.
-    captured_sudo_caps: "SudoCapability | None" = None if skeleton else sudo_caps
+    captured_sudo_caps: SudoCapability | None = None if skeleton else sudo_caps
 
     def on_refresh() -> TuiContext:
         # Re-read config so settings edits take effect immediately.
@@ -3459,6 +3771,7 @@ def _build_tui_context(
     on_kill = _wrap_tui_callback(on_kill, _CbErr)
     on_kill_all = _wrap_tui_callback(on_kill_all, _CbErr)
     on_kill_all_global = _wrap_tui_callback(on_kill_all_global, _CbErr)
+    on_remote_kill = _wrap_tui_callback(on_remote_kill, _CbErr)
     on_refresh = _wrap_tui_callback(on_refresh, _CbErr)
     on_probe_link_health = _wrap_tui_callback(on_probe_link_health, _CbErr)
     on_probe_cwd_writable = _wrap_tui_callback(on_probe_cwd_writable, _CbErr)
@@ -3572,6 +3885,7 @@ def _build_tui_context(
         on_kill=on_kill,
         on_kill_all=on_kill_all,
         on_kill_all_global=on_kill_all_global,
+        on_remote_kill=on_remote_kill,
         on_refresh=on_refresh,
         on_probe_link_health=on_probe_link_health,
         on_probe_cwd_writable=on_probe_cwd_writable,

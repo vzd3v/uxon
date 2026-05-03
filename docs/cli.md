@@ -115,10 +115,41 @@ Identifier resolution (first match wins):
 If `$TMUX` names the **same** socket as `uxon` for the launch user,
 `attach` becomes `tmux switch-client` automatically.
 
-## `uxon kill <id> [--dry-run]`
+## `uxon kill <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]`
 
 Short form: `uxon -k <id>`. Kills a single session. Same identifier
 resolution as `attach`.
+
+Without `--user` / `--host`, behaves exactly as before: kills a
+session owned by the current launch user on the local box.
+
+**`--user <name>`** kills a session belonging to a different launch
+user on the same host. Requires per-target NOPASSWD (`sudo -niu
+<name>`) — exactly the same gating the TUI applies to the
+"superuser" block. Probed once for the single target; an
+unreachable target fails fast with the stable error tag
+`uxon-error: not-reachable` on stderr and exit code `1`. Passing
+`--user <self>` is a no-op (no probe, same as omitting the flag).
+
+**`--host <alias>`** routes the kill to a configured `[[remote_hosts]]`
+peer over SSH. The peer's own `uxon kill` does the per-target sudo
+gating, so the local side does not need to know the peer's user
+table. May be combined with `--user <name>` to target a specific
+launch user on the peer. The wire always sends `--force` — local
+confirmation is a UI gesture, not a wire concern.
+
+**Confirmation gating** — `--user`/`--host` add a confirmation
+prompt (typing the literal phrase `kill`) when running on a TTY.
+`--force` skips the prompt. `--json` is non-interactive and refuses
+to run without `--force` or `--dry-run`.
+
+`--dry-run` prints the would-be tmux argv (local) or the SSH command
+line (remote) instead of executing it. The probe still runs in the
+local cross-user case so the dry-run output reflects reachability.
+
+**Bulk** kill (`kill-all`) is **strictly local** — there is no
+`uxon kill-all --host`. Per-session kill is the only destructive
+operation that crosses hosts.
 
 ## `uxon kill-all [--force] [--dry-run]`
 
@@ -232,7 +263,9 @@ Legacy aliases accepted for back-compat: `--dap`, `-dap`, `-dsp`.
 | Code | Meaning |
 |------|---------|
 | `0` | Success. |
-| `2` | Usage error (bad flags, no TTY for the bare TUI invocation, unknown subcommand). |
+| `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), live `--host` fetch failed without a usable cache, SSH timeout, peer rc non-zero. |
+| `2` | Usage error (bad flags, no TTY for the bare TUI invocation, unknown subcommand, unknown `--host` alias). |
+| `130` | User cancelled the confirmation prompt. |
 | `non-zero from forked tmux/agent` | Surfaced to the caller as-is. The TUI pauses with a banner so you can read stderr. `0` (success) and `130` (Ctrl-C inside the agent) do not pause. |
 
 ## Failure-mode notes

@@ -181,6 +181,14 @@ class TuiContext:
     on_kill: Callable[[str, str], None] = lambda user, name: None  # (user, session) -> kill
     on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
     on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
+    # Multi-host per-session kill (3.4.0). Args: (host_name, user, session).
+    # Implementation runs ``uxon kill --force --host <h> --user <u> <s>``
+    # over SSH on the local CLI side; the peer's own ``uxon kill`` does the
+    # per-target sudo gating. Bulk kill remains strictly local — no
+    # ``on_remote_kill_all`` exists by design.
+    on_remote_kill: Callable[[str, str, str], None] = (
+        lambda host, user, name: None  # (host, user, session) -> kill on peer
+    )
     on_refresh: Callable[[], TuiContext] = lambda: None  # type: ignore[return-value]
     on_probe_link_health: Callable[[], Any] = lambda: None
     # Returns True if launch_user has write access to ``cwd``. Wired by

@@ -100,9 +100,7 @@ class ReachableUsersAreFiltered(unittest.TestCase):
         )
         with mock.patch("uxon.sudo_probe.subprocess.run", stub):
             with mock.patch("uxon.sudo_probe._self_user", return_value="vz"):
-                caps = probe_sudo_capability(
-                    ["alice_agent", "bob_agent", "carol_agent"]
-                )
+                caps = probe_sudo_capability(["alice_agent", "bob_agent", "carol_agent"])
         self.assertEqual(caps.reachable_users, frozenset({"alice_agent", "bob_agent"}))
         self.assertFalse(caps.can_root)
 
@@ -139,9 +137,7 @@ class SelfIsExcluded(unittest.TestCase):
         stub = _SudoStub(per_user={"alice_agent": 0})
         with mock.patch("uxon.sudo_probe.subprocess.run", stub):
             with mock.patch("uxon.sudo_probe._self_user", return_value="vz"):
-                caps = probe_sudo_capability(
-                    ["alice_agent", "alice_agent", "alice_agent"]
-                )
+                caps = probe_sudo_capability(["alice_agent", "alice_agent", "alice_agent"])
         per_user_argvs = [c for c in stub.calls if c[:2] == ["sudo", "-niu"]]
         self.assertEqual(len(per_user_argvs), 1)
         self.assertEqual(caps.reachable_users, frozenset({"alice_agent"}))

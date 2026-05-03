@@ -8,6 +8,26 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.4.0] — 2026-05-03
+
+### Added
+
+- `uxon kill --user <name> <id>` now kills a session belonging to
+  another launch user when the caller has per-target NOPASSWD to
+  that user. Mirrors the local TUI's per-target sudo gating (probed
+  once for the single target; refused with `uxon-error: not-reachable`
+  otherwise). `--user == <self>` short-circuits to the existing
+  own-only path.
+- `uxon kill --host <alias> <id>` (and `--host <alias> --user <name>`)
+  routes a single-session kill to a configured peer over SSH. The
+  peer's own `uxon kill` does the per-target sudo gating, so the
+  local side does not need to know the peer's user table. **Bulk**
+  kill (`kill-all`) remains strictly local — only per-session kill
+  crosses hosts.
+- TUI: pressing `k` on a row in the remote-sessions table prompts
+  for confirmation and dispatches `uxon kill --host ... --user ... <id>`
+  over SSH to the peer.
+
 ## [3.3.0] — 2026-05-03
 
 ### Changed

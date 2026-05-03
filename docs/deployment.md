@@ -273,10 +273,22 @@ Exit codes:
 - `2` — config error: unknown `--host <name>`, mutually exclusive
   flags, no `[[remote_hosts]]` configured.
 
-`kill-all` is **strictly local** — there is no
-`uxon kill-all --host <name>`. Destructive actions never cross
-hosts; SSH-into-the-peer-and-run-it-there is the deliberate
-gesture.
+**Bulk** destructive ops are strictly local — there is no
+`uxon kill-all --host <name>` and there will not be one. Reaping
+every session on a peer is the operator's deliberate SSH gesture,
+not something `uxon` schedules over a fan-out.
+
+**Per-session** kill, however, *can* target a peer with `uxon kill
+--host <alias> [--user <name>] <id>`. The local CLI runs `uxon
+kill --force --user <name> <id>` on the peer over SSH; the peer's
+own per-target sudo gating applies (NOPASSWD for `<name>` on the
+peer). Requires the same SSH plumbing as `list --host`: BatchMode
+is mandatory (no interactive prompts) and the peer must have
+NOPASSWD `sudo -niu <name>` configured. `kill --json` is
+non-interactive and refuses to run without `--force` or
+`--dry-run`. The TUI mirrors this from the remote-sessions table:
+pressing `k` on a row prompts for confirmation and dispatches the
+same `--host`/`--user` SSH call.
 
 ### TUI
 
@@ -293,8 +305,11 @@ stalls the local-sessions stream or another peer's poll. Cadence
 is `tui_ssh_refresh_interval_seconds` (default 10s), separate
 from the local-tmux cadence.
 
-Activating a remote row is currently a no-op; remote attach /
-kill needs an SSH gesture not yet wired.
+Activating a remote row (Enter) is currently a no-op; remote
+attach is not wired. Pressing `k` on a remote row dispatches the
+per-session kill described above (`uxon kill --host ... --user
+... <id>` over SSH); bulk kill across hosts remains intentionally
+out of scope.
 
 ## Migration notes
 

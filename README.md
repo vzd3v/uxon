@@ -95,9 +95,11 @@ friction.
 - **Operator visibility.** With per-target sudo (or root NOPASSWD)
   to listed `session_users`, the TUI shows every reachable user's
   sessions with CPU/RAM/age and last-attach. `Enter` attaches as a
-  guest, `d` kills, `kill-all-reachable` reaps every reachable user —
-  one screen, every runaway process, no SSH tour. The probe is
-  one-shot at startup; new sudo grants → restart `uxon`.
+  guest, `d` kills any session you can sudo to (locally or via
+  `--host` for a peer), `kill-all-reachable` reaps every reachable
+  user on the local box — one screen, every runaway process, no SSH
+  tour. The probe is one-shot at startup; new sudo grants →
+  restart `uxon`.
 - **Multi-host aggregation.** `[[remote_hosts]]` blocks turn the same
   TUI into a fleet view: per-peer remote-sessions table over SSH,
   fail-soft snapshot cache, no cluster coordinator. Destructive

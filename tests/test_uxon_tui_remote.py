@@ -191,5 +191,190 @@ class RemoteHeaderTests(unittest.TestCase):
         self.assertIn("3 hosts", h)
 
 
+class ActionKillRemoteBindingTests(unittest.TestCase):
+    """Pure tests for the ``k`` binding wiring on ``MainScreen``.
+
+    Uses a Pilot-free MainScreen instance assembled via ``__new__`` —
+    we only care that:
+
+      1. The ``k`` binding maps to ``kill_remote`` and is shown.
+      2. Without focus on a ``RemoteSessionTable``, the action is a
+         silent warning (no callback fires).
+      3. With a focused row, the action pushes a confirmation
+         modal whose OK callback dispatches ``ctx.on_remote_kill``
+         with the resolved (host, user, name) tuple.
+
+    Smoke-coverage of the modal flow itself is left to the existing
+    Pilot-driven tests; the fast pure path is enough to pin the
+    business logic.
+    """
+
+    def _binding_keys(self) -> list[str]:
+        from uxon.tui.screens.main import MainScreen
+
+        return [b.key for b in MainScreen.BINDINGS]
+
+    def test_k_binding_registered(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        keys = self._binding_keys()
+        self.assertIn("k", keys)
+        binding = next(b for b in MainScreen.BINDINGS if b.key == "k")
+        self.assertEqual(binding.action, "kill_remote")
+        self.assertTrue(binding.show)
+        self.assertTrue(binding.description.strip())
+
+    def test_action_kill_remote_warns_without_focus(self) -> None:
+        from uxon.tui.context import TuiContext
+
+        notifies: list[tuple[str, str | None]] = []
+        kill_calls: list[tuple[str, str, str]] = []
+
+        class _FakeApp:
+            def notify(self, msg: str, severity: str | None = None, **_: object) -> None:
+                notifies.append((msg, severity))
+
+            def push_screen(self, *_a: object, **_kw: object) -> None:
+                raise AssertionError("push_screen must not run when nothing is focused")
+
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+            on_remote_kill=lambda h, u, n: kill_calls.append((h, u, n)),
+        )
+        # ``self.focused`` is a Textual reactive descriptor; subclass
+        # MainScreen so the property can be overridden with a plain
+        # attribute on the instance via a class-level shadow.
+        from uxon.tui.screens.main import MainScreen as _MS
+
+        fake_app = _FakeApp()
+
+        class _StubScreen(_MS):  # type: ignore[misc]
+            focused = None  # shadows the reactive descriptor
+            app = fake_app  # shadows the MessagePump descriptor
+
+        screen = _StubScreen.__new__(_StubScreen)
+        screen.ctx = ctx
+
+        screen.action_kill_remote()
+        self.assertEqual(len(notifies), 1)
+        msg, severity = notifies[0]
+        self.assertIn("remote", msg.lower())
+        self.assertEqual(severity, "warning")
+        self.assertEqual(kill_calls, [])
+
+    def test_action_kill_remote_dispatches_on_confirm(self) -> None:
+        from uxon.tui.context import TuiContext
+        from uxon.tui.screens.main import MainScreen
+        from uxon.tui.widgets.remote_session_table import RemoteSessionTable
+
+        kill_calls: list[tuple[str, str, str]] = []
+        captured_callback: list = []
+
+        class _FakeApp:
+            def notify(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def push_screen(self, _modal: object, callback) -> None:
+                captured_callback.append(callback)
+
+        # ``RemoteSessionTable`` subclasses ``DataTable`` whose
+        # ``cursor_row`` is itself a Textual reactive descriptor; shadow
+        # it on a subclass and inject the row index directly so the
+        # widget answers ``row_at(0)`` without a real mount.
+        class _StubTable(RemoteSessionTable):  # type: ignore[misc]
+            cursor_row = 0  # shadows the reactive descriptor
+
+        table = _StubTable.__new__(_StubTable)
+        table._row_index = [
+            (
+                "vz-prod1",
+                {"user": "alice", "name": "uxon-foo@claude", "active_cmd": "claude"},
+            )
+        ]
+
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+            on_remote_kill=lambda h, u, n: kill_calls.append((h, u, n)),
+        )
+
+        fake_app = _FakeApp()
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            focused = table  # shadows the reactive descriptor
+            app = fake_app  # shadows the MessagePump descriptor
+
+        screen = _StubScreen.__new__(_StubScreen)
+        screen.ctx = ctx
+        screen.action_refresh = lambda: None  # type: ignore[method-assign]
+
+        screen.action_kill_remote()
+        # The modal is queued; simulate the user confirming.
+        self.assertEqual(len(captured_callback), 1)
+        captured_callback[0](True)
+        self.assertEqual(kill_calls, [("vz-prod1", "alice", "uxon-foo@claude")])
+
+    def test_action_kill_remote_strips_own_only_badge(self) -> None:
+        """``host_name`` from the table may carry a ``" (own only)"``
+        badge in the multi-host display. The callback must receive the
+        bare host name."""
+        from uxon.tui.context import TuiContext
+        from uxon.tui.screens.main import MainScreen
+        from uxon.tui.widgets.remote_session_table import RemoteSessionTable
+
+        kill_calls: list[tuple[str, str, str]] = []
+
+        class _FakeApp:
+            def notify(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def push_screen(self, _modal: object, callback) -> None:
+                callback(True)
+
+        class _StubTable(RemoteSessionTable):  # type: ignore[misc]
+            cursor_row = 0
+
+        table = _StubTable.__new__(_StubTable)
+        table._row_index = [("vz-prod1 (own only)", {"user": "alice", "name": "uxon-foo@claude"})]
+
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+            on_remote_kill=lambda h, u, n: kill_calls.append((h, u, n)),
+        )
+
+        fake_app = _FakeApp()
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            focused = table
+            app = fake_app
+
+        screen = _StubScreen.__new__(_StubScreen)
+        screen.ctx = ctx
+        screen.action_refresh = lambda: None  # type: ignore[method-assign]
+
+        screen.action_kill_remote()
+        self.assertEqual(kill_calls, [("vz-prod1", "alice", "uxon-foo@claude")])
+
+
 if __name__ == "__main__":
     unittest.main()
