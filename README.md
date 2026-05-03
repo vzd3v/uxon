@@ -6,64 +6,114 @@
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)
 
-**Run terminal AI coding agents (Claude Code, Codex, Cursor) on a shared
-server — safely, persistently, and visibly to the operator.**
+**uxon is the team-scale control plane for terminal AI coding agents.**
+Run Claude Code, Codex, and Cursor across shared Linux servers and a
+fleet of hosts — with per-user OS isolation, sysadmin-grade operator
+control, and a TUI that fits a phone over SSH.
 
-`uxon` is a small `tmux` wrapper with a full-screen TUI session picker.
-It standardises session names, isolates each user on a dedicated `tmux`
-socket, and lets you start, attach, monitor, and kill agent sessions
-from one screen — your laptop, your phone over SSH, or a sysadmin's
-shell with `sudo`.
+Where personal session managers stop ("you and your laptop"), `uxon`
+picks up: multiple developers, multiple hosts, one safe shared runtime.
 
 <!-- screenshot goes here -->
 
-## What it solves
+## Why uxon
 
-- **Sandboxed agent runs.** Drop the agent into a low-privilege OS
-  account with a restricted filesystem view via `sudo -iu`, while you
-  keep operating from your own login. The agent can't reach what its
-  user can't reach.
-- **Many users on one box.** Each developer logs into their own OS
-  user, runs their own authenticated `claude` / `codex` / `cursor`
-  with their own keys and quotas, and never sees another user's tmux
-  sessions by accident — every launch user gets a dedicated socket
-  at `/tmp/uxon-<user>.sock`.
-- **Operator visibility and control.** With passwordless `sudo` to
-  the launch users listed in `session_users`, the operator opens
-  `uxon` and sees every agent session of those users — their own
-  *and* others' — with CPU, RAM, age, last attach, attached-or-not.
-  **`Enter` attaches to any of those sessions** (you join their
-  `tmux` as a guest via `sudo -iu`), `d` kills a runaway, and
-  `kill-all-global` reaps every session of every listed
-  `session_user` after explicit confirmation. No more "who's that
-  38 GB python on the dashboard?".
+A team-scale control plane is a different problem from a personal
+session picker. The matrix below compares `uxon` to the four most
+active personal managers (READMEs read May 2026):
+
+| Capability | **uxon** | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [agent-deck](https://github.com/asheshgoplani/agent-deck) | [Agent of Empires](https://github.com/njbrake/agent-of-empires) | [CCManager](https://github.com/kbwo/ccmanager) |
+|---|---|---|---|---|---|
+| Multiple agents on one host | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Persistent `tmux` sessions | ✓ | ✓ | ✓ | ✓ | — (no tmux by design) |
+| Multi-host SSH aggregation | ✓ | — | ✓ | — | — |
+| **Multi-user on one box** (per-user OS isolation) | ✓ | — | — | — | — |
+| **Operator view across users** (`sudo` attach, `kill-all-global`) | ✓ | — | — | — | — |
+| **Low-priv `runtime_user` agent sandbox** | ✓ | — | — | — | — |
+| Docker-based sandbox | — (deliberate, see below) | — | optional | optional | partial (devcontainer) |
+| Web dashboard | — | — | — | ✓ | — |
+| Phone access over SSH | TUI | — | Telegram/Slack relay | web (HTTPS + QR) | — |
+| Git worktrees | claude-only | ✓ | ✓ | ✓ | ✓ |
+
+Multi-host alone isn't unique — `agent-deck` does it too. The
+combination that **only `uxon` ships today** is the three bold rows:
+multi-user OS isolation, sysadmin operator view, and the low-priv
+agent runtime — all on the same shared Linux host.
+
+**Use the right tool for the shape of your fleet.**
+
+- Whole fleet is your laptop, want polished worktree UX → **Claude Squad** or **CCManager**.
+- Want a web dashboard, optional Docker sandboxing, mobile via web → **Agent of Empires**.
+- Want chat-based remote control of your own machine → **agent-deck**.
+- Administer a box several developers share, or several boxes a team shares, and need to see and reap runaway agents across all of them → **`uxon`**.
+
+### Sandbox model: OS users, not containers
+
+Two of the four competitors offer Docker-based sandboxing as an
+option. `uxon` deliberately doesn't — it pushes you toward a
+dedicated low-privilege Linux user (`runtime_user`) and `sudo -iu`
+into it. The trade-off is honest: Docker is a real isolation primitive
+and most dev machines have it installed. For a small team sharing a
+Linux box the daily friction of containerised agents is also real:
+
+- **Bind-mount UID tape.** Files created in the container come back
+  owned by `root` (or whatever UID was baked in) on the host, breaking
+  save-and-edit. Cleanly fixing it means per-machine images with a
+  matching UID/GID — or rootless mode — neither of which is free.
+- **Networking gymnastics.** Anything the agent talks to on
+  `localhost` (a local DB, a model proxy, an internal service, an
+  `mDNS`/`.local` host) needs `host.docker.internal`,
+  `--network=host`, or explicit port plumbing. SSH-agent forwarding
+  needs socket bind-mounts and breaks across reconnects.
+- **Auth duplication.** `~/.claude`, `~/.gitconfig`, `~/.aws/`,
+  known_hosts, SSH keys — each has to be passed through, or the
+  container becomes a second place to re-auth every agent.
+- **Per-image churn.** Tool updates → image rebuilds → push or share.
+  For a team that just wants "Claude Code with the project's deps,"
+  this is a maintenance loop with no payoff.
+
+OS-user isolation removes all four: the developer is already
+authenticated as themselves, `runtime_user` is a separate Linux
+account bounded with `sudo`/`pam_limits`/quotas, networking is the
+host's networking, SSH-agent forwarding is `ForwardAgent yes`. The
+cost is that `runtime_user` lives in the host's kernel namespace —
+fine when you trust the developers logging into the box, deliberately
+not fine if you don't.
+
+If you need stronger isolation than that, run `uxon` itself inside a
+VM (or container) per team and keep the OS-user model inside it. The
+layers compose; one replaces the other only if you accept the
+friction.
+
+---
+
+## What you get
+
+- **Multi-user on one box.** Every launch user runs on a dedicated
+  socket at `/tmp/uxon-<user>.sock` with their own authenticated
+  agents and quotas; nobody sees another user's `tmux` by accident.
+- **Operator visibility.** With `sudo` to listed `session_users`, the
+  TUI shows every agent session of those users with CPU/RAM/age and
+  last-attach. `Enter` attaches as a guest, `d` kills, `kill-all-global`
+  reaps the host — one screen, every runaway process, no SSH tour.
+- **Multi-host aggregation.** `[[remote_hosts]]` blocks turn the same
+  TUI into a fleet view: per-peer remote-sessions table over SSH,
+  fail-soft snapshot cache, no cluster coordinator. Destructive
+  actions stay local — the SSH gesture for `kill` is deliberate.
 - **Attach from anywhere.** Sessions live in `tmux`, so they survive
-  every disconnect. Start at your desk, reattach from your phone over
-  SSH on the train, switch to a tablet later — same session, same
-  state. The TUI is keyboard-only and fits a small screen.
-- **Predictable session names.** `uxon-<project>@<agent>` (`-2`,
-  `-3` for parallels). No more hand-rolled `tmux new -s` strings or
-  guessing what you called it yesterday.
-- **Permissive defaults, strict-whitelist for ops.** With
-  `allowed_roots = []` (default), the TUI's "new session in current
-  folder" and `uxon run` (CLI) both launch anywhere the launch user
-  can write. With `allowed_roots = [...]` set, both switch to
-  strict whitelist — only those paths are accepted, with no
-  `$HOME`-implicit or any other side allowance. `allowed_roots`
-  also bounds `uxon new` (creating a new project directory). To
-  restrict what the agent can reach on disk regardless of where
-  `uxon` is invoked, sandbox launches under a low-privilege OS user
-  via `runtime_user`. See
-  [`docs/configuration.md`](docs/configuration.md).
+  every disconnect. Start at your desk, reattach from your phone on
+  the train, switch to a tablet — same session, same state. The TUI
+  is keyboard-only and fits a small screen.
 - **One tool, every agent.** Flip a config switch to enable Claude
-  Code, Codex, Cursor — together or any subset. Built-in `--dsp`
-  (skip-permissions / "yolo") flag maps to each agent's native
-  equivalent across all three; `--auto` does the same for `claude`
-  and `codex` (cursor has no auto mode and errors out).
-- **Optional niceties.** Git worktrees (currently `claude`-only —
-  `codex` and `cursor` error if you pass `-w`), GitHub repo creation
-  on a new project (with a strict whitelist of named profiles),
-  per-project config overrides. All off by default.
+  Code, Codex, Cursor — together or any subset. `--dsp`
+  ("yolo") and `--auto` map to each agent's native equivalent;
+  predictable session names (`uxon-<project>@<agent>`) replace
+  hand-rolled `tmux new -s` strings.
+
+Configuration use cases — strict-whitelist mode, dedicated low-priv
+agent user, per-project overrides, GitHub repo creation on new
+project — live in
+[`docs/configuration.md`](docs/configuration.md).
 
 ---
 
