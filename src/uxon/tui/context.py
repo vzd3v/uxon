@@ -192,6 +192,16 @@ class TuiContext:
     on_dismiss_detected_agent: Callable[[str], None] = lambda agent_id: None
     get_dismissed_detected_agents: Callable[[], list[str]] = list
 
+    # Multi-host (Task #11): peer machines polled over SSH for their
+    # session lists. ``remote_hosts`` is the static config (parsed
+    # once at load_config time); ``remote_snapshots`` is the live
+    # state, keyed by ``RemoteHost.name`` and populated by per-host
+    # refresh sources. An empty ``remote_hosts`` disables the whole
+    # block — no Remote-sessions table is rendered, no SSH workers
+    # are kicked.
+    remote_hosts: list = field(default_factory=list)  # list[RemoteHost]
+    remote_snapshots: dict = field(default_factory=dict)  # dict[str, RemoteSnapshot]
+
     # Pluggable refresh sources. Each entry is a ``SourceSpec`` (see
     # ``uxon.tui.refresh``) describing one asynchronous data stream:
     # a fetcher, a cadence-attribute name, and a per-source worker

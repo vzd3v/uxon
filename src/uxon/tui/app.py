@@ -362,6 +362,20 @@ class UxonApp(App):
             ctx = event.value if isinstance(event.value, TuiContext) else None
             self.post_message(_MainCtxLoaded(ctx, error=event.error))
             return
+        # Per-host remote-session sources are named ``remote:<host>``.
+        # The fetcher returns a :class:`RemoteSnapshot` (always — the
+        # collector is fail-soft and never raises into the worker).
+        # We hand the snapshot to MainScreen which updates
+        # ``ctx.remote_snapshots`` and re-populates the table.
+        if event.name.startswith("remote:"):
+            host_name = event.name[len("remote:") :]
+            from uxon.remote_collector import RemoteSnapshot
+
+            if isinstance(event.value, RemoteSnapshot):
+                top = self.screen_stack[-1] if self.screen_stack else None
+                if top is not None and isinstance(top, MainScreen):
+                    top.apply_remote_snapshot(host_name, event.value)
+            return
         # Unknown source name — log and drop. Adding a new source means
         # adding a name → handler mapping here in the same change.
         _debug(

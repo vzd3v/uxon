@@ -3065,6 +3065,7 @@ def _build_tui_context(
     if skeleton:
         refresh_sources: list = []
     else:
+        from uxon.remote_collector import fetch_remote_snapshot
         from uxon.tui.refresh import SourceSpec
 
         # ``main_ctx_rebuild`` returns a fresh ``TuiContext``. The app's
@@ -3086,6 +3087,20 @@ def _build_tui_context(
                 kick_on_mount=True,
             ),
         ]
+        # One source per configured remote host. Each runs in its own
+        # worker group (``refresh:remote:<name>``) so a slow / dead
+        # peer can never stall the local-sessions stream or another
+        # peer's poll. Cadence is the dedicated SSH interval — peers
+        # are polled less aggressively than the local tmux stream.
+        for host in cfg.remote_hosts:
+            refresh_sources.append(
+                SourceSpec(
+                    name=f"remote:{host.name}",
+                    fetch=lambda h=host: fetch_remote_snapshot(h),
+                    cadence_seconds_attr="tui_ssh_refresh_interval_seconds",
+                    kick_on_mount=True,
+                )
+            )
 
     return TuiContext(
         sessions=tui_own,
@@ -3131,6 +3146,7 @@ def _build_tui_context(
         on_dismiss_detected_agent=on_dismiss_detected_agent,
         get_dismissed_detected_agents=get_dismissed_detected_agents,
         refresh_sources=refresh_sources,
+        remote_hosts=list(cfg.remote_hosts),
     )
 
 

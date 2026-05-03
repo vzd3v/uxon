@@ -44,7 +44,7 @@ from ..state import (
     session_intent,
     visible_detected_agents,
 )
-from ..widgets import ActionRow, DetectedAgentsBanner, SessionTable
+from ..widgets import ActionRow, DetectedAgentsBanner, RemoteSessionTable, SessionTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
 from .git_profile import GitProfileScreen
@@ -191,7 +191,28 @@ class MainScreen(Screen):
             if not self.ctx.sessions and not (self.ctx.has_sudo and self.ctx.other_sessions):
                 note = "Loading sessions…" if self.ctx.loading else "No active sessions."
                 yield Static(note, id="sessions-note", classes="empty-note")
+            # Multi-host: a separate Remote-sessions block. Rendered
+            # only when at least one peer is configured (an empty
+            # ctx.remote_hosts skips the section entirely so a
+            # single-host operator sees no extra UI). The HOST column
+            # is added when more than one peer is configured — the
+            # one-host case prints just the table; the host name is
+            # implicit from the section header.
+            if self.ctx.remote_hosts:
+                show_host = len(self.ctx.remote_hosts) > 1
+                yield Static(self._remote_header(), classes="segment-header")
+                yield RemoteSessionTable(show_host=show_host, id="sessions-remote")
         yield Footer()
+
+    def _remote_header(self) -> str:
+        # When polling fails, ``remote_snapshots`` still contains the
+        # last-good entries (cached) plus any errors; keep the header
+        # quiet here and surface per-host status in a future commit
+        # (the data is already available on the snapshots).
+        if len(self.ctx.remote_hosts) == 1:
+            host = self.ctx.remote_hosts[0]
+            return f"── remote sessions ── {host.name}"
+        return f"── remote sessions ── {len(self.ctx.remote_hosts)} hosts"
 
     def _cwd_detail(self) -> str:
         if self.ctx.cwd_writable is False:
@@ -215,6 +236,11 @@ class MainScreen(Screen):
                 self.query_one("#sessions-other", SessionTable).populate(self.ctx.other_sessions)
             except Exception:  # pragma: no cover — defensive
                 pass
+        if self.ctx.remote_hosts:
+            try:
+                self._populate_remote_table()
+            except Exception:  # pragma: no cover — defensive
+                pass
         self.call_after_refresh(self._update_status_line)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
             return
@@ -223,6 +249,45 @@ class MainScreen(Screen):
     def on_show(self) -> None:
         if not self._restore_focus_key:
             self.call_later(self._focus_default_action)
+
+    # ── Remote sessions block (multi-host) ────────────────────────────
+
+    def _flatten_remote_rows(self) -> list[tuple[str, dict]]:
+        """Flatten ``ctx.remote_snapshots`` into a list the table can
+        render.
+
+        Iteration follows ``ctx.remote_hosts`` order so the displayed
+        order is config-defined, not snapshot-arrival-defined. Within
+        a host the session order is whatever the peer reported (the
+        wire schema preserves it).
+        """
+        rows: list[tuple[str, dict]] = []
+        for host in self.ctx.remote_hosts:
+            snap = self.ctx.remote_snapshots.get(host.name)
+            if snap is None:
+                continue
+            for rec in snap.sessions:
+                rows.append((host.name, rec))
+        return rows
+
+    def _populate_remote_table(self) -> None:
+        table = self.query_one("#sessions-remote", RemoteSessionTable)
+        table.populate(self._flatten_remote_rows())
+
+    def apply_remote_snapshot(self, host_name: str, snapshot) -> None:
+        """Hook called by the app dispatch when a per-host SourceSpec
+        result lands.
+
+        Updates ``ctx.remote_snapshots`` in place and re-populates the
+        table. Called from ``UxonApp.on__refresh_source_landed`` for
+        ``remote:*`` events.
+        """
+        self.ctx.remote_snapshots[host_name] = snapshot
+        if self.ctx.remote_hosts:
+            try:
+                self._populate_remote_table()
+            except Exception:  # pragma: no cover — table not yet mounted
+                pass
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 
@@ -544,6 +609,12 @@ class MainScreen(Screen):
             other_table = None
         if other_table is not None:
             other_table.populate(self.ctx.other_sessions)
+
+        if self.ctx.remote_hosts:
+            try:
+                self._populate_remote_table()
+            except Exception:  # pragma: no cover — DOM not mounted yet
+                pass
 
         if self.ctx.has_sudo:
             try:
