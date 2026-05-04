@@ -28,6 +28,20 @@ import os
 from typing import Any
 
 import platformdirs
+import structlog
+
+# Module-level structlog renderer for the off-by-default debug channel.
+# We bypass structlog's logger configuration on purpose: the debug log
+# is a per-day, per-user file whose path is recomputed per call (so a
+# long-running TUI rolls cleanly across midnight, and so tests can
+# patch ``_log_dir``). The renderer turns a record dict into one JSON
+# line; we write it ourselves. This keeps the on-disk shape
+# byte-identical to the prior ``json.dumps(...)`` output and to the
+# format consumers (tests, ``jq`` pipelines) rely on.
+_DEBUG_RENDERER: structlog.processors.JSONRenderer = structlog.processors.JSONRenderer(
+    sort_keys=False,
+    ensure_ascii=False,
+)
 
 
 def _default_log_dir() -> str:
@@ -94,7 +108,6 @@ def debug(topic: str, **fields: Any) -> None:
         return
     try:
         import datetime
-        import json
 
         now = datetime.datetime.now(datetime.UTC)
         record: dict[str, Any] = {
@@ -112,8 +125,17 @@ def debug(topic: str, **fields: Any) -> None:
         user = os.environ.get("SUDO_USER") or os.environ.get("USER", "unknown")
         date_str = now.strftime("%Y%m%d")
         path = os.path.join(log_dir, f"tui-debug-{user}-{date_str}.log")
+        # Render via structlog's JSONRenderer for shape parity with the
+        # rest of the structured-logging surface; the on-disk format
+        # remains one ``{"ts": ..., "topic": ..., ...}`` JSON object per
+        # line. The first positional argument (logger) is unused by
+        # the JSON processor.
+        # JSONRenderer is statically typed ``str | bytes``; with our
+        # config (no bytes serializer) it always returns ``str`` here.
+        line = _DEBUG_RENDERER(None, "debug", record)
+        assert isinstance(line, str)
         with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            fh.write(line + "\n")
     except Exception:
         # Telemetry, not a correctness path — never crash the TUI.
         return
