@@ -771,11 +771,14 @@ class MainScreen(Screen):
         # probe results are lost after the first ctx swap and every
         # LaunchOptionsScreen would render "(checking…)" forever.
         new_ctx.link_health_status = self.ctx.link_health_status
-        new_ctx.agent_availability = self.ctx.agent_availability
-        # detected_agents is mutated in place by the same probe worker;
-        # without this carry-over the periodic ctx refresh would clear
-        # the suggestion banner one tick after it appeared.
-        new_ctx.detected_agents = self.ctx.detected_agents
+        # Stage 8 commit 5b: ``agent_availability`` and
+        # ``detected_agents`` no longer need carries — the canonical
+        # store is ``app.state.agent_availability`` /
+        # ``app.state.detected_agents``, shared across ctx rebuild
+        # ticks. The shim's getter returns ``state.<slot>.value`` on
+        # read so any consumer of the legacy attribute sees the
+        # currently-applied dict regardless of which ctx it goes
+        # through.
         # Stage 8 commit 4: ``remote_snapshots`` no longer needs a
         # carry — the canonical store is ``app.state.remote``,
         # shared across rebuild ticks. The shim's getter flattens

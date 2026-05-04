@@ -73,12 +73,41 @@ class _AgentAvailabilityUpdated(Message):
 class _HostReportUpdated(Message):
     """Posted by ``_probe_host_worker`` once a fresh :class:`HostReport` lands.
 
-    Carries no payload — the worker mutates ``ctx.agent_availability`` and
-    ``ctx.detected_agents`` in place before posting (mirroring the
-    pre-existing pattern for ``_AgentAvailabilityUpdated``).
+    Stage 8 commit 5b: carries the locally-built availability and
+    detected dicts. The worker no longer mutates ``ctx.<field>`` from
+    the thread; the on-loop handler folds the payload into the slot
+    store via :func:`slot_state.apply`. Pre-5b semantics (no payload,
+    in-place worker mutation) are gone — the message must always
+    carry the dicts (or ``error`` when the probe failed).
+
+    On failure ``error`` is non-empty and the dicts may be empty; the
+    handler skips the slot apply but still triggers the
+    availability-dispatch path so the UI re-renders with whatever
+    state currently holds.
     """
 
     bubble = False
+
+    def __init__(
+        self,
+        availability: dict | None = None,
+        detected: dict | None = None,
+        error: str = "",
+        elapsed_ms: int = 0,
+    ) -> None:
+        super().__init__()
+        # ``None`` (the default) marks a legacy bare-post pattern
+        # used by tests that mutated ``ctx.agent_availability`` /
+        # ``ctx.detected_agents`` directly and then posted to wake
+        # the handler. The on-loop handler treats this case as
+        # "skip the slot apply" (the slot already reflects the
+        # mutation through the shim's read-through path) and falls
+        # through to ``_dispatch_availability_change`` so the UI
+        # still re-renders.
+        self.availability = availability
+        self.detected = detected
+        self.error = error
+        self.elapsed_ms = elapsed_ms
 
 
 class _LinkHealthUpdated(Message):
@@ -673,58 +702,66 @@ class UxonApp(App):
     def _probe_host_worker(self) -> None:
         """Background thread: probe tmux + all known agent binaries.
 
-        Uses ``probes.probe_host`` rather than the older per-agent
-        ``probe_agents`` driver so that one ``sh -lc`` round-trip covers
-        every binary, and so detected-but-not-enabled agents surface in
-        ``ctx.detected_agents`` for the suggestion banner.
+        Stage 8 commit 5b — race-free. The worker builds two local
+        dicts (availability + detected) and posts them in a single
+        :class:`_HostReportUpdated` message; the on-loop handler
+        folds the payload into ``state.agent_availability`` /
+        ``state.detected_agents`` via :func:`slot_state.apply`. No
+        ``self.ctx.<field>`` is touched from the thread — the
+        previous in-place mutation pattern was a latent data race
+        between the worker and the event loop's selectors / screens.
 
-        ``BinaryStatus`` (path-based) is mapped to ``AgentAvailability``
-        (status-based) for backward compatibility with existing
-        consumers like ``LaunchOptionsScreen``.
+        Uses ``probes.probe_host`` rather than the older per-agent
+        ``probe_agents`` driver so one ``sh -lc`` round-trip covers
+        every binary; detected-but-not-enabled agents surface in
+        ``state.detected_agents.value`` for the suggestion banner.
         """
+        import time as _time
+
         from uxon import agents as uxon_agents
         from uxon import probes as uxon_probes
 
         # Build a minimal cfg-shaped object with what probe_host needs.
+        # Reading ``enabled_agents`` from a thread is safe (immutable
+        # tuple). The handler dispatches on the event loop where any
+        # state mutation actually lands.
         class _Cfg:
             enabled_agents = self.ctx.enabled_agents
 
-        # Default to the current OS user when ``launch_user`` is unset so
-        # ``probe_host`` runs the local (no-sudo) code path. Falling back
-        # to ``ctx.current_user`` would force a sudo wrap whenever the
-        # caller fed us a placeholder value (test fixtures, skeleton
-        # contexts), which is both slower and prone to false-negatives.
         target_user = self.ctx.launch_user or uxon_probes._current_user()
 
-        # Worker-state-derived gate (see ``__init__``) means we don't
-        # need a try/finally to clear a bool latch — a worker that
-        # exits or crashes drops out of RUNNING state automatically.
-        # We still post ``_HostReportUpdated`` in finally so a partial
-        # mapping failure doesn't suppress the badge update.
+        t0 = _time.monotonic()
         try:
-            try:
-                report = uxon_probes.probe_host(_Cfg(), target_user)
-            except Exception:  # pragma: no cover — defensive
-                return
+            report = uxon_probes.probe_host(_Cfg(), target_user)
+        except Exception as exc:  # pragma: no cover — defensive
+            self.post_message(
+                _HostReportUpdated(
+                    error=str(exc) or exc.__class__.__name__,
+                    elapsed_ms=int((_time.monotonic() - t0) * 1000),
+                )
+            )
+            return
 
-            # Map BinaryStatus → AgentAvailability for enabled agents.
-            for aid, status in report.enabled.items():
-                if status.path is not None:
-                    self.ctx.agent_availability[aid] = uxon_agents.AgentAvailability(
-                        status="ok",
-                        path=status.path,
-                    )
-                else:
-                    self.ctx.agent_availability[aid] = uxon_agents.AgentAvailability(
-                        status="missing",
-                        error=f"{status.name} not found on PATH",
-                    )
-
-            # Update detected agents (installed but not enabled).
-            self.ctx.detected_agents.clear()
-            self.ctx.detected_agents.update(report.detected)
-        finally:
-            self.post_message(_HostReportUpdated())
+        availability: dict = {}
+        for aid, status in report.enabled.items():
+            if status.path is not None:
+                availability[aid] = uxon_agents.AgentAvailability(
+                    status="ok",
+                    path=status.path,
+                )
+            else:
+                availability[aid] = uxon_agents.AgentAvailability(
+                    status="missing",
+                    error=f"{status.name} not found on PATH",
+                )
+        detected = dict(report.detected)
+        self.post_message(
+            _HostReportUpdated(
+                availability=availability,
+                detected=detected,
+                elapsed_ms=int((_time.monotonic() - t0) * 1000),
+            )
+        )
 
     def _probe_cwd_writable_worker(self) -> None:
         """Background thread: probe write access and post the result."""
@@ -835,7 +872,47 @@ class UxonApp(App):
         self._dispatch_availability_change()
 
     def on__host_report_updated(self, event: _HostReportUpdated) -> None:
-        """Handler for the new probe_host worker. Same dispatch path."""
+        """Handler for the new probe_host worker.
+
+        Stage 8 commit 5b: folds the worker's locally-built dicts
+        into ``state.agent_availability`` / ``state.detected_agents``
+        via :func:`slot_state.apply`. The dispatcher is the *only*
+        on-loop site that mutates these slots, so any later observer
+        (selectors, screens, the dispatch path below) sees a
+        consistent fresh dict on each tick. The shim
+        ``ctx.agent_availability`` returns ``state.<slot>.value``,
+        i.e. the freshly-allocated dict — by-reference snapshots
+        captured at modal-construction time go stale, which is
+        why ``LaunchOptionsScreen`` is ported off snapshotting in
+        commit 5c.
+        """
+        from .slot_state import SlotResult
+        from .slot_state import apply as apply_slot
+
+        # Skip the slot apply when:
+        #   - the worker reported an error (no fresh dict to fold), or
+        #   - the message is a legacy bare post (availability is None)
+        #     used by tests that mutate ``ctx.agent_availability``
+        #     directly and just post to wake the handler.
+        # Both fall through to ``_dispatch_availability_change`` which
+        # reads through the shim to whatever state currently holds.
+        if not event.error and event.availability is not None:
+            attempted_at = time.time()
+            avail_result: SlotResult[dict] = SlotResult(
+                value=event.availability,
+                error=None,
+                elapsed_ms=event.elapsed_ms,
+                attempted_at=attempted_at,
+            )
+            self.state.agent_availability = apply_slot(self.state.agent_availability, avail_result)
+            if event.detected is not None:
+                detect_result: SlotResult[dict] = SlotResult(
+                    value=event.detected,
+                    error=None,
+                    elapsed_ms=event.elapsed_ms,
+                    attempted_at=attempted_at,
+                )
+                self.state.detected_agents = apply_slot(self.state.detected_agents, detect_result)
         self._dispatch_availability_change()
 
     def on__link_health_updated(self, event: _LinkHealthUpdated) -> None:
