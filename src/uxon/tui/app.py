@@ -836,9 +836,17 @@ class UxonApp(App):
         if main is not None:
             self.call_later(main._refresh_detected_banner)
 
+        # Stage 8 commit 5d: read availability through the canonical
+        # store directly. The shim ``ctx.agent_availability`` resolves
+        # to the same value (state.<slot>.value) but going through it
+        # forces an extra getattr layer; in the dispatch hot path
+        # (every probe tick) the direct read is cheaper and pre-stages
+        # the shim deletion in commit 10.
+        availability = self.state.agent_availability.value or {}
+        enabled = self.cfg.enabled_agents
         current_all_missing = compute_all_missing(
-            enabled_agents=self.ctx.enabled_agents,
-            availability=self.ctx.agent_availability,
+            enabled_agents=enabled,
+            availability=availability,
         )
         modal_on_stack = any(isinstance(s, AgentsUnavailableScreen) for s in self.screen_stack)
         push = should_push_agents_unavailable(
@@ -848,7 +856,7 @@ class UxonApp(App):
             pending_launch=self.pending_launch is not None,
         )
         if push:
-            self.push_screen(AgentsUnavailableScreen(tuple(self.ctx.enabled_agents)))
+            self.push_screen(AgentsUnavailableScreen(tuple(enabled)))
         # Update the transition tracker only after we have observed at
         # least one resolved availability set; ``compute_all_missing``
         # returns False both for "all ok" and for "still pending" — we
@@ -858,13 +866,20 @@ class UxonApp(App):
             self._last_all_missing = current_all_missing
 
     def _availability_resolved(self) -> bool:
-        """True iff every enabled agent has a non-pending availability entry."""
-        if not self.ctx.enabled_agents:
+        """True iff every enabled agent has a non-pending availability entry.
+
+        Stage 8 commit 5d: reads ``self.state.agent_availability.value``
+        directly rather than going through the shim — same data, one
+        less layer of indirection on a path that runs on every probe
+        tick.
+        """
+        enabled = self.cfg.enabled_agents
+        if not enabled:
             return False
+        availability = self.state.agent_availability.value or {}
         return all(
-            aid in self.ctx.agent_availability
-            and getattr(self.ctx.agent_availability[aid], "status", "pending") != "pending"
-            for aid in self.ctx.enabled_agents
+            aid in availability and getattr(availability[aid], "status", "pending") != "pending"
+            for aid in enabled
         )
 
     def on__agent_availability_updated(self, event: _AgentAvailabilityUpdated) -> None:
