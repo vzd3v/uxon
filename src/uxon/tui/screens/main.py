@@ -440,7 +440,17 @@ class MainScreen(Screen):
         # Async probe may not have landed yet (cross-user / sudo path).
         # Run the fallback probe synchronously here so the user never
         # gets to launch-time with an unknown answer.
-        if self.ctx.cwd_writable is None:
+        # Stage 8 commit 6: "loading" is now structural — the slot
+        # has not been written yet (``last_attempt_at is None``). A
+        # legitimate ``value=None`` from a returned probe (rare; the
+        # callback rarely returns None) does not trigger the
+        # synchronous fallback because the slot's
+        # ``last_attempt_at`` is set.
+        state = getattr(self.app, "state", None)
+        never_loaded = (
+            state is None or state.cwd_writable.last_attempt_at is None
+        ) and self.ctx.cwd_writable is None
+        if never_loaded:
             try:
                 self.ctx.cwd_writable = bool(self.ctx.on_probe_cwd_writable())
             except CallbackError as exc:
@@ -770,7 +780,12 @@ class MainScreen(Screen):
         # and refresh_tick is a TUI-internal counter. Without this the
         # probe results are lost after the first ctx swap and every
         # LaunchOptionsScreen would render "(checking…)" forever.
-        new_ctx.link_health_status = self.ctx.link_health_status
+        # Stage 8 commit 6: ``link_health_status`` no longer needs a
+        # carry — ``app.state.link_health`` is canonical and shared
+        # across ctx rebuild ticks. The shim's getter returns
+        # ``state.link_health.value`` so any consumer of the legacy
+        # attribute sees the currently-applied status regardless of
+        # which ctx it goes through.
         # Stage 8 commit 5b: ``agent_availability`` and
         # ``detected_agents`` no longer need carries — the canonical
         # store is ``app.state.agent_availability`` /
@@ -800,13 +815,20 @@ class MainScreen(Screen):
             # round-tripping the counter when no App is in the picture.
             new_ctx._state = self.ctx._state
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
-        # Carry the cwd-writable result across refreshes too: same-user
-        # builds set it synchronously, cross-user builds leave None and
-        # the probe runs once on mount. Without this, every refresh in
-        # the cross-user case would drop back to None until the next
-        # probe, flicker-disabling the row.
-        if new_ctx.cwd_writable is None and new_ctx.cwd == self.ctx.cwd:
-            new_ctx.cwd_writable = self.ctx.cwd_writable
+        # Stage 8 commit 6: cwd-change invalidation. The carry-list
+        # used to enforce this implicitly ("only carry when cwd
+        # matches"); now ``state.cwd_writable`` is canonical and a
+        # cwd transition resets the slot to its zero state so the
+        # row paints "checking…" until the next probe lands.
+        # ``state.main`` is not yet canonical (commit 7 flips it),
+        # so we compare ``new_ctx.cwd`` against the previous
+        # ``self.ctx.cwd``. Worker-side gating
+        # (``_CwdWritableUpdated.cwd_at_start``) drops in-flight
+        # probes that started against the old cwd.
+        if app_state is not None and new_ctx.cwd != self.ctx.cwd:
+            from uxon.tui.slot_state import SlotState as _SlotState
+
+            app_state.cwd_writable = _SlotState[bool | None]()
         self.ctx = new_ctx
         # Mirror ``ctx.loading`` into the reactive so watchers fire
         # when the first non-skeleton ctx lands. Commit 7 flips this

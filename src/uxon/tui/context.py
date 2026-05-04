@@ -397,6 +397,64 @@ TuiContext.detected_agents = property(  # type: ignore[assignment]
 )
 
 
+# ── link_health_status / cwd_writable shim properties ───────────────
+#
+# Stage 8 commit 6: ``state.link_health`` and ``state.cwd_writable``
+# become canonical. Unlike ``agent_availability`` / ``detected_agents``
+# (commit 5), these were never thread-race targets — both the
+# link-health and cwd probes already posted messages and the on-loop
+# handlers wrote ``ctx.<field>`` single-threaded. The migration is a
+# data-shape rename so the carry-list can disappear, plus the
+# cwd-change invalidation in the rebuild dispatcher.
+
+
+def _link_health_get(self: TuiContext) -> LinkHealthStatus:
+    state = getattr(self, "_state", None)
+    if state is not None and state.link_health.value is not None:
+        return state.link_health.value
+    return self.__dict__.get("_legacy_link_health_status", LinkHealthStatus())
+
+
+def _link_health_set(self: TuiContext, value: LinkHealthStatus) -> None:
+    self.__dict__["_legacy_link_health_status"] = value
+
+
+def _cwd_writable_get(self: TuiContext) -> bool | None:
+    """Return the cached cwd-writable flag.
+
+    Three-valued semantics survive the slot migration:
+      ``None``  — probe still in flight or never ran
+      ``True``  — launchable
+      ``False`` — not launchable
+
+    Pre-commit-6 ``ctx.cwd_writable is None`` doubled as the
+    "loading" sentinel. Post-commit-6 the loading-vs-loaded
+    distinction is structural: ``state.cwd_writable.last_attempt_at
+    is None`` means never-loaded, regardless of value. Existing
+    readers that only need the tri-state result (the launch-row
+    decoration) still see the ``bool | None`` value through this
+    shim.
+    """
+    state = getattr(self, "_state", None)
+    if state is not None and state.cwd_writable.last_attempt_at is not None:
+        return state.cwd_writable.value
+    return self.__dict__.get("_legacy_cwd_writable", None)
+
+
+def _cwd_writable_set(self: TuiContext, value: bool | None) -> None:
+    self.__dict__["_legacy_cwd_writable"] = value
+
+
+TuiContext.link_health_status = property(  # type: ignore[assignment]
+    _link_health_get,
+    _link_health_set,
+)
+TuiContext.cwd_writable = property(  # type: ignore[assignment]
+    _cwd_writable_get,
+    _cwd_writable_set,
+)
+
+
 # Number of action items at the top of the main list.
 #
 # Historically a loose module-level constant; as of PR 9 (2026-04-18)

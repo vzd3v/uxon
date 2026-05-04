@@ -121,13 +121,25 @@ class _LinkHealthUpdated(Message):
 
 
 class _CwdWritableUpdated(Message):
-    """Posted by the cwd-write probe worker when the result lands."""
+    """Posted by the cwd-write probe worker when the result lands.
+
+    Stage 8 commit 6: carries ``cwd_at_start`` — the cwd value
+    captured at probe launch time. The on-loop handler drops
+    results whose ``cwd_at_start`` does not match the current
+    ``state.main.cwd`` (or, pre-commit-7, ``ctx.cwd``); this
+    prevents an in-flight probe started against ``cwd_old`` from
+    being attributed to ``cwd_new`` after a directory change.
+
+    SlotResult-shaped fields stay inside the handler; the message
+    envelope only carries the validated payload + the gate token.
+    """
 
     bubble = False
 
-    def __init__(self, writable: bool) -> None:
+    def __init__(self, writable: bool, *, cwd_at_start: str = "") -> None:
         super().__init__()
         self.writable = writable
+        self.cwd_at_start = cwd_at_start
 
 
 class _MainCtxLoaded(Message):
@@ -360,8 +372,9 @@ class UxonApp(App):
         # already resolve it (cross-user case: uxon left cwd_writable=None
         # because the check would shell out via sudo).
         if self.ctx.cwd_writable is None:
+            cwd_at_start = self.ctx.cwd
             self.run_worker(
-                self._probe_cwd_writable_worker,
+                lambda cwd=cwd_at_start: self._probe_cwd_writable_worker(cwd),
                 thread=True,
                 exclusive=False,
                 group="cwd_writable",
@@ -762,21 +775,56 @@ class UxonApp(App):
             )
         )
 
-    def _probe_cwd_writable_worker(self) -> None:
-        """Background thread: probe write access and post the result."""
+    def _probe_cwd_writable_worker(self, cwd_at_start: str = "") -> None:
+        """Background thread: probe write access and post the result.
+
+        Stage 8 commit 6: ``cwd_at_start`` is captured at the kick
+        site (``on_mount`` / ``MainScreen``-driven re-probes) and
+        threaded through the message envelope so the on-loop
+        handler can gate against an in-flight probe whose result
+        no longer applies to the current cwd.
+        """
         try:
-            writable = bool(self.ctx.on_probe_cwd_writable())
+            writable = bool(self.cfg.on_probe_cwd_writable())
         except CallbackError:
             writable = False
         except Exception:  # pragma: no cover — defensive
             writable = False
-        self.post_message(_CwdWritableUpdated(writable))
+        self.post_message(_CwdWritableUpdated(writable, cwd_at_start=cwd_at_start))
 
     def on__cwd_writable_updated(self, event: _CwdWritableUpdated) -> None:
-        self.ctx.cwd_writable = event.writable
+        """Apply a cwd-write probe result to ``state.cwd_writable``.
+
+        Stage 8 commit 6: drops results whose ``cwd_at_start`` no
+        longer matches the live ``ctx.cwd``. Without this gate, an
+        in-flight probe started against ``cwd_old`` could land
+        after the user changed directory and surface as the answer
+        for ``cwd_new`` — confusing and wrong. The mismatch case
+        is logged via ``UXON_DEBUG=refresh`` and silently dropped
+        so the next probe starts fresh.
+        """
+        from .slot_state import SlotResult
+        from .slot_state import apply as apply_slot
+
+        live_cwd = self.ctx.cwd
+        if event.cwd_at_start and event.cwd_at_start != live_cwd:
+            _debug(
+                "refresh",
+                at="cwd_writable_drop",
+                reason="cwd_changed",
+                cwd_at_start=event.cwd_at_start,
+                live_cwd=live_cwd,
+            )
+            return
+        result: SlotResult[bool | None] = SlotResult(
+            value=bool(event.writable),
+            error=None,
+            elapsed_ms=0,
+            attempted_at=time.time(),
+        )
+        self.state.cwd_writable = apply_slot(self.state.cwd_writable, result)
         top = self.screen_stack[-1] if self.screen_stack else None
         if isinstance(top, MainScreen):
-            top.ctx.cwd_writable = event.writable
             self.call_later(top._refresh_cwd_row)
 
     def _kick_link_health_probe(self) -> None:
@@ -941,10 +989,25 @@ class UxonApp(App):
         self._dispatch_availability_change()
 
     def on__link_health_updated(self, event: _LinkHealthUpdated) -> None:
-        self.ctx.link_health_status = event.status
+        """Apply a link-health probe result to ``state.link_health``.
+
+        Stage 8 commit 6: ``link_health`` is now a slot. The handler
+        runs on the event loop (the worker only posts the message),
+        so no thread-race concerns — the migration is a data-shape
+        rename so the carry-list can disappear.
+        """
+        from .slot_state import SlotResult
+        from .slot_state import apply as apply_slot
+
+        result: SlotResult = SlotResult(
+            value=event.status,
+            error=None,
+            elapsed_ms=0,
+            attempted_at=time.time(),
+        )
+        self.state.link_health = apply_slot(self.state.link_health, result)
         top = self.screen_stack[-1] if self.screen_stack else None
         if isinstance(top, MainScreen):
-            top.ctx.link_health_status = event.status
             self.call_later(top._update_status_line)
 
     def action_main_digit_jump(self, n: int) -> None:
