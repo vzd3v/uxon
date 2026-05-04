@@ -22,7 +22,7 @@ the module's type hints parsed lazily.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
@@ -69,6 +69,14 @@ class SlotState(Generic[T]):
         elapsed_ms_recent: Bounded ring of recent fetch durations in
             milliseconds. Useful for cost diagnosis without spinning up
             a full metrics pipeline.
+        p50_elapsed_ms: Pre-computed median over ``elapsed_ms_recent``,
+            re-derived inside :func:`apply` on every call. Surfaces
+            on the per-host health badge tooltip (commit 4) without
+            forcing every render path to re-sort the ring. ``None``
+            until the first attempt lands. Even-length rings use the
+            *average* of the two middle values so a noisy [10, 30]
+            history reports 20 — not the upper-median 30 — which
+            matches how operators read latency budgets.
     """
 
     value: T | None = None
@@ -79,6 +87,7 @@ class SlotState(Generic[T]):
     in_flight: bool = False
     consecutive_failures: int = 0
     elapsed_ms_recent: tuple[int, ...] = field(default_factory=tuple)
+    p50_elapsed_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +189,23 @@ class Source(Generic[T]):
     kick_on_mount: bool = True
 
 
+def _median(samples: tuple[int, ...]) -> int | None:
+    """Median of ``samples`` as an int. ``None`` for the empty ring.
+
+    Uses an even-length *average* (``(s[mid-1] + s[mid]) // 2``) so a
+    bimodal latency history doesn't bias toward the upper sample.
+    Pure; no module-level imports required (avoids ``statistics`` for
+    one helper that runs on a 16-element tuple).
+    """
+    if not samples:
+        return None
+    s = sorted(samples)
+    n = len(s)
+    if n % 2 == 1:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) // 2
+
+
 def apply(
     prev: SlotState[T],
     r: SlotResult[T],
@@ -208,20 +234,36 @@ def apply(
           produce a new value).
 
     In both cases ``r.elapsed_ms`` is appended to the ring, with the
-    oldest entry evicted once the ring exceeds ``ring_size``. The
-    ``in_flight`` flag is unchanged here — the scheduler owns that
+    oldest entry evicted once the ring exceeds ``ring_size``, and
+    :attr:`SlotState.p50_elapsed_ms` is recomputed from the new ring.
+    The ``in_flight`` flag is unchanged here — the scheduler owns that
     field; :func:`apply` only reflects post-completion state.
 
+    Identity preservation on no-op success (commit 4): when the
+    incoming success carries a *value-equal but distinct object* to
+    the previously-stored value, the new :class:`SlotState`'s
+    ``value`` reuses ``prev.value``'s identity. This makes
+    ``id(slot.value)`` stable across a no-op tick — selectors that
+    key on it (e.g. ``select_remote_rows``) cache-hit and the
+    per-host repaint path elides the row recompute. Other fields
+    (``last_attempt_at``, the ring, ``from_cache``) still advance:
+    the *attempt* did happen and must be visible to staleness logic.
+
     The function is pure: same ``(prev, r, ring_size)`` always returns
-    an equal :class:`SlotState`. Re-applying with the same result is a
-    no-op only in the trivial sense that the values match; the ring
-    will grow by one entry on each call.
+    an equal :class:`SlotState`.
     """
     new_ring = (*prev.elapsed_ms_recent, r.elapsed_ms)
     if len(new_ring) > ring_size:
         new_ring = new_ring[-ring_size:]
+    p50 = _median(new_ring)
 
     if r.error is None:
+        # Identity-stable substitution on no-op success.
+        # Only kicks in when the result is a *different object* whose
+        # equality matches — selectors keyed on ``id(slot.value)``
+        # cache-hit across the no-op tick.
+        if prev.value is not None and r.value is not prev.value and r.value == prev.value:
+            r = replace(r, value=prev.value)
         return SlotState(
             value=r.value,
             last_success_at=r.attempted_at,
@@ -231,6 +273,7 @@ def apply(
             in_flight=prev.in_flight,
             consecutive_failures=0,
             elapsed_ms_recent=new_ring,
+            p50_elapsed_ms=p50,
         )
     return SlotState(
         value=prev.value,
@@ -241,4 +284,5 @@ def apply(
         in_flight=prev.in_flight,
         consecutive_failures=prev.consecutive_failures + 1,
         elapsed_ms_recent=new_ring,
+        p50_elapsed_ms=p50,
     )

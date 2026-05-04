@@ -495,21 +495,56 @@ class UxonApp(App):
         self.post_message(_MainCtxLoaded(ctx, error=event.error))
 
     def _handle_remote_snapshot(self, event: _RefreshSourceLanded) -> None:
-        """Apply a remote-host snapshot to the active main screen.
+        """Apply a remote-host snapshot via the slot store.
 
-        Source name is ``remote:<host>``; the fetcher always returns a
-        :class:`RemoteSnapshot` (the collector is fail-soft and never
-        raises into the worker). We hand the snapshot to
-        :class:`MainScreen`, which updates ``ctx.remote_snapshots`` and
-        re-populates the per-host table.
+        Source name is ``remote:<host>``. The fetcher always returns a
+        :class:`RemoteSnapshot` (the collector is fail-soft); we wrap
+        it in a :class:`SlotResult` and fold it into
+        ``state.remote[host]`` via the pure :func:`slot_state.apply`.
+
+        Stage 8 commit 4: ``state.remote`` is now the canonical store
+        for per-host snapshots. The shim ``ctx.remote_snapshots``
+        property reads through ``state.remote`` so screens that have
+        not yet been ported keep working unchanged. The fetcher
+        already includes its own elapsed timing in
+        :attr:`_RefreshSourceLanded.elapsed_ms`; we surface it on the
+        slot's ring so the latency-p50 tooltip has data.
         """
         host_name = event.name[len("remote:") :]
         from uxon.remote_collector import RemoteSnapshot
 
-        if isinstance(event.value, RemoteSnapshot):
-            top = self.screen_stack[-1] if self.screen_stack else None
-            if top is not None and isinstance(top, MainScreen):
-                top.apply_remote_snapshot(host_name, event.value)
+        from .slot_state import SlotResult, SlotState
+        from .slot_state import apply as apply_slot
+
+        # Resolve attempted_at from the source result's timing
+        # signature: ``time.time()`` at landing is close enough — the
+        # fetcher itself doesn't emit a timestamp, and the wall-clock
+        # at dispatch is what staleness logic compares against.
+        attempted_at = time.time()
+
+        snap = event.value if isinstance(event.value, RemoteSnapshot) else None
+        if snap is None and not event.error:
+            # Defensive: a remote source landed with neither a
+            # RemoteSnapshot nor an error — drop without mutating.
+            return
+
+        from_cache = bool(getattr(snap, "from_cache", False)) if snap is not None else False
+        result: SlotResult[RemoteSnapshot] = SlotResult(
+            value=snap,
+            error=event.error or None,
+            elapsed_ms=event.elapsed_ms,
+            attempted_at=attempted_at,
+            from_cache=from_cache,
+        )
+        prev = self.state.remote.get(host_name) or SlotState[RemoteSnapshot]()
+        self.state.remote[host_name] = apply_slot(prev, result)
+
+        # Fan out to MainScreen for the per-host repaint. The screen
+        # reads ``state.remote`` via the shim to render; the per-host
+        # update path lands in commit 4 alongside this dispatcher.
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if top is not None and isinstance(top, MainScreen):
+            top.apply_remote_snapshot(host_name, self.state.remote[host_name].value)
 
     def _build_source_dispatch(
         self,

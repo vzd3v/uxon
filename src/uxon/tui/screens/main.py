@@ -256,17 +256,20 @@ class MainScreen(Screen):
     def _remote_header(self) -> str:
         # Single-host case: peer name + "(own only)" badge if the peer
         # rejected --all-users (enable_all_users_list = false there) +
-        # health badge ([ok] / [cache 12s] / [err: …] / [loading]) read
-        # directly from RemoteSnapshot — the cleaner SlotState read
-        # lands at stage 8. Multi-host case: scope/health badges go onto
-        # the per-row HOST column in ``_flatten_remote_rows`` instead.
+        # health badge ([ok] / [cache 12s] / [err: …] / [loading]).
+        # Reads through the slot store: ``state.remote[name].value`` is
+        # the live :class:`RemoteSnapshot` (or ``None`` until the first
+        # landing). Multi-host case puts scope/health badges on the
+        # per-row HOST column in ``_flatten_remote_rows`` instead.
         if len(self.ctx.remote_hosts) == 1:
             host = self.ctx.remote_hosts[0]
-            snap = self.ctx.remote_snapshots.get(host.name)
+            state = getattr(self.app, "state", None)
+            slot = state.remote.get(host.name) if state is not None else None
+            snap = slot.value if slot is not None else None
             scope = (
                 " (own only)" if snap is not None and getattr(snap, "scope_limited", False) else ""
             )
-            health = select_remote_health_badge(snap)
+            health = select_remote_health_badge(host.name, snap)
             return f"── remote sessions ── {host.name}{scope} [{health.text}]"
         return f"── remote sessions ── {len(self.ctx.remote_hosts)} hosts"
 
@@ -321,15 +324,23 @@ class MainScreen(Screen):
     # ── Remote sessions block (multi-host) ────────────────────────────
 
     def _flatten_remote_rows(self) -> list[tuple[str, dict]]:
-        """Flatten ``ctx.remote_snapshots`` into a list the table can render.
+        """Flatten the per-host slot store into a list the table can render.
 
-        Thin shim over :func:`select_remote_rows` — the pure selector is
-        identity-stable across calls when ``ctx.remote_snapshots`` is
-        unchanged. We return a fresh ``list`` each call (the table's
-        ``populate`` mutates it). Tests that poke this method directly
-        keep working because the public surface is unchanged.
+        Thin shim over :func:`select_remote_rows` — the pure selector
+        keys on ``id(slot.value)``, so an unchanged-value tick returns
+        the same tuple object and downstream Textual code can
+        ``is``-compare to skip a re-render. We return a fresh ``list``
+        each call (the table's ``populate`` mutates it).
+
+        Stub-app safety: tests that build a ``_FakeApp`` without a
+        ``state`` attribute fall through to an empty result —
+        equivalent to "no slots have landed yet", which is a valid
+        zero state.
         """
-        return list(select_remote_rows(self.ctx))
+        state = getattr(self.app, "state", None)
+        if state is None:
+            return []
+        return list(select_remote_rows(state, self.ctx.remote_hosts))
 
     def _populate_remote_table(self) -> None:
         table = self.query_one("#sessions-remote", RemoteSessionTable)
@@ -337,30 +348,41 @@ class MainScreen(Screen):
 
     def apply_remote_snapshot(self, host_name: str, snapshot) -> None:
         """Hook called by the app dispatch when a per-host SourceSpec
-        result lands.
+        result lands. Re-renders the rows for one peer.
 
-        Updates ``ctx.remote_snapshots`` in place and re-populates the
-        table. Called from ``UxonApp.on__refresh_source_landed`` for
-        ``remote:*`` events. Also re-renders the section header so a
-        single-host "(own only)" badge appears as soon as the peer's
-        ``scope_limited`` flag arrives.
+        Stage 8 commit 4: the canonical store is ``state.remote`` —
+        the dispatcher (``UxonApp._handle_remote_snapshot``) writes
+        through ``slot_state.apply`` *before* calling this method,
+        so the screen only triggers a repaint here. The repaint is
+        per-host: we update only the rows for ``host_name`` via
+        :meth:`RemoteSessionTable.update_host_rows`, leaving every
+        other peer's rows untouched. The single-host section header
+        still re-renders because its ``(own only)`` badge depends on
+        the freshly-landed scope flag.
         """
-        self.ctx.remote_snapshots[host_name] = snapshot
-        if self.ctx.remote_hosts:
+        if not self.ctx.remote_hosts:
+            return
+        try:
+            table = self.query_one("#sessions-remote", RemoteSessionTable)
+        except Exception:  # pragma: no cover — table not yet mounted
+            return
+        rows: list[tuple[str, dict]] = []
+        if snapshot is not None:
+            multi_host = len(self.ctx.remote_hosts) > 1
+            display_name = host_name
+            if multi_host:
+                if bool(getattr(snapshot, "scope_limited", False)):
+                    display_name = f"{display_name} (own only)"
+                badge = select_remote_health_badge(host_name, snapshot)
+                display_name = f"{display_name} [{badge.text}]"
+            for rec in snapshot.sessions:
+                rows.append((display_name, rec))
+        table.update_host_rows(host_name, rows)
+        if len(self.ctx.remote_hosts) == 1:
             try:
-                self._populate_remote_table()
-            except Exception:  # pragma: no cover — table not yet mounted
+                self.query_one("#remote-section-header", Static).update(self._remote_header())
+            except Exception:  # pragma: no cover — header not yet mounted
                 pass
-            # Single-host header carries the (own only) badge — refresh
-            # it whenever a snapshot lands. Multi-host header is fixed
-            # ("N hosts") and doesn't change.
-            if len(self.ctx.remote_hosts) == 1:
-                try:
-                    from textual.widgets import Static
-
-                    self.query_one("#remote-section-header", Static).update(self._remote_header())
-                except Exception:  # pragma: no cover — header not yet mounted
-                    pass
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 
@@ -754,15 +776,12 @@ class MainScreen(Screen):
         # without this carry-over the periodic ctx refresh would clear
         # the suggestion banner one tick after it appeared.
         new_ctx.detected_agents = self.ctx.detected_agents
-        # remote_snapshots is owned by the per-host SSH workers (their
-        # cadence is `remote_interval`, ~10 s). The local ctx-rebuild
-        # source ticks much faster (`tui_refresh_interval_seconds`,
-        # ~2 s) and produces a fresh ctx with an empty snapshots dict;
-        # without this carry-over each local tick would wipe the
-        # remote-sessions table for the gap until the next per-host
-        # poll lands. Same dict reference flows through, so subsequent
-        # `apply_remote_snapshot` writes target the live state.
-        new_ctx.remote_snapshots = self.ctx.remote_snapshots
+        # Stage 8 commit 4: ``remote_snapshots`` no longer needs a
+        # carry — the canonical store is ``app.state.remote``,
+        # shared across rebuild ticks. The shim's getter flattens
+        # state.remote on read; in-place mutations of legacy slots
+        # are no longer driven by the dispatcher (which writes
+        # through ``slot_state.apply`` directly).
         # Stage 8 commit 3: link the new ctx to the App's TuiState
         # before writing through the ``refresh_tick`` proxy. Without
         # this link the assignment would land on the new ctx's own

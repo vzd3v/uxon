@@ -42,6 +42,38 @@ class ColumnLabelTests(unittest.TestCase):
         self.assertEqual(labels, ("HOST", "USER", "NAME", "AGENT", "CMD", "PATH"))
 
 
+def _state_with_snapshots(snapshots):
+    """Build a TuiState with one slot per host, value=snapshot.
+
+    Stage 8 commit 4: the canonical store moved from
+    ``ctx.remote_snapshots`` (legacy dict) onto
+    ``state.remote: dict[str, SlotState[RemoteSnapshot]]``. Tests
+    populate the slot dict directly here — the alternative
+    (constructing a SlotResult and feeding ``apply``) is exercised in
+    the unit tests for ``slot_state.apply`` itself.
+    """
+    from uxon.tui.slot_state import SlotState
+    from uxon.tui.tui_state import TuiState
+
+    state = TuiState()
+    for name, snap in snapshots.items():
+        state.remote[name] = SlotState(value=snap, last_attempt_at=1.0)
+    return state
+
+
+class _StubApp:
+    """Minimal stand-in for :class:`UxonApp` used by stub-screen tests.
+
+    Carries a real :class:`TuiState` so the post-commit-4 code paths
+    that go through ``self.app.state`` keep working. ``ctx`` is
+    populated by the screen's own assignment.
+    """
+
+    def __init__(self, state) -> None:
+        self.state = state
+        self.ctx = None
+
+
 class FlattenRemoteRowsTests(unittest.TestCase):
     """``MainScreen._flatten_remote_rows`` is a pure helper — we
     exercise it by constructing a mock object with the same attrs
@@ -51,7 +83,14 @@ class FlattenRemoteRowsTests(unittest.TestCase):
     def _flatten(self, hosts, snapshots):
         from uxon.tui.context import TuiContext
         from uxon.tui.screens.main import MainScreen
+        from uxon.tui.state import _REMOTE_ROWS_CACHE
 
+        # Reset the selector cache between tests — it's keyed on per-
+        # host ``(name, id(slot.value))`` and a previous test's cached
+        # tuple could otherwise mask a regression here.
+        _REMOTE_ROWS_CACHE.clear()
+        _REMOTE_ROWS_CACHE.update({"key": None, "value": ()})
+        state = _state_with_snapshots(snapshots)
         ctx = TuiContext(
             sessions=[],
             total_cpu="",
@@ -62,12 +101,17 @@ class FlattenRemoteRowsTests(unittest.TestCase):
             new_project_root="",
             existing_projects=[],
             remote_hosts=hosts,
-            remote_snapshots=snapshots,
         )
-        # Bind ctx without going through Screen.__init__ (which needs an
-        # app). The method accesses self.ctx only.
         screen = MainScreen.__new__(MainScreen)
         screen.ctx = ctx  # type: ignore[attr-defined]
+
+        # Shadow the ``app`` MessagePump descriptor with a stub that
+        # carries the state — the stub-app pattern matches the rest
+        # of the file.
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            app = _StubApp(state)
+
+        screen.__class__ = _StubScreen
         return MainScreen._flatten_remote_rows(screen)
 
     def _host(self, name: str) -> RemoteHost:
@@ -126,7 +170,14 @@ class FlattenRemoteRowsTests(unittest.TestCase):
 
 
 class ApplyRemoteSnapshotTests(unittest.TestCase):
-    def test_updates_snapshot_dict(self) -> None:
+    def test_repaints_one_host_via_update_host_rows(self) -> None:
+        """Stage 8 commit 4: ``apply_remote_snapshot`` no longer
+        writes to ``ctx.remote_snapshots`` (the dispatcher already
+        wrote the slot before calling). The screen instead drives a
+        per-host repaint via :meth:`RemoteSessionTable.update_host_rows`.
+        Pin that contract: the call dispatches with the host name and
+        the flattened rows for that host only.
+        """
         from uxon.tui.context import TuiContext
         from uxon.tui.screens.main import MainScreen
 
@@ -144,23 +195,39 @@ class ApplyRemoteSnapshotTests(unittest.TestCase):
                     name="vz-prod1", ssh_alias="vz-prod1", description="", remote_uxon="uxon"
                 )
             ],
-            remote_snapshots={},
         )
         screen = MainScreen.__new__(MainScreen)
         screen.ctx = ctx  # type: ignore[attr-defined]
-        # Patch _populate_remote_table so the call doesn't need a DOM.
-        screen._populate_remote_table = lambda: None  # type: ignore[method-assign]
+
+        captured: list[tuple[str, list]] = []
+
+        class _FakeTable:
+            def update_host_rows(self, host_name, rows):
+                captured.append((host_name, list(rows)))
+
+        # Replace ``query_one`` with a stub that returns the fake
+        # table for the remote-sessions id, otherwise raises (so we
+        # don't accidentally land on a different widget).
+        def _query_one(selector, _kind=None):
+            if selector == "#sessions-remote":
+                return _FakeTable()
+            raise LookupError(selector)
+
+        screen.query_one = _query_one  # type: ignore[method-assign]
         snap = RemoteSnapshot(
             host_name="vz-prod1",
             fetched_at_epoch=1.0,
             from_cache=False,
             error=None,
-            sessions=[{"name": "uxon-foo@claude"}],
+            sessions=[{"name": "uxon-foo@claude", "short_id": "foo"}],
             cached_at_epoch=1.0,
         )
         screen.apply_remote_snapshot("vz-prod1", snap)
-        self.assertIn("vz-prod1", ctx.remote_snapshots)
-        self.assertIs(ctx.remote_snapshots["vz-prod1"], snap)
+        self.assertEqual(len(captured), 1)
+        host_name, rows = captured[0]
+        self.assertEqual(host_name, "vz-prod1")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1].get("short_id"), "foo")
 
 
 class RemoteHeaderTests(unittest.TestCase):
@@ -171,6 +238,7 @@ class RemoteHeaderTests(unittest.TestCase):
     def _header(self, hosts):
         from uxon.tui.context import TuiContext
         from uxon.tui.screens.main import MainScreen
+        from uxon.tui.tui_state import TuiState
 
         ctx = TuiContext(
             sessions=[],
@@ -185,6 +253,16 @@ class RemoteHeaderTests(unittest.TestCase):
         )
         screen = MainScreen.__new__(MainScreen)
         screen.ctx = ctx  # type: ignore[attr-defined]
+
+        # ``_remote_header`` reads through ``self.app.state.remote``
+        # for the single-host case. Provide a stub-app with an empty
+        # state — the no-snapshot path is what the existing pin
+        # exercises; the populated case is covered by
+        # ``RemoteHeaderHealthBadgeTests`` in tests/test_uxon_tui.py.
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            app = _StubApp(TuiState())
+
+        screen.__class__ = _StubScreen
         return MainScreen._remote_header(screen)
 
     def _host(self, name: str) -> RemoteHost:
@@ -383,21 +461,20 @@ class ActionKillRemoteBindingTests(unittest.TestCase):
         self.assertEqual(kill_calls, [("vz-prod1", "alice", "uxon-foo@claude")])
 
 
-class ApplyLoadedCtxRemoteCarryTests(unittest.TestCase):
-    """``apply_loaded_ctx`` must carry ``remote_snapshots`` across the
-    local ctx-rebuild tick.
+class RemoteStateSurvivesRebuildTests(unittest.TestCase):
+    """Stage 8 commit 4: per-host remote snapshots live on
+    ``app.state.remote`` (a slot store). The carry-list inside
+    ``apply_loaded_ctx`` is gone — ``state`` is shared across rebuild
+    ticks because it's owned by the App, not the ctx.
 
-    The local rebuild source ticks roughly every
-    ``tui_refresh_interval_seconds`` (~2 s) and produces a fresh
-    :class:`TuiContext` with an empty ``remote_snapshots`` dict; the
-    per-host SSH workers tick on their own, slower cadence
-    (``remote_interval``, ~10 s) and write into the live dict. Without
-    the carry-over each fast tick would wipe the remote-sessions
-    table for the gap until the next per-host poll lands (the
-    "remote table mig­ает" symptom).
+    Pin the new contract: the slot for a peer survives an
+    ``apply_loaded_ctx`` swap so downstream readers
+    (``select_remote_rows``) keep seeing the live snapshot during
+    the gap between local-rebuild ticks (~2 s) and per-host SSH
+    polls (~10 s).
     """
 
-    def _ctx(self, *, snapshots=None) -> object:
+    def _ctx(self) -> object:
         from uxon.tui.context import TuiContext
 
         return TuiContext(
@@ -414,7 +491,6 @@ class ApplyLoadedCtxRemoteCarryTests(unittest.TestCase):
                     name="vz-prod1", ssh_alias="vz-prod1", description="", remote_uxon="uxon"
                 )
             ],
-            remote_snapshots=snapshots if snapshots is not None else {},
         )
 
     def _snap(self) -> RemoteSnapshot:
@@ -427,17 +503,25 @@ class ApplyLoadedCtxRemoteCarryTests(unittest.TestCase):
             cached_at_epoch=1.0,
         )
 
-    def test_remote_snapshots_carry_across_rebuild(self) -> None:
+    def test_state_remote_survives_apply_loaded_ctx(self) -> None:
         from uxon.tui.screens.main import MainScreen
+        from uxon.tui.slot_state import SlotState
+        from uxon.tui.tui_state import TuiState
 
         snap = self._snap()
-        old = self._ctx(snapshots={"vz-prod1": snap})
-        new = self._ctx(snapshots={})  # fresh rebuild — empty by default
+        state = TuiState()
+        state.remote["vz-prod1"] = SlotState(value=snap, last_attempt_at=1.0)
+
+        old = self._ctx()
+        new = self._ctx()
 
         class _FakeApp:
             ctx = None
 
-        fake_app = _FakeApp()
+            def __init__(self, state):
+                self.state = state
+
+        fake_app = _FakeApp(state)
 
         class _StubScreen(MainScreen):  # type: ignore[misc]
             focused = None
@@ -449,48 +533,12 @@ class ApplyLoadedCtxRemoteCarryTests(unittest.TestCase):
         screen._apply_ctx_refresh = lambda: True  # type: ignore[method-assign]
 
         screen.apply_loaded_ctx(new, focus_key="")
-
         self.assertIs(screen.ctx, new)
+        # The slot is unchanged — same SlotState identity, same value.
+        self.assertIs(state.remote["vz-prod1"].value, snap)
+        # Shim flattens state.remote into the legacy dict shape on read.
         self.assertIn("vz-prod1", screen.ctx.remote_snapshots)
         self.assertIs(screen.ctx.remote_snapshots["vz-prod1"], snap)
-        # Same dict reference flows through so subsequent
-        # ``apply_remote_snapshot`` writes target the live state.
-        self.assertIs(screen.ctx.remote_snapshots, old.remote_snapshots)
-
-    def test_carry_does_not_overwrite_when_new_ctx_brings_snapshots(self) -> None:
-        """If the rebuild ever starts pre-populating ``remote_snapshots``
-        (e.g. from on-disk cache), the carry-over must not silently
-        clobber the fresher data. The current behavior is "always carry";
-        this test pins it so a future change of intent is deliberate."""
-        from uxon.tui.screens.main import MainScreen
-
-        old_snap = self._snap()
-        new_snap = RemoteSnapshot(
-            host_name="vz-prod1",
-            fetched_at_epoch=2.0,
-            from_cache=True,
-            error=None,
-            sessions=[],
-            cached_at_epoch=2.0,
-        )
-        old = self._ctx(snapshots={"vz-prod1": old_snap})
-        new = self._ctx(snapshots={"vz-prod1": new_snap})
-
-        class _FakeApp:
-            ctx = None
-
-        class _StubScreen(MainScreen):  # type: ignore[misc]
-            focused = None
-            app = _FakeApp()
-
-        screen = _StubScreen.__new__(_StubScreen)
-        screen.ctx = old
-        screen._restore_focus_key = ""
-        screen._apply_ctx_refresh = lambda: True  # type: ignore[method-assign]
-
-        screen.apply_loaded_ctx(new, focus_key="")
-        # Carry wins: the in-memory live dict is preserved.
-        self.assertIs(screen.ctx.remote_snapshots["vz-prod1"], old_snap)
 
 
 class RemoteFocusKeyTests(unittest.TestCase):
@@ -596,21 +644,14 @@ class StateSelectorTests(unittest.TestCase):
         tui_state._REMOTE_ROWS_CACHE["value"] = ()
         tui_state._HOST_HEALTH_BADGE_CACHE.clear()
 
-    def _ctx(self, hosts, snapshots):
-        from uxon.tui.context import TuiContext
+    def _state(self, snapshots):
+        from uxon.tui.slot_state import SlotState
+        from uxon.tui.tui_state import TuiState
 
-        return TuiContext(
-            sessions=[],
-            total_cpu="",
-            total_ram="",
-            version="",
-            cwd="",
-            cwd_short="",
-            new_project_root="",
-            existing_projects=[],
-            remote_hosts=hosts,
-            remote_snapshots=snapshots,
-        )
+        state = TuiState()
+        for name, snap in snapshots.items():
+            state.remote[name] = SlotState(value=snap, last_attempt_at=1.0)
+        return state
 
     def _host(self, name: str) -> RemoteHost:
         return RemoteHost(name=name, ssh_alias=name, description="", remote_uxon="uxon")
@@ -629,45 +670,124 @@ class StateSelectorTests(unittest.TestCase):
         from uxon.tui.state import select_remote_rows
 
         self._reset_caches()
-        ctx = self._ctx(
-            [self._host("prod"), self._host("stage")],
+        hosts = [self._host("prod"), self._host("stage")]
+        state = self._state(
             {
                 "prod": self._snap("prod", [{"user": "u1", "name": "n1"}]),
                 "stage": self._snap("stage", [{"user": "u2", "name": "n2"}]),
-            },
+            }
         )
-        first = select_remote_rows(ctx)
-        second = select_remote_rows(ctx)
+        first = select_remote_rows(state, hosts)
+        second = select_remote_rows(state, hosts)
         self.assertIs(first, second)
         self.assertEqual(len(first), 2)
 
     def test_select_remote_rows_recomputes_on_snapshot_replacement(self) -> None:
+        from uxon.tui.slot_state import SlotState
         from uxon.tui.state import select_remote_rows
 
         self._reset_caches()
-        ctx = self._ctx(
-            [self._host("prod")],
-            {"prod": self._snap("prod", [{"user": "u1", "name": "n1"}])},
+        hosts = [self._host("prod")]
+        state = self._state({"prod": self._snap("prod", [{"user": "u1", "name": "n1"}])})
+        first = select_remote_rows(state, hosts)
+        # Replace the slot's value with a different snapshot — bumps id.
+        state.remote["prod"] = SlotState(
+            value=self._snap("prod", [{"user": "u1", "name": "n1-new"}]),
+            last_attempt_at=2.0,
         )
-        first = select_remote_rows(ctx)
-        ctx.remote_snapshots["prod"] = self._snap("prod", [{"user": "u1", "name": "n1-new"}])
-        second = select_remote_rows(ctx)
+        second = select_remote_rows(state, hosts)
         self.assertIsNot(first, second)
 
-    def test_select_layout_signature_equal_for_unchanged_ctx(self) -> None:
-        from uxon.tui.state import select_layout_signature
-
-        ctx = self._ctx([], {})
-        self.assertEqual(select_layout_signature(ctx), select_layout_signature(ctx))
-
-    def test_select_remote_health_badge_identity_stable_per_snapshot(self) -> None:
-        from uxon.tui.state import select_remote_health_badge
+    def test_select_remote_rows_identity_stable_on_no_op_apply(self) -> None:
+        """Stage 8 commit 4 contract: an unchanged-value tick goes
+        through ``slot_state.apply`` (which allocates a fresh
+        SlotState) but ``id(slot.value)`` is preserved so the
+        selector cache hits and returns the same tuple object.
+        Pinning this here protects the read-side guarantee that
+        downstream Textual code can ``is``-compare to skip a
+        re-render.
+        """
+        from uxon.tui.slot_state import SlotResult, SlotState
+        from uxon.tui.slot_state import apply as apply_slot
+        from uxon.tui.state import select_remote_rows
 
         self._reset_caches()
-        snap = self._snap("prod", [])
-        a = select_remote_health_badge(snap)
-        b = select_remote_health_badge(snap)
-        self.assertIs(a, b)
+        hosts = [self._host("prod")]
+        snap = self._snap("prod", [{"user": "u1", "name": "n1"}])
+        state = self._state({"prod": snap})
+        first = select_remote_rows(state, hosts)
+
+        # No-op success: same value (==), different object identity.
+        # The identity-stable apply substitutes prev.value into the
+        # result so the new SlotState carries the original snap.
+        from uxon.remote_collector import RemoteSnapshot
+
+        snap_again = RemoteSnapshot(
+            host_name="prod",
+            fetched_at_epoch=1.0,
+            from_cache=False,
+            error=None,
+            sessions=[{"user": "u1", "name": "n1"}],
+            cached_at_epoch=1.0,
+        )
+        self.assertEqual(snap, snap_again)
+        self.assertIsNot(snap, snap_again)
+        result: SlotResult[RemoteSnapshot] = SlotResult(
+            value=snap_again,
+            error=None,
+            elapsed_ms=10,
+            attempted_at=2.0,
+        )
+        prev_slot: SlotState[RemoteSnapshot] = state.remote["prod"]
+        new_slot: SlotState[RemoteSnapshot] = apply_slot(prev_slot, result)
+        state.remote["prod"] = new_slot
+        # Slot identity changed (apply allocates fresh).
+        self.assertIsNot(prev_slot, new_slot)
+        # Value identity preserved by apply.
+        self.assertIs(new_slot.value, snap)
+        # Selector cache hits because cache key uses id(slot.value).
+        second = select_remote_rows(state, hosts)
+        self.assertIs(first, second)
+
+    def test_select_layout_signature_equal_for_unchanged_ctx(self) -> None:
+        from uxon.tui.context import TuiContext
+        from uxon.tui.state import select_layout_signature
+
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+        )
+        self.assertEqual(select_layout_signature(ctx), select_layout_signature(ctx))
+
+    def test_select_remote_health_badge_per_host_keyed(self) -> None:
+        """Cache is per-host: replacing host A's snapshot does not
+        invalidate host B's cached badge entry. Pinned here because
+        the pre-commit-4 cache flushed all entries on a 256-key
+        overflow — the worst-of-both behaviour at 50-host churn.
+        """
+        from uxon.tui.state import _HOST_HEALTH_BADGE_CACHE, select_remote_health_badge
+
+        self._reset_caches()
+        snap_a = self._snap("a", [])
+        snap_b = self._snap("b", [])
+        ba = select_remote_health_badge("a", snap_a)
+        bb = select_remote_health_badge("b", snap_b)
+        # Replace a's slot — b stays cached.
+        snap_a2 = self._snap("a", [])
+        ba2 = select_remote_health_badge("a", snap_a2)
+        self.assertIsNot(ba, ba2)
+        bb2 = select_remote_health_badge("b", snap_b)
+        self.assertIs(bb, bb2)
+        # Cache keyed by host name, value carries (id, badge).
+        self.assertIn("a", _HOST_HEALTH_BADGE_CACHE)
+        self.assertIn("b", _HOST_HEALTH_BADGE_CACHE)
+        self.assertEqual(_HOST_HEALTH_BADGE_CACHE["b"][0], id(snap_b))
 
 
 if __name__ == "__main__":

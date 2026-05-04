@@ -252,6 +252,14 @@ class TuiContext:
     # block — no Remote-sessions table is rendered, no SSH workers
     # are kicked.
     remote_hosts: list = field(default_factory=list)  # list[RemoteHost]
+    # ``remote_snapshots`` is exposed via the property defined after
+    # the class body. Reads return either a flattened view of
+    # ``self._state.remote`` (when a state is linked) or the legacy
+    # dict slot below. Writes go to the legacy slot only — the
+    # dispatcher mutates ``state.remote`` directly via ``apply``.
+    # Test fixtures keep passing ``remote_snapshots={...}`` as a
+    # kwarg, which lands in the legacy slot for unit tests that
+    # don't build an App.
     remote_snapshots: dict = field(default_factory=dict)  # dict[str, RemoteSnapshot]
 
     # Pluggable refresh sources. Each entry is a ``SourceSpec`` (see
@@ -308,6 +316,37 @@ def _tui_refresh_tick_set(self: TuiContext, value: int) -> None:
 TuiContext.refresh_tick = property(  # type: ignore[assignment]
     _tui_refresh_tick_get,
     _tui_refresh_tick_set,
+)
+
+
+# ── remote_snapshots property (read-through view onto state.remote) ─
+#
+# Stage 8 commit 4: ``state.remote`` is the canonical store. Reads
+# through the shim flatten the slot dict to the legacy
+# ``dict[str, RemoteSnapshot]`` shape; writes (rare; mostly test
+# fixtures setting via the constructor kwarg) land on a private
+# legacy dict so test paths that don't run inside an App keep working.
+#
+# The flattened view is rebuilt on every access — sub-optimal, but
+# selectors cache around it (``select_remote_rows`` keys on
+# ``id(slot.value)`` not ``id(snapshots)``) so the rebuild cost is
+# bounded by the number of configured hosts.
+
+
+def _tui_remote_snapshots_get(self: TuiContext) -> dict:
+    state = getattr(self, "_state", None)
+    if state is not None and state.remote:
+        return {name: slot.value for name, slot in state.remote.items() if slot.value is not None}
+    return self.__dict__.get("_legacy_remote_snapshots", {})
+
+
+def _tui_remote_snapshots_set(self: TuiContext, value: dict) -> None:
+    self.__dict__["_legacy_remote_snapshots"] = value
+
+
+TuiContext.remote_snapshots = property(  # type: ignore[assignment]
+    _tui_remote_snapshots_get,
+    _tui_remote_snapshots_set,
 )
 
 

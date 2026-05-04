@@ -164,6 +164,107 @@ class FromCacheTests(unittest.TestCase):
         self.assertTrue(nxt.from_cache)
 
 
+class P50Tests(unittest.TestCase):
+    """Stage 8 commit 4: ``SlotState.p50_elapsed_ms`` is computed
+    inside :func:`apply` from the latency ring. Pin the contract so
+    a future implementation change (eg. switching to a streaming
+    median or tightening the ring) doesn't silently shift the value.
+    """
+
+    def test_default_state_has_no_p50(self) -> None:
+        self.assertIsNone(SlotState[int]().p50_elapsed_ms)
+
+    def test_first_success_sets_p50_to_only_sample(self) -> None:
+        out = apply(
+            SlotState[int](),
+            SlotResult[int](value=1, error=None, elapsed_ms=42, attempted_at=1.0),
+        )
+        self.assertEqual(out.p50_elapsed_ms, 42)
+
+    def test_odd_length_ring_uses_middle(self) -> None:
+        # Three samples → median is the middle element after sort.
+        prev = SlotState[int]()
+        for ms in (10, 30, 20):
+            prev = apply(
+                prev, SlotResult[int](value=1, error=None, elapsed_ms=ms, attempted_at=1.0)
+            )
+        self.assertEqual(prev.p50_elapsed_ms, 20)
+
+    def test_even_length_ring_uses_average_not_upper(self) -> None:
+        # Two samples [10, 20] → 15 (averaged), not 20 (upper-median bias).
+        # The upper-median form is what ``statistics.median_high`` would
+        # give; we deliberately diverge to match operator latency reading.
+        prev = apply(
+            SlotState[int](),
+            SlotResult[int](value=1, error=None, elapsed_ms=10, attempted_at=1.0),
+        )
+        prev = apply(
+            prev,
+            SlotResult[int](value=1, error=None, elapsed_ms=20, attempted_at=2.0),
+        )
+        self.assertEqual(prev.p50_elapsed_ms, 15)
+
+
+class IdentityStableApplyTests(unittest.TestCase):
+    """Stage 8 commit 4: ``apply`` substitutes ``prev.value`` into the
+    result on a no-op success so ``id(slot.value)`` is preserved
+    across an unchanged-value tick. Selectors keyed on
+    ``id(slot.value)`` rely on this contract; any regression here
+    breaks the per-host repaint optimisation (commit 11) and the
+    selector cache (state.py).
+    """
+
+    def test_value_identity_preserved_on_no_op_success(self) -> None:
+        v1 = ["x"]  # mutable container is fine — apply doesn't touch it
+        v2 = list(v1)  # equal but distinct identity
+        prev = apply(
+            SlotState[list](),
+            SlotResult[list](value=v1, error=None, elapsed_ms=10, attempted_at=1.0),
+        )
+        self.assertIs(prev.value, v1)
+
+        out = apply(
+            prev,
+            SlotResult[list](value=v2, error=None, elapsed_ms=12, attempted_at=2.0),
+        )
+        # Value identity preserved.
+        self.assertIs(out.value, v1)
+        # Slot identity changed (apply allocates fresh — not a no-op
+        # at the slot level; selectors should not key on the slot id).
+        self.assertIsNot(out, prev)
+        # Clock advanced, ring grew, p50 recomputed.
+        self.assertEqual(out.last_attempt_at, 2.0)
+        self.assertEqual(len(out.elapsed_ms_recent), 2)
+
+    def test_value_identity_breaks_on_genuine_update(self) -> None:
+        v1 = ["x"]
+        v2 = ["y"]
+        prev = apply(
+            SlotState[list](),
+            SlotResult[list](value=v1, error=None, elapsed_ms=10, attempted_at=1.0),
+        )
+        out = apply(
+            prev,
+            SlotResult[list](value=v2, error=None, elapsed_ms=12, attempted_at=2.0),
+        )
+        self.assertIsNot(out.value, v1)
+        self.assertEqual(out.value, v2)
+
+    def test_failure_preserves_prev_value_identity(self) -> None:
+        # Failure path was already identity-preserving (apply assigns
+        # ``value=prev.value``); pin the cross-test for completeness.
+        v1 = ["x"]
+        prev = apply(
+            SlotState[list](),
+            SlotResult[list](value=v1, error=None, elapsed_ms=10, attempted_at=1.0),
+        )
+        out = apply(
+            prev,
+            SlotResult[list](value=None, error="boom", elapsed_ms=12, attempted_at=2.0),
+        )
+        self.assertIs(out.value, v1)
+
+
 class PurityTests(unittest.TestCase):
     def test_apply_is_pure_same_inputs_equal_outputs(self) -> None:
         prev = SlotState[str](value="x", consecutive_failures=2)

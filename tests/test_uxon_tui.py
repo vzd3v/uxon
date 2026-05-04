@@ -850,15 +850,32 @@ class RemoteHeaderHealthBadgeTests(unittest.TestCase):
             remote_hosts=[
                 RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")
             ],
-            remote_snapshots={"prod": snap} if snap is not None else {},
         )
         return ctx
 
     def _header(self, snap):
         from uxon.tui.screens.main import MainScreen
+        from uxon.tui.slot_state import SlotState
+        from uxon.tui.tui_state import TuiState
+
+        # Stage 8 commit 4: ``_remote_header`` reads through
+        # ``self.app.state.remote`` for the single-host case. Build
+        # a stub state with one slot per host populated.
+        state = TuiState()
+        if snap is not None:
+            state.remote["prod"] = SlotState(value=snap, last_attempt_at=1.0)
+
+        class _StubApp:
+            def __init__(self, state):
+                self.state = state
 
         screen = MainScreen.__new__(MainScreen)
         screen.ctx = self._ctx_with_snapshot(snap)  # type: ignore[attr-defined]
+
+        class _StubScreen(MainScreen):  # type: ignore[misc]
+            app = _StubApp(state)
+
+        screen.__class__ = _StubScreen
         return MainScreen._remote_header(screen)
 
     def test_loading_when_no_snapshot(self) -> None:
