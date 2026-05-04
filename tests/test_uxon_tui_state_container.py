@@ -161,5 +161,70 @@ class MainScreenLoadingReactiveTests(unittest.TestCase):
         self.assertTrue(hasattr(MainScreen, "loading"))
 
 
+class AvailabilityShimTests(unittest.TestCase):
+    """Stage 8 commit 5a: ``ctx.agent_availability`` and
+    ``ctx.detected_agents`` are now read-through properties onto
+    ``state.<slot>.value``. The shim must expose the *same dict
+    object* the slot stores so today's worker-thread in-place
+    mutations continue to land on state. The race fix (worker stops
+    mutating from the thread) lands in commit 5b; commit 5a only
+    pins the structural read-through.
+    """
+
+    def test_availability_reads_state_slot_value(self) -> None:
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            self.skipTest("textual not available")
+        from uxon.tui.app import UxonApp
+
+        ctx = _bare_ctx(loading=True)
+        ctx.agent_availability = {"claude": "pending"}
+        app = UxonApp(ctx, probe_agents=False)
+        # State slot was populated from the legacy dict; the shim
+        # now reads through state.<slot>.value.
+        self.assertEqual(app.ctx.agent_availability, {"claude": "pending"})
+        self.assertIs(app.ctx.agent_availability, app.state.agent_availability.value)
+
+    def test_in_place_mutation_lands_on_state(self) -> None:
+        """Pin the race-prone-but-functional behaviour: a thread that
+        mutates the shim's dict in place writes to state.<slot>.value
+        (same dict reference). Commit 5b fixes the race; this test
+        survives that fix because the fixed worker no longer mutates
+        ctx.<field> at all.
+        """
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            self.skipTest("textual not available")
+        from uxon.tui.app import UxonApp
+
+        ctx = _bare_ctx(loading=True)
+        ctx.agent_availability = {}
+        app = UxonApp(ctx, probe_agents=False)
+        app.ctx.agent_availability["codex"] = "ok"
+        self.assertEqual(app.state.agent_availability.value, {"codex": "ok"})
+
+    def test_detected_agents_shim(self) -> None:
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            self.skipTest("textual not available")
+        from uxon.tui.app import UxonApp
+
+        ctx = _bare_ctx(loading=True)
+        ctx.detected_agents = {"codex": "binary"}
+        app = UxonApp(ctx, probe_agents=False)
+        self.assertEqual(app.ctx.detected_agents, {"codex": "binary"})
+        self.assertIs(app.ctx.detected_agents, app.state.detected_agents.value)
+
+    def test_legacy_fallback_when_no_state_linked(self) -> None:
+        ctx = _bare_ctx()
+        # No state linked. Setter writes to legacy slot; getter reads
+        # from there because state is None.
+        ctx.agent_availability = {"claude": "ok"}
+        self.assertEqual(ctx.agent_availability, {"claude": "ok"})
+
+
 if __name__ == "__main__":
     unittest.main()

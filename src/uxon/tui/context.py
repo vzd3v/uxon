@@ -350,6 +350,53 @@ TuiContext.remote_snapshots = property(  # type: ignore[assignment]
 )
 
 
+# ── agent_availability / detected_agents shim properties ────────────
+#
+# Stage 8 commit 5a: the canonical store moves to
+# ``state.agent_availability`` and ``state.detected_agents`` (each a
+# :class:`SlotState[dict[...]]`). The shim properties read
+# ``state.<slot>.value`` when a state is linked — and crucially
+# *expose the same dict object* the slot holds, so today's
+# worker-thread in-place mutations
+# (``self.ctx.agent_availability[aid] = …``) continue to land on
+# state. This commit does not change semantics: the worker-thread
+# race is identical to today's. The race fix lands in commit 5b
+# (``_probe_host_worker`` builds local dicts and posts a
+# :class:`SlotResult`; the on-loop handler runs ``apply``).
+
+
+def _availability_get(self: TuiContext) -> dict:
+    state = getattr(self, "_state", None)
+    if state is not None and state.agent_availability.value is not None:
+        return state.agent_availability.value
+    return self.__dict__.get("_legacy_agent_availability", {})
+
+
+def _availability_set(self: TuiContext, value: dict) -> None:
+    self.__dict__["_legacy_agent_availability"] = value
+
+
+def _detected_get(self: TuiContext) -> dict:
+    state = getattr(self, "_state", None)
+    if state is not None and state.detected_agents.value is not None:
+        return state.detected_agents.value
+    return self.__dict__.get("_legacy_detected_agents", {})
+
+
+def _detected_set(self: TuiContext, value: dict) -> None:
+    self.__dict__["_legacy_detected_agents"] = value
+
+
+TuiContext.agent_availability = property(  # type: ignore[assignment]
+    _availability_get,
+    _availability_set,
+)
+TuiContext.detected_agents = property(  # type: ignore[assignment]
+    _detected_get,
+    _detected_set,
+)
+
+
 # Number of action items at the top of the main list.
 #
 # Historically a loose module-level constant; as of PR 9 (2026-04-18)

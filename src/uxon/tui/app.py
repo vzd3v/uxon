@@ -230,6 +230,24 @@ class UxonApp(App):
         # counter still lives in the legacy
         # ``MainScreen.apply_loaded_ctx`` increment until commit 6b.
         self.state: TuiState = TuiState()
+        # Stage 8 commit 5a: hoist the cli-built initial dicts into
+        # state slots so the slot is canonical from this point
+        # forward. The legacy ctx kwarg-stored dicts remain accessible
+        # via the shim's fallback path for unit tests that build a
+        # bare ctx without an App. ``dataclasses.replace`` produces a
+        # new (frozen) :class:`SlotState` carrying the same dict
+        # reference — worker-thread in-place mutations through
+        # ``ctx.agent_availability[aid] = …`` will land on this dict.
+        from dataclasses import replace as _replace
+
+        self.state.agent_availability = _replace(
+            self.state.agent_availability,
+            value=dict(ctx.agent_availability),
+        )
+        self.state.detected_agents = _replace(
+            self.state.detected_agents,
+            value=dict(ctx.detected_agents),
+        )
         self.ctx._state = self.state
         self.pending_launch: LaunchRequest | None = None
         self.quit_rc: int | None = None
