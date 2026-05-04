@@ -95,12 +95,15 @@ class FlattenRemoteRowsTests(unittest.TestCase):
     def test_iterates_hosts_in_config_order(self) -> None:
         # Iteration order follows ``remote_hosts``, not snapshot
         # insertion order, so the displayed order is config-defined.
+        # In the multi-host display the bare host name is the first
+        # space-delimited token; the trailing ``[…]`` is the stage-6
+        # health badge.
         snaps = {
             "b": self._snap("b", [{"name": "x"}]),
             "a": self._snap("a", [{"name": "y"}]),
         }
         rows = self._flatten([self._host("a"), self._host("b")], snaps)
-        self.assertEqual([h for h, _ in rows], ["a", "b"])
+        self.assertEqual([h.split(" ", 1)[0] for h, _ in rows], ["a", "b"])
 
     def test_pairs_each_record_with_its_host(self) -> None:
         snaps = {
@@ -108,8 +111,12 @@ class FlattenRemoteRowsTests(unittest.TestCase):
             "b": self._snap("b", [{"name": "s3"}]),
         }
         rows = self._flatten([self._host("a"), self._host("b")], snaps)
+        # Multi-host display attaches the stage-6 health badge to the
+        # host display name; pin record pairing rather than the badge
+        # text (which is exercised separately in ``HostHealthBadgeTests``
+        # in ``tests/test_uxon_tui.py``).
         self.assertEqual(
-            rows,
+            [(h.split(" ", 1)[0], rec) for h, rec in rows],
             [
                 ("a", {"name": "s1"}),
                 ("a", {"name": "s2"}),

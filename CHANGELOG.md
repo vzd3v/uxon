@@ -8,6 +8,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Remote-host section now carries a per-host health badge derived
+  directly from the snapshot. Single-host setups append the state to
+  the section header (`[ok]`, `[cache 12s]`, `[err: ssh timeout]`,
+  `[loading]`); multi-host setups attach the same badge to the per-row
+  HOST column. The richer SlotState-driven surface (latency ring
+  tooltip, in-flight indicator) lands in a later stage.
+
 ## [3.5.0] — 2026-05-03
 
 ### Added

@@ -736,5 +736,160 @@ class LaunchRequestShapeTests(unittest.TestCase):
         self.assertTrue(issubclass(uxon_tui.CallbackError, Exception))
 
 
+class HostHealthBadgeTests(unittest.TestCase):
+    """``host_health_badge`` derives a per-host badge from a
+    ``RemoteSnapshot`` (or ``None``). Stage 6 reads the snapshot's
+    ``error`` / ``from_cache`` / ``cached_at_epoch`` directly — the
+    SlotState[T] surface lands at stage 8."""
+
+    def _snap(self, **overrides):
+        from uxon.remote_collector import RemoteSnapshot
+
+        defaults: dict[str, object] = dict(
+            host_name="prod",
+            fetched_at_epoch=1000.0,
+            from_cache=False,
+            error=None,
+            sessions=[],
+            cached_at_epoch=1000.0,
+        )
+        defaults.update(overrides)
+        return RemoteSnapshot(**defaults)  # type: ignore[arg-type]
+
+    def test_none_snapshot_is_loading(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(None)
+        self.assertEqual(b.status, "loading")
+        self.assertEqual(b.text, "loading")
+
+    def test_fresh_success_is_ok(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(self._snap())
+        self.assertEqual(b.status, "ok")
+        self.assertEqual(b.text, "ok")
+
+    def test_from_cache_no_error_is_stale_with_age(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(self._snap(from_cache=True), now=1027.0)
+        self.assertEqual(b.status, "stale")
+        self.assertEqual(b.text, "cache 27s")
+
+    def test_from_cache_minutes_age(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(self._snap(from_cache=True), now=1000.0 + 90)
+        self.assertEqual(b.text, "cache 1m")
+
+    def test_from_cache_hours_age(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(self._snap(from_cache=True), now=1000.0 + 7200)
+        self.assertEqual(b.text, "cache 2h")
+
+    def test_from_cache_with_live_error_appends_err(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(
+            self._snap(from_cache=True, error="ssh timeout after 5s"),
+            now=1010.0,
+        )
+        self.assertEqual(b.status, "stale")
+        self.assertIn("cache 10s", b.text)
+        self.assertIn("err", b.text)
+
+    def test_error_no_cache_is_down_with_short_message(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(
+            self._snap(from_cache=False, error="ssh timeout after 5s", cached_at_epoch=None)
+        )
+        self.assertEqual(b.status, "down")
+        self.assertTrue(b.text.startswith("err: "))
+        self.assertIn("ssh timeout", b.text)
+
+    def test_error_message_first_line_only(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(
+            self._snap(from_cache=False, error="line one\nline two", cached_at_epoch=None)
+        )
+        self.assertNotIn("\n", b.text)
+        self.assertNotIn("line two", b.text)
+
+    def test_error_message_truncated_when_long(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        long_err = "x" * 200
+        b = host_health_badge(self._snap(from_cache=False, error=long_err, cached_at_epoch=None))
+        # Bounded badge length keeps the section header / table cell
+        # from wrapping under pathological peer error strings.
+        self.assertLessEqual(len(b.text), 60)
+
+
+class RemoteHeaderHealthBadgeTests(unittest.TestCase):
+    """Single-host section header carries the stage-6 health badge.
+    Multi-host header still shows the host count; per-host badges go
+    onto the HOST column rows (covered in tests/test_uxon_tui_remote.py)."""
+
+    def _ctx_with_snapshot(self, snap):
+        from uxon.remote_hosts import RemoteHost
+        from uxon.tui.context import TuiContext
+
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+            remote_hosts=[
+                RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")
+            ],
+            remote_snapshots={"prod": snap} if snap is not None else {},
+        )
+        return ctx
+
+    def _header(self, snap):
+        from uxon.tui.screens.main import MainScreen
+
+        screen = MainScreen.__new__(MainScreen)
+        screen.ctx = self._ctx_with_snapshot(snap)  # type: ignore[attr-defined]
+        return MainScreen._remote_header(screen)
+
+    def test_loading_when_no_snapshot(self) -> None:
+        self.assertIn("[loading]", self._header(None))
+
+    def test_ok_when_fresh_success(self) -> None:
+        from uxon.remote_collector import RemoteSnapshot
+
+        snap = RemoteSnapshot(
+            host_name="prod",
+            fetched_at_epoch=1.0,
+            from_cache=False,
+            error=None,
+            sessions=[],
+            cached_at_epoch=1.0,
+        )
+        self.assertIn("[ok]", self._header(snap))
+
+    def test_down_when_error_no_cache(self) -> None:
+        from uxon.remote_collector import RemoteSnapshot
+
+        snap = RemoteSnapshot(
+            host_name="prod",
+            fetched_at_epoch=1.0,
+            from_cache=False,
+            error="ssh exited 255",
+            sessions=[],
+            cached_at_epoch=None,
+        )
+        self.assertIn("[err:", self._header(snap))
+
+
 if __name__ == "__main__":
     unittest.main()

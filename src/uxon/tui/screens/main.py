@@ -40,6 +40,7 @@ from ..state import (
     MainIntent,
     activate_main_index,
     digit_jump_intent,
+    host_health_badge,
     main_action_intent,
     main_status_line,
     session_intent,
@@ -238,16 +239,19 @@ class MainScreen(Screen):
 
     def _remote_header(self) -> str:
         # Single-host case: peer name + "(own only)" badge if the peer
-        # rejected --all-users (e.g. enable_all_users_list = false on
-        # the peer's config). Multi-host case: badges go onto the
-        # per-row HOST column in ``_flatten_remote_rows`` instead.
+        # rejected --all-users (enable_all_users_list = false there) +
+        # health badge ([ok] / [cache 12s] / [err: …] / [loading]) read
+        # directly from RemoteSnapshot — the cleaner SlotState read
+        # lands at stage 8. Multi-host case: scope/health badges go onto
+        # the per-row HOST column in ``_flatten_remote_rows`` instead.
         if len(self.ctx.remote_hosts) == 1:
             host = self.ctx.remote_hosts[0]
             snap = self.ctx.remote_snapshots.get(host.name)
-            badge = (
+            scope = (
                 " (own only)" if snap is not None and getattr(snap, "scope_limited", False) else ""
             )
-            return f"── remote sessions ── {host.name}{badge}"
+            health = host_health_badge(snap)
+            return f"── remote sessions ── {host.name}{scope} [{health.text}]"
         return f"── remote sessions ── {len(self.ctx.remote_hosts)} hosts"
 
     def _cwd_detail(self) -> str:
@@ -309,7 +313,12 @@ class MainScreen(Screen):
             if snap is None:
                 continue
             limited = bool(getattr(snap, "scope_limited", False))
-            display_name = f"{host.name} (own only)" if multi_host and limited else host.name
+            display_name = host.name
+            if multi_host:
+                if limited:
+                    display_name = f"{display_name} (own only)"
+                health = host_health_badge(snap)
+                display_name = f"{display_name} [{health.text}]"
             for rec in snap.sessions:
                 rows.append((display_name, rec))
         return rows
