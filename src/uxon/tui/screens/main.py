@@ -26,6 +26,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.lazy import Lazy
+from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
@@ -118,9 +119,22 @@ class MainScreen(Screen):
         Binding("9", "digit_jump(9)", "", show=False, priority=True),
     ]
 
+    # Stage 8 commit 3: writable reactive driving the
+    # ``#sessions-note`` re-render when the first ``MainData`` lands.
+    # Plain assignment only — **no** ``compute_loading`` method:
+    # Textual's ``Reactive._set`` (textual/reactive.py:330-333) marks
+    # the descriptor read-only when ``hasattr(obj, compute_name)``
+    # holds, and ``mutate_reactive`` raises immediately. The
+    # rebuild-source dispatcher (commit 7) writes
+    # ``screen.loading = (state.main is None)`` directly. Until then
+    # ``apply_loaded_ctx`` mirrors ``ctx.loading`` into this reactive
+    # so existing renderers see a consistent state.
+    loading: reactive[bool] = reactive(True)
+
     def __init__(self, ctx: TuiContext) -> None:
         super().__init__()
         self.ctx = ctx
+        self.loading = bool(ctx.loading)
         self._restore_focus_key = ""
 
     def compose(self) -> ComposeResult:
@@ -749,6 +763,20 @@ class MainScreen(Screen):
         # poll lands. Same dict reference flows through, so subsequent
         # `apply_remote_snapshot` writes target the live state.
         new_ctx.remote_snapshots = self.ctx.remote_snapshots
+        # Stage 8 commit 3: link the new ctx to the App's TuiState
+        # before writing through the ``refresh_tick`` proxy. Without
+        # this link the assignment would land on the new ctx's own
+        # default-factory state (transient and unobserved by anyone)
+        # instead of the App-owned state container. Some unit tests
+        # build a FakeApp without ``state``; fall through to the
+        # legacy slot in that case (covered by ``getattr``).
+        app_state = getattr(self.app, "state", None)
+        if app_state is not None:
+            new_ctx._state = app_state
+        else:
+            # Carry the legacy ctx's _state across so the proxy keeps
+            # round-tripping the counter when no App is in the picture.
+            new_ctx._state = self.ctx._state
         new_ctx.refresh_tick = self.ctx.refresh_tick + 1
         # Carry the cwd-writable result across refreshes too: same-user
         # builds set it synchronously, cross-user builds leave None and
@@ -758,6 +786,15 @@ class MainScreen(Screen):
         if new_ctx.cwd_writable is None and new_ctx.cwd == self.ctx.cwd:
             new_ctx.cwd_writable = self.ctx.cwd_writable
         self.ctx = new_ctx
+        # Mirror ``ctx.loading`` into the reactive so watchers fire
+        # when the first non-skeleton ctx lands. Commit 7 flips this
+        # to ``state.main is None``; for now both sides agree. The
+        # reactive descriptor needs Textual node setup (``_id``); test
+        # stubs that bypass ``__init__`` (``MainScreen.__new__``) hit
+        # ReactiveError on assignment, so guard with a defensive
+        # ``hasattr`` rather than try/except (cheaper hot-path).
+        if hasattr(self, "_id"):
+            self.loading = bool(new_ctx.loading)
         # Keep app.ctx in lockstep so the probe worker's writes target the
         # same dict that screens read from.
         self.app.ctx = new_ctx  # type: ignore[attr-defined]

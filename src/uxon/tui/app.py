@@ -37,6 +37,7 @@ from .state import (
     compute_all_missing,
     should_push_agents_unavailable,
 )
+from .tui_state import TuiState
 
 _ACTIVE_STATES = (WorkerState.PENDING, WorkerState.RUNNING)
 
@@ -221,6 +222,15 @@ class UxonApp(App):
         # subsequent commits; for this commit ``cfg`` is duplicated
         # state populated alongside the live ctx.
         self.cfg: TuiConfig = TuiConfig.from_context(ctx)
+        # Stage 8 commit 3: introduce the async-side state container.
+        # Empty on construction — no slot is canonical yet (commits
+        # 4–6b flip canonicality field-by-field). ``ctx._state`` is
+        # linked here so ``ctx.refresh_tick`` already round-trips
+        # through ``state.refresh_tick``; the canonical owner of the
+        # counter still lives in the legacy
+        # ``MainScreen.apply_loaded_ctx`` increment until commit 6b.
+        self.state: TuiState = TuiState()
+        self.ctx._state = self.state
         self.pending_launch: LaunchRequest | None = None
         self.quit_rc: int | None = None
         self.pending_status = pending_status

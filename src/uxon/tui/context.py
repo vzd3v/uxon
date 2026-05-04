@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    pass
+    from .tui_state import TuiState
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,14 @@ class TuiContext:
     existing_projects: list[tuple[str, str]]  # (name, compact_mtime) under new_project_root
     server_status: ServerStatus = field(default_factory=ServerStatus)
     link_health_status: LinkHealthStatus = field(default_factory=LinkHealthStatus)
-    refresh_tick: int = 0
+    # ``refresh_tick`` is declared here so pyright sees the
+    # attribute, but the property descriptor installed *after the
+    # class body* (see below) replaces this default at runtime —
+    # reads/writes go through ``self._state.refresh_tick`` when a
+    # state is linked, otherwise through a private legacy slot.
+    # ``init=False`` keeps the kwarg out of ``__init__`` (no caller
+    # passes ``refresh_tick=`` today).
+    refresh_tick: int = field(default=0, init=False)
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
     # Multi-host transport knobs. Forwarded into per-host fetch
@@ -259,6 +266,49 @@ class TuiContext:
     # populates this with the ``main_ctx_rebuild`` source that wraps
     # ``on_refresh()``; future hosts add more entries here.
     refresh_sources: list = field(default_factory=list)
+
+    # Linked :class:`uxon.tui.tui_state.TuiState` — the App sets this
+    # at ``__init__`` time so the canonical ``refresh_tick`` (and
+    # later: every async slot) is shared between the live ctx and the
+    # state container. Defaults to ``None`` for tests and the
+    # skeleton ctx that don't run inside an App; the property
+    # accessors below fall back to a private legacy slot. Excluded
+    # from ``__repr__`` to keep test failures readable.
+    _state: TuiState | None = field(default=None, repr=False, compare=False)
+
+
+# ── refresh_tick property ───────────────────────────────────────────
+#
+# Defined after the dataclass body so the property descriptor is not
+# shadowed by the @dataclass-generated ``__init__`` field assignment.
+# When ``_state`` is linked (App is running), reads/writes go through
+# ``state.refresh_tick``; otherwise a private legacy slot in
+# ``__dict__`` keeps the dataclass-style attribute semantics intact.
+#
+# Stage 8 commit 3 introduces this proxy; commit 6b makes
+# ``state.refresh_tick`` canonical and the legacy slot becomes dead
+# weight (removed in commit 10 with the rest of the shim).
+
+
+def _tui_refresh_tick_get(self: TuiContext) -> int:
+    state = getattr(self, "_state", None)
+    if state is not None:
+        return state.refresh_tick
+    return self.__dict__.get("_legacy_refresh_tick", 0)
+
+
+def _tui_refresh_tick_set(self: TuiContext, value: int) -> None:
+    value = int(value)
+    state = getattr(self, "_state", None)
+    if state is not None:
+        state.refresh_tick = value
+    self.__dict__["_legacy_refresh_tick"] = value
+
+
+TuiContext.refresh_tick = property(  # type: ignore[assignment]
+    _tui_refresh_tick_get,
+    _tui_refresh_tick_set,
+)
 
 
 # Number of action items at the top of the main list.
