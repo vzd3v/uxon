@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import msgspec
 import platformdirs
 
 from uxon.remote_hosts import RemoteHost
@@ -378,10 +379,14 @@ def _parse_envelope(
     TUI will surface the absence; we don't want to fail the whole
     snapshot for one bad session.
     """
+    # ``msgspec.json.decode`` is the C-accelerated decoder; we keep
+    # the result as untyped ``Any`` here because the remaining shape
+    # checks below already validate the envelope and individual
+    # session dicts are intentionally opaque (see docstring).
     try:
-        env: Any = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        return None, [], f"invalid JSON: {exc.msg}"
+        env: Any = msgspec.json.decode(payload)
+    except msgspec.DecodeError as exc:
+        return None, [], f"invalid JSON: {exc}"
     if not isinstance(env, dict):
         return None, [], "envelope is not a JSON object"
     schema_version = env.get("schema_version")
@@ -424,8 +429,8 @@ def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> Remo
     except (FileNotFoundError, PermissionError, OSError):
         return None
     try:
-        blob: Any = json.loads(text)
-    except json.JSONDecodeError:
+        blob: Any = msgspec.json.decode(text)
+    except msgspec.DecodeError:
         return None
     if not isinstance(blob, dict):
         return None

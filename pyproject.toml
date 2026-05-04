@@ -32,6 +32,7 @@ dependencies = [
     "tomlkit",
     "platformdirs>=4",
     "structlog>=24",
+    "msgspec>=0.18",
 ]
 
 [project.urls]
