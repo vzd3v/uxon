@@ -285,8 +285,20 @@ class MainScreen(Screen):
                 pass
         self.call_after_refresh(self._update_status_line)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
+            # Stage 10a — ``UXON_DEBUG=startup``: closest proxy to "first
+            # frame painted" Textual exposes without a renderer hook. By
+            # the end of ``MainScreen.on_mount`` the widgets are mounted
+            # and the next event-loop tick paints them; this is the
+            # signal we emit for the ``mount_started → first_paint``
+            # budget.
+            import time as _time  # noqa: PLC0415
+
+            _debug("startup", at="first_paint", ts=_time.monotonic())
             return
         self.call_later(self._focus_default_action)
+        import time as _time  # noqa: PLC0415
+
+        _debug("startup", at="first_paint", ts=_time.monotonic())
 
     def on_show(self) -> None:
         if not self._restore_focus_key:

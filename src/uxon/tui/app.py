@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -231,6 +232,11 @@ class UxonApp(App):
         self._source_handles: dict[str, Worker | None] = {}
         self._host_probe_handle: Worker | None = None
         self._link_health_handle: Worker | None = None
+        # Stage 10a — ``UXON_DEBUG=startup`` channel: latch to fire
+        # ``first_data_landed`` exactly once per app instance. Subsequent
+        # ``main_ctx_rebuild`` results are steady-state and not
+        # interesting for time-to-first-paint diagnosis.
+        self._first_data_landed_logged: bool = False
         # Source-landing dispatch registries (id → handler). Built
         # once per instance so unit tests can inspect them without
         # spinning a Pilot. See :meth:`_build_source_dispatch`.
@@ -247,6 +253,13 @@ class UxonApp(App):
         self._last_all_missing: bool | None = None
 
     def on_mount(self) -> None:
+        # Stage 10a — ``UXON_DEBUG=startup`` channel: log mount entry
+        # with a monotonic timestamp so the operator can compute
+        # ``mount_started → first_paint`` (target ≤ 50 ms per spec)
+        # and ``mount_started → first_data_landed`` for end-to-end
+        # cold-start latency. ``time.monotonic()`` is the right clock
+        # for diffs; wall-clock would jitter under NTP corrections.
+        _debug("startup", at="mount_started", ts=time.monotonic())
         # Push the main screen as the first and only base screen.
         self.push_screen(MainScreen(self.ctx))
         # MainScreen sits on the stack immediately after push_screen, so a
@@ -431,6 +444,18 @@ class UxonApp(App):
         so the legacy message must keep its semantics.
         """
         ctx = event.value if isinstance(event.value, TuiContext) else None
+        # Stage 10a — ``UXON_DEBUG=startup``: latch fires once per app
+        # instance (per ``self._first_data_landed_logged`` reset in
+        # ``__init__``). Subsequent rebuilds are steady-state ticks,
+        # not interesting for cold-start latency diagnosis.
+        if not self._first_data_landed_logged:
+            self._first_data_landed_logged = True
+            _debug(
+                "startup",
+                at="first_data_landed",
+                source=event.name,
+                ts=time.monotonic(),
+            )
         self.post_message(_MainCtxLoaded(ctx, error=event.error))
 
     def _handle_remote_snapshot(self, event: _RefreshSourceLanded) -> None:
