@@ -3867,7 +3867,12 @@ def _build_tui_context(
     # ``MainScreen.on_mount`` reads to fan out the initial refresh —
     # an empty list there means the "Loading sessions…" placeholder
     # never gets replaced.
-    from uxon.remote_collector import fetch_remote_snapshot
+    from uxon.host_breaker import BreakerSpec, HostBreaker
+    from uxon.remote_collector import (
+        RemoteSnapshot,
+        fetch_remote_snapshot,
+        read_cached_snapshot,
+    )
     from uxon.tui.refresh import SourceSpec
 
     # ``main_ctx_rebuild`` returns a fresh ``TuiContext``. The app's
@@ -3904,17 +3909,59 @@ def _build_tui_context(
 
     _fetch_sem = _threading.Semaphore(cfg.fetch_concurrency)
 
-    def _make_remote_fetch(h, sem, multiplex):
+    # Per-host circuit breaker. One :class:`HostBreaker` per peer,
+    # keyed by host name and captured by ``_make_remote_fetch``. The
+    # breaker decides whether an SSH attempt fires; when open, the
+    # fetcher short-circuits to a cache-only snapshot so the UI keeps
+    # rendering the last good payload without the cost of yet another
+    # doomed connect. ``BreakerSpec`` defaults are intentional — no
+    # new config knobs in this commit. Wiring a per-host override is a
+    # follow-up.
+    _host_breakers: dict[str, HostBreaker] = {}
+
+    def _make_remote_fetch(h, sem, multiplex, breaker):
         def _fetch():
+            # Breaker is the first gate: if it says "do not attempt",
+            # skip the SSH layer entirely. We still produce a
+            # ``RemoteSnapshot`` so the UI sees something — load the
+            # last good cache if we have one; otherwise an empty
+            # error snapshot. Either way the cadence-driven retry
+            # path will get its next chance the moment the breaker
+            # half-opens.
+            if not breaker.should_attempt():
+                cached = read_cached_snapshot(h.name)
+                if cached is not None:
+                    return cached
+                return RemoteSnapshot(
+                    host_name=h.name,
+                    fetched_at_epoch=0.0,
+                    from_cache=False,
+                    error="circuit breaker open",
+                    sessions=[],
+                    cached_at_epoch=None,
+                )
+            breaker.mark_inflight()
             sem.acquire()
             try:
-                return fetch_remote_snapshot(h, ssh_multiplex=multiplex)
+                snap = fetch_remote_snapshot(h, ssh_multiplex=multiplex)
             finally:
                 sem.release()
+            # Translate the snapshot's success/failure into the
+            # breaker's outcome reporting. A cache-fallback snapshot
+            # (``from_cache=True``, ``error=None``) means the live
+            # fetch did not succeed — count as failure. ``error is
+            # None and not from_cache`` is a real live success.
+            if snap.error is None and not snap.from_cache:
+                breaker.on_success()
+            else:
+                breaker.on_failure()
+            breaker.clear_inflight()
+            return snap
 
         return _fetch
 
     for host in cfg.remote_hosts:
+        _host_breakers[host.name] = HostBreaker(BreakerSpec())
         # Per-host cadence: ``host.interval`` (if set) wins over the
         # fleet-global ``tui_ssh_refresh_interval_seconds``. We pass
         # cadence_seconds_attr=None so the timer reads the explicit
@@ -3927,7 +3974,9 @@ def _build_tui_context(
         refresh_sources.append(
             SourceSpec(
                 name=f"remote:{host.name}",
-                fetch=_make_remote_fetch(host, _fetch_sem, cfg.ssh_multiplex),
+                fetch=_make_remote_fetch(
+                    host, _fetch_sem, cfg.ssh_multiplex, _host_breakers[host.name]
+                ),
                 cadence_seconds_attr=None,
                 cadence_seconds=host_cadence,
                 kick_on_mount=True,
