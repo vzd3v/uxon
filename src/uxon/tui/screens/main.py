@@ -346,6 +346,60 @@ class MainScreen(Screen):
         table = self.query_one("#sessions-remote", RemoteSessionTable)
         table.populate(self._flatten_remote_rows())
 
+    def _refresh_remote_section_header(self, host_name: str) -> None:
+        """Update the single-host remote-section header in place.
+
+        Stage 8 commit 11: split out from the (deprecated)
+        ``apply_remote_snapshot`` path. Used by the App-level
+        dispatcher to refresh only the header text after a single
+        peer's slot landing — the ``(own only)`` badge depends on
+        the newly-landed scope flag, which isn't visible to the
+        coalesced row dispatch.
+        """
+        if not self.ctx.remote_hosts or len(self.ctx.remote_hosts) != 1:
+            return
+        try:
+            self.query_one("#remote-section-header", Static).update(self._remote_header())
+        except Exception:  # pragma: no cover — header not yet mounted
+            pass
+
+    def _dispatch_remote_rows(self, old_rows: tuple, new_rows: tuple) -> None:
+        """Apply a coalesced row-tuple change to the remote table.
+
+        Stage 8 commit 11. ``old_rows`` and ``new_rows`` come from
+        ``select_remote_rows`` invocations across two refresh cycles.
+        We diff by host (the bare host name is the first
+        space-delimited token of the first row tuple element) and
+        dispatch ``update_host_rows`` only for hosts whose row list
+        actually changed. Unchanged hosts produce zero
+        ``add_row`` / ``remove_row`` calls — pinned by the
+        ``test_only_changed_host_touched`` regression test.
+        """
+        if not self.ctx.remote_hosts:
+            return
+        try:
+            table = self.query_one("#sessions-remote", RemoteSessionTable)
+        except Exception:  # pragma: no cover — table not yet mounted
+            return
+
+        def _group_by_host(rows: tuple) -> dict[str, list[tuple]]:
+            grouped: dict[str, list[tuple]] = {}
+            for display_name, rec in rows:
+                host = display_name.split(" ", 1)[0]
+                grouped.setdefault(host, []).append((display_name, rec))
+            return grouped
+
+        old_by_host = _group_by_host(old_rows)
+        new_by_host = _group_by_host(new_rows)
+        # Hosts that disappeared from the new tuple → drop their rows.
+        for host in old_by_host:
+            if host not in new_by_host:
+                table.update_host_rows(host, [])
+        # Hosts whose rows changed (or are new).
+        for host, rows in new_by_host.items():
+            if old_by_host.get(host) != rows:
+                table.update_host_rows(host, rows)
+
     def apply_remote_snapshot(self, host_name: str, snapshot) -> None:
         """Hook called by the app dispatch when a per-host SourceSpec
         result lands. Re-renders the rows for one peer.
