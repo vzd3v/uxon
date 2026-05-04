@@ -25,6 +25,7 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.worker import Worker, WorkerState
 
+from .config import TuiConfig
 from .context import CallbackError, LaunchRequest, TuiContext
 from .events import _log_event, metrics_record
 from .events import debug as _debug
@@ -211,6 +212,15 @@ class UxonApp(App):
     ) -> None:
         super().__init__()
         self.ctx = ctx
+        # Snapshot the immutable side of ``ctx`` once at construction.
+        # ``cfg`` is shared across rebuild ticks — ``on_refresh()``
+        # produces a fresh ctx with new sessions / server_status, but
+        # the callbacks, cadence knobs, remote-hosts registry and
+        # refresh-source list are stable for the App's lifetime.
+        # Screens / modals migrate to reading from ``self.cfg`` over
+        # subsequent commits; for this commit ``cfg`` is duplicated
+        # state populated alongside the live ctx.
+        self.cfg: TuiConfig = TuiConfig.from_context(ctx)
         self.pending_launch: LaunchRequest | None = None
         self.quit_rc: int | None = None
         self.pending_status = pending_status

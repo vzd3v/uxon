@@ -4079,6 +4079,8 @@ def _build_tui_context(
         loading=skeleton,
         tui_refresh_interval_seconds=cfg.tui_refresh_interval_seconds,
         tui_ssh_refresh_interval_seconds=cfg.tui_ssh_refresh_interval_seconds,
+        ssh_multiplex=cfg.ssh_multiplex,
+        fetch_concurrency=cfg.fetch_concurrency,
         cwd_writable=cwd_writable,
         current_user=launch_user,
         sudo_caps=sudo_caps,

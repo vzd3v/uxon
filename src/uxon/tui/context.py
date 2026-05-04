@@ -127,6 +127,13 @@ class TuiContext:
     refresh_tick: int = 0
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
+    # Multi-host transport knobs. Forwarded into per-host fetch
+    # closures by ``cli._build_tui_context`` and snapshotted into
+    # :class:`uxon.tui.config.TuiConfig` at App-construction time.
+    # Defaults mirror :data:`uxon.cli.DEFAULT_CONFIG` so test fixtures
+    # that build a bare ``TuiContext`` keep working unchanged.
+    ssh_multiplex: str = "auto"
+    fetch_concurrency: int = 16
 
     # True until the first real refresh lands. The TUI distinguishes this
     # from a loaded-but-empty state — skeleton ctx renders "Loading…" in
