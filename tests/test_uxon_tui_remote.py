@@ -578,5 +578,97 @@ class RemoteFocusKeyTests(unittest.TestCase):
         self.assertFalse(screen._focus_key("remote:vz-prod1/alice/uxon-foo@claude"))
 
 
+class StateSelectorTests(unittest.TestCase):
+    """Stage 9a — pure selectors with identity-stable memoisation.
+
+    The selectors operate on the existing :class:`TuiContext` shape (the
+    ``TuiState``/``MainData`` split is deferred). Identity stability is
+    the contract: when inputs are unchanged by ``is`` comparison the
+    selector returns the previously returned object. The cache lives at
+    module scope, so each test resets it via ``_reset_caches`` to stay
+    independent.
+    """
+
+    def _reset_caches(self) -> None:
+        from uxon.tui import state as tui_state
+
+        tui_state._REMOTE_ROWS_CACHE["key"] = None
+        tui_state._REMOTE_ROWS_CACHE["value"] = ()
+        tui_state._HOST_HEALTH_BADGE_CACHE.clear()
+
+    def _ctx(self, hosts, snapshots):
+        from uxon.tui.context import TuiContext
+
+        return TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+            remote_hosts=hosts,
+            remote_snapshots=snapshots,
+        )
+
+    def _host(self, name: str) -> RemoteHost:
+        return RemoteHost(name=name, ssh_alias=name, description="", remote_uxon="uxon")
+
+    def _snap(self, name: str, sessions: list[dict]) -> RemoteSnapshot:
+        return RemoteSnapshot(
+            host_name=name,
+            fetched_at_epoch=1.0,
+            from_cache=False,
+            error=None,
+            sessions=sessions,
+            cached_at_epoch=1.0,
+        )
+
+    def test_select_remote_rows_identity_stable(self) -> None:
+        from uxon.tui.state import select_remote_rows
+
+        self._reset_caches()
+        ctx = self._ctx(
+            [self._host("prod"), self._host("stage")],
+            {
+                "prod": self._snap("prod", [{"user": "u1", "name": "n1"}]),
+                "stage": self._snap("stage", [{"user": "u2", "name": "n2"}]),
+            },
+        )
+        first = select_remote_rows(ctx)
+        second = select_remote_rows(ctx)
+        self.assertIs(first, second)
+        self.assertEqual(len(first), 2)
+
+    def test_select_remote_rows_recomputes_on_snapshot_replacement(self) -> None:
+        from uxon.tui.state import select_remote_rows
+
+        self._reset_caches()
+        ctx = self._ctx(
+            [self._host("prod")],
+            {"prod": self._snap("prod", [{"user": "u1", "name": "n1"}])},
+        )
+        first = select_remote_rows(ctx)
+        ctx.remote_snapshots["prod"] = self._snap("prod", [{"user": "u1", "name": "n1-new"}])
+        second = select_remote_rows(ctx)
+        self.assertIsNot(first, second)
+
+    def test_select_layout_signature_equal_for_unchanged_ctx(self) -> None:
+        from uxon.tui.state import select_layout_signature
+
+        ctx = self._ctx([], {})
+        self.assertEqual(select_layout_signature(ctx), select_layout_signature(ctx))
+
+    def test_select_remote_health_badge_identity_stable_per_snapshot(self) -> None:
+        from uxon.tui.state import select_remote_health_badge
+
+        self._reset_caches()
+        snap = self._snap("prod", [])
+        a = select_remote_health_badge(snap)
+        b = select_remote_health_badge(snap)
+        self.assertIs(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()

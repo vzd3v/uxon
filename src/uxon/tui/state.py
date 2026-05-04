@@ -486,6 +486,114 @@ def _short_error(msg: str | None, *, limit: int = 48) -> str:
     return first or "error"
 
 
+# ── Stage 9 selectors ─────────────────────────────────────────────────
+#
+# Pure, identity-stable selectors over the existing :class:`TuiContext`
+# shape. Stage 8 deliberately deferred the ``TuiContext`` →
+# ``TuiState``/``MainData`` split, so these operate on the live ctx +
+# per-host ``RemoteSnapshot`` mapping rather than on a future state
+# container. The identity-stable contract (selector returns the same
+# object across calls when inputs are unchanged by ``is`` comparison)
+# still applies and is testable today; the eventual reactive wiring
+# will plug into these helpers without changing their signatures.
+
+_REMOTE_ROWS_CACHE: dict[str, Any] = {"key": None, "value": ()}
+_HOST_HEALTH_BADGE_CACHE: dict[int, HostHealthBadge] = {}
+
+
+def select_remote_rows(ctx: TuiContext) -> tuple[tuple[str, dict], ...]:
+    """Flatten ``ctx.remote_snapshots`` into a row tuple. Identity-stable.
+
+    Mirrors ``MainScreen._flatten_remote_rows`` but as a pure function:
+    iterate ``ctx.remote_hosts`` (config-defined order), skip hosts with
+    no snapshot, attach ``(own only)`` / ``[<health>]`` badges to the
+    displayed host name in the multi-host case (single-host case puts
+    the badge in the section header instead — see ``_remote_header``).
+
+    Memoised via a function-local cache keyed by the per-host
+    ``(host.name, id(snap))`` tuple plus ``id(ctx.remote_snapshots)``.
+    Replacing one peer's snapshot triggers a recompute; unrelated
+    mutations (e.g. a ``ctx`` rebuild that carries the same dict
+    reference through) return the previous tuple object so downstream
+    Textual code can ``is``-compare to skip a re-render.
+    """
+    snapshots = ctx.remote_snapshots
+    hosts = ctx.remote_hosts
+    multi_host = len(hosts) > 1
+    key_parts = [id(snapshots)]
+    for host in hosts:
+        snap = snapshots.get(host.name)
+        key_parts.append(host.name)
+        key_parts.append(id(snap))
+    key = tuple(key_parts)
+    if _REMOTE_ROWS_CACHE.get("key") == key:
+        return _REMOTE_ROWS_CACHE["value"]
+    rows: list[tuple[str, dict]] = []
+    for host in hosts:
+        snap = snapshots.get(host.name)
+        if snap is None:
+            continue
+        limited = bool(getattr(snap, "scope_limited", False))
+        display_name = host.name
+        if multi_host:
+            if limited:
+                display_name = f"{display_name} (own only)"
+            badge = select_remote_health_badge(snap)
+            display_name = f"{display_name} [{badge.text}]"
+        for rec in snap.sessions:
+            rows.append((display_name, rec))
+    value: tuple[tuple[str, dict], ...] = tuple(rows)
+    _REMOTE_ROWS_CACHE["key"] = key
+    _REMOTE_ROWS_CACHE["value"] = value
+    return value
+
+
+def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
+    """Return the four-bool layout signature for ``MainScreen`` patch-vs-recompose.
+
+    Mirrors ``MainScreen._layout_signature``: ``(has_own_sessions,
+    has_super, has_other_sessions, kill_visible)``. Pure; memoisation
+    is unnecessary because the result is a tuple of bools (cheap to
+    recompute, equality-compared by callers).
+    """
+    has_super = bool(ctx.sudo_caps.reachable_users)
+    return (
+        bool(ctx.sessions),
+        has_super,
+        bool(ctx.other_sessions),
+        has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
+    )
+
+
+def select_remote_health_badge(snapshot: Any) -> HostHealthBadge:
+    """Identity-stable wrapper over :func:`host_health_badge`.
+
+    Same input snapshot identity → same returned badge object. Downstream
+    callers can ``is``-compare to skip a re-render of the host column /
+    section header. The ``None`` snapshot case shares one cached
+    ``loading`` badge (``id(None)`` is stable).
+
+    The ``now`` axis from :func:`host_health_badge` is intentionally
+    not exposed here: the badge's "stale + age" text would change on
+    every wall-clock tick, defeating the cache. Callers that need
+    age-stamped output pass through to :func:`host_health_badge`
+    directly.
+    """
+    key = id(snapshot)
+    cached = _HOST_HEALTH_BADGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    badge = host_health_badge(snapshot)
+    # Bound the cache loosely — a long-running TUI churns through
+    # snapshot objects, and we don't want the dict to grow without
+    # limit. 256 entries is comfortably above the realistic per-host
+    # snapshot churn between rebuilds.
+    if len(_HOST_HEALTH_BADGE_CACHE) > 256:
+        _HOST_HEALTH_BADGE_CACHE.clear()
+    _HOST_HEALTH_BADGE_CACHE[key] = badge
+    return badge
+
+
 def host_health_badge(snapshot: Any, *, now: float | None = None) -> HostHealthBadge:
     """Compute a per-host health badge from a (possibly ``None``) snapshot.
 

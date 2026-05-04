@@ -40,9 +40,11 @@ from ..state import (
     MainIntent,
     activate_main_index,
     digit_jump_intent,
-    host_health_badge,
     main_action_intent,
     main_status_line,
+    select_layout_signature,
+    select_remote_health_badge,
+    select_remote_rows,
     session_intent,
     visible_detected_agents,
 )
@@ -250,7 +252,7 @@ class MainScreen(Screen):
             scope = (
                 " (own only)" if snap is not None and getattr(snap, "scope_limited", False) else ""
             )
-            health = host_health_badge(snap)
+            health = select_remote_health_badge(snap)
             return f"── remote sessions ── {host.name}{scope} [{health.text}]"
         return f"── remote sessions ── {len(self.ctx.remote_hosts)} hosts"
 
@@ -293,35 +295,15 @@ class MainScreen(Screen):
     # ── Remote sessions block (multi-host) ────────────────────────────
 
     def _flatten_remote_rows(self) -> list[tuple[str, dict]]:
-        """Flatten ``ctx.remote_snapshots`` into a list the table can
-        render.
+        """Flatten ``ctx.remote_snapshots`` into a list the table can render.
 
-        Iteration follows ``ctx.remote_hosts`` order so the displayed
-        order is config-defined, not snapshot-arrival-defined. Within
-        a host the session order is whatever the peer reported (the
-        wire schema preserves it). Peers whose snapshot reports
-        ``scope_limited=True`` (the peer fell back to "own only" because
-        ``enable_all_users_list`` is disabled there) get a ``(own only)``
-        badge appended to the displayed host name. Single-host case
-        puts the badge in the section header instead — see
-        :meth:`_remote_header`.
+        Thin shim over :func:`select_remote_rows` — the pure selector is
+        identity-stable across calls when ``ctx.remote_snapshots`` is
+        unchanged. We return a fresh ``list`` each call (the table's
+        ``populate`` mutates it). Tests that poke this method directly
+        keep working because the public surface is unchanged.
         """
-        rows: list[tuple[str, dict]] = []
-        multi_host = len(self.ctx.remote_hosts) > 1
-        for host in self.ctx.remote_hosts:
-            snap = self.ctx.remote_snapshots.get(host.name)
-            if snap is None:
-                continue
-            limited = bool(getattr(snap, "scope_limited", False))
-            display_name = host.name
-            if multi_host:
-                if limited:
-                    display_name = f"{display_name} (own only)"
-                health = host_health_badge(snap)
-                display_name = f"{display_name} [{health.text}]"
-            for rec in snap.sessions:
-                rows.append((display_name, rec))
-        return rows
+        return list(select_remote_rows(self.ctx))
 
     def _populate_remote_table(self) -> None:
         table = self.query_one("#sessions-remote", RemoteSessionTable)
@@ -639,13 +621,13 @@ class MainScreen(Screen):
         )
 
     def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
-        has_super = bool(ctx.sudo_caps.reachable_users)
-        return (
-            bool(ctx.sessions),
-            has_super,
-            bool(ctx.other_sessions),
-            has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
-        )
+        """Thin shim over :func:`select_layout_signature`.
+
+        Kept as an instance method so the existing test surface (some
+        tests synthesise a screen and call this directly) stays
+        unchanged.
+        """
+        return select_layout_signature(ctx)
 
     def _refresh_cwd_row(self) -> None:
         """Re-render the cwd action row from the current ctx.cwd_writable."""
