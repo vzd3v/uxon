@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from textual.app import App
@@ -192,6 +193,13 @@ class UxonApp(App):
         self._source_handles: dict[str, Worker | None] = {}
         self._host_probe_handle: Worker | None = None
         self._link_health_handle: Worker | None = None
+        # Source-landing dispatch registries (id → handler). Built
+        # once per instance so unit tests can inspect them without
+        # spinning a Pilot. See :meth:`_build_source_dispatch`.
+        (
+            self._source_dispatch_exact,
+            self._source_dispatch_prefix,
+        ) = self._build_source_dispatch()
         # Transition gate: ``AgentsUnavailableScreen`` is pushed only on
         # the (False|None) → True transition of the "all enabled agents
         # are missing" predicate. ``None`` means we have not seen a probe
@@ -356,35 +364,93 @@ class UxonApp(App):
             )
         )
 
-    def on__refresh_source_landed(self, event: _RefreshSourceLanded) -> None:
-        """Dispatch a source's result to the per-name apply handler.
+    # ── Source landing dispatch ─────────────────────────────────────
+    #
+    # Per stage 8 of the multi-host design spec, the result-landing
+    # dispatch is data-driven: a registry maps source-id → handler so
+    # adding a new asynchronous stream is a registry entry rather than
+    # an ``if/elif`` ladder edit. Two registries are inspected in this
+    # order:
+    #
+    # 1. ``_EXACT_HANDLERS``: ``dict[str, handler]`` — exact name match
+    #    (``"main_ctx_rebuild"`` etc.). Most sources land here.
+    # 2. ``_PREFIX_HANDLERS``: ordered ``list[(prefix, handler)]`` —
+    #    fallback for families like ``"remote:<host>"`` where the
+    #    handler peels the prefix off and routes by suffix.
+    #
+    # An unknown name falls through to a debug-log drop, exactly as
+    # the legacy ladder did. The handlers are bound methods on
+    # :class:`UxonApp` so they have access to ``self`` (state, screens,
+    # the message pump). The registry is built once per instance in
+    # :meth:`__init__` so it can be inspected by tests without going
+    # through the Pilot harness.
 
-        ``main_ctx_rebuild`` is dispatched into the legacy
-        :class:`_MainCtxLoaded` path so the existing
-        :meth:`on__main_ctx_loaded` swap-or-recompose logic stays the
-        single render entry point. Future sources register their own
-        names + handlers without touching this dispatch.
+    def _handle_main_ctx_rebuild(self, event: _RefreshSourceLanded) -> None:
+        """Dispatch ``main_ctx_rebuild`` into the legacy :class:`_MainCtxLoaded`
+        message so :meth:`on__main_ctx_loaded` stays the single render
+        entry point. Many tests synthesise ``_MainCtxLoaded`` directly,
+        so the legacy message must keep its semantics.
         """
-        if event.name == "main_ctx_rebuild":
-            ctx = event.value if isinstance(event.value, TuiContext) else None
-            self.post_message(_MainCtxLoaded(ctx, error=event.error))
-            return
-        # Per-host remote-session sources are named ``remote:<host>``.
-        # The fetcher returns a :class:`RemoteSnapshot` (always — the
-        # collector is fail-soft and never raises into the worker).
-        # We hand the snapshot to MainScreen which updates
-        # ``ctx.remote_snapshots`` and re-populates the table.
-        if event.name.startswith("remote:"):
-            host_name = event.name[len("remote:") :]
-            from uxon.remote_collector import RemoteSnapshot
+        ctx = event.value if isinstance(event.value, TuiContext) else None
+        self.post_message(_MainCtxLoaded(ctx, error=event.error))
 
-            if isinstance(event.value, RemoteSnapshot):
-                top = self.screen_stack[-1] if self.screen_stack else None
-                if top is not None and isinstance(top, MainScreen):
-                    top.apply_remote_snapshot(host_name, event.value)
+    def _handle_remote_snapshot(self, event: _RefreshSourceLanded) -> None:
+        """Apply a remote-host snapshot to the active main screen.
+
+        Source name is ``remote:<host>``; the fetcher always returns a
+        :class:`RemoteSnapshot` (the collector is fail-soft and never
+        raises into the worker). We hand the snapshot to
+        :class:`MainScreen`, which updates ``ctx.remote_snapshots`` and
+        re-populates the per-host table.
+        """
+        host_name = event.name[len("remote:") :]
+        from uxon.remote_collector import RemoteSnapshot
+
+        if isinstance(event.value, RemoteSnapshot):
+            top = self.screen_stack[-1] if self.screen_stack else None
+            if top is not None and isinstance(top, MainScreen):
+                top.apply_remote_snapshot(host_name, event.value)
+
+    def _build_source_dispatch(
+        self,
+    ) -> tuple[
+        dict[str, Callable[[_RefreshSourceLanded], None]],
+        list[tuple[str, Callable[[_RefreshSourceLanded], None]]],
+    ]:
+        """Construct the (exact, prefix) dispatch registries.
+
+        Inspected by :meth:`on__refresh_source_landed` and by unit
+        tests (no Pilot required). Adding a new source means adding
+        an entry here in the same change as the source-spec
+        registration.
+        """
+        exact: dict[str, Callable[[_RefreshSourceLanded], None]] = {
+            "main_ctx_rebuild": self._handle_main_ctx_rebuild,
+        }
+        # Prefix matchers are scanned in order; the first match wins.
+        prefix: list[tuple[str, Callable[[_RefreshSourceLanded], None]]] = [
+            ("remote:", self._handle_remote_snapshot),
+        ]
+        return exact, prefix
+
+    def on__refresh_source_landed(self, event: _RefreshSourceLanded) -> None:
+        """Dispatch a source's result via the id → handler registry.
+
+        Looks up ``event.name`` in ``_source_dispatch_exact`` first; on
+        miss, scans ``_source_dispatch_prefix`` for the first prefix
+        match. Unknown names are debug-logged and dropped — adding a
+        new source means registering a handler in
+        :meth:`_build_source_dispatch`.
+        """
+        handler = self._source_dispatch_exact.get(event.name)
+        if handler is not None:
+            handler(event)
             return
-        # Unknown source name — log and drop. Adding a new source means
-        # adding a name → handler mapping here in the same change.
+        for prefix_str, prefix_handler in self._source_dispatch_prefix:
+            if event.name.startswith(prefix_str):
+                prefix_handler(event)
+                return
+        # Unknown source name — log and drop.
         _debug(
             "refresh",
             at="source_landed",
