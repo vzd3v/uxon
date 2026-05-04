@@ -722,13 +722,12 @@ class UxonApp(App):
         from uxon import probes as uxon_probes
 
         # Build a minimal cfg-shaped object with what probe_host needs.
-        # Reading ``enabled_agents`` from a thread is safe (immutable
-        # tuple). The handler dispatches on the event loop where any
-        # state mutation actually lands.
+        # Both fields are read off the frozen :class:`TuiConfig`
+        # snapshot — no mutable ctx access from the worker thread.
         class _Cfg:
-            enabled_agents = self.ctx.enabled_agents
+            enabled_agents = self.cfg.enabled_agents
 
-        target_user = self.ctx.launch_user or uxon_probes._current_user()
+        target_user = self.cfg.launch_user or uxon_probes._current_user()
 
         t0 = _time.monotonic()
         try:
@@ -904,14 +903,18 @@ class UxonApp(App):
         from .slot_state import SlotResult
         from .slot_state import apply as apply_slot
 
-        # Skip the slot apply when:
-        #   - the worker reported an error (no fresh dict to fold), or
-        #   - the message is a legacy bare post (availability is None)
-        #     used by tests that mutate ``ctx.agent_availability``
-        #     directly and just post to wake the handler.
-        # Both fall through to ``_dispatch_availability_change`` which
-        # reads through the shim to whatever state currently holds.
-        if not event.error and event.availability is not None:
+        # Apply the slot updates transactionally — either both slots
+        # fold in or neither does. The two fields are coupled (same
+        # probe produces both) and must not desync silently.
+        # ``availability is None and detected is None`` is the legacy
+        # bare-post pattern: tests mutate ``ctx.agent_availability``
+        # directly and post to wake the handler. An asymmetric
+        # payload (one None, the other not) is a programming error;
+        # log and drop without partial mutation rather than silently
+        # advancing one slot.
+        avail_present = event.availability is not None
+        detect_present = event.detected is not None
+        if not event.error and avail_present and detect_present:
             attempted_at = time.time()
             avail_result: SlotResult[dict] = SlotResult(
                 value=event.availability,
@@ -920,14 +923,21 @@ class UxonApp(App):
                 attempted_at=attempted_at,
             )
             self.state.agent_availability = apply_slot(self.state.agent_availability, avail_result)
-            if event.detected is not None:
-                detect_result: SlotResult[dict] = SlotResult(
-                    value=event.detected,
-                    error=None,
-                    elapsed_ms=event.elapsed_ms,
-                    attempted_at=attempted_at,
-                )
-                self.state.detected_agents = apply_slot(self.state.detected_agents, detect_result)
+            detect_result: SlotResult[dict] = SlotResult(
+                value=event.detected,
+                error=None,
+                elapsed_ms=event.elapsed_ms,
+                attempted_at=attempted_at,
+            )
+            self.state.detected_agents = apply_slot(self.state.detected_agents, detect_result)
+        elif avail_present != detect_present:
+            _debug(
+                "refresh",
+                at="host_report_partial",
+                action="drop",
+                avail_present=avail_present,
+                detect_present=detect_present,
+            )
         self._dispatch_availability_change()
 
     def on__link_health_updated(self, event: _LinkHealthUpdated) -> None:
