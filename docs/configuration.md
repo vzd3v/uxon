@@ -382,11 +382,15 @@ Operating model:
 
 - The TUI shows local users' sessions and remote hosts' sessions in
   separate blocks; the operator sees everything in one screen.
+- `Enter` on a remote row attaches to that peer's session through
+  SSH; `k` kills one highlighted remote session through the peer's
+  own `uxon kill --host ... --user ...` path.
 - `uxon list --all-hosts --json` is the integration surface — JSON
   Lines, one envelope per source, suitable for piping into log
   aggregation or dashboards.
-- Destructive actions stay strictly local. Reaping an agent on a
-  peer means SSHing in. The rationale is in
+- Bulk destructive actions stay strictly local. Reaping every agent
+  on a peer means SSHing in and running the bulk gesture there. The
+  rationale is in
   [`docs/deployment.md` § Multi-host](deployment.md#multi-host).
 
 **Cross-user visibility on peers.** The aggregator runs

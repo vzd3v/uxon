@@ -7,59 +7,56 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)
 
 Session manager for development teams using terminal AI coding
-agents (Claude Code, Codex, Cursor CLI) on shared Linux servers.
-Multi-user via OS accounts, multi-host via SSH, supervision via
-sudoers.
+agents (Claude Code, Codex, Cursor CLI) on one or more Linux
+servers. Team visibility via OS accounts, cross-host visibility via
+SSH, supervision via sudoers.
 
 <!-- screenshot goes here -->
 
 ## When to use uxon
 
-Five recurring needs of development teams running terminal AI coding
-agents on one or more shared Linux servers:
+Use `uxon` when terminal AI coding agents are a team runtime, not a
+private terminal habit. The team may share one Linux server, spread
+work across several separate servers, or do both. The problem is the
+same: developers and leads need one consistent way to see, attach to,
+start, and stop live agent sessions without turning every host into a
+hand-managed pile of `tmux` sockets.
 
-1. **Supervision and teaching.** A lead, senior, or instructor needs
-   to see and intervene in another developer's live agent session —
-   to review the workflow (not just the resulting diff), demonstrate
-   a pattern in place, or stop a session that has started doing
-   something wrong. Screen-sharing and synchronous meetings are the
-   default alternative; neither scales to a team that works
-   continuously across timezones.
+The core workflow:
 
-2. **Blast-radius control.** Permissive modes (Claude
-   `--dangerously-skip-permissions`, Codex
-   `--dangerously-bypass-approvals-and-sandbox`, Cursor `--yolo`)
-   are necessary for productive agent work but, run as the
-   developer's shell user, give the agent write access to the
-   developer's dotfiles, SSH keys, shell history, and any
-   credentials sitting in `$HOME`.
+- Developers see their own running sessions, attach to one, kill
+  stale or runaway sessions, start an agent in the current directory,
+  create a new project under the configured project root, or pick an
+  existing project from the TUI.
+- Agents can run as low-privilege launch users such as
+  `alice_agent`, not as the human shell users `alice` / `bob`. That
+  gives each agent a managed runtime identity and keeps yolo-mode
+  writes away from human dotfiles, SSH keys, shell history, and
+  credentials in `$HOME`.
+- Leads, seniors, instructors, and operators can see and attach to
+  colleagues' live sessions where sudoers grants allow it. This is
+  useful for reviewing the workflow, teaching an agent-first pattern
+  in place, helping a teammate debug a stuck session, or stopping a
+  session that started doing the wrong thing.
+- One TUI can show local sessions and sessions from configured remote
+  hosts. Remote access uses SSH to the peer and that peer's own
+  sudoers rules, so a central dashboard is not required and each host
+  keeps its OS-level authority boundary.
 
-3. **Visibility and lifecycle.** Multiple agents per developer ×
-   multiple developers × one or more hosts produces a population of
-   running sessions that no single person sees. Idle, runaway, and
-   forgotten sessions consume RAM, CPU, disk, and budget — and
-   persist past their purpose unless someone holds an explicit
-   inventory.
+Example: a developer connects to the host, sees eight agent sessions,
+kills the five dead ones before they keep burning CPU and budget,
+reattaches to the active session that matters, then starts another
+agent by choosing a project from the configured project folder. A lead
+opens the same TUI and, according to their sudoers grants, sees their
+own sessions plus reachable teammates' sessions on the local host and
+on remote peers. They attach to a newcomer's session to demonstrate
+the team's agent workflow, then jump into a colleague's session to
+show how to use a new shared skill.
 
-4. **Persistence across devices and networks.** Sessions started in
-   a personal terminal die when the developer's network drops or
-   the laptop sleeps. Continuing the same session from a different
-   device or location is operationally useful but not free without
-   infrastructure on the host.
-
-5. **Attribution and access control.** When several developers
-   share a host, every running session needs to be attributable to
-   a person, project, and agent. Access — to one's own sessions, to
-   colleagues' sessions, to the host config — needs to be granted,
-   revoked, and audited through a mechanism that survives staff
-   rotation.
-
-A solo developer on a personal server can solve all five with
-`tmux`, sudoers, and discipline alone. uxon exists because that
-combination scales poorly past a single user: naming, isolation,
-supervision, and lifecycle stop being personal habits and become
-collective problems that need one consistent layer the whole team
-uses.
+Solo use still works: `uxon` is a good persistent TUI over `tmux` for
+one person too. It exists mainly because teams need the shared version
+of that loop: attribution, lifecycle, low-priv launch users,
+supervision, and cross-host visibility.
 
 ## Model
 
@@ -84,11 +81,11 @@ Cross-host aggregation works the same way: each peer evaluates its
 own sudoers independently. There is no central authority, no shared
 state, no cluster coordinator. The local TUI runs `ssh <peer> uxon
 list --json` against each configured `[[remote_hosts]]` entry and
-renders the results alongside local sessions. Per-session
-`uxon kill --host <peer> --user <name>` routes the kill to the peer
-over SSH and is gated by the peer's own sudoers. Bulk destructive
-operations stay strictly local — fan-out kills are an explicit
-operator gesture, not a uxon primitive.
+renders the results alongside local sessions. Remote attach and
+per-session `uxon kill --host <peer> --user <name>` route to the
+peer over SSH and are gated by the peer's own sudoers. Bulk
+destructive operations stay strictly local — fan-out kills are an
+explicit operator gesture, not a uxon primitive.
 
 ## Out of scope
 
@@ -395,9 +392,11 @@ output from peer hosts over SSH. One section per host, with an extra
 `HOST` column when more than one peer is configured. The collector is
 fail-soft: a dead or slow peer falls back to the on-disk snapshot
 (`~/.local/state/uxon/remote/<name>.json`) and never stalls the local
-view. Destructive actions stay local — there is no remote `kill` or
-`kill-all`. See [`docs/deployment.md`](docs/deployment.md#multi-host)
-for the full SSH model and config schema.
+view. `Enter` attaches to the highlighted remote session; `k` kills
+one highlighted remote session through the peer's own `uxon kill`
+gate. Bulk `kill-all` remains local to the host where it is invoked.
+See [`docs/deployment.md`](docs/deployment.md#multi-host) for the
+full SSH model and config schema.
 
 ### 4. Server status (bottom)
 

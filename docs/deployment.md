@@ -336,11 +336,10 @@ stalls the local-sessions stream or another peer's poll. Cadence
 is `tui_ssh_refresh_interval_seconds` (default 10s), separate
 from the local-tmux cadence.
 
-Activating a remote row (Enter) is currently a no-op; remote
-attach is not wired. Pressing `k` on a remote row dispatches the
-per-session kill described above (`uxon kill --host ... --user
-... <id>` over SSH); bulk kill across hosts remains intentionally
-out of scope.
+Activating a remote row (Enter) attaches to that peer's session
+over SSH. Pressing `k` on a remote row dispatches the per-session
+kill described above (`uxon kill --host ... --user ... <id>` over
+SSH); bulk kill across hosts remains intentionally out of scope.
 
 ## Migration notes
 
