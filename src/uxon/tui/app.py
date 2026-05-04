@@ -356,6 +356,19 @@ class UxonApp(App):
         # deduplication for ``call_after_refresh``: the dirty flag
         # is the coalescing mechanism.
         self._remote_rows_dirty: bool = False
+        # Stage 8 commit 11 followup: reset module-level selector
+        # caches at every App-instance birth. The TTY-handoff loop
+        # (``run()`` outside this class) creates a fresh App after
+        # each launch; module-level caches in
+        # :mod:`uxon.tui.state` would otherwise leak prior-instance
+        # data into the new one. The keys typically differ, but the
+        # reset makes the contract explicit and shifts any cache
+        # invalidation cost to the cold path.
+        from .state import _HOST_HEALTH_BADGE_CACHE, _REMOTE_ROWS_CACHE
+
+        _REMOTE_ROWS_CACHE["key"] = None
+        _REMOTE_ROWS_CACHE["value"] = ()
+        _HOST_HEALTH_BADGE_CACHE.clear()
 
     def on_mount(self) -> None:
         # Stage 10a — ``UXON_DEBUG=startup`` channel: log mount entry
@@ -954,10 +967,19 @@ class UxonApp(App):
         )
 
     def _probe_link_health_worker(self) -> None:
+        """Background thread: probe SSH-path health and post the result.
+
+        Stage 8 commit 6 followup: reads ``on_probe_link_health`` off
+        the frozen :class:`TuiConfig` (no mutable ctx access from the
+        thread). ``apply_loaded_ctx`` may replace ``self.app.ctx``
+        concurrently on the event loop, so reading ``self.ctx`` from
+        the worker is a data race; the cfg snapshot is immutable for
+        the App's lifetime.
+        """
         from uxon import tui as uxon_tui
 
         try:
-            probe = getattr(self.ctx, "on_probe_link_health", None)
+            probe = self.cfg.on_probe_link_health
             status = probe() if callable(probe) else None
         except Exception as exc:  # pragma: no cover — defensive
             status = uxon_tui.LinkHealthStatus(
