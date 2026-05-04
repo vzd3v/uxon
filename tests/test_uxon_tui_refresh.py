@@ -194,6 +194,61 @@ class DispatchRegistryTests(unittest.TestCase):
         self.assertIsInstance(posted[0], _MainCtxLoaded)
         self.assertIs(posted[0].ctx, ctx)  # type: ignore[union-attr]
 
+    def test_event_default_epoch_is_unstamped_sentinel(self) -> None:
+        """Default ``instance_epoch=-1`` means "synthetic / unstamped"
+        — the dispatcher skips the epoch gate so legacy tests keep
+        working unchanged.
+        """
+        from uxon.tui.app import _RefreshSourceLanded
+
+        ev = _RefreshSourceLanded(name="x", value=None)
+        self.assertEqual(ev.instance_epoch, -1)
+
+    def test_stale_epoch_is_dropped_at_dispatcher(self) -> None:
+        """A real (non-sentinel) epoch that doesn't match the app's
+        current epoch must be dropped — no handler invocation, no
+        message posted. This protects against a worker spawned by a
+        previous app instance landing after a TTY-handoff app
+        re-creation.
+        """
+        from uxon.tui.app import _RefreshSourceLanded
+
+        app = self._make_app()
+        posted: list[object] = []
+        app.post_message = posted.append  # type: ignore[method-assign]
+
+        # Pick an epoch deliberately != app's. Using ``app_epoch + 1``
+        # (any int other than the app's value works); using
+        # ``-1`` would hit the unstamped-sentinel skip path.
+        app_epoch = app._instance_epoch  # type: ignore[attr-defined]
+        stale = _RefreshSourceLanded(
+            name="main_ctx_rebuild",
+            value=app.ctx,  # type: ignore[attr-defined]
+            instance_epoch=app_epoch + 100,
+        )
+        app.on__refresh_source_landed(stale)  # type: ignore[attr-defined]
+        self.assertEqual(posted, [])
+
+    def test_matching_epoch_is_dispatched(self) -> None:
+        """A real event with epoch matching the app's epoch must be
+        dispatched normally — the gate's job is to drop *stale*
+        events, not all stamped events.
+        """
+        from uxon.tui.app import _MainCtxLoaded, _RefreshSourceLanded
+
+        app = self._make_app()
+        posted: list[object] = []
+        app.post_message = posted.append  # type: ignore[method-assign]
+
+        ev = _RefreshSourceLanded(
+            name="main_ctx_rebuild",
+            value=app.ctx,  # type: ignore[attr-defined]
+            instance_epoch=app._instance_epoch,  # type: ignore[attr-defined]
+        )
+        app.on__refresh_source_landed(ev)  # type: ignore[attr-defined]
+        self.assertEqual(len(posted), 1)
+        self.assertIsInstance(posted[0], _MainCtxLoaded)
+
     def test_unknown_name_falls_through_to_drop(self) -> None:
         from uxon.tui.app import _RefreshSourceLanded
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from textual.app import App
 from textual.binding import Binding
@@ -128,16 +128,39 @@ class _RefreshSourceLanded(Message):
     ``None`` — the handler is responsible for that case (typically: log
     via ``UXON_DEBUG=refresh`` and otherwise leave state untouched, so
     a transient source failure does not corrupt previously-good data).
+
+    The ``instance_epoch`` field carries the spawning :class:`UxonApp`'s
+    monotonically-increasing epoch (set in ``__init__``). The dispatcher
+    drops events whose epoch does not match the current app's epoch —
+    this catches the rare race where a worker thread spawned by an
+    instance-N app posts its result after the outer ``run()`` loop has
+    already created instance-N+1 (e.g. after a TTY handoff).
+
+    The default ``-1`` is a sentinel meaning "unstamped" — the dispatcher
+    skips the epoch gate when it sees the sentinel. This keeps existing
+    tests that synthesise this message directly without specifying an
+    epoch working unchanged. Production stamping is done in
+    :meth:`UxonApp._source_worker`, which always passes the real
+    ``self._instance_epoch``.
     """
 
     bubble = False
 
-    def __init__(self, name: str, value: object, error: str = "", elapsed_ms: int = 0) -> None:
+    def __init__(
+        self,
+        name: str,
+        value: object,
+        error: str = "",
+        elapsed_ms: int = 0,
+        *,
+        instance_epoch: int = -1,
+    ) -> None:
         super().__init__()
         self.name = name
         self.value = value
         self.error = error
         self.elapsed_ms = elapsed_ms
+        self.instance_epoch = instance_epoch
 
 
 class UxonApp(App):
@@ -152,6 +175,15 @@ class UxonApp(App):
     """
 
     CSS_PATH = "styles.tcss"
+
+    # Process-wide monotonic counter feeding ``self._instance_epoch``.
+    # Each ``UxonApp.__init__`` snapshots-and-increments this so a
+    # worker spawned by instance N can be distinguished from one
+    # belonging to instance N+1 after the outer ``run()`` loop
+    # re-creates the app following a TTY handoff. Spec § Worker
+    # lifetime: "every result carries a monotonically increasing
+    # ``instance_epoch`` matched against the App's own epoch".
+    _next_epoch: ClassVar[int] = 0
 
     # UxonApp has no per-app bindings — quit/help etc. live on the
     # MainScreen so its Footer displays them; delegating to screens
@@ -182,6 +214,12 @@ class UxonApp(App):
         self.quit_rc: int | None = None
         self.pending_status = pending_status
         self.probe_agents = probe_agents
+        # Snapshot the process-wide counter, then bump it. The first
+        # instance in a process gets epoch 0 — same default as
+        # ``_RefreshSourceLanded.instance_epoch`` so synthetic test
+        # posts (which omit the kwarg) line up automatically.
+        self._instance_epoch: int = UxonApp._next_epoch
+        UxonApp._next_epoch += 1
         # Worker-handle in-flight gates (see :func:`_worker_active`).
         # Each kick also pins its worker to a dedicated group so an
         # ``exclusive=True`` call cancels only siblings, never workers
@@ -361,6 +399,7 @@ class UxonApp(App):
                 value=result.value,
                 error=result.error or "",
                 elapsed_ms=result.elapsed_ms,
+                instance_epoch=self._instance_epoch,
             )
         )
 
@@ -436,12 +475,33 @@ class UxonApp(App):
     def on__refresh_source_landed(self, event: _RefreshSourceLanded) -> None:
         """Dispatch a source's result via the id → handler registry.
 
+        Cross-instance gate: an event whose ``instance_epoch`` does not
+        match ``self._instance_epoch`` is dropped — the worker that
+        posted it belongs to a previous app instance whose result has
+        no business mutating the current instance's state. Spec §
+        Worker lifetime.
+
         Looks up ``event.name`` in ``_source_dispatch_exact`` first; on
         miss, scans ``_source_dispatch_prefix`` for the first prefix
         match. Unknown names are debug-logged and dropped — adding a
         new source means registering a handler in
         :meth:`_build_source_dispatch`.
         """
+        # Sentinel ``-1`` = unstamped (synthetic test post). Production
+        # workers always stamp ``self._instance_epoch``; a real event
+        # with a different epoch indicates a worker spawned by a prior
+        # app instance and is dropped.
+        if event.instance_epoch != -1 and event.instance_epoch != self._instance_epoch:
+            _debug(
+                "refresh",
+                at="source_landed",
+                source=event.name,
+                action="drop",
+                reason="stale_instance_epoch",
+                event_epoch=event.instance_epoch,
+                app_epoch=self._instance_epoch,
+            )
+            return
         handler = self._source_dispatch_exact.get(event.name)
         if handler is not None:
             handler(event)
