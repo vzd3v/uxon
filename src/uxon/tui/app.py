@@ -566,8 +566,29 @@ class UxonApp(App):
         # increment happens before the screen sees the ctx so any
         # selector or watcher that fires off ``apply_loaded_ctx``
         # reads the post-increment value.
-        if event.error == "":
+        if event.error == "" and ctx is not None:
+            from .main_data import MainData
+
             self.state.refresh_tick += 1
+            # Stage 8 commit 7: ``state.main`` is now canonical. The
+            # rebuild-source dispatcher is the single writer; we
+            # snapshot the rebuild-derived fields off the incoming
+            # ctx into a frozen :class:`MainData` and assign. The ctx
+            # stays in the message envelope for screens not yet
+            # ported (commit 8 flips MainScreen to read
+            # ``state.main`` directly).
+            self.state.main = MainData.from_context(ctx)
+            # Drive the ``loading`` reactive on the main screen if
+            # one is mounted. Plain reassignment — the reactive has
+            # no compute method (verified by introspection in
+            # tests), so ``__set__`` triggers ``_check_watchers``
+            # without raising. ``state.main is None`` is the
+            # structural loading sentinel; on first landing it
+            # flips to False and the ``#sessions-note`` reactively
+            # repaints.
+            screen = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
+            if screen is not None and hasattr(screen, "_id"):
+                screen.loading = self.state.main is None
         self.post_message(_MainCtxLoaded(ctx, error=event.error))
 
     def _handle_remote_snapshot(self, event: _RefreshSourceLanded) -> None:

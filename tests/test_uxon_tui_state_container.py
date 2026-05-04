@@ -226,6 +226,50 @@ class AvailabilityShimTests(unittest.TestCase):
         self.assertEqual(ctx.agent_availability, {"claude": "ok"})
 
 
+class StateMainCanonicalTests(unittest.TestCase):
+    """Stage 8 commit 7: ``state.main`` is canonical, written by
+    ``UxonApp._handle_main_ctx_rebuild``. Pin the contract:
+
+    * On the first rebuild landing the slot flips from None to a
+      fresh :class:`MainData`.
+    * Subsequent landings replace the slot with a fresh value.
+    * ``MainScreen.loading`` follows ``state.main is None`` —
+      starts at True (skeleton), flips to False once the first
+      rebuild lands.
+    """
+
+    def test_first_rebuild_populates_state_main(self) -> None:
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            self.skipTest("textual not available")
+        from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.context import TuiContext
+
+        ctx = _bare_ctx(loading=True)
+        app = UxonApp(ctx, probe_agents=False)
+        self.assertIsNone(app.state.main)
+
+        # Synthesise a rebuild landing without a Pilot.
+        loaded_ctx = TuiContext(
+            sessions=[],
+            total_cpu="13",
+            total_ram="800M",
+            version="x",
+            cwd="/srv/work",
+            cwd_short="work",
+            new_project_root="/srv/work",
+            existing_projects=[("p", "1m")],
+        )
+        UxonApp._handle_main_ctx_rebuild(
+            app,
+            _RefreshSourceLanded(name="main_ctx_rebuild", value=loaded_ctx),
+        )
+        self.assertIsNotNone(app.state.main)
+        self.assertEqual(app.state.main.cwd, "/srv/work")  # type: ignore[union-attr]
+        self.assertEqual(app.state.main.total_cpu, "13")  # type: ignore[union-attr]
+
+
 class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
     """Stage 8 commit 6b regression: selectors must key on the
     specific subfield they consume, not on whole-TuiState identity.
