@@ -26,7 +26,7 @@ from textual.message import Message
 from textual.worker import Worker, WorkerState
 
 from .context import CallbackError, LaunchRequest, TuiContext
-from .events import _log_event
+from .events import _log_event, metrics_record
 from .events import debug as _debug
 from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
@@ -405,6 +405,18 @@ class UxonApp(App):
             action="done" if result.error is None else "error",
             error=result.error or "",
             elapsed_ms=result.elapsed_ms,
+        )
+        # Stage 10b — opt-in ``UXON_METRICS=1`` JSONL. ``from_cache`` is
+        # available on ``RemoteSnapshot`` (the remote-host path) but not
+        # on ``TuiContext`` (the local rebuild path), so we read it
+        # defensively. ``error or None`` normalises the empty-string
+        # convention used inside ``SourceResult``.
+        from_cache = bool(getattr(result.value, "from_cache", False))
+        metrics_record(
+            result.name,
+            elapsed_ms=result.elapsed_ms,
+            error=result.error or None,
+            from_cache=from_cache,
         )
         self.post_message(
             _RefreshSourceLanded(

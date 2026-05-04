@@ -141,6 +141,128 @@ def debug(topic: str, **fields: Any) -> None:
         return
 
 
+# ── Metrics (off by default; enable via UXON_METRICS=1) ──────────────
+#
+# Stage 10b — opt-in JSONL of source-attempt records, rotated at 1 MiB
+# into ``.1`` and ``.2`` (cap 3 files total). Telemetry, not a
+# correctness path: failures are swallowed, never raised. The path
+# lives next to the event-log + debug-log under platformdirs'
+# ``user_state_dir("uxon")``.
+
+# Test seam: rotation threshold in bytes. Production default is 1 MiB
+# (per spec). Tests override to a small value to exercise rotation
+# without writing megabytes.
+_METRICS_ROTATE_BYTES: int = 1024 * 1024
+
+
+def _metrics_enabled() -> bool:
+    """True iff ``UXON_METRICS`` is set to a truthy value.
+
+    Resolved per-call (not snapshotted at import) so tests can flip
+    the env var and the production process picks up an operator
+    runtime change without restart.
+    """
+    raw = os.environ.get("UXON_METRICS", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _metrics_path() -> str:
+    """Return the metrics-log path. Honours ``UXON_LOG_DIR``."""
+    return os.path.join(_log_dir(), "metrics.jsonl")
+
+
+def _rotate_metrics(path: str) -> None:
+    """Shift ``metrics.jsonl`` → ``.1``, ``.1`` → ``.2``; drop ``.2``.
+
+    Cap is 3 files total (``metrics.jsonl``, ``.1``, ``.2``). Old ``.2``
+    is removed. Never raises — rotation is best-effort.
+    """
+    try:
+        old2 = path + ".2"
+        old1 = path + ".1"
+        if os.path.exists(old2):
+            try:
+                os.remove(old2)
+            except OSError:
+                pass
+        if os.path.exists(old1):
+            try:
+                os.rename(old1, old2)
+            except OSError:
+                pass
+        if os.path.exists(path):
+            try:
+                os.rename(path, old1)
+            except OSError:
+                pass
+    except Exception:
+        return
+
+
+def metrics_record(
+    source_id: str,
+    *,
+    elapsed_ms: int,
+    error: str | None,
+    from_cache: bool = False,
+    attempted_at: float | None = None,
+) -> None:
+    """Append one JSON line to ``metrics.jsonl`` if ``UXON_METRICS=1``.
+
+    Rotates at ``_METRICS_ROTATE_BYTES`` (1 MiB by default) into ``.1``
+    and ``.2`` files; cap is 3 files total. Telemetry path — never
+    raises, never crashes the TUI.
+
+    Fields:
+      ts            ISO-8601 UTC timestamp (seconds precision)
+      source_id     ``"main_ctx_rebuild"`` or ``"remote:<host>"``
+      elapsed_ms    wall-time of the fetch attempt
+      error         first-line error string, or ``null`` on success
+      from_cache    True iff the result was served from on-disk cache
+      attempted_at  optional epoch seconds (caller-supplied)
+    """
+    if not _metrics_enabled():
+        return
+    try:
+        import datetime
+        import json
+
+        now = datetime.datetime.now(datetime.UTC)
+        record: dict[str, Any] = {
+            "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source_id": source_id,
+            "elapsed_ms": int(elapsed_ms),
+            "error": error,
+            "from_cache": bool(from_cache),
+        }
+        if attempted_at is not None:
+            record["attempted_at"] = float(attempted_at)
+
+        log_dir = _log_dir()
+        try:
+            # 0o700 mirrors the SSH cache permission used elsewhere — the
+            # metrics file may carry hostnames the operator considers
+            # sensitive, so we keep it user-only.
+            os.makedirs(log_dir, mode=0o700, exist_ok=True)
+        except OSError:
+            pass
+
+        path = _metrics_path()
+        # Pre-write rotation: check current size and shift if past
+        # threshold. Append-only; we don't rotate mid-write.
+        try:
+            if os.path.exists(path) and os.path.getsize(path) >= _METRICS_ROTATE_BYTES:
+                _rotate_metrics(path)
+        except OSError:
+            pass
+        line = json.dumps(record, ensure_ascii=False)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        # Telemetry — never crash the TUI.
+        return
+
+
 def _log_event(
     event: str,
     *,
