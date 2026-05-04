@@ -8,6 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.6.0] — 2026-05-04
+
 ### Added
 
 - Remote-host section now carries a per-host health badge derived
@@ -16,6 +18,31 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `[loading]`); multi-host setups attach the same badge to the per-row
   HOST column. The richer SlotState-driven surface (latency ring
   tooltip, in-flight indicator) lands in a later stage.
+- New observability channel `UXON_DEBUG=startup` logs three monotonic
+  timestamps (`mount_started`, `first_paint`, `first_data_landed`) for
+  time-to-first-paint diagnosis. Off by default; opt-in via the
+  existing `UXON_DEBUG` env var; goes to the same per-day debug log
+  the other topics use.
+- New opt-in metrics channel `UXON_METRICS=1` writes one JSON line per
+  source attempt to `${state_dir}/metrics.jsonl` (`source_id`,
+  `elapsed_ms`, `error`, `from_cache`). Rotated at 1 MiB into `.1` /
+  `.2` files (cap 3 files). Off by default; failures are swallowed.
+- `uxon doctor --remote` end-to-end probes every configured
+  `[[remote_hosts]]` peer once and reports reachability, latency, and
+  session count. Default `uxon doctor` (no flag) still has zero SSH
+  I/O — the flag is the explicit operator gesture for fleet health
+  diagnosis. JSON output adds a `data.remote_hosts` array under the
+  doctor envelope when the flag is set.
+- Per-host circuit breaker on remote SSH fetches: a peer that fails
+  three consecutive attempts is opened for one full interval before
+  the next probe runs, so a downed host stops contributing to the
+  log noise without blocking siblings.
+
+### Changed
+
+- `uxon doctor` default behaviour is unchanged (still local-only). The
+  `--remote` opt-in is the documented walk-back of the
+  doctor-is-local rule.
 
 ## [3.5.0] — 2026-05-03
 
