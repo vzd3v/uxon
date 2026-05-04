@@ -174,10 +174,15 @@ class RemoteSessionTable(DataTable):
         keep: list[tuple[str, dict[str, Any]]] = []
         drop_keys: list[str] = []
         for entry_host, rec in self._row_index:
+            # Multi-host display names carry " (own only) [badge]"
+            # suffixes; the bare prefix is the canonical name. The
+            # row's stored DataTable key embeds the *display* name
+            # the row was originally inserted with — must use
+            # ``entry_host`` (not ``host_name``) when building the
+            # drop key, otherwise ``remove_row`` silently fails on
+            # the mismatch and the old row leaks alongside the new.
             if entry_host == host_name or entry_host.split(" ", 1)[0] == host_name:
-                # Multi-host display names carry " (own only) [badge]"
-                # suffixes; the bare prefix is the canonical name.
-                drop_keys.append(self._row_key(host_name, rec))
+                drop_keys.append(self._row_key(entry_host, rec))
             else:
                 keep.append((entry_host, rec))
         for key in drop_keys:
@@ -189,7 +194,7 @@ class RemoteSessionTable(DataTable):
         for entry_host, rec in rows:
             cells = self._build_cells(entry_host, rec)
             try:
-                self.add_row(*cells, key=self._row_key(host_name, rec))
+                self.add_row(*cells, key=self._row_key(entry_host, rec))
             except Exception:  # pragma: no cover — defensive
                 pass
             self._row_index.append((entry_host, rec))

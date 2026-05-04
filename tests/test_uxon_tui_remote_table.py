@@ -102,6 +102,57 @@ class UpdateHostRowsTests(unittest.IsolatedAsyncioTestCase):
             # host-b's rows were never touched.
             self.assertEqual(host_names.count("host-b"), 2)
 
+    async def test_multi_host_decorated_display_name_round_trip(self) -> None:
+        """Regression: ``apply_remote_snapshot`` passes the bare
+        host name to ``update_host_rows``, but the rows' display
+        name carries a ``(own only) [badge]`` decoration in
+        multi-host mode. The DataTable row key uses the *display
+        name* (because that's what ``add_row(key=...)`` used during
+        insertion); building the drop key with the bare host name
+        would silently fail (``remove_row`` raises on miss, caught
+        by the defensive bare-except), leaking old rows alongside
+        the new ones.
+
+        Pin it: insert a host with a decorated display name, call
+        ``update_host_rows`` with the bare name, assert the row
+        count stays bounded by the new rows for that host.
+        """
+        from textual.app import App, ComposeResult
+
+        from uxon.tui.widgets import RemoteSessionTable
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield RemoteSessionTable(show_host=True, id="rt")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            table: RemoteSessionTable = app.query_one("#rt", RemoteSessionTable)
+            decorated = "host-a (own only) [ok]"
+            table.populate(
+                [
+                    (decorated, {"user": "u1", "name": "a1", "short_id": "a1"}),
+                    (decorated, {"user": "u1", "name": "a2", "short_id": "a2"}),
+                    ("host-b [ok]", {"user": "u2", "name": "b1", "short_id": "b1"}),
+                ]
+            )
+            await pilot.pause()
+            self.assertEqual(table.row_count, 3)
+
+            # Now update host-a with one row replacing two — the
+            # caller passes the bare canonical name as the first arg
+            # but the row tuples carry the (possibly different)
+            # decorated display name.
+            new_decorated = "host-a (own only) [stale]"
+            table.update_host_rows(
+                "host-a",
+                [(new_decorated, {"user": "u1", "name": "a3", "short_id": "a3"})],
+            )
+            await pilot.pause()
+            # host-a now has 1 row, host-b still has 1 row → 2 total.
+            # Pre-fix this was 4 (the two old host-a rows leaked).
+            self.assertEqual(table.row_count, 2)
+
     async def test_empty_rows_drops_host(self) -> None:
         """A host that lost all its sessions should disappear from the
         table when ``update_host_rows(host, [])`` lands.
