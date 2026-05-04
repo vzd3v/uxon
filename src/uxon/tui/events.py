@@ -27,16 +27,18 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import platformdirs
+
 
 def _default_log_dir() -> str:
     """Return the XDG-derived default log directory.
 
     Honours ``XDG_STATE_HOME``; falls back to ``~/.local/state``.
+    Resolution is delegated to :mod:`platformdirs`, which honours the
+    same env var on Linux. ``UXON_LOG_DIR`` overrides this in
+    :func:`_log_dir`.
     """
-    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "state"
-    )
-    return os.path.join(base, "uxon")
+    return platformdirs.user_state_dir("uxon", appauthor=False)
 
 
 # Snapshot of the default at import time. Kept for backward-compat

@@ -11,20 +11,19 @@ Pure stdlib (json + os). No textual, no TUI imports.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+
+import platformdirs
 
 
 def state_dir() -> Path:
     """Return the per-user state directory for uxon (created on demand).
 
     Honours ``XDG_STATE_HOME`` per the XDG Base Directory spec, falling
-    back to ``~/.local/state``.
+    back to ``~/.local/state``. Resolution is delegated to
+    :mod:`platformdirs`, which honours the same env var on Linux.
     """
-    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "state"
-    )
-    return Path(base) / "uxon"
+    return Path(platformdirs.user_state_dir("uxon", appauthor=False))
 
 
 def dismissed_path() -> Path:

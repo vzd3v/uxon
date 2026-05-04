@@ -71,11 +71,13 @@ class StateDirTests(unittest.TestCase):
             self.assertEqual(state_dir(), Path("/tmp/xdg-test/uxon/remote"))
 
     def test_default_under_home_local_state(self) -> None:
+        # When ``$XDG_STATE_HOME`` is unset, platformdirs derives the
+        # path from ``$HOME`` per the XDG Base Directory spec.
         env = dict(os.environ)
         env.pop("XDG_STATE_HOME", None)
+        env["HOME"] = "/home/alice"
         with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch.object(Path, "home", return_value=Path("/home/alice")):
-                self.assertEqual(state_dir(), Path("/home/alice/.local/state/uxon/remote"))
+            self.assertEqual(state_dir(), Path("/home/alice/.local/state/uxon/remote"))
 
     def test_override_short_circuits_env(self) -> None:
         # Tests use this seam to keep their fixtures inside tmpdir.

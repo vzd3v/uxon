@@ -30,6 +30,7 @@ classifiers = [
 dependencies = [
     "textual>=0.80,<9",
     "tomlkit",
+    "platformdirs>=4",
 ]
 
 [project.urls]

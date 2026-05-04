@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import platformdirs
+
 from uxon.remote_hosts import RemoteHost
 from uxon.wire_schema import WIRE_SCHEMA_VERSION, SessionRecord
 
@@ -119,8 +121,12 @@ def state_dir(*, override: Path | None = None) -> Path:
     """
     if override is not None:
         return override
-    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    return Path(base) / "uxon" / "remote"
+    # platformdirs honours ``$XDG_STATE_HOME`` on Linux and falls back
+    # to ``~/.local/state`` — identical semantics to the previous
+    # hand-rolled resolver. ``appauthor=False`` suppresses the
+    # Windows-only "Author" path component (no-op on Linux but kept
+    # explicit so the call site is portable).
+    return Path(platformdirs.user_state_dir("uxon", appauthor=False)) / "remote"
 
 
 def snapshot_cache_path(name: str, *, override_dir: Path | None = None) -> Path:
@@ -155,10 +161,11 @@ def _xdg_cache_home() -> str:
     parent of the SSH ``ControlPath`` socket so multiplexed connections
     survive across uxon invocations.
     """
-    base = os.environ.get("XDG_CACHE_HOME")
-    if base:
-        return base
-    return str(Path.home() / ".cache")
+    # platformdirs honours ``$XDG_CACHE_HOME`` on Linux and falls back
+    # to ``~/.cache``. We deliberately do NOT pass an app name here:
+    # the existing default template appends ``/uxon/ssh-%C`` itself,
+    # so this helper must return the *parent* (e.g. ``~/.cache``).
+    return platformdirs.user_cache_dir(appauthor=False)
 
 
 def _default_template() -> list[str]:
