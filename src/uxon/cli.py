@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -2122,10 +2123,17 @@ def parse_subcommand(argv: list[str]) -> ParsedArgs:
         return ParsedArgs(action="version", json_output=json_out)
     if cmd == "doctor":
         json_out = "--json" in argv[1:]
-        extras = [a for a in argv[1:] if a != "--json"]
+        # Stage 10c — opt-in ``--remote`` flag walks back the
+        # AGENTS.md "doctor doesn't probe remote_hosts" rule under
+        # explicit operator gesture. See ``do_doctor`` for the
+        # rationale + the AGENTS.md addendum.
+        all_remote = "--remote" in argv[1:]
+        extras = [a for a in argv[1:] if a not in {"--json", "--remote"}]
         if extras:
             fail(f"unknown args for doctor: {' '.join(extras)}")
-        return ParsedArgs(action="doctor", json_output=json_out)
+        # Reuse ``all_hosts`` as the bool carrier — adding a separate
+        # field for one flag isn't worth widening ``ParsedArgs``.
+        return ParsedArgs(action="doctor", json_output=json_out, all_hosts=all_remote)
     if cmd == "run":
         return parse_run_like(argv[1:], "run")
     if cmd == "list":
@@ -2995,6 +3003,7 @@ def do_doctor(
     cwd: str,
     *,
     json_output: bool = False,
+    probe_remote: bool = False,
 ) -> int:
     from uxon import agents as uxon_agents
     from uxon import probes as uxon_probes
@@ -3090,6 +3099,12 @@ def do_doctor(
             else [],
             "issues": list(issues),
         }
+        if probe_remote:
+            # Forward-compat addition: ``data.remote_hosts`` only
+            # appears under ``--remote``. Default doctor JSON output
+            # is unchanged so existing operator scripts that read the
+            # envelope keep working.
+            data["remote_hosts"] = _doctor_remote_rows(cfg)
         _emit_json("doctor", data)
         return 0
 
@@ -3147,7 +3162,65 @@ def do_doctor(
             print(f"- {issue}")
     else:
         print("issues: none")
+    # Remote-host probes: only when the operator explicitly opts in via
+    # ``--remote``. Default ``uxon doctor`` stays local-only per the
+    # AGENTS.md contract; the rule has been amended to add "except
+    # under --remote" in the same change.
+    if probe_remote:
+        if not cfg.remote_hosts:
+            print("remote_hosts: no remote hosts configured")
+        else:
+            rows = _doctor_remote_rows(cfg)
+            print(f"remote_hosts={len(rows)}:")
+            for row in rows:
+                if row["ok"]:
+                    print(
+                        f"- {row['name']}  ok  latency={row['latency_ms']}ms  "
+                        f"sessions={row['sessions']}"
+                    )
+                else:
+                    err = (row["error"] or "").splitlines()[0] if row["error"] else "error"
+                    print(f"- {row['name']}  err  latency={row['latency_ms']}ms  {err}")
     return 0
+
+
+def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:
+    """Probe each ``[[remote_hosts]]`` peer once for ``uxon doctor --remote``.
+
+    **Deliberate AGENTS.md walk-back**: the project rule "uxon doctor
+    does not probe ``[[remote_hosts]]``" stays in force for default
+    ``uxon doctor``. This helper runs only when the operator passes
+    ``--remote`` — the explicit gesture for fleet health diagnosis.
+    The default invocation still has zero SSH I/O.
+
+    Each peer gets one ``ssh ... uxon list --json`` round-trip with the
+    fleet-global SSH multiplex setting; per-host overrides on
+    ``host.connect_timeout`` / ``host.total_timeout`` are honoured by
+    ``fetch_remote_snapshot``. Errors are surfaced (no fail-soft cache
+    fallback masking — the operator wants the truth).
+
+    Returns one dict per peer: ``name``, ``ok`` (bool),
+    ``latency_ms`` (int), ``error`` (str | None), ``from_cache`` (bool),
+    ``sessions`` (int).
+    """
+    from uxon.remote_collector import fetch_remote_snapshot
+
+    rows: list[dict[str, Any]] = []
+    for host in cfg.remote_hosts:
+        t0 = time.monotonic()
+        snap = fetch_remote_snapshot(host, ssh_multiplex=cfg.ssh_multiplex)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        rows.append(
+            {
+                "name": host.name,
+                "ok": snap.error is None,
+                "latency_ms": latency_ms,
+                "error": snap.error,
+                "from_cache": bool(snap.from_cache),
+                "sessions": len(snap.sessions),
+            }
+        )
+    return rows
 
 
 def _doctor_git_profile_rows(cfg: Config, launch_user: str) -> list[str]:
@@ -4095,7 +4168,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.action == "doctor":
         return do_doctor(
-            cfg, caller_user, launch_user, canonical(os.getcwd()), json_output=args.json_output
+            cfg,
+            caller_user,
+            launch_user,
+            canonical(os.getcwd()),
+            json_output=args.json_output,
+            probe_remote=args.all_hosts,
         )
     if args.action == "run":
         return do_run(args, cfg, launch_user)

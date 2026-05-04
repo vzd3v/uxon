@@ -170,5 +170,211 @@ class ProbeOneTimeoutOverrideTests(unittest.TestCase):
         self.assertEqual(captured["timeout"], 2.0)
 
 
+class DoctorRemoteFlagTests(unittest.TestCase):
+    """Stage 10c — opt-in ``uxon doctor --remote`` probes peers.
+
+    Default ``uxon doctor`` stays local-only (the AGENTS.md walk-back
+    is gated on the explicit flag). The flag triggers one
+    ``fetch_remote_snapshot`` call per configured peer.
+    """
+
+    def _stub_cfg(self, remote_hosts=None):
+        from uxon.cli import Config
+
+        return Config(
+            runtime_user="",
+            default_launch_mode="caller",
+            enable_all_users_list=False,
+            launch_user_by_caller={},
+            session_users=[],
+            allowed_roots=[],
+            session_prefix="uxon-",
+            legacy_session_prefixes=(),
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_default_args={},
+            new_project_root="/tmp",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/uxon-{user}.sock",
+            tui_refresh_interval_seconds=2.0,
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
+            remote_hosts=remote_hosts or [],
+        )
+
+    def _stub_probe_host(self):
+        from uxon import probes
+
+        return probes.HostReport(
+            tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
+            enabled={
+                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint="")
+            },
+            detected={},
+            launch_user=_USER,
+        )
+
+    def _patches(self):
+        from contextlib import ExitStack
+
+        from uxon import agents as uxon_agents
+        from uxon import cli
+
+        stack = ExitStack()
+        stack.enter_context(patch("uxon.probes.probe_host", return_value=self._stub_probe_host()))
+        stack.enter_context(
+            patch.object(
+                uxon_agents,
+                "_probe_one",
+                return_value=uxon_agents.AgentAvailability(status="ok", version="x"),
+            )
+        )
+        stack.enter_context(patch.object(cli, "collect_sessions", return_value=[]))
+        stack.enter_context(patch.object(cli, "collect_sessions_for_user", return_value=[]))
+        stack.enter_context(patch.object(cli, "resolve_config_layers", return_value=({}, [])))
+        return stack
+
+    def test_no_flag_no_ssh_attempt(self) -> None:
+        """Default doctor (no ``--remote``) never calls the collector."""
+        from uxon import cli
+        from uxon.remote_hosts import RemoteHost
+
+        hosts = [RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")]
+
+        # ``_doctor_remote_rows`` imports ``fetch_remote_snapshot``
+        # lazily at call time, so we patch the source module
+        # ``uxon.remote_collector.fetch_remote_snapshot`` and assert
+        # zero invocations under the default doctor path.
+        from uxon import remote_collector
+
+        with self._patches() as stack:
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            collector_mock = stack.enter_context(
+                patch.object(remote_collector, "fetch_remote_snapshot")
+            )
+            cli.do_doctor(
+                self._stub_cfg(remote_hosts=hosts),
+                caller_user=_USER,
+                launch_user=_USER,
+                cwd="/tmp",
+                probe_remote=False,
+            )
+        self.assertEqual(collector_mock.call_count, 0)
+
+    def test_flag_calls_collector_once_per_host(self) -> None:
+        from uxon import cli, remote_collector
+        from uxon.remote_collector import RemoteSnapshot
+        from uxon.remote_hosts import RemoteHost
+
+        hosts = [
+            RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon"),
+            RemoteHost(name="stage", ssh_alias="stage", description="", remote_uxon="uxon"),
+        ]
+
+        def _fake_fetch(host, *, ssh_multiplex="auto", **kwargs):
+            return RemoteSnapshot(
+                host_name=host.name,
+                fetched_at_epoch=1.0,
+                from_cache=False,
+                error=None,
+                sessions=[{"user": "u", "name": "uxon-s@claude"}],
+                cached_at_epoch=1.0,
+            )
+
+        with self._patches() as stack:
+            captured = stack.enter_context(redirect_stdout(io.StringIO()))
+            mock_fetch = stack.enter_context(
+                patch.object(remote_collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
+            )
+            cli.do_doctor(
+                self._stub_cfg(remote_hosts=hosts),
+                caller_user=_USER,
+                launch_user=_USER,
+                cwd="/tmp",
+                probe_remote=True,
+            )
+
+        self.assertEqual(mock_fetch.call_count, 2)
+        out = captured.getvalue()
+        self.assertIn("remote_hosts=2:", out)
+        self.assertIn("prod  ok", out)
+        self.assertIn("stage  ok", out)
+
+    def test_flag_with_no_hosts_reports_cleanly(self) -> None:
+        from uxon import cli
+
+        with self._patches() as stack:
+            captured = stack.enter_context(redirect_stdout(io.StringIO()))
+            cli.do_doctor(
+                self._stub_cfg(remote_hosts=[]),
+                caller_user=_USER,
+                launch_user=_USER,
+                cwd="/tmp",
+                probe_remote=True,
+            )
+        self.assertIn("remote_hosts: no remote hosts configured", captured.getvalue())
+
+    def test_json_round_trip_with_remote(self) -> None:
+        import json as _json
+
+        from uxon import cli, remote_collector
+        from uxon.remote_collector import RemoteSnapshot
+        from uxon.remote_hosts import RemoteHost
+
+        hosts = [RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")]
+
+        def _fake_fetch(host, *, ssh_multiplex="auto", **kwargs):
+            return RemoteSnapshot(
+                host_name=host.name,
+                fetched_at_epoch=1.0,
+                from_cache=False,
+                error=None,
+                sessions=[],
+                cached_at_epoch=1.0,
+            )
+
+        with self._patches() as stack:
+            captured = stack.enter_context(redirect_stdout(io.StringIO()))
+            stack.enter_context(
+                patch.object(remote_collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
+            )
+            cli.do_doctor(
+                self._stub_cfg(remote_hosts=hosts),
+                caller_user=_USER,
+                launch_user=_USER,
+                cwd="/tmp",
+                json_output=True,
+                probe_remote=True,
+            )
+        env = _json.loads(captured.getvalue())
+        self.assertEqual(env["kind"], "doctor")
+        self.assertIn("remote_hosts", env["data"])
+        self.assertEqual(len(env["data"]["remote_hosts"]), 1)
+        row = env["data"]["remote_hosts"][0]
+        self.assertEqual(row["name"], "prod")
+        self.assertTrue(row["ok"])
+        self.assertIsNone(row["error"])
+
+    def test_json_default_omits_remote_hosts(self) -> None:
+        """Without ``--remote``, the JSON envelope must not carry the new key."""
+        import json as _json
+
+        from uxon import cli
+
+        with self._patches() as stack:
+            captured = stack.enter_context(redirect_stdout(io.StringIO()))
+            cli.do_doctor(
+                self._stub_cfg(),
+                caller_user=_USER,
+                launch_user=_USER,
+                cwd="/tmp",
+                json_output=True,
+                probe_remote=False,
+            )
+        env = _json.loads(captured.getvalue())
+        self.assertNotIn("remote_hosts", env["data"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
