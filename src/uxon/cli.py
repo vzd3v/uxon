@@ -4014,22 +4014,32 @@ def _build_tui_context(
                     cached_at_epoch=None,
                 )
             breaker.mark_inflight()
-            sem.acquire()
             try:
-                snap = fetch_remote_snapshot(h, ssh_multiplex=multiplex)
+                sem.acquire()
+                try:
+                    snap = fetch_remote_snapshot(h, ssh_multiplex=multiplex)
+                finally:
+                    sem.release()
+                # Translate the snapshot's success/failure into the
+                # breaker's outcome reporting. A cache-fallback
+                # snapshot (``from_cache=True``, ``error=<live>``)
+                # means the live fetch did not succeed — count as
+                # failure. ``error is None and not from_cache`` is a
+                # real live success.
+                if snap.error is None and not snap.from_cache:
+                    breaker.on_success()
+                else:
+                    breaker.on_failure()
+                return snap
             finally:
-                sem.release()
-            # Translate the snapshot's success/failure into the
-            # breaker's outcome reporting. A cache-fallback snapshot
-            # (``from_cache=True``, ``error=None``) means the live
-            # fetch did not succeed — count as failure. ``error is
-            # None and not from_cache`` is a real live success.
-            if snap.error is None and not snap.from_cache:
-                breaker.on_success()
-            else:
-                breaker.on_failure()
-            breaker.clear_inflight()
-            return snap
+                # Defence in depth: if ``fetch_remote_snapshot`` ever
+                # propagates (KeyboardInterrupt mid-tick, a test mock
+                # that raises), the breaker must NOT stay in_flight=True
+                # forever — that would permanently block the host's
+                # next probe. ``on_success`` / ``on_failure`` already
+                # clear the gate as a safety net, but the contract is
+                # this finally.
+                breaker.clear_inflight()
 
         return _fetch
 

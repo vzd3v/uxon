@@ -215,10 +215,14 @@ class UxonApp(App):
         self.quit_rc: int | None = None
         self.pending_status = pending_status
         self.probe_agents = probe_agents
-        # Snapshot the process-wide counter, then bump it. The first
-        # instance in a process gets epoch 0 — same default as
-        # ``_RefreshSourceLanded.instance_epoch`` so synthetic test
-        # posts (which omit the kwarg) line up automatically.
+        # Snapshot the process-wide counter, then bump it. Production
+        # ``_source_worker`` stamps the live epoch on every result.
+        # ``_RefreshSourceLanded.instance_epoch`` defaults to the
+        # sentinel ``-1`` ("unstamped — skip the gate"); the dispatcher
+        # treats a sentinel-tagged event as always-current so synthetic
+        # test posts (which omit the kwarg) bypass the cross-instance
+        # drop. Don't trust value alignment between the two: the gate
+        # is the sentinel branch, not the integer compare.
         self._instance_epoch: int = UxonApp._next_epoch
         UxonApp._next_epoch += 1
         # Worker-handle in-flight gates (see :func:`_worker_active`).
