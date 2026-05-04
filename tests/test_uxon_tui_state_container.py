@@ -226,5 +226,49 @@ class AvailabilityShimTests(unittest.TestCase):
         self.assertEqual(ctx.agent_availability, {"claude": "ok"})
 
 
+class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
+    """Stage 8 commit 6b regression: selectors must key on the
+    specific subfield they consume, not on whole-TuiState identity.
+    refresh_tick advances every local rebuild tick (it's a counter),
+    so any selector that memoises on whole-state identity would
+    cache-miss every tick — defeating the entire point of the
+    identity-stable apply.
+
+    Pin it: ``select_remote_rows(state, hosts)`` returns the same
+    tuple object across a ``refresh_tick`` increment with no
+    remote-slot change.
+    """
+
+    def test_select_remote_rows_stable_across_refresh_tick(self) -> None:
+        from uxon.remote_collector import RemoteSnapshot
+        from uxon.remote_hosts import RemoteHost
+        from uxon.tui.slot_state import SlotState
+        from uxon.tui.state import _REMOTE_ROWS_CACHE, select_remote_rows
+        from uxon.tui.tui_state import TuiState
+
+        # Reset module-level cache so this test stands alone.
+        _REMOTE_ROWS_CACHE.clear()
+        _REMOTE_ROWS_CACHE.update({"key": None, "value": ()})
+
+        host = RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")
+        snap = RemoteSnapshot(
+            host_name="prod",
+            fetched_at_epoch=1.0,
+            from_cache=False,
+            error=None,
+            sessions=[{"user": "u1", "name": "n1"}],
+            cached_at_epoch=1.0,
+        )
+        state = TuiState()
+        state.remote["prod"] = SlotState(value=snap, last_attempt_at=1.0)
+
+        first = select_remote_rows(state, [host])
+        # Advance refresh_tick — selector must NOT cache-miss.
+        state.refresh_tick += 1
+        state.refresh_tick += 1
+        second = select_remote_rows(state, [host])
+        self.assertIs(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()

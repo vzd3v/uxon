@@ -814,7 +814,11 @@ class MainScreen(Screen):
             # Carry the legacy ctx's _state across so the proxy keeps
             # round-tripping the counter when no App is in the picture.
             new_ctx._state = self.ctx._state
-        new_ctx.refresh_tick = self.ctx.refresh_tick + 1
+        # Stage 8 commit 6b: ``state.refresh_tick`` is canonical and
+        # advanced by ``UxonApp._handle_main_ctx_rebuild`` *before*
+        # this method runs. ``apply_loaded_ctx`` no longer touches
+        # the counter — the previous ``new_ctx.refresh_tick =
+        # self.ctx.refresh_tick + 1`` line is gone.
         # Stage 8 commit 6: cwd-change invalidation. The carry-list
         # used to enforce this implicitly ("only carry when cwd
         # matches"); now ``state.cwd_writable`` is canonical and a

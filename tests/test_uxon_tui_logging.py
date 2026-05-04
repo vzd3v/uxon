@@ -105,13 +105,16 @@ class StartupChannelTests(unittest.TestCase):
         from unittest.mock import MagicMock
 
         from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.tui_state import TuiState
 
         # Build an app stub that bypasses ``__init__`` (Textual's
         # ``App.__init__`` requires a running event loop). We only need
-        # ``_first_data_landed_logged`` and ``post_message`` for the
-        # handler.
+        # ``_first_data_landed_logged``, ``post_message``, and
+        # ``state`` (the rebuild handler advances state.refresh_tick
+        # since commit 6b).
         app = UxonApp.__new__(UxonApp)
         app._first_data_landed_logged = False  # type: ignore[attr-defined]
+        app.state = TuiState()  # type: ignore[attr-defined]
         app.post_message = MagicMock()  # type: ignore[method-assign]
 
         captured: list[dict] = []

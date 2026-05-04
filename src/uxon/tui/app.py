@@ -538,6 +538,16 @@ class UxonApp(App):
         message so :meth:`on__main_ctx_loaded` stays the single render
         entry point. Many tests synthesise ``_MainCtxLoaded`` directly,
         so the legacy message must keep its semantics.
+
+        Stage 8 commit 6b: ``state.refresh_tick`` is canonical. The
+        rebuild-source dispatcher is the *only* writer; previously
+        ``MainScreen.apply_loaded_ctx`` did
+        ``new_ctx.refresh_tick = self.ctx.refresh_tick + 1`` via the
+        shim, but that path is gone. Selectors that memoise on
+        ``state.refresh_tick`` will cache-miss every tick by design
+        (the counter advances always); the contract is that
+        selectors key on the specific subfield they consume, not on
+        whole-state identity.
         """
         ctx = event.value if isinstance(event.value, TuiContext) else None
         # Stage 10a — ``UXON_DEBUG=startup``: latch fires once per app
@@ -552,6 +562,12 @@ class UxonApp(App):
                 source=event.name,
                 ts=time.monotonic(),
             )
+        # Advance the canonical tick on every rebuild landing. The
+        # increment happens before the screen sees the ctx so any
+        # selector or watcher that fires off ``apply_loaded_ctx``
+        # reads the post-increment value.
+        if event.error == "":
+            self.state.refresh_tick += 1
         self.post_message(_MainCtxLoaded(ctx, error=event.error))
 
     def _handle_remote_snapshot(self, event: _RefreshSourceLanded) -> None:
