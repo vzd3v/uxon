@@ -265,5 +265,95 @@ class DispatchRegistryTests(unittest.TestCase):
         self.assertEqual(posted, [])
 
 
+class WorkerDrainTests(unittest.TestCase):
+    """Stage 8 § Worker lifetime: ``UxonApp._drain_workers`` cancels
+    every tracked handle and waits a bounded grace before returning,
+    so no worker thread survives the app instance that spawned it.
+    """
+
+    def _make_app(self) -> object:
+        try:
+            from uxon.tui.app import UxonApp
+        except ImportError:
+            self.skipTest("textual not available")
+        from uxon.tui.context import LaunchRequest, TuiContext
+
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="0",
+            total_ram="0",
+            version="0.0",
+            cwd="/tmp",
+            cwd_short="tmp",
+            new_project_root="/tmp",
+            existing_projects=[],
+            cwd_writable=True,
+            current_user="u",
+            on_launch_cwd=lambda agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+            on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
+                cmd=("/bin/true",), label="new"
+            ),
+            on_launch_existing=lambda n, agent_id, mode_id: LaunchRequest(
+                cmd=("/bin/true",), label="existing"
+            ),
+        )
+        return UxonApp(ctx, probe_agents=False)
+
+    def _fake_worker(self, *, active: bool):
+        """Build a stand-in for ``textual.worker.Worker`` exposing only
+        the surface :meth:`_drain_workers` actually touches.
+        """
+        from textual.worker import WorkerState
+
+        class _FakeWorker:
+            def __init__(self, active: bool) -> None:
+                self.state = WorkerState.RUNNING if active else WorkerState.SUCCESS
+                self.group = "test"
+                self.cancel_called = 0
+
+            def cancel(self) -> None:
+                self.cancel_called += 1
+                # Mimic textual: cancellation flips state out of RUNNING
+                # so the bounded poll-loop in ``_drain_workers`` exits
+                # immediately rather than burning the full grace window.
+                from textual.worker import WorkerState as _WS
+
+                self.state = _WS.CANCELLED
+
+        return _FakeWorker(active)
+
+    def test_drain_cancels_active_source_handles(self) -> None:
+        app = self._make_app()
+        w_a = self._fake_worker(active=True)
+        w_b = self._fake_worker(active=True)
+        app._source_handles = {"main_ctx_rebuild": w_a, "remote:foo": w_b}  # type: ignore[attr-defined,assignment]
+        # Wipe the host_probe / link_health slots so they don't try
+        # to reach into a real WorkerManager.
+        app._host_probe_handle = None  # type: ignore[attr-defined]
+        app._link_health_handle = None  # type: ignore[attr-defined]
+        app._drain_workers(grace_seconds=0.05)  # type: ignore[attr-defined]
+        self.assertEqual(w_a.cancel_called, 1)
+        self.assertEqual(w_b.cancel_called, 1)
+
+    def test_drain_skips_already_completed_workers(self) -> None:
+        app = self._make_app()
+        done = self._fake_worker(active=False)
+        app._source_handles = {"main_ctx_rebuild": done}  # type: ignore[attr-defined,assignment]
+        app._host_probe_handle = None  # type: ignore[attr-defined]
+        app._link_health_handle = None  # type: ignore[attr-defined]
+        app._drain_workers(grace_seconds=0.0)  # type: ignore[attr-defined]
+        # Already-done worker must not be cancelled — there's nothing
+        # to cancel and ``Worker.cancel`` would warn in textual.
+        self.assertEqual(done.cancel_called, 0)
+
+    def test_drain_handles_empty_state(self) -> None:
+        app = self._make_app()
+        app._source_handles = {}  # type: ignore[attr-defined,assignment]
+        app._host_probe_handle = None  # type: ignore[attr-defined]
+        app._link_health_handle = None  # type: ignore[attr-defined]
+        # Must not raise.
+        app._drain_workers(grace_seconds=0.0)  # type: ignore[attr-defined]
+
+
 if __name__ == "__main__":
     unittest.main()

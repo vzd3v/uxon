@@ -736,6 +736,90 @@ class UxonApp(App):
         if isinstance(top, MainScreen):
             top.action_digit_jump(n)
 
+    # ── Worker drain on teardown ────────────────────────────────────
+
+    def _drain_workers(self, *, grace_seconds: float = 0.1) -> None:
+        """Cancel every tracked worker and wait briefly for completion.
+
+        Spec § Worker lifetime: "Before App.run() returns, every
+        in-flight worker is awaited (or hard-cancelled with a 100 ms
+        grace). No worker thread survives the App instance that
+        spawned it."
+
+        Cancel-then-poll-until-grace is the simplest portable
+        implementation: textual's :meth:`Worker.cancel` flips the
+        state to ``CANCELLED`` for thread workers more or less
+        immediately; for any straggler we sleep in 10 ms slices up
+        to ``grace_seconds`` total so a slow shutdown doesn't make
+        teardown synchronous on the worker.
+
+        Called from :meth:`on_unmount`. Safe to call multiple times.
+        """
+        import time as _time
+
+        # Collect every tracked handle into one flat list. ``run_worker``
+        # may have produced a ``Worker`` for any of these slots.
+        candidates: list[Worker] = []
+        for w in self._source_handles.values():
+            if w is not None:
+                candidates.append(w)
+        if self._host_probe_handle is not None:
+            candidates.append(self._host_probe_handle)
+        if self._link_health_handle is not None:
+            candidates.append(self._link_health_handle)
+
+        # cwd_writable workers were spawned without a handle; reach
+        # into the worker manager group instead. ``self.workers``
+        # exposes a :class:`WorkerManager` whose ``__iter__`` yields
+        # every worker; filtering by group avoids touching workers
+        # already covered above.
+        try:
+            for w in list(self.workers):
+                if w.group == "cwd_writable":
+                    candidates.append(w)
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+        cancelled = 0
+        already_done = 0
+        for w in candidates:
+            if w.state in _ACTIVE_STATES:
+                try:
+                    w.cancel()
+                    cancelled += 1
+                except Exception:  # pragma: no cover — defensive
+                    pass
+            else:
+                already_done += 1
+
+        # Bounded polling — never block teardown more than the grace
+        # window. 10 ms slices keep the wakeup cost negligible.
+        deadline = _time.monotonic() + max(grace_seconds, 0.0)
+        while _time.monotonic() < deadline:
+            if not any(w.state in _ACTIVE_STATES for w in candidates):
+                break
+            _time.sleep(0.01)
+
+        _debug(
+            "refresh",
+            at="drain",
+            cancelled=cancelled,
+            already_done=already_done,
+            total=len(candidates),
+            instance_epoch=self._instance_epoch,
+        )
+
+    def on_unmount(self) -> None:
+        """Drain in-flight workers before the app loop returns.
+
+        Textual fires ``Unmount`` from :meth:`App._shutdown` after
+        ``_close_all`` / ``_close_messages``, so by the time we get
+        here the message pump is already winding down — cancelling
+        workers from this hook is exactly the "before App.run()
+        returns" point the spec calls for.
+        """
+        self._drain_workers()
+
     def pop_until_main(self) -> None:
         """Dismiss every modal above the main screen.
 
