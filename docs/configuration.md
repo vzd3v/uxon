@@ -610,13 +610,15 @@ remain the operator's responsibility.
 | `remote_hosts` | array of tables | `[]` | Peer hosts polled over SSH for the multi-host TUI block and `uxon list --host`/`--all-hosts`. See [`docs/deployment.md` § Multi-host](deployment.md#multi-host). Per-host options: `interval`, `connect_timeout`, `total_timeout` (durations: `"5s"`, `"500ms"`, `"2m"`, or bare seconds), `extra_ssh_options` (list of extra ssh tokens inserted before `{ssh_alias}`), `command_template` (full-argv override using placeholders `{ssh_alias}`/`{remote_uxon}`/`{connect_timeout}`/`{xdg_cache}`/`{remote_command}` — for kubectl-exec / docker-exec recipes). |
 | `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=60s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
 | `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. |
+| `audit.enabled` | bool | `true` | Application-level audit channel. When `true`, every `uxon` invocation emits structured events to journald (preferred) or `/dev/log` (fallback). The only kill-switch — there is no environment-variable override. Set to `false` to silence the channel entirely (no events, no sink detection). |
+| `audit.syslog_facility` | string | `"user"` | Syslog facility name used only when the `/dev/log` fallback path is active (no journald socket). One of `kern`, `user`, `mail`, `daemon`, `auth`, `authpriv`, `cron`, `local0`–`local7`. journald native protocol carries its own metadata fields and ignores this setting. |
 
 ## Reference: environment variables
 
 | Variable | Effect |
 |----------|--------|
 | `UXON_REPEAT_NONINTERACTIVE_POLICY` | Overrides `repeat_noninteractive_mode` per invocation (`fail` / `attach` / `new`). |
-| `UXON_LOG_DIR` | Overrides the TUI event-log directory. Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. |
+| `UXON_LOG_DIR` | Overrides the directory used for the developer-facing `debug` and `metrics` channels (off by default; gated on `UXON_DEBUG` / `UXON_METRICS=1`). Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. The audit channel goes to journald/syslog regardless of this variable. |
 | `SUDO_USER` | Honoured when `uxon` is invoked via `sudo` to identify the real caller. |
 
 ## Rendering config from JSON

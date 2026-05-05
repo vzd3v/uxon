@@ -86,6 +86,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "default_git_remote_profile": "",
     "git_remote_profiles": [],
     "remote_hosts": [],
+    # Application-level audit channel.  ``enabled`` is the only kill-switch
+    # (no env-var override).  ``syslog_facility`` is consulted only on the
+    # ``/dev/log`` fallback path; journald native carries its own metadata.
+    "audit": {"enabled": True, "syslog_facility": "user"},
 }
 
 
@@ -154,6 +158,8 @@ class Config:
     )  # list[RemoteHost] — parsed once in load_config
     ssh_multiplex: str = "auto"  # "auto" | "off"
     fetch_concurrency: int = 16
+    audit_enabled: bool = True
+    audit_syslog_facility: str = "user"
 
 
 @dataclass
@@ -277,7 +283,13 @@ def load_toml(path: Path) -> dict[str, Any]:
     if tomllib is None:
         fail("python tomllib is unavailable on this host", 1)
     with path.open("rb") as f:
-        data = tomllib.load(f)
+        try:
+            data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as exc:
+            # Convert the malformed-TOML escape path into the same
+            # ``SystemExit`` shape every other config error already takes,
+            # so ``main()``'s ``try/except SystemExit`` can audit it.
+            fail(f"invalid TOML in {path}: {exc}", 1)
     if not isinstance(data, dict):
         return {}
     return data
@@ -508,6 +520,13 @@ def load_config(cwd: str) -> Config:
         )
     except uxon_remote_hosts.RemoteHostError as exc:
         fail(str(exc))
+
+    audit_tbl = merged.get("audit", DEFAULT_CONFIG["audit"])
+    if not isinstance(audit_tbl, dict):
+        fail("'audit' must be a TOML table")
+    audit_enabled = bool(audit_tbl.get("enabled", True))
+    audit_syslog_facility = str(audit_tbl.get("syslog_facility", "user"))
+
     if default_git_remote_profile and not uxon_git_profiles.find_profile(
         git_remote_profiles, default_git_remote_profile
     ):
@@ -539,6 +558,8 @@ def load_config(cwd: str) -> Config:
         remote_hosts=remote_hosts,
         ssh_multiplex=ssh_multiplex,
         fetch_concurrency=fetch_concurrency,
+        audit_enabled=audit_enabled,
+        audit_syslog_facility=audit_syslog_facility,
     )
 
 
