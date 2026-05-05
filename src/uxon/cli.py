@@ -2322,9 +2322,17 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         names = ", ".join(h.name for h in cfg.remote_hosts) or "(none)"
         fail(f"unknown --host {args.host!r}; configured: {names}")
     assert args.user is not None  # parser-enforced
+    import uuid as _uuid
+
+    from uxon import audit as _audit
+
+    corr_id = str(_uuid.uuid4())
+    _audit.set_correlation_id(corr_id)
     remote_cmd = (
         f"{shlex.quote(peer.remote_uxon)} attach "
-        f"--user {shlex.quote(args.user)} {shlex.quote(args.target_id or '')}"
+        f"--user {shlex.quote(args.user)} "
+        f"--audit-correlation-id {shlex.quote(corr_id)} "
+        f"{shlex.quote(args.target_id or '')}"
     )
     ssh_argv = build_peer_ssh_argv(
         peer,
@@ -2332,6 +2340,18 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         allocate_tty=True,
         connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
         ssh_multiplex=cfg.ssh_multiplex,
+    )
+    # Audit must fire *before* ``os.execvp`` (Bug 7) — once the process
+    # image is replaced the cached socket is gone.  ``audit()`` is a
+    # non-blocking ``socket.send``, so the kernel buffers the datagram
+    # and the data is handed off before we exec.
+    _audit.audit(
+        "attach.remote.out",
+        peer_name=peer.name,
+        ssh_alias=peer.ssh_alias,
+        target_user=args.user,
+        target_session=args.target_id,
+        correlation_id=corr_id,
     )
     if args.dry_run:
         print(shlex.join(ssh_argv))
@@ -2343,6 +2363,21 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
 def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("attach requires an identifier")
+
+    from uxon import audit as _audit
+
+    # Bug 6 — peer-inbound branch.  When invoked over SSH the only
+    # signal that this is the peer side of an ``attach.remote.out`` is
+    # ``SSH_CONNECTION`` in the env (sudo strips it on the next leg, so
+    # we have to capture it before the sudo execvp below).  This emit
+    # *replaces* ``session.attach`` for the peer-side path — they
+    # describe the same physical event from caller-vs-peer POV.
+    if os.environ.get("SSH_CONNECTION"):
+        _audit.audit(
+            "attach.remote.in",
+            target_user=args.user or launch_user,
+            target_session=args.target_id,
+        )
 
     # Remote dispatch: --host routes to a configured peer over SSH.
     # Per-target sudo gating happens on the peer (peer's own
@@ -2357,6 +2392,12 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
         caps = probe_sudo_capability([target_user])
         if target_user not in caps.reachable_users:
+            _audit.audit(
+                "session.attach",
+                outcome="denied",
+                session=args.target_id or "",
+                target_user=target_user,
+            )
             eprint(
                 f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
                 "check /etc/sudoers.d for a NOPASSWD rule for this target)"
@@ -2377,6 +2418,9 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             print(f"session={shlex.quote(target.name)}")
             print(f"exec {shlex.join(full)}")
             return 0
+        # Audit before ``os.execvp`` (Bug 7) — once the image is
+        # replaced our cached socket is gone.
+        _audit.audit("session.attach", session=target.name, target_user=target_user)
         os.execvp(full[0], full)
         return 0
 
@@ -2397,6 +2441,12 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     target = resolve_session(
         args.target_id, sessions, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
     )
+    # Same-user audit fires once before ``attach_session``'s execvp.
+    # Emitting from ``do_attach`` (not ``attach_session``) keeps the
+    # call exactly once per CLI invocation; the helper is also used by
+    # the TUI's ``attach_session_blocking`` and we don't want to double
+    # up there.
+    _audit.audit("session.attach", session=target.name, target_user=launch_user)
     return attach_session(target, cfg, launch_user, args.dry_run)
 
 
@@ -2520,7 +2570,28 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
         remote_cmd_parts.extend(["--user", shlex.quote(args.user)])
     if args.json_output:
         remote_cmd_parts.append("--json")
+    # Correlation-id append must precede the join.  ``_do_kill_remote``
+    # uses ``subprocess.run`` (not ``os.execvp``), so there is no Bug 7
+    # process-replacement concern here — the audit emit is correct
+    # anywhere before the run.
+    import uuid as _uuid
+
+    from uxon import audit as _audit
+
+    corr_id = str(_uuid.uuid4())
+    _audit.set_correlation_id(corr_id)
+    remote_cmd_parts.extend(["--audit-correlation-id", shlex.quote(corr_id)])
     remote_cmd = " ".join(remote_cmd_parts)
+    _audit.audit(
+        "kill.remote.out",
+        peer_name=target_host.name,
+        ssh_alias=target_host.ssh_alias,
+        target_user=args.user,
+        target_session=args.target_id,
+        force=args.force,
+        dry_run=args.dry_run,
+        correlation_id=corr_id,
+    )
     ssh_argv = build_peer_ssh_argv(
         target_host,
         remote_command=remote_cmd,
@@ -2571,6 +2642,21 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("kill requires an identifier")
 
+    from uxon import audit as _audit
+
+    # Bug 6 — peer-inbound branch.  Same shape as ``do_attach`` above.
+    # ``correlation_id`` is read from module state (the parser layer set
+    # it via ``set_correlation_id`` after popping ``--audit-correlation-id``
+    # from argv).
+    if os.environ.get("SSH_CONNECTION"):
+        _audit.audit(
+            "kill.remote.in",
+            session=args.target_id,
+            target_user=args.user or launch_user,
+            force=args.force,
+            correlation_id=_audit._correlation_id,
+        )
+
     # Remote dispatch: --host routes to a configured peer over SSH.
     # Per-target sudo gating happens on the peer (its own ``uxon kill``
     # runs the probe), so the local side does not need to know the
@@ -2589,6 +2675,14 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         caps = probe_sudo_capability([target_user])
         reachable = target_user in caps.reachable_users
         if not reachable:
+            _audit.audit(
+                "session.kill",
+                outcome="denied",
+                session=args.target_id or "",
+                target_user=target_user,
+                force=args.force,
+                dry_run=args.dry_run,
+            )
             # Stable error tag — mirrors the ``all-users-disabled``
             # precedent. Callers (and the SSH peer-aggregator) parse
             # this exact substring. Surface the verdict on dry-run too:
@@ -2637,6 +2731,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 print(f"dry-run: {shlex.join(full)}")
             return 0
         run_cmd(full, check=True)
+        _audit.audit(
+            "session.kill",
+            session=target.name,
+            target_user=target_user,
+            force=args.force,
+            dry_run=args.dry_run,
+        )
         if args.json_output:
             _emit_json(
                 "kill",
@@ -2676,6 +2777,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             print(f"dry-run: {shlex.join(full)}")
         return 0
     run_cmd(full, check=True)
+    _audit.audit(
+        "session.kill",
+        session=target.name,
+        target_user=launch_user,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
     if args.json_output:
         _emit_json(
             "kill",
@@ -2746,6 +2854,15 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 "sessions": results,
             },
         )
+    from uxon import audit as _audit
+
+    killed = sum(1 for r in results if r["action"] == "killed")
+    _audit.audit(
+        "session.kill_all",
+        target_users=[launch_user],
+        killed_count=killed,
+        dry_run=args.dry_run,
+    )
     return 0
 
 
@@ -3972,6 +4089,7 @@ def _build_tui_context(
         # sessions", which is the same behaviour the legacy
         # ``kill-all-global`` had when sudo was unavailable.
         users = sorted({launch_user, *sudo_caps.reachable_users})
+        killed_count = 0
         for u in users:
             fresh = collect_sessions([u], cfg)
             for s in fresh:
@@ -3980,7 +4098,21 @@ def _build_tui_context(
                     "-t",
                     s.name,
                 ]
-                run_cmd(full, check=False)
+                cp = run_cmd(full, check=False)
+                if cp.returncode == 0:
+                    killed_count += 1
+        # Operationally the most-significant kill_all path: cross-user
+        # bulk kill from the TUI.  Audit emit covers the whole sweep,
+        # not per-session — matches the spec's `target_users` /
+        # `killed_count` shape.
+        from uxon import audit as _audit
+
+        _audit.audit(
+            "session.kill_all",
+            target_users=users,
+            killed_count=killed_count,
+            dry_run=False,
+        )
 
     # Legacy alias kept for any out-of-tree caller. The TUI dispatches
     # via ``on_kill_all_global`` (the field name on TuiContext); the
