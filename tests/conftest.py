@@ -29,6 +29,7 @@ def _disable_audit_by_default(request: pytest.FixtureRequest):
     _audit.enabled = False
     _audit._initialized = False
     _audit._socket = None
+    _audit.sink = "none"
     _audit._prefix = {}
     _audit._prefix_subcmd = ""
     _audit._correlation_id = None
@@ -42,4 +43,5 @@ def _disable_audit_by_default(request: pytest.FixtureRequest):
         except OSError:
             pass
     _audit._socket = None
+    _audit.sink = "none"
     _audit._initialized = False
