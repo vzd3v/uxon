@@ -6,7 +6,9 @@ Public API re-exports only. Implementation lives in sibling modules:
                    ``LinkHealthStatus``, ``LaunchRequest``, ``Item``,
                    ``build_items``, ``CallbackError``).
   - ``state``    — pure TUI state decisions (not public-re-exported).
-  - ``events``   — JSONL event log (``LOG_DIR``, ``_log_event``).
+  - ``events``   — debug and metrics channels (``debug``,
+                   ``metrics_record``).  The audit channel lives in
+                   ``uxon.audit`` and goes to journald / syslog directly.
   - ``launch``   — launch-handoff helpers (runs outside the TUI).
   - ``hints``    — ``TEXTUAL_MISSING_HINT`` install guidance.
   - ``app``      — textual :class:`UxonApp` + :func:`run` outer loop.
@@ -34,7 +36,6 @@ from .context import (
     TuiSession,
     build_items,
 )
-from .events import LOG_DIR
 from .hints import TEXTUAL_MISSING_HINT
 
 if TYPE_CHECKING:
@@ -45,7 +46,6 @@ __all__ = [
     "UxonApp",
     "Item",
     "LinkHealthStatus",
-    "LOG_DIR",
     "LaunchRequest",
     "ServerStatus",
     "TEXTUAL_MISSING_HINT",

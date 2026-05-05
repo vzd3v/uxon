@@ -3427,6 +3427,17 @@ def do_doctor(
             # is unchanged so existing operator scripts that read the
             # envelope keep working.
             data["remote_hosts"] = _doctor_remote_rows(cfg)
+        # Audit-channel report (Bug 2).  Operators run ``uxon doctor``
+        # to validate the deploy; we surface the resolved sink so
+        # "audit isn't reaching journald" is one command away.  Force
+        # sink detection by reading ``audit.sink`` after a synthetic
+        # touch (so the doctor invocation itself initialises the channel
+        # if the operator has not invoked ``cli.start`` first).
+        from uxon import audit as _audit
+
+        if not _audit._initialized and _audit.enabled:
+            _audit._lazy_init()
+        data["audit"] = {"enabled": _audit.enabled, "sink": _audit.sink or "none"}
         _emit_json("doctor", data)
         return 0
 
@@ -3478,6 +3489,19 @@ def do_doctor(
             print(f"- {row}")
     else:
         print("git_remote_profiles=0")
+    # Audit-channel report (Bug 2) — operator-visible verification of
+    # the platform-log path.  Force sink detection if it hasn't run yet
+    # (``cli.start`` already triggered it for non-doctor invocations,
+    # but a stand-alone ``uxon doctor`` may be the first audit-aware
+    # call in this process).
+    from uxon import audit as _audit
+
+    if not _audit._initialized and _audit.enabled:
+        _audit._lazy_init()
+    _sink_label = {"journal": "journald-native", "syslog": "syslog", "none": "no-sink"}.get(
+        _audit.sink, "no-sink"
+    )
+    print(f"audit:    {'enabled' if _audit.enabled else 'disabled'}, sink={_sink_label}")
     if issues:
         print("issues:")
         for issue in issues:

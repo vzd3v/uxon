@@ -376,5 +376,104 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         self.assertNotIn("remote_hosts", env["data"])
 
 
+class DoctorAuditLineTests(unittest.TestCase):
+    """``uxon doctor`` reports audit-channel status (Bug 2)."""
+
+    def _stub_cfg(self):
+        from uxon.cli import Config
+
+        return Config(
+            runtime_user="",
+            default_launch_mode="caller",
+            enable_all_users_list=False,
+            launch_user_by_caller={},
+            session_users=[],
+            allowed_roots=[],
+            session_prefix="uxon-",
+            legacy_session_prefixes=(),
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_default_args={},
+            new_project_root="/tmp",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/uxon-{user}.sock",
+            tui_refresh_interval_seconds=2.0,
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
+        )
+
+    def _stub_probe_host(self):
+        from uxon import probes
+
+        return probes.HostReport(
+            tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
+            enabled={
+                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint="")
+            },
+            detected={},
+            launch_user=_USER,
+        )
+
+    def _patches(self):
+        from contextlib import ExitStack
+
+        from uxon import agents as uxon_agents
+        from uxon import cli
+
+        stack = ExitStack()
+        stack.enter_context(patch("uxon.probes.probe_host", return_value=self._stub_probe_host()))
+        stack.enter_context(
+            patch.object(
+                uxon_agents,
+                "_probe_one",
+                return_value=uxon_agents.AgentAvailability(status="ok", version="x"),
+            )
+        )
+        stack.enter_context(patch.object(cli, "collect_sessions", return_value=[]))
+        stack.enter_context(patch.object(cli, "collect_sessions_for_user", return_value=[]))
+        stack.enter_context(patch.object(cli, "resolve_config_layers", return_value=({}, [])))
+        return stack
+
+    def test_human_readable_has_audit_line(self) -> None:
+        from uxon import audit as au
+        from uxon import cli
+
+        with self._patches() as stack:
+            captured = stack.enter_context(redirect_stdout(io.StringIO()))
+            stack.enter_context(patch.object(au, "_detect_sink", return_value="syslog"))
+            stack.enter_context(patch.object(au, "_open_sink_socket", return_value=None))
+            au.enabled = True
+            au._initialized = False
+            cli.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
+        out = captured.getvalue()
+        self.assertIn("audit:", out)
+        self.assertIn("sink=syslog", out)
+
+    def test_json_output_has_audit_block(self) -> None:
+        import json as _json
+
+        from uxon import audit as au
+        from uxon import cli
+
+        with self._patches() as stack:
+            captured = stack.enter_context(redirect_stdout(io.StringIO()))
+            stack.enter_context(patch.object(au, "_detect_sink", return_value="journal"))
+            stack.enter_context(patch.object(au, "_open_sink_socket", return_value=None))
+            au.enabled = True
+            au._initialized = False
+            cli.do_doctor(
+                self._stub_cfg(),
+                caller_user=_USER,
+                launch_user=_USER,
+                cwd="/tmp",
+                json_output=True,
+            )
+        env = _json.loads(captured.getvalue())
+        self.assertIn("audit", env["data"])
+        self.assertEqual(env["data"]["audit"]["sink"], "journal")
+        self.assertIn(env["data"]["audit"]["sink"], {"journal", "syslog", "none"})
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

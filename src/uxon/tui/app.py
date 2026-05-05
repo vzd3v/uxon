@@ -28,8 +28,8 @@ from textual.worker import Worker, WorkerState
 
 from .config import TuiConfig
 from .context import CallbackError, LaunchRequest, TuiContext
-from .events import _log_event, metrics_record
 from .events import debug as _debug
+from .events import metrics_record
 from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
 from .screens.agents_unavailable import AgentsUnavailableScreen
@@ -1288,12 +1288,7 @@ def run(ctx: TuiContext) -> int:
         app.run()
 
         if app.quit_rc is not None:
-            _log_event(
-                "tui_quit",
-                caller_user=caller_user,
-                launch_user=ctx.current_user,
-                outcome=f"rc={app.quit_rc}",
-            )
+            _debug("tui", reason=f"rc={app.quit_rc}")
             return app.quit_rc
 
         req = app.pending_launch
@@ -1320,16 +1315,6 @@ def run(ctx: TuiContext) -> int:
             session=req.label,
             rc=rc,
             wall_seconds=round(wall_seconds, 3),
-        )
-        # ``_log_event("launch_completed", ...)`` stays here through the
-        # bridge window; commit 9 deletes it once every audit replacement
-        # is wired.
-        _log_event(
-            "launch_completed",
-            caller_user=caller_user,
-            launch_user=ctx.current_user,
-            outcome=f"rc={rc}",
-            extra={"label": req.label, "stage": stage, "wall_seconds": round(wall_seconds, 3)},
         )
         pause_on_launch_failure(sys.stdout, req, rc, stage, wall_seconds)
         try:

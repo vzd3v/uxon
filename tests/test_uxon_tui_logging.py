@@ -1,4 +1,11 @@
-"""Event-log tests for :func:`uxon.tui.events._log_event`."""
+"""Tests for the debug and metrics logging channels.
+
+The previous JSONL TUI event log (``_log_event`` / ``tui-{user}-{date}.log``)
+was removed in 4.0; audit events now go to journald / syslog via
+``uxon.audit``.  The ``debug`` channel (off by default,
+``UXON_DEBUG``-gated) and the ``metrics`` channel
+(``UXON_METRICS=1``-gated) are unchanged and tested below.
+"""
 
 from __future__ import annotations
 
@@ -8,54 +15,6 @@ import pathlib
 import tempfile
 import unittest
 from unittest import mock
-
-from uxon.tui.events import _log_event
-
-
-class LogEventTests(unittest.TestCase):
-    def _find_log(self, log_dir: str) -> pathlib.Path:
-        files = list(pathlib.Path(log_dir).glob("*.log"))
-        self.assertEqual(len(files), 1, f"expected 1 log file, got {files}")
-        return files[0]
-
-    def test_log_event_writes_jsonl_line(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch.dict(os.environ, {"UXON_LOG_DIR": td}):
-                _log_event(
-                    "tui_start",
-                    caller_user="u",
-                    launch_user="u",
-                    extra={"version": "1.0.0"},
-                )
-            lines = self._find_log(td).read_text().splitlines()
-            self.assertEqual(len(lines), 1)
-            rec = json.loads(lines[0])
-            self.assertEqual(rec["event"], "tui_start")
-            self.assertEqual(rec["caller_user"], "u")
-            self.assertEqual(rec["extra"], {"version": "1.0.0"})
-
-    def test_log_event_appends_multiple_records(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch.dict(os.environ, {"UXON_LOG_DIR": td}):
-                _log_event("a", caller_user="u")
-                _log_event("b", caller_user="u")
-            lines = self._find_log(td).read_text().splitlines()
-            self.assertEqual([json.loads(x)["event"] for x in lines], ["a", "b"])
-
-    def test_log_event_swallows_errors(self) -> None:
-        # Un-writable directory — log_event must not raise.
-        with mock.patch.dict(os.environ, {"UXON_LOG_DIR": "/proc/nonexistent"}):
-            try:
-                _log_event("x", caller_user="u")
-            except Exception as exc:
-                self.fail(f"_log_event raised: {exc!r}")
-
-    def test_log_event_creates_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            nested = os.path.join(td, "a", "b")
-            with mock.patch.dict(os.environ, {"UXON_LOG_DIR": nested}):
-                _log_event("x", caller_user="u")
-            self.assertTrue(os.path.isdir(nested))
 
 
 class StartupChannelTests(unittest.TestCase):
