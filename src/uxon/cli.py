@@ -2113,6 +2113,52 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
     )
 
 
+def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
+    """Parse the arg tail of ``uxon attach <id> [...]``.
+
+    Symmetric to :func:`_parse_kill_extras` but without
+    ``--all-users``, ``--json``, ``--force``. ``--host`` requires
+    ``--user`` — implicit peer-login-user defaults invite
+    "where did this attach actually go?" surprises.
+    """
+    dry = False
+    user: str | None = None
+    host: str | None = None
+    extras: list[str] = []
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token == "--dry-run":
+            dry = True
+        elif token == "--user":
+            i += 1
+            if i >= len(rest):
+                fail("--user requires a name")
+            user = rest[i]
+        elif token == "--host":
+            i += 1
+            if i >= len(rest):
+                fail("--host requires a host name")
+            host = rest[i]
+        else:
+            extras.append(token)
+        i += 1
+    if extras:
+        fail(f"unknown args for attach: {' '.join(extras)}")
+    if host is not None and user is None:
+        fail(
+            "attach --host requires --user (peer owns authorisation; "
+            "pass the target user explicitly)"
+        )
+    return ParsedArgs(
+        action="attach",
+        target_id=target_id,
+        dry_run=dry,
+        user=user,
+        host=host,
+    )
+
+
 def parse_subcommand(argv: list[str]) -> ParsedArgs:
     cmd = argv[0]
     if cmd == "version":
@@ -2152,10 +2198,7 @@ def parse_subcommand(argv: list[str]) -> ParsedArgs:
         target = argv[1]
         if cmd == "kill":
             return _parse_kill_extras(argv[2:], target)
-        extras = list(argv[2:])
-        if extras:
-            fail(f"unknown args for {cmd}: {' '.join(extras)}")
-        return ParsedArgs(action=cmd, target_id=target)
+        return _parse_attach_extras(argv[2:], target)
     if cmd == "new":
         if len(argv) < 2:
             fail("new requires a name")
@@ -2185,10 +2228,7 @@ def parse_args(argv: list[str]) -> ParsedArgs:
     if argv[0] in ("-a", "--attach"):
         if len(argv) < 2:
             fail("attach requires an identifier")
-        extras = argv[2:]
-        if extras:
-            fail(f"unknown args for attach: {' '.join(extras)}")
-        return ParsedArgs(action="attach", target_id=argv[1])
+        return _parse_attach_extras(argv[2:], argv[1])
     if argv[0] in ("-k", "--kill"):
         if len(argv) < 2:
             fail("kill requires an identifier")
