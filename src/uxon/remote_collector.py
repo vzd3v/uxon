@@ -293,6 +293,58 @@ def _strip_multiplex(template: list[str]) -> list[str]:
     return out
 
 
+def build_peer_ssh_argv(
+    host: RemoteHost,
+    *,
+    remote_command: str,
+    allocate_tty: bool,
+    connect_timeout: int,
+    ssh_multiplex: str,
+) -> list[str]:
+    """Single source of truth for ssh-argv to one peer.
+
+    Used by fetch (poller), kill, and attach paths so all three
+    honour ``host.command_template`` / ``host.extra_ssh_options`` and
+    share the multiplexed ControlMaster started by the poller.
+
+    ``allocate_tty=True`` inserts ``-tt`` immediately after the first
+    token when the first token is ``"ssh"`` — interactive sessions
+    (attach) need a forced PTY. Custom non-ssh templates (kubectl
+    exec etc.) are left alone; the operator owns tty plumbing in
+    their argv.
+
+    Selection of template mirrors :func:`_build_fetch_argv`:
+      - ``host.command_template`` set → render that directly. Operator
+        owns the argv; ``extra_ssh_options`` and ``ssh_multiplex`` are
+        ignored because both target the default ssh template.
+      - Otherwise → start from :func:`_default_template`, optionally
+        strip multiplex options, insert ``host.extra_ssh_options``
+        before ``{ssh_alias}``.
+    """
+    if host.command_template:
+        template: list[str] = list(host.command_template)
+    else:
+        template = _default_template()
+        if ssh_multiplex == "off":
+            template = _strip_multiplex(template)
+        if host.extra_ssh_options:
+            try:
+                idx = template.index("{ssh_alias}")
+            except ValueError:
+                idx = len(template)
+            template = template[:idx] + list(host.extra_ssh_options) + template[idx:]
+    if allocate_tty and template and template[0] == "ssh":
+        template = [template[0], "-tt", *template[1:]]
+    return _render_argv(
+        template,
+        ssh_alias=host.ssh_alias,
+        remote_uxon=host.remote_uxon,
+        connect_timeout=connect_timeout,
+        xdg_cache=_xdg_cache_home(),
+        remote_command=remote_command,
+    )
+
+
 def _build_fetch_argv(
     host: RemoteHost,
     *,

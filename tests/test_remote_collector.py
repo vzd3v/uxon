@@ -196,6 +196,98 @@ class BuildFetchArgvTests(unittest.TestCase):
         self.assertEqual(argv[-1], "uxon list --json")
 
 
+class BuildPeerSshArgvTests(unittest.TestCase):
+    def test_default_template_no_tty(self) -> None:
+        from uxon.remote_collector import build_peer_ssh_argv
+
+        argv = build_peer_ssh_argv(
+            _host(ssh_alias="edge-eu"),
+            remote_command="uxon list --json",
+            allocate_tty=False,
+            connect_timeout=7,
+            ssh_multiplex="auto",
+        )
+        self.assertEqual(argv[0], "ssh")
+        self.assertNotIn("-tt", argv)
+        self.assertIn("ControlMaster=auto", argv)
+        self.assertEqual(argv[-2], "edge-eu")
+        self.assertEqual(argv[-1], "uxon list --json")
+
+    def test_allocate_tty_inserts_dash_tt_after_ssh(self) -> None:
+        from uxon.remote_collector import build_peer_ssh_argv
+
+        argv = build_peer_ssh_argv(
+            _host(),
+            remote_command="uxon attach --user alice abc",
+            allocate_tty=True,
+            connect_timeout=5,
+            ssh_multiplex="auto",
+        )
+        self.assertEqual(argv[0], "ssh")
+        self.assertEqual(argv[1], "-tt")
+
+    def test_allocate_tty_skipped_for_non_ssh_first_token(self) -> None:
+        # Custom templates that don't start with "ssh" do NOT receive
+        # -tt — operator owns interactive-tty plumbing in their argv.
+        from uxon.remote_collector import build_peer_ssh_argv
+
+        argv = build_peer_ssh_argv(
+            _host(command_template=("kubectl", "exec", "uxon-pod", "--", "/bin/sh", "-c", "{remote_command}")),
+            remote_command="uxon attach foo",
+            allocate_tty=True,
+            connect_timeout=5,
+            ssh_multiplex="auto",
+        )
+        self.assertEqual(argv[0], "kubectl")
+        self.assertNotIn("-tt", argv)
+
+    def test_ssh_multiplex_off_strips_control_options(self) -> None:
+        from uxon.remote_collector import build_peer_ssh_argv
+
+        argv = build_peer_ssh_argv(
+            _host(),
+            remote_command="uxon attach abc",
+            allocate_tty=True,
+            connect_timeout=5,
+            ssh_multiplex="off",
+        )
+        joined = " ".join(argv)
+        self.assertNotIn("ControlMaster", joined)
+        self.assertNotIn("ControlPath", joined)
+        self.assertIn("-tt", argv)  # tty insertion still happens
+
+    def test_custom_command_template_honoured(self) -> None:
+        from uxon.remote_collector import build_peer_ssh_argv
+
+        argv = build_peer_ssh_argv(
+            _host(command_template=("ssh", "-J", "bastion", "{ssh_alias}", "{remote_command}")),
+            remote_command="uxon attach --user alice abc",
+            allocate_tty=True,
+            connect_timeout=5,
+            ssh_multiplex="auto",
+        )
+        # Operator's jumphost preserved; -tt inserted right after ssh
+        # (before -J), so it applies to the outermost ssh.
+        self.assertEqual(argv[0], "ssh")
+        self.assertEqual(argv[1], "-tt")
+        self.assertIn("-J", argv)
+        self.assertIn("bastion", argv)
+        self.assertEqual(argv[-1], "uxon attach --user alice abc")
+
+    def test_extra_ssh_options_inserted_before_alias(self) -> None:
+        from uxon.remote_collector import build_peer_ssh_argv
+
+        argv = build_peer_ssh_argv(
+            _host(extra_ssh_options=("-o", "ProxyJump=bastion")),
+            remote_command="uxon kill --force abc",
+            allocate_tty=False,
+            connect_timeout=5,
+            ssh_multiplex="auto",
+        )
+        alias_idx = argv.index("vz-prod1")
+        self.assertEqual(argv[alias_idx - 2 : alias_idx], ["-o", "ProxyJump=bastion"])
+
+
 class ParseEnvelopeTests(unittest.TestCase):
     def test_happy_path(self) -> None:
         sessions, scope_skipped, err = _parse_envelope(
