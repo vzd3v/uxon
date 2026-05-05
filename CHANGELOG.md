@@ -6,10 +6,38 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — target version 3.3.0
+## [Unreleased] — target version 4.0.0
+
+### Changed (breaking)
+
+- Audit events now go to the platform log (journald native on
+  systemd hosts, `/dev/log` syslog fallback otherwise) instead of
+  `~/.local/state/uxon/tui-{user}-{date}.log`.  That file is no
+  longer written.  Query via `journalctl SYSLOG_IDENTIFIER=uxon` on
+  systemd hosts.
+- `uxon.tui.LOG_DIR` public import removed.  Out-of-tree code that
+  imported `from uxon.tui import LOG_DIR` will fail at import.
+- Peer protocol: `list`, `attach`, `kill` now accept an internal
+  `--audit-correlation-id <uuid>` flag (hidden from `--help`).  All
+  peers in a fleet must run the same major version (existing
+  upgrade posture).
 
 ### Added
 
+- `uxon doctor` reports the audit-channel state on its own line:
+  `audit:    enabled, sink=journald-native` (or `sink=syslog`,
+  `sink=disabled`, `sink=no-sink`).  JSON envelope carries the same
+  data under `data.audit`.
+- New `[audit]` config table: `enabled` (bool, default `true`) and
+  `syslog_facility` (string, default `"user"`, consulted only on
+  the `/dev/log` fallback path).  No environment-variable override
+  — the only kill-switch is the config table.
+- Events emitted to the platform log channel: `cli.start`,
+  `tui.open`, `session.new`, `session.attach`, `session.ended`,
+  `session.kill`, `session.kill_all`, `attach.remote.out`,
+  `attach.remote.in`, `kill.remote.out`, `kill.remote.in`,
+  `list.peek`, `list.remote.in`, `git.remote.create`,
+  `config.error`.
 - Multi-host: configure peers under `[[remote_hosts]]` in `config.toml`;
   `uxon list --host <alias>` and `uxon list --all-hosts` aggregate
   sessions across the fleet.

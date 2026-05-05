@@ -17,8 +17,29 @@ TUI session picker.
 There is no daemon. There is no database. State lives in:
 - `tmux` sessions on a per-user dedicated socket;
 - `config/config.toml` (host config) and `.uxon.toml` (per-project);
-- `${XDG_STATE_HOME:-~/.local/state}/uxon/` (best-effort JSONL event
-  log; override with `UXON_LOG_DIR`).
+- the host's platform log channel (journald native or `/dev/log`
+  syslog), for the `audit` channel;
+- `${XDG_STATE_HOME:-~/.local/state}/uxon/`, for the developer-facing
+  `debug` and `metrics` channels (override with `UXON_LOG_DIR`).
+
+### Logging channels
+
+Three non-overlapping channels.  Audit is on by default; the other
+two are off and operator-opt-in.
+
+| Channel  | Sink                          | Default | Audience            |
+|----------|-------------------------------|---------|---------------------|
+| `audit`  | journald native / `/dev/log`  | on      | operator / lead     |
+| `debug`  | `~/.local/state/uxon/…`       | off     | developer           |
+| `metrics`| `~/.local/state/uxon/…`       | off     | developer           |
+
+`audit` is the application-level operational record (who attached,
+who killed, who launched, with cross-host correlation).  `debug` is
+gated on `UXON_DEBUG=<topic>` and writes one JSONL line per
+instrumentation point — left in code permanently because it costs a
+single set-membership check when the env var is unset.  `metrics`
+is gated on `UXON_METRICS=1` and writes per-fetch latency for the
+remote-collector pollers.
 
 ## Top-level layout
 
@@ -28,6 +49,7 @@ src/uxon/                     Python package (pipx / uv tool / pip installable).
   __main__.py                 `python -m uxon` shim → cli.main().
   cli.py                      Single-file CLI entrypoint.
   settings.py                 Settings schema, layered TOML read/write.
+  audit.py                    Audit channel — journald / syslog emit.
   agents.py                   Pure-data agent catalog and probe.
   wire_schema.py              Versioned JSON envelope for `--json` output.
   remote_hosts.py             [[remote_hosts]] schema and validation.
@@ -78,7 +100,8 @@ Sub-modules under `src/uxon/tui/`:
 - `state.py` — pure UI state decisions (filter, validation, key
   routing, focus transitions). Tested with plain `unittest`,
   no `Pilot`.
-- `events.py` — best-effort JSONL event log.
+- `events.py` — `debug` and `metrics` channels (both off by default).
+  The audit channel lives in `uxon.audit`, not here.
 - `launch.py` — fork-and-wait helper plus the failure-pause banner.
   Runs **outside** the Textual `App` between round-trips.
 - `hints.py` — `TEXTUAL_MISSING_HINT` install guidance.

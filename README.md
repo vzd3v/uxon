@@ -254,6 +254,11 @@ distro's package manager (this is what PEP 668 protects against).
 For multi-host rollout, generated config from a JSON payload, and
 deployment topology, see [`docs/deployment.md`](docs/deployment.md).
 
+`uxon` emits audit events to the platform log channel (journald
+native on systemd hosts, `/dev/log` syslog fallback); see
+[`docs/deployment.md`](docs/deployment.md#audit-channel) for the
+channel topology and how to query it.
+
 ### After install
 
 ```bash

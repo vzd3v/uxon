@@ -20,6 +20,38 @@ $EDITOR config/config.toml         # set allowed_roots, session_users, agents
 uxon doctor                         # verify
 ```
 
+### Audit channel
+
+`uxon` emits one structured audit event per substantive operator
+gesture (`cli.start`, `tui.open`, `session.new`, `session.attach`,
+`session.ended`, `session.kill`, `session.kill_all`,
+`attach.remote.out` / `.in`, `kill.remote.out` / `.in`, `list.peek`,
+`list.remote.in`, `git.remote.create`, `config.error`).  The channel
+auto-detects its sink at first call: journald native protocol via
+`/run/systemd/journal/socket` if present, `/dev/log` syslog
+otherwise.  No `python-systemd` dependency; the wire layer is
+stdlib-only.
+
+Under the prescribed install path (`sudo install/install_uxon.py`
+into `/opt/uxon/venv`) the package files are root-owned and journald
+/ syslog files are root-owned — a launch user can append events but
+cannot edit the trail.  `uxon` does **not** try to defend at runtime
+against a launch user running their own copy; privileged operations
+(`sudo -iu …`) appear in `sudo`'s own audit trail (`auth.log` /
+journald), which is the source of truth for who-did-what at the OS
+level.  `uxon`'s audit is application-level value-add — which
+session, which agent, which project, correlation across hosts.
+
+`uxon doctor` reports the channel state on its own line:
+
+```
+audit:    enabled, sink=journald-native    (or sink=syslog / disabled / no-sink)
+```
+
+Disable per-host with `[audit]\nenabled = false` in `config.toml`;
+there is no environment-variable override.  Query via
+`journalctl SYSLOG_IDENTIFIER=uxon`.
+
 `install/install_uxon.py` creates a dedicated venv at `--venv-dir`
 (default `/opt/uxon/venv`), `pip install`s the package into it, and
 symlinks `/opt/uxon/venv/bin/uxon` to `--install-path`. Dependencies
@@ -286,6 +318,17 @@ when peers are upgraded. `data.scope_skipped` is optional — older
 peers without per-target sudo support omit it; the collector
 treats missing/null as `[]`.
 
+**Internal flag — `--audit-correlation-id`.**  The peer-protocol
+contract for `list`, `attach`, and `kill` accepts an internal
+`--audit-correlation-id <uuid>` flag.  The local side generates a
+UUIDv4 and passes it to the peer; the peer stamps it into its own
+audit trail (`attach.remote.in`, `kill.remote.in`, `list.remote.in`)
+so an operator chasing a cross-host event can join both records by
+ID.  The flag is hidden from `--help` because it is not a public
+knob.  Peers within a rolling-upgrade window must run the same
+major version (existing wire-schema posture); 4.0 peers reject the
+flag from a < 4.0 caller and vice versa.
+
 ### CLI
 
 ```bash
@@ -343,16 +386,40 @@ SSH); bulk kill across hosts remains intentionally out of scope.
 
 ## Migration notes
 
+### 3.x → 4.0
+
+- **TUI event log removed.** The per-day JSONL file at
+  `${XDG_STATE_HOME:-~/.local/state}/uxon/tui-{user}-{date}.log` is
+  no longer written.  Application-level audit now goes to the
+  platform log channel (journald native, `/dev/log` syslog
+  fallback).  Query via `journalctl SYSLOG_IDENTIFIER=uxon` on
+  systemd hosts; on syslog-only hosts `grep '@cee:' /var/log/syslog`.
+- **`uxon.tui.LOG_DIR` import removed.** Out-of-tree consumers that
+  imported `from uxon.tui import LOG_DIR` will fail at import.  The
+  constant still lives in `uxon.tui.events.LOG_DIR` as an internal
+  detail of the developer-facing `debug` / `metrics` channels.
+- **Peer protocol — `--audit-correlation-id`.** `list`, `attach`,
+  `kill` now accept an internal `--audit-correlation-id <uuid>`
+  flag.  Peers within a rolling-upgrade window must run the same
+  major version (existing posture); silent fallback would lose the
+  correlation property exactly when an operator is debugging across
+  hosts.  Hidden from `--help`.
+- **Old `tui-*.log` files left in place.** No automatic cleanup —
+  operators remove the old directory manually if desired.
+
 ### 1.x → 2.0
 
 - **Defaults moved.** `allowed_roots` defaults to `[]` and
   `new_project_root` defaults to `~/projects`. Existing deployments
   override both — no action required if your `config.toml` already
   sets them.
-- **Log directory default.** TUI events default to
-  `${XDG_STATE_HOME:-~/.local/state}/uxon`. Set
-  `UXON_LOG_DIR=/old/path/here` in the launch user's environment to
-  preserve the previous location.
+- **Log directory default.** The developer-facing `debug` and
+  `metrics` channels default to `${XDG_STATE_HOME:-~/.local/state}/uxon`.
+  Set `UXON_LOG_DIR=/old/path/here` in the launch user's environment
+  to preserve the previous location.  (Audit events go to journald /
+  syslog regardless — they have always honoured the OS log channel
+  on hosts that have one; `UXON_LOG_DIR` only ever scoped the
+  developer channels.)
 - **Internal agent material untracked.** `AGENTS.md`, `CLAUDE.md`,
   `.claude/`, `docs/plans/`, `docs/superpowers/`, `docs/prototypes/`
   are no longer tracked. Operators do not need to do anything.
