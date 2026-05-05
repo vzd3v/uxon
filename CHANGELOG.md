@@ -8,114 +8,66 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — target version 3.3.0
 
-Everything below lives on the `feat/multi-host` development branch and
-will ship as a single `3.3.0` release when the branch merges. Versions
-`3.3.0` / `3.4.0` / `3.5.0` / `3.6.0` were bumped on the branch
-prematurely during multi-stage development; consolidating into one
-unreleased section here keeps the version axis honest until the
-release event.
-
 ### Added
 
-- TUI superuser block visibility is now scoped to the users you can
-  actually `sudo -niu` into, not to a single root-NOPASSWD gate.
-  Operators with per-target NOPASSWD (e.g.
-  `lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL`) finally see the
-  block they couldn't see before; the section header carries a
-  `(N/M users reachable)` hint when `session_users` lists more
-  candidates than the caller can sudo to. Sudo capability is probed
-  once at TUI startup — new sudoers grants are picked up by quitting
-  and re-launching `uxon`. The Settings screen still gates on root
-  NOPASSWD because writing a root-owned `config.toml` needs `sudo
-  tee`.
-- Multi-host aggregator (`uxon list --all-hosts`, the TUI remote-
-  sessions block) now requests `list --all-users --json` from each
-  peer so cross-user sessions surface across hosts. When a peer has
-  `enable_all_users_list = false`, it returns the stable error tag
-  `uxon-error: all-users-disabled` and the aggregator falls back to
-  per-peer "own only" mode. The TUI labels the degraded peer
-  `(own only)` in the section header (single-host case) or in the
-  HOST column (multi-host case).
-- `uxon kill --user <name> <id>` now kills a session belonging to
-  another launch user when the caller has per-target NOPASSWD to
-  that user. Mirrors the local TUI's per-target sudo gating (probed
-  once for the single target; refused with `uxon-error: not-reachable`
-  otherwise). `--user == <self>` short-circuits to the existing
-  own-only path.
-- `uxon kill --host <alias> <id>` (and `--host <alias> --user <name>`)
-  routes a single-session kill to a configured peer over SSH. The
-  peer's own `uxon kill` does the per-target sudo gating, so the
-  local side does not need to know the peer's user table. **Bulk**
-  kill (`kill-all`) remains strictly local — only per-session kill
-  crosses hosts.
-- TUI: pressing `k` on a row in the remote-sessions table prompts
-  for confirmation and dispatches `uxon kill --host ... --user ... <id>`
-  over SSH to the peer.
-- SSH `ControlMaster=auto` is now the default for `[[remote_hosts]]`
-  fetches. First tick still costs 200–500 ms (TCP+auth); subsequent
-  ticks reuse the multiplexed session at 5–20 ms. The control socket
-  lives under `${XDG_CACHE_HOME:-~/.cache}/uxon/ssh-%C` and persists
-  60 s. Set `ssh_multiplex = "off"` to opt out.
+- Multi-host: configure peers under `[[remote_hosts]]` in `config.toml`;
+  `uxon list --host <alias>` and `uxon list --all-hosts` aggregate
+  sessions across the fleet.
+- TUI Remote sessions block with HOST column and per-host health badge
+  (`[ok]`, `[cache 12s]`, `[err: …]`, `[loading]`).
+- `uxon attach --host <alias> --user <name> [--dry-run]` opens a remote
+  session over SSH; pressing Enter on a TUI remote row does the same.
+- `uxon kill --host <alias> [--user <name>] <id>` kills a single
+  session on a peer; `k` on a TUI remote row dispatches the same.
+  Bulk `kill-all` stays local.
+- `uxon kill --user <name> <id>` kills another launch user's session
+  when the caller has per-target NOPASSWD to that user.
+- TUI superuser block now scopes to users you can `sudo -niu` into;
+  header shows `(N/M users reachable)` when `session_users` lists more
+  candidates than the caller can reach. Probed once at TUI startup.
+- Cross-host `--all-users` aggregation: peers with
+  `enable_all_users_list = false` are labelled `(own only)` in the
+  section header or HOST column.
+- `--json` output for `uxon list`, `doctor`, `version`, `kill`,
+  `kill-all` — one wire-schema envelope per call.
+- SSH `ControlMaster=auto` is the default for `[[remote_hosts]]`
+  fetches; control socket under `${XDG_CACHE_HOME:-~/.cache}/uxon/ssh-%C`,
+  60 s lifetime. Set `ssh_multiplex = "off"` to opt out.
 - Per-host overrides in `[[remote_hosts]]`: `interval`,
-  `connect_timeout`, `total_timeout` (durations: `"5s"`, `"500ms"`,
-  `"2m"`, or bare seconds), `extra_ssh_options` (tokens inserted
-  before `{ssh_alias}` in the default template), and `command_template`
-  (full-argv override using a closed placeholder set — see
-  `docs/configuration.md` for kubectl-exec / docker-exec recipes).
-- `fetch_concurrency` config key (default `16`) caps concurrent SSH
-  fetch workers fleet-wide so a 50-host post-outage stampede cannot
-  exhaust the FD `ulimit`.
-- Remote-host section now carries a per-host health badge derived
-  directly from the snapshot. Single-host setups append the state to
-  the section header (`[ok]`, `[cache 12s]`, `[err: ssh timeout]`,
-  `[loading]`); multi-host setups attach the same badge to the per-row
-  HOST column.
-- New observability channel `UXON_DEBUG=startup` logs three monotonic
-  timestamps (`mount_started`, `first_paint`, `first_data_landed`) for
-  time-to-first-paint diagnosis. Off by default; opt-in via the
-  existing `UXON_DEBUG` env var; goes to the same per-day debug log
-  the other topics use.
-- New opt-in metrics channel `UXON_METRICS=1` writes one JSON line per
-  source attempt to `${state_dir}/metrics.jsonl` (`source_id`,
-  `elapsed_ms`, `error`, `from_cache`). Rotated at 1 MiB into `.1` /
-  `.2` files (cap 3 files). Off by default; failures are swallowed.
-- `uxon doctor --remote` end-to-end probes every configured
-  `[[remote_hosts]]` peer once and reports reachability, latency, and
-  session count. Default `uxon doctor` (no flag) still has zero SSH
-  I/O — the flag is the explicit operator gesture for fleet health
-  diagnosis. JSON output adds a `data.remote_hosts` array under the
-  doctor envelope when the flag is set.
-- Per-host circuit breaker on remote SSH fetches: a peer that fails
-  three consecutive attempts is opened for one full interval before
-  the next probe runs, so a downed host stops contributing to the
-  log noise without blocking siblings.
+  `connect_timeout`, `total_timeout` (`"5s"`, `"500ms"`, `"2m"`, or
+  bare seconds), `extra_ssh_options`, and `command_template`
+  (kubectl-exec / docker-exec recipes in `docs/configuration.md`).
+- `fetch_concurrency` (default `16`) caps concurrent SSH workers
+  fleet-wide.
+- Per-host circuit breaker: three consecutive failures open a peer for
+  one interval before the next probe.
+- `uxon doctor --remote` probes every configured peer once and reports
+  reachability, latency, and session count; default `uxon doctor`
+  keeps zero SSH I/O.
+- `UXON_DEBUG=startup` logs `mount_started` / `first_paint` /
+  `first_data_landed` timestamps to the per-day debug log.
+- `UXON_METRICS=1` writes one JSON line per source attempt to
+  `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files).
 
 ### Changed
 
 - `kill ALL uxon sessions` action renamed to `kill all reachable
-  users` and now scopes to the same per-target sudo set. The
-  confirmation phrase is `kill-all-reachable` (was `kill-all-global`).
-- `uxon list --all-users` now scopes to the reachable subset of
-  `session_users`. Unreachable candidates surface on stderr in human
-  mode and as a new optional `data.scope_skipped: list[str]` field
-  in the JSON envelope (forward-compatible — older peers omit it).
-- `uxon doctor` now probes agent binaries in parallel (up to 4
-  concurrent workers) with a 2 s per-probe deadline. Slow agents
-  (cold `cursor-agent --version`, ~5–8 s) surface as `TIMEOUT (>2.0s)`
-  instead of inflating doctor's wall time from ~10 s to ~2–3 s.
-  Output order remains deterministic (follows `cfg.enabled_agents`).
+  users`; confirmation phrase is now `kill-all-reachable` (was
+  `kill-all-global`).
+- `uxon list --all-users` scopes to the reachable subset of
+  `session_users`; unreachable users surface on stderr and as
+  `data.scope_skipped` in JSON.
+- `uxon doctor` runs agent probes in parallel with a 2 s per-probe
+  deadline; slow agents surface as `TIMEOUT (>2.0s)` instead of
+  inflating wall time.
 
 ### Fixed
 
-- Remote-host on-disk cache now round-trips `scope_limited` and
-  `scope_skipped`. A peer that went offline after flipping
-  `enable_all_users_list = false` (or after accumulating
-  `scope_skipped` users) no longer surfaces a misleading "full
-  visibility" badge from the cache fallback path.
-- TUI remote-sessions table no longer flickers or temporarily empties
-  on every local refresh tick. Per-host snapshot state is now carried
-  across the local ctx rebuild; only the per-host SSH worker writes
-  rows. Focus on a remote row is preserved across full re-composes.
+- TUI remote-sessions table no longer flickers or empties on refresh
+  ticks; focus on a remote row is preserved across re-composes.
+- Remote-host on-disk cache round-trips `scope_limited` /
+  `scope_skipped`, so an offline peer no longer shows a misleading
+  "full visibility" badge from the cache fallback path.
 
 ## [3.2.2] — 2026-05-02
 
