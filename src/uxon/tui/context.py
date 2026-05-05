@@ -203,6 +203,14 @@ class TuiContext:
     on_remote_kill: Callable[[str, str, str], None] = (
         lambda host, user, name: None  # (host, user, session) -> kill on peer
     )
+    # Multi-host per-session attach (parallel to on_remote_kill).
+    # Args: (host_name, user, session). Implementation builds an
+    # interactive ssh LaunchRequest via build_peer_ssh_argv; the TUI
+    # hands it to request_launch (fork-and-wait, returns to TUI on
+    # tmux detach).
+    on_remote_attach: Callable[[str, str, str], LaunchRequest] = (
+        lambda host, user, name: LaunchRequest(cmd=("true",), label="noop-remote-attach")
+    )
     on_refresh: Callable[[], TuiContext] = lambda: None  # type: ignore[return-value]
     on_probe_link_health: Callable[[], Any] = lambda: None
     # Returns True if launch_user has write access to ``cwd``. Wired by

@@ -92,6 +92,7 @@ class TuiConfig:
     on_kill_all: Callable[[], None]
     on_kill_all_global: Callable[[], None]
     on_remote_kill: Callable[[str, str, str], None]
+    on_remote_attach: Callable[[str, str, str], LaunchRequest]
     on_refresh: Callable[[], TuiContext]
     on_probe_link_health: Callable[[], Any]
     on_probe_cwd_writable: Callable[[], bool]
@@ -142,6 +143,7 @@ class TuiConfig:
             on_kill_all=ctx.on_kill_all,
             on_kill_all_global=ctx.on_kill_all_global,
             on_remote_kill=ctx.on_remote_kill,
+            on_remote_attach=ctx.on_remote_attach,
             on_refresh=ctx.on_refresh,
             on_probe_link_health=ctx.on_probe_link_health,
             on_probe_cwd_writable=ctx.on_probe_cwd_writable,

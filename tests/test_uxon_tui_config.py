@@ -58,6 +58,7 @@ def _mk_ctx(**overrides) -> TuiContext:
         on_kill_all=lambda: None,
         on_kill_all_global=lambda: None,
         on_remote_kill=lambda h, u, n: None,
+        on_remote_attach=lambda h, u, n: LaunchRequest(cmd=("/bin/true",), label="remote-attach"),
         on_refresh=lambda: _mk_ctx(),
         on_probe_link_health=lambda: None,
         on_probe_cwd_writable=lambda: True,
@@ -108,6 +109,7 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertIs(cfg.on_kill_all, ctx.on_kill_all)
         self.assertIs(cfg.on_kill_all_global, ctx.on_kill_all_global)
         self.assertIs(cfg.on_remote_kill, ctx.on_remote_kill)
+        self.assertIs(cfg.on_remote_attach, ctx.on_remote_attach)
         self.assertIs(cfg.on_refresh, ctx.on_refresh)
         self.assertIs(cfg.on_probe_link_health, ctx.on_probe_link_health)
         self.assertIs(cfg.on_probe_cwd_writable, ctx.on_probe_cwd_writable)
@@ -122,6 +124,21 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertIs(cfg.on_enable_detected_agent, ctx.on_enable_detected_agent)
         self.assertIs(cfg.on_dismiss_detected_agent, ctx.on_dismiss_detected_agent)
         self.assertIs(cfg.get_dismissed_detected_agents, ctx.get_dismissed_detected_agents)
+
+
+class OnRemoteAttachPropagatedTests(unittest.TestCase):
+    def test_on_remote_attach_propagated(self) -> None:
+        attach_calls: list[tuple[str, str, str]] = []
+
+        def fake_attach(host: str, user: str, name: str) -> LaunchRequest:
+            attach_calls.append((host, user, name))
+            return LaunchRequest(cmd=("true",), label="t")
+
+        ctx = _mk_ctx(on_remote_attach=fake_attach)
+        cfg = TuiConfig.from_context(ctx)
+        self.assertIs(cfg.on_remote_attach, ctx.on_remote_attach)
+        cfg.on_remote_attach("h", "u", "n")
+        self.assertEqual(attach_calls, [("h", "u", "n")])
 
 
 class FrozenSemanticsTests(unittest.TestCase):
