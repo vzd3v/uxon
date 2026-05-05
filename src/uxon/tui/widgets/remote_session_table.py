@@ -13,9 +13,10 @@ flat table. The optional ``HOST`` column is shown when more than
 one peer is configured, so a single-host setup looks just like a
 local table with a "remote" header above it.
 
-This widget is read-only: it does not drive attach/kill — those
-need a remote SSH gesture not yet wired (deferred to a later
-commit). For now the rows surface the data; activation is a no-op.
+This widget surfaces wire-schema rows; activation is driven by
+MainScreen.on_data_table_row_selected (Enter -> remote attach
+via ctx.on_remote_attach over SSH) and MainScreen.action_kill_remote
+(``k`` -> remote kill via ctx.on_remote_kill over SSH).
 """
 
 from __future__ import annotations
@@ -65,8 +66,8 @@ class RemoteSessionTable(DataTable):
         self.cursor_type = "none"
         self.zebra_stripes = True
         self.show_host = show_host
-        # Each row in the table maps back to a (host_name, record) tuple
-        # so a future remote-attach handler can identify what was clicked.
+        # Each row in the table maps back to a (host_name, record) tuple;
+        # the on_data_table_row_selected handler reads it via row_at().
         self._row_index: list[tuple[str, dict[str, Any]]] = []
 
     def on_focus(self) -> None:
