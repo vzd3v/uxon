@@ -313,23 +313,61 @@ order — verify by inspection).
 
 - `src/uxon/cli.py::on_launch_cwd` / `on_launch_new` / `on_launch_existing`
   (lines 4002–4009 area — these are the three TUI "launch" callbacks installed on
-  `TuiContext`): emit `session.new` (or `session.attach` for `on_launch_existing`) right
-  after the `_plan_tui_*` call returns, using the locals already in scope (`agent_id`,
-  `cwd` / `name`, `launch_user`, the returned `req.label`). Concretely:
+  `TuiContext`): emit a `session.*` audit event right after the `_plan_tui_*` call
+  returns. **Two subtleties** verified against current code (`cli.py:3547–3623,
+  3626–3662`):
+
+  1. `_plan_tui_existing_session_or_launch` (the tail both `_plan_tui_create_new_agent`
+     and `_plan_tui_open_existing_agent` go through) returns **either** an attach
+     `LaunchRequest` (label starts with `"attach"` or `"switch-client"`) **or** a launch
+     `LaunchRequest` (label `"launch <session>"`). The callback must discriminate to emit
+     the correct event type. `_plan_tui_run_agent` (used by `on_launch_cwd`) only ever
+     returns a launch request, so `on_launch_cwd` can hardcode `session.new`.
+
+  2. `on_launch_new(name, ...)` and `on_launch_existing(name, ...)` receive a bare
+     project name, not an absolute path. The absolute path is computed inside
+     `_resolve_tui_project_dir` (`cli.py:3611`) as
+     `canonical(os.path.join(cfg.new_project_root, name))`. The callback must
+     reproduce that derivation to populate `project=` per spec §Event alphabet
+     (which requires "abs path"). Do **not** call `_resolve_tui_project_dir` again —
+     it has a `mkdir -p` side effect; just reuse the path expression.
+
+  Concretely:
   ```python
-  # in on_launch_cwd
+  # in on_launch_cwd — only ever a new session
   req = _plan_tui_run_agent(cfg, launch_user, cwd, agent_id, mode_id)
   from uxon import audit as _audit
   _audit.audit("session.new", agent=agent_id, project=cwd, branch="",
                session=req.label, dry_run=False)
   return req
+
+  # in on_launch_new — may be either, discriminate by req.label
+  req = _plan_tui_create_new_agent(cfg, launch_user, name, agent_id, mode_id, git_profile)
+  project = canonical(os.path.join(cfg.new_project_root, name))
+  from uxon import audit as _audit
+  if req.label.startswith(("attach", "switch-client")):
+      _audit.audit("session.attach", session=req.label,
+                   target_user=launch_user, project=project)
+  else:
+      _audit.audit("session.new", agent=agent_id, project=project,
+                   branch="", session=req.label, dry_run=False)
+  return req
+
+  # in on_launch_existing — same discrimination; absolute path same way
+  req = _plan_tui_open_existing_agent(cfg, launch_user, name, agent_id, mode_id)
+  project = canonical(os.path.join(cfg.new_project_root, name))
+  from uxon import audit as _audit
+  if req.label.startswith(("attach", "switch-client")):
+      _audit.audit("session.attach", session=req.label,
+                   target_user=launch_user, project=project)
+  else:
+      _audit.audit("session.new", agent=agent_id, project=project,
+                   branch="", session=req.label, dry_run=False)
+  return req
   ```
-  Same shape for `on_launch_new` (substitute `name`/derived project path) and
-  `on_launch_existing` (use `session.attach` event since it's reattaching to an
-  existing session, not creating one). **No changes to `LaunchRequest` are needed**
-  — emitting from the callbacks side-steps the `LaunchRequest` field-addition and
-  keeps `context.py` unchanged. (Supersedes the original D2/A1 proposal; see
-  resolution at the end of this plan.)
+  **No changes to `LaunchRequest` are needed** — emitting from the callbacks
+  side-steps the `LaunchRequest` field-addition and keeps `context.py` unchanged.
+  (Supersedes the original D2/A1 proposal; see resolution at the end of this plan.)
 
 - `src/uxon/tui/app.py::run`: replace `_log_event("launch", ...)` (line 1311) with a
   pure `debug("launch", …)` call carrying the dev-only fields (`stage`, `cmd[:2]`,
