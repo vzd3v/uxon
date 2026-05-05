@@ -179,3 +179,36 @@ class AttachHostRemoteTests(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             uxon.do_attach(args, cfg, "u-vz")
+
+
+class OnRemoteAttachCallbackTests(unittest.TestCase):
+    """The TUI-side on_remote_attach callback builds the right LaunchRequest."""
+
+    def test_builds_interactive_ssh_launch_request(self) -> None:
+        from tests.test_uxon_kill_multi import _make_config
+
+        cfg = _make_config(
+            remote_hosts=[
+                RemoteHost(
+                    name="box-b",
+                    ssh_alias="ssh-b",
+                    description="",
+                    remote_uxon="uxon",
+                )
+            ]
+        )
+        callback = uxon._build_on_remote_attach_callback(cfg)
+        req = callback("box-b", "alice", "demo@claude")
+        argv = list(req.cmd)
+        self.assertEqual(argv[0], "ssh")
+        self.assertIn("-tt", argv)
+        self.assertIn("ssh-b", argv)
+        # Remote command should carry --user alice and the target id.
+        remote_cmd = argv[-1]
+        self.assertIn("uxon attach", remote_cmd)
+        self.assertIn("--user", remote_cmd)
+        self.assertIn("alice", remote_cmd)
+        self.assertIn("demo@claude", remote_cmd)
+        # Label is descriptive for pause_on_launch_failure.
+        self.assertIn("attach", req.label)
+        self.assertIn("box-b", req.label)

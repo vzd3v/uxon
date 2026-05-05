@@ -3720,6 +3720,40 @@ def _plan_tui_open_existing(
     return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
 
 
+def _build_on_remote_attach_callback(cfg: Config):
+    """Return the TUI on_remote_attach callback for the given cfg.
+
+    Pulled out as a module-level factory so tests can construct it
+    with a synthetic Config without spinning up the full
+    _build_tui_context closure.
+    """
+    from uxon.remote_collector import (
+        DEFAULT_CONNECT_TIMEOUT_SEC,
+        build_peer_ssh_argv,
+    )
+    from uxon.remote_hosts import find_host
+    from uxon.tui.context import CallbackError, LaunchRequest
+
+    def on_remote_attach(host_name: str, user: str, name: str) -> LaunchRequest:
+        peer = find_host(cfg.remote_hosts, host_name)
+        if peer is None:
+            raise CallbackError(f"unknown remote host: {host_name}")
+        remote_cmd = (
+            f"{shlex.quote(peer.remote_uxon)} attach "
+            f"--user {shlex.quote(user)} {shlex.quote(name)}"
+        )
+        argv = build_peer_ssh_argv(
+            peer,
+            remote_command=remote_cmd,
+            allocate_tty=True,
+            connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
+            ssh_multiplex=cfg.ssh_multiplex,
+        )
+        return LaunchRequest(cmd=tuple(argv), label=f"attach {name}@{host_name}")
+
+    return on_remote_attach
+
+
 def _build_tui_context(
     cfg: Config,
     launch_user: str,
@@ -4005,6 +4039,10 @@ def _build_tui_context(
     on_kill_all = _wrap_tui_callback(on_kill_all, _CbErr)
     on_kill_all_global = _wrap_tui_callback(on_kill_all_global, _CbErr)
     on_remote_kill = _wrap_tui_callback(on_remote_kill, _CbErr)
+    # on_remote_attach already raises CallbackError directly (see
+    # _build_on_remote_attach_callback) — no _wrap_tui_callback shim
+    # needed.
+    on_remote_attach = _build_on_remote_attach_callback(cfg)
     on_refresh = _wrap_tui_callback(on_refresh, _CbErr)
     on_probe_link_health = _wrap_tui_callback(on_probe_link_health, _CbErr)
     on_probe_cwd_writable = _wrap_tui_callback(on_probe_cwd_writable, _CbErr)
@@ -4210,6 +4248,7 @@ def _build_tui_context(
         on_kill_all=on_kill_all,
         on_kill_all_global=on_kill_all_global,
         on_remote_kill=on_remote_kill,
+        on_remote_attach=on_remote_attach,
         on_refresh=on_refresh,
         on_probe_link_health=on_probe_link_health,
         on_probe_cwd_writable=on_probe_cwd_writable,
