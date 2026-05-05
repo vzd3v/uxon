@@ -1,0 +1,401 @@
+"""uxon — audit channel.
+
+Single public entrypoint :func:`audit` emits a structured event to the
+platform log (journald native protocol on systemd hosts, ``/dev/log`` syslog
+fallback otherwise) — never raises, never blocks.
+
+Design and rationale:
+``docs/superpowers/specs/2026-05-05-audit-log-design.md``.
+
+The module is intentionally stdlib-only: ``socket`` for the wire layer,
+``json`` for the syslog body, ``threading.Lock`` to serialize first-call
+lazy init. Steady-state ``audit()`` calls hold no lock.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import pwd
+import socket
+import stat
+import threading
+from typing import Any
+
+from uxon import __version__ as _uxon_version
+
+# ---------------------------------------------------------------------------
+# Module state.
+#
+# Module-level defaults are the values that apply *before* :func:`configure`
+# is called.  They have to be live so the config-error path (Bug 5) can fire
+# from ``main()`` *before* ``load_config`` completes.
+# ---------------------------------------------------------------------------
+
+enabled: bool = True
+sink: str = ""  # "journal" / "syslog" / "none"; populated on first call
+
+_init_lock = threading.Lock()
+_initialized: bool = False
+_socket: socket.socket | None = None
+_prefix: dict[str, Any] = {}
+_prefix_subcmd: str = ""
+_syslog_facility_name: str = "user"
+_correlation_id: str | None = None
+
+# RFC 3164 / 5424 facility numbers, indexed by name.  Only the ones an
+# operator can plausibly reach for in ``[audit].syslog_facility`` matter.
+_FACILITY_NAMES: dict[str, int] = {
+    "kern": 0,
+    "user": 1,
+    "mail": 2,
+    "daemon": 3,
+    "auth": 4,
+    "syslog": 5,
+    "lpr": 6,
+    "news": 7,
+    "uucp": 8,
+    "cron": 9,
+    "authpriv": 10,
+    "ftp": 11,
+    "local0": 16,
+    "local1": 17,
+    "local2": 18,
+    "local3": 19,
+    "local4": 20,
+    "local5": 21,
+    "local6": 22,
+    "local7": 23,
+}
+
+# Severity 6 (informational) is right for every uxon audit event — these are
+# operational records, not warnings.
+_SEVERITY_INFO = 6
+
+_JOURNAL_SOCKET_PATH = "/run/systemd/journal/socket"
+_DEV_LOG_PATH = "/dev/log"
+
+_FLAG_DENYLIST_PREFIXES: tuple[str, ...] = ("--token", "--password", "--secret")
+
+
+# ---------------------------------------------------------------------------
+# Public configure / correlation helpers.
+# ---------------------------------------------------------------------------
+
+
+def configure(*, enabled: bool, syslog_facility: str, subcmd: str) -> None:
+    """Set audit-module config from the resolved ``Config``.
+
+    Called once by ``main()`` after ``load_config`` succeeds.  Safe to call
+    after the first ``audit()`` — the cached prefix is updated in place so
+    subsequent events carry the right ``subcmd``.
+    """
+    # Direct assignment via ``globals()`` — avoids ``global`` collisions
+    # with the keyword-only parameter of the same name.
+    globals()["enabled"] = bool(enabled)
+    globals()["_syslog_facility_name"] = str(syslog_facility) or "user"
+    globals()["_prefix_subcmd"] = str(subcmd) if subcmd else ""
+    if _prefix:
+        _prefix["subcmd"] = globals()["_prefix_subcmd"]
+
+
+def set_correlation_id(uid: str | None) -> None:
+    """Stash the per-invocation correlation UUID in module state.
+
+    Read by :func:`audit` when assembling the per-event field set; the
+    parser layer calls this after :func:`extract_correlation_id` pops the
+    flag from argv.
+    """
+    globals()["_correlation_id"] = uid
+
+
+# ---------------------------------------------------------------------------
+# Argv flag plumbing.
+# ---------------------------------------------------------------------------
+
+
+def extract_correlation_id(argv: list[str]) -> tuple[str | None, list[str]]:
+    """Pop ``--audit-correlation-id <uuid>`` if present.
+
+    Returns ``(uuid_or_None, argv_with_flag_removed)``.  Bounds-checks the
+    value index so a malformed trailing ``--audit-correlation-id`` does not
+    raise.
+    """
+    out: list[str] = []
+    i = 0
+    found: str | None = None
+    n = len(argv)
+    while i < n:
+        a = argv[i]
+        if a == "--audit-correlation-id":
+            if i + 1 < n:
+                found = argv[i + 1]
+                i += 2
+                continue
+            # Trailing flag with no value: drop it; the per-parser walk
+            # would have failed anyway, leave that error to the caller.
+            i += 1
+            continue
+        if a.startswith("--audit-correlation-id="):
+            found = a.split("=", 1)[1]
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    return found, out
+
+
+def _sanitize_flags(flags: list[str]) -> list[str]:
+    """Mask values of secret-bearing keyword flags before they hit the log.
+
+    Denylist is prefix-based: anything starting with ``--token``,
+    ``--password``, ``--secret`` has its value replaced with ``REDACTED``.
+    Both ``--foo=value`` and ``--foo value`` shapes are handled.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(flags)
+    while i < n:
+        a = flags[i]
+        is_secret = a.startswith(_FLAG_DENYLIST_PREFIXES)
+        if is_secret and "=" in a:
+            name = a.split("=", 1)[0]
+            out.append(f"{name}=REDACTED")
+            i += 1
+            continue
+        if is_secret:
+            out.append(a)
+            if i + 1 < n:
+                out.append("REDACTED")
+                i += 2
+                continue
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Sink detection + prefix construction.
+# ---------------------------------------------------------------------------
+
+
+def _detect_sink() -> str:
+    """Pick a sink at first call.  Order: journald-native, syslog, none."""
+    try:
+        st = os.stat(_JOURNAL_SOCKET_PATH)
+        if stat.S_ISSOCK(st.st_mode):
+            return "journal"
+    except OSError:
+        pass
+    try:
+        st = os.stat(_DEV_LOG_PATH)
+        if stat.S_ISSOCK(st.st_mode):
+            return "syslog"
+    except OSError:
+        pass
+    return "none"
+
+
+def _build_prefix() -> dict[str, Any]:
+    """Compute the cached caller-context prefix.  Called once per process."""
+    sudo_user = os.environ.get("SUDO_USER") or ""
+    user_env = os.environ.get("USER", "")
+    caller_user = sudo_user or user_env
+
+    sudo_uid_raw = os.environ.get("SUDO_UID") or ""
+    try:
+        caller_uid = int(sudo_uid_raw) if sudo_uid_raw else os.getuid()
+    except ValueError:
+        caller_uid = os.getuid()
+
+    try:
+        launch_user = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        launch_user = ""
+
+    prefix: dict[str, Any] = {
+        "host": socket.gethostname(),
+        "uxon_version": _uxon_version,
+        "caller_user": caller_user,
+        "caller_uid": caller_uid,
+        "launch_user": launch_user,
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+    }
+    ssh_conn = os.environ.get("SSH_CONNECTION")
+    if ssh_conn:
+        prefix["ssh_client"] = ssh_conn
+    if _prefix_subcmd:
+        prefix["subcmd"] = _prefix_subcmd
+    return prefix
+
+
+# ---------------------------------------------------------------------------
+# Wire-format serialization.
+# ---------------------------------------------------------------------------
+
+
+def _journal_value(value: Any) -> str:
+    """Render ``value`` for the ``KEY=value\\n`` journald wire format.
+
+    Per ``man sd_journal_send``, multi-line / binary values need a length-
+    prefixed encoding; we keep payloads simple and JSON-serialize anything
+    non-scalar so the field is queryable as a single line.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, (int, float, str)):
+        s = str(value)
+        if "\n" in s:
+            return json.dumps(s, ensure_ascii=False)
+        return s
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _serialize_journal(fields: dict[str, Any]) -> bytes:
+    """Build a journald-native datagram body.
+
+    ``KEY=value\\n`` repeated.  Keys are uppercased per the protocol; we
+    add ``SYSLOG_IDENTIFIER=uxon`` so ``journalctl -t uxon`` finds events.
+    """
+    parts: list[str] = ["SYSLOG_IDENTIFIER=uxon"]
+    for k, v in fields.items():
+        key = k.upper()
+        rendered = _journal_value(v)
+        if "\n" in rendered:
+            # Length-prefixed binary form: KEY\n<le u64 length>\n<data>\n
+            data = rendered.encode("utf-8")
+            length = len(data).to_bytes(8, "little")
+            parts.append(f"{key}\n")
+            return (
+                "\n".join(parts[:-1]).encode("utf-8")
+                + b"\n"
+                + key.encode("utf-8")
+                + b"\n"
+                + length
+                + data
+                + b"\n"
+            )
+        parts.append(f"{key}={rendered}")
+    return ("\n".join(parts) + "\n").encode("utf-8")
+
+
+def _serialize_syslog(fields: dict[str, Any]) -> bytes:
+    """Build an RFC 5424 + CEE-JSON datagram body.
+
+    ``<PRI>1 TIMESTAMP HOST APP-NAME PROCID MSGID - @cee: {…}``.
+    The CEE prefix tells log-shipping pipelines (``rsyslog mmjsonparse``,
+    Vector, Fluent Bit) to parse the body as JSON.
+    """
+    facility = _FACILITY_NAMES.get(_syslog_facility_name, _FACILITY_NAMES["user"])
+    pri = facility * 8 + _SEVERITY_INFO
+    ts = fields.get("ts") or datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds")
+    if isinstance(ts, str) and ts.endswith("+00:00"):
+        ts = ts[:-6] + "Z"
+    host = fields.get("host") or "-"
+    procid = str(fields.get("pid") or os.getpid())
+    msgid = str(fields.get("event") or "-")
+    body = json.dumps(fields, ensure_ascii=False, default=str)
+    header = f"<{pri}>1 {ts} {host} uxon {procid} {msgid} - @cee: "
+    return (header + body).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# IO seam — the only place that actually touches a socket.  Tests
+# monkeypatch this.
+# ---------------------------------------------------------------------------
+
+
+def _send_raw(payload: bytes) -> None:
+    """Send one datagram on the cached socket; swallow every ``OSError``."""
+    sock = _socket
+    if sock is None:
+        return
+    try:
+        sock.send(payload)
+    except OSError:
+        # EAGAIN / ENOBUFS / EPIPE / EMSGSIZE — drop and continue.  The
+        # "drop on overrun" policy is the explicit non-blocking trade-off.
+        return
+
+
+def _open_sink_socket(chosen: str) -> socket.socket | None:
+    """Open and connect the AF_UNIX/SOCK_DGRAM socket for ``chosen``."""
+    if chosen == "journal":
+        path = _JOURNAL_SOCKET_PATH
+    elif chosen == "syslog":
+        path = _DEV_LOG_PATH
+    else:
+        return None
+    try:
+        # SOCK_NONBLOCK keeps audit off the agent launch hot path.  CLOEXEC
+        # is the Python 3.4+ default (PEP 446), no explicit flag needed.
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
+        s.connect(path)
+        return s
+    except OSError:
+        return None
+
+
+def _lazy_init() -> None:
+    """First-call init: detect sink, open socket, build prefix.
+
+    Idempotent under the lock.  Called only on the first :func:`audit` call;
+    steady-state events skip this entirely.
+    """
+    global _initialized
+    if _initialized:
+        return
+    with _init_lock:
+        if _initialized:
+            return
+        chosen = _detect_sink()
+        globals()["sink"] = chosen
+        globals()["_socket"] = _open_sink_socket(chosen)
+        globals()["_prefix"] = _build_prefix()
+        _initialized = True
+
+
+# ---------------------------------------------------------------------------
+# Public entrypoint.
+# ---------------------------------------------------------------------------
+
+
+def audit(event: str, *, outcome: str = "ok", **fields: Any) -> None:
+    """Emit one structured audit event.  Never raises, never blocks.
+
+    Hot-path budget per spec:  enabled-check (~0.1 µs) + dict merge (~3 µs)
+    + serialize (~5–10 µs) + socket.send (~10 µs) ≈ 15–25 µs per event.
+    """
+    if not enabled:
+        return
+    try:
+        if not _initialized:
+            _lazy_init()
+        if sink == "none" or _socket is None:
+            return
+
+        ts = datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds")
+        if ts.endswith("+00:00"):
+            ts = ts[:-6] + "Z"
+
+        payload_fields: dict[str, Any] = {"v": 1, "event": event, "outcome": outcome, "ts": ts}
+        payload_fields.update(_prefix)
+        if _correlation_id and "correlation_id" not in fields:
+            payload_fields["correlation_id"] = _correlation_id
+        payload_fields.update(fields)
+
+        if sink == "journal":
+            data = _serialize_journal(payload_fields)
+        else:
+            data = _serialize_syslog(payload_fields)
+        _send_raw(data)
+    except Exception:
+        # Audit must never raise.  Any unexpected error here (a serialize
+        # bug, a key-collision in payload_fields, …) is swallowed.
+        return
