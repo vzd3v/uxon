@@ -1301,14 +1301,29 @@ def run(ctx: TuiContext) -> int:
             # Defensive: App exited without setting quit_rc or launch —
             # treat as a clean quit.
             return 0
-        _log_event(
+        # Audit-channel ``session.new`` is emitted by the per-callback
+        # sites in ``cli.py::on_launch_*``; here we keep only the
+        # developer-facing ``debug`` record (off by default,
+        # ``UXON_DEBUG=tui`` opts in) so the dev-only fields (stage / cmd
+        # head / label) survive the migration to journald.
+        _debug(
             "launch",
             caller_user=caller_user,
             launch_user=ctx.current_user,
-            extra={"label": req.label, "cmd": list(req.cmd)[:2]},
+            label=req.label,
+            cmd=list(req.cmd)[:2],
         )
         sys.stdout.flush()
         rc, stage, wall_seconds = _run_launch_request(req)
+        _audit.audit(
+            "session.ended",
+            session=req.label,
+            rc=rc,
+            wall_seconds=round(wall_seconds, 3),
+        )
+        # ``_log_event("launch_completed", ...)`` stays here through the
+        # bridge window; commit 9 deletes it once every audit replacement
+        # is wired.
         _log_event(
             "launch_completed",
             caller_user=caller_user,

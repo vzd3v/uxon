@@ -2917,6 +2917,16 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     session = allocate_session_name(
         session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
     )
+    from uxon import audit as _audit
+
+    _audit.audit(
+        "session.new",
+        agent=_agent,
+        project=target_dir,
+        branch=branch or "",
+        session=session,
+        dry_run=args.dry_run,
+    )
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
 
@@ -3014,6 +3024,16 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     sessions = collect_sessions([launch_user], cfg)
     session = allocate_session_name(
         session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+    )
+    from uxon import audit as _audit
+
+    _audit.audit(
+        "session.new",
+        agent=_agent,
+        project=target_dir,
+        branch=branch or "",
+        session=session,
+        dry_run=args.dry_run,
     )
     return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
 
@@ -4044,13 +4064,75 @@ def _build_tui_context(
         ]
 
     def on_launch_cwd(agent_id: str, mode_id: str):
-        return _plan_tui_run_agent(cfg, launch_user, cwd, agent_id, mode_id)
+        req = _plan_tui_run_agent(cfg, launch_user, cwd, agent_id, mode_id)
+        # ``_plan_tui_run_agent`` only ever yields a launch (never an
+        # attach), so this path is unconditional ``session.new``.
+        from uxon import audit as _audit
+
+        _audit.audit(
+            "session.new",
+            agent=agent_id,
+            project=cwd,
+            branch="",
+            session=req.label,
+            dry_run=False,
+        )
+        return req
 
     def on_launch_new(name: str, agent_id: str, mode_id: str, git_profile: str):
-        return _plan_tui_create_new_agent(cfg, launch_user, name, agent_id, mode_id, git_profile)
+        req = _plan_tui_create_new_agent(cfg, launch_user, name, agent_id, mode_id, git_profile)
+        # ``_plan_tui_existing_session_or_launch`` (the tail this routes
+        # through) returns either an attach request (label starts with
+        # ``attach`` / ``switch-client``) or a launch request — discriminate
+        # on the label to pick the right event.  Recompute the absolute
+        # project path the same way ``_resolve_tui_project_dir`` does, but
+        # without its ``mkdir -p`` side effect.
+        project = canonical(os.path.join(cfg.new_project_root, name))
+        from uxon import audit as _audit
+
+        if req.label.startswith(("attach", "switch-client")):
+            _audit.audit(
+                "session.attach",
+                session=req.label,
+                target_user=launch_user,
+                project=project,
+            )
+        else:
+            _audit.audit(
+                "session.new",
+                agent=agent_id,
+                project=project,
+                branch="",
+                session=req.label,
+                dry_run=False,
+            )
+        return req
 
     def on_launch_existing(name: str, agent_id: str, mode_id: str):
-        return _plan_tui_open_existing_agent(cfg, launch_user, name, agent_id, mode_id)
+        req = _plan_tui_open_existing_agent(cfg, launch_user, name, agent_id, mode_id)
+        # Same attach-vs-launch discrimination as ``on_launch_new`` —
+        # `open existing` may attach (existing session) or launch (no
+        # session yet for that project + agent).
+        project = canonical(os.path.join(cfg.new_project_root, name))
+        from uxon import audit as _audit
+
+        if req.label.startswith(("attach", "switch-client")):
+            _audit.audit(
+                "session.attach",
+                session=req.label,
+                target_user=launch_user,
+                project=project,
+            )
+        else:
+            _audit.audit(
+                "session.new",
+                agent=agent_id,
+                project=project,
+                branch="",
+                session=req.label,
+                dry_run=False,
+            )
+        return req
 
     git_profile_options = [
         (
