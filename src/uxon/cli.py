@@ -199,6 +199,11 @@ class ParsedArgs:
     host: str | None = None  # --host <name>: route 'list' / 'kill' to one configured remote peer
     all_hosts: bool = False  # --all-hosts: aggregate local + every configured remote peer
     user: str | None = None  # --user <name>: target a different launch user (kill)
+    # Internal peer-protocol flag — propagated by callers to peers so a
+    # cross-host operation appears in both audit trails with the same UUID.
+    # Stripped from argv by :func:`uxon.audit.extract_correlation_id` before
+    # the per-parser walk sees it; never surfaces in ``--help``.
+    audit_correlation_id: str | None = None
 
 
 def eprint(msg: str) -> None:
@@ -1967,6 +1972,11 @@ SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version", "d
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
+    from uxon.audit import extract_correlation_id, set_correlation_id
+
+    corr_id, argv = extract_correlation_id(argv)
+    if corr_id:
+        set_correlation_id(corr_id)
     all_users = False
     json_out = False
     all_hosts = False
@@ -1999,6 +2009,7 @@ def parse_list_args(argv: list[str]) -> ParsedArgs:
         json_output=json_out,
         host=host,
         all_hosts=all_hosts,
+        audit_correlation_id=corr_id,
     )
 
 
@@ -2093,6 +2104,11 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
     Unknown flags fail loudly. Returns a fully populated
     :class:`ParsedArgs` with ``action="kill"``.
     """
+    from uxon.audit import extract_correlation_id, set_correlation_id
+
+    corr_id, rest = extract_correlation_id(rest)
+    if corr_id:
+        set_correlation_id(corr_id)
     dry = False
     force = False
     json_out = False
@@ -2131,6 +2147,7 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
         json_output=json_out,
         user=user,
         host=host,
+        audit_correlation_id=corr_id,
     )
 
 
@@ -2142,6 +2159,11 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
     ``--user`` — implicit peer-login-user defaults invite
     "where did this attach actually go?" surprises.
     """
+    from uxon.audit import extract_correlation_id, set_correlation_id
+
+    corr_id, rest = extract_correlation_id(rest)
+    if corr_id:
+        set_correlation_id(corr_id)
     dry = False
     user: str | None = None
     host: str | None = None
@@ -2177,6 +2199,7 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
         dry_run=dry,
         user=user,
         host=host,
+        audit_correlation_id=corr_id,
     )
 
 
