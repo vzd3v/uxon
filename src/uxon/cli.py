@@ -4345,7 +4345,27 @@ def main(argv: list[str] | None = None) -> int:
         # argparse always raises SystemExit with an int (0 for --help,
         # 2 for parse errors); guard the typed-as-``str | int | None`` shape.
         return int(ex.code) if isinstance(ex.code, int) else (0 if ex.code is None else 2)
-    cfg = load_config(os.getcwd())
+    from uxon import audit as _audit
+
+    try:
+        cfg = load_config(os.getcwd())
+    except SystemExit as ex:
+        # Bug 5 part 2 — convert config-load failure into an audit event.
+        # The audit module's compile-time defaults (``enabled=True``,
+        # ``syslog_facility="user"``) are what fires here; ``configure()``
+        # has not run yet because ``load_config`` is what feeds it.
+        _audit.audit(
+            "config.error",
+            outcome="error",
+            path=str(repo_config_path()),
+            error=str(ex)[:256],
+        )
+        raise
+    _audit.configure(
+        enabled=cfg.audit_enabled,
+        syslog_facility=cfg.audit_syslog_facility,
+        subcmd=args.action,
+    )
     caller_user = resolve_caller_user()
     launch_user = resolve_launch_user(cfg, caller_user)
 
@@ -4375,6 +4395,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(format_version())
         return 0
+    # Emit ``cli.start`` *after* the ``version`` early-return (the version
+    # subcommand is a no-op probe; we don't litter the audit trail with it)
+    # but *before* the ``doctor`` early-return — ``uxon doctor`` is a
+    # substantive operator gesture that belongs in the audit history.
+    _audit.audit(
+        "cli.start",
+        flags=_audit._sanitize_flags(list(argv or [])),
+        agents_enabled=list(cfg.enabled_agents),
+        enable_all_users_list=cfg.enable_all_users_list,
+        audit_enabled=True,
+        allowed_roots_count=len(cfg.allowed_roots),
+        remote_hosts_count=len(cfg.remote_hosts),
+    )
     if args.action == "doctor":
         return do_doctor(
             cfg,
