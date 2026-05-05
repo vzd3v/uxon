@@ -3963,11 +3963,26 @@ def _build_on_remote_attach_callback(cfg: Config):
     from uxon.tui.context import CallbackError, LaunchRequest
 
     def on_remote_attach(host_name: str, user: str, name: str) -> LaunchRequest:
+        import uuid as _uuid
+
+        from uxon import audit as _audit
+
         peer = find_host(cfg.remote_hosts, host_name)
         if peer is None:
             raise CallbackError(f"unknown remote host: {host_name}")
+        corr_id = str(_uuid.uuid4())
+        _audit.set_correlation_id(corr_id)
+        _audit.audit(
+            "attach.remote.out",
+            peer_name=peer.name,
+            ssh_alias=peer.ssh_alias,
+            target_user=user,
+            target_session=name,
+            correlation_id=corr_id,
+        )
         remote_cmd = (
-            f"{shlex.quote(peer.remote_uxon)} attach --user {shlex.quote(user)} {shlex.quote(name)}"
+            f"{shlex.quote(peer.remote_uxon)} attach --user {shlex.quote(user)} "
+            f"--audit-correlation-id {shlex.quote(corr_id)} {shlex.quote(name)}"
         )
         argv = build_peer_ssh_argv(
             peer,
@@ -4093,6 +4108,9 @@ def _build_tui_context(
         ``_wrap_tui_callback`` shim — :meth:`MainScreen.action_kill_remote`
         renders them as a red toast.
         """
+        import uuid as _uuid
+
+        from uxon import audit as _audit
         from uxon.remote_collector import (
             DEFAULT_CONNECT_TIMEOUT_SEC,
             DEFAULT_TOTAL_TIMEOUT_SEC,
@@ -4103,9 +4121,22 @@ def _build_tui_context(
         peer = find_host(cfg.remote_hosts, host_name)
         if peer is None:
             fail(f"unknown remote host: {host_name}", 1)
+        corr_id = str(_uuid.uuid4())
+        _audit.set_correlation_id(corr_id)
+        _audit.audit(
+            "kill.remote.out",
+            peer_name=peer.name,
+            ssh_alias=peer.ssh_alias,
+            target_user=user,
+            target_session=name,
+            force=True,
+            dry_run=False,
+            correlation_id=corr_id,
+        )
         remote_cmd = (
             f"{shlex.quote(peer.remote_uxon)} kill --force "
-            f"--user {shlex.quote(user)} {shlex.quote(name)}"
+            f"--user {shlex.quote(user)} "
+            f"--audit-correlation-id {shlex.quote(corr_id)} {shlex.quote(name)}"
         )
         ssh_argv = build_peer_ssh_argv(
             peer,
