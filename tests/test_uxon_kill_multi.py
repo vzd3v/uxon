@@ -310,7 +310,12 @@ class KillHostRemoteTests(unittest.TestCase):
         self.assertEqual(argv[0], "ssh")
         self.assertIn("-o", argv)
         self.assertIn("BatchMode=yes", argv)
-        self.assertIn("ServerAliveInterval=5", argv)
+        # After unification onto build_peer_ssh_argv kill-remote shares
+        # the default fetch template, which sets ServerAliveInterval=15.
+        self.assertIn("ServerAliveInterval=15", argv)
+        # ControlMaster=auto comes for free now — kill reuses the
+        # warm master started by the poller.
+        self.assertIn("ControlMaster=auto", argv)
         # ssh alias appears before the remote command string.
         ssh_alias_idx = argv.index("ssh-b")
         remote_cmd = argv[ssh_alias_idx + 1]
@@ -337,6 +342,27 @@ class KillHostRemoteTests(unittest.TestCase):
         remote_cmd = argv[-1]
         self.assertIn("--user", remote_cmd)
         self.assertIn("alice", remote_cmd)
+
+    def test_host_honours_command_template(self) -> None:
+        cfg = _make_config(
+            remote_hosts=[
+                RemoteHost(
+                    name="box-b",
+                    ssh_alias="ssh-b",
+                    description="",
+                    remote_uxon="uxon",
+                    command_template=("ssh", "-J", "bastion", "{ssh_alias}", "{remote_command}"),
+                )
+            ]
+        )
+        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
+        cp = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(uxon.subprocess, "run", return_value=cp) as srun:
+            uxon.do_kill(args, cfg, "u-vz")
+        argv = srun.call_args[0][0]
+        # Bug fix: kill-remote now honours command_template.
+        self.assertIn("-J", argv)
+        self.assertIn("bastion", argv)
 
     def test_host_unknown_alias_exits_2_with_hint(self) -> None:
         cfg = self._cfg_with_host()

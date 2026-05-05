@@ -2330,6 +2330,7 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     from uxon.remote_collector import (
         DEFAULT_CONNECT_TIMEOUT_SEC,
         DEFAULT_TOTAL_TIMEOUT_SEC,
+        build_peer_ssh_argv,
     )
     from uxon.remote_hosts import find_host
 
@@ -2355,17 +2356,13 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     if args.json_output:
         remote_cmd_parts.append("--json")
     remote_cmd = " ".join(remote_cmd_parts)
-    ssh_argv = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={DEFAULT_CONNECT_TIMEOUT_SEC}",
-        "-o",
-        "ServerAliveInterval=5",
-        target_host.ssh_alias,
-        remote_cmd,
-    ]
+    ssh_argv = build_peer_ssh_argv(
+        target_host,
+        remote_command=remote_cmd,
+        allocate_tty=False,
+        connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
+        ssh_multiplex=cfg.ssh_multiplex,
+    )
 
     if args.dry_run:
         if args.json_output:
@@ -3717,6 +3714,7 @@ def _build_tui_context(
         from uxon.remote_collector import (
             DEFAULT_CONNECT_TIMEOUT_SEC,
             DEFAULT_TOTAL_TIMEOUT_SEC,
+            build_peer_ssh_argv,
         )
         from uxon.remote_hosts import find_host
 
@@ -3727,17 +3725,13 @@ def _build_tui_context(
             f"{shlex.quote(peer.remote_uxon)} kill --force "
             f"--user {shlex.quote(user)} {shlex.quote(name)}"
         )
-        ssh_argv = [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            f"ConnectTimeout={DEFAULT_CONNECT_TIMEOUT_SEC}",
-            "-o",
-            "ServerAliveInterval=5",
-            peer.ssh_alias,
-            remote_cmd,
-        ]
+        ssh_argv = build_peer_ssh_argv(
+            peer,
+            remote_command=remote_cmd,
+            allocate_tty=False,
+            connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
+            ssh_multiplex=cfg.ssh_multiplex,
+        )
         try:
             cp = subprocess.run(
                 ssh_argv,
