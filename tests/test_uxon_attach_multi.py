@@ -106,3 +106,76 @@ class AttachCrossUserTests(unittest.TestCase):
         self.assertIn("sudo", out)
         self.assertIn("alice", out)
         self.assertIn("tmux", out)
+
+
+class AttachHostRemoteTests(unittest.TestCase):
+    """``uxon attach --host <alias> --user <u>`` SSH-routed dispatch."""
+
+    def _cfg_with_host(self, **host_kwargs) -> uxon.Config:
+        from tests.test_uxon_kill_multi import _make_config
+        return _make_config(
+            remote_hosts=[
+                RemoteHost(
+                    name="box-b",
+                    ssh_alias="ssh-b",
+                    description="",
+                    remote_uxon="uxon",
+                    **host_kwargs,
+                )
+            ]
+        )
+
+    def test_host_dry_run_prints_ssh_attach_command(self) -> None:
+        cfg = self._cfg_with_host()
+        args = uxon.ParsedArgs(
+            action="attach",
+            target_id="demo@claude",
+            host="box-b",
+            user="alice",
+            dry_run=True,
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = uxon.do_attach(args, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("ssh", out)
+        self.assertIn("-tt", out)  # interactive PTY
+        self.assertIn("ssh-b", out)
+        self.assertIn("uxon attach", out)
+        self.assertIn("--user", out)
+        self.assertIn("alice", out)
+        self.assertIn("demo@claude", out)
+
+    def test_host_honours_command_template(self) -> None:
+        cfg = self._cfg_with_host(
+            command_template=("ssh", "-J", "bastion", "{ssh_alias}", "{remote_command}"),
+        )
+        args = uxon.ParsedArgs(
+            action="attach",
+            target_id="demo@claude",
+            host="box-b",
+            user="alice",
+            dry_run=True,
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            uxon.do_attach(args, cfg, "u-vz")
+        out = buf.getvalue()
+        self.assertIn("-J", out)
+        self.assertIn("bastion", out)
+        # -tt still injected after the outermost ssh.
+        first_ssh = out.find("ssh")
+        first_tt = out.find("-tt")
+        self.assertGreater(first_tt, first_ssh)
+
+    def test_host_unknown_alias_fails(self) -> None:
+        cfg = self._cfg_with_host()
+        args = uxon.ParsedArgs(
+            action="attach",
+            target_id="demo@claude",
+            host="unknown",
+            user="alice",
+        )
+        with self.assertRaises(SystemExit):
+            uxon.do_attach(args, cfg, "u-vz")

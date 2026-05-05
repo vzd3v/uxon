@@ -2254,9 +2254,46 @@ def parse_args(argv: list[str]) -> ParsedArgs:
 
 
 def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
-    """Forward declaration; real impl arrives in Task 6."""
-    fail("not yet implemented (Task 7)")
-    return 1
+    """Handle ``uxon attach <id> --host <alias> --user <u>``.
+
+    Looks up the configured peer, builds an interactive ssh argv via
+    :func:`build_peer_ssh_argv`, and execvp's it. Peer's own
+    ``uxon attach --user`` runs the per-target sudo probe, so the
+    local side does not need to know the peer's user table.
+
+    The wire command always passes ``--user`` (even when it equals
+    the ssh-login-user on the peer): peer is the sole authority on
+    'who can attach to what', and we route that decision through
+    its own gating. ``--user`` was made required at parse time
+    (:func:`_parse_attach_extras`).
+    """
+    from uxon.remote_collector import (
+        DEFAULT_CONNECT_TIMEOUT_SEC,
+        build_peer_ssh_argv,
+    )
+    from uxon.remote_hosts import find_host
+
+    peer = find_host(cfg.remote_hosts, args.host or "")
+    if peer is None:
+        names = ", ".join(h.name for h in cfg.remote_hosts) or "(none)"
+        fail(f"unknown --host {args.host!r}; configured: {names}")
+    assert args.user is not None  # parser-enforced
+    remote_cmd = (
+        f"{shlex.quote(peer.remote_uxon)} attach "
+        f"--user {shlex.quote(args.user)} {shlex.quote(args.target_id or '')}"
+    )
+    ssh_argv = build_peer_ssh_argv(
+        peer,
+        remote_command=remote_cmd,
+        allocate_tty=True,
+        connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
+        ssh_multiplex=cfg.ssh_multiplex,
+    )
+    if args.dry_run:
+        print(shlex.join(ssh_argv))
+        return 0
+    os.execvp(ssh_argv[0], ssh_argv)
+    return 0  # unreachable
 
 
 def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
