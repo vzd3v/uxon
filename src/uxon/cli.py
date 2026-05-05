@@ -3101,6 +3101,9 @@ def _do_create_git_remote(
         )
 
     current_user = process_user()
+    from uxon import audit as _audit
+
+    _git_ok = False
     try:
         result = uxon_git_create.create_project_remote(
             profile,
@@ -3110,8 +3113,28 @@ def _do_create_git_remote(
             current_user=current_user,
             dry_run=args.dry_run,
         )
+        _git_ok = True
     except uxon_git_create.CreationError as exc:
+        # Audit before ``fail()`` re-raises ``SystemExit`` — the operator
+        # cares more about the failure than the success.
+        _audit.audit(
+            "git.remote.create",
+            outcome="error",
+            profile=profile.name,
+            repo=repo_name,
+            creds_user=profile.creds_user or launch_user,
+            rc=1,
+        )
         fail(f"git remote creation failed at stage {exc.stage!r}: {exc}")
+    if _git_ok:
+        _audit.audit(
+            "git.remote.create",
+            outcome="ok",
+            profile=profile.name,
+            repo=repo_name,
+            creds_user=profile.creds_user or launch_user,
+            rc=0,
+        )
 
     if args.dry_run:
         for cmd in result.commands:
@@ -4638,6 +4661,16 @@ def main(argv: list[str] | None = None) -> int:
             return _do_list_host(args, cfg)
         if args.all_hosts:
             return _do_list_all_hosts(args, cfg, launch_user)
+        # Peer-inbound branch: a peer-collector invocation arrives with
+        # ``SSH_CONNECTION`` set and neither ``--host`` nor ``--all-hosts``.
+        # Fires *after* those early-returns so a caller-side
+        # ``uxon list --host`` does not double-emit on its own host.
+        if os.environ.get("SSH_CONNECTION"):
+            _audit.audit(
+                "list.remote.in",
+                scope="all-users" if args.all_users else "own",
+                correlation_id=_audit._correlation_id,
+            )
         if args.all_users:
             if not cfg.enable_all_users_list:
                 # Stable error tag. The remote-host aggregator's
@@ -4646,6 +4679,13 @@ def main(argv: list[str] | None = None) -> int:
                 # --json`` (own-only) command.
                 fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
             scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
+            # ``list.peek`` fires only after the gate passes — placement
+            # ensures we never log a peek for a denied invocation.
+            _audit.audit(
+                "list.peek",
+                scope_users=scope_users,
+                scope_skipped=list(scope_skipped),
+            )
             sessions = collect_sessions(scope_users, cfg)
             if args.json_output:
                 _emit_json(
