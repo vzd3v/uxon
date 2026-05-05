@@ -93,8 +93,17 @@ Optimizations baked in:
   `socket.gethostname()`, env reads, `__version__` — computed once
   and held as a pre-built dict (native sink) or pre-serialized
   bytes prefix (syslog sink).
-- **`SOCK_NONBLOCK | SOCK_CLOEXEC`.** Audit never blocks the agent
-  launch path. On `BlockingIOError`/`OSError` we drop and continue.
+- **`SOCK_NONBLOCK`.** Audit never blocks the agent launch path. On
+  `BlockingIOError`/`OSError` (including `EAGAIN`, `ENOBUFS`, `EPIPE`,
+  `EMSGSIZE`) we drop and continue. Close-on-exec is the Python 3.4+
+  default (PEP 446) — no explicit `SOCK_CLOEXEC` needed.
+- **No memfd fallback for oversized datagrams.** journald's native
+  protocol allows a sealed-memfd retry on `EMSGSIZE`. Our payloads
+  are bounded by design (≤ a few KB; envelope + small per-event extras),
+  well below the AF_UNIX datagram limit. If `EMSGSIZE` ever fires it
+  is treated as "drop and continue" like any other send error. This
+  is the explicit trade-off for the "stdlib only / ~30-line wire layer"
+  posture.
 - **Bypass stdlib `logging` framework.** Direct `socket.send`. No
   `LogRecord`, no `Formatter`, no `Handler` chain. Saves ~50µs per
   call vs `SysLogHandler`.
@@ -124,10 +133,18 @@ Resolution:
 - `syslog_facility` is consulted only when the syslog fallback is
   active. journald native protocol uses its own metadata fields, not
   syslog facility.
-- **No environment-variable override.** The whole point in shared-host
-  mode is that the launch user can't disable audit by exporting a
-  variable. Configuration lives in `config.toml`, which on a
-  shared-host install is in `/etc/uxon/config.toml` (root-owned).
+- **No environment-variable override.** The launch user can't disable
+  audit by exporting a variable; the only kill-switch is the config
+  table.
+
+The `[audit]` table lives in the same `config.toml` as every other
+operator-controlled setting. The "config file is not writable by the
+launch user" property is **conditional** on the install path:
+`install_uxon.py` puts `config/config.toml` under root-owned
+`/opt/uxon/venv` (or wherever `--venv-dir` points), and the operator
+chmods/chowns from there; a dev-checkout install (code in a
+user-writable directory) does not have this property. The threat-model
+"closed (operator-mode)" claim assumes the prescribed install path.
 
 ## Caller-context prefix (every event)
 
@@ -137,12 +154,12 @@ Computed once per process at first `audit()` call:
 |------------------|----------------------------------------------------------------|
 | `host`           | `socket.gethostname()`                                         |
 | `uxon_version`   | `uxon.__version__`                                             |
-| `caller_user`    | `os.environ.get("SUDO_USER")` or `os.environ.get("USER")`      |
-| `caller_uid`     | `int(os.environ.get("SUDO_UID"))` or `os.getuid()` (real UID)  |
+| `caller_user`    | `os.environ.get("SUDO_USER") or os.environ.get("USER", "")`    |
+| `caller_uid`     | `int(os.environ.get("SUDO_UID") or os.getuid())` (real UID)    |
 | `launch_user`    | `pwd.getpwuid(os.geteuid()).pw_name`                           |
 | `pid`, `ppid`    | `os.getpid()`, `os.getppid()`                                  |
 | `ssh_client`     | `os.environ.get("SSH_CONNECTION")` if present, else omitted    |
-| `subcmd`         | first positional CLI arg (`attach` / `kill` / `new` / …)       |
+| `subcmd`         | `args.action` (canonical name from `ParsedArgs`, not `sys.argv[1]` — alias-safe) |
 
 Inbound detection: presence of `SSH_CONNECTION` in environment +
 `subcmd ∈ {list, attach, kill}` is what flips a local event into its
@@ -268,20 +285,21 @@ change. Documented as such.
 
 | File                               | Site                                 | Event(s)                                    |
 |------------------------------------|--------------------------------------|--------------------------------------------|
-| `src/uxon/cli.py::main`            | after argv parse, before subcmd dispatch | `cli.start`                            |
-| `src/uxon/cli.py::do_attach`       | success path; sudo/not-found error paths | `session.attach` (outcome ok/denied/not_found) |
-| `src/uxon/cli.py::_do_attach_remote` | before `execvp`                    | `attach.remote.out`                          |
-| `src/uxon/cli.py::do_attach`       | inbound branch (`SSH_CONNECTION` present) | `attach.remote.in`                       |
-| `src/uxon/cli.py::do_kill`         | local kill (no `--host`)             | `session.kill` (outcome ok/denied/not_found) |
-| `src/uxon/cli.py::do_kill` (caller, with `--host`) | before SSH dispatch  | `kill.remote.out`                           |
-| `src/uxon/cli.py::do_kill` (peer, `SSH_CONNECTION` present) | inbound branch | `kill.remote.in`                          |
+| `src/uxon/cli.py::main`            | after `parse_args`, after `load_config` succeeds, before subcmd dispatch | `cli.start` (using `args.action` as `subcmd`) |
+| `src/uxon/cli.py::main`            | wrapping `load_config(os.getcwd())` in `try/except SystemExit` (see Bug 5) | `config.error` |
+| `src/uxon/cli.py::do_attach` (local) | **before** `os.execvp` (lines around 2336/2398); plus failure paths (sudo denied, not-found) | `session.attach` (outcome `ok`/`denied`/`not_found`) |
+| `src/uxon/cli.py::_do_attach_remote` | before `os.execvp` at line 2295 | `attach.remote.out` |
+| `src/uxon/cli.py::do_attach` (peer-side, when `SSH_CONNECTION` present) | top of function, before sudo path is taken | `attach.remote.in` (replaces `session.attach` in this branch — they describe the same physical event from caller-vs-peer POV) |
+| `src/uxon/cli.py::do_kill` (local kill, no `--host`) | end of routine, both success and failure | `session.kill` (outcome `ok`/`denied`/`not_found`) |
+| `src/uxon/cli.py::do_kill` (caller, with `--host`) → `_do_kill_remote` | before SSH dispatch | `kill.remote.out` |
+| `src/uxon/cli.py::do_kill` (peer-side, when `SSH_CONNECTION` present) | top of function | `kill.remote.in` (replaces `session.kill` in this branch) |
 | `src/uxon/cli.py::do_kill_all`     | end of routine                       | `session.kill_all`                          |
 | `src/uxon/cli.py::do_new`          | success path; failure                | `session.new` (outcome)                      |
 | `src/uxon/cli.py::do_run`          | success path; failure                | `session.new`                                |
-| `src/uxon/cli.py::do_list`         | branch where `--all-users` actually enumerates (local), or where invoked over SSH | `list.peek` (local cross-user) / `list.remote.in` (inbound) |
-| `src/uxon/git_create.py`           | end of `create_or_attach_remote`     | `git.remote.create`                          |
+| `src/uxon/cli.py::main`, list block (lines around 4345–4379) | inside `if args.action == "list":`, after the existing `--host`/`--all-hosts` early-returns. **(a)** When `args.all_users` is true and we actually enumerate (i.e. after the `enable_all_users_list` gate passes), emit `list.peek`. **(b)** When `SSH_CONNECTION` is present and neither `--host` nor `--all-hosts` was passed (peer-collector path), emit `list.remote.in` instead of `list.peek`. | `list.peek` / `list.remote.in` |
+| `src/uxon/cli.py::_do_create_git_remote` (lines around 2932–2950) | wrap the `create_project_remote(...)` call in `try/finally`, emit on both paths | `git.remote.create` |
 | `src/uxon/tui/app.py::run`         | before `app.run()` first call        | `tui.open`                                   |
-| `src/uxon/tui/app.py::run`         | after `_run_launch_request` returns  | `session.ended`                              |
+| `src/uxon/tui/app.py::run`         | after `_run_launch_request` returns (the function lives in `tui/launch.py`; the call is at `app.py:1318`) | `session.ended` |
 
 The TUI's `tui_start` / `launch` / `launch_completed` call sites
 collapse into the same lines that previously called `_log_event`,
@@ -324,24 +342,78 @@ single helper `pop_correlation_id(rest: list[str]) -> str` that all
 three subcommand parsers call before their own option walk. Stored
 in `audit` module state.
 
-### Bug 4 — sanitised flags in `cli.start`
+### Bug 4 — `git.remote.create` event needs an emission point that doesn't currently exist
+
+`git_create.create_project_remote` raises `CreationError` on failure
+and the call site in `cli.py::_do_create_git_remote` (lines around
+2932–2950) does not have a single point that sees both the outcome
+and the profile/repo/creds_user values. **Resolution**: wrap the
+`create_project_remote(...)` call in `_do_create_git_remote` (not in
+`git_create.py` — keep the data-layer module audit-free) in a
+`try/finally` so the audit fires on both paths, `outcome="ok"` on
+success, `outcome="error"` otherwise. `rc` is `0` on success, `1`
+on `CreationError` (we do not currently surface a finer code).
+
+### Bug 5 — `config.error` has no emission point because `load_config` calls `fail()`
+
+`load_config(os.getcwd())` at `cli.py:4304` calls `fail(...)` on
+errors, which `eprint`s and `raise SystemExit(code)`. There is no
+`try/except` around it. **Resolution**: wrap in
+`try/except SystemExit as ex:` at the call site, emit
+`audit("config.error", outcome="error", path=..., error=...)`, then
+re-raise. This is one new try/except block in `main()`. The
+audit-channel must be initialized lazily — but `load_config` runs
+before `cli.start`, so the first `audit()` call from `config.error`
+is what triggers sink detection. That's fine; the cost (one syscall)
+is paid only on the error path.
+
+### Bug 6 — inbound-detection branch must be added in `do_attach` and `do_kill`
+
+`do_attach` and `do_kill` currently have no `SSH_CONNECTION` check.
+The peer's `uxon` process today runs the same local code path as a
+direct local invocation; the only signal that it is peer-inbound is
+the env var. **Resolution**: at the top of each function (before the
+existing `--host`/sudo logic), check `os.environ.get("SSH_CONNECTION")`
+and emit the `*.remote.in` event instead of (not in addition to)
+the local `session.attach` / `session.kill`. This is two new
+2-line branches, no flow restructure.
+
+### Bug 7 — audit must fire **before** `os.execvp`
+
+`do_attach`, `_do_attach_remote`, and `tui/launch.py` all end in
+`os.execvp` (`cli.py:2295`, `2336`, `2398`, `2788`). After execvp
+the process image is replaced and the audit module's open socket is
+gone. Since `audit()` is a non-blocking `socket.send`, the kernel
+buffers the datagram — by the time we call `execvp` the data has
+already been handed off. **Resolution**: explicitly require in the
+spec and call-site table that audit calls precede the corresponding
+execvp. No code-path change beyond placement.
+
+### Bug 8 — sanitised flags in `cli.start`
 
 Including raw `flags` may leak operator-supplied secrets (e.g.
 `--token-file=/path/to/secret`). **Resolution**: sanitise before
-emitting — drop any `--token-*`, `--password*`, mask values of
-keyword flags whose names match a small denylist. Document the
-denylist alongside `cli.start` in `docs/configuration.md`.
+emitting — drop or mask values of keyword flags whose names match a
+small denylist (`--token*`, `--password*`, `--secret*`).
+Document the denylist alongside `cli.start` in `docs/configuration.md`.
 
-### Bug 5 — `git.remote.create` event needs an emission point that doesn't currently exist
+### Bug 9 — `tests/test_uxon_tui_logging.py` partial removal
 
-`git_create.py` raises `CreationError` on failure but does not have a
-single end-of-routine point that knows both the outcome and the
-profile/repo/creds_user values. **Resolution**: in
-`git_create.py::create_or_attach_remote` (or its caller in
-`do_new`), wrap the call in a `try/finally` so the audit fires on
-both paths, with `outcome="ok"` on success, `outcome="error"`
-otherwise. The `rc` field carries the `CreationError`'s exit code if
-present, else 0/1.
+The file contains three classes: `LogEventTests` (covers `_log_event`),
+`StartupChannelTests` (covers `debug()`), `MetricsJsonlTests`
+(covers `metrics_record()`). Only `LogEventTests` is tied to the
+removed channel. **Resolution**: delete the `LogEventTests` class
+only. Keep `StartupChannelTests` and `MetricsJsonlTests` —
+the debug and metrics channels are unchanged. Rename the file's
+docstring accordingly.
+
+### Bug 10 — `docs/deployment.md` 1.x→2.0 migration note also references the removed log
+
+The 2.0 migration note (lines 352–355) describes `UXON_LOG_DIR` as
+controlling "TUI events". After this change, that's no longer
+accurate. **Resolution**: update the 2.0 migration entry to scope
+`UXON_LOG_DIR` to "debug + metrics paths only", and add a 4.0
+migration entry pointing readers at `journalctl SYSLOG_IDENTIFIER=uxon`.
 
 ## Testability
 
@@ -378,6 +450,12 @@ gated by `UXON_PERF=1` so it doesn't run on CI by default) measures:
 - Steady-state per-event cost: expected < 30µs median, < 100µs p99.
 - 10 000 events back-to-back, ensuring no allocator-thrash regression.
 
+The hot-path budget (~15–25µs) assumes minimal GIL contention. Under
+active TUI workers (Textual event loop + SSH fetch threads),
+`socket.send` releases and reacquires the GIL — under contention this
+can add up to ~50µs. The benchmark runs both quiescent and with a
+synthetic worker-load shim to validate the p99.
+
 Numbers go into the spec follow-up if they materially deviate.
 
 ## Documentation changes (in this same change)
@@ -390,7 +468,10 @@ Numbers go into the spec follow-up if they materially deviate.
   does not engineer a runtime defence against a launch user running
   their own copy (sudo's own audit covers privileged operations).
   Plus the wire-protocol note that `--audit-correlation-id` is part
-  of the peer-protocol contract.
+  of the peer-protocol contract. Also: update the **1.x → 2.0
+  migration note** (lines 352–355) to scope `UXON_LOG_DIR` to debug
+  and metrics paths, and **add a 4.0 migration entry** pointing
+  operators at `journalctl SYSLOG_IDENTIFIER=uxon`.
 - `docs/configuration.md` — new entry for `[audit]` table; update
   `UXON_LOG_DIR` description to "controls debug + metrics paths only;
   audit goes to journald/syslog regardless".
