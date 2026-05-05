@@ -354,15 +354,8 @@ def _build_fetch_argv(
 ) -> list[str]:
     """Assemble the fetch argv for one host.
 
-    Selection of template:
-      - ``host.command_template`` set → render that directly. Operator
-        owns the argv; ``extra_ssh_options`` and ``ssh_multiplex`` are
-        ignored because both target the default ssh template.
-      - Otherwise → start from :func:`_default_template`, optionally
-        strip multiplex options, and insert ``host.extra_ssh_options``
-        immediately before ``{ssh_alias}``.
-
-    Then render the placeholders. The remote command is the standard
+    Thin wrapper over :func:`build_peer_ssh_argv` with
+    ``allocate_tty=False``. The remote command is the standard
     ``<remote_uxon> list [--all-users] --json`` invocation; the
     ``ALL_USERS_DISABLED_MARKER`` fallback path still works because
     ``all_users=False`` rebuilds the argv with the legacy form.
@@ -372,25 +365,12 @@ def _build_fetch_argv(
         if all_users
         else f"{shlex.quote(host.remote_uxon)} list --json"
     )
-    if host.command_template:
-        template: list[str] = list(host.command_template)
-    else:
-        template = _default_template()
-        if ssh_multiplex == "off":
-            template = _strip_multiplex(template)
-        if host.extra_ssh_options:
-            try:
-                idx = template.index("{ssh_alias}")
-            except ValueError:
-                idx = len(template)
-            template = template[:idx] + list(host.extra_ssh_options) + template[idx:]
-    return _render_argv(
-        template,
-        ssh_alias=host.ssh_alias,
-        remote_uxon=host.remote_uxon,
-        connect_timeout=connect_timeout,
-        xdg_cache=_xdg_cache_home(),
+    return build_peer_ssh_argv(
+        host,
         remote_command=remote_command,
+        allocate_tty=False,
+        connect_timeout=connect_timeout,
+        ssh_multiplex=ssh_multiplex,
     )
 
 
