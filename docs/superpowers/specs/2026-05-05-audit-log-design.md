@@ -74,6 +74,13 @@ Detection runs once at first call; the chosen socket is held open.
 No re-detection if the socket later breaks (we don't reconnect — drop
 events on `EAGAIN`/`ENOBUFS`/`EPIPE`).
 
+The lazy-init block (sink detection + socket open + prefix
+construction) is guarded by a module-level `threading.Lock`.
+Concurrent first callers from TUI worker threads serialize on it; the
+second caller observes the singleton already initialized and proceeds
+without re-running detection. Steady-state `audit()` calls do not
+take the lock — only the first-call init path does.
+
 ### Hot path
 
 ```
@@ -334,13 +341,23 @@ the deploy.
 
 ### Bug 3 — `--audit-correlation-id` parsing surface
 
-Peer's CLI must accept the new flag for `list`, `attach`, `kill`. If
-the existing parser is positional/manual (it is — `cli.py` does its
-own argv walk), inserting one new keyword flag in three subcommand
-branches is mechanical but easy to miss. **Resolution**: factor a
-single helper `pop_correlation_id(rest: list[str]) -> str` that all
-three subcommand parsers call before their own option walk. Stored
-in `audit` module state.
+Peer's CLI must accept the new flag for `list`, `attach`, `kill`.
+The three parsers (`_parse_kill_extras`, `_parse_attach_extras`,
+`parse_list_args`) each do a manual indexed walk over their argv
+slice. **Resolution**: factor one helper
+
+```python
+def extract_correlation_id(argv: list[str]) -> tuple[str | None, list[str]]:
+    """Pop the internal --audit-correlation-id <uuid> flag if present.
+    Returns (uuid_or_None, argv_with_flag_removed)."""
+```
+
+Each of the three parsers calls it on its incoming list **first**,
+then walks the returned filtered list with their existing logic. The
+extracted UUID is set into `audit` module state via
+`audit.set_correlation_id(uuid)`; subsequent `audit()` calls read it
+from there. The non-mutating return-tuple shape avoids surprising
+in-place argv mutation across the three call sites.
 
 ### Bug 4 — `git.remote.create` event needs an emission point that doesn't currently exist
 
@@ -354,18 +371,31 @@ and the profile/repo/creds_user values. **Resolution**: wrap the
 success, `outcome="error"` otherwise. `rc` is `0` on success, `1`
 on `CreationError` (we do not currently surface a finer code).
 
-### Bug 5 — `config.error` has no emission point because `load_config` calls `fail()`
+### Bug 5 — `config.error` has no emission point because `load_config` calls `fail()` (and one path leaks `tomllib.TOMLDecodeError`)
 
-`load_config(os.getcwd())` at `cli.py:4304` calls `fail(...)` on
+`load_config(os.getcwd())` at `cli.py:4304` calls `fail(...)` on most
 errors, which `eprint`s and `raise SystemExit(code)`. There is no
-`try/except` around it. **Resolution**: wrap in
-`try/except SystemExit as ex:` at the call site, emit
-`audit("config.error", outcome="error", path=..., error=...)`, then
-re-raise. This is one new try/except block in `main()`. The
-audit-channel must be initialized lazily — but `load_config` runs
-before `cli.start`, so the first `audit()` call from `config.error`
-is what triggers sink detection. That's fine; the cost (one syscall)
-is paid only on the error path.
+`try/except` around it. **Additionally**, `load_toml`
+(`cli.py:274–283`) calls `tomllib.load(f)` without a try/except —
+`tomllib.TOMLDecodeError` (subclass of `ValueError`) escapes
+`load_config` and surfaces as an unhandled traceback, bypassing any
+caller-side `try/except SystemExit`.
+
+**Resolution**: two changes, in this order:
+
+1. In `load_toml`, wrap `tomllib.load(f)` in `try/except
+   tomllib.TOMLDecodeError as exc:` and call `fail(f"invalid TOML in
+   {path}: {exc}", 1)`. This converts the malformed-TOML path into
+   the same `SystemExit` shape every other config error already takes.
+2. In `main()`, wrap `cfg = load_config(os.getcwd())` in
+   `try/except SystemExit as ex:`; before re-raising, emit
+   `audit("config.error", outcome="error", path=str(repo_config_path()),
+   error=str(ex))`. The first `audit()` call here triggers lazy sink
+   detection — fine, the cost (one syscall) is paid only on the error
+   path.
+
+Bug 5 is **two** code edits, not one. Both must land together or
+malformed TOML still produces an audit-less traceback.
 
 ### Bug 6 — inbound-detection branch must be added in `do_attach` and `do_kill`
 
@@ -388,6 +418,21 @@ buffers the datagram — by the time we call `execvp` the data has
 already been handed off. **Resolution**: explicitly require in the
 spec and call-site table that audit calls precede the corresponding
 execvp. No code-path change beyond placement.
+
+Two clarifications attached to this rule:
+
+1. **`SSH_CONNECTION` is read from the env at the inbound branch of
+   `do_attach` / `do_kill`, before the sudo `os.execvp`** — this is
+   why the audit must fire at the top of those functions. `sudo`
+   strips most env vars by default; once we cross into
+   `sudo -niu <target_user>`, `SSH_CONNECTION` is gone unless the
+   sudoers config has `env_keep += "SSH_CONNECTION"`. We don't rely
+   on sudoers — we capture it before execvp.
+2. **If the non-blocking `socket.send` returns `EAGAIN` immediately
+   before `execvp`**, the event drops. The "drop and continue"
+   policy applies identically whether the drop happens mid-session
+   or right before process replacement. Acceptable trade-off for
+   the no-blocking guarantee.
 
 ### Bug 8 — sanitised flags in `cli.start`
 
@@ -431,7 +476,7 @@ Test layers:
    - sink detection ordering (mock `os.path.exists`)
    - native-journal serialization (`KEY=value\n` lines)
    - syslog-CEE serialization (`<PRI>VERSION TIMESTAMP HOST APP-NAME PROCID MSGID - @cee: {…}`)
-   - flags sanitiser (Bug 4)
+   - flags sanitiser (Bug 8)
    - `audit.enabled = false` short-circuit (no `_send_raw` call)
 
 2. **Integration over CLI handlers**: extend existing `tests/test_uxon_cli_*.py`
