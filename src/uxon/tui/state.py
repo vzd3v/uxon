@@ -370,6 +370,7 @@ class MainIntent:
     index: int | None = None
     user: str = ""
     session_name: str = ""
+    host: str = ""
 
 
 def main_action_intent(kind: str) -> MainIntent | None:
@@ -389,6 +390,27 @@ def session_intent(session: TuiSession, current_user: str) -> MainIntent:
         "attach",
         user=session.user or current_user,
         session_name=session.name,
+    )
+
+
+def remote_session_intent(
+    host_name: str,
+    rec: dict,
+    current_user: str,
+) -> MainIntent:
+    """Build a MainIntent for activating one row of the RemoteSessionTable.
+
+    ``host_name`` is the display name as carried on the row tuple —
+    may include a trailing " (own only)" suffix; we strip it.
+    ``rec`` is the wire-schema session record (dict). Falls back to
+    ``current_user`` when the record lacks a ``user`` field.
+    """
+    bare_host = host_name.split(" ", 1)[0]
+    return MainIntent(
+        kind="attach-remote",
+        host=bare_host,
+        user=str(rec.get("user") or current_user),
+        session_name=str(rec.get("name") or ""),
     )
 
 
