@@ -44,3 +44,65 @@ class AttachParserTests(unittest.TestCase):
     def test_attach_unknown_flag(self) -> None:
         with self.assertRaises(SystemExit):
             uxon.parse_args(["attach", "demo@claude", "--unknown"])
+
+
+class AttachCrossUserTests(unittest.TestCase):
+    """Peer-side ``uxon attach --user`` cross-user gating.
+
+    Mirror of ``KillUserCrossUserTests`` in test_uxon_kill_multi.py.
+    """
+
+    def _cfg(self) -> uxon.Config:
+        from tests.test_uxon_kill_multi import _make_config
+        return _make_config()
+
+    def test_same_user_no_sudo_path(self) -> None:
+        cfg = self._cfg()
+        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="u-vz", dry_run=True)
+        with mock.patch.object(uxon, "collect_sessions") as cs, \
+             mock.patch.object(uxon, "resolve_session") as rs, \
+             mock.patch.object(uxon, "attach_session", return_value=0) as att:
+            cs.return_value = []
+            rs.return_value = mock.Mock(name="demo@claude")
+            rc = uxon.do_attach(args, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+        # No probe needed when target == launch_user
+        att.assert_called_once()
+
+    def test_cross_user_unreachable_emits_stable_tag(self) -> None:
+        cfg = self._cfg()
+        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
+        from uxon.sudo_probe import SudoCapability
+        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        buf = io.StringIO()
+        with mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps), \
+             redirect_stdout(buf):
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                rc = uxon.do_attach(args, cfg, "u-vz")
+        # Stable error tag — aggregator's UI surfaces it via
+        # pause_on_launch_failure.
+        self.assertEqual(rc, 1)
+        self.assertIn("uxon-error: not-reachable", err.getvalue())
+
+    def test_cross_user_reachable_dry_run_shows_sudo_prefix(self) -> None:
+        cfg = self._cfg()
+        args = uxon.ParsedArgs(
+            action="attach", target_id="demo@claude", user="alice", dry_run=True
+        )
+        from uxon.sudo_probe import SudoCapability
+        caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
+        buf = io.StringIO()
+        with mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps), \
+             mock.patch.object(uxon, "collect_sessions", return_value=[]), \
+             mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"), \
+             mock.patch.object(uxon, "process_user", return_value="u-vz"), \
+             mock.patch.object(uxon, "resolve_session") as rs:
+            rs.return_value = mock.Mock(name="demo@claude")
+            rs.return_value.name = "demo@claude"
+            with redirect_stdout(buf):
+                rc = uxon.do_attach(args, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("sudo", out)
+        self.assertIn("alice", out)
+        self.assertIn("tmux", out)

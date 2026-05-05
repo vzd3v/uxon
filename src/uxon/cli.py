@@ -2253,9 +2253,53 @@ def parse_args(argv: list[str]) -> ParsedArgs:
     return parse_run_like(argv, "run")
 
 
+def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
+    """Forward declaration; real impl arrives in Task 6."""
+    fail("not yet implemented (Task 7)")
+    return 1
+
+
 def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("attach requires an identifier")
+
+    # Remote dispatch: --host routes to a configured peer over SSH.
+    # Per-target sudo gating happens on the peer (peer's own
+    # 'uxon attach' runs the probe), so the local side does not need
+    # to know the peer's user table. Mirrors do_kill --host.
+    if args.host is not None:
+        return _do_attach_remote(args, cfg)
+
+    target_user = args.user or launch_user
+    if target_user != launch_user:
+        from uxon.sudo_probe import probe_sudo_capability
+
+        caps = probe_sudo_capability([target_user])
+        if target_user not in caps.reachable_users:
+            eprint(
+                f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
+                "check /etc/sudoers.d for a NOPASSWD rule for this target)"
+            )
+            return 1
+        sessions = collect_sessions([target_user], cfg)
+        target = resolve_session(
+            args.target_id,
+            sessions,
+            cfg.session_prefix,
+            legacy_prefixes=cfg.legacy_session_prefixes,
+        )
+        base = configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
+        full = ["sudo", "-niu", target_user, "--", *base]
+        if args.dry_run:
+            print(f"attach_user={shlex.quote(target_user)}")
+            print(f"socket={shlex.quote(tmux_socket_path(cfg, target_user))}")
+            print(f"session={shlex.quote(target.name)}")
+            print(f"exec {shlex.join(full)}")
+            return 0
+        os.execvp(full[0], full)
+        return 0
+
+    # Same-user path — unchanged.
     sessions = collect_sessions([launch_user], cfg)
     if not sessions:
         legacy = collect_sessions_for_user(
