@@ -470,9 +470,7 @@ class MainScreen(Screen):
             if entry is None:
                 return
             host_name, rec = entry
-            self._run_intent(
-                remote_session_intent(host_name, rec, self.ctx.current_user)
-            )
+            self._run_intent(remote_session_intent(host_name, rec, self.ctx.current_user))
             return
 
     def _run_intent(self, intent: MainIntent | None) -> None:
@@ -519,9 +517,7 @@ class MainScreen(Screen):
         try:
             req = self.ctx.on_remote_attach(host, user, name)
         except CallbackError as exc:
-            self.app.notify(
-                f"Remote attach failed: {exc}", severity="error", timeout=6
-            )
+            self.app.notify(f"Remote attach failed: {exc}", severity="error", timeout=6)
             return
         self.app.request_launch(req)  # type: ignore[attr-defined]
 

@@ -208,8 +208,8 @@ class TuiContext:
     # interactive ssh LaunchRequest via build_peer_ssh_argv; the TUI
     # hands it to request_launch (fork-and-wait, returns to TUI on
     # tmux detach).
-    on_remote_attach: Callable[[str, str, str], LaunchRequest] = (
-        lambda host, user, name: LaunchRequest(cmd=("true",), label="noop-remote-attach")
+    on_remote_attach: Callable[[str, str, str], LaunchRequest] = lambda host, user, name: (
+        LaunchRequest(cmd=("true",), label="noop-remote-attach")
     )
     on_refresh: Callable[[], TuiContext] = lambda: None  # type: ignore[return-value]
     on_probe_link_health: Callable[[], Any] = lambda: None

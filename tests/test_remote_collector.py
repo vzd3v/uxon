@@ -232,7 +232,17 @@ class BuildPeerSshArgvTests(unittest.TestCase):
         from uxon.remote_collector import build_peer_ssh_argv
 
         argv = build_peer_ssh_argv(
-            _host(command_template=("kubectl", "exec", "uxon-pod", "--", "/bin/sh", "-c", "{remote_command}")),
+            _host(
+                command_template=(
+                    "kubectl",
+                    "exec",
+                    "uxon-pod",
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    "{remote_command}",
+                )
+            ),
             remote_command="uxon attach foo",
             allocate_tty=True,
             connect_timeout=5,

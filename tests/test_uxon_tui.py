@@ -590,7 +590,7 @@ class MainScreenIntentStateTests(unittest.TestCase):
 
 class RemoteSessionIntentTests(unittest.TestCase):
     def test_basic(self) -> None:
-        from uxon.tui.state import remote_session_intent, MainIntent
+        from uxon.tui.state import MainIntent, remote_session_intent
 
         intent = remote_session_intent(
             "vz-prod1",

@@ -3739,8 +3739,7 @@ def _build_on_remote_attach_callback(cfg: Config):
         if peer is None:
             raise CallbackError(f"unknown remote host: {host_name}")
         remote_cmd = (
-            f"{shlex.quote(peer.remote_uxon)} attach "
-            f"--user {shlex.quote(user)} {shlex.quote(name)}"
+            f"{shlex.quote(peer.remote_uxon)} attach --user {shlex.quote(user)} {shlex.quote(name)}"
         )
         argv = build_peer_ssh_argv(
             peer,
