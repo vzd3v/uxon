@@ -1,19 +1,18 @@
 # Connecting to a uxon host
 
-uxon's whole point is that agent sessions outlive the developer's
-local terminal. That guarantee only holds if the *transport*
-between the developer's laptop and the host also outlives ordinary
-network events: a closed laptop lid, a Wi-Fi to LTE handover, a
-moved seat in an office, a hotel-network outage.
+`uxon` keeps agent sessions alive on the host after the developer's
+local terminal disconnects. That property is most useful when the
+transport between the developer's laptop and the host also survives
+ordinary network events: a closed laptop lid, a Wi-Fi to LTE
+handover, a moved seat in an office, a hotel-network outage.
 
 Bare `ssh` does not provide that. A dropped connection kills the
 local tab; the server-side `tmux` survives, but the developer has
 to re-`ssh` and re-`uxon attach`. With dozens of tabs and several
-hosts, the friction adds up to "I'd rather not close this laptop".
+hosts, manual reconnects become operational overhead.
 
 This page collects the client-side practices that make uxon's
-persistence actually felt — none of them are uxon-specific, but
-they are how the tool is meant to be used.
+persistence useful in daily work. None of them are uxon-specific.
 
 ## Eternal Terminal (`et`) — recommended
 

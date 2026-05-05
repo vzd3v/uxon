@@ -1,6 +1,6 @@
 # Deployment
 
-This document is for operators running `uxon` on one or more shared
+This document is for operators running `uxon` on one or more Linux
 hosts. For a solo developer on a single host, the
 [Install](../README.md#install) section in `README.md` is enough.
 

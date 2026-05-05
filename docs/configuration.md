@@ -361,7 +361,7 @@ lists folders under `new_project_root`.
 
 Several developers, several hosts. Each host is configured as
 [team on a single host](#team-on-a-single-host) with its own users,
-its own low-priv account, its own allowed-roots. One designated host
+its own low-priv accounts, its own allowed-roots. One designated host
 (typically the operator's workstation) aggregates the rest over SSH
 via `[[remote_hosts]]`, exactly as in
 [solo on multiple hosts](#solo-on-multiple-hosts):

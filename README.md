@@ -15,12 +15,12 @@ SSH, supervision via sudoers.
 
 ## When to use uxon
 
-Use `uxon` when terminal AI coding agents are a team runtime, not a
-private terminal habit. The team may share one Linux server, spread
-work across several separate servers, or do both. The problem is the
-same: developers and leads need one consistent way to see, attach to,
-start, and stop live agent sessions without turning every host into a
-hand-managed pile of `tmux` sockets.
+Use `uxon` when terminal AI coding agents are a team runtime. The
+team may share one Linux server, spread work across several separate
+servers, or do both. The requirement is the same: developers and
+leads need one consistent way to see, attach to, start, and stop live
+agent sessions without managing raw `tmux` sockets by hand on every
+host.
 
 The core workflow:
 
@@ -35,8 +35,8 @@ The core workflow:
   credentials in `$HOME`.
 - Leads, seniors, instructors, and operators can see and attach to
   colleagues' live sessions where sudoers grants allow it. This is
-  useful for reviewing the workflow, teaching an agent-first pattern
-  in place, helping a teammate debug a stuck session, or stopping a
+  useful for reviewing the workflow, teaching a team workflow in
+  place, helping a teammate debug a stuck session, or stopping a
   session that started doing the wrong thing.
 - One TUI can show local sessions and sessions from configured remote
   hosts. Remote access uses SSH to the peer and that peer's own
@@ -44,19 +44,19 @@ The core workflow:
   keeps its OS-level authority boundary.
 
 Example: a developer connects to the host, sees eight agent sessions,
-kills the five dead ones before they keep burning CPU and budget,
+kills the five dead ones before they keep consuming CPU and budget,
 reattaches to the active session that matters, then starts another
 agent by choosing a project from the configured project folder. A lead
 opens the same TUI and, according to their sudoers grants, sees their
 own sessions plus reachable teammates' sessions on the local host and
-on remote peers. They attach to a newcomer's session to demonstrate
-the team's agent workflow, then jump into a colleague's session to
-show how to use a new shared skill.
+on remote peers. They attach to a new developer's session to
+demonstrate the team workflow, then jump into a colleague's session
+to show how to use a new shared skill.
 
-Solo use still works: `uxon` is a good persistent TUI over `tmux` for
-one person too. It exists mainly because teams need the shared version
-of that loop: attribution, lifecycle, low-priv launch users,
-supervision, and cross-host visibility.
+Solo use still works: `uxon` is a persistent TUI over `tmux` for one
+person too. It exists mainly because teams need the shared version of
+that loop: attribution, lifecycle, low-priv launch users, supervision,
+and cross-host visibility.
 
 ## Model
 
@@ -79,89 +79,52 @@ path.
 
 Cross-host aggregation works the same way: each peer evaluates its
 own sudoers independently. There is no central authority, no shared
-state, no cluster coordinator. The local TUI runs `ssh <peer> uxon
-list --json` against each configured `[[remote_hosts]]` entry and
-renders the results alongside local sessions. Remote attach and
-per-session `uxon kill --host <peer> --user <name>` route to the
-peer over SSH and are gated by the peer's own sudoers. Bulk
-destructive operations stay strictly local — fan-out kills are an
-explicit operator gesture, not a uxon primitive.
+state, no cluster coordinator. The local TUI polls each configured
+`[[remote_hosts]]` peer over SSH and renders those sessions alongside
+local sessions. Remote attach and per-session
+`uxon kill --host <peer> --user <name>` route to the peer over SSH
+and are gated by the peer's own sudoers. Bulk destructive operations
+stay strictly local — fan-out kills are an explicit operator gesture,
+not a uxon primitive.
 
-## Out of scope
+## Fit and boundaries
 
-- uxon does not constrain what the agent binary does once launched.
+`uxon` fits teams that already operate Linux hosts and want agent
+session management to follow the same OS boundaries as the rest of
+the host:
+
+- launch users are regular Unix accounts;
+- cross-user visibility is granted with sudoers;
+- cross-host visibility is granted with SSH plus the peer's sudoers;
+- the primary UI is a terminal TUI, not a web service.
+
+The runtime has no daemon, database, or central control plane. Each
+host remains independently configured and independently authorised.
+
+Boundaries:
+
+- `uxon` does not constrain what the agent binary does once launched.
   Anything the agent's OS account can do, the agent can do.
-- uxon does not configure cgroups, AppArmor, seccomp, or kernel
-  namespaces. Isolation between accounts is what the host's OS user
-  model and the operator's sudoers configuration provide.
-- uxon is not a replacement for SSO, centralised RBAC, audit
-  infrastructure, or secrets management. It is the runtime layer
-  beneath these — typically the layer that exists before any of
-  them do.
-
-## Why uxon
-
-Compared with the four most active personal session managers for
-terminal AI coding agents (READMEs verified May 2026):
-
-| Capability | **uxon** | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [agent-deck](https://github.com/asheshgoplani/agent-deck) | [Agent of Empires](https://github.com/njbrake/agent-of-empires) | [CCManager](https://github.com/kbwo/ccmanager) |
-|---|---|---|---|---|---|
-| Multiple agents per host | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Persistent `tmux` sessions | ✓ | ✓ | ✓ | ✓ | — |
-| Multi-host aggregation in one TUI | ✓ | — | ✓ | — | — |
-| **Multi-user on one host (per-user OS accounts)** | **✓** | — | — | — | — |
-| **Per-developer low-priv OS account for the agent** | **✓** | — | — | — | — |
-| **Operator view across users and hosts** | **✓** | — | — | — | — |
-| Docker-based sandbox | — (deliberate, see below) | — | optional | optional | via devcontainer |
-| Web dashboard | — | — | ✓ | ✓ (Beta) | — |
-| Cost / token tracking | — | — | ✓ | — | — |
-
-The three bold rows are the combination only uxon ships today.
-Multi-host alone isn't unique — `agent-deck` does it too — but
-combining it with multi-user OS accounts on each host, with
-sudoers-gated supervision evaluated independently per peer, is.
-
-The three rows where uxon is "—" are deliberate:
-
-- **No Docker sandbox.** Discussed in [Isolation model](#isolation-model-os-users-not-containers).
-- **No web dashboard.** uxon is keyboard-driven by design; the TUI
-  works over SSH from any device, including a phone. A web
-  dashboard adds a process to host, an auth surface to manage, and
-  a second UI to keep in sync.
-- **No cost / token tracking.** Outside scope today; budget
-  visibility is a real team need and a candidate for a future
-  read-only integration with each agent's own state files.
-
-**Pick by the shape of your fleet:**
-
-- One developer on one machine, polished single-user UX →
-  **Claude Squad** or **CCManager**.
-- Single-user fleet (your own machines) with cost dashboard, chat
-  relay, optional Docker sandbox → **agent-deck**.
-- Single-user, web dashboard with PWA / mobile installation →
-  **Agent of Empires**.
-- A team of 2+ developers sharing one or more Linux boxes, each
-  developer's agent under its own low-priv account, leads
-  supervising via sudoers, every session visible from one TUI →
-  **uxon**.
+- `uxon` does not configure cgroups, AppArmor, seccomp, kernel
+  namespaces, SSO, central RBAC, audit infrastructure, secrets
+  management, or cost / token accounting.
+- `uxon` has no web dashboard. The primary interface is the TUI over
+  SSH or another terminal transport.
 
 ### Isolation model: OS users, not containers
 
-Two of the four competitors offer Docker-based sandboxing as an
-option. uxon deliberately doesn't — it points the operator at a
-dedicated low-privilege Linux user (`<user>_agent`) and `sudo -iu`
-into it. The trade-off is honest: Docker is a real isolation
-primitive that most dev hosts already have installed. For a team
-sharing a Linux box, the daily friction of containerised agents is
-also real:
+`uxon` uses dedicated low-privilege Linux users (`<user>_agent`) and
+`sudo -iu` instead of creating a container per agent session. Docker
+or Podman are stronger isolation primitives, but they add operational
+cost on a shared development host:
 
-- **Bind-mount UID tape.** With naive `docker run` defaults, files
+- **Bind-mount UID mapping.** With naive `docker run` defaults, files
   created in the container come back owned by `root` (or whatever
   UID was baked in) on the host, breaking save-and-edit. Rootless
   Podman with the `:U` mount option, and rootless Docker via
   `subuid`/`subgid`, close this — at the cost of a per-host setup
   that is itself non-trivial.
-- **Networking gymnastics.** Anything the agent talks to on
+- **Networking.** Anything the agent talks to on
   `localhost` (a local DB, a model proxy, an internal service, an
   `mDNS`/`.local` host) needs `host.docker.internal`,
   `--network=host`, or explicit port plumbing. SSH-agent
@@ -170,9 +133,9 @@ also real:
 - **Auth duplication.** `~/.claude`, `~/.gitconfig`, `~/.aws/`,
   `known_hosts`, SSH keys — each has to be passed through, or the
   container becomes a second place to re-auth every agent.
-- **Per-image churn.** Tool updates → image rebuilds → push or
+- **Per-image maintenance.** Tool updates → image rebuilds → push or
   share. For a team that just wants "Claude Code with the
-  project's deps", this is a maintenance loop with no payoff.
+  project's deps", this is extra operational work.
 
 OS-user isolation removes those four at the cost of relying on
 Linux user separation rather than container primitives:
@@ -197,31 +160,7 @@ the developers logging into the box.
 
 If you need stronger isolation than that, run uxon itself inside a
 VM (or container) per team and keep the OS-user model inside it.
-The layers compose; one replaces the other only if you accept the
-friction.
-
-### What uxon is not
-
-A few adjacent tools share words with uxon and are easy to confuse
-with it:
-
-- **Anthropic "Agent Teams" inside Claude Code.** A single Claude
-  Code session acts as team lead and coordinates teammates via a
-  shared task list. This is intra-Claude multi-agent — *not*
-  multiple humans sharing a host. uxon does not interact with it.
-- **Claude Code on the web / Codex Cloud / Cursor background
-  agents.** Vendor-hosted sessions accessible from a browser or
-  phone. uxon is the opposite shape: self-hosted, on your Linux
-  servers, under your OS users.
-- **[Coder](https://coder.com).** Self-hosted dev-environment
-  platform: VM- or container-per-workspace, web IDE, OAuth, often
-  Kubernetes-shaped. Coder is the answer when your team has
-  platform engineers and wants per-developer isolated
-  environments. uxon is the answer when your team has SSH access
-  to a Linux box and wants a thin, sudoers-shaped supervision
-  layer over it.
-
----
+The layers compose.
 
 ## Install
 
@@ -243,8 +182,7 @@ prefers full control over their tooling.
 Each OS user runs one of these in their own account:
 
 ```bash
-# uv tool — recommended. uv is the 2026 default Python toolchain;
-# fast, uses uv-managed Python and a shared dep cache.
+# uv tool — recommended for isolated CLI installs.
 uv tool install uxon
 
 # pipx — equivalent. Same console-script entrypoint.
@@ -371,7 +309,8 @@ picker. One screen, three blocks:
 
 Before every launch, a permissions modal asks whether to start the
 agent in normal mode or with `--dangerously-skip-permissions`
-("yolo"). No accidental yolos.
+("yolo"). The TUI does not start yolo mode without this explicit
+choice.
 
 ### 2. Your sessions
 
@@ -530,9 +469,9 @@ operations for scripting, SSH one-liners, and CI. Brief summary:
 | `uxon` | Open the interactive TUI (needs a TTY). |
 | `uxon run [-w <branch>] [agent-flags...]` | Start an agent in `$PWD`. |
 | `uxon new <name> [-w <branch>] [...]` | Create / reuse a project under `new_project_root` and start an agent. |
-| `uxon list [--all-users]` | List `uxon-*` sessions for this user (or all configured users). |
+| `uxon list [--all-users] [--host <name> \| --all-hosts]` | List local sessions, reachable users, or configured peers. |
 | `uxon attach <id>` | Re-attach to a session. Accepts full name, short name, bare stem, or active-pane PID. |
-| `uxon kill <id>` | Kill one session. |
+| `uxon kill <id> [--user <name>] [--host <name>]` | Kill one local, cross-user, or remote session. |
 | `uxon kill-all [--force]` | Kill every `uxon-*` session for the current launch user. |
 | `uxon doctor` | Read-only diagnostics: caller / launch user, config, allowed_roots, agents, sockets, sessions, detected issues. Run this first when something looks wrong. |
 | `uxon version` | Print version + git commit. |
@@ -557,7 +496,7 @@ is in **[`docs/cli.md`](docs/cli.md)**.
   denied, allowed-roots mismatch, git remote failure, config-write
   conflict — all caught and shown in-place rather than crashing.
 - **TUI surfaces tmux/agent issues in line.** Missing `tmux` or
-  missing agent binaries trigger a friendly preflight error from the
+  missing agent binaries trigger a preflight error from the
   CLI and an in-line hint in the TUI; freshly-installed agents are
   auto-detected and offered for one-keypress enabling. For deeper
   diagnostics see [`docs/cli.md`](docs/cli.md#doctor).
