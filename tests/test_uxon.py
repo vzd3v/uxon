@@ -1613,6 +1613,74 @@ class CliPreflightTests(unittest.TestCase):
                 # Should not have failed; list doesn't require agents.
                 self.assertEqual(rc, 0)
 
+    def test_peer_inbound_list_all_users_disabled_emits_remote_in_denied(self) -> None:
+        # Spec lines 207-209: state-changing events emit on success AND
+        # failure paths.  Spec line 306: peer-inbound list emits
+        # ``list.remote.in`` instead of ``list.peek``.  Combined: a
+        # peer that refuses ``--all-users`` (because
+        # ``enable_all_users_list = false``) must record exactly one
+        # ``list.remote.in outcome=denied``, no parallel ``list.peek``,
+        # and no stale ``outcome=ok`` from a top-of-block emit.
+        # Regression for the pre-fix bug where the peer-inbound branch
+        # emitted ``outcome=ok`` *before* the gate check, then ``fail``
+        # raised SystemExit unaudited.
+        from uxon import audit as uxon_audit
+        import uxon.cli as cli
+
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        cfg = cli.Config(
+            runtime_user="",
+            default_launch_mode="caller",
+            enable_all_users_list=False,
+            launch_user_by_caller={},
+            session_users=[],
+            allowed_roots=["/srv/repos"],
+            session_prefix="uxon-",
+            legacy_session_prefixes=(),
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_default_args={"claude": (), "codex": (), "cursor": ()},
+            new_project_root="/srv/repos",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/uxon-{user}.sock",
+            tui_refresh_interval_seconds=2.0,
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
+        )
+
+        with mock.patch("uxon.probes.probe_host") as probe:
+            mock_report = mock.MagicMock()
+            mock_report.tmux.path = "/usr/bin/tmux"
+            mock_report.enabled = {"claude": mock.MagicMock(path=None)}
+            probe.return_value = mock_report
+            with (
+                mock.patch.dict(
+                    "os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}
+                ),
+                mock.patch.object(cli, "load_config", return_value=cfg),
+                mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+                mock.patch("sys.stderr", new_callable=io.StringIO),
+            ):
+                with self.assertRaises(SystemExit):
+                    uxon.main(["list", "--all-users"])
+
+        list_emits = [
+            e for e in recorded if e[0] in ("list.remote.in", "list.peek")
+        ]
+        peek_emits = [e for e in list_emits if e[0] == "list.peek"]
+        rin_emits = [e for e in list_emits if e[0] == "list.remote.in"]
+        # ``replaces`` semantics: on the peer-inbound path, no
+        # ``list.peek`` may be emitted alongside.
+        self.assertEqual(peek_emits, [])
+        self.assertEqual(len(rin_emits), 1)
+        self.assertEqual(rin_emits[0][1]["outcome"], "denied")
+        self.assertEqual(rin_emits[0][1]["scope"], "all-users")
+
 
 class DoInteractiveTextualMissingTests(unittest.TestCase):
     """With textual unavailable, ``uxon`` (interactive) must print a single
