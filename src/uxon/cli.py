@@ -4145,10 +4145,22 @@ def _build_tui_context(
     cwd_short = cwd.replace(home, "~") if cwd.startswith(home) else cwd
 
     def on_attach(user: str, name: str):
+        # TUI Enter on a local row dispatches a direct
+        # ``tmux attach-session`` (no ``uxon`` wrapper) — emit
+        # ``session.attach`` here so the operation is auditable.
+        # ``do_attach``'s emit only covers the CLI-side ``uxon attach``
+        # invocation; the TUI request bypasses that path entirely.
+        from uxon import audit as _audit
+
         fresh = collect_sessions([user], cfg)
-        target = resolve_session(
-            name, fresh, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
+        target = _resolve_or_audit_not_found(
+            name,
+            fresh,
+            cfg,
+            audit_event="session.attach",
+            target_user=user,
         )
+        _audit.audit("session.attach", session=target.name, target_user=user)
         return _build_tmux_attach_request(target, cfg, user)
 
     def on_kill(user: str, name: str) -> None:
