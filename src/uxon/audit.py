@@ -87,17 +87,16 @@ _FLAG_DENYLIST_PREFIXES: tuple[str, ...] = ("--token", "--password", "--secret")
 def configure(*, enabled: bool, syslog_facility: str, subcmd: str) -> None:
     """Set audit-module config from the resolved ``Config``.
 
-    Called once by ``main()`` after ``load_config`` succeeds.  Safe to call
-    after the first ``audit()`` — the cached prefix is updated in place so
-    subsequent events carry the right ``subcmd``.
+    Called once by ``main()`` after ``load_config`` succeeds, before the
+    first ``audit()`` call. ``_build_prefix`` reads ``_prefix_subcmd``
+    when it runs (lazy-init triggered by the first event), so the subcmd
+    lands in the cached prefix without an in-place mutation.
     """
     # Direct assignment via ``globals()`` — avoids ``global`` collisions
     # with the keyword-only parameter of the same name.
     globals()["enabled"] = bool(enabled)
     globals()["_syslog_facility_name"] = str(syslog_facility) or "user"
     globals()["_prefix_subcmd"] = str(subcmd) if subcmd else ""
-    if _prefix:
-        _prefix["subcmd"] = globals()["_prefix_subcmd"]
 
 
 def set_correlation_id(uid: str | None) -> None:
