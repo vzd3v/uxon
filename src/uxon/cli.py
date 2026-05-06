@@ -1464,6 +1464,7 @@ def _resolve_or_audit_not_found(
     *,
     audit_event: str | None,
     target_user: str,
+    session_field: str = "session",
     extra: dict[str, Any] | None = None,
 ) -> SessionInfo:
     """Resolve a session and, on no-match failure, emit the ``not_found``
@@ -1471,17 +1472,19 @@ def _resolve_or_audit_not_found(
 
     Spec (``docs/superpowers/specs/2026-05-05-audit-log-design.md``)
     enumerates ``outcome ∈ {"ok", "denied", "error", "not_found"}`` for
-    ``session.attach`` and ``session.kill``. Without this wrapper the
-    ``not_found`` outcome would never appear, because
+    ``session.attach``, ``session.kill``, and their peer-inbound
+    replacements ``attach.remote.in`` / ``kill.remote.in``. Without
+    this wrapper the ``not_found`` outcome would never appear, because
     :func:`resolve_session` raises :class:`SystemExit` via :func:`fail`
-    before any caller-side audit fires. The audit emits before the
-    ``SystemExit`` propagates up.
+    before any caller-side audit fires.
 
-    Pass ``audit_event=None`` to skip the emit (peer-inbound branches:
-    ``attach.remote.in`` / ``kill.remote.in`` replace the local
-    ``session.*`` event per spec line 299/302; emitting a
-    ``not_found`` outcome on the peer side would re-introduce the
-    duplicate signal the spec deliberately removed).
+    ``session_field`` selects the key under which the identifier is
+    recorded: ``"session"`` for ``session.attach`` / ``session.kill``,
+    ``"target_session"`` for ``attach.remote.in`` / ``kill.remote.in``
+    (peer-inbound branches — the spec uses different field names on
+    the two sides of the wire).
+
+    Pass ``audit_event=None`` to skip the emit entirely.
     """
     try:
         return resolve_session(
@@ -1496,7 +1499,7 @@ def _resolve_or_audit_not_found(
         from uxon import audit as _audit
 
         fields: dict[str, Any] = {
-            "session": identifier or "",
+            session_field: identifier or "",
             "target_user": target_user,
         }
         if extra:
@@ -2454,18 +2457,19 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # we have to capture it before the sudo execvp below).  Spec line
     # 299: ``attach.remote.in`` *replaces* ``session.attach`` on the
     # peer side — both names describe the same physical event from
-    # caller-vs-peer POV, so we suppress every downstream
-    # ``session.attach`` emit when ``peer_inbound`` is true.
+    # caller-vs-peer POV.
+    #
+    # The spec also requires (line 207-209) that state-changing events
+    # emit on **both** the success and failure paths.  We honour that
+    # for the peer side too: instead of a single ``outcome=ok`` emit at
+    # the top, every ``session.attach`` emission point below switches
+    # event name (``attach.remote.in``) and identifier-field name
+    # (``target_session`` instead of ``session``) when ``peer_inbound``.
+    # An auditor querying ``EVENT=attach.remote.in OUTCOME=denied``
+    # then actually finds the failure.
     peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    if peer_inbound:
-        _audit.audit(
-            "attach.remote.in",
-            target_user=args.user or launch_user,
-            target_session=args.target_id,
-        )
-    # Audit-event tag threaded into ``_resolve_or_audit_not_found``;
-    # ``None`` skips the emit.
-    _attach_event: str | None = None if peer_inbound else "session.attach"
+    _attach_event: str = "attach.remote.in" if peer_inbound else "session.attach"
+    _session_field: str = "target_session" if peer_inbound else "session"
 
     target_user = args.user or launch_user
     if target_user != launch_user:
@@ -2473,13 +2477,12 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
         caps = probe_sudo_capability([target_user])
         if target_user not in caps.reachable_users:
-            if not peer_inbound:
-                _audit.audit(
-                    "session.attach",
-                    outcome="denied",
-                    session=args.target_id or "",
-                    target_user=target_user,
-                )
+            _audit.audit(
+                _attach_event,
+                outcome="denied",
+                **{_session_field: args.target_id or ""},
+                target_user=target_user,
+            )
             eprint(
                 f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
                 "check /etc/sudoers.d for a NOPASSWD rule for this target)"
@@ -2492,6 +2495,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             cfg,
             audit_event=_attach_event,
             target_user=target_user,
+            session_field=_session_field,
         )
         base = configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
         full = ["sudo", "-niu", target_user, "--", *base]
@@ -2503,23 +2507,25 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             return 0
         # Audit before ``os.execvp`` (Bug 7) — once the image is
         # replaced our cached socket is gone.
-        if not peer_inbound:
-            _audit.audit("session.attach", session=target.name, target_user=target_user)
+        _audit.audit(
+            _attach_event,
+            **{_session_field: target.name},
+            target_user=target_user,
+        )
         try:
             os.execvp(full[0], full)
         except Exception as exc:
-            if not peer_inbound:
-                _audit.audit(
-                    "session.attach",
-                    outcome="error",
-                    session=target.name,
-                    target_user=target_user,
-                    error=str(exc)[:256],
-                )
+            _audit.audit(
+                _attach_event,
+                outcome="error",
+                **{_session_field: target.name},
+                target_user=target_user,
+                error=str(exc)[:256],
+            )
             raise
         return 0
 
-    # Same-user path — unchanged.
+    # Same-user path.
     sessions = collect_sessions([launch_user], cfg)
     if not sessions:
         legacy = collect_sessions_for_user(
@@ -2539,25 +2545,28 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         cfg,
         audit_event=_attach_event,
         target_user=launch_user,
+        session_field=_session_field,
     )
     # Same-user audit fires once before ``attach_session``'s execvp.
     # Emitting from ``do_attach`` (not ``attach_session``) keeps the
     # call exactly once per CLI invocation; the helper is also used by
     # the TUI's ``attach_session_blocking`` and we don't want to double
     # up there.
-    if not peer_inbound:
-        _audit.audit("session.attach", session=target.name, target_user=launch_user)
+    _audit.audit(
+        _attach_event,
+        **{_session_field: target.name},
+        target_user=launch_user,
+    )
     try:
         return attach_session(target, cfg, launch_user, args.dry_run)
     except Exception as exc:
-        if not peer_inbound:
-            _audit.audit(
-                "session.attach",
-                outcome="error",
-                session=target.name,
-                target_user=launch_user,
-                error=str(exc)[:256],
-            )
+        _audit.audit(
+            _attach_event,
+            outcome="error",
+            **{_session_field: target.name},
+            target_user=launch_user,
+            error=str(exc)[:256],
+        )
         raise
 
 

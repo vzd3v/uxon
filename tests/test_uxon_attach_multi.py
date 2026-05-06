@@ -114,6 +114,48 @@ class AttachCrossUserTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("uxon-error: not-reachable", err.getvalue())
 
+    def test_peer_inbound_unreachable_emits_attach_remote_in_denied(self) -> None:
+        # Spec lines 207-209: state-changing events emit on success AND
+        # failure.  Spec line 299: ``attach.remote.in`` *replaces*
+        # ``session.attach`` on the peer side.  Combined: a peer
+        # receiving an attach for an unreachable target must record
+        # ``attach.remote.in outcome=denied`` (not a stale ``ok``, and
+        # not a suppressed ``session.attach``).  Regression for the
+        # pre-fix bug where the peer-inbound branch unconditionally
+        # emitted ``outcome=ok`` at the top of ``do_attach`` and
+        # suppressed every downstream failure-path emit.
+        from uxon.sudo_probe import SudoCapability
+
+        cfg = self._cfg()
+        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
+        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        from uxon import audit as uxon_audit
+
+        with (
+            mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
+            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+            mock.patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            rc = uxon.do_attach(args, cfg, "u-vz")
+
+        self.assertEqual(rc, 1)
+        # Exactly one attach.remote.in emit, with outcome=denied.  No
+        # phantom ``ok`` may slip in, and no ``session.attach`` may be
+        # emitted in parallel (``replaces`` semantics).
+        rin_emits = [e for e in recorded if e[0] == "attach.remote.in"]
+        local_emits = [e for e in recorded if e[0] == "session.attach"]
+        self.assertEqual(local_emits, [])
+        self.assertEqual(len(rin_emits), 1)
+        self.assertEqual(rin_emits[0][1]["outcome"], "denied")
+        self.assertEqual(rin_emits[0][1]["target_session"], "demo@claude")
+        self.assertEqual(rin_emits[0][1]["target_user"], "alice")
+
     def test_cross_user_reachable_dry_run_shows_sudo_prefix(self) -> None:
         cfg = self._cfg()
         args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice", dry_run=True)
