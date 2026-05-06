@@ -1624,8 +1624,8 @@ class CliPreflightTests(unittest.TestCase):
         # Regression for the pre-fix bug where the peer-inbound branch
         # emitted ``outcome=ok`` *before* the gate check, then ``fail``
         # raised SystemExit unaudited.
-        from uxon import audit as uxon_audit
         import uxon.cli as cli
+        from uxon import audit as uxon_audit
 
         recorded: list[tuple[str, dict]] = []
 
