@@ -2366,6 +2366,18 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
     from uxon import audit as _audit
 
+    # Remote dispatch: --host routes to a configured peer over SSH.
+    # Per-target sudo gating happens on the peer (peer's own
+    # 'uxon attach' runs the probe), so the local side does not need
+    # to know the peer's user table. Mirrors do_kill --host.
+    #
+    # Checked *before* the SSH_CONNECTION peer-inbound branch: a
+    # caller invoking ``ssh peer1 "uxon attach --host peer2 …"`` is the
+    # caller-side leg dispatching onward, not a peer-inbound terminus,
+    # and must not emit ``attach.remote.in``.
+    if args.host is not None:
+        return _do_attach_remote(args, cfg)
+
     # Bug 6 — peer-inbound branch.  When invoked over SSH the only
     # signal that this is the peer side of an ``attach.remote.out`` is
     # ``SSH_CONNECTION`` in the env (sudo strips it on the next leg, so
@@ -2378,13 +2390,6 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             target_user=args.user or launch_user,
             target_session=args.target_id,
         )
-
-    # Remote dispatch: --host routes to a configured peer over SSH.
-    # Per-target sudo gating happens on the peer (peer's own
-    # 'uxon attach' runs the probe), so the local side does not need
-    # to know the peer's user table. Mirrors do_kill --host.
-    if args.host is not None:
-        return _do_attach_remote(args, cfg)
 
     target_user = args.user or launch_user
     if target_user != launch_user:
@@ -2644,6 +2649,17 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
     from uxon import audit as _audit
 
+    # Remote dispatch: --host routes to a configured peer over SSH.
+    # Per-target sudo gating happens on the peer (its own ``uxon kill``
+    # runs the probe), so the local side does not need to know the
+    # peer's user table. Bulk kill stays strictly local.
+    #
+    # Checked *before* the SSH_CONNECTION peer-inbound branch: a chained
+    # ``ssh peer1 "uxon kill --host peer2 …"`` invocation is the
+    # caller-side dispatch leg, not a peer-inbound terminus.
+    if args.host is not None:
+        return _do_kill_remote(args, cfg)
+
     # Bug 6 — peer-inbound branch.  Same shape as ``do_attach`` above.
     # ``correlation_id`` is read from module state (the parser layer set
     # it via ``set_correlation_id`` after popping ``--audit-correlation-id``
@@ -2656,13 +2672,6 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             force=args.force,
             correlation_id=_audit._correlation_id,
         )
-
-    # Remote dispatch: --host routes to a configured peer over SSH.
-    # Per-target sudo gating happens on the peer (its own ``uxon kill``
-    # runs the probe), so the local side does not need to know the
-    # peer's user table. Bulk kill stays strictly local.
-    if args.host is not None:
-        return _do_kill_remote(args, cfg)
 
     # Local cross-user kill: --user X where X != launch_user requires
     # per-target NOPASSWD. Probe once for the single target (the same
