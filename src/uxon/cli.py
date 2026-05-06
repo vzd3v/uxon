@@ -4190,14 +4190,28 @@ def _build_tui_context(
         )
 
     def on_kill_all() -> None:
+        # TUI 'D' / kill-all-mine. Mirrors ``on_kill_all_reachable``'s
+        # audit shape (``target_users``, ``killed_count``, ``dry_run``)
+        # for the single-user case.
+        from uxon import audit as _audit
+
         fresh = collect_sessions([launch_user], cfg)
+        killed_count = 0
         for s in fresh:
             full = configured_tmux_base(cfg, launch_user, nonint=True) + [
                 "kill-session",
                 "-t",
                 s.name,
             ]
-            run_cmd(full, check=False)
+            cp = run_cmd(full, check=False)
+            if cp.returncode == 0:
+                killed_count += 1
+        _audit.audit(
+            "session.kill_all",
+            target_users=[launch_user],
+            killed_count=killed_count,
+            dry_run=False,
+        )
 
     def on_remote_kill(host_name: str, user: str, name: str) -> None:
         """TUI dispatch: kill ``name`` belonging to ``user`` on peer ``host_name``.
