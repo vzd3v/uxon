@@ -3036,6 +3036,16 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             args.repeat_mode, cfg, target_desc, attach_target, existing
         )
         if decision == "attach":
+            # Same physical operation as ``do_attach`` for an existing
+            # session — emit the same event before ``attach_session``'s
+            # execvp (Bug 7 — audit fires before the image is replaced).
+            from uxon import audit as _audit
+
+            _audit.audit(
+                "session.attach",
+                session=attach_target.name,
+                target_user=launch_user,
+            )
             return attach_session(attach_target, cfg, launch_user, args.dry_run)
     else:
         repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
