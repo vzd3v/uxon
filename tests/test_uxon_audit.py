@@ -232,6 +232,42 @@ class AuditDisabledTests(_BaseAuditTests):
         self.assertEqual(recorded, [])
 
 
+class AuditNeverRaisesTests(_BaseAuditTests):
+    """The hot-path contract: ``audit()`` never raises and never blocks."""
+
+    def test_audit_swallows_send_raw_exception(self) -> None:
+        # If _send_raw itself raises (a serialiser bug, a memoryview
+        # error, etc.), audit() must swallow and return None.
+        def boom(_payload: bytes) -> None:
+            raise RuntimeError("simulated send failure")
+
+        with (
+            patch.object(au, "_detect_sink", return_value="syslog"),
+            patch.object(au, "_open_sink_socket", return_value=object()),
+            patch.object(au, "_send_raw", side_effect=boom),
+            patch.dict("os.environ", {"USER": "tester"}, clear=False),
+        ):
+            au.configure(enabled=True, syslog_facility="user", subcmd="run")
+            # Must not propagate the RuntimeError.
+            au.audit("session.attach", session="x", target_user="y")
+
+    def test_audit_swallows_serializer_exception(self) -> None:
+        # A serialiser raising (e.g. a future bug in _serialize_syslog)
+        # must not propagate either — the bare ``except Exception`` at
+        # the bottom of audit() is the safety net.
+        def boom(_fields: dict[str, Any]) -> bytes:
+            raise ValueError("simulated serializer failure")
+
+        with (
+            patch.object(au, "_detect_sink", return_value="syslog"),
+            patch.object(au, "_open_sink_socket", return_value=object()),
+            patch.object(au, "_serialize_syslog", side_effect=boom),
+            patch.dict("os.environ", {"USER": "tester"}, clear=False),
+        ):
+            au.configure(enabled=True, syslog_facility="user", subcmd="run")
+            au.audit("session.attach", session="x", target_user="y")
+
+
 class CorrelationIdTests(_BaseAuditTests):
     _VALID_UUID = "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f"
 
