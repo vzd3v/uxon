@@ -1309,6 +1309,9 @@ def run(ctx: TuiContext) -> int:
             cmd=list(req.cmd)[:2],
         )
         sys.stdout.flush()
+        from uxon.tui.context import session_name_from_launch_label
+
+        _session = session_name_from_launch_label(req.label)
         _t0 = time.monotonic()
         try:
             rc, stage, wall_seconds = _run_launch_request(req)
@@ -1321,7 +1324,7 @@ def run(ctx: TuiContext) -> int:
             _audit.audit(
                 "session.ended",
                 outcome="error",
-                session=req.label,
+                session=_session,
                 rc=-1,
                 wall_seconds=round(time.monotonic() - _t0, 3),
                 error=str(exc)[:256],
@@ -1330,7 +1333,7 @@ def run(ctx: TuiContext) -> int:
         _audit.audit(
             "session.ended",
             outcome="ok" if rc == 0 else "error",
-            session=req.label,
+            session=_session,
             rc=rc,
             wall_seconds=round(wall_seconds, 3),
         )

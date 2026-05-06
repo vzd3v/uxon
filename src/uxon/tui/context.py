@@ -70,6 +70,23 @@ class LaunchRequest:
     label: str = ""
 
 
+def session_name_from_launch_label(label: str) -> str:
+    """Extract the bare tmux session name from a LaunchRequest label.
+
+    Labels are constructed as ``"<verb> <session>"`` (verbs ``launch``,
+    ``attach``, ``switch-client``) with an optional ``" (nested)"``
+    suffix on the switch-client form.  Audit ``session.*`` events take
+    the bare session name in the ``session`` field; the labelled form
+    breaks cross-event correlation with CLI emits.
+    """
+    if " " not in label:
+        return label
+    rest = label.split(" ", 1)[1]
+    if rest.endswith(" (nested)"):
+        rest = rest[: -len(" (nested)")]
+    return rest
+
+
 @dataclass
 class TuiSession:
     """Flattened session data for TUI rendering (decoupled from uxon internals)."""

@@ -2536,21 +2536,15 @@ def _tui_launch_request_cls() -> type:
 
 
 def _session_name_from_launch_label(label: str) -> str:
-    """Extract the bare tmux session name from a LaunchRequest label.
+    """Thin re-export so cli.py call sites keep their local symbol.
 
-    Labels are constructed as ``"<verb> <session>"`` (verbs ``launch``,
-    ``attach``, ``switch-client``) with an optional ``" (nested)"``
-    suffix on the switch-client form.  Audit ``session.*`` events take
-    the bare session name in the ``session`` field; passing the verb-
-    prefixed label there breaks cross-event correlation with CLI emits
-    (``do_new`` / ``do_attach`` use the bare name).
+    Helper lives next to LaunchRequest (``uxon.tui.context``) so the TUI
+    run-loop can reuse it for ``session.ended`` without a circular dep
+    on cli.py.
     """
-    if " " not in label:
-        return label
-    rest = label.split(" ", 1)[1]
-    if rest.endswith(" (nested)"):
-        rest = rest[: -len(" (nested)")]
-    return rest
+    from uxon.tui.context import session_name_from_launch_label
+
+    return session_name_from_launch_label(label)
 
 
 def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
