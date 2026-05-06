@@ -259,29 +259,29 @@ def _journal_value(value: Any) -> str:
 def _serialize_journal(fields: dict[str, Any]) -> bytes:
     """Build a journald-native datagram body.
 
-    ``KEY=value\\n`` repeated.  Keys are uppercased per the protocol; we
-    add ``SYSLOG_IDENTIFIER=uxon`` so ``journalctl -t uxon`` finds events.
+    Per ``man sd_journal_send``, each field is encoded as either
+    ``KEY=value\\n`` (single-line) or ``KEY\\n<le u64 length>\\n<data>\\n``
+    (binary / multi-line). The two forms can be mixed in one datagram.
+    Keys are uppercased per the protocol; we prepend
+    ``SYSLOG_IDENTIFIER=uxon`` so ``journalctl -t uxon`` finds events.
     """
-    parts: list[str] = ["SYSLOG_IDENTIFIER=uxon"]
+    buf = bytearray(b"SYSLOG_IDENTIFIER=uxon\n")
     for k, v in fields.items():
-        key = k.upper()
+        key = k.upper().encode("utf-8")
         rendered = _journal_value(v)
         if "\n" in rendered:
-            # Length-prefixed binary form: KEY\n<le u64 length>\n<data>\n
             data = rendered.encode("utf-8")
-            length = len(data).to_bytes(8, "little")
-            parts.append(f"{key}\n")
-            return (
-                "\n".join(parts[:-1]).encode("utf-8")
-                + b"\n"
-                + key.encode("utf-8")
-                + b"\n"
-                + length
-                + data
-                + b"\n"
-            )
-        parts.append(f"{key}={rendered}")
-    return ("\n".join(parts) + "\n").encode("utf-8")
+            buf += key
+            buf += b"\n"
+            buf += len(data).to_bytes(8, "little")
+            buf += data
+            buf += b"\n"
+        else:
+            buf += key
+            buf += b"="
+            buf += rendered.encode("utf-8")
+            buf += b"\n"
+    return bytes(buf)
 
 
 def _serialize_syslog(fields: dict[str, Any]) -> bytes:

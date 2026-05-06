@@ -122,6 +122,29 @@ class JournalSerializationTests(_BaseAuditTests):
         self.assertIn("OK=true\n", text)
         self.assertIn("SYSLOG_IDENTIFIER=uxon\n", text)
 
+    def test_multiline_value_does_not_truncate_subsequent_fields(self) -> None:
+        # Defensive: if a rendered value ever contains a literal newline,
+        # the binary-form encoding ``KEY\n<le u64 length>\nDATA\n`` must
+        # be emitted inline and the loop must continue to subsequent
+        # fields. ``_journal_value`` currently JSON-escapes newlines so
+        # this path is hard to hit upstream — patch it to force the case.
+        original = au._journal_value
+
+        def fake(value: Any) -> str:
+            if value == "__MULTILINE__":
+                return "line1\nline2"
+            return original(value)
+
+        with patch.object(au, "_journal_value", side_effect=fake):
+            body = au._serialize_journal({"first": "__MULTILINE__", "second": "after"})
+
+        self.assertIn(b"SECOND=after\n", body)
+        # Binary form for FIRST: KEY\n + 8-byte little-endian length + data + \n
+        idx = body.index(b"FIRST\n")
+        length_bytes = body[idx + len(b"FIRST\n") : idx + len(b"FIRST\n") + 8]
+        length = int.from_bytes(length_bytes, "little")
+        self.assertEqual(length, len(b"line1\nline2"))
+
 
 class SyslogSerializationTests(_BaseAuditTests):
     def test_pri_header_and_cee_body(self) -> None:
