@@ -83,9 +83,13 @@ journalctl SYSLOG_IDENTIFIER=uxon EVENT=session.kill_all --since "7 days ago" -o
 journalctl SYSLOG_IDENTIFIER=uxon -f
 ```
 
-Add a `--user` flag to any of the above on a single-user host
-(`journalctl --user SYSLOG_IDENTIFIER=uxon …`) — that's where solo
-installs land their records.
+All recipes hit the **system** journal: ``audit.py`` connects to
+``/run/systemd/journal/socket`` regardless of whether the caller is
+root or a regular user.  Do **not** add ``--user`` — that flag scopes
+to the per-user systemd-journal namespace, which uxon never writes to,
+and it would silently return zero rows.  On hosts where users can't
+read the system journal, add the caller to the ``systemd-journal``
+group (or query as root).
 
 `install/install_uxon.py` creates a dedicated venv at `--venv-dir`
 (default `/opt/uxon/venv`), `pip install`s the package into it, and
