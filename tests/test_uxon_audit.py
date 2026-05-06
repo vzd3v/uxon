@@ -392,6 +392,29 @@ class AuditSendTests(_BaseAuditTests):
         evt = json.loads(text[idx:])
         self.assertEqual(evt["correlation_id"], "uuid-1234")
 
+    def test_outcome_error_threaded_through(self) -> None:
+        # Spec line 207: outcome ∈ {ok, denied, error, not_found}.
+        # When the caller passes outcome="error" (failure-path emits
+        # for session.kill / session.new / session.attach), the value
+        # must thread through into the wire payload — the default-arg
+        # mechanism in audit() must not silently override or drop it.
+        recorded: list[bytes] = []
+        with (
+            patch.object(au, "_detect_sink", return_value="syslog"),
+            patch.object(au, "_open_sink_socket", return_value=object()),
+            patch.object(au, "_send_raw", side_effect=recorded.append),
+            patch.dict("os.environ", {"USER": "tester"}, clear=False),
+        ):
+            au.audit("session.ended", outcome="error", session="sX", rc=1)
+
+        self.assertEqual(len(recorded), 1)
+        text = recorded[0].decode("utf-8")
+        idx = text.index("@cee: ") + len("@cee: ")
+        evt = json.loads(text[idx:])
+        self.assertEqual(evt["outcome"], "error")
+        self.assertEqual(evt["rc"], 1)
+        self.assertEqual(evt["session"], "sX")
+
 
 if __name__ == "__main__":
     unittest.main()
