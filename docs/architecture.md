@@ -34,12 +34,15 @@ two are off and operator-opt-in.
 | `metrics`| `~/.local/state/uxon/…`       | off     | developer           |
 
 `audit` is the application-level operational record (who attached,
-who killed, who launched, with cross-host correlation).  `debug` is
-gated on `UXON_DEBUG=<topic>` and writes one JSONL line per
-instrumentation point — left in code permanently because it costs a
-single set-membership check when the env var is unset.  `metrics`
-is gated on `UXON_METRICS=1` and writes per-fetch latency for the
-remote-collector pollers.
+who killed, who launched, with cross-host correlation).  Per-event
+schema and field reference in
+[`docs/audit-events.md`](audit-events.md); operational topology and
+query recipes in [`docs/deployment.md`](deployment.md#audit-channel).
+`debug` is gated on `UXON_DEBUG=<topic>` and writes one JSONL line
+per instrumentation point — left in code permanently because it
+costs a single set-membership check when the env var is unset.
+`metrics` is gated on `UXON_METRICS=1` and writes per-fetch latency
+for the remote-collector pollers.
 
 ## Top-level layout
 

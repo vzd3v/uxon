@@ -23,14 +23,15 @@ uxon doctor                         # verify
 ### Audit channel
 
 `uxon` emits one structured audit event per substantive operator
-gesture (`cli.start`, `tui.open`, `session.new`, `session.attach`,
-`session.ended`, `session.kill`, `session.kill_all`,
-`attach.remote.out` / `.in`, `kill.remote.out` / `.in`, `list.peek`,
-`list.remote.in`, `git.remote.create`, `config.error`).  The channel
-auto-detects its sink at first call: journald native protocol via
-`/run/systemd/journal/socket` if present, `/dev/log` syslog
-otherwise.  No `python-systemd` dependency; the wire layer is
-stdlib-only.
+gesture.  The channel auto-detects its sink at first call: journald
+native protocol via `/run/systemd/journal/socket` if present,
+`/dev/log` syslog otherwise.  No `python-systemd` dependency; the
+wire layer is stdlib-only.
+
+Per-event schema (envelope, event alphabet, outcome semantics) lives
+in [`docs/audit-events.md`](audit-events.md).  This section covers
+the operational topology — where events land, who can read them,
+and how to query.
 
 Under the prescribed install path (`sudo install/install_uxon.py`
 into `/opt/uxon/venv`) the package files are root-owned and journald

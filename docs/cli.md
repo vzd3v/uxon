@@ -25,6 +25,10 @@ flagged in each section.
   [`docs/configuration.md`](configuration.md#team-on-a-single-host)
   and run `tmux` / `git` / `mkdir` under the launch user via
   `sudo -iu` when caller ≠ launch user.
+- Every state-changing subcommand emits one audit event per
+  invocation (success or failure) to the platform log channel —
+  see [`docs/audit-events.md`](audit-events.md) for which event each
+  command fires and the fields it carries.
 
 ## `uxon` (no arguments)
 

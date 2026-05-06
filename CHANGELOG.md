@@ -32,12 +32,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `syslog_facility` (string, default `"user"`, consulted only on
   the `/dev/log` fallback path).  No environment-variable override
   — the only kill-switch is the config table.
-- Events emitted to the platform log channel: `cli.start`,
-  `tui.open`, `session.new`, `session.attach`, `session.ended`,
-  `session.kill`, `session.kill_all`, `attach.remote.out`,
-  `attach.remote.in`, `kill.remote.out`, `kill.remote.in`,
-  `list.peek`, `list.remote.in`, `git.remote.create`,
-  `config.error`.
+- 15 audit events covering CLI startup, TUI lifecycle, session
+  create/attach/end/kill, cross-host dispatch, and `git.remote.create`
+  / `config.error`.  Schema and per-event field reference in
+  [`docs/audit-events.md`](docs/audit-events.md).
 - Multi-host: configure peers under `[[remote_hosts]]` in `config.toml`;
   `uxon list --host <alias>` and `uxon list --all-hosts` aggregate
   sessions across the fleet.

@@ -255,9 +255,10 @@ For multi-host rollout, generated config from a JSON payload, and
 deployment topology, see [`docs/deployment.md`](docs/deployment.md).
 
 `uxon` emits audit events to the platform log channel (journald
-native on systemd hosts, `/dev/log` syslog fallback); see
-[`docs/deployment.md`](docs/deployment.md#audit-channel) for the
-channel topology and how to query it.
+native on systemd hosts, `/dev/log` syslog fallback).  Per-event
+schema reference in [`docs/audit-events.md`](docs/audit-events.md);
+channel topology and `journalctl` recipes in
+[`docs/deployment.md`](docs/deployment.md#audit-channel).
 
 ### After install
 
