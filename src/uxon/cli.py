@@ -2791,7 +2791,19 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             else:
                 print(f"dry-run: {shlex.join(full)}")
             return 0
-        run_cmd(full, check=True)
+        try:
+            run_cmd(full, check=True)
+        except subprocess.CalledProcessError as exc:
+            _audit.audit(
+                "session.kill",
+                outcome="error",
+                session=target.name,
+                target_user=target_user,
+                force=args.force,
+                dry_run=args.dry_run,
+                rc=exc.returncode,
+            )
+            raise
         _audit.audit(
             "session.kill",
             session=target.name,
@@ -2842,7 +2854,19 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         else:
             print(f"dry-run: {shlex.join(full)}")
         return 0
-    run_cmd(full, check=True)
+    try:
+        run_cmd(full, check=True)
+    except subprocess.CalledProcessError as exc:
+        _audit.audit(
+            "session.kill",
+            outcome="error",
+            session=target.name,
+            target_user=launch_user,
+            force=args.force,
+            dry_run=args.dry_run,
+            rc=exc.returncode,
+        )
+        raise
     _audit.audit(
         "session.kill",
         session=target.name,
@@ -4180,7 +4204,19 @@ def _build_tui_context(
         )
         # TUI-driven kill: no TTY available, use non-interactive sudo.
         full = configured_tmux_base(cfg, user, nonint=True) + ["kill-session", "-t", target.name]
-        run_cmd(full, check=True)
+        try:
+            run_cmd(full, check=True)
+        except subprocess.CalledProcessError as exc:
+            _audit.audit(
+                "session.kill",
+                outcome="error",
+                session=target.name,
+                target_user=user,
+                force=True,
+                dry_run=False,
+                rc=exc.returncode,
+            )
+            raise
         _audit.audit(
             "session.kill",
             session=target.name,
