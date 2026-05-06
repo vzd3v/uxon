@@ -813,7 +813,7 @@ class DefaultTemplateTests(unittest.TestCase):
         tmpl = _default_template()
         flat = " ".join(tmpl)
         self.assertIn("ControlMaster=auto", flat)
-        self.assertIn("ControlPath={xdg_cache}/uxon/ssh-%C", flat)
+        self.assertIn("ControlPath={ssh_control_dir}/ssh-%C", flat)
         self.assertIn("ControlPersist=60s", flat)
         self.assertIn("ServerAliveInterval=15", flat)
 
@@ -849,7 +849,7 @@ class RenderArgvTests(unittest.TestCase):
             ssh_alias="peer1",
             remote_uxon="uxon",
             connect_timeout=5,
-            xdg_cache="/home/me/.cache",
+            ssh_control_dir="/home/me/.cache/uxon",
             remote_command="uxon list --all-users --json",
         )
         self.assertEqual(argv[0], "ssh")
@@ -877,7 +877,7 @@ class RenderArgvTests(unittest.TestCase):
             ssh_alias="ignored",
             remote_uxon="uxon",
             connect_timeout=5,
-            xdg_cache="/tmp",
+            ssh_control_dir="/tmp/uxon",
             remote_command="uxon list --json",
         )
         self.assertEqual(argv[-1], "uxon list --json")

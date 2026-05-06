@@ -63,9 +63,10 @@ class RemoteHost:
         command_template: Optional full-argv override for the fetch
             command — replaces the default ssh template entirely.
             Placeholders from the closed set ``{ssh_alias}``,
-            ``{remote_uxon}``, ``{connect_timeout}``, ``{xdg_cache}``,
-            ``{remote_command}`` are substituted at call time. Used to
-            wire kubectl-exec, docker-exec, or other transports.
+            ``{remote_uxon}``, ``{connect_timeout}``,
+            ``{ssh_control_dir}``, ``{remote_command}`` are substituted
+            at call time. Used to wire kubectl-exec, docker-exec, or
+            other transports.
     """
 
     name: str

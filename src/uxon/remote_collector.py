@@ -48,7 +48,7 @@ import msgspec
 import platformdirs
 
 from uxon.remote_hosts import RemoteHost
-from uxon.wire_schema import WIRE_SCHEMA_VERSION, SessionRecord
+from uxon.wire_schema import WIRE_SCHEMA_VERSION, RemoteSessionPayload
 
 # Reasonable defaults: a peer that doesn't answer in 5 s is treated as
 # down. ssh's TCP-level ConnectTimeout caps the connect phase only;
@@ -80,8 +80,11 @@ class RemoteSnapshot:
         error: Short, human-readable error string, or ``None`` on a
             successful fetch. The collector never raises — every
             failure surfaces here.
-        sessions: List of wire-schema :class:`SessionRecord` dicts.
-            Empty when the fetch failed AND no cache was available.
+        sessions: List of peer-emitted session records
+            (:class:`RemoteSessionPayload`). Each record's shape mirrors
+            :class:`SessionRecord` but is unvalidated at decode time —
+            consumers must read fields defensively. Empty when the
+            fetch failed AND no cache was available.
         cached_at_epoch: Wall-clock time at which the underlying
             payload was originally collected. For a fresh fetch this
             equals :attr:`fetched_at_epoch`; for a cache fallback it
@@ -103,7 +106,7 @@ class RemoteSnapshot:
     fetched_at_epoch: float
     from_cache: bool
     error: str | None
-    sessions: list[SessionRecord] = field(default_factory=list)
+    sessions: list[RemoteSessionPayload] = field(default_factory=list)
     cached_at_epoch: float | None = None
     scope_limited: bool = False
     scope_skipped: list[str] = field(default_factory=list)
@@ -149,24 +152,37 @@ PLACEHOLDER_CLOSED_SET: frozenset[str] = frozenset(
         "{ssh_alias}",
         "{remote_uxon}",
         "{connect_timeout}",
-        "{xdg_cache}",
+        "{ssh_control_dir}",
         "{remote_command}",
     }
 )
 
 
-def _xdg_cache_home() -> str:
-    """Return the operator's XDG cache root.
+def _ssh_control_dir() -> str:
+    """Return the directory that holds uxon's ssh ``ControlPath`` sockets,
+    creating it on demand with mode 0o700.
 
-    Honours ``$XDG_CACHE_HOME``; falls back to ``~/.cache``. Used as the
-    parent of the SSH ``ControlPath`` socket so multiplexed connections
-    survive across uxon invocations.
+    Resolves to ``$XDG_CACHE_HOME/uxon`` (falling back to ``~/.cache/uxon``).
+    OpenSSH refuses to bind a ControlMaster socket whose parent directory
+    does not exist, so this helper *owns* the directory: callers receive a
+    path that is guaranteed to be usable. Symmetrical to
+    :func:`write_cached_snapshot`, which owns the on-disk snapshot dir.
+
+    Idempotent — safe to call on every fetch / kill / attach. Mode 0o700
+    keeps socket names invisible to other users on a shared host.
     """
-    # platformdirs honours ``$XDG_CACHE_HOME`` on Linux and falls back
-    # to ``~/.cache``. We deliberately do NOT pass an app name here:
-    # the existing default template appends ``/uxon/ssh-%C`` itself,
-    # so this helper must return the *parent* (e.g. ``~/.cache``).
-    return platformdirs.user_cache_dir(appauthor=False)
+    path = Path(platformdirs.user_cache_dir(appauthor=False)) / "uxon"
+    # ``mkdir(mode=0o700)`` only applies to a freshly-created directory.
+    # Force-apply the mode afterwards so a pre-existing world-readable
+    # ``~/.cache/uxon`` is brought into line — best-effort: a read-only
+    # filesystem or unwritable parent surfaces on the actual ssh bind
+    # below, where the operator gets a real error message.
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return str(path)
 
 
 def _default_template() -> list[str]:
@@ -190,7 +206,7 @@ def _default_template() -> list[str]:
         "-o",
         "ControlMaster=auto",
         "-o",
-        "ControlPath={xdg_cache}/uxon/ssh-%C",
+        "ControlPath={ssh_control_dir}/ssh-%C",
         "-o",
         "ControlPersist=60s",
         "{ssh_alias}",
@@ -247,7 +263,7 @@ def _render_argv(
     ssh_alias: str,
     remote_uxon: str,
     connect_timeout: int,
-    xdg_cache: str,
+    ssh_control_dir: str,
     remote_command: str,
 ) -> list[str]:
     """Substitute placeholders in ``template``. Empty tokens after
@@ -257,7 +273,7 @@ def _render_argv(
         "{ssh_alias}": ssh_alias,
         "{remote_uxon}": remote_uxon,
         "{connect_timeout}": str(connect_timeout),
-        "{xdg_cache}": xdg_cache,
+        "{ssh_control_dir}": ssh_control_dir,
         "{remote_command}": remote_command,
     }
     rendered: list[str] = []
@@ -335,12 +351,18 @@ def build_peer_ssh_argv(
             template = template[:idx] + list(host.extra_ssh_options) + template[idx:]
     if allocate_tty and template and template[0] == "ssh":
         template = [template[0], "-tt", *template[1:]]
+    # Resolve the ssh control-socket directory lazily: only call
+    # :func:`_ssh_control_dir` (which has the side effect of mkdir'ing
+    # the directory) when at least one rendered token actually needs
+    # it. Keeps ``ssh_multiplex = "off"`` and custom command_templates
+    # that don't use ControlMaster free of an unwanted ``~/.cache/uxon``.
+    needs_control_dir = any("{ssh_control_dir}" in tok for tok in template)
     return _render_argv(
         template,
         ssh_alias=host.ssh_alias,
         remote_uxon=host.remote_uxon,
         connect_timeout=connect_timeout,
-        xdg_cache=_xdg_cache_home(),
+        ssh_control_dir=_ssh_control_dir() if needs_control_dir else "",
         remote_command=remote_command,
     )
 
@@ -384,7 +406,7 @@ ALL_USERS_DISABLED_MARKER = "uxon-error: all-users-disabled"
 
 def _parse_envelope(
     payload: str,
-) -> tuple[list[SessionRecord] | None, list[str], str | None]:
+) -> tuple[list[RemoteSessionPayload] | None, list[str], str | None]:
     """Validate and unpack an ``uxon list --json`` envelope.
 
     Returns ``(sessions, scope_skipped, None)`` on success, or

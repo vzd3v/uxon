@@ -106,6 +106,21 @@ class SessionRecord(TypedDict):
     legacy: bool
 
 
+RemoteSessionPayload = dict[str, Any]
+"""One peer-emitted session record, as it lands at the local collector.
+
+Shape mirrors :class:`SessionRecord` (the producer-side total TypedDict
+written by :func:`build_session_records`), but
+:func:`uxon.remote_collector._parse_envelope` validates the envelope
+only and treats individual records as opaque. Forward-compatibility
+with peers running a newer or older uxon is the explicit goal: a peer
+that adds, renames, or omits a per-session field must not blank a
+whole snapshot. Consumers therefore read fields defensively
+(``rec.get(...)``) and cannot assume any field is present even after a
+successful fetch — hence the deliberately permissive type.
+"""
+
+
 class _SessionLike(Protocol):
     """Structural type for what :func:`build_session_records` reads.
 
