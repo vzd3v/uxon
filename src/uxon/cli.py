@@ -4487,7 +4487,6 @@ def _build_tui_context(
                 "session.attach",
                 session=req.label,
                 target_user=launch_user,
-                project=project,
             )
         else:
             _audit.audit(
@@ -4513,7 +4512,6 @@ def _build_tui_context(
                 "session.attach",
                 session=req.label,
                 target_user=launch_user,
-                project=project,
             )
         else:
             _audit.audit(
