@@ -1451,6 +1451,46 @@ def resolve_session(
     raise AssertionError("unreachable")
 
 
+def _resolve_or_audit_not_found(
+    identifier: str,
+    sessions: list[SessionInfo],
+    cfg: Config,
+    *,
+    audit_event: str,
+    target_user: str,
+    extra: dict[str, Any] | None = None,
+) -> SessionInfo:
+    """Resolve a session and, on no-match failure, emit the ``not_found``
+    audit outcome before re-raising.
+
+    Spec (``docs/superpowers/specs/2026-05-05-audit-log-design.md``)
+    enumerates ``outcome ∈ {"ok", "denied", "error", "not_found"}`` for
+    ``session.attach`` and ``session.kill``. Without this wrapper the
+    ``not_found`` outcome would never appear, because
+    :func:`resolve_session` raises :class:`SystemExit` via :func:`fail`
+    before any caller-side audit fires. The audit emits before the
+    ``SystemExit`` propagates up.
+    """
+    try:
+        return resolve_session(
+            identifier,
+            sessions,
+            cfg.session_prefix,
+            legacy_prefixes=cfg.legacy_session_prefixes,
+        )
+    except SystemExit:
+        from uxon import audit as _audit
+
+        fields: dict[str, Any] = {
+            "session": identifier or "",
+            "target_user": target_user,
+        }
+        if extra:
+            fields.update(extra)
+        _audit.audit(audit_event, outcome="not_found", **fields)
+        raise
+
+
 def is_under_allowed_roots(cfg: Config, path: str) -> bool:
     """Single source of truth for the ``allowed_roots`` whitelist policy.
 
@@ -2409,11 +2449,12 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             )
             return 1
         sessions = collect_sessions([target_user], cfg)
-        target = resolve_session(
+        target = _resolve_or_audit_not_found(
             args.target_id,
             sessions,
-            cfg.session_prefix,
-            legacy_prefixes=cfg.legacy_session_prefixes,
+            cfg,
+            audit_event="session.attach",
+            target_user=target_user,
         )
         base = configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
         full = ["sudo", "-niu", target_user, "--", *base]
@@ -2443,8 +2484,12 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 f"no sessions found on dedicated socket {tmux_socket_path(cfg, launch_user)}, "
                 f"but legacy default-socket sessions still exist. Use 'uxon doctor' for details."
             )
-    target = resolve_session(
-        args.target_id, sessions, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
+    target = _resolve_or_audit_not_found(
+        args.target_id,
+        sessions,
+        cfg,
+        audit_event="session.attach",
+        target_user=launch_user,
     )
     # Same-user audit fires once before ``attach_session``'s execvp.
     # Emitting from ``do_attach`` (not ``attach_session``) keeps the
@@ -2707,11 +2752,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         _confirm_kill_or_fail(prompt, args)
 
         sessions = collect_sessions([target_user], cfg)
-        target = resolve_session(
+        target = _resolve_or_audit_not_found(
             args.target_id,
             sessions,
-            cfg.session_prefix,
-            legacy_prefixes=cfg.legacy_session_prefixes,
+            cfg,
+            audit_event="session.kill",
+            target_user=target_user,
+            extra={"force": args.force, "dry_run": args.dry_run},
         )
         # Non-interactive sudo: there's no TTY in the kill path even
         # for the CLI; if NOPASSWD is missing we want a fast failure
@@ -2765,8 +2812,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
     # Self-only path: unchanged from the pre-3.4.0 behaviour.
     sessions = collect_sessions([launch_user], cfg)
-    target = resolve_session(
-        args.target_id, sessions, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
+    target = _resolve_or_audit_not_found(
+        args.target_id,
+        sessions,
+        cfg,
+        audit_event="session.kill",
+        target_user=launch_user,
+        extra={"force": args.force, "dry_run": args.dry_run},
     )
     full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
     if args.dry_run:
