@@ -2907,6 +2907,14 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     sessions = collect_sessions([launch_user], cfg)
     if not sessions:
+        from uxon import audit as _audit
+
+        _audit.audit(
+            "session.kill_all",
+            target_users=[launch_user],
+            killed_count=0,
+            dry_run=args.dry_run,
+        )
         if args.json_output:
             _emit_json(
                 "kill-all",
