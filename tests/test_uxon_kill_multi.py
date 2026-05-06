@@ -244,6 +244,31 @@ class KillUserLocalTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 uxon.do_kill(args, cfg, "u-vz")
 
+    def test_peer_side_parses_remote_kill_argv_built_by_local(self) -> None:
+        # Regression: ``_do_kill_remote`` and TUI ``on_remote_kill``
+        # construct ``uxon kill <target> --force --user <u> --audit-correlation-id <uuid>``.
+        # A previous shape put flags before ``<target>``, which made
+        # ``parse_subcommand`` (which reads ``argv[1]`` as the target)
+        # treat ``--force`` as the target and reject ``<target>`` as
+        # an unknown arg. Peer-side parse of the new shape must succeed.
+        argv = [
+            "kill",
+            "demo@claude",
+            "--force",
+            "--user",
+            "alice",
+            "--audit-correlation-id",
+            "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f",
+        ]
+        parsed = uxon.parse_args(argv)
+        self.assertEqual(parsed.action, "kill")
+        self.assertEqual(parsed.target_id, "demo@claude")
+        self.assertEqual(parsed.user, "alice")
+        self.assertTrue(parsed.force)
+        self.assertEqual(
+            parsed.audit_correlation_id, "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f"
+        )
+
     def test_run_cmd_failure_emits_session_kill_outcome_error(self) -> None:
         # Regression for the failure-path emit added in commit bd9ba0c:
         # if ``tmux kill-session`` returns non-zero (sudo blockage,
@@ -314,7 +339,7 @@ class KillHostRemoteTests(unittest.TestCase):
         self.assertIn("dry-run:", out)
         self.assertIn("ssh ", out)
         self.assertIn("ssh-b", out)
-        self.assertIn("kill --force", out)
+        self.assertIn("kill demo@claude --force", out)
         self.assertIn("demo@claude", out)
 
     def test_host_with_user_appends_user_flag(self) -> None:

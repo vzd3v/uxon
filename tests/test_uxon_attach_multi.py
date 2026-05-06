@@ -46,6 +46,29 @@ class AttachParserTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             uxon.parse_args(["attach", "demo@claude", "--unknown"])
 
+    def test_peer_side_parses_remote_attach_argv_built_by_local(self) -> None:
+        # Regression: ``_do_attach_remote`` and TUI ``on_remote_attach``
+        # construct ``uxon attach <target> --user <u> --audit-correlation-id <uuid>``.
+        # A previous shape put flags before ``<target>``, which made
+        # ``parse_subcommand`` treat ``--user`` as the target_id and
+        # reject the rest. Peer-side parse of the new shape must
+        # succeed.
+        argv = [
+            "attach",
+            "demo@claude",
+            "--user",
+            "alice",
+            "--audit-correlation-id",
+            "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f",
+        ]
+        parsed = uxon.parse_args(argv)
+        self.assertEqual(parsed.action, "attach")
+        self.assertEqual(parsed.target_id, "demo@claude")
+        self.assertEqual(parsed.user, "alice")
+        self.assertEqual(
+            parsed.audit_correlation_id, "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f"
+        )
+
 
 class AttachCrossUserTests(unittest.TestCase):
     """Peer-side ``uxon attach --user`` cross-user gating.

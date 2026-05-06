@@ -2382,11 +2382,14 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
 
     corr_id = str(_uuid.uuid4())
     _audit.set_correlation_id(corr_id)
+    # ``target_id`` MUST come first after the verb: peer-side
+    # ``parse_subcommand`` reads ``argv[1]`` as the target, with flags
+    # tail-parsed afterwards.  Putting flags first makes the peer parse
+    # the flag name as the target and reject the rest.
     remote_cmd = (
-        f"{shlex.quote(peer.remote_uxon)} attach "
+        f"{shlex.quote(peer.remote_uxon)} attach {shlex.quote(args.target_id or '')} "
         f"--user {shlex.quote(args.user)} "
-        f"--audit-correlation-id {shlex.quote(corr_id)} "
-        f"{shlex.quote(args.target_id or '')}"
+        f"--audit-correlation-id {shlex.quote(corr_id)}"
     )
     ssh_argv = build_peer_ssh_argv(
         peer,
@@ -2667,11 +2670,14 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     prompt = f"Kill {args.target_id}@{target_host.name}{target_user_part}?"
     _confirm_kill_or_fail(prompt, args)
 
+    # ``target_id`` MUST come first after the verb: peer-side
+    # ``parse_subcommand`` reads ``argv[1]`` as the target, flags are
+    # tail-parsed afterwards.  Mirrors ``_do_attach_remote`` ordering.
     remote_cmd_parts = [
         shlex.quote(target_host.remote_uxon),
         "kill",
-        "--force",
         shlex.quote(str(args.target_id)),
+        "--force",
     ]
     if args.user:
         remote_cmd_parts.extend(["--user", shlex.quote(args.user)])
@@ -4206,9 +4212,11 @@ def _build_on_remote_attach_callback(cfg: Config):
             target_session=name,
             correlation_id=corr_id,
         )
+        # target first (see _do_attach_remote for rationale).
         remote_cmd = (
-            f"{shlex.quote(peer.remote_uxon)} attach --user {shlex.quote(user)} "
-            f"--audit-correlation-id {shlex.quote(corr_id)} {shlex.quote(name)}"
+            f"{shlex.quote(peer.remote_uxon)} attach {shlex.quote(name)} "
+            f"--user {shlex.quote(user)} "
+            f"--audit-correlation-id {shlex.quote(corr_id)}"
         )
         argv = build_peer_ssh_argv(
             peer,
@@ -4417,10 +4425,11 @@ def _build_tui_context(
             dry_run=False,
             correlation_id=corr_id,
         )
+        # target first (see _do_attach_remote for rationale).
         remote_cmd = (
-            f"{shlex.quote(peer.remote_uxon)} kill --force "
+            f"{shlex.quote(peer.remote_uxon)} kill {shlex.quote(name)} --force "
             f"--user {shlex.quote(user)} "
-            f"--audit-correlation-id {shlex.quote(corr_id)} {shlex.quote(name)}"
+            f"--audit-correlation-id {shlex.quote(corr_id)}"
         )
         ssh_argv = build_peer_ssh_argv(
             peer,
