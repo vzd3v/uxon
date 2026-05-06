@@ -2413,7 +2413,20 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     if args.dry_run:
         print(shlex.join(ssh_argv))
         return 0
-    os.execvp(ssh_argv[0], ssh_argv)
+    try:
+        os.execvp(ssh_argv[0], ssh_argv)
+    except Exception as exc:
+        _audit.audit(
+            "attach.remote.out",
+            outcome="error",
+            peer_name=peer.name,
+            ssh_alias=peer.ssh_alias,
+            target_user=args.user,
+            target_session=args.target_id,
+            correlation_id=corr_id,
+            error=str(exc)[:256],
+        )
+        raise
     return 0  # unreachable
 
 
@@ -2730,6 +2743,21 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
             print(f"dry-run: {shlex.join(ssh_argv)}")
         return 0
 
+    def _emit_kill_remote_error(error: str, rc: int) -> None:
+        _audit.audit(
+            "kill.remote.out",
+            outcome="error",
+            peer_name=target_host.name,
+            ssh_alias=target_host.ssh_alias,
+            target_user=args.user,
+            target_session=args.target_id,
+            force=args.force,
+            dry_run=args.dry_run,
+            correlation_id=corr_id,
+            rc=rc,
+            error=error[:256],
+        )
+
     try:
         cp = subprocess.run(
             ssh_argv,
@@ -2738,9 +2766,11 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
             timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired:
+        _emit_kill_remote_error("ssh timeout", 124)
         eprint(f"uxon: --host {target_host.name}: ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s")
         return 1
     except FileNotFoundError:
+        _emit_kill_remote_error("ssh binary missing", 127)
         eprint("uxon: ssh not installed on local host")
         return 1
 
@@ -2748,7 +2778,10 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
         sys.stdout.write(cp.stdout)
     if cp.stderr:
         sys.stderr.write(cp.stderr)
-    return 0 if cp.returncode == 0 else 1
+    if cp.returncode != 0:
+        _emit_kill_remote_error("non-zero ssh rc", cp.returncode)
+        return 1
+    return 0
 
 
 def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
