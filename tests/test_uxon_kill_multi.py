@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 import uxon.cli as uxon
+from uxon import audit as uxon_audit
 from uxon.remote_hosts import RemoteHost
 from uxon.tui.context import SudoCapability
 
@@ -241,6 +243,42 @@ class KillUserLocalTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 uxon.do_kill(args, cfg, "u-vz")
+
+    def test_run_cmd_failure_emits_session_kill_outcome_error(self) -> None:
+        # Regression for the failure-path emit added in commit bd9ba0c:
+        # if ``tmux kill-session`` returns non-zero (sudo blockage,
+        # tmux server gone, busy session), ``run_cmd(check=True)``
+        # raises CalledProcessError. ``do_kill`` must emit
+        # ``session.kill outcome=error`` with the captured rc *before*
+        # re-raising — spec line 208.
+        cfg = _make_config()
+        target = _make_session("uxon-demo@claude")
+        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="u-vz")
+        boom = subprocess.CalledProcessError(returncode=2, cmd=["tmux", "kill-session"])
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with (
+            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
+            mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
+            mock.patch.object(uxon, "run_cmd", side_effect=boom),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                uxon.do_kill(args, cfg, "u-vz")
+
+        kill_emits = [e for e in recorded if e[0] == "session.kill"]
+        self.assertTrue(kill_emits, "no session.kill emit recorded")
+        # The failure-path emit is the one that fired — outcome=error
+        # with rc=2 from the captured CalledProcessError.
+        outcomes = [fields["outcome"] for _, fields in kill_emits]
+        self.assertIn("error", outcomes)
+        err_emit = next(fields for _, fields in kill_emits if fields["outcome"] == "error")
+        self.assertEqual(err_emit["rc"], 2)
+        self.assertEqual(err_emit["session"], "uxon-demo@claude")
+        self.assertEqual(err_emit["target_user"], "u-vz")
 
 
 class KillHostRemoteTests(unittest.TestCase):
