@@ -2775,6 +2775,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             target.name,
         ]
         if args.dry_run:
+            _audit.audit(
+                "session.kill",
+                session=target.name,
+                target_user=target_user,
+                force=args.force,
+                dry_run=True,
+            )
             if args.json_output:
                 _emit_json(
                     "kill",
@@ -2840,6 +2847,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     )
     full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
     if args.dry_run:
+        _audit.audit(
+            "session.kill",
+            session=target.name,
+            target_user=launch_user,
+            force=args.force,
+            dry_run=True,
+        )
         if args.json_output:
             _emit_json(
                 "kill",
