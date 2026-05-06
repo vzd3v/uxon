@@ -4092,8 +4092,11 @@ def _build_on_remote_attach_callback(cfg: Config):
         peer = find_host(cfg.remote_hosts, host_name)
         if peer is None:
             raise CallbackError(f"unknown remote host: {host_name}")
+        # Pass correlation_id explicitly via kwargs rather than seeding
+        # ``_audit._correlation_id``: the TUI process is long-lived, and a
+        # left-behind global would leak into subsequent local audit events
+        # (next session.attach / session.kill picked up the stale UUID).
         corr_id = str(_uuid.uuid4())
-        _audit.set_correlation_id(corr_id)
         _audit.audit(
             "attach.remote.out",
             peer_name=peer.name,
@@ -4298,8 +4301,10 @@ def _build_tui_context(
         peer = find_host(cfg.remote_hosts, host_name)
         if peer is None:
             fail(f"unknown remote host: {host_name}", 1)
+        # See on_remote_attach: TUI process outlives the dispatch, so we
+        # avoid the module-level correlation_id global to keep state from
+        # bleeding into the next local emit.
         corr_id = str(_uuid.uuid4())
-        _audit.set_correlation_id(corr_id)
         _audit.audit(
             "kill.remote.out",
             peer_name=peer.name,
