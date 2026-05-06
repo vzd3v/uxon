@@ -2473,7 +2473,17 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         # Audit before ``os.execvp`` (Bug 7) — once the image is
         # replaced our cached socket is gone.
         _audit.audit("session.attach", session=target.name, target_user=target_user)
-        os.execvp(full[0], full)
+        try:
+            os.execvp(full[0], full)
+        except Exception as exc:
+            _audit.audit(
+                "session.attach",
+                outcome="error",
+                session=target.name,
+                target_user=target_user,
+                error=str(exc)[:256],
+            )
+            raise
         return 0
 
     # Same-user path — unchanged.
@@ -2503,7 +2513,17 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # the TUI's ``attach_session_blocking`` and we don't want to double
     # up there.
     _audit.audit("session.attach", session=target.name, target_user=launch_user)
-    return attach_session(target, cfg, launch_user, args.dry_run)
+    try:
+        return attach_session(target, cfg, launch_user, args.dry_run)
+    except Exception as exc:
+        _audit.audit(
+            "session.attach",
+            outcome="error",
+            session=target.name,
+            target_user=launch_user,
+            error=str(exc)[:256],
+        )
+        raise
 
 
 def _tui_launch_request_cls() -> type:
@@ -3170,7 +3190,17 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 session=attach_target.name,
                 target_user=launch_user,
             )
-            return attach_session(attach_target, cfg, launch_user, args.dry_run)
+            try:
+                return attach_session(attach_target, cfg, launch_user, args.dry_run)
+            except Exception as exc:
+                _audit.audit(
+                    "session.attach",
+                    outcome="error",
+                    session=attach_target.name,
+                    target_user=launch_user,
+                    error=str(exc)[:256],
+                )
+                raise
     else:
         repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
     session = allocate_session_name(
@@ -3186,7 +3216,20 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         session=session,
         dry_run=args.dry_run,
     )
-    return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+    try:
+        return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+    except Exception as exc:
+        _audit.audit(
+            "session.new",
+            outcome="error",
+            agent=_agent,
+            project=target_dir,
+            branch=branch or "",
+            session=session,
+            dry_run=args.dry_run,
+            error=str(exc)[:256],
+        )
+        raise
 
 
 def _do_create_git_remote(
@@ -3317,7 +3360,20 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         session=session,
         dry_run=args.dry_run,
     )
-    return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+    try:
+        return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+    except Exception as exc:
+        _audit.audit(
+            "session.new",
+            outcome="error",
+            agent=_agent,
+            project=target_dir,
+            branch=branch or "",
+            session=session,
+            dry_run=args.dry_run,
+            error=str(exc)[:256],
+        )
+        raise
 
 
 def repo_root() -> Path:
