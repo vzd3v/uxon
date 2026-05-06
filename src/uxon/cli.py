@@ -4164,13 +4164,30 @@ def _build_tui_context(
         return _build_tmux_attach_request(target, cfg, user)
 
     def on_kill(user: str, name: str) -> None:
+        # TUI 'k' on a local row runs ``tmux kill-session`` directly
+        # via ``run_cmd`` — emit ``session.kill`` after success so the
+        # operation is auditable (mirrors do_kill same-user pattern).
+        from uxon import audit as _audit
+
         fresh = collect_sessions([user], cfg)
-        target = resolve_session(
-            name, fresh, cfg.session_prefix, legacy_prefixes=cfg.legacy_session_prefixes
+        target = _resolve_or_audit_not_found(
+            name,
+            fresh,
+            cfg,
+            audit_event="session.kill",
+            target_user=user,
+            extra={"force": True, "dry_run": False},
         )
         # TUI-driven kill: no TTY available, use non-interactive sudo.
         full = configured_tmux_base(cfg, user, nonint=True) + ["kill-session", "-t", target.name]
         run_cmd(full, check=True)
+        _audit.audit(
+            "session.kill",
+            session=target.name,
+            target_user=user,
+            force=True,
+            dry_run=False,
+        )
 
     def on_kill_all() -> None:
         fresh = collect_sessions([launch_user], cfg)
