@@ -142,6 +142,44 @@ class AddRemoveTests(unittest.TestCase):
         self.assertEqual(op.row_key, "local/alice/uxon-b@claude")
 
 
+class TimeDependentColumnsTests(unittest.TestCase):
+    """``new`` / ``last`` formatters call ``time.time()`` internally.
+    Within a single ``diff()`` call both old and new format invocations
+    happen within microseconds, so the rendered strings must match for
+    identical inputs and the diff must emit zero ops. This pins the
+    no-spurious-churn contract for time-dependent columns.
+    """
+
+    def test_diff_with_time_columns_and_set_epochs_emits_no_ops(self) -> None:
+        time_cols = _cols("new", "last")
+        rows = (
+            _row(name="uxon-a@claude"),
+            _row(name="uxon-b@claude"),
+        )
+        # Same tuple in both args; non-None epochs on both rows.
+        rows = tuple(
+            SessionRow(
+                host=None,
+                user="alice",
+                name=r.name,
+                short=r.short,
+                agent=r.agent,
+                attached=False,
+                legacy=False,
+                pid=123,
+                cpu_pct=5.0,
+                rss_kib=100 * 1024,
+                created_epoch=1700000000.0,
+                last_attached_epoch=1700000010.0,
+                cmd="claude",
+                path="/srv/foo",
+            )
+            for r in rows
+        )
+        ops = diff(rows, rows, time_cols)
+        self.assertEqual(ops, ())
+
+
 class ReorderTests(unittest.TestCase):
     def test_swap_two_rows(self) -> None:
         a = _row(name="uxon-a@claude")

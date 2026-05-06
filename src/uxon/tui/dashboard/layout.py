@@ -87,6 +87,16 @@ def _warn_unknown_once(col_id: str) -> None:
     debug("tui", reason="unknown_column_id", id=col_id)
 
 
+def _reset_warned() -> None:
+    """Test hook: clear the once-per-process warned-id memo.
+
+    Production callers never invoke this. Tests that exercise
+    ``_warn_unknown_once`` must reset between runs so memo state from
+    one test does not silently mask a missing warn in the next.
+    """
+    _WARNED_UNKNOWN_IDS.clear()
+
+
 def build_active_columns(
     *,
     cfg_columns: tuple[str, ...] | None,

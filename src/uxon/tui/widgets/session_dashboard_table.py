@@ -143,8 +143,15 @@ class SessionDashboardTable(FocusReleasingDataTable):
         ordered = list(self.ordered_rows)
         for row in ordered[anchor_idx:]:
             key_obj = row.key
-            key_str = key_obj.value if isinstance(key_obj, RowKey) else str(key_obj)
-            assert key_str is not None  # rows we add always have a string key
+            # Rows we add always carry a ``str`` key (see ``add_row(...,
+            # key=...)`` call sites); the ``isinstance`` chain narrows
+            # for pyright without a runtime assert (``-O`` would strip
+            # it anyway), and the ``str(key_obj)`` fallback yields a
+            # string in the structurally-impossible non-RowKey path.
+            if isinstance(key_obj, RowKey) and isinstance(key_obj.value, str):
+                key_str = key_obj.value
+            else:
+                key_str = str(key_obj)
             cells = tuple(self.get_row(key_obj))
             trailing.append((key_str, cells))
         for key_str, _ in trailing:

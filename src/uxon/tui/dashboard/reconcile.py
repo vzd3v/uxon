@@ -117,40 +117,40 @@ def diff(
     the active-column tuple (already filtered by layout flags); the
     diff only emits ops for these columns.
     """
+    # Precompute keys once: ``_row_key`` is pure but called many times
+    # per row in this hot path; reusing the precomputed list keeps the
+    # diff cost ~O(rows) string formats rather than ~O(3·rows).
+    old_keys = [_row_key(r) for r in old]
+    new_keys = [_row_key(r) for r in new]
+
     old_index: dict[str, int] = {}
     old_rows: dict[str, SessionRow] = {}
     for i, r in enumerate(old):
-        k = _row_key(r)
+        k = old_keys[i]
         old_index[k] = i
         old_rows[k] = r
 
-    new_index: dict[str, int] = {}
-    for i, r in enumerate(new):
-        new_index[_row_key(r)] = i
+    new_index: dict[str, int] = {k: i for i, k in enumerate(new_keys)}
 
     ops: list[Op] = []
 
     # 1. Removes first (in old's index order).
-    removed_keys = [
-        k for k, _ in sorted(old_index.items(), key=lambda kv: kv[1]) if k not in new_index
-    ]
+    removed_keys = [k for k in old_keys if k not in new_index]
     for k in removed_keys:
         ops.append(RowRemove(k))
 
     # 2. Compute the relative order of surviving keys in both old and
     # new. A key is "in place" iff its index among surviving keys
     # matches between old and new.
-    survivors_in_old = [
-        k for k, _ in sorted(old_index.items(), key=lambda kv: kv[1]) if k in new_index
-    ]
-    survivors_in_new = [_row_key(r) for r in new if _row_key(r) in old_index]
+    survivors_in_old = [k for k in old_keys if k in new_index]
+    survivors_in_new = [k for k in new_keys if k in old_index]
     old_pos_among_survivors = {k: i for i, k in enumerate(survivors_in_old)}
     new_pos_among_survivors = {k: i for i, k in enumerate(survivors_in_new)}
 
     # 3. Walk new in order.
     for i, row_new in enumerate(new):
-        k = _row_key(row_new)
-        before_key = _row_key(new[i + 1]) if i + 1 < len(new) else None
+        k = new_keys[i]
+        before_key = new_keys[i + 1] if i + 1 < len(new_keys) else None
 
         if k not in old_index:
             # Pure add.

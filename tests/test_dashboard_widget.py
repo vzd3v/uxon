@@ -276,6 +276,113 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
             expected = [_row_key(a), _row_key(x), _row_key(b), _row_key(c)]
             self.assertEqual(ordered_keys, expected)
 
+    async def test_two_inline_inserts_in_one_apply_batch(self) -> None:
+        """[A, B] → [A, X, B, Y]: two interior inserts in a single
+        ``apply`` call. Final visual order must match ``new`` exactly,
+        row count is 4, and no ``CellUpdate`` op fires (both surviving
+        rows occupy the same surviving-relative position).
+        """
+        from textual.app import App, ComposeResult
+
+        from uxon.tui.dashboard.reconcile import CellUpdate, _row_key, diff
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        cols = _active_columns()
+        a = _make_row(host="a", user="u", name="s-a")
+        b = _make_row(host="a", user="u", name="s-b")
+        x = _make_row(host="a", user="u", name="s-x")
+        y = _make_row(host="a", user="u", name="s-y")
+        old_rows = (a, b)
+        new_rows = (a, x, b, y)
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionDashboardTable(cols, id="dash")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
+            table.apply(diff((), old_rows, cols))
+            await pilot.pause()
+
+            ops = diff(old_rows, new_rows, cols)
+            # Surviving rows (a, b) keep their surviving-relative
+            # position, so reconcile must not emit any CellUpdate.
+            self.assertEqual([o for o in ops if isinstance(o, CellUpdate)], [])
+
+            table.apply(ops)
+            await pilot.pause()
+
+            self.assertEqual(table.row_count, 4)
+            ordered_keys = [
+                row.key.value if hasattr(row.key, "value") else str(row.key)
+                for row in table.ordered_rows
+            ]
+            expected = [_row_key(a), _row_key(x), _row_key(b), _row_key(y)]
+            self.assertEqual(ordered_keys, expected)
+
+    async def test_remove_missing_key_does_not_crash(self) -> None:
+        """``_apply_remove`` swallows the underlying remove_row error
+        when the row-key is not present (covered by the defensive
+        try/except). Widget must survive and row count is unchanged.
+        """
+        from textual.app import App, ComposeResult
+
+        from uxon.tui.dashboard.reconcile import RowRemove, diff
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        cols = _active_columns()
+        a = _make_row(host="a", user="u", name="s-a")
+        b = _make_row(host="a", user="u", name="s-b")
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionDashboardTable(cols, id="dash")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
+            table.apply(diff((), (a, b), cols))
+            await pilot.pause()
+            self.assertEqual(table.row_count, 2)
+
+            # Synthetic op: a key that was never added.
+            table.apply((RowRemove("nonexistent/u/x"),))
+            await pilot.pause()
+            self.assertEqual(table.row_count, 2)
+            # Widget remains queryable — no exception bubbled.
+            self.assertEqual(app.query_one("#dash", SessionDashboardTable).row_count, 2)
+
+    async def test_update_missing_key_does_not_crash(self) -> None:
+        """``_apply_update`` swallows the underlying update_cell error
+        when the row-key is not present. Row count unchanged, widget
+        survives.
+        """
+        from rich.text import Text
+        from textual.app import App, ComposeResult
+
+        from uxon.tui.dashboard.reconcile import CellUpdate, diff
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        cols = _active_columns()
+        a = _make_row(host="a", user="u", name="s-a")
+        b = _make_row(host="a", user="u", name="s-b")
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionDashboardTable(cols, id="dash")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
+            table.apply(diff((), (a, b), cols))
+            await pilot.pause()
+            self.assertEqual(table.row_count, 2)
+
+            table.apply((CellUpdate("nonexistent/u/x", "cpu", Text("99")),))
+            await pilot.pause()
+            self.assertEqual(table.row_count, 2)
+
     async def test_remove_row_under_cursor_lands_on_replacement(self) -> None:
         """When the row under the cursor is removed and a new row takes
         its visual slot, ``apply`` followed by ``pin_cursor_to(prev_key)``

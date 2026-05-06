@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import unittest
 
+from uxon.tui.dashboard import layout as layout_mod
 from uxon.tui.dashboard.columns import REGISTRY
 from uxon.tui.dashboard.layout import LayoutFlags, build_active_columns
 
@@ -19,7 +20,23 @@ def _ids(cols: tuple) -> list[str]:
     return [c.id for c in cols]
 
 
-class DefaultsPathTests(unittest.TestCase):
+class _LayoutTestBase(unittest.TestCase):
+    """Shared setup: reset the once-per-process unknown-id memo so
+    state from one test cannot silently mask a missing warn in the
+    next. ``_WARNED_UNKNOWN_IDS`` is module-level by design (production
+    callers want once-per-process), so tests must clear it explicitly.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        layout_mod._reset_warned()
+
+    def tearDown(self) -> None:
+        layout_mod._reset_warned()
+        super().tearDown()
+
+
+class DefaultsPathTests(_LayoutTestBase):
     def test_no_cfg_single_host_single_user(self) -> None:
         flags = LayoutFlags(multi_host=False, cross_user=False)
         cols = build_active_columns(cfg_columns=None, flags=flags)
@@ -53,7 +70,7 @@ class DefaultsPathTests(unittest.TestCase):
         self.assertEqual(ids[1], "user")
 
 
-class ExplicitCfgTests(unittest.TestCase):
+class ExplicitCfgTests(_LayoutTestBase):
     def test_explicit_cfg_wins_over_defaults(self) -> None:
         flags = LayoutFlags(multi_host=False, cross_user=False)
         cols = build_active_columns(
@@ -96,7 +113,7 @@ class ExplicitCfgTests(unittest.TestCase):
         self.assertEqual(_ids(cols), ["host", "name", "cpu"])
 
 
-class AutoInsertTests(unittest.TestCase):
+class AutoInsertTests(_LayoutTestBase):
     def test_multi_host_prepends_host_when_missing(self) -> None:
         flags = LayoutFlags(multi_host=True, cross_user=False)
         cols = build_active_columns(
@@ -140,6 +157,18 @@ class AutoInsertTests(unittest.TestCase):
         )
         self.assertEqual(_ids(cols), ["user", "name", "cpu"])
 
+    def test_cross_user_auto_insert_when_host_explicit(self) -> None:
+        # When the user lists ``host`` explicitly *and* cross_user is
+        # set, ``user`` lands after the *last* of host/name in the
+        # resulting list (the loop walks selected and updates
+        # ``insert_at`` on every match). With cfg=(name, host, cpu)
+        # and host in cfg, the loop iterates name→insert_at=1,
+        # host→insert_at=2, cpu→skipped, so user lands at index 2.
+        cfg = ("name", "host", "cpu")
+        flags = LayoutFlags(multi_host=True, cross_user=True)
+        out = build_active_columns(cfg_columns=cfg, flags=flags)
+        self.assertEqual(_ids(out), ["name", "host", "user", "cpu"])
+
     def test_cross_user_with_no_name_or_host_inserts_at_front(self) -> None:
         flags = LayoutFlags(multi_host=False, cross_user=True)
         cols = build_active_columns(
@@ -150,7 +179,7 @@ class AutoInsertTests(unittest.TestCase):
         self.assertEqual(_ids(cols), ["user", "cpu", "cmd"])
 
 
-class RegistryConsistencyTests(unittest.TestCase):
+class RegistryConsistencyTests(_LayoutTestBase):
     def test_default_path_uses_registry_order(self) -> None:
         flags = LayoutFlags(multi_host=True, cross_user=True)
         cols = build_active_columns(cfg_columns=None, flags=flags)

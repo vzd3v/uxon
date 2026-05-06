@@ -124,9 +124,14 @@ class HostColourTests(unittest.TestCase):
 
 
 class FormatCpuTests(unittest.TestCase):
-    def test_zero_renders_dash(self) -> None:
+    def test_zero_renders_numeric(self) -> None:
+        # Legacy ``SessionTable._cpu_cell`` rendered "0.0" for idle
+        # sessions; the unified pipeline preserves that — only a
+        # missing input would blank the cell, but the adapter normalises
+        # missing→0.0 at the boundary so we always emit a number.
         text = format_cpu(_row(cpu_pct=0.0))
-        self.assertEqual(text.plain, "-")
+        self.assertEqual(text.plain, "0.0")
+        self.assertEqual(str(text.style), "")
 
     def test_low_cpu_plain_style(self) -> None:
         text = format_cpu(_row(cpu_pct=5.0))
@@ -241,12 +246,22 @@ class AgentFormatterTests(unittest.TestCase):
 
 
 class UserFormatterTests(unittest.TestCase):
-    def test_user_yellow_bold(self) -> None:
+    def test_user_renders_plain(self) -> None:
+        # The USER column header signals cross-user mode; per-row colour
+        # would also paint the operator's own user, which diverges from
+        # the legacy intent (yellow was a non-self marker on the
+        # dedicated #sessions-other table). Render plain.
         col = _by_id("user")
         text = col.format(_row(user="alice"))
         self.assertIsInstance(text, Text)
         self.assertEqual(text.plain, "alice")
-        self.assertEqual(str(text.style), "bold yellow")
+        self.assertEqual(str(text.style), "")
+
+    def test_user_missing_dash(self) -> None:
+        col = _by_id("user")
+        text = col.format(_row(user=""))
+        self.assertEqual(text.plain, "-")
+        self.assertEqual(str(text.style), "")
 
 
 class HostFormatterTests(unittest.TestCase):
@@ -343,6 +358,45 @@ class SortKeyTests(unittest.TestCase):
         key = _by_id("host").sort_key
         ordered = sorted(rows, key=key)
         self.assertEqual([r.name for r in ordered], ["b", "c", "a"])
+
+    def test_new_and_last_sort_with_mixed_none_and_float(self) -> None:
+        # Two locals (created_epoch=None) + two remotes (epoch set):
+        # sort by ``_sort_new`` must be deterministic and not crash.
+        # ``float("-inf")`` fallback puts None-epoch rows first asc,
+        # last desc — pinning the ordering so a future tweak surfaces.
+        rows = [
+            _row(name="local1", host=None, created_epoch=None),
+            _row(name="local2", host=None, created_epoch=None),
+            _row(name="remote-old", host="peer-a", created_epoch=1234567890.0),
+            _row(name="remote-new", host="peer-b", created_epoch=1234567900.0),
+        ]
+        key_new = _by_id("new").sort_key
+
+        asc = sorted(rows, key=key_new)
+        # None-epoch rows sit at the front in ascending sort.
+        self.assertEqual(
+            [r.name for r in asc],
+            ["local1", "local2", "remote-old", "remote-new"],
+        )
+
+        desc = sorted(rows, key=key_new, reverse=True)
+        # In descending order they fall to the back.
+        self.assertEqual(
+            [r.name for r in desc],
+            ["remote-new", "remote-old", "local1", "local2"],
+        )
+
+        # Mirror behaviour for the LAST column: build rows where
+        # ``last_attached_epoch`` carries the same mixed shape.
+        rows_last = [
+            _row(name="L1", last_attached_epoch=None),
+            _row(name="L2", last_attached_epoch=None),
+            _row(name="R-old", last_attached_epoch=100.0),
+            _row(name="R-new", last_attached_epoch=500.0),
+        ]
+        key_last = _by_id("last").sort_key
+        asc_last = sorted(rows_last, key=key_last)
+        self.assertEqual([r.name for r in asc_last], ["L1", "L2", "R-old", "R-new"])
 
 
 if __name__ == "__main__":

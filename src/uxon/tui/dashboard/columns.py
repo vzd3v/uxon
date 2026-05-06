@@ -75,9 +75,14 @@ def host_colour(host_name: str) -> str:
 
 
 def format_cpu(row: SessionRow) -> Text:
-    """Format CPU% with the existing >50/>10 colour thresholds."""
-    if row.cpu_pct <= 0:
-        return Text("-")
+    """Format CPU% with the existing >50/>10 colour thresholds.
+
+    Legacy ``SessionTable._cpu_cell`` rendered ``"0.0"`` for an idle
+    session — only a missing input string blanked the cell. The unified
+    pipeline has already collapsed the missing/zero distinction at the
+    adapter boundary (``from_tui_session``), so we always render the
+    numeric value; an idle row shows as ``"0.0"`` to match legacy.
+    """
     raw = f"{row.cpu_pct:.1f}" if row.cpu_pct < 100 else f"{row.cpu_pct:.0f}"
     if row.cpu_pct > 50:
         return Text(raw, style="bold red")
@@ -129,7 +134,11 @@ def _format_host(row: SessionRow) -> Text:
 
 
 def _format_user(row: SessionRow) -> Text:
-    return Text(row.user or "-", style="bold yellow")
+    # Render plain: in cross_user mode the column header itself flags
+    # multi-user state; per-row colour would also paint the operator's
+    # own user yellow which diverges from the legacy intent (yellow
+    # was a non-self marker on the dedicated #sessions-other table).
+    return Text(row.user or "-")
 
 
 def _format_name(row: SessionRow) -> Text:
