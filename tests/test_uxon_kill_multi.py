@@ -309,6 +309,42 @@ class KillUserLocalTests(unittest.TestCase):
         self.assertEqual(err_emit["target_user"], "u-vz")
 
 
+class KillPeerInboundTests(unittest.TestCase):
+    """Peer-inbound branch (``SSH_CONNECTION`` set): ``kill.remote.in``
+    replaces ``session.kill`` AND carries the real outcome on every
+    failure path — not the previous always-``ok`` top-of-function emit
+    that swallowed denied / not_found / error signals."""
+
+    def test_peer_inbound_unreachable_emits_kill_remote_in_denied(self) -> None:
+        cfg = _make_config()
+        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
+        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with (
+            mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
+            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+            mock.patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            rc = uxon.do_kill(args, cfg, "u-vz")
+
+        self.assertEqual(rc, 1)
+        # Exactly one kill.remote.in emit, denied; no parallel
+        # session.kill (replaces semantics).
+        rin_emits = [e for e in recorded if e[0] == "kill.remote.in"]
+        local_emits = [e for e in recorded if e[0] == "session.kill"]
+        self.assertEqual(local_emits, [])
+        self.assertEqual(len(rin_emits), 1)
+        self.assertEqual(rin_emits[0][1]["outcome"], "denied")
+        self.assertEqual(rin_emits[0][1]["session"], "demo@claude")
+        self.assertEqual(rin_emits[0][1]["target_user"], "alice")
+        self.assertEqual(rin_emits[0][1]["force"], True)
+
+
 class KillHostRemoteTests(unittest.TestCase):
     """``uxon kill --host <alias>`` SSH-routed remote dispatch."""
 

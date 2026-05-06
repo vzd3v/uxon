@@ -2815,17 +2815,15 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # state (the parser layer set it via ``set_correlation_id`` after
     # popping ``--audit-correlation-id`` from argv).  Spec line 302:
     # ``kill.remote.in`` *replaces* ``session.kill`` for the peer-side
-    # branch — we suppress every downstream ``session.kill`` emit when
-    # ``peer_inbound`` is true.
+    # branch.  Spec line 207-209: state-changing events emit on **both**
+    # success and failure paths; we honour that on the peer side too by
+    # switching the event name at every emit point (rather than the old
+    # single ``outcome=ok`` emit at the top, which lost the failure
+    # signal for sudo-denied / not-found / run_cmd-error paths).  Per
+    # spec line 225, ``kill.remote.in`` shares the ``session`` key with
+    # ``session.kill`` — only the event name differs, no field rename.
     peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    if peer_inbound:
-        _audit.audit(
-            "kill.remote.in",
-            session=args.target_id,
-            target_user=args.user or launch_user,
-            force=args.force,
-        )
-    _kill_event: str | None = None if peer_inbound else "session.kill"
+    _kill_event: str = "kill.remote.in" if peer_inbound else "session.kill"
 
     # Local cross-user kill: --user X where X != launch_user requires
     # per-target NOPASSWD. Probe once for the single target (the same
@@ -2838,15 +2836,14 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         caps = probe_sudo_capability([target_user])
         reachable = target_user in caps.reachable_users
         if not reachable:
-            if not peer_inbound:
-                _audit.audit(
-                    "session.kill",
-                    outcome="denied",
-                    session=args.target_id or "",
-                    target_user=target_user,
-                    force=args.force,
-                    dry_run=args.dry_run,
-                )
+            _audit.audit(
+                _kill_event,
+                outcome="denied",
+                session=args.target_id or "",
+                target_user=target_user,
+                force=args.force,
+                dry_run=args.dry_run,
+            )
             # Stable error tag — mirrors the ``all-users-disabled``
             # precedent. Callers (and the SSH peer-aggregator) parse
             # this exact substring. Surface the verdict on dry-run too:
@@ -2880,14 +2877,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             target.name,
         ]
         if args.dry_run:
-            if not peer_inbound:
-                _audit.audit(
-                    "session.kill",
-                    session=target.name,
-                    target_user=target_user,
-                    force=args.force,
-                    dry_run=True,
-                )
+            _audit.audit(
+                _kill_event,
+                session=target.name,
+                target_user=target_user,
+                force=args.force,
+                dry_run=True,
+            )
             if args.json_output:
                 _emit_json(
                     "kill",
@@ -2907,25 +2903,23 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         try:
             run_cmd(full, check=True)
         except subprocess.CalledProcessError as exc:
-            if not peer_inbound:
-                _audit.audit(
-                    "session.kill",
-                    outcome="error",
-                    session=target.name,
-                    target_user=target_user,
-                    force=args.force,
-                    dry_run=args.dry_run,
-                    rc=exc.returncode,
-                )
-            raise
-        if not peer_inbound:
             _audit.audit(
-                "session.kill",
+                _kill_event,
+                outcome="error",
                 session=target.name,
                 target_user=target_user,
                 force=args.force,
                 dry_run=args.dry_run,
+                rc=exc.returncode,
             )
+            raise
+        _audit.audit(
+            _kill_event,
+            session=target.name,
+            target_user=target_user,
+            force=args.force,
+            dry_run=args.dry_run,
+        )
         if args.json_output:
             _emit_json(
                 "kill",
@@ -2955,14 +2949,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     )
     full = configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
     if args.dry_run:
-        if not peer_inbound:
-            _audit.audit(
-                "session.kill",
-                session=target.name,
-                target_user=launch_user,
-                force=args.force,
-                dry_run=True,
-            )
+        _audit.audit(
+            _kill_event,
+            session=target.name,
+            target_user=launch_user,
+            force=args.force,
+            dry_run=True,
+        )
         if args.json_output:
             _emit_json(
                 "kill",
@@ -2980,25 +2973,23 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     try:
         run_cmd(full, check=True)
     except subprocess.CalledProcessError as exc:
-        if not peer_inbound:
-            _audit.audit(
-                "session.kill",
-                outcome="error",
-                session=target.name,
-                target_user=launch_user,
-                force=args.force,
-                dry_run=args.dry_run,
-                rc=exc.returncode,
-            )
-        raise
-    if not peer_inbound:
         _audit.audit(
-            "session.kill",
+            _kill_event,
+            outcome="error",
             session=target.name,
             target_user=launch_user,
             force=args.force,
             dry_run=args.dry_run,
+            rc=exc.returncode,
         )
+        raise
+    _audit.audit(
+        _kill_event,
+        session=target.name,
+        target_user=launch_user,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
     if args.json_output:
         _emit_json(
             "kill",
