@@ -2987,8 +2987,10 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     from uxon import audit as _audit
 
     killed = sum(1 for r in results if r["action"] == "killed")
+    attempted = sum(1 for r in results if r["action"] in ("killed", "failed"))
     _audit.audit(
         "session.kill_all",
+        outcome="ok" if killed == attempted else "error",
         target_users=[launch_user],
         killed_count=killed,
         dry_run=args.dry_run,
@@ -4287,6 +4289,7 @@ def _build_tui_context(
                 killed_count += 1
         _audit.audit(
             "session.kill_all",
+            outcome="ok" if killed_count == len(fresh) else "error",
             target_users=[launch_user],
             killed_count=killed_count,
             dry_run=False,
@@ -4368,6 +4371,7 @@ def _build_tui_context(
         # ``kill-all-global`` had when sudo was unavailable.
         users = sorted({launch_user, *sudo_caps.reachable_users})
         killed_count = 0
+        attempted = 0
         for u in users:
             fresh = collect_sessions([u], cfg)
             for s in fresh:
@@ -4377,6 +4381,7 @@ def _build_tui_context(
                     s.name,
                 ]
                 cp = run_cmd(full, check=False)
+                attempted += 1
                 if cp.returncode == 0:
                     killed_count += 1
         # Operationally the most-significant kill_all path: cross-user
@@ -4387,6 +4392,7 @@ def _build_tui_context(
 
         _audit.audit(
             "session.kill_all",
+            outcome="ok" if killed_count == attempted else "error",
             target_users=users,
             killed_count=killed_count,
             dry_run=False,
