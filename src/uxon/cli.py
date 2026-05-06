@@ -2661,16 +2661,15 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         return _do_kill_remote(args, cfg)
 
     # Bug 6 — peer-inbound branch.  Same shape as ``do_attach`` above.
-    # ``correlation_id`` is read from module state (the parser layer set
-    # it via ``set_correlation_id`` after popping ``--audit-correlation-id``
-    # from argv).
+    # ``correlation_id`` is auto-injected by ``audit()`` from module
+    # state (the parser layer set it via ``set_correlation_id`` after
+    # popping ``--audit-correlation-id`` from argv).
     if os.environ.get("SSH_CONNECTION"):
         _audit.audit(
             "kill.remote.in",
             session=args.target_id,
             target_user=args.user or launch_user,
             force=args.force,
-            correlation_id=_audit._correlation_id,
         )
 
     # Local cross-user kill: --user X where X != launch_user requires
@@ -4730,10 +4729,14 @@ def main(argv: list[str] | None = None) -> int:
         # Fires *after* those early-returns so a caller-side
         # ``uxon list --host`` does not double-emit on its own host.
         if os.environ.get("SSH_CONNECTION"):
+            # ``correlation_id`` is auto-injected by ``audit()`` from
+            # module state when the parser popped ``--audit-correlation-id``
+            # off argv. Passing it explicitly would emit ``"correlation_id":
+            # null`` when the flag was absent — see spec §"Correlation
+            # across hosts" ("omitted rather than synthesized").
             _audit.audit(
                 "list.remote.in",
                 scope="all-users" if args.all_users else "own",
-                correlation_id=_audit._correlation_id,
             )
         if args.all_users:
             if not cfg.enable_all_users_list:
