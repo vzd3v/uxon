@@ -6,7 +6,7 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — target version 4.0.0
+## [Unreleased] — target version 3.3.0
 
 ### Changed (breaking)
 

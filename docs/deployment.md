@@ -326,8 +326,8 @@ audit trail (`attach.remote.in`, `kill.remote.in`, `list.remote.in`)
 so an operator chasing a cross-host event can join both records by
 ID.  The flag is hidden from `--help` because it is not a public
 knob.  Peers within a rolling-upgrade window must run the same
-major version (existing wire-schema posture); 4.0 peers reject the
-flag from a < 4.0 caller and vice versa.
+version (existing wire-schema posture); peers that don't recognise
+the flag reject it as an unknown argument.
 
 ### CLI
 
@@ -386,7 +386,11 @@ SSH); bulk kill across hosts remains intentionally out of scope.
 
 ## Migration notes
 
-### 3.x → 4.0
+### Audit channel (3.3.0)
+
+The 3.3.0 release introduces a dedicated audit channel and removes
+the legacy TUI event log.  Treat the items below as upgrade notes
+on top of the 2.x topology already documented above.
 
 - **TUI event log removed.** The per-day JSONL file at
   `${XDG_STATE_HOME:-~/.local/state}/uxon/tui-{user}-{date}.log` is
@@ -400,10 +404,10 @@ SSH); bulk kill across hosts remains intentionally out of scope.
   detail of the developer-facing `debug` / `metrics` channels.
 - **Peer protocol — `--audit-correlation-id`.** `list`, `attach`,
   `kill` now accept an internal `--audit-correlation-id <uuid>`
-  flag.  Peers within a rolling-upgrade window must run the same
-  major version (existing posture); silent fallback would lose the
-  correlation property exactly when an operator is debugging across
-  hosts.  Hidden from `--help`.
+  flag.  Peers in a rolling-upgrade window must run the same
+  version; silent fallback would lose the correlation property
+  exactly when an operator is debugging across hosts.  Hidden from
+  `--help`.
 - **Old `tui-*.log` files left in place.** No automatic cleanup —
   operators remove the old directory manually if desired.
 
