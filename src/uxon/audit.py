@@ -162,17 +162,29 @@ def extract_correlation_id(argv: list[str]) -> tuple[str | None, list[str]]:
 
 
 def _sanitize_flags(flags: list[str]) -> list[str]:
-    """Mask values of secret-bearing keyword flags before they hit the log.
+    """Make argv suitable for inclusion in a log field.
 
-    Denylist is prefix-based: anything starting with ``--token``,
-    ``--password``, ``--secret`` has its value replaced with ``REDACTED``.
-    Both ``--foo=value`` and ``--foo value`` shapes are handled.
+    Two transformations:
+      - Mask values of secret-bearing keyword flags (denylist prefixes
+        ``--token``, ``--password``, ``--secret``). Both ``--foo=value``
+        and ``--foo value`` shapes are handled.
+      - Drop the internal ``--audit-correlation-id`` flag (and its value)
+        entirely. It is peer-protocol metadata, already emitted as the
+        ``correlation_id`` envelope field; including it in ``flags`` is
+        duplicate noise.
     """
     out: list[str] = []
     i = 0
     n = len(flags)
     while i < n:
         a = flags[i]
+        if a == "--audit-correlation-id":
+            # Drop the flag and its (separated) value, if any.
+            i += 2 if i + 1 < n else 1
+            continue
+        if a.startswith("--audit-correlation-id="):
+            i += 1
+            continue
         is_secret = a.startswith(_FLAG_DENYLIST_PREFIXES)
         if is_secret and "=" in a:
             name = a.split("=", 1)[0]
