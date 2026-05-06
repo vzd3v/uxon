@@ -295,11 +295,14 @@ class KillUserLocalTests(unittest.TestCase):
                 uxon.do_kill(args, cfg, "u-vz")
 
         kill_emits = [e for e in recorded if e[0] == "session.kill"]
-        self.assertTrue(kill_emits, "no session.kill emit recorded")
-        # The failure-path emit is the one that fired — outcome=error
-        # with rc=2 from the captured CalledProcessError.
+        # Exactly one ``session.kill`` emit must fire on this path —
+        # the failure-path one with ``outcome=error``.  No spurious
+        # ``ok`` emit may slip in before the raise; asserting the full
+        # outcome list (rather than ``assertIn("error", …)``) catches a
+        # future regression where someone reorders the emit above
+        # ``run_cmd`` and ships a phantom success record.
         outcomes = [fields["outcome"] for _, fields in kill_emits]
-        self.assertIn("error", outcomes)
+        self.assertEqual(outcomes, ["error"])
         err_emit = next(fields for _, fields in kill_emits if fields["outcome"] == "error")
         self.assertEqual(err_emit["rc"], 2)
         self.assertEqual(err_emit["session"], "uxon-demo@claude")
