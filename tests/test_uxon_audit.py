@@ -75,6 +75,20 @@ class PrefixConstructionTests(_BaseAuditTests):
             prefix = au._build_prefix()
         self.assertEqual(prefix["subcmd"], "attach")
 
+    def test_malformed_sudo_uid_falls_back_to_real_uid(self) -> None:
+        # ``SUDO_UID`` is a string in the environment; if it is unparseable
+        # (operator-set or proc/env corruption), ``int(...)`` raises
+        # ValueError. Spec contract: never raise, always emit; fall back
+        # to ``os.getuid()`` so the prefix stays well-formed.
+        env = {"SUDO_USER": "alice", "SUDO_UID": "not-a-number", "USER": "root"}
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("socket.gethostname", return_value="host3"),
+            patch("os.getuid", return_value=12345),
+        ):
+            prefix = au._build_prefix()
+        self.assertEqual(prefix["caller_uid"], 12345)
+
 
 class SinkDetectionTests(_BaseAuditTests):
     def _stat_for(self, present: dict[str, bool]):
