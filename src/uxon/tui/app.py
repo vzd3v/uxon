@@ -1309,7 +1309,19 @@ def run(ctx: TuiContext) -> int:
             cmd=list(req.cmd)[:2],
         )
         sys.stdout.flush()
-        rc, stage, wall_seconds = _run_launch_request(req)
+        _t0 = time.monotonic()
+        try:
+            rc, stage, wall_seconds = _run_launch_request(req)
+        except BaseException as exc:
+            _audit.audit(
+                "session.ended",
+                outcome="error",
+                session=req.label,
+                rc=-1,
+                wall_seconds=round(time.monotonic() - _t0, 3),
+                error=str(exc)[:256],
+            )
+            raise
         _audit.audit(
             "session.ended",
             outcome="ok" if rc == 0 else "error",
