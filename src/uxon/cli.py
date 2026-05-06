@@ -2515,6 +2515,24 @@ def _tui_launch_request_cls() -> type:
     return LaunchRequest
 
 
+def _session_name_from_launch_label(label: str) -> str:
+    """Extract the bare tmux session name from a LaunchRequest label.
+
+    Labels are constructed as ``"<verb> <session>"`` (verbs ``launch``,
+    ``attach``, ``switch-client``) with an optional ``" (nested)"``
+    suffix on the switch-client form.  Audit ``session.*`` events take
+    the bare session name in the ``session`` field; passing the verb-
+    prefixed label there breaks cross-event correlation with CLI emits
+    (``do_new`` / ``do_attach`` use the bare name).
+    """
+    if " " not in label:
+        return label
+    rest = label.split(" ", 1)[1]
+    if rest.endswith(" (nested)"):
+        rest = rest[: -len(" (nested)")]
+    return rest
+
+
 def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
     """Return the LaunchRequest for attaching to an existing session.
 
@@ -4466,7 +4484,7 @@ def _build_tui_context(
             agent=agent_id,
             project=cwd,
             branch="",
-            session=req.label,
+            session=_session_name_from_launch_label(req.label),
             dry_run=False,
         )
         return req
@@ -4485,7 +4503,7 @@ def _build_tui_context(
         if req.label.startswith(("attach", "switch-client")):
             _audit.audit(
                 "session.attach",
-                session=req.label,
+                session=_session_name_from_launch_label(req.label),
                 target_user=launch_user,
             )
         else:
@@ -4494,7 +4512,7 @@ def _build_tui_context(
                 agent=agent_id,
                 project=project,
                 branch="",
-                session=req.label,
+                session=_session_name_from_launch_label(req.label),
                 dry_run=False,
             )
         return req
@@ -4510,7 +4528,7 @@ def _build_tui_context(
         if req.label.startswith(("attach", "switch-client")):
             _audit.audit(
                 "session.attach",
-                session=req.label,
+                session=_session_name_from_launch_label(req.label),
                 target_user=launch_user,
             )
         else:
@@ -4519,7 +4537,7 @@ def _build_tui_context(
                 agent=agent_id,
                 project=project,
                 branch="",
-                session=req.label,
+                session=_session_name_from_launch_label(req.label),
                 dry_run=False,
             )
         return req
