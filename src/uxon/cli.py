@@ -212,7 +212,13 @@ def eprint(msg: str) -> None:
 
 def fail(msg: str, code: int = 2) -> NoReturn:
     eprint(f"uxon: {msg}")
-    raise SystemExit(code)
+    # Stash the human-readable message on the exception object so a
+    # ``try/except SystemExit`` upstream (e.g. main()'s ``config.error``
+    # audit emit) can recover it. Without this, ``str(ex)`` on a
+    # ``SystemExit(int_code)`` yields just ``"1"`` / ``"2"``.
+    err = SystemExit(code)
+    err.uxon_msg = msg  # type: ignore[attr-defined]
+    raise err
 
 
 def _sanitize_callback_stderr(raw: str) -> str:
@@ -4716,11 +4722,16 @@ def main(argv: list[str] | None = None) -> int:
         # The audit module's compile-time defaults (``enabled=True``,
         # ``syslog_facility="user"``) are what fires here; ``configure()``
         # has not run yet because ``load_config`` is what feeds it.
+        # Spec says ``error`` carries the first 256 chars of the error
+        # text; ``fail()`` stashes the human-readable message on
+        # ``ex.uxon_msg`` so we don't end up logging just the int exit
+        # code (``str(SystemExit(1)) == "1"``).
+        err_msg = getattr(ex, "uxon_msg", None) or str(ex.code)
         _audit.audit(
             "config.error",
             outcome="error",
             path=str(repo_config_path()),
-            error=str(ex)[:256],
+            error=err_msg[:256],
         )
         raise
     _audit.configure(
