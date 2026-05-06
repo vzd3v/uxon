@@ -4485,6 +4485,25 @@ def _build_tui_context(
             connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
             ssh_multiplex=cfg.ssh_multiplex,
         )
+        # Mirrors ``_do_kill_remote::_emit_kill_remote_error`` (CLI
+        # path) so the TUI and CLI failure trails are symmetric: an
+        # operator querying ``EVENT=kill.remote.out OUTCOME=error``
+        # finds TUI-originated ssh failures alongside CLI ones.
+        def _emit_kill_remote_error(error: str, rc: int) -> None:
+            _audit.audit(
+                "kill.remote.out",
+                outcome="error",
+                peer_name=peer.name,
+                ssh_alias=peer.ssh_alias,
+                target_user=user,
+                target_session=name,
+                force=True,
+                dry_run=False,
+                correlation_id=corr_id,
+                rc=rc,
+                error=error[:256],
+            )
+
         try:
             cp = subprocess.run(
                 ssh_argv,
@@ -4493,12 +4512,15 @@ def _build_tui_context(
                 timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
             )
         except subprocess.TimeoutExpired:
+            _emit_kill_remote_error("ssh timeout", 124)
             fail(f"ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s talking to {host_name}", 1)
         except FileNotFoundError:
+            _emit_kill_remote_error("ssh binary missing", 127)
             fail("ssh not installed on local host", 1)
         if cp.returncode != 0:
             stderr = (cp.stderr or "").strip().splitlines()
             tail = stderr[-1] if stderr else f"ssh exited {cp.returncode}"
+            _emit_kill_remote_error(f"non-zero ssh rc: {tail}", cp.returncode)
             fail(f"remote kill on {host_name} failed: {tail}", 1)
 
     def on_kill_all_reachable() -> None:
