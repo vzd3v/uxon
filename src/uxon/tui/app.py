@@ -1312,7 +1312,12 @@ def run(ctx: TuiContext) -> int:
         _t0 = time.monotonic()
         try:
             rc, stage, wall_seconds = _run_launch_request(req)
-        except BaseException as exc:
+        except Exception as exc:
+            # ``Exception`` (not ``BaseException``): a KeyboardInterrupt or
+            # SystemExit propagating up here is a user-driven interruption,
+            # not an error in the launched subprocess.  Spec's outcome
+            # alphabet has no "cancelled" label, so leave those uncaught
+            # rather than mislabel them as ``outcome="error"``.
             _audit.audit(
                 "session.ended",
                 outcome="error",
