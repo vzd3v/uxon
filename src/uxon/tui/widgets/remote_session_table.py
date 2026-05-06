@@ -24,10 +24,11 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from rich.text import Text
-from textual.widgets import DataTable
+
+from .focus_releasing_data_table import FocusReleasingDataTable
 
 
-class RemoteSessionTable(DataTable):
+class RemoteSessionTable(FocusReleasingDataTable):
     """DataTable rendering remote-host sessions from wire-schema records.
 
     Columns (when ``show_host=False``):
@@ -39,17 +40,10 @@ class RemoteSessionTable(DataTable):
     The ``populate`` method takes pairs of ``(host_name, record)`` so
     a multi-host snapshot can be flattened in one pass with stable
     sort order — host first, then session name.
-    """
 
-    DEFAULT_CSS = """
-    RemoteSessionTable {
-        width: 1fr;
-        height: 1fr;
-        min-height: 3;
-    }
-    RemoteSessionTable > .datatable--hover {
-        background: $boost;
-    }
+    Boundary-aware navigation, cursor-on-focus visibility, and the
+    base CSS (width / height / hover) are inherited from
+    :class:`FocusReleasingDataTable`.
     """
 
     COLUMN_KEYS: ClassVar[list[str]] = [
@@ -63,18 +57,10 @@ class RemoteSessionTable(DataTable):
 
     def __init__(self, *, show_host: bool = False, id: str | None = None) -> None:
         super().__init__(id=id)
-        self.cursor_type = "none"
-        self.zebra_stripes = True
         self.show_host = show_host
         # Each row in the table maps back to a (host_name, record) tuple;
         # the on_data_table_row_selected handler reads it via row_at().
         self._row_index: list[tuple[str, dict[str, Any]]] = []
-
-    def on_focus(self) -> None:
-        self.cursor_type = "row"
-
-    def on_blur(self) -> None:
-        self.cursor_type = "none"
 
     @staticmethod
     def column_labels(*, show_host: bool) -> tuple[str, ...]:
