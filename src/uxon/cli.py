@@ -1462,7 +1462,7 @@ def _resolve_or_audit_not_found(
     sessions: list[SessionInfo],
     cfg: Config,
     *,
-    audit_event: str,
+    audit_event: str | None,
     target_user: str,
     extra: dict[str, Any] | None = None,
 ) -> SessionInfo:
@@ -1476,6 +1476,12 @@ def _resolve_or_audit_not_found(
     :func:`resolve_session` raises :class:`SystemExit` via :func:`fail`
     before any caller-side audit fires. The audit emits before the
     ``SystemExit`` propagates up.
+
+    Pass ``audit_event=None`` to skip the emit (peer-inbound branches:
+    ``attach.remote.in`` / ``kill.remote.in`` replace the local
+    ``session.*`` event per spec line 299/302; emitting a
+    ``not_found`` outcome on the peer side would re-introduce the
+    duplicate signal the spec deliberately removed).
     """
     try:
         return resolve_session(
@@ -1485,6 +1491,8 @@ def _resolve_or_audit_not_found(
             legacy_prefixes=cfg.legacy_session_prefixes,
         )
     except SystemExit:
+        if audit_event is None:
+            raise
         from uxon import audit as _audit
 
         fields: dict[str, Any] = {
@@ -2427,15 +2435,21 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # Bug 6 — peer-inbound branch.  When invoked over SSH the only
     # signal that this is the peer side of an ``attach.remote.out`` is
     # ``SSH_CONNECTION`` in the env (sudo strips it on the next leg, so
-    # we have to capture it before the sudo execvp below).  This emit
-    # *replaces* ``session.attach`` for the peer-side path — they
-    # describe the same physical event from caller-vs-peer POV.
-    if os.environ.get("SSH_CONNECTION"):
+    # we have to capture it before the sudo execvp below).  Spec line
+    # 299: ``attach.remote.in`` *replaces* ``session.attach`` on the
+    # peer side — both names describe the same physical event from
+    # caller-vs-peer POV, so we suppress every downstream
+    # ``session.attach`` emit when ``peer_inbound`` is true.
+    peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
+    if peer_inbound:
         _audit.audit(
             "attach.remote.in",
             target_user=args.user or launch_user,
             target_session=args.target_id,
         )
+    # Audit-event tag threaded into ``_resolve_or_audit_not_found``;
+    # ``None`` skips the emit.
+    _attach_event: str | None = None if peer_inbound else "session.attach"
 
     target_user = args.user or launch_user
     if target_user != launch_user:
@@ -2443,12 +2457,13 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
         caps = probe_sudo_capability([target_user])
         if target_user not in caps.reachable_users:
-            _audit.audit(
-                "session.attach",
-                outcome="denied",
-                session=args.target_id or "",
-                target_user=target_user,
-            )
+            if not peer_inbound:
+                _audit.audit(
+                    "session.attach",
+                    outcome="denied",
+                    session=args.target_id or "",
+                    target_user=target_user,
+                )
             eprint(
                 f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
                 "check /etc/sudoers.d for a NOPASSWD rule for this target)"
@@ -2459,7 +2474,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             args.target_id,
             sessions,
             cfg,
-            audit_event="session.attach",
+            audit_event=_attach_event,
             target_user=target_user,
         )
         base = configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
@@ -2472,17 +2487,19 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             return 0
         # Audit before ``os.execvp`` (Bug 7) — once the image is
         # replaced our cached socket is gone.
-        _audit.audit("session.attach", session=target.name, target_user=target_user)
+        if not peer_inbound:
+            _audit.audit("session.attach", session=target.name, target_user=target_user)
         try:
             os.execvp(full[0], full)
         except Exception as exc:
-            _audit.audit(
-                "session.attach",
-                outcome="error",
-                session=target.name,
-                target_user=target_user,
-                error=str(exc)[:256],
-            )
+            if not peer_inbound:
+                _audit.audit(
+                    "session.attach",
+                    outcome="error",
+                    session=target.name,
+                    target_user=target_user,
+                    error=str(exc)[:256],
+                )
             raise
         return 0
 
@@ -2504,7 +2521,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         args.target_id,
         sessions,
         cfg,
-        audit_event="session.attach",
+        audit_event=_attach_event,
         target_user=launch_user,
     )
     # Same-user audit fires once before ``attach_session``'s execvp.
@@ -2512,17 +2529,19 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # call exactly once per CLI invocation; the helper is also used by
     # the TUI's ``attach_session_blocking`` and we don't want to double
     # up there.
-    _audit.audit("session.attach", session=target.name, target_user=launch_user)
+    if not peer_inbound:
+        _audit.audit("session.attach", session=target.name, target_user=launch_user)
     try:
         return attach_session(target, cfg, launch_user, args.dry_run)
     except Exception as exc:
-        _audit.audit(
-            "session.attach",
-            outcome="error",
-            session=target.name,
-            target_user=launch_user,
-            error=str(exc)[:256],
-        )
+        if not peer_inbound:
+            _audit.audit(
+                "session.attach",
+                outcome="error",
+                session=target.name,
+                target_user=launch_user,
+                error=str(exc)[:256],
+            )
         raise
 
 
