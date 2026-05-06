@@ -14,6 +14,7 @@ from typing import Any
 
 from rich.text import Text
 
+from uxon.tui.dashboard import KNOWN_COLUMN_IDS
 from uxon.tui.dashboard.columns import (
     REGISTRY,
     ColumnSpec,
@@ -99,6 +100,14 @@ class RegistryShapeTests(unittest.TestCase):
             self.assertEqual(_by_id(col_id).align, "right", col_id)
         for col_id in ("host", "user", "name", "agent", "cmd", "path"):
             self.assertEqual(_by_id(col_id).align, "left", col_id)
+
+    def test_known_column_ids_matches_registry(self) -> None:
+        # ``KNOWN_COLUMN_IDS`` is the lightweight mirror imported by
+        # ``uxon.cli`` (which must stay Rich-free); a drift between
+        # the two would silently break config validation. Order must
+        # match too — config.example.toml documents the lists in
+        # registry order.
+        self.assertEqual(KNOWN_COLUMN_IDS, tuple(c.id for c in REGISTRY))
 
 
 class HostColourTests(unittest.TestCase):

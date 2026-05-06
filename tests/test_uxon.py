@@ -284,6 +284,96 @@ class UxonTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg("tui_refresh_interval_seconds = 0\n", tmpdir)
 
+    def test_load_config_tui_table_defaults_when_section_absent(self) -> None:
+        # No ``[tui.table]`` block — defaults must hold and the columns
+        # signal must be ``None`` (not ``()``), since ``None`` is the
+        # contract that ``build_active_columns`` uses to mean
+        # "fall back to the registry defaults".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("", tmpdir)
+        self.assertIsNone(cfg.tui_table_columns)
+        self.assertEqual(cfg.tui_table_default_sort_by, "cpu")
+
+    def test_load_config_tui_table_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [tui.table]
+                    columns         = ["name", "user", "cpu", "ram", "last"]
+                    default_sort_by = "ram"
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        self.assertEqual(cfg.tui_table_columns, ("name", "user", "cpu", "ram", "last"))
+        self.assertEqual(cfg.tui_table_default_sort_by, "ram")
+
+    def test_load_config_tui_table_empty_columns_collapses_to_none(self) -> None:
+        # Explicit empty list and absent key both signal "use registry
+        # defaults"; we never expose an empty-tuple state.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [tui.table]
+                    columns = []
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        self.assertIsNone(cfg.tui_table_columns)
+
+    def test_load_config_tui_table_rejects_non_list_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [tui.table]
+                        columns = "name"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+
+    def test_load_config_tui_table_rejects_non_string_default_sort_by(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [tui.table]
+                        default_sort_by = 1
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+
+    def test_load_config_tui_table_unknown_default_sort_by_falls_back(self) -> None:
+        # Unknown id → soft-fallback to "cpu" with a debug-log entry.
+        # Patch the lazy events.debug import so the test does not
+        # depend on UXON_DEBUG being set, and to capture the call.
+        from uxon.tui import events as _events
+
+        seen: list[tuple[str, dict]] = []
+
+        def _spy(topic: str, **fields: object) -> None:
+            seen.append((topic, dict(fields)))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(_events, "debug", _spy):
+                cfg = self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [tui.table]
+                        default_sort_by = "no-such-column"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertEqual(cfg.tui_table_default_sort_by, "cpu")
+        self.assertEqual(len(seen), 1)
+        topic, fields = seen[0]
+        self.assertEqual(topic, "tui")
+        self.assertEqual(fields.get("reason"), "unknown_default_sort_by")
+        self.assertEqual(fields.get("id"), "no-such-column")
+
     def test_load_config_reads_git_remote_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg(

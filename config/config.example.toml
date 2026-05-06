@@ -125,3 +125,15 @@ default_args = []
 #
 # Combine the team-on-a-single-host keys above with [[remote_hosts]]
 # blocks like in the solo-on-multiple-hosts section.
+
+
+# ─── Dashboard columns (TUI) ──────────────────────────────────────
+# docs/configuration.md#dashboard-columns
+#
+# Empty / absent uses the built-in registry defaults. Listing
+# columns explicitly opts into a fixed visual order; unknown ids
+# from older / newer uxon versions are silently dropped.
+#
+# [tui.table]
+# columns         = ["name", "user", "cpu", "ram", "last", "cmd"]
+# default_sort_by = "cpu"

@@ -73,6 +73,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tmux_socket_template": "/tmp/uxon-{user}.sock",
     "tui_refresh_interval_seconds": 2.0,
     "tui_ssh_refresh_interval_seconds": 10.0,
+    # Dashboard column layout. ``columns`` is a list of column ids (see
+    # :data:`uxon.tui.dashboard.KNOWN_COLUMN_IDS`); empty / absent means
+    # "use the registry defaults". ``default_sort_by`` picks the initial
+    # sort column; unknown ids fall back to ``"cpu"`` (logged via
+    # ``UXON_DEBUG=tui``).
+    "tui": {
+        "table": {
+            "columns": [],
+            "default_sort_by": "cpu",
+        },
+    },
     # Stage 5: ssh transport hardening.
     # ``ssh_multiplex = "auto"`` adds ControlMaster/Path/Persist to the
     # default fetch template (warm tick: 5-20 ms vs cold 200-500 ms).
@@ -160,6 +171,13 @@ class Config:
     fetch_concurrency: int = 16
     audit_enabled: bool = True
     audit_syslog_facility: str = "user"
+    # ``None`` is the load-time signal "use REGISTRY defaults". An empty
+    # tuple would mean "operator explicitly cleared the column list" —
+    # that's not a state we want to expose distinctly, so absent / ``[]``
+    # in TOML both collapse to ``None`` here. ``build_active_columns``
+    # consumes this contract directly.
+    tui_table_columns: tuple[str, ...] | None = None
+    tui_table_default_sort_by: str = "cpu"
 
 
 @dataclass
@@ -498,6 +516,51 @@ def load_config(cwd: str) -> Config:
     if tui_ssh_refresh_interval_seconds <= 0:
         fail("tui_ssh_refresh_interval_seconds must be greater than 0")
 
+    # ── [tui.table] dashboard column layout ──────────────────────────
+    # Read defensively. Both ``tui`` and ``tui.table`` may be absent
+    # from the TOML; that maps to "use REGISTRY defaults" (signalled
+    # by ``tui_table_columns is None``) and ``default_sort_by="cpu"``.
+    tui_tbl = merged.get("tui", {})
+    if not isinstance(tui_tbl, dict):
+        fail("'tui' must be a TOML table")
+    tui_table_tbl = tui_tbl.get("table", {})
+    if not isinstance(tui_table_tbl, dict):
+        fail("'tui.table' must be a TOML table")
+    tui_table_columns_raw = tui_table_tbl.get("columns")
+    if tui_table_columns_raw is None or tui_table_columns_raw == []:
+        # Absent or explicit empty list → "use REGISTRY defaults".
+        tui_table_columns: tuple[str, ...] | None = None
+    elif not isinstance(tui_table_columns_raw, list):
+        fail("tui.table.columns must be a list of column ids")
+    else:
+        tui_table_columns = tuple(str(x) for x in tui_table_columns_raw)
+    tui_table_default_sort_by_raw = tui_table_tbl.get("default_sort_by", "cpu")
+    if not isinstance(tui_table_default_sort_by_raw, str):
+        fail("tui.table.default_sort_by must be a string")
+    tui_table_default_sort_by = tui_table_default_sort_by_raw
+    # Unknown values are soft-fallback (``"cpu"``) with a debug-log
+    # entry — operators upgrading uxon may carry config from a version
+    # that named columns differently and we don't want to break TUI
+    # boot for cosmetic settings. Validation pulls the lightweight
+    # ``KNOWN_COLUMN_IDS`` constant from the dashboard package
+    # (no Rich / Textual import); the debug log goes through the same
+    # lazy path so ``import uxon.cli`` stays Rich-free.
+    from uxon.tui.dashboard import KNOWN_COLUMN_IDS as _KNOWN_COLUMN_IDS
+
+    if tui_table_default_sort_by not in _KNOWN_COLUMN_IDS:
+        try:
+            from uxon.tui.events import debug as _events_debug
+
+            _events_debug(
+                "tui",
+                reason="unknown_default_sort_by",
+                id=tui_table_default_sort_by,
+            )
+        except Exception:
+            # Telemetry, not a correctness path.
+            pass
+        tui_table_default_sort_by = "cpu"
+
     ssh_multiplex = str(merged.get("ssh_multiplex", DEFAULT_CONFIG["ssh_multiplex"]))
     if ssh_multiplex not in ("auto", "off"):
         fail(f"ssh_multiplex must be 'auto' or 'off', got {ssh_multiplex!r}")
@@ -571,6 +634,8 @@ def load_config(cwd: str) -> Config:
         fetch_concurrency=fetch_concurrency,
         audit_enabled=audit_enabled,
         audit_syslog_facility=audit_syslog_facility,
+        tui_table_columns=tui_table_columns,
+        tui_table_default_sort_by=tui_table_default_sort_by,
     )
 
 

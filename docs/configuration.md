@@ -479,6 +479,38 @@ never *creates* a session under a legacy prefix.
 
 ---
 
+## Use case: dashboard columns
+
+The TUI's session dashboard ships a default column layout that suits
+most setups; the `[tui.table]` block lets you override it.
+
+```toml
+[tui.table]
+columns         = ["name", "user", "cpu", "ram", "last", "cmd"]
+default_sort_by = "cpu"
+```
+
+- `tui.table.columns` — list of column ids in display order. Leave
+  empty (or omit) to use the registry defaults: every column whose
+  `default_visible` is true plus any that the runtime layout
+  promotes (`host` in multi-host setups, `user` when other-user
+  rows are visible). Listing columns explicitly opts into a fixed
+  visual order; ids unknown to the running uxon version are silently
+  dropped (an older config carrying a since-removed column id stays
+  loadable).
+- `tui.table.default_sort_by` — column id used as the initial sort
+  on TUI startup. Defaults to `"cpu"`. Unknown values fall back to
+  `"cpu"` (with a debug-log entry on `UXON_DEBUG=tui`); the TUI
+  never refuses to start because of a cosmetic setting.
+
+Available column ids: `host`, `user`, `name`, `agent`, `cpu`,
+`ram`, `new`, `last`, `cmd`, `path`, `pid`, `wins`. The full
+contract (which ids are gated by which runtime flags, alignment,
+formatting) lives in
+[`src/uxon/tui/dashboard/columns.py`](../src/uxon/tui/dashboard/columns.py).
+
+---
+
 ## Use case: tweak refresh cadence on a slow link
 
 Defaults: TUI refreshes every 2 s, the SSH-link probe (only shown
@@ -603,6 +635,8 @@ remain the operator's responsibility.
 | `tmux_socket_template` | string | `/tmp/uxon-{user}.sock` | Per-user socket path. Placeholders: `{user}`, `{uid}`. |
 | `tui_refresh_interval_seconds` | number | `2.0` | Local-tmux refresh cadence. |
 | `tui_ssh_refresh_interval_seconds` | number | `10.0` | Cadence for SSH-driven streams: the `ssh-link` probe (visible inside SSH) and the per-peer remote-sessions poller (when `[[remote_hosts]]` is configured). |
+| `tui.table.columns` | array | `[]` | Dashboard columns in display order. Empty (or absent) uses the registry defaults; listing ids opts into a fixed order. Unknown ids are dropped silently. See [Use case: dashboard columns](#use-case-dashboard-columns). |
+| `tui.table.default_sort_by` | string | `"cpu"` | Initial sort column id. Unknown values fall back to `"cpu"` (logged via `UXON_DEBUG=tui`). |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback when `uxon new` finds an existing matching session. |
 | `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
 | `default_git_remote_profile` | string | `""` | Profile picked by `--git-remote default` and the TUI default. |
