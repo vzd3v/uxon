@@ -186,6 +186,19 @@ class SyslogSerializationTests(_BaseAuditTests):
         # facility=3 (daemon) → 3*8 + 6 = 30
         self.assertEqual(int(m.group(1)), 30)
 
+    def test_unknown_facility_falls_back_to_user(self) -> None:
+        # Operator typo or schema drift: ``[audit].syslog_facility`` set
+        # to a name that is not in ``_FACILITY_NAMES``. The serializer
+        # must not crash; spec says default is "user" (facility=1).
+        au._syslog_facility_name = "bogus"
+        body = au._serialize_syslog(
+            {"event": "x", "ts": "2026-01-01T00:00:00.000Z", "host": "h", "pid": 1}
+        )
+        m = re.match(rb"<(\d+)>1 ", body)
+        assert m is not None
+        # 1 * 8 + 6 = 14
+        self.assertEqual(int(m.group(1)), 14)
+
 
 class FlagSanitizerTests(_BaseAuditTests):
     def test_token_file_value_redacted_inline(self) -> None:
