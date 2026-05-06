@@ -4289,6 +4289,20 @@ def _build_tui_context(
         else:
             other = []
         skipped_users = tuple(sorted(u for u in candidates if u not in sudo_caps.reachable_users))
+        # Spec line 223: ``list.peek`` fires when the TUI actually
+        # enumerates cross-user sessions (gated by ``enable_all_users_list``
+        # and ``reachable_users`` being non-empty).  CLI ``uxon list
+        # --all-users`` emits its own ``list.peek`` from the list block;
+        # the TUI refresh path is the second documented site and was
+        # previously silent.
+        if cfg.enable_all_users_list and sudo_caps.reachable_users:
+            from uxon import audit as _audit
+
+            _audit.audit(
+                "list.peek",
+                scope_users=sorted({launch_user, *sudo_caps.reachable_users}),
+                scope_skipped=list(skipped_users),
+            )
 
         own.sort(key=lambda s: s.name)
         other.sort(key=lambda s: (s.user, s.name))
