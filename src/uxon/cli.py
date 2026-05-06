@@ -5010,7 +5010,11 @@ def main(argv: list[str] | None = None) -> int:
         # ``SSH_CONNECTION`` set and neither ``--host`` nor ``--all-hosts``.
         # Fires *after* those early-returns so a caller-side
         # ``uxon list --host`` does not double-emit on its own host.
-        if os.environ.get("SSH_CONNECTION"):
+        # Spec line 306: when peer-inbound, ``list.remote.in`` replaces
+        # ``list.peek`` ("instead of"), so we suppress the latter on
+        # this code path.
+        peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
+        if peer_inbound:
             # ``correlation_id`` is auto-injected by ``audit()`` from
             # module state when the parser popped ``--audit-correlation-id``
             # off argv. Passing it explicitly would emit ``"correlation_id":
@@ -5030,11 +5034,12 @@ def main(argv: list[str] | None = None) -> int:
             scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
             # ``list.peek`` fires only after the gate passes — placement
             # ensures we never log a peek for a denied invocation.
-            _audit.audit(
-                "list.peek",
-                scope_users=scope_users,
-                scope_skipped=list(scope_skipped),
-            )
+            if not peer_inbound:
+                _audit.audit(
+                    "list.peek",
+                    scope_users=scope_users,
+                    scope_skipped=list(scope_skipped),
+                )
             sessions = collect_sessions(scope_users, cfg)
             if args.json_output:
                 _emit_json(
