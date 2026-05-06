@@ -1312,6 +1312,7 @@ def run(ctx: TuiContext) -> int:
         rc, stage, wall_seconds = _run_launch_request(req)
         _audit.audit(
             "session.ended",
+            outcome="ok" if rc == 0 else "error",
             session=req.label,
             rc=rc,
             wall_seconds=round(wall_seconds, 3),
