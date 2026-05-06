@@ -52,6 +52,41 @@ Disable per-host with `[audit]\nenabled = false` in `config.toml`;
 there is no environment-variable override.  Query via
 `journalctl SYSLOG_IDENTIFIER=uxon`.
 
+#### Common queries
+
+On the journald-native sink every envelope field is a first-class
+`FIELD=value` selector (uppercased — that's the journald wire
+convention).  On the `/dev/log` syslog fallback the body lands as
+`@cee: {…}` JSON — the same fields are reachable via `-o json | jq`.
+
+```bash
+# Everything uxon emitted today
+journalctl SYSLOG_IDENTIFIER=uxon --since today
+
+# Everything one operator did today (caller_user is the human's
+# login, before any sudo -iu)
+journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=alice --since today
+
+# All denied / errored / not-found gestures across the fleet
+journalctl SYSLOG_IDENTIFIER=uxon -o json | \
+  jq -c 'select(.OUTCOME != "ok") | {ts:.TS, event:.EVENT, outcome:.OUTCOME, caller:.CALLER_USER, target:.TARGET_USER, session:.SESSION}'
+
+# Trace one cross-host operation end-to-end by correlation_id (the
+# UUID on the caller's *.remote.out matches the peer's *.remote.in)
+journalctl SYSLOG_IDENTIFIER=uxon CORRELATION_ID=8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f
+
+# Kill-all gestures (and what they hit) for the last week
+journalctl SYSLOG_IDENTIFIER=uxon EVENT=session.kill_all --since "7 days ago" -o json | \
+  jq -c '{ts:.TS, caller:.CALLER_USER, users:.TARGET_USERS, killed:.KILLED_COUNT, dry_run:.DRY_RUN}'
+
+# Live tail (follow new events as they arrive)
+journalctl SYSLOG_IDENTIFIER=uxon -f
+```
+
+Add a `--user` flag to any of the above on a single-user host
+(`journalctl --user SYSLOG_IDENTIFIER=uxon …`) — that's where solo
+installs land their records.
+
 `install/install_uxon.py` creates a dedicated venv at `--venv-dir`
 (default `/opt/uxon/venv`), `pip install`s the package into it, and
 symlinks `/opt/uxon/venv/bin/uxon` to `--install-path`. Dependencies
