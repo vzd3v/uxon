@@ -4485,6 +4485,7 @@ def _build_tui_context(
             connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
             ssh_multiplex=cfg.ssh_multiplex,
         )
+
         # Mirrors ``_do_kill_remote::_emit_kill_remote_error`` (CLI
         # path) so the TUI and CLI failure trails are symmetric: an
         # operator querying ``EVENT=kill.remote.out OUTCOME=error``

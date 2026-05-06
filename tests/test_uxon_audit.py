@@ -316,16 +316,12 @@ class CorrelationIdTests(_BaseAuditTests):
         # Malformed value: not a UUID. The flag and value are still
         # stripped from argv so the per-parser walk doesn't see them,
         # but ``cid`` is ``None`` so module state stays clean.
-        cid, rest = au.extract_correlation_id(
-            ["--audit-correlation-id", "not-a-uuid", "--json"]
-        )
+        cid, rest = au.extract_correlation_id(["--audit-correlation-id", "not-a-uuid", "--json"])
         self.assertIsNone(cid)
         self.assertEqual(rest, ["--json"])
 
     def test_invalid_uuid_inline_dropped(self) -> None:
-        cid, rest = au.extract_correlation_id(
-            ["--audit-correlation-id=evil\nfield", "--json"]
-        )
+        cid, rest = au.extract_correlation_id(["--audit-correlation-id=evil\nfield", "--json"])
         self.assertIsNone(cid)
         self.assertEqual(rest, ["--json"])
 

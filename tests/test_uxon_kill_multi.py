@@ -265,9 +265,7 @@ class KillUserLocalTests(unittest.TestCase):
         self.assertEqual(parsed.target_id, "demo@claude")
         self.assertEqual(parsed.user, "alice")
         self.assertTrue(parsed.force)
-        self.assertEqual(
-            parsed.audit_correlation_id, "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f"
-        )
+        self.assertEqual(parsed.audit_correlation_id, "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f")
 
     def test_run_cmd_failure_emits_session_kill_outcome_error(self) -> None:
         # Regression for the failure-path emit added in commit bd9ba0c:

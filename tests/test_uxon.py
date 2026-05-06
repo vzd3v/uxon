@@ -1659,9 +1659,7 @@ class CliPreflightTests(unittest.TestCase):
             mock_report.enabled = {"claude": mock.MagicMock(path=None)}
             probe.return_value = mock_report
             with (
-                mock.patch.dict(
-                    "os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}
-                ),
+                mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
                 mock.patch.object(cli, "load_config", return_value=cfg),
                 mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
                 mock.patch("sys.stderr", new_callable=io.StringIO),
@@ -1669,9 +1667,7 @@ class CliPreflightTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     uxon.main(["list", "--all-users"])
 
-        list_emits = [
-            e for e in recorded if e[0] in ("list.remote.in", "list.peek")
-        ]
+        list_emits = [e for e in recorded if e[0] in ("list.remote.in", "list.peek")]
         peek_emits = [e for e in list_emits if e[0] == "list.peek"]
         rin_emits = [e for e in list_emits if e[0] == "list.remote.in"]
         # ``replaces`` semantics: on the peer-inbound path, no
