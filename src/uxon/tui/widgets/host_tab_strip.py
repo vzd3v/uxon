@@ -135,12 +135,18 @@ class HostTabStrip(Widget):
         margin-right: 2;
         text-style: dim;
     }
+    /* Active without focus — soft tint just so the operator knows
+       which host's rows the table is showing. */
     HostTabStrip _TabButton.-active {
         text-style: bold;
-        background: $accent 30%;
+        background: $accent 20%;
     }
+    /* Active and focused (= keyboard cursor is on it) — stronger
+       fill plus an underline acts as the cursor marker, separate
+       from the 'this is the visible host' marker above. */
     HostTabStrip _TabButton:focus {
-        text-style: bold;
+        text-style: bold underline;
+        background: $accent 60%;
     }
     """
 
