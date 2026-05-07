@@ -12,6 +12,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
+from helpers import make_config as _make_config
+
 from uxon import cli as uxon
 from uxon.remote_hosts import RemoteHost
 
@@ -75,8 +77,6 @@ class AttachCrossUserTests(unittest.TestCase):
     """
 
     def _cfg(self) -> uxon.Config:
-        from tests.test_uxon_kill_multi import _make_config
-
         return _make_config()
 
     def test_same_user_no_sudo_path(self) -> None:
@@ -183,8 +183,6 @@ class AttachHostRemoteTests(unittest.TestCase):
     """``uxon attach --host <alias> --user <u>`` SSH-routed dispatch."""
 
     def _cfg_with_host(self, **host_kwargs) -> uxon.Config:
-        from tests.test_uxon_kill_multi import _make_config
-
         return _make_config(
             remote_hosts=[
                 RemoteHost(
@@ -257,8 +255,6 @@ class OnRemoteAttachCallbackTests(unittest.TestCase):
     """The TUI-side on_remote_attach callback builds the right LaunchRequest."""
 
     def test_builds_interactive_ssh_launch_request(self) -> None:
-        from tests.test_uxon_kill_multi import _make_config
-
         cfg = _make_config(
             remote_hosts=[
                 RemoteHost(
