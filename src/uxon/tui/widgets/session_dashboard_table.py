@@ -106,24 +106,24 @@ class SessionDashboardTable(FocusReleasingDataTable):
         self._block_meta = meta
 
     def _wrap_cell(self, row_key: str, col_id: str, value: Any) -> Any:
-        """Apply block hue + zebra dim to NAME / HOST cells.
+        """Apply the block hue to NAME / HOST cells.
 
         Other columns are passed through unchanged. CPU danger styling
         is per-cell already (set by ``format_cpu``); we never overwrite
-        it.
+        it. Background zebra is owned by DataTable's ``zebra_stripes``
+        — this method only paints the foreground hue for the host
+        block, identical for every row in the block (no per-row
+        font-level alternation).
         """
         if col_id not in ("name", "host"):
             return value
         meta = self._block_meta.get(row_key)
         if meta is None:
             return value
-        block_color, row_in_block = meta
-        style = block_color
-        if row_in_block % 2 == 1:
-            style = f"{style} dim"
+        block_color, _row_in_block = meta
         if isinstance(value, Text):
-            return Text(value.plain, style=style)
-        return Text(str(value), style=style)
+            return Text(value.plain, style=block_color)
+        return Text(str(value), style=block_color)
 
     def on_mount(self) -> None:
         for col in self._columns:
