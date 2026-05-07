@@ -6,6 +6,28 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — 3.4.0
+
+### Added
+- Session dashboard: `by_host` view (default) with per-host tab strip and status bar; `flat` toggle via `v`.
+- Search bar (default focus on TUI mount); `/` to refocus from anywhere.
+- Optional `host_stats` block in the wire envelope (additive; no schema-version bump).
+- Per-host colour pin: `[[remote_hosts]] color = "..."`; configurable palette `[tui] color_palette`; configurable local hue `[local_host] color`.
+- `tui.table.default_view`, `tui.search.fields`, `[local_host]` section, `[tui] color_palette`.
+- `ssh_control_persist_seconds` setting (default 300s; must be > 0).
+- Layout-invariant bindings via JCUKEN ↔ QWERTY alias map.
+
+### Changed
+- Sort is now a hard contract, not a setting: locals → cfg-order remotes → within-block by last-attach desc, name asc.
+- Attached state shown via `●` filled / `○` hollow glyph; no `bold green` override.
+- Quit is `q`/`й` only. `Esc` is a scoped cancel; never quits.
+- `PATH` column hidden by default. Operators opt back in via `tui.table.columns`.
+- Reconciler `apply()` runs `RowAdd` ops in reverse new-index order — fixes a long-standing visual reorder bug on tab switches and large diffs.
+
+### Removed
+- Sort cycle bindings (`s`, `S`) and `tui.table.default_sort_by` setting.
+- `Esc → quit` binding on `MainScreen`.
+
 ## [3.3.0] — 2026-05-07
 
 ### Documentation
