@@ -224,13 +224,20 @@ class SortingAndFilteringTests(_ModelTestBase):
             )
         )
         rows = select_dashboard_model(state, cfg, ui)
-        self.assertEqual(rows[0].host, "h1")
-        self.assertEqual(rows[0].name, "uxon-high@claude")
-        # Tail is the lowest-CPU row.
-        self.assertEqual(rows[-1].name, "uxon-low@claude")
-        # CPU monotonically non-increasing.
-        cpus = [r.cpu_pct for r in rows]
-        self.assertEqual(cpus, sorted(cpus, reverse=True))
+        # Locals form the leading block regardless of CPU. The single
+        # local row (CPU 3.0) appears first even though h1 has a row at
+        # CPU 99.0 — within-block CPU ordering is the user-chosen sort.
+        self.assertIsNone(rows[0].host)
+        self.assertEqual(rows[0].cpu_pct, 3.0)
+        # Then h1 in cfg order, sorted by CPU desc within the host.
+        self.assertEqual([r.host for r in rows[1:3]], ["h1", "h1"])
+        self.assertEqual([r.name for r in rows[1:3]], ["uxon-high@claude", "uxon-low@claude"])
+        # Then h2.
+        self.assertEqual(rows[3].host, "h2")
+        self.assertEqual(rows[3].name, "uxon-mid@claude")
+        # CPU monotonically non-increasing within each host block.
+        h1_cpus = [r.cpu_pct for r in rows if r.host == "h1"]
+        self.assertEqual(h1_cpus, sorted(h1_cpus, reverse=True))
 
     def test_filter_substring_matches_name_cmd_path_user(self) -> None:
         ui_base = DashboardUiState(filter_text="")

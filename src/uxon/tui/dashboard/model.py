@@ -71,8 +71,9 @@ def _build(
         for s in state.main.other_sessions:
             rows.append(from_tui_session(s))
 
-    # 2. Per-host remote rows in cfg-declared order. Local-before-remote
-    # ordering is a stable-sort tiebreak operators expect.
+    # 2. Per-host remote rows in cfg-declared order. Local rows always
+    # render as a leading block above any remote rows — see the
+    # post-sort grouping pass below.
     for host in cfg.remote_hosts:
         slot = state.remote.get(host.name)
         if slot is None:
@@ -97,6 +98,18 @@ def _build(
     if column is None:
         column = next(c for c in REGISTRY if c.id == "cpu")
     rows.sort(key=column.sort_key, reverse=(ui.sort_dir == "desc"))
+
+    # 5. Group locals above remotes, with each remote host as its own
+    # contiguous block in cfg-declared order. Python's sort is stable,
+    # so the user's chosen ordering from step 4 is preserved within
+    # each block. Hosts not in cfg (shouldn't happen in practice) sort
+    # to the very end so an unexpected row stays visible without
+    # disturbing known-host ordering.
+    host_priority: dict[str | None, int] = {None: -1}
+    for idx, host in enumerate(cfg.remote_hosts):
+        host_priority[host.name] = idx
+    tail = len(cfg.remote_hosts)
+    rows.sort(key=lambda r: host_priority.get(r.host, tail))
 
     return tuple(rows)
 
