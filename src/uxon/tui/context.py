@@ -163,6 +163,7 @@ class TuiContext:
     # Defaults mirror :data:`uxon.cli.DEFAULT_CONFIG` so test fixtures
     # that build a bare ``TuiContext`` keep working unchanged.
     ssh_multiplex: str = "auto"
+    ssh_control_persist_seconds: int = 300
     fetch_concurrency: int = 16
 
     # True until the first real refresh lands. The TUI distinguishes this

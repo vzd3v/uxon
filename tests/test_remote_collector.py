@@ -839,8 +839,17 @@ class DefaultTemplateTests(unittest.TestCase):
         flat = " ".join(tmpl)
         self.assertIn("ControlMaster=auto", flat)
         self.assertIn("ControlPath={ssh_control_dir}/ssh-%C", flat)
-        self.assertIn("ControlPersist=60s", flat)
+        # Task 10: ControlPersist is parameterised by
+        # ``ssh_control_persist_seconds`` (default 300, see
+        # ``DEFAULT_CONFIG``).
+        self.assertIn("ControlPersist={ssh_control_persist_seconds}s", flat)
         self.assertIn("ServerAliveInterval=15", flat)
+
+    def test_default_template_uses_persist_placeholder(self) -> None:
+        from uxon.remote_collector import _default_template
+
+        template = _default_template()
+        assert "ControlPersist={ssh_control_persist_seconds}s" in template
 
     def test_default_template_uses_only_closed_placeholders(self) -> None:
         from uxon.remote_collector import PLACEHOLDER_CLOSED_SET, _default_template

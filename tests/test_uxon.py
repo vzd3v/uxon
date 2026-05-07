@@ -284,6 +284,20 @@ class UxonTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg("tui_refresh_interval_seconds = 0\n", tmpdir)
 
+    def test_ssh_control_persist_seconds_must_be_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg("ssh_control_persist_seconds = 0\n", tmpdir)
+        # ``fail()`` stashes the human-readable message on the
+        # exception; assert against that rather than ``str(SystemExit)``
+        # (which is just the rc).
+        self.assertIn("ssh_control_persist_seconds", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_ssh_control_persist_seconds_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("", tmpdir)
+        self.assertEqual(cfg.ssh_control_persist_seconds, 300)
+
     def test_load_config_tui_table_defaults_when_section_absent(self) -> None:
         # No ``[tui.table]`` block — defaults must hold and the columns
         # signal must be ``None`` (not ``()``), since ``None`` is the

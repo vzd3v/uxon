@@ -127,6 +127,18 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "string",
         "Rich style spec painting the locals block. Default 'green'.",
     ),
+    SettingSpec(
+        "ssh_multiplex",
+        "enum",
+        "Reuse one SSH master connection across fetches.",
+        choices=("auto", "off"),
+    ),
+    SettingSpec(
+        "ssh_control_persist_seconds",
+        "number",
+        "ControlPersist for the multiplexed SSH master, seconds. Must be > 0; "
+        "disable multiplexing via ssh_multiplex=off.",
+    ),
 )
 
 TABLE_KEYS: tuple[str, ...] = tuple(spec.key for spec in SETTINGS_SPECS if spec.kind == "table")

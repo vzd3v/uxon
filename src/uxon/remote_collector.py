@@ -161,6 +161,7 @@ PLACEHOLDER_CLOSED_SET: frozenset[str] = frozenset(
         "{connect_timeout}",
         "{ssh_control_dir}",
         "{remote_command}",
+        "{ssh_control_persist_seconds}",
     }
 )
 
@@ -215,7 +216,7 @@ def _default_template() -> list[str]:
         "-o",
         "ControlPath={ssh_control_dir}/ssh-%C",
         "-o",
-        "ControlPersist=60s",
+        "ControlPersist={ssh_control_persist_seconds}s",
         "{ssh_alias}",
         "{remote_command}",
     ]
@@ -272,6 +273,7 @@ def _render_argv(
     connect_timeout: int,
     ssh_control_dir: str,
     remote_command: str,
+    ssh_control_persist_seconds: int = 300,
 ) -> list[str]:
     """Substitute placeholders in ``template``. Empty tokens after
     substitution are dropped (e.g. an empty extra-options list).
@@ -282,6 +284,7 @@ def _render_argv(
         "{connect_timeout}": str(connect_timeout),
         "{ssh_control_dir}": ssh_control_dir,
         "{remote_command}": remote_command,
+        "{ssh_control_persist_seconds}": str(ssh_control_persist_seconds),
     }
     rendered: list[str] = []
     for token in template:
@@ -323,6 +326,7 @@ def build_peer_ssh_argv(
     allocate_tty: bool,
     connect_timeout: int,
     ssh_multiplex: str,
+    ssh_control_persist_seconds: int = 300,
 ) -> list[str]:
     """Single source of truth for ssh-argv to one peer.
 
@@ -371,6 +375,7 @@ def build_peer_ssh_argv(
         connect_timeout=connect_timeout,
         ssh_control_dir=_ssh_control_dir() if needs_control_dir else "",
         remote_command=remote_command,
+        ssh_control_persist_seconds=ssh_control_persist_seconds,
     )
 
 
@@ -380,6 +385,7 @@ def _build_fetch_argv(
     connect_timeout: int,
     all_users: bool,
     ssh_multiplex: str,
+    ssh_control_persist_seconds: int = 300,
 ) -> list[str]:
     """Assemble the fetch argv for one host.
 
@@ -400,6 +406,7 @@ def _build_fetch_argv(
         allocate_tty=False,
         connect_timeout=connect_timeout,
         ssh_multiplex=ssh_multiplex,
+        ssh_control_persist_seconds=ssh_control_persist_seconds,
     )
 
 
@@ -586,6 +593,7 @@ def fetch_remote_snapshot(
     connect_timeout: int = DEFAULT_CONNECT_TIMEOUT_SEC,
     total_timeout: int = DEFAULT_TOTAL_TIMEOUT_SEC,
     ssh_multiplex: str = "auto",
+    ssh_control_persist_seconds: int = 300,
     override_state_dir: Path | None = None,
     _runner: Any = subprocess.run,
 ) -> RemoteSnapshot:
@@ -629,6 +637,7 @@ def fetch_remote_snapshot(
             connect_timeout=eff_connect,
             all_users=all_users,
             ssh_multiplex=ssh_multiplex,
+            ssh_control_persist_seconds=ssh_control_persist_seconds,
         )
         try:
             cp = _runner(argv, capture_output=True, text=True, timeout=eff_total)

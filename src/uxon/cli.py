@@ -91,6 +91,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # default fetch template (warm tick: 5-20 ms vs cold 200-500 ms).
     # ``"off"`` strips them — for environments that prohibit the socket.
     "ssh_multiplex": "auto",
+    # ControlPersist (seconds) for the SSH master connection. Must be a
+    # positive integer; disable multiplexing via ``ssh_multiplex = "off"``
+    # rather than zeroing this out.
+    "ssh_control_persist_seconds": 300,
     # ``fetch_concurrency`` caps concurrent SSH fetch workers fleet-wide
     # so a 50-host post-outage stampede doesn't exhaust the FD ulimit.
     # Stage 5 step 7 wires the semaphore.
@@ -170,6 +174,7 @@ class Config:
         default_factory=list
     )  # list[RemoteHost] — parsed once in load_config
     ssh_multiplex: str = "auto"  # "auto" | "off"
+    ssh_control_persist_seconds: int = 300
     fetch_concurrency: int = 16
     audit_enabled: bool = True
     audit_syslog_facility: str = "user"
@@ -595,6 +600,15 @@ def load_config(cwd: str) -> Config:
     ssh_multiplex = str(merged.get("ssh_multiplex", DEFAULT_CONFIG["ssh_multiplex"]))
     if ssh_multiplex not in ("auto", "off"):
         fail(f"ssh_multiplex must be 'auto' or 'off', got {ssh_multiplex!r}")
+    persist_raw = merged.get(
+        "ssh_control_persist_seconds", DEFAULT_CONFIG["ssh_control_persist_seconds"]
+    )
+    try:
+        ssh_control_persist_seconds = int(persist_raw)
+    except (TypeError, ValueError):
+        fail(f"ssh_control_persist_seconds must be an integer, got {persist_raw!r}")
+    if ssh_control_persist_seconds <= 0:
+        fail("ssh_control_persist_seconds must be > 0; disable via ssh_multiplex=off")
     try:
         fetch_concurrency = int(
             merged.get("fetch_concurrency", DEFAULT_CONFIG["fetch_concurrency"])
@@ -662,6 +676,7 @@ def load_config(cwd: str) -> Config:
         git_remote_profiles=git_remote_profiles,
         remote_hosts=remote_hosts,
         ssh_multiplex=ssh_multiplex,
+        ssh_control_persist_seconds=ssh_control_persist_seconds,
         fetch_concurrency=fetch_concurrency,
         audit_enabled=audit_enabled,
         audit_syslog_facility=audit_syslog_facility,
@@ -1913,7 +1928,11 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     if target is None:
         names = ", ".join(h.name for h in cfg.remote_hosts) or "<none>"
         fail(f"unknown --host {args.host!r}; configured: {names}")
-    snap = fetch_remote_snapshot(target, ssh_multiplex=cfg.ssh_multiplex)
+    snap = fetch_remote_snapshot(
+        target,
+        ssh_multiplex=cfg.ssh_multiplex,
+        ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
+    )
     if args.json_output:
         _emit_json_with_host(
             "list",
@@ -1978,7 +1997,11 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             compact=True,
         )
         for host in cfg.remote_hosts:
-            snap = fetch_remote_snapshot(host, ssh_multiplex=cfg.ssh_multiplex)
+            snap = fetch_remote_snapshot(
+                host,
+                ssh_multiplex=cfg.ssh_multiplex,
+                ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
+            )
             _emit_json_with_host(
                 "list",
                 _list_data_from_records(
@@ -2000,7 +2023,11 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if scope_skipped:
         _emit_scope_skipped_hint(scope_skipped)
     for host in cfg.remote_hosts:
-        snap = fetch_remote_snapshot(host, ssh_multiplex=cfg.ssh_multiplex)
+        snap = fetch_remote_snapshot(
+            host,
+            ssh_multiplex=cfg.ssh_multiplex,
+            ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
+        )
         print()
         _print_remote_table(cfg, host.name, snap.sessions, cached=snap.from_cache)
         if snap.error and not snap.from_cache:
@@ -2519,6 +2546,7 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         allocate_tty=True,
         connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
         ssh_multiplex=cfg.ssh_multiplex,
+        ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
     )
     # Audit must fire *before* ``os.execvp`` (Bug 7) — once the process
     # image is replaced the cached socket is gone.  ``audit()`` is a
@@ -2852,6 +2880,7 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
         allocate_tty=False,
         connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
         ssh_multiplex=cfg.ssh_multiplex,
+        ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
     )
 
     if args.dry_run:
@@ -3935,7 +3964,11 @@ def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for host in cfg.remote_hosts:
         t0 = time.monotonic()
-        snap = fetch_remote_snapshot(host, ssh_multiplex=cfg.ssh_multiplex)
+        snap = fetch_remote_snapshot(
+            host,
+            ssh_multiplex=cfg.ssh_multiplex,
+            ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
+        )
         latency_ms = int((time.monotonic() - t0) * 1000)
         rows.append(
             {
@@ -4378,6 +4411,7 @@ def _build_on_remote_attach_callback(cfg: Config):
             allocate_tty=True,
             connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
             ssh_multiplex=cfg.ssh_multiplex,
+            ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         )
         return LaunchRequest(cmd=tuple(argv), label=f"attach {name}@{host_name}")
 
@@ -4606,6 +4640,7 @@ def _build_tui_context(
             allocate_tty=False,
             connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
             ssh_multiplex=cfg.ssh_multiplex,
+            ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         )
 
         # Mirrors ``_do_kill_remote::_emit_kill_remote_error`` (CLI
@@ -4966,7 +5001,7 @@ def _build_tui_context(
     # follow-up.
     _host_breakers: dict[str, HostBreaker] = {}
 
-    def _make_remote_fetch(h, sem, multiplex, breaker):
+    def _make_remote_fetch(h, sem, multiplex, persist_seconds, breaker):
         def _fetch():
             # Breaker is the first gate: if it says "do not attempt",
             # skip the SSH layer entirely. We still produce a
@@ -4991,7 +5026,11 @@ def _build_tui_context(
             try:
                 sem.acquire()
                 try:
-                    snap = fetch_remote_snapshot(h, ssh_multiplex=multiplex)
+                    snap = fetch_remote_snapshot(
+                        h,
+                        ssh_multiplex=multiplex,
+                        ssh_control_persist_seconds=persist_seconds,
+                    )
                 finally:
                     sem.release()
                 # Translate the snapshot's success/failure into the
@@ -5032,7 +5071,11 @@ def _build_tui_context(
             SourceSpec(
                 name=f"remote:{host.name}",
                 fetch=_make_remote_fetch(
-                    host, _fetch_sem, cfg.ssh_multiplex, _host_breakers[host.name]
+                    host,
+                    _fetch_sem,
+                    cfg.ssh_multiplex,
+                    cfg.ssh_control_persist_seconds,
+                    _host_breakers[host.name],
                 ),
                 cadence_seconds_attr=None,
                 cadence_seconds=host_cadence,
@@ -5054,6 +5097,7 @@ def _build_tui_context(
         tui_refresh_interval_seconds=cfg.tui_refresh_interval_seconds,
         tui_ssh_refresh_interval_seconds=cfg.tui_ssh_refresh_interval_seconds,
         ssh_multiplex=cfg.ssh_multiplex,
+        ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         fetch_concurrency=cfg.fetch_concurrency,
         cwd_writable=cwd_writable,
         current_user=launch_user,
