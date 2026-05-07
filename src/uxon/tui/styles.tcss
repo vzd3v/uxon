@@ -88,6 +88,18 @@ ActionRow.destructive,
  * ``dashboard/columns.py`` formatters, so no class-bound rules are
  * needed here. The cursor highlight is the textual default. */
 
+/* ── HostTabStrip ───────────────────────────────────────────────── */
+
+HostTabStrip {
+    margin-bottom: 1;
+}
+
+/* ── HostStatusBar ──────────────────────────────────────────────── */
+
+HostStatusBar {
+    margin-bottom: 1;
+}
+
 /* ── Modals (ConfirmYesNo, ConfirmPhrase, Permissions, etc.) ─────── */
 
 ModalScreen {

@@ -39,6 +39,7 @@ from ..context import (
     TuiContext,
     _segments,
 )
+from ..dashboard.buckets import select_host_buckets
 from ..dashboard.layout import LayoutFlags, build_active_columns
 from ..dashboard.model import select_dashboard_model
 from ..dashboard.reconcile import diff
@@ -56,6 +57,8 @@ from ..state import (
     visible_detected_agents,
 )
 from ..widgets import ActionRow, DetectedAgentsBanner
+from ..widgets.host_status_bar import HostStatusBar
+from ..widgets.host_tab_strip import HostTabActivated, HostTabStrip
 from ..widgets.session_dashboard_table import SessionDashboardTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
@@ -105,6 +108,8 @@ class MainScreen(Screen):
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
         Binding("v", "toggle_view", "View", show=True),
+        Binding("[", "prev_tab", "Prev host", show=True),
+        Binding("]", "next_tab", "Next host", show=True),
         # Detected-agents banner: only does something when the banner is
         # visible (``visible_detected_agents(...)`` is non-empty). When the
         # banner is hidden these bindings are no-ops; the footer hides
@@ -232,6 +237,9 @@ class MainScreen(Screen):
                 # the layout doesn't flicker an empty-note at first paint.
                 note_classes = "empty-note -hidden"
             yield Static(note, id="sessions-note", classes=note_classes)
+            if self._dashboard_ui.view_mode == "by_host":
+                yield HostTabStrip([], id="host-tabs")
+                yield HostStatusBar(mode="compact", id="host-status-compact")
             yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
             if bool(self.ctx.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
@@ -400,15 +408,31 @@ class MainScreen(Screen):
         rows = select_dashboard_model(state, cfg_view, self._dashboard_ui)  # type: ignore[arg-type]
         # Commit 12: full model — local (host=None) + remote (host=peer).
         all_rows = rows
+        # Task 8: in by_host view, filter visible rows to the active tab.
+        # The filter-forces-flat branch lands in Task 9 (search).
+        if self._dashboard_ui.view_mode == "by_host" and not self._dashboard_ui.filter_text:
+            buckets = select_host_buckets(rows, cfg_view, state)
+            try:
+                tab_strip = self.query_one("#host-tabs", HostTabStrip)
+            except Exception:
+                active_idx = 0
+            else:
+                tab_strip.set_buckets(list(buckets))
+                active_idx = tab_strip.active_index
+            if buckets:
+                active_bucket = (
+                    buckets[active_idx] if 0 <= active_idx < len(buckets) else buckets[0]
+                )
+                rows = active_bucket.rows
         try:
             widget = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:  # pragma: no cover — not yet mounted
             return
         prev_cursor_key = self._cursor_row_key(widget)
-        plan = diff(self._dashboard_rows, all_rows, self._active_columns)
-        widget.set_block_meta(self._build_block_meta(all_rows))
+        plan = diff(self._dashboard_rows, rows, self._active_columns)
+        widget.set_block_meta(self._build_block_meta(rows))
         widget.apply(plan)
-        self._dashboard_rows = all_rows
+        self._dashboard_rows = rows
         widget.pin_cursor_to(prev_cursor_key)
         self._refresh_dashboard_note(all_rows)
 
@@ -698,6 +722,29 @@ class MainScreen(Screen):
         self._dashboard_ui = set_view_mode(self._dashboard_ui, new_mode)
         self._refresh_dashboard()
         self.app.notify(f"View: {new_mode.replace('_', ' ')}")
+
+    def action_prev_tab(self) -> None:
+        try:
+            strip = self.query_one("#host-tabs", HostTabStrip)
+        except Exception:
+            return
+        n = len(strip._buckets)
+        if n <= 1:
+            return
+        strip.active_index = (strip.active_index - 1) % n
+
+    def action_next_tab(self) -> None:
+        try:
+            strip = self.query_one("#host-tabs", HostTabStrip)
+        except Exception:
+            return
+        n = len(strip._buckets)
+        if n <= 1:
+            return
+        strip.active_index = (strip.active_index + 1) % n
+
+    def on_host_tab_activated(self, event: HostTabActivated) -> None:
+        self._refresh_dashboard()
 
     def action_enable_detected(self) -> None:
         """Banner action: add the first detected agent to ``[agents].enabled``."""
