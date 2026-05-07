@@ -5083,6 +5083,19 @@ def _build_tui_context(
             )
         )
 
+    # Local /proc snapshot for the HostStatusBar's locals bucket. Skip
+    # on the skeleton tick (first frame must paint immediately); on the
+    # real refresh tick treat probe failure as "pending…" — the
+    # selector renders the absence rather than the error.
+    host_stats: Any = None
+    if not skeleton:
+        try:
+            from uxon.probes import read_host_stats
+
+            host_stats = read_host_stats()
+        except Exception:  # pragma: no cover — defensive
+            host_stats = None
+
     return TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,
@@ -5094,6 +5107,7 @@ def _build_tui_context(
         existing_projects=existing_projects,
         server_status=server_status,
         loading=skeleton,
+        host_stats=host_stats,
         tui_refresh_interval_seconds=cfg.tui_refresh_interval_seconds,
         tui_ssh_refresh_interval_seconds=cfg.tui_ssh_refresh_interval_seconds,
         ssh_multiplex=cfg.ssh_multiplex,

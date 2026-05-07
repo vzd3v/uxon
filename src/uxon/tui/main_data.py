@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING
 from .context import ServerStatus, SudoCapability
 
 if TYPE_CHECKING:
+    from uxon.probes import HostStatsResult
+
     from .context import TuiContext, TuiSession
 
 
@@ -69,6 +71,7 @@ class MainData:
     total_ram: str
     version: str
     repo_config_writable: bool
+    host_stats: HostStatsResult | None = None
 
     @classmethod
     def from_context(cls, ctx: TuiContext) -> MainData:
@@ -94,4 +97,5 @@ class MainData:
             total_ram=ctx.total_ram,
             version=ctx.version,
             repo_config_writable=ctx.repo_config_writable,
+            host_stats=getattr(ctx, "host_stats", None),
         )

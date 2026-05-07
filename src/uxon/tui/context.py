@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from uxon.probes import HostStatsResult
+
     from .tui_state import TuiState
 
 
@@ -171,6 +173,10 @@ class TuiContext:
     # session areas, server status and existing-projects detail; a fully
     # loaded ctx with no sessions renders "No active sessions." instead.
     loading: bool = False
+    # Local-host /proc snapshot consumed by ``HostStatusBar`` for the
+    # locals bucket. ``None`` on cold start (skeleton ctx) and on probe
+    # failure — the widget renders "pending…" in that case.
+    host_stats: HostStatsResult | None = None
 
     # Whether ``cwd`` is a valid launch target for ``launch_user`` under
     # the current policy: write access, plus membership in

@@ -39,7 +39,7 @@ from ..context import (
     TuiContext,
     _segments,
 )
-from ..dashboard.buckets import select_host_buckets
+from ..dashboard.buckets import select_host_buckets, select_host_status_block
 from ..dashboard.layout import LayoutFlags, build_active_columns
 from ..dashboard.model import select_dashboard_model
 from ..dashboard.reconcile import diff
@@ -243,6 +243,10 @@ class MainScreen(Screen):
             if self._dashboard_ui.view_mode == "by_host":
                 yield HostTabStrip([], id="host-tabs")
                 yield HostStatusBar(mode="compact", id="host-status-compact")
+            # Expanded bar is always mounted; ``display`` is toggled by
+            # ``_refresh_dashboard`` based on view mode + filter so the
+            # widget tree stays stable across mode flips.
+            yield HostStatusBar(mode="expanded", id="host-status-expanded")
             yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
             if bool(self.ctx.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
@@ -429,6 +433,7 @@ class MainScreen(Screen):
             tab_strip_widget.display = in_by_host
         except Exception:
             pass
+        active_bucket = None
         if in_by_host:
             buckets = select_host_buckets(rows, cfg_view, state)
             try:
@@ -454,6 +459,35 @@ class MainScreen(Screen):
         self._dashboard_rows = rows
         widget.pin_cursor_to(prev_cursor_key)
         self._refresh_dashboard_note(all_rows)
+        # Task 11: feed the HostStatusBar(s). Status lines aggregate over
+        # the unfiltered, full row tuple so the bar reflects fleet
+        # totals even when a search filter narrows the table.
+        host_stats_local = state.main.host_stats if state.main is not None else None
+        status_lines = select_host_status_block(all_rows, state, host_stats_local, cfg_view)
+        try:
+            compact_bar = self.query_one("#host-status-compact", HostStatusBar)
+        except Exception:
+            compact_bar = None
+        try:
+            expanded_bar = self.query_one("#host-status-expanded", HostStatusBar)
+        except Exception:
+            expanded_bar = None
+        if in_by_host and active_bucket is not None and status_lines:
+            line = next(
+                (sl for sl in status_lines if sl.host_name == active_bucket.host_name),
+                status_lines[0],
+            )
+            if compact_bar is not None:
+                compact_bar.display = True
+                compact_bar.update_lines((line,))
+            if expanded_bar is not None:
+                expanded_bar.display = False
+        else:
+            if compact_bar is not None:
+                compact_bar.display = False
+            if expanded_bar is not None:
+                expanded_bar.display = True
+                expanded_bar.update_lines(status_lines)
 
     def _build_block_meta(
         self,
