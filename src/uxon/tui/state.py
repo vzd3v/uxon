@@ -590,22 +590,22 @@ def select_remote_rows(
     return value
 
 
-def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool, bool]:
-    """Return the five-bool layout signature for ``MainScreen`` patch-vs-recompose.
+def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
+    """Return the four-bool layout signature for ``MainScreen`` patch-vs-recompose.
 
     Mirrors ``MainScreen._layout_signature``: ``(has_own_sessions,
-    has_super, has_other_sessions, kill_visible, cross_user)``. Pure;
-    memoisation is unnecessary because the result is a tuple of bools
-    (cheap to recompute, equality-compared by callers).
+    has_super, has_other_sessions, kill_visible)``. Pure; memoisation
+    is unnecessary because the result is a tuple of bools (cheap to
+    recompute, equality-compared by callers).
 
-    The fifth bool ``cross_user`` is the recompose hook the dashboard
-    uses to rebuild the widget with the USER column once any
-    other-user session appears. It tracks ``bool(ctx.other_sessions)``
-    — every other-user local row that the rebuild path identifies
-    counts. ``False → True`` flip on first appearance, ``True →
-    False`` on the last disappearance, in both cases triggering the
-    ``MainScreen`` recompose path so ``build_active_columns`` runs
-    again with the new flag.
+    The recompose-on-cross-user flip is carried by
+    ``has_other_sessions`` (position 2): once the dashboard owns
+    other-user rows, ``bool(ctx.other_sessions)`` flipping is the
+    same predicate as "USER column needs to appear/disappear", so a
+    separate ``cross_user`` bool would be redundant. The flip
+    triggers the ``MainScreen`` recompose path; the new ``__init__``
+    rebuilds ``_active_columns`` from ``LayoutFlags(cross_user=
+    bool(ctx.other_sessions))``.
     """
     has_super = bool(ctx.sudo_caps.reachable_users)
     return (
@@ -613,7 +613,6 @@ def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool, bo
         has_super,
         bool(ctx.other_sessions),
         has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
-        bool(ctx.other_sessions),  # cross_user: True when any other-user local row exists
     )
 
 

@@ -765,14 +765,13 @@ class StateSelectorTests(unittest.TestCase):
         )
         self.assertEqual(select_layout_signature(ctx), select_layout_signature(ctx))
 
-    def test_select_layout_signature_returns_five_tuple(self) -> None:
-        """Pin the 5-tuple shape so a future drift back to 4-tuple fails fast.
+    def test_select_layout_signature_returns_four_tuple(self) -> None:
+        """Pin the 4-tuple shape so a future drift fails fast.
 
-        Element 5 is ``cross_user``. Commit 11 makes it data-driven:
-        ``False`` when no other-user local rows exist, ``True``
-        otherwise. The flip is what triggers the
-        ``apply_loaded_ctx`` recompose so the dashboard widget gets
-        rebuilt with the USER column.
+        Position 2 is ``has_other_sessions``. ``False`` when no
+        other-user local rows exist, ``True`` otherwise. The flip is
+        what triggers the ``apply_loaded_ctx`` recompose so the
+        dashboard widget gets rebuilt with the USER column.
         """
         from uxon.tui.context import TuiContext
         from uxon.tui.state import select_layout_signature
@@ -788,17 +787,16 @@ class StateSelectorTests(unittest.TestCase):
             existing_projects=[],
         )
         sig = select_layout_signature(ctx)
-        self.assertEqual(len(sig), 5)
-        # No other-user rows present → cross_user is False.
-        self.assertEqual(sig[4], False)
+        self.assertEqual(len(sig), 4)
+        # No other-user rows present → has_other_sessions is False.
+        self.assertEqual(sig[2], False)
 
-    def test_select_layout_signature_cross_user_flips_with_other_sessions(self) -> None:
-        """``cross_user`` (5th bool) tracks ``bool(ctx.other_sessions)``.
+    def test_select_layout_signature_recomposes_on_other_sessions_flip(self) -> None:
+        """``has_other_sessions`` (3rd bool) tracks ``bool(ctx.other_sessions)``.
 
-        Commit 11 wires the bool to the rebuild path's
-        ``other_sessions`` filter — every other-user local row the
-        rebuild discovers flips the bool to ``True``, recomposing the
-        widget with a USER column visible.
+        Every other-user local row the rebuild discovers flips the
+        bool to ``True``, recomposing the widget with a USER column
+        visible.
         """
         from uxon.tui.context import SudoCapability, TuiContext, TuiSession
         from uxon.tui.state import select_layout_signature
@@ -841,8 +839,8 @@ class StateSelectorTests(unittest.TestCase):
             existing_projects=[],
             sudo_caps=sudo_caps,
         )
-        self.assertEqual(select_layout_signature(ctx_with)[4], True)
-        self.assertEqual(select_layout_signature(ctx_without)[4], False)
+        self.assertEqual(select_layout_signature(ctx_with)[2], True)
+        self.assertEqual(select_layout_signature(ctx_without)[2], False)
         # The signatures must differ — that's the recompose trigger.
         self.assertNotEqual(
             select_layout_signature(ctx_with),

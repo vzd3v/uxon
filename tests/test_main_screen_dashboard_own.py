@@ -135,8 +135,9 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         """``state.main`` lands → dashboard widget shows the row.
 
         The bridge filter discards anything where ``host is not None``
-        or ``user != current_user``. Sanity-check the count here; the
-        column tuple is verified at construction time elsewhere.
+        (remote rows). Local own + other-user rows both flow through.
+        Sanity-check the count here; the column tuple is verified at
+        construction time elsewhere.
         """
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
@@ -434,9 +435,16 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(launch_requests), 1)
 
     async def test_sudo_kill_via_dashboard(self) -> None:
-        """``d`` + confirm on an other-user dashboard row dispatches ``ctx.on_kill`` with the row's user."""
+        """``d`` + confirm on an other-user dashboard row dispatches ``ctx.on_kill`` with the row's user.
+
+        Also asserts the ``ConfirmYesNo`` modal's prompt mentions the
+        OTHER user (the row's user), not the operator's current user
+        — so the operator visually confirms they're killing alice's
+        session, not their own.
+        """
         from uxon.tui.app import UxonApp
         from uxon.tui.context import SudoCapability
+        from uxon.tui.screens.confirm import ConfirmYesNo
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
         kill_calls: list[tuple[str, str]] = []
@@ -456,6 +464,16 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             _seed_state_main(app, ctx)
             app.screen._refresh_dashboard()
             app.screen.action_refresh = lambda: None
+            # Spy on push_screen so we can read the modal's prompt.
+            modal_prompts: list[str] = []
+            orig_push_screen = app.push_screen
+
+            def _capture_push(screen, *args, **kwargs):
+                if isinstance(screen, ConfirmYesNo):
+                    modal_prompts.append(screen.prompt)
+                return orig_push_screen(screen, *args, **kwargs)
+
+            app.push_screen = _capture_push  # type: ignore[method-assign]
             widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
             target_idx = next(
                 i
@@ -470,6 +488,14 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("y")
             await pilot.pause()
         self.assertEqual(kill_calls, [("alice", "alice.bar")])
+        # Prompt must reference the OTHER user (alice), not the
+        # current user (devagent). Pin both halves so a regression
+        # that reverses the substitution fails fast.
+        self.assertEqual(len(modal_prompts), 1)
+        prompt = modal_prompts[0]
+        self.assertIn("alice", prompt)
+        self.assertIn("alice.bar", prompt)
+        self.assertNotIn("devagent", prompt)
 
     async def test_user_column_present_when_cross_user_true(self) -> None:
         """Construction with ``other_sessions`` non-empty includes the USER column."""
@@ -527,6 +553,62 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNot(app.screen, old_screen)
             self.assertIsInstance(app.screen, MainScreen)
             self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
+
+    async def test_cursor_pinned_across_cross_user_recompose(self) -> None:
+        """Cursor on an own row survives the recompose triggered by other_sessions arriving.
+
+        Sequence: mount with no other-user rows; place cursor on the
+        first own row; apply a fresh ctx that adds an other-user
+        session. The signature flip recomposes ``MainScreen``; the
+        new screen must restore focus to the same own row by KEY
+        (own:<name>), not by index — index 0 in the new model could
+        be the alice.bar row depending on sort order.
+        """
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import SudoCapability
+        from uxon.tui.screens.main import MainScreen
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        ctx = _mk_ctx(
+            sessions=[_own_session()],
+            other_sessions=[],
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            _seed_state_main(app, ctx)
+            app.screen._refresh_dashboard()
+            old_screen = app.screen
+            old_widget = old_screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            old_widget.focus()
+            old_widget.move_cursor(row=0)
+            await pilot.pause()
+            # Sanity: the only own row is devagent.foo.
+            self.assertEqual(old_screen._dashboard_rows[0].name, "devagent.foo")
+            # Apply a fresh ctx with the other-user session — flips
+            # the layout signature → forces recompose.
+            new_ctx = _mk_ctx(
+                sessions=[_own_session()],
+                other_sessions=[_other_session()],
+                sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+            )
+            old_screen.apply_loaded_ctx(new_ctx)
+            await pilot.pause()
+            # Recompose happened.
+            self.assertIsNot(app.screen, old_screen)
+            self.assertIsInstance(app.screen, MainScreen)
+            # USER column is now active.
+            self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
+            # Cursor is pinned to the devagent.foo row by key, not
+            # index — even if the sort places alice.bar above it.
+            new_widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            self.assertIs(app.screen.focused, new_widget)
+            cursor_idx = new_widget.cursor_row
+            assert cursor_idx is not None
+            cursor_row = app.screen._dashboard_rows[cursor_idx]
+            self.assertEqual(cursor_row.name, "devagent.foo")
+            self.assertEqual(cursor_row.user, "devagent")
 
     async def test_recompose_when_cross_user_flips_false(self) -> None:
         """A refresh that drops the last other-user row recomposes → USER column gone."""

@@ -56,10 +56,9 @@ from ..state import (
     select_layout_signature,
     select_remote_health_badge,
     select_remote_rows,
-    session_intent,
     visible_detected_agents,
 )
-from ..widgets import ActionRow, DetectedAgentsBanner, RemoteSessionTable, SessionTable
+from ..widgets import ActionRow, DetectedAgentsBanner, RemoteSessionTable
 from ..widgets.session_dashboard_table import SessionDashboardTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
@@ -161,14 +160,15 @@ class MainScreen(Screen):
         )
         # Compute the active dashboard columns once and reuse from
         # ``compose`` and ``_refresh_dashboard``. Two independent calls
-        # would be fragile when commit 12 widens the flags — easy to
-        # drift one path. ``MainScreen`` is reconstructed via
+        # would be fragile when the flags widen — easy to drift one
+        # path. ``MainScreen`` is reconstructed via
         # ``switch_screen(MainScreen)`` on the recompose path, so a
         # ``cross_user`` flip picks up the new columns naturally
-        # because ``__init__`` runs again. The signature's fifth bool
-        # (``select_layout_signature``) tracks ``bool(ctx.other_sessions)``
-        # — the same predicate used here — so the flip and the
-        # column-set rebuild are wired through the same source.
+        # because ``__init__`` runs again. The layout signature's
+        # ``has_other_sessions`` bool (``select_layout_signature``)
+        # tracks ``bool(ctx.other_sessions)`` — the same predicate
+        # used here — so the flip and the column-set rebuild are
+        # wired through the same source.
         flags = LayoutFlags(
             multi_host=bool(ctx.remote_hosts),
             cross_user=bool(ctx.other_sessions),
@@ -579,17 +579,16 @@ class MainScreen(Screen):
         """
         self._run_intent(main_action_intent(event.row.kind))
 
-    # ── DataTable row activation (Enter on a SessionTable row) ───────
+    # ── DataTable row activation (Enter on a session row) ───────────
 
     def on_data_table_row_selected(self, event) -> None:  # type: ignore[no-untyped-def]
         """Enter/click on a session row attaches to that session.
 
-        Local SessionTable rows fire the existing session_intent path.
+        SessionDashboardTable rows dispatch the local on_attach
+        callback directly — remote rows in the dashboard are rejected
+        until ctx.on_remote_attach is wired into the dashboard.
         RemoteSessionTable rows fire the remote_session_intent path,
         which dispatches via ctx.on_remote_attach over SSH.
-        SessionDashboardTable rows (commit 10 bridge) dispatch the
-        local on_attach callback directly — remote rows in the
-        dashboard are rejected until commit 12 wires on_remote_attach.
         """
         table = event.data_table
         if isinstance(table, SessionDashboardTable):
@@ -598,8 +597,8 @@ class MainScreen(Screen):
                 return
             row = self._dashboard_rows[idx]
             if row.host is not None:
-                # Bridge guard: remote-attach from the dashboard lands
-                # in commit 12.
+                # Bridge guard: remote-attach from the dashboard is
+                # not yet wired here.
                 self.app.notify(
                     "Remote attach from dashboard not yet wired.",
                     severity="warning",
@@ -607,12 +606,6 @@ class MainScreen(Screen):
                 return
             session_user = row.user or self.ctx.current_user
             self._attach_session(session_user, row.name)
-            return
-        if isinstance(table, SessionTable):
-            session = table.session_at(event.cursor_row)
-            if session is None:
-                return
-            self._run_intent(session_intent(session, self.ctx.current_user))
             return
         if isinstance(table, RemoteSessionTable):
             entry = table.row_at(event.cursor_row)
@@ -914,7 +907,7 @@ class MainScreen(Screen):
             repo_config_writable=self.ctx.repo_config_writable,
         )
 
-    def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool, bool]:
+    def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
         """Thin shim over :func:`select_layout_signature`.
 
         Kept as an instance method so the existing test surface (some
@@ -946,10 +939,8 @@ class MainScreen(Screen):
             return False
 
         # Local sessions (own + other-user) render through the
-        # dashboard widget. The legacy ``#sessions-own`` populate path
-        # was removed in commit 10; the dedicated ``#sessions-other``
-        # populate path was removed in commit 11. The dashboard is
-        # repopulated below so the model selector sees a consistent
+        # unified dashboard widget. The dashboard is repopulated
+        # below so the model selector sees a consistent
         # ``state.main`` snapshot.
 
         # Remote-sessions table is owned by the per-host SSH workers via
@@ -1090,19 +1081,15 @@ class MainScreen(Screen):
     def action_kill(self) -> None:
         """Confirm then kill the session under focus.
 
-        Handles two focus targets after commit 11:
-
-        * :class:`SessionDashboardTable` (``#sessions-dashboard``) —
-          resolves via the cursor index into ``self._dashboard_rows``.
-          Local rows (own + other-user) dispatch to ``ctx.on_kill``;
-          ``row.user`` carries the target user so other-user rows
-          take the existing sudo path inside the kill callback. A
-          remote-host row in the dashboard is rejected with a warning
-          until commit 12 wires ``ctx.on_remote_kill`` here.
-        * :class:`SessionTable` — defensive isinstance branch retained
-          for the multi-host transition; the legacy
-          ``#sessions-other`` widget is no longer mounted in commit 11.
-        * Anything else — warn and bail.
+        Only fires on :class:`SessionDashboardTable`
+        (``#sessions-dashboard``). Resolves via the cursor index into
+        ``self._dashboard_rows``: local rows (own + other-user)
+        dispatch to ``ctx.on_kill``; ``row.user`` carries the target
+        user so other-user rows take the existing sudo path inside
+        the kill callback. A remote-host row in the dashboard is
+        rejected with a warning until ``ctx.on_remote_kill`` is wired
+        through here. Any other focus target falls through to the
+        "select a session" notify.
         """
         focused = self.focused
         session_user: str
@@ -1114,8 +1101,8 @@ class MainScreen(Screen):
                 return
             row = self._dashboard_rows[idx]
             if row.host is not None:
-                # Bridge guard: remote rows in the dashboard land in
-                # commit 12 (ctx.on_remote_kill dispatch).
+                # Bridge guard: remote rows in the dashboard are not
+                # yet wired through ctx.on_remote_kill here.
                 self.app.notify(
                     "Remote kill from dashboard not yet wired.",
                     severity="warning",
@@ -1124,14 +1111,6 @@ class MainScreen(Screen):
             session_user = row.user or self.ctx.current_user
             session_name = row.name
             session_short = row.short or row.name
-        elif isinstance(focused, SessionTable):
-            row_idx = focused.cursor_row
-            session = focused.session_at(row_idx)
-            if session is None:
-                return
-            session_user = session.user or self.ctx.current_user
-            session_name = session.name
-            session_short = session.short
         else:
             self.app.notify("Select a session first.", severity="warning")
             return
@@ -1302,17 +1281,12 @@ class MainScreen(Screen):
             # Other-user rows are tagged with the row's user so a
             # focus restore after recompose lands on the right row
             # rather than colliding with an own-session of the same
-            # name. Remote rows (commit 12) will branch here.
+            # name. Remote rows will branch here once folded in.
             if row.host is None:
                 if row.user and row.user != self.ctx.current_user:
                     return f"other:{row.user}/{row.name}"
                 return f"own:{row.name}"
             return ""
-        if isinstance(focused, SessionTable):
-            session = focused.session_at(focused.cursor_row)
-            if session is None:
-                return ""
-            return f"own:{session.name}"
         if isinstance(focused, RemoteSessionTable):
             entry = focused.row_at(focused.cursor_row)
             if entry is None:

@@ -137,7 +137,8 @@ def _format_user(row: SessionRow) -> Text:
     # Render plain: in cross_user mode the column header itself flags
     # multi-user state; per-row colour would also paint the operator's
     # own user yellow which diverges from the legacy intent (yellow
-    # was a non-self marker on the dedicated #sessions-other table).
+    # was a non-self marker on the legacy split table; in the unified
+    # table the column header itself is the multi-user signal).
     return Text(row.user or "-")
 
 
