@@ -125,7 +125,7 @@ class HostColourTests(unittest.TestCase):
 
 class FormatCpuTests(unittest.TestCase):
     def test_zero_renders_numeric(self) -> None:
-        # Legacy ``SessionTable._cpu_cell`` rendered "0.0" for idle
+        # The legacy idle-CPU rendering emitted "0.0" for idle
         # sessions; the unified pipeline preserves that — only a
         # missing input would blank the cell, but the adapter normalises
         # missing→0.0 at the boundary so we always emit a number.
@@ -150,8 +150,8 @@ class FormatCpuTests(unittest.TestCase):
         self.assertEqual(str(text.style), "bold red")
 
     def test_thresholds_match_legacy(self) -> None:
-        # >50 → bold red; >10 → yellow; <=10 → plain. Mirrors
-        # SessionTable._cpu_cell.
+        # >50 → bold red; >10 → yellow; <=10 → plain. Mirrors the
+        # legacy idle-CPU rendering.
         self.assertEqual(str(format_cpu(_row(cpu_pct=10.0)).style), "")
         self.assertEqual(str(format_cpu(_row(cpu_pct=10.5)).style), "yellow")
         self.assertEqual(str(format_cpu(_row(cpu_pct=50.0)).style), "yellow")

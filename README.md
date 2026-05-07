@@ -318,32 +318,45 @@ agent in normal mode or with `--dangerously-skip-permissions`
 ("yolo"). The TUI does not start yolo mode without this explicit
 choice.
 
-### 2. Your sessions
+### 2. Session dashboard
 
-Live list of `uxon-*` sessions for the current user with:
+A single, sortable table mounting every session you can see — your
+own local sessions, other-user local sessions visible via
+`sudo -niu` (when the superuser block is active), and one row per
+session on each configured `[[remote_hosts]]` peer.
 
-- session name, agent, working directory;
+Per-row data:
+
+- session name (with a per-host colour glyph in multi-host setups),
+  agent, working directory;
 - live CPU / RAM (refreshed every `tui_refresh_interval_seconds`);
 - attached-or-not marker;
-- creation time and last-attach time.
+- creation time and last-activity time.
 
-`Enter` attaches. `d` kills (with confirmation). `D` kills *all your
-own* sessions after typing `kill-all`.
+The column set adapts to the layout: a `HOST` column appears
+automatically when peers are configured; a `USER` column appears
+when other-user rows are present. The full set of columns and
+their order is configurable via `[tui.table]` in `config.toml` —
+see [`docs/configuration.md`](docs/configuration.md#use-case-dashboard-columns)
+for the column ids, the registry-of-defaults rule, and
+`default_sort_by`. Unknown column ids in an older config are
+silently dropped (forward-compat).
 
-### 3. Remote sessions (only when `[[remote_hosts]]` is configured)
+`Enter` attaches (local rows attach directly; remote rows open
+`ssh <alias> uxon attach …`). `d` kills the highlighted row with
+confirmation — the same key works for local and remote rows
+uniformly; the per-target sudo gating happens on the peer's
+`uxon kill`. Bulk `kill-all` (`D`) stays local to the host where
+it is invoked.
 
-A separate `── remote sessions ──` block aggregates `uxon list --json`
-output from peer hosts over SSH. One section per host, with an extra
-`HOST` column when more than one peer is configured. The collector is
-fail-soft: a dead or slow peer falls back to the on-disk snapshot
-(`~/.local/state/uxon/remote/<name>.json`) and never stalls the local
-view. `Enter` attaches to the highlighted remote session; `k` kills
-one highlighted remote session through the peer's own `uxon kill`
-gate. Bulk `kill-all` remains local to the host where it is invoked.
-See [`docs/deployment.md`](docs/deployment.md#multi-host) for the
-full SSH model and config schema.
+The remote collector is fail-soft: a dead or slow peer falls back
+to the on-disk snapshot
+(`~/.local/state/uxon/remote/<name>.json`) and never stalls the
+local view. See
+[`docs/deployment.md`](docs/deployment.md#multi-host) for the full
+SSH model and config schema.
 
-### 4. Server status (bottom)
+### 3. Server status (bottom)
 
 Load average, normalised CPU load, RAM, disk, uptime. When you're
 inside an SSH session, an async `ssh-link` probe shows RTT, jitter,
@@ -374,7 +387,8 @@ up by quitting (`q`) and re-launching `uxon`.
 
 Inside the block:
 
-- **Other users' sessions** with a yellow `USER` column. `Enter`
+- **Other users' sessions** appear as additional rows in the unified
+  session dashboard (§ 2) with a yellow `USER` column. `Enter`
   attaches via `sudo -niu <user>` (read-only-ish — you're a guest
   in their tmux); `d` kills the highlighted one.
 - **⚙ Settings** — repo-level `config.toml` editor. Bool keys

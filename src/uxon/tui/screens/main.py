@@ -294,8 +294,8 @@ class MainScreen(Screen):
         # Initial dashboard apply. ``state.main`` may still be ``None``
         # at this point (cold-start skeleton ctx) — ``_refresh_dashboard``
         # treats that as a zero-row tick and toggles the empty-note in
-        # response. The legacy ``#sessions-own`` populate path is gone in
-        # commit 10; the dashboard owns the own-row display.
+        # response. ``#sessions-dashboard`` (the unified
+        # :class:`SessionDashboardTable`) owns row display end-to-end.
         self._refresh_dashboard()
         self.call_after_refresh(self._update_status_line)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):

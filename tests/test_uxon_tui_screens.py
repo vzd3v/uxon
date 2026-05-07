@@ -249,7 +249,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             # Focus the dashboard table and press 'd'. Commit 10
-            # replaced ``#sessions-own`` (legacy SessionTable) with
+            # replaced ``#sessions-own`` (the legacy local table) with
             # ``#sessions-dashboard`` (SessionDashboardTable). The
             # dashboard is data-driven from ``state.main`` — inject a
             # ``MainData`` snapshot so the model selector emits the row

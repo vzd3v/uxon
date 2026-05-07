@@ -1,16 +1,15 @@
 """Shared base for uxon's session-listing DataTables.
 
-:class:`SessionTable` (legacy local table) and
-:class:`SessionDashboardTable` (the unified dashboard) are populated
-from different shapes, but their navigation contract is identical:
-they sit between the action rows above and (potentially) more
-focusable widgets below, and *release* focus to the surrounding
-focus chain when the cursor would
-otherwise hit a row boundary. Without that, ``↑`` on row 0 and ``↓``
-on the last row leave the user trapped inside the table — the bug
-that made this base necessary.
+:class:`SessionDashboardTable` is the only consumer today. The base
+exists so future row-listing tables (e.g. peer health, audit
+inspector) inherit the navigation contract without re-deriving it:
+the table sits between the action rows above and other focusable
+widgets below, and *releases* focus to the surrounding focus chain
+when the cursor would otherwise hit a row boundary. Without that,
+``↑`` on row 0 and ``↓`` on the last row leave the user trapped
+inside the table — the bug that made this base necessary.
 
-This base owns three concerns shared between the two tables:
+This base owns three concerns:
 
 1. **Boundary-aware navigation.** ``action_cursor_up`` /
    ``action_cursor_down`` delegate to ``app.action_focus_previous`` /

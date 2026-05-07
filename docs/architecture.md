@@ -116,9 +116,67 @@ Sub-modules under `src/uxon/tui/`:
 - `screens/` — one module per screen: `main`, `confirm`,
   `launch_options`, `new_project`, `git_profile`, `existing`,
   `settings`, `git_remotes`, `agents_unavailable`.
-- `widgets/` — `ActionRow`, `SessionTable`, and `RemoteSessionTable`
-  (multi-host block). Everything else is stock `textual`.
+- `widgets/` — `ActionRow`, `DetectedAgentsBanner`,
+  `SessionDashboardTable` (the unified session table), and
+  `FocusReleasingDataTable` (internal base). Everything else is
+  stock `textual`.
+- `dashboard/` — pure layers behind `SessionDashboardTable`
+  (`row.py`, `columns.py`, `layout.py`, `ui_state.py`, `model.py`,
+  `reconcile.py`). See § "Session dashboard" below.
 - `styles.tcss` — Textual CSS for the whole app.
+
+## Session dashboard
+
+`SessionDashboardTable` (one row per visible session — local own,
+local other-user under sudo, and one row per session on every
+configured peer) is built on four pure layers under
+[`src/uxon/tui/dashboard/`](../src/uxon/tui/dashboard/) plus the
+widget shell at
+[`src/uxon/tui/widgets/session_dashboard_table.py`](../src/uxon/tui/widgets/session_dashboard_table.py):
+
+1. **`row.py` — `SessionRow`.** A single frozen dataclass is the
+   unified row type. Two adapters land the legacy shapes onto it:
+   `from_tui_session(...)` for local rows (own + sudo), and
+   `from_remote_session_record(...)` for one row of a peer
+   `RemoteSnapshot`. Equality is value-based — two ticks producing
+   identical rows compare equal under `is`-stable identity once
+   they go through the model selector.
+2. **`columns.py` — `ColumnSpec` registry.** The single source of
+   truth for which columns exist, how each one renders, and how
+   each one sorts. `REGISTRY` is the column id → spec map;
+   formatters return `rich.text.Text` with inline style (no CSS
+   class names). `sort_keys` exposes the key function used by the
+   model layer.
+3. **`layout.py` — `build_active_columns(flags, cfg)`.** Pure
+   selector that picks the active column subset from `REGISTRY`
+   based on runtime flags (`multi_host`, `cross_user`) and the
+   operator-supplied `[tui.table] columns`. Unknown ids in `cfg`
+   are silently dropped — older operator configs survive a column
+   removal.
+4. **`ui_state.py` — `DashboardUiState`.** Frozen dataclass
+   holding `sort_by`, `sort_dir`, and any UI-only state.
+   `cycle_sort` and `toggle_sort_dir` are pure reducers.
+
+The selector and reconciler tie those layers to the widget:
+
+5. **`model.py` — `select_dashboard_model(...)`.** Identity-stable
+   selector: returns the same `(rows, columns, ui)` tuple by `is`
+   when nothing changed since the previous call, so a no-op tick
+   short-circuits the reconciler. The cache lives in
+   `_LAST_OUTPUT`.
+6. **`reconcile.py` — `diff(old, new, columns)`.** Pure reconciler
+   over rows × columns. Emits the minimal sequence of mutate ops
+   the widget will apply (add row / remove row / update cell). A
+   no-op tick produces zero ops and zero log lines on the
+   `tui-table` debug channel. Per-host repaint: a single peer's
+   snapshot landing produces ops only for that peer's rows; every
+   other row compares equal and is skipped.
+
+The widget at `widgets/session_dashboard_table.py` is a thin
+shell. Its `apply(ops)` mutates the underlying Textual `DataTable`;
+all decisions about what to display live in the layers above. The
+widget subclasses `FocusReleasingDataTable` for boundary-aware
+navigation.
 
 ## Module boundaries
 

@@ -77,7 +77,7 @@ def host_colour(host_name: str) -> str:
 def format_cpu(row: SessionRow) -> Text:
     """Format CPU% with the existing >50/>10 colour thresholds.
 
-    Legacy ``SessionTable._cpu_cell`` rendered ``"0.0"`` for an idle
+    The legacy idle-CPU rendering emitted ``"0.0"`` for an idle
     session — only a missing input string blanked the cell. The unified
     pipeline has already collapsed the missing/zero distinction at the
     adapter boundary (``from_tui_session``), so we always render the

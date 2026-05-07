@@ -13,7 +13,10 @@ Public API re-exports only. Implementation lives in sibling modules:
   - ``hints``    — ``TEXTUAL_MISSING_HINT`` install guidance.
   - ``app``      — textual :class:`UxonApp` + :func:`run` outer loop.
   - ``screens/`` — one module per screen (MainScreen, modals, …).
-  - ``widgets/`` — two custom widgets (ActionRow, SessionTable).
+  - ``widgets/`` — custom widgets (``ActionRow``,
+                   ``DetectedAgentsBanner``, ``SessionDashboardTable``).
+  - ``dashboard/``— pure layers behind ``SessionDashboardTable``
+                   (row, columns, layout, ui_state, model, reconcile).
 
 Pure-data re-exports load eagerly. Textual-dependent names (``UxonApp``,
 ``run``) are deferred via ``__getattr__`` so that

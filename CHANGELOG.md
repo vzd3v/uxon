@@ -39,12 +39,22 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Multi-host: configure peers under `[[remote_hosts]]` in `config.toml`;
   `uxon list --host <alias>` and `uxon list --all-hosts` aggregate
   sessions across the fleet.
-- TUI Remote sessions block with HOST column and per-host health badge
-  (`[ok]`, `[cache 12s]`, `[err: …]`, `[loading]`).
+- TUI session dashboard: a single sortable table that mounts local
+  own, local other-user (when sudo block is active), and remote
+  rows together. A HOST column appears automatically when peers
+  are configured; per-host health badges
+  (`[ok]`, `[cache 12s]`, `[err: …]`, `[loading]`) live in the
+  section header.
+- New `[tui.table]` config block: `columns` (list of column ids in
+  display order) and `default_sort_by` (initial sort column).
+  Empty/absent uses built-in defaults; unknown ids are silently
+  dropped for forward-compat. See
+  [`docs/configuration.md`](docs/configuration.md#use-case-dashboard-columns)
+  for the full reference.
 - `uxon attach --host <alias> --user <name> [--dry-run]` opens a remote
   session over SSH; pressing Enter on a TUI remote row does the same.
 - `uxon kill --host <alias> [--user <name>] <id>` kills a single
-  session on a peer; `k` on a TUI remote row dispatches the same.
+  session on a peer; `d` on a TUI remote row dispatches the same.
   Bulk `kill-all` stays local.
 - `uxon kill --user <name> <id>` kills another launch user's session
   when the caller has per-target NOPASSWD to that user.
@@ -77,6 +87,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Local and remote sessions now render in a single sortable session
+  dashboard. The HOST column appears automatically when peers are
+  configured; the USER column appears when other-user rows are
+  visible. The dedicated remote-sessions section is gone.
 - `kill ALL uxon sessions` action renamed to `kill all reachable
   users`; confirmation phrase is now `kill-all-reachable` (was
   `kill-all-global`).
@@ -86,6 +100,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `uxon doctor` runs agent probes in parallel with a 2 s per-probe
   deadline; slow agents surface as `TIMEOUT (>2.0s)` instead of
   inflating wall time.
+
+### Removed
+
+- The `k` keybinding (remote-only kill) is removed. `d` covers all
+  kills now — local rows and remote rows alike.
 
 ### Fixed
 

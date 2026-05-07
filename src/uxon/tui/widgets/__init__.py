@@ -7,8 +7,8 @@ custom surface is small and focused:
   used on MainScreen.
 - :class:`DetectedAgentsBanner` — top-of-MainScreen agent-availability
   banner.
-- :class:`SessionTable` — local sessions (own / other-users); legacy,
-  superseded by :class:`SessionDashboardTable` for live MainScreen use.
+- :class:`SessionDashboardTable` — the unified session table (local
+  own + other-user + every remote peer) used on MainScreen.
 
 Boundary-aware navigation and visual defaults come from
 :class:`FocusReleasingDataTable` (internal — not re-exported).
@@ -16,6 +16,6 @@ Boundary-aware navigation and visual defaults come from
 
 from .action_row import ActionRow
 from .detected_banner import DetectedAgentsBanner
-from .session_table import SessionTable
+from .session_dashboard_table import SessionDashboardTable
 
-__all__ = ["ActionRow", "DetectedAgentsBanner", "SessionTable"]
+__all__ = ["ActionRow", "DetectedAgentsBanner", "SessionDashboardTable"]

@@ -377,14 +377,9 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(widget.row_count, 2)
             users = sorted(r.user for r in app.screen._dashboard_rows)
             self.assertEqual(users, ["alice", "devagent"])
-            # Legacy #sessions-other widget must NOT exist.
-            from uxon.tui.widgets import SessionTable
-
+            # The legacy ``#sessions-other`` widget must NOT exist —
+            # all rows live in the unified dashboard now.
             self.assertEqual(len(app.screen.query("#sessions-other")), 0)
-            self.assertEqual(
-                len([w for w in app.screen.query(SessionTable)]),
-                0,
-            )
 
     async def test_sudo_attach_via_dashboard(self) -> None:
         """Enter on an other-user dashboard row dispatches ``ctx.on_attach`` with the row's user."""
