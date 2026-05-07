@@ -412,8 +412,8 @@ class MainScreen(Screen):
         except Exception:  # pragma: no cover — not yet mounted
             return
         prev_cursor_key = self._cursor_row_key(widget)
-        ops = diff(self._dashboard_rows, all_rows, self._active_columns)
-        widget.apply(ops)
+        plan = diff(self._dashboard_rows, all_rows, self._active_columns)
+        widget.apply(plan)
         self._dashboard_rows = all_rows
         widget.pin_cursor_to(prev_cursor_key)
         self._refresh_dashboard_note(all_rows)

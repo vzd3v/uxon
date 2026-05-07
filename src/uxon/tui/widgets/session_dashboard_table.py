@@ -63,7 +63,7 @@ from .focus_releasing_data_table import FocusReleasingDataTable
 
 if TYPE_CHECKING:
     from ..dashboard.columns import ColumnSpec
-    from ..dashboard.reconcile import Op
+    from ..dashboard.reconcile import ApplyPlan
 
 # Import-time guard: fail loudly if Textual ever drops the private
 # ``_row_locations`` attribute we depend on. We can't ``hasattr`` the class
@@ -100,28 +100,49 @@ class SessionDashboardTable(FocusReleasingDataTable):
 
     # ── op application ──────────────────────────────────────────────
 
-    def apply(self, ops: tuple[Op, ...]) -> None:
+    def apply(self, plan: ApplyPlan) -> None:
         """Dispatch reconciler ops against the underlying DataTable.
 
-        No-op apply (zero ops) emits NO ``tui-table`` debug line — silence
-        is the contract that proves the identity-stable diff is working.
+        RowAdd ops are applied in **reverse new-index order** so every
+        ``before_key`` is either ``None`` or refers to a row already
+        inserted earlier in this same reverse walk. The "anchor not
+        present → append" branch in :meth:`_apply_add` becomes
+        structurally unreachable in production: ``before_key`` is
+        sourced from ``plan.new_keys``, and removed keys (in old but
+        not in new) cannot appear there. The branch is kept as a
+        defensive log only.
+
+        No-op apply (zero ops) emits NO ``tui-table`` debug line —
+        silence is the contract that proves the identity-stable diff is
+        working.
         """
-        if not ops:
+        if not plan.ops:
             # Silence-on-no-op is part of the contract; commit 9's perf
             # test asserts on the absence of any log line here.
             return
         t0 = time.perf_counter()
         counts = {"add": 0, "remove": 0, "update": 0}
-        for op in ops:
+        new_index = {k: i for i, k in enumerate(plan.new_keys)}
+        removes_and_updates: list[CellUpdate | RowRemove] = []
+        adds: list[RowAdd] = []
+        for op in plan.ops:
             if isinstance(op, RowAdd):
-                counts["add"] += 1
-                self._apply_add(op)
-            elif isinstance(op, RowRemove):
+                adds.append(op)
+            else:
+                removes_and_updates.append(op)
+        # RowRemoves first, then in-place CellUpdates, then RowAdds in
+        # reverse new-index order.
+        for op in removes_and_updates:
+            if isinstance(op, RowRemove):
                 counts["remove"] += 1
                 self._apply_remove(op)
-            elif isinstance(op, CellUpdate):
+            else:  # CellUpdate
                 counts["update"] += 1
                 self._apply_update(op)
+        adds.sort(key=lambda op: -new_index[op.row_key])
+        for op in adds:
+            counts["add"] += 1
+            self._apply_add(op)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         debug("tui-table", ms=elapsed_ms, ops=counts, rows=self.row_count)
 

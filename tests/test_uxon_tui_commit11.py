@@ -153,7 +153,7 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
         second = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         self.assertIsNot(first, second)
 
-        ops = diff(first, second, cols)
+        ops = diff(first, second, cols).ops
         # Inspect ops: row_keys touched must all begin with "a/" —
         # rows belonging to host B (prefix "b/") are not touched.
         # ``_row_key`` formats as "<host>/<user>/<name>".
