@@ -93,6 +93,23 @@ def _seed_state_main(app, ctx) -> None:
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # Reset the module-level ``_LAST_OUTPUT`` cache in
+        # ``dashboard.model``: the selector identity-stables its return
+        # tuple across calls, and that cache survives between tests in
+        # the same process. Without this reset, a follow-up test that
+        # builds a fresh ctx with the same row content would see the
+        # previous test's tuple object — masking real divergence and
+        # making cache-hit assertions ambiguous.
+        from uxon.tui.dashboard import model as _dashboard_model
+
+        _dashboard_model._LAST_OUTPUT = ()
+
+    def tearDown(self) -> None:
+        from uxon.tui.dashboard import model as _dashboard_model
+
+        _dashboard_model._LAST_OUTPUT = ()
+
     async def test_dashboard_widget_mounts_with_dashboard_id(self) -> None:
         """``#sessions-dashboard`` is mounted unconditionally.
 
@@ -210,6 +227,76 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attach_calls, [("devagent", "devagent.foo")])
         self.assertEqual(len(launch_requests), 1)
         self.assertEqual(launch_requests[0].label, "attach devagent.foo")
+
+    async def test_action_kill_notifies_when_dashboard_row_is_remote(self) -> None:
+        """``action_kill`` rejects a remote dashboard row with a warning.
+
+        Production code can't get a remote row into the dashboard until
+        commit 12 wires ``ctx.on_remote_kill``; the bridge guard exists
+        to keep ``ctx.on_kill`` from firing on a remote row if a future
+        widening accidentally regresses the filter. This test pins the
+        guard by injecting a synthetic remote :class:`SessionRow`
+        directly into ``screen._dashboard_rows`` and asserting the
+        local kill callback is never called and a warning notify is
+        emitted.
+        """
+        from uxon.tui.app import UxonApp
+        from uxon.tui.dashboard.row import SessionRow
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        kill_calls: list[tuple[str, str]] = []
+
+        def fake_kill(user: str, name: str) -> None:
+            kill_calls.append((user, name))
+
+        ctx = _mk_ctx(sessions=[_own_session()], on_kill=fake_kill)
+        app = UxonApp(ctx, probe_agents=False)
+        notify_calls: list[tuple[str, str | None]] = []
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            _seed_state_main(app, ctx)
+            app.screen._refresh_dashboard()
+            # Inject a synthetic remote row directly. Bypasses the
+            # bridge filter (production path) so the guard inside
+            # ``action_kill`` is what we exercise here.
+            synthetic_remote_row = SessionRow(
+                host="peer1",
+                user="devagent",
+                name="devagent.remote",
+                short="remote",
+                agent="claude",
+                attached=False,
+                legacy=False,
+                pid=42,
+                cpu_pct=0.0,
+                rss_kib=0,
+                created_epoch=None,
+                last_attached_epoch=None,
+                cmd="claude",
+                path="/srv/work",
+            )
+            app.screen._dashboard_rows = (synthetic_remote_row,)
+            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget.focus()
+            widget.move_cursor(row=0)
+            await pilot.pause()
+            # Capture notify so the guard's warning is observable.
+            orig_notify = app.screen.app.notify
+
+            def _capture_notify(msg, *args, severity=None, **kw):
+                notify_calls.append((msg, severity))
+                return orig_notify(msg, *args, severity=severity or "information", **kw)
+
+            app.screen.app.notify = _capture_notify  # type: ignore[method-assign]
+            app.screen.action_kill()
+            await pilot.pause()
+        self.assertEqual(kill_calls, [])
+        # At least one warning-severity notify mentions the remote-kill guard.
+        warnings = [m for (m, sev) in notify_calls if sev == "warning"]
+        self.assertTrue(
+            any("Remote kill" in m for m in warnings),
+            f"expected a 'Remote kill ... not yet wired' warning, got {notify_calls!r}",
+        )
 
     async def test_cursor_pinned_across_no_op_refresh(self) -> None:
         """A no-op refresh tick leaves the cursor on the same row.

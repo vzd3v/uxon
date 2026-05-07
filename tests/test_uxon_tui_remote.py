@@ -765,6 +765,32 @@ class StateSelectorTests(unittest.TestCase):
         )
         self.assertEqual(select_layout_signature(ctx), select_layout_signature(ctx))
 
+    def test_select_layout_signature_returns_five_tuple(self) -> None:
+        """Pin the 5-tuple shape so a future drift back to 4-tuple fails fast.
+
+        Element 5 is ``cross_user``; commit 10 hardcodes ``False`` and
+        commit 11 will flip it to data-driven. Future widenings must
+        keep the tuple at five booleans for the existing
+        ``apply_loaded_ctx`` short-circuit to behave correctly.
+        """
+        from uxon.tui.context import TuiContext
+        from uxon.tui.state import select_layout_signature
+
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+        )
+        sig = select_layout_signature(ctx)
+        self.assertEqual(len(sig), 5)
+        # Element 5 is cross_user; commit 10 hardcodes False.
+        self.assertEqual(sig[4], False)
+
     def test_select_remote_health_badge_per_host_keyed(self) -> None:
         """Cache is per-host: replacing host A's snapshot does not
         invalidate host B's cached badge entry. Pinned here because

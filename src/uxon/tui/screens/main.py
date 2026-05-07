@@ -156,6 +156,21 @@ class MainScreen(Screen):
         self._dashboard_ui = DashboardUiState(
             sort_by=ctx.tui_table_default_sort_by or "cpu",
         )
+        # Compute the active dashboard columns once and reuse from
+        # ``compose`` and ``_refresh_dashboard``. Two independent calls
+        # would be fragile when commits 11/12 widen the flags — easy to
+        # drift one path. ``MainScreen`` is reconstructed via
+        # ``switch_screen(MainScreen)`` on the recompose path, so a
+        # ``cross_user`` flip in commit 11 will pick up the new columns
+        # naturally because ``__init__`` runs again.
+        flags = LayoutFlags(
+            multi_host=bool(ctx.remote_hosts),
+            cross_user=False,
+        )
+        self._active_columns = build_active_columns(
+            cfg_columns=ctx.tui_table_columns,
+            flags=flags,
+        )
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -205,21 +220,12 @@ class MainScreen(Screen):
             show_agent = len(self.ctx.enabled_agents) > 1
             # Sessions header + unified dashboard. The dashboard is
             # mounted unconditionally — empty-state copy is rendered by
-            # the ``#sessions-note`` Static beneath it (toggled by class
+            # the ``#sessions-note`` Static above it (toggled by class
             # in ``_refresh_dashboard_note``). This is the bridge in
             # commit 10: only own-user local rows land in the dashboard;
             # the legacy ``#sessions-other`` / ``#sessions-remote``
             # widgets keep their existing semantics until commits 11/12.
             yield Static("── sessions ──", classes="segment-header")
-            flags = LayoutFlags(
-                multi_host=bool(self.ctx.remote_hosts),
-                cross_user=False,
-            )
-            columns = build_active_columns(
-                cfg_columns=self.ctx.tui_table_columns,
-                flags=flags,
-            )
-            yield SessionDashboardTable(columns=columns, id="sessions-dashboard")
             note = "Loading sessions…" if self.ctx.loading else "No active sessions."
             note_classes = "empty-note"
             if self.ctx.sessions:
@@ -227,6 +233,7 @@ class MainScreen(Screen):
                 # the layout doesn't flicker an empty-note at first paint.
                 note_classes = "empty-note -hidden"
             yield Static(note, id="sessions-note", classes=note_classes)
+            yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
             if bool(self.ctx.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
                 if self.ctx.other_sessions:
@@ -425,20 +432,12 @@ class MainScreen(Screen):
         # Commit 10 bridge: only own rows go into the dashboard. Commit
         # 11 widens to all local rows; commit 12 widens to local + remote.
         own_rows = tuple(r for r in rows if r.host is None and r.user == self.ctx.current_user)
-        flags = LayoutFlags(
-            multi_host=bool(self.ctx.remote_hosts),
-            cross_user=False,
-        )
-        columns = build_active_columns(
-            cfg_columns=self.ctx.tui_table_columns,
-            flags=flags,
-        )
         try:
             widget = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:  # pragma: no cover — not yet mounted
             return
         prev_cursor_key = self._cursor_row_key(widget)
-        ops = diff(self._dashboard_rows, own_rows, columns)
+        ops = diff(self._dashboard_rows, own_rows, self._active_columns)
         widget.apply(ops)
         self._dashboard_rows = own_rows
         widget.pin_cursor_to(prev_cursor_key)
