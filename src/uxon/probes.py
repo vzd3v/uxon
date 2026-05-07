@@ -7,9 +7,11 @@ Uses only stdlib: subprocess, shlex, dataclasses, pwd.
 from __future__ import annotations
 
 import os
+import platform
 import pwd
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 
 
@@ -249,4 +251,90 @@ def probe_host(cfg, launch_user: str) -> HostReport:
         enabled=enabled,
         detected=detected,
         launch_user=launch_user,
+    )
+
+
+# ── Host metrics probe ───────────────────────────────────────────────
+
+_PROC = "/proc"
+_CPU_DELAY_S = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class HostStatsResult:
+    """Concrete shape returned by :func:`read_host_stats`.
+
+    Mirrors the wire-schema ``HostStats`` typeddict; converted to a
+    plain ``dict`` by the envelope builder before serialisation.
+    """
+
+    cpu_pct: float
+    mem_used_kib: int
+    mem_total_kib: int
+    loadavg_1m: float
+    uptime_s: int
+    kernel: str
+
+
+def _cpu_busy_pair() -> tuple[int, int]:
+    with open(f"{_PROC}/stat") as fh:
+        head = fh.readline()
+    fields = [int(x) for x in head.split()[1:]]
+    idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
+    total = sum(fields)
+    return total - idle, total
+
+
+def _read_meminfo() -> tuple[int, int]:
+    try:
+        with open(f"{_PROC}/meminfo") as fh:
+            blob = fh.read()
+    except FileNotFoundError:
+        return 0, 0
+    total = 0
+    avail = 0
+    for line in blob.splitlines():
+        if line.startswith("MemTotal:"):
+            total = int(line.split()[1])
+        elif line.startswith("MemAvailable:"):
+            avail = int(line.split()[1])
+    return total, avail
+
+
+def _read_loadavg_1m() -> float:
+    try:
+        with open(f"{_PROC}/loadavg") as fh:
+            return float(fh.read().split()[0])
+    except FileNotFoundError:
+        return 0.0
+
+
+def _read_uptime() -> int:
+    try:
+        with open(f"{_PROC}/uptime") as fh:
+            return int(float(fh.read().split()[0]))
+    except FileNotFoundError:
+        return 0
+
+
+def read_host_stats() -> HostStatsResult:
+    """Sample /proc for one host_stats snapshot. Stdlib only.
+
+    Two ``/proc/stat`` reads ~50 ms apart yield a CPU delta. Memory
+    / loadavg / uptime are single-shot. ``kernel`` is ``platform.release()``.
+    """
+    busy_a, total_a = _cpu_busy_pair()
+    if _CPU_DELAY_S > 0:
+        time.sleep(_CPU_DELAY_S)
+    busy_b, total_b = _cpu_busy_pair()
+    cpu_pct = 0.0 if total_b <= total_a else 100.0 * (busy_b - busy_a) / (total_b - total_a)
+    total_kib, avail_kib = _read_meminfo()
+    used_kib = max(0, total_kib - avail_kib) if total_kib else 0
+    return HostStatsResult(
+        cpu_pct=max(0.0, min(100.0, cpu_pct)),
+        mem_used_kib=used_kib,
+        mem_total_kib=total_kib,
+        loadavg_1m=_read_loadavg_1m(),
+        uptime_s=_read_uptime(),
+        kernel=platform.release(),
     )

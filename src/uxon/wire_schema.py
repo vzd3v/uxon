@@ -39,6 +39,15 @@ List-data optional fields (forward-compatible additions, no version bump):
   never asked (e.g. the caller themselves, filtered before probing)
   appear in neither field. Older peers that don't emit the key are
   treated as ``[]`` by the aggregator — no schema bump.
+
+Top-level optional fields (also forward-compatible, no version bump):
+
+- ``host_stats`` (``HostStats``): host-level metrics snapshot
+  (CPU/RAM/loadavg/uptime/kernel) sampled by the producer at envelope
+  build time. Older peers omit the key; the consumer treats absence as
+  ``None`` and renders the host status bar without metrics. Adding new
+  keys inside ``host_stats`` is also additive — consumers ``.get(...)``
+  defensively.
 """
 
 from __future__ import annotations
@@ -104,6 +113,23 @@ class SessionRecord(TypedDict):
     cpu_pct: float
     rss_kib: int
     legacy: bool
+
+
+class HostStats(TypedDict, total=False):
+    """Snapshot of host-level metrics returned alongside session list.
+
+    Forward-compatible: peers running schema 1 omit this field; the
+    parser treats absence as ``None``. Adding a new key here is also
+    additive — peers running an older binary omit unknown keys; the
+    consumer should ``.get(...)`` defensively.
+    """
+
+    cpu_pct: float        # /proc/stat delta over ~50 ms
+    mem_used_kib: int     # MemTotal - MemAvailable
+    mem_total_kib: int    # MemTotal
+    loadavg_1m: float     # /proc/loadavg field 0
+    uptime_s: int         # /proc/uptime field 0
+    kernel: str           # uname -r
 
 
 RemoteSessionPayload = dict[str, Any]

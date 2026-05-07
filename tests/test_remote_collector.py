@@ -300,7 +300,7 @@ class BuildPeerSshArgvTests(unittest.TestCase):
 
 class ParseEnvelopeTests(unittest.TestCase):
     def test_happy_path(self) -> None:
-        sessions, scope_skipped, err = _parse_envelope(
+        sessions, scope_skipped, host_stats, err = _parse_envelope(
             _good_envelope([{"name": "uxon-foo@claude"}])
         )
         self.assertIsNone(err)
@@ -308,16 +308,18 @@ class ParseEnvelopeTests(unittest.TestCase):
         # Older envelopes that omit ``scope_skipped`` parse as an
         # empty list (forward-compatible per-target-sudo addition).
         self.assertEqual(scope_skipped, [])
+        # Older envelopes also omit ``host_stats``; absence → ``None``.
+        self.assertIsNone(host_stats)
 
     def test_invalid_json(self) -> None:
-        sessions, _scope_skipped, err = _parse_envelope("{not json")
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope("{not json")
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("invalid JSON", err)
 
     def test_schema_version_mismatch_rejected(self) -> None:
         bad = json.dumps({"schema_version": "2", "kind": "list", "data": {"sessions": []}})
-        sessions, _scope_skipped, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("schema_version mismatch", err)
@@ -326,20 +328,20 @@ class ParseEnvelopeTests(unittest.TestCase):
         bad = json.dumps(
             {"schema_version": WIRE_SCHEMA_VERSION, "kind": "version", "data": {"sessions": []}}
         )
-        sessions, _scope_skipped, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("unexpected envelope kind", err)
 
     def test_missing_sessions_list(self) -> None:
         bad = json.dumps({"schema_version": WIRE_SCHEMA_VERSION, "kind": "list", "data": {}})
-        sessions, _scope_skipped, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("sessions", err)
 
     def test_top_level_must_be_object(self) -> None:
-        sessions, _scope_skipped, err = _parse_envelope("[]")
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope("[]")
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("not a JSON object", err)
@@ -355,10 +357,33 @@ class ParseEnvelopeTests(unittest.TestCase):
                 },
             }
         )
-        sessions, scope_skipped, err = _parse_envelope(env)
+        sessions, scope_skipped, _host_stats, err = _parse_envelope(env)
         self.assertIsNone(err)
         self.assertEqual(sessions, [])
         self.assertEqual(scope_skipped, ["carol_agent", "dave_agent"])
+
+    def test_host_stats_extracted_when_present(self) -> None:
+        env = json.dumps(
+            {
+                "schema_version": WIRE_SCHEMA_VERSION,
+                "kind": "list",
+                "data": {"sessions": []},
+                "host_stats": {
+                    "cpu_pct": 12.5,
+                    "mem_used_kib": 1024,
+                    "mem_total_kib": 2048,
+                    "loadavg_1m": 0.42,
+                    "uptime_s": 3600,
+                    "kernel": "6.8.0",
+                },
+            }
+        )
+        sessions, _scope_skipped, host_stats, err = _parse_envelope(env)
+        self.assertIsNone(err)
+        self.assertEqual(sessions, [])
+        assert host_stats is not None
+        self.assertEqual(host_stats["kernel"], "6.8.0")
+        self.assertEqual(host_stats["mem_total_kib"], 2048)
 
 
 class CacheRoundTripTests(unittest.TestCase):

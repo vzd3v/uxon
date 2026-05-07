@@ -454,7 +454,7 @@ class WireRoundTripTests(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             uxon._emit_json("list", uxon._list_data(cfg, sessions, ["u-vz"], all_users=False))
-        parsed, _scope_skipped, err = _parse_envelope(buf.getvalue())
+        parsed, _scope_skipped, _host_stats, err = _parse_envelope(buf.getvalue())
         self.assertIsNone(err)
         assert parsed is not None
         self.assertEqual(len(parsed), 2)
@@ -475,7 +475,7 @@ class WireRoundTripTests(unittest.TestCase):
                 uxon._list_data(cfg, [_make_session()], ["u-vz"], all_users=False),
                 compact=True,
             )
-        parsed, _scope_skipped, err = _parse_envelope(buf.getvalue())
+        parsed, _scope_skipped, _host_stats, err = _parse_envelope(buf.getvalue())
         self.assertIsNone(err)
         assert parsed is not None
         self.assertEqual(len(parsed), 1)

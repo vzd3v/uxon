@@ -1997,6 +1997,26 @@ def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> Non
         data,
         uxon_version=read_repo_version(),
     )
+    if kind == "list":
+        # Additive optional ``host_stats`` block. Producer must never
+        # abort the list output if /proc is partially unavailable;
+        # absence is the documented forward-compatible signal.
+        try:
+            from uxon.probes import read_host_stats
+
+            hs = read_host_stats()
+            env["host_stats"] = {  # type: ignore[typeddict-unknown-key]
+                "cpu_pct": hs.cpu_pct,
+                "mem_used_kib": hs.mem_used_kib,
+                "mem_total_kib": hs.mem_total_kib,
+                "loadavg_1m": hs.loadavg_1m,
+                "uptime_s": hs.uptime_s,
+                "kernel": hs.kernel,
+            }
+        except Exception as exc:  # pragma: no cover — defensive
+            from uxon.tui.events import debug
+
+            debug("probes", err=type(exc).__name__, msg=str(exc))
     if compact:
         print(json.dumps(env, sort_keys=False))
     else:

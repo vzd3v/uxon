@@ -100,6 +100,12 @@ class RemoteSnapshot:
             and could not reach. Forward-compatible: missing on older
             peers that don't emit the field — the collector treats
             that as ``[]``.
+        host_stats: Optional snapshot of host-level metrics
+            (CPU/RAM/loadavg/uptime/kernel) emitted by the peer
+            alongside the session list. Forward-compatible: missing
+            on peers that don't emit the field — the collector treats
+            that as ``None`` and the host status bar renders without
+            metrics.
     """
 
     host_name: str
@@ -110,6 +116,7 @@ class RemoteSnapshot:
     cached_at_epoch: float | None = None
     scope_limited: bool = False
     scope_skipped: list[str] = field(default_factory=list)
+    host_stats: dict[str, Any] | None = None
 
 
 def state_dir(*, override: Path | None = None) -> Path:
@@ -406,12 +413,12 @@ ALL_USERS_DISABLED_MARKER = "uxon-error: all-users-disabled"
 
 def _parse_envelope(
     payload: str,
-) -> tuple[list[RemoteSessionPayload] | None, list[str], str | None]:
+) -> tuple[list[RemoteSessionPayload] | None, list[str], dict[str, Any] | None, str | None]:
     """Validate and unpack an ``uxon list --json`` envelope.
 
-    Returns ``(sessions, scope_skipped, None)`` on success, or
-    ``(None, [], error)`` when the payload is malformed. Failure
-    modes:
+    Returns ``(sessions, scope_skipped, host_stats, None)`` on success,
+    or ``(None, [], None, error)`` when the payload is malformed.
+    Failure modes:
 
     - JSON parse error.
     - Top-level shape is not a dict.
@@ -440,33 +447,38 @@ def _parse_envelope(
     try:
         env: Any = msgspec.json.decode(payload)
     except msgspec.DecodeError as exc:
-        return None, [], f"invalid JSON: {exc}"
+        return None, [], None, f"invalid JSON: {exc}"
     if not isinstance(env, dict):
-        return None, [], "envelope is not a JSON object"
+        return None, [], None, "envelope is not a JSON object"
     schema_version = env.get("schema_version")
     if schema_version != WIRE_SCHEMA_VERSION:
         return (
             None,
             [],
+            None,
             (
                 f"schema_version mismatch: peer reports {schema_version!r}, "
                 f"local expects {WIRE_SCHEMA_VERSION!r}"
             ),
         )
     if env.get("kind") != "list":
-        return None, [], f"unexpected envelope kind {env.get('kind')!r}"
+        return None, [], None, f"unexpected envelope kind {env.get('kind')!r}"
     data = env.get("data")
     if not isinstance(data, dict):
-        return None, [], "envelope.data is not an object"
+        return None, [], None, "envelope.data is not an object"
     sessions = data.get("sessions")
     if not isinstance(sessions, list):
-        return None, [], "envelope.data.sessions is not a list"
+        return None, [], None, "envelope.data.sessions is not a list"
     raw_skipped = data.get("scope_skipped", [])
     if isinstance(raw_skipped, list):
         scope_skipped = [str(u) for u in raw_skipped if isinstance(u, str)]
     else:
         scope_skipped = []
-    return sessions, scope_skipped, None
+    # Optional, additive ``host_stats`` block. Older peers omit it;
+    # we treat absence as ``None`` rather than a parse error.
+    host_stats_raw = env.get("host_stats")
+    host_stats = host_stats_raw if isinstance(host_stats_raw, dict) else None
+    return sessions, scope_skipped, host_stats, None
 
 
 def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> RemoteSnapshot | None:
@@ -650,7 +662,7 @@ def fetch_remote_snapshot(
         error, payload, _ = _run_one(all_users=False)
 
     if error is None and payload is not None:
-        sessions, scope_skipped, parse_err = _parse_envelope(payload)
+        sessions, scope_skipped, host_stats, parse_err = _parse_envelope(payload)
         if parse_err is not None:
             error = parse_err
         else:
@@ -664,6 +676,7 @@ def fetch_remote_snapshot(
                 cached_at_epoch=fetched_at,
                 scope_limited=scope_limited,
                 scope_skipped=scope_skipped,
+                host_stats=host_stats,
             )
             # A cache-write failure (disk full, perms) must not taint
             # a fresh in-memory snapshot — we still have valid data.
