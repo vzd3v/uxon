@@ -30,7 +30,14 @@ class SearchBar(Widget):
         padding: 0 1;
     }
     SearchBar > Horizontal { height: 1; }
-    SearchBar Input { width: 1fr; }
+    SearchBar Input {
+        width: 1fr;
+        height: 1;
+        border: none;
+        padding: 0;
+        background: $surface;
+    }
+    SearchBar Input:focus { border: none; }
     SearchBar #match-count { width: auto; color: $text-muted; }
     """
 
