@@ -212,14 +212,6 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         def fake_kill(user: str, name: str) -> None:
             kill_calls.append((user, name))
 
-        def fake_refresh():
-            refresh_calls.append(1)
-            return _mk_ctx(
-                sessions=[],
-                on_kill=fake_kill,
-                on_refresh=fake_refresh,
-            )
-
         session = TuiSession(
             name="devagent.foo",
             short="foo",
@@ -233,18 +225,43 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             path="/srv/work",
             user="devagent",
         )
+
+        def fake_refresh():
+            # Commit 10: the dashboard is data-driven from
+            # ``state.main``. The on-mount ``kick_refresh`` lands a
+            # rebuild before the test presses 'd'; return the same
+            # session so the dashboard has a row to focus on.
+            refresh_calls.append(1)
+            return _mk_ctx(
+                sessions=[session],
+                current_user="devagent",
+                on_kill=fake_kill,
+                on_refresh=fake_refresh,
+            )
+
         ctx = _mk_ctx(
             sessions=[session],
+            current_user="devagent",
             on_kill=fake_kill,
             on_refresh=fake_refresh,
         )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            # Focus the session table and press 'd'.
-            from uxon.tui.widgets import SessionTable
+            # Focus the dashboard table and press 'd'. Commit 10
+            # replaced ``#sessions-own`` (legacy SessionTable) with
+            # ``#sessions-dashboard`` (SessionDashboardTable). The
+            # dashboard is data-driven from ``state.main`` — inject a
+            # ``MainData`` snapshot so the model selector emits the row
+            # without waiting for the periodic rebuild source to run.
+            from uxon.tui.main_data import MainData
+            from uxon.tui.widgets.session_dashboard_table import (
+                SessionDashboardTable,
+            )
 
-            t = app.screen.query_one("#sessions-own", SessionTable)
+            app.state.main = MainData.from_context(ctx)
+            app.screen._refresh_dashboard()
+            t = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
             app.screen.action_refresh = lambda: None
             t.focus()
             t.move_cursor(row=0)

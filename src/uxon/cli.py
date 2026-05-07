@@ -5033,6 +5033,8 @@ def _build_tui_context(
         get_dismissed_detected_agents=get_dismissed_detected_agents,
         refresh_sources=refresh_sources,
         remote_hosts=list(cfg.remote_hosts),
+        tui_table_columns=cfg.tui_table_columns,
+        tui_table_default_sort_by=cfg.tui_table_default_sort_by,
     )
 
 

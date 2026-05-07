@@ -20,6 +20,7 @@ reference to the current :class:`TuiContext` and refreshes it on ``r``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -36,6 +37,11 @@ from ..context import (
     TuiContext,
     _segments,
 )
+from ..dashboard.layout import LayoutFlags, build_active_columns
+from ..dashboard.model import select_dashboard_model
+from ..dashboard.reconcile import diff
+from ..dashboard.row import SessionRow
+from ..dashboard.ui_state import DashboardUiState
 from ..events import debug as _debug
 from ..state import (
     MainIntent,
@@ -51,6 +57,7 @@ from ..state import (
     visible_detected_agents,
 )
 from ..widgets import ActionRow, DetectedAgentsBanner, RemoteSessionTable, SessionTable
+from ..widgets.session_dashboard_table import SessionDashboardTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
 from .git_profile import GitProfileScreen
@@ -77,6 +84,9 @@ class MainScreen(Screen):
     .empty-note {
         color: $text-muted;
         padding: 1 2;
+    }
+    .empty-note.-hidden {
+        display: none;
     }
     #server-status {
         color: $text-muted;
@@ -137,6 +147,15 @@ class MainScreen(Screen):
         self.ctx = ctx
         self.loading = bool(ctx.loading)
         self._restore_focus_key = ""
+        # Dashboard tracking. The widget is a view; MainScreen owns the
+        # SessionRow tuple and the UI state so action_kill /
+        # on_data_table_row_selected can map cursor → SessionRow.
+        # Commit 10 bridges only own local rows into the dashboard;
+        # commits 11/12 fold other-user and remote rows.
+        self._dashboard_rows: tuple[SessionRow, ...] = ()
+        self._dashboard_ui = DashboardUiState(
+            sort_by=ctx.tui_table_default_sort_by or "cpu",
+        )
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -184,9 +203,30 @@ class MainScreen(Screen):
                 id="action-open",
             )
             show_agent = len(self.ctx.enabled_agents) > 1
+            # Sessions header + unified dashboard. The dashboard is
+            # mounted unconditionally — empty-state copy is rendered by
+            # the ``#sessions-note`` Static beneath it (toggled by class
+            # in ``_refresh_dashboard_note``). This is the bridge in
+            # commit 10: only own-user local rows land in the dashboard;
+            # the legacy ``#sessions-other`` / ``#sessions-remote``
+            # widgets keep their existing semantics until commits 11/12.
+            yield Static("── sessions ──", classes="segment-header")
+            flags = LayoutFlags(
+                multi_host=bool(self.ctx.remote_hosts),
+                cross_user=False,
+            )
+            columns = build_active_columns(
+                cfg_columns=self.ctx.tui_table_columns,
+                flags=flags,
+            )
+            yield SessionDashboardTable(columns=columns, id="sessions-dashboard")
+            note = "Loading sessions…" if self.ctx.loading else "No active sessions."
+            note_classes = "empty-note"
             if self.ctx.sessions:
-                yield Static("── sessions ──", classes="segment-header")
-                yield SessionTable(show_agent_column=show_agent, id="sessions-own")
+                # Dashboard will populate momentarily — start hidden so
+                # the layout doesn't flicker an empty-note at first paint.
+                note_classes = "empty-note -hidden"
+            yield Static(note, id="sessions-note", classes=note_classes)
             if bool(self.ctx.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
                 if self.ctx.other_sessions:
@@ -214,11 +254,6 @@ class MainScreen(Screen):
                         enabled=True,
                         id="action-kill-all-global",
                     )
-            if not self.ctx.sessions and not (
-                bool(self.ctx.sudo_caps.reachable_users) and self.ctx.other_sessions
-            ):
-                note = "Loading sessions…" if self.ctx.loading else "No active sessions."
-                yield Static(note, id="sessions-note", classes="empty-note")
             # Multi-host: a separate Remote-sessions block. Rendered
             # only when at least one peer is configured (an empty
             # ctx.remote_hosts skips the section entirely so a
@@ -286,11 +321,12 @@ class MainScreen(Screen):
         return f"({self.ctx.new_project_root}/…)"
 
     def on_mount(self) -> None:
-        if self.ctx.sessions:
-            try:
-                self.query_one("#sessions-own", SessionTable).populate(self.ctx.sessions)
-            except Exception:  # pragma: no cover — defensive
-                pass
+        # Initial dashboard apply. ``state.main`` may still be ``None``
+        # at this point (cold-start skeleton ctx) — ``_refresh_dashboard``
+        # treats that as a zero-row tick and toggles the empty-note in
+        # response. The legacy ``#sessions-own`` populate path is gone in
+        # commit 10; the dashboard owns the own-row display.
+        self._refresh_dashboard()
         if bool(self.ctx.sudo_caps.reachable_users) and self.ctx.other_sessions:
             try:
                 self.query_one("#sessions-other", SessionTable).populate(self.ctx.other_sessions)
@@ -321,6 +357,92 @@ class MainScreen(Screen):
     def on_show(self) -> None:
         if not self._restore_focus_key:
             self.call_later(self._focus_default_action)
+
+    # ── Dashboard (commit 10 bridge: own-only) ───────────────────────
+
+    def _build_dashboard_cfg_view(self) -> SimpleNamespace:
+        """Minimal cfg view consumed by :func:`select_dashboard_model`.
+
+        The selector reads only ``cfg.remote_hosts`` today; the namespace
+        includes ``current_user`` for symmetry / future widening. This
+        avoids importing :class:`uxon.tui.config.TuiConfig` here (its
+        constructor demands the full callback bundle, which the bridge
+        does not need).
+        """
+        return SimpleNamespace(
+            remote_hosts=self.ctx.remote_hosts,
+            current_user=self.ctx.current_user,
+        )
+
+    def _cursor_row_key(self, widget: SessionDashboardTable) -> str | None:
+        """Read the dashboard cursor's row-key for pin-after-apply.
+
+        Returns ``None`` for an empty table or out-of-range cursor — the
+        widget's :meth:`pin_cursor_to` accepts ``None`` as "leave alone".
+        """
+        try:
+            idx = widget.cursor_row
+            if idx is None or idx < 0 or idx >= len(widget.ordered_rows):
+                return None
+            key_obj = widget.ordered_rows[idx].key
+            value = getattr(key_obj, "value", None)
+            return value if isinstance(value, str) else None
+        except Exception:  # pragma: no cover — defensive (widget not ready)
+            return None
+
+    def _refresh_dashboard_note(self, own_rows: tuple[SessionRow, ...]) -> None:
+        """Toggle the ``#sessions-note`` placeholder above the dashboard.
+
+        Visible when no own-rows are present (Loading… on cold start,
+        "No active sessions." once the rebuild has landed). The class
+        toggle keeps the layout signature stable across the empty/non-
+        empty transition — the Static is mounted unconditionally.
+        """
+        try:
+            note = self.query_one("#sessions-note", Static)
+        except Exception:  # pragma: no cover — note not yet mounted
+            return
+        if own_rows:
+            note.set_class(True, "-hidden")
+        else:
+            note.set_class(False, "-hidden")
+            note.update("Loading sessions…" if self.ctx.loading else "No active sessions.")
+
+    def _refresh_dashboard(self) -> None:
+        """Compute new model, diff against the previous, apply to the widget.
+
+        Owns the dashboard's per-tick lifecycle: pull state, build the
+        row tuple via :func:`select_dashboard_model`, filter to local-own
+        rows for this bridge commit, diff against the previous tuple,
+        apply the ops to the widget, then pin the cursor by row-key so
+        a no-op tick leaves it where it was.
+        """
+        state = getattr(self.app, "state", None)
+        if state is None:
+            return
+        cfg_view = self._build_dashboard_cfg_view()
+        rows = select_dashboard_model(state, cfg_view, self._dashboard_ui)  # type: ignore[arg-type]
+        # Commit 10 bridge: only own rows go into the dashboard. Commit
+        # 11 widens to all local rows; commit 12 widens to local + remote.
+        own_rows = tuple(r for r in rows if r.host is None and r.user == self.ctx.current_user)
+        flags = LayoutFlags(
+            multi_host=bool(self.ctx.remote_hosts),
+            cross_user=False,
+        )
+        columns = build_active_columns(
+            cfg_columns=self.ctx.tui_table_columns,
+            flags=flags,
+        )
+        try:
+            widget = self.query_one("#sessions-dashboard", SessionDashboardTable)
+        except Exception:  # pragma: no cover — not yet mounted
+            return
+        prev_cursor_key = self._cursor_row_key(widget)
+        ops = diff(self._dashboard_rows, own_rows, columns)
+        widget.apply(ops)
+        self._dashboard_rows = own_rows
+        widget.pin_cursor_to(prev_cursor_key)
+        self._refresh_dashboard_note(own_rows)
 
     # ── Remote sessions block (multi-host) ────────────────────────────
 
@@ -457,8 +579,27 @@ class MainScreen(Screen):
         Local SessionTable rows fire the existing session_intent path.
         RemoteSessionTable rows fire the remote_session_intent path,
         which dispatches via ctx.on_remote_attach over SSH.
+        SessionDashboardTable rows (commit 10 bridge) dispatch the
+        local on_attach callback directly — remote rows in the
+        dashboard are rejected until commit 12 wires on_remote_attach.
         """
         table = event.data_table
+        if isinstance(table, SessionDashboardTable):
+            idx = event.cursor_row
+            if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
+                return
+            row = self._dashboard_rows[idx]
+            if row.host is not None:
+                # Bridge guard: remote-attach from the dashboard lands
+                # in commit 12.
+                self.app.notify(
+                    "Remote attach from dashboard not yet wired.",
+                    severity="warning",
+                )
+                return
+            session_user = row.user or self.ctx.current_user
+            self._attach_session(session_user, row.name)
+            return
         if isinstance(table, SessionTable):
             session = table.session_at(event.cursor_row)
             if session is None:
@@ -765,7 +906,7 @@ class MainScreen(Screen):
             repo_config_writable=self.ctx.repo_config_writable,
         )
 
-    def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
+    def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool, bool]:
         """Thin shim over :func:`select_layout_signature`.
 
         Kept as an instance method so the existing test surface (some
@@ -796,12 +937,10 @@ class MainScreen(Screen):
         except Exception:
             return False
 
-        try:
-            own_table = self.query_one("#sessions-own", SessionTable)
-        except Exception:
-            own_table = None
-        if own_table is not None:
-            own_table.populate(self.ctx.sessions)
+        # Own sessions render through the dashboard widget; the legacy
+        # ``#sessions-own`` populate path is gone in commit 10. The
+        # dashboard is repopulated below (after the other-user block) so
+        # the model selector sees a consistent ``state.main`` snapshot.
 
         try:
             other_table = self.query_one("#sessions-other", SessionTable)
@@ -829,14 +968,15 @@ class MainScreen(Screen):
                 )
                 kill_row._render_text()
 
-        # Update the "Loading sessions…" / "No active sessions." placeholder
-        # in place when present (only rendered when both lists are empty).
-        try:
-            note = self.query_one("#sessions-note", Static)
-        except Exception:
-            note = None
-        if note is not None:
-            note.update("Loading sessions…" if self.ctx.loading else "No active sessions.")
+        # The "Loading sessions…" / "No active sessions." placeholder
+        # is owned by ``_refresh_dashboard_note`` (called from
+        # ``_refresh_dashboard`` below), which also toggles its
+        # visibility based on the current own-row count.
+
+        # Dashboard repopulate: pulls a fresh model from ``state.main``
+        # and applies the diff. Runs after the other-user populate so a
+        # synchronous mid-tick observer would see both panes consistent.
+        self._refresh_dashboard()
 
         self._update_status_line()
         return True
@@ -945,26 +1085,59 @@ class MainScreen(Screen):
         self.app.switch_screen(new_screen)
 
     def action_kill(self) -> None:
-        """Confirm then kill the session under focus."""
+        """Confirm then kill the session under focus.
+
+        Handles three focus targets in commit 10:
+
+        * :class:`SessionTable` (legacy ``#sessions-other``) — resolves
+          via ``focused.session_at(cursor_row)``.
+        * :class:`SessionDashboardTable` (``#sessions-dashboard``) —
+          resolves via the cursor index into ``self._dashboard_rows``.
+          A remote-host row in the dashboard is rejected with a
+          warning until commit 12 wires ``ctx.on_remote_kill`` here.
+        * Anything else — warn and bail.
+        """
         focused = self.focused
-        if not isinstance(focused, SessionTable):
+        session_user: str
+        session_name: str
+        session_short: str
+        if isinstance(focused, SessionDashboardTable):
+            idx = focused.cursor_row
+            if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
+                return
+            row = self._dashboard_rows[idx]
+            if row.host is not None:
+                # Bridge guard: remote rows in the dashboard land in
+                # commit 12 (ctx.on_remote_kill dispatch).
+                self.app.notify(
+                    "Remote kill from dashboard not yet wired.",
+                    severity="warning",
+                )
+                return
+            session_user = row.user or self.ctx.current_user
+            session_name = row.name
+            session_short = row.short or row.name
+        elif isinstance(focused, SessionTable):
+            row_idx = focused.cursor_row
+            session = focused.session_at(row_idx)
+            if session is None:
+                return
+            session_user = session.user or self.ctx.current_user
+            session_name = session.name
+            session_short = session.short
+        else:
             self.app.notify("Select a session first.", severity="warning")
             return
-        row = focused.cursor_row
-        session = focused.session_at(row)
-        if session is None:
-            return
-        user = session.user or self.ctx.current_user
 
         def after_confirm(ok: bool | None) -> None:
             if not ok:
                 return
             try:
-                self.ctx.on_kill(user, session.name)
-                self.app.notify(f"Killed {session.short}")
+                self.ctx.on_kill(session_user, session_name)
+                self.app.notify(f"Killed {session_short}")
             except CallbackError as exc:
                 self.app.notify(
-                    f"Kill {session.short} failed: {exc}",
+                    f"Kill {session_short} failed: {exc}",
                     severity="error",
                     timeout=6,
                 )
@@ -972,7 +1145,7 @@ class MainScreen(Screen):
             self.action_refresh()
 
         self.app.push_screen(
-            ConfirmYesNo(f"Kill {session.name} (user={user})?"),
+            ConfirmYesNo(f"Kill {session_name} (user={session_user})?"),
             after_confirm,
         )
 
@@ -1084,7 +1257,11 @@ class MainScreen(Screen):
                 self.query_one(f"#{action_ids[idx]}", ActionRow).focus()
                 return
             if idx < other_start:
-                t = self.query_one("#sessions-own", SessionTable)
+                # Own-segment math still applies — the dashboard's
+                # own-row count equals the legacy ``#sessions-own``
+                # count in this bridge commit because the call-site
+                # filter discards everything that isn't a local own row.
+                t = self.query_one("#sessions-dashboard", SessionDashboardTable)
                 t.move_cursor(row=idx - own_start)
                 t.focus()
                 return
@@ -1106,6 +1283,15 @@ class MainScreen(Screen):
         focused = self.focused
         if isinstance(focused, ActionRow):
             return f"action:{focused.id or ''}"
+        if isinstance(focused, SessionDashboardTable):
+            idx = focused.cursor_row
+            if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
+                return ""
+            row = self._dashboard_rows[idx]
+            # Commit 10 dashboard only carries own rows (host=None).
+            if row.host is None:
+                return f"own:{row.name}"
+            return ""
         if isinstance(focused, SessionTable):
             session = focused.session_at(focused.cursor_row)
             if session is None:
@@ -1137,7 +1323,7 @@ class MainScreen(Screen):
             except Exception:
                 return False
         if key.startswith("own:"):
-            return self._focus_session_key("#sessions-own", key.removeprefix("own:"))
+            return self._focus_dashboard_own(key.removeprefix("own:"))
         if key.startswith("other:"):
             _, _, session_name = key.removeprefix("other:").partition("/")
             return self._focus_session_key("#sessions-other", session_name)
@@ -1181,6 +1367,24 @@ class MainScreen(Screen):
             return False
         for idx, session in enumerate(table._session_index):
             if session.name == session_name:
+                table.focus()
+                table.move_cursor(row=idx)
+                return True
+        return False
+
+    def _focus_dashboard_own(self, session_name: str) -> bool:
+        """Restore focus on the dashboard row matching ``session_name``.
+
+        The dashboard model is owned by ``self._dashboard_rows``; we
+        index that tuple instead of the widget's row keys to avoid a
+        round-trip through the private DataTable index.
+        """
+        try:
+            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
+        except Exception:
+            return False
+        for idx, row in enumerate(self._dashboard_rows):
+            if row.host is None and row.name == session_name:
                 table.focus()
                 table.move_cursor(row=idx)
                 return True

@@ -590,13 +590,19 @@ def select_remote_rows(
     return value
 
 
-def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
-    """Return the four-bool layout signature for ``MainScreen`` patch-vs-recompose.
+def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool, bool]:
+    """Return the five-bool layout signature for ``MainScreen`` patch-vs-recompose.
 
     Mirrors ``MainScreen._layout_signature``: ``(has_own_sessions,
-    has_super, has_other_sessions, kill_visible)``. Pure; memoisation
-    is unnecessary because the result is a tuple of bools (cheap to
-    recompute, equality-compared by callers).
+    has_super, has_other_sessions, kill_visible, cross_user)``. Pure;
+    memoisation is unnecessary because the result is a tuple of bools
+    (cheap to recompute, equality-compared by callers).
+
+    The fifth bool ``cross_user`` is the recompose hook commit 11 uses
+    to rebuild the dashboard widget with the USER column once any
+    other-user session appears. In commit 10 it is constantly
+    ``False`` — there are no other-user rows in the dashboard yet
+    (the call-site filter discards them).
     """
     has_super = bool(ctx.sudo_caps.reachable_users)
     return (
@@ -604,6 +610,7 @@ def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
         has_super,
         bool(ctx.other_sessions),
         has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
+        False,  # cross_user: hardcoded in commit 10; commit 11 makes it data-driven
     )
 
 
