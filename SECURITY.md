@@ -117,6 +117,57 @@ boundaries are:
   the host's own `sudo` trail covers cross-user invocations, but
   uxon is not a replacement for an enterprise audit pipeline.
 
+## Why OS users instead of containers
+
+`uxon` uses dedicated low-privilege Linux users (`<user>_agent`)
+and `sudo -iu` rather than spinning up a container per agent
+session. Docker / Podman are stronger isolation primitives, but on
+a shared development host they add four kinds of operational cost:
+
+- **Bind-mount UID mapping.** With naive `docker run` defaults,
+  files created in the container come back owned by `root` (or
+  whatever UID was baked in) on the host, breaking save-and-edit.
+  Rootless Podman with the `:U` mount option, and rootless Docker
+  via `subuid` / `subgid`, close this — at the cost of per-host
+  setup that is itself non-trivial.
+- **Networking.** Anything the agent talks to on `localhost` (a
+  local DB, a model proxy, an internal service, an
+  `mDNS` / `.local` host) needs `host.docker.internal`,
+  `--network=host`, or explicit port plumbing. SSH-agent
+  forwarding needs socket bind-mounts and breaks across
+  reconnects.
+- **Auth duplication.** `~/.claude`, `~/.gitconfig`, `~/.aws/`,
+  `known_hosts`, SSH keys — each has to be passed through, or the
+  container becomes a second place to re-auth every agent.
+- **Per-image maintenance.** Tool updates → image rebuilds → push
+  or share. For a team that just wants "Claude Code with the
+  project's deps", this is extra operational work.
+
+OS-user isolation removes those four at the cost of relying on
+Linux user separation rather than container primitives:
+
+- **Same kernel.** A kernel-level escape from inside the agent
+  binary reaches the host. Containers narrow this surface via
+  default seccomp / AppArmor profiles; `<user>_agent` does not.
+- **Same network namespace.** The agent can reach `127.0.0.1`
+  services on the host and scan the LAN. `iptables` / `nftables`
+  rules per UID can mitigate, but uxon does not configure them.
+- **Same `/proc`.** Without `hidepid=2` mounted on `/proc`, every
+  user can see every other user's command lines and environments
+  (not their memory).
+
+The isolation `<user>_agent` actually provides is what regular
+Linux UID separation provides: the agent cannot read files outside
+its UID's reach, cannot signal another UID's processes, cannot
+read another user's `~/.ssh/`. That is enough when the host's
+threat model is "developers on this team, plus their agents
+running yolo by accident". It is not enough when you do not trust
+the developers logging into the box.
+
+If you need stronger isolation than that, run uxon itself inside a
+VM (or container) per team and keep the OS-user model inside it.
+The layers compose.
+
 ## Hardening recommendations
 
 - **Run agents as a dedicated, low-privilege OS user.** The

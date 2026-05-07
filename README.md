@@ -113,174 +113,48 @@ Boundaries:
 
 ### Isolation model: OS users, not containers
 
-`uxon` uses dedicated low-privilege Linux users (`<user>_agent`) and
-`sudo -iu` instead of creating a container per agent session. Docker
-or Podman are stronger isolation primitives, but they add operational
-cost on a shared development host:
-
-- **Bind-mount UID mapping.** With naive `docker run` defaults, files
-  created in the container come back owned by `root` (or whatever
-  UID was baked in) on the host, breaking save-and-edit. Rootless
-  Podman with the `:U` mount option, and rootless Docker via
-  `subuid`/`subgid`, close this — at the cost of a per-host setup
-  that is itself non-trivial.
-- **Networking.** Anything the agent talks to on
-  `localhost` (a local DB, a model proxy, an internal service, an
-  `mDNS`/`.local` host) needs `host.docker.internal`,
-  `--network=host`, or explicit port plumbing. SSH-agent
-  forwarding needs socket bind-mounts and breaks across
-  reconnects.
-- **Auth duplication.** `~/.claude`, `~/.gitconfig`, `~/.aws/`,
-  `known_hosts`, SSH keys — each has to be passed through, or the
-  container becomes a second place to re-auth every agent.
-- **Per-image maintenance.** Tool updates → image rebuilds → push or
-  share. For a team that just wants "Claude Code with the
-  project's deps", this is extra operational work.
-
-OS-user isolation removes those four at the cost of relying on
-Linux user separation rather than container primitives:
-
-- **Same kernel.** A kernel-level escape from inside the agent
-  binary reaches the host. Containers narrow this surface via
-  default seccomp / AppArmor profiles; `<user>_agent` does not.
-- **Same network namespace.** The agent can reach `127.0.0.1`
-  services on the host and scan the LAN. `iptables`/`nftables`
-  rules per UID can mitigate, but uxon does not configure them.
-- **Same `/proc`.** Without `hidepid=2` mounted on `/proc`, every
-  user can see every other user's processes (not their memory,
-  but command lines and environments).
-
-The isolation `<user>_agent` actually provides is what regular
-Linux UID separation provides: the agent cannot read files outside
-its UID's reach, cannot signal another UID's processes, cannot
-read another user's `~/.ssh/`. That is enough when the host's
-threat model is "developers on this team, plus their agents
-running yolo by accident". It is not enough when you do not trust
-the developers logging into the box.
-
-If you need stronger isolation than that, run uxon itself inside a
-VM (or container) per team and keep the OS-user model inside it.
-The layers compose.
+`uxon` uses dedicated low-privilege Linux users (`<user>_agent`)
+and `sudo -iu` rather than spinning up a container per agent
+session. The tradeoff: no UID-mapping pain, no network namespace
+plumbing, no auth duplication, no per-image maintenance — at the
+cost of relying on regular Linux UID separation (same kernel, same
+network namespace, same `/proc` unless `hidepid=2`). That suits
+hosts where the threat model is "developers on this team, plus
+their agents running yolo by accident", not hosts where the
+developers themselves are untrusted. If you need stronger
+isolation, run `uxon` inside a VM (or container) per team and keep
+the OS-user model inside it. Full reasoning and the per-tradeoff
+breakdown in
+[SECURITY.md § Why OS users instead of containers](SECURITY.md#why-os-users-instead-of-containers).
 
 ## Install
 
-Requires **Python 3.11+**, `tmux`, and Linux. Dependencies (`textual`,
-`tomlkit`) are pulled in automatically.
-
-`uxon` is built for persistent Linux servers where one or several OS
-users run agent sessions that need to survive disconnects. Two install
-flavours, depending on whether each user installs their own copy or
-the host has one shared `uxon` on `PATH` for everyone.
-
-### Per-user install (recommended)
-
-**Use this when** each OS user manages their own copy of `uxon` —
-independently versioned, no `sudo` needed, easy `uninstall`. The
-common case for solo developers and small teams where everyone
-prefers full control over their tooling.
-
-Each OS user runs one of these in their own account:
+Requires **Python 3.11+**, `tmux`, and Linux. Dependencies
+(`textual`, `tomlkit`) come in automatically.
 
 ```bash
-# uv tool — recommended for isolated CLI installs.
-uv tool install uxon
-
-# pipx — equivalent. Same console-script entrypoint.
-pipx install uxon
-
-# pip --user — no isolation. See PEP 668 caveat below.
-pip install --user uxon
+uv tool install uxon              # per-user (recommended)
+pipx install uxon                 # equivalent
+sudo pipx install --global uxon   # host-wide (pipx 1.5+)
+uxon                              # launch the TUI; it self-diagnoses
 ```
 
-uv/pipx isolate `uxon` and its deps in a per-user venv; `pip --user`
-puts them under `~/.local/` shared with anything else installed that
-way. All three put a `uxon` console script on the user's `PATH`.
-Updates: `uv tool upgrade uxon` / `pipx upgrade uxon` /
-`pip install --user --upgrade uxon`.
-
-On Debian/Ubuntu/Fedora system Python, PEP 668 blocks
-`pip install --user`; use `pipx` (recommended) or
-`pip install --user --break-system-packages uxon` if you know what
-you're doing. With your own Python (pyenv/asdf/uv-managed) PEP 668
-doesn't apply.
-
-For unreleased changes from `main`:
-
-```bash
-uv tool install git+https://github.com/vzd3v/uxon.git
-# or:  pipx install git+https://github.com/vzd3v/uxon.git
-```
-
-### Host-wide install (one `uxon` for all users on the host)
-
-**Use this when** you administer a server where several OS users
-launch agent sessions and you want them on a single shared `uxon`
-in `/usr/local/bin/uxon` — one version, one update path, one place
-to audit. With (a) passwordless `sudo` to other launch users
-(per-target NOPASSWD on each `<user>_agent`, or root NOPASSWD) and
-(b) those users listed in `session_users` in `config.toml`, the
-operator additionally **sees and can attach to those users'
-sessions** from the same TUI (the Superuser block, described under
-[The TUI](#the-tui) below) — visibility is scoped to the users you
-can actually sudo into. Missing either piece — no `sudo`, or empty
-`session_users` — and every OS user sees only their own
-sessions. Each OS user keeps their own `tmux` socket and
-their own `uxon-*` sessions; only the binary is shared.
-
-```bash
-# Simple: pipx as a system installer (pipx 1.5+).
-sudo pipx install --global uxon
-# Updates: sudo pipx upgrade --global uxon
-```
-
-```bash
-# Explicit: bundled installer. Useful for fleet rollout (Ansible /
-# Puppet) and when ops conventions pin paths like /opt/uxon/venv.
-git clone https://github.com/vzd3v/uxon.git
-cd uxon
-sudo python3 install/install_uxon.py \
-  --repo-dir "$(pwd)" \
-  --install-path /usr/local/bin/uxon
-# (uses /opt/uxon/venv by default; override with --venv-dir)
-# Updates: re-run with --reinstall
-```
-
-Both isolate `uxon`'s Python deps in a dedicated venv and put the
-console script on `PATH` via a `/usr/local/bin/uxon` shim. Don't use
-`sudo pip install uxon` — it dumps `textual` / `rich` / `tomlkit` /
-etc. into the system Python `site-packages` and conflicts with the
-distro's package manager (this is what PEP 668 protects against).
-
-For multi-host rollout, generated config from a JSON payload, and
-deployment topology, see [`docs/deployment.md`](docs/deployment.md).
+The host-wide path plus passwordless `sudo` to launch users plus a
+`session_users` list unlocks the TUI's cross-user dashboard
+(see [The TUI](#the-tui) below). For the bundled installer
+(Ansible / Puppet rollout), PEP 668 caveats, the bootstrap
+config snippet, and unreleased-from-`main` builds, see
+[`docs/getting-started.md`](docs/getting-started.md). For
+multi-host rollout, JSON-rendered configs, and pinned refs, see
+[`docs/deployment.md`](docs/deployment.md). For the **client
+side** (laptop, phone, tablet) connecting to the host, see
+[`docs/clients.md`](docs/clients.md).
 
 `uxon` emits audit events to the platform log channel (journald
-native on systemd hosts, `/dev/log` syslog fallback).  Per-event
-schema reference in [`docs/audit-events.md`](docs/audit-events.md);
-channel topology and `journalctl` recipes in
+native on systemd hosts, `/dev/log` syslog fallback). Per-event
+schema in [`docs/audit-events.md`](docs/audit-events.md); channel
+topology and `journalctl` recipes in
 [`docs/deployment.md`](docs/deployment.md#audit-channel).
-
-### After install
-
-```bash
-uxon                              # launch the TUI; it self-diagnoses
-# Optional: bootstrap an example config. The file ships as a working
-# "solo on a single host" config — works as-is, no edits needed.
-# Uncomment a scenario block at the bottom for team / multi-host setups.
-curl -fsSL https://raw.githubusercontent.com/vzd3v/uxon/main/config/config.example.toml -o ./config.toml
-```
-
-For deeper, scriptable host inspection see
-[`docs/cli.md`](docs/cli.md#doctor).
-
-You'll also need at least one of the agent CLIs installed for the
-launch user — see [Supported agents](#supported-agents).
-
-For the **client side** (your laptop, phone, tablet) — connecting
-to the host so that sessions actually survive disconnects — see
-[`docs/clients.md`](docs/clients.md). The short version: prefer
-Eternal Terminal (`et`) over bare `ssh`; put hosts in
-`~/.ssh/config`; use a hardware-protected SSH key.
 
 ## Quick start
 
@@ -369,44 +243,27 @@ the agent or the network.
 
 ### ⚡ Superuser block (only when passwordless `sudo` is detected)
 
-Visibility falls out of your sudo rules per-target. At TUI startup
-`uxon` probes `sudo -niu <U> -- true` for each user in
-`session_users` and shows the block scoped to the **reachable**
-subset:
+When the caller has passwordless `sudo` to one or more users in
+`session_users`, the dashboard adds those users' rows under a
+yellow `USER` column and a superuser block appears with three
+extras:
 
-- **`<caller> ALL=(ALL) NOPASSWD: ALL`** (root NOPASSWD) — full
-  block, every user in `session_users` listed.
-- **`<caller> ALL=(alice_agent,bob_agent) NOPASSWD: ALL`**
-  (per-target NOPASSWD) — block shows alice/bob; the section header
-  carries a `(2/N users reachable)` hint when `session_users` lists
-  more. Note the grant targets `*_agent` accounts, **not** `alice` /
-  `bob` shell users — the operator gets visibility into the agents'
-  tmux sockets without the ability to log in as the developers
-  themselves.
-- **No passwordless sudo** — block hidden; you see only your own
-  sessions.
+- **Other users' sessions** in the same dashboard. `Enter` attaches
+  via `sudo -niu <user>`; `d` kills.
+- **⚙ Settings** — repo-level `config.toml` editor (preserves
+  comments via `tomlkit` round-trip; falls back to `sudo tee` for
+  root-owned files).
+- **Kill ALL uxon sessions (reachable users)** — the "fire alarm",
+  gated on typing `kill-all-reachable`.
 
-The probe runs **once at startup**; new sudoers grants are picked
-up by quitting (`q`) and re-launching `uxon`.
-
-Inside the block:
-
-- **Other users' sessions** appear as additional rows in the unified
-  session dashboard (§ 2) with a yellow `USER` column. `Enter`
-  attaches via `sudo -niu <user>` (read-only-ish — you're a guest
-  in their tmux); `d` kills the highlighted one.
-- **⚙ Settings** — repo-level `config.toml` editor. Bool keys
-  toggle, enums cycle, strings open an input, arrays use
-  comma-separated input. Saves rewrite the file via a `tomlkit`
-  round-trip (using `sudo tee` automatically when needed) and
-  preserve untouched comments and formatting. Visible only when the
-  caller has root NOPASSWD or the file is locally writable.
-  Project-level `.uxon.toml` keys are read-only here — edit them in
-  the project.
-- **Kill ALL uxon sessions (reachable users)** — appears when at
-  least one session exists across reachable users; requires typing
-  `kill-all-reachable` to confirm. The "fire alarm" button. Acts
-  only on users you can sudo into.
+Visibility is scoped to the **reachable** subset of `session_users`
+— probed once at TUI startup via `sudo -niu <U> -- true`. The
+section header shows `(N/M users reachable)` when not all of
+`session_users` is reachable; new sudoers grants are picked up by
+quitting and re-launching. Grants target the `*_agent` accounts,
+not the developers' shell users — supervision without
+impersonation. Full sudoers patterns and resolution order in
+[`docs/configuration.md` § Operator view](docs/configuration.md#operator-view-who-sees-whose-sessions).
 
 ### Keys
 
@@ -533,6 +390,9 @@ More edge cases (legacy session prefixes, failed-launch banner, the
 
 ## Documentation
 
+- [`docs/getting-started.md`](docs/getting-started.md) — full
+  install paths (per-user / host-wide / bundled installer),
+  PEP 668 caveat, after-install bootstrap.
 - [`docs/configuration.md`](docs/configuration.md) — all config keys
   organised by deployment scenario (solo / team × single-host /
   multi-host), plus orthogonal use cases (GitHub repo on new
