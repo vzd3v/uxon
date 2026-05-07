@@ -117,7 +117,7 @@ class HostColourTests(unittest.TestCase):
 
     def test_different_names_usually_distinct(self) -> None:
         # Sample a handful of names; at least two must map to different
-        # palette entries (the palette has 10 distinct values).
+        # palette entries.
         samples = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
         colours = {host_colour(n) for n in samples}
         self.assertGreater(len(colours), 1)
@@ -200,14 +200,15 @@ class FormatRelativeTimeTests(unittest.TestCase):
 
 
 class NameFormatterTests(unittest.TestCase):
-    def test_local_row_uses_dim_glyph(self) -> None:
+    def test_local_row_uses_green_glyph(self) -> None:
         col = _by_id("name")
         text = col.format(_row(host=None, short="foo"))
         self.assertIsInstance(text, Text)
         self.assertIn("foo", text.plain)
         # The glyph (first chunk) carries the row's host colour — for
-        # local rows that's "dim" so it renders unobtrusively.
-        self.assertEqual(str(text.style), "dim")
+        # local rows that's "green", which doubles as the at-a-glance
+        # cue that the session lives on the operator's machine.
+        self.assertEqual(str(text.style), "green")
 
     def test_remote_row_uses_host_colour(self) -> None:
         col = _by_id("name")
@@ -265,11 +266,11 @@ class UserFormatterTests(unittest.TestCase):
 
 
 class HostFormatterTests(unittest.TestCase):
-    def test_local_renders_dim_local(self) -> None:
+    def test_local_renders_green_local(self) -> None:
         col = _by_id("host")
         text = col.format(_row(host=None))
         self.assertEqual(text.plain, "local")
-        self.assertEqual(str(text.style), "dim")
+        self.assertEqual(str(text.style), "green")
 
     def test_remote_uses_palette(self) -> None:
         col = _by_id("host")

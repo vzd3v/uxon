@@ -45,30 +45,32 @@ class ColumnSpec:
 
 
 # Stable palette of Rich style specs the host glyph cycles through.
-# Order is deterministic and chosen for visual distinguishability on
-# both light and dark terminal themes.
+# Order is deterministic. The palette is intentionally small (3
+# entries) so a typical multi-host operator sees a clean zebra rather
+# than a spread of unfamiliar colours; collisions past 3 hosts are
+# disambiguated by the HOST column itself. Red and yellow are
+# deliberately excluded — those are reserved for danger / warning
+# semantics elsewhere in the TUI (CPU thresholds, error toasts) and
+# must not appear as a benign per-host marker.
 _HOST_PALETTE: tuple[str, ...] = (
     "cyan",
-    "magenta",
-    "yellow",
-    "green",
     "blue",
-    "red",
-    "bright_cyan",
-    "bright_magenta",
-    "bright_yellow",
-    "bright_green",
+    "magenta",
 )
+
+# Local rows render with this style on the NAME glyph and HOST cell.
+# Distinct from the remote palette so operators can tell at a glance
+# which sessions live on the local host.
+_LOCAL_STYLE = "green"
 
 
 def host_colour(host_name: str) -> str:
     """Return a deterministic Rich style spec for ``host_name``.
 
     Stable across calls and across processes — uses md5 of the host
-    name modulo the palette size. Two distinct names usually map to
-    distinct entries; with the current 10-entry palette, collisions
-    are inevitable past ~10 hosts but survive sort and remain
-    distinguishable per-row via the HOST column itself.
+    name modulo the palette size. With a 3-entry palette collisions
+    are common past 3 hosts; the HOST column carries the resolving
+    label.
     """
     digest = hashlib.md5(host_name.encode("utf-8")).hexdigest()
     return _HOST_PALETTE[int(digest, 16) % len(_HOST_PALETTE)]
@@ -129,7 +131,7 @@ def format_relative_time(epoch: float | None, now: float | None = None) -> str:
 
 def _format_host(row: SessionRow) -> Text:
     if row.host is None:
-        return Text("local", style="dim")
+        return Text("local", style=_LOCAL_STYLE)
     return Text(row.host, style=host_colour(row.host))
 
 
@@ -148,7 +150,7 @@ def _format_name(row: SessionRow) -> Text:
     The glyph survives sort even when the HOST column is hidden, so
     operators retain per-row host attribution in single-list view.
     """
-    glyph_style = host_colour(row.host) if row.host is not None else "dim"
+    glyph_style = host_colour(row.host) if row.host is not None else _LOCAL_STYLE
     text = Text("● ", style=glyph_style)
     display = row.short or row.name or "-"
     if row.attached:
