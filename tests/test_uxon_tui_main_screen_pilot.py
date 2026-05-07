@@ -63,5 +63,41 @@ class EscNotQuitTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(app.screen, MainScreen)
 
 
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_smoke_search_filter_forces_flat_then_clear(self) -> None:
+        from uxon.remote_hosts import RemoteHost
+        from uxon.tui.app import UxonApp
+
+        ctx = _mk_ctx(
+            remote_hosts=[
+                RemoteHost(name="kris", ssh_alias="kris", description="", remote_uxon="uxon"),
+                RemoteHost(name="ada", ssh_alias="ada", description="", remote_uxon="uxon"),
+            ]
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            # SearchBar Input has focus by default after on_mount.
+            focused = pilot.app.focused
+            self.assertIsNotNone(focused)
+            self.assertIn("Input", type(focused).__name__)
+            # Type "kris" — non-empty filter forces flat render.
+            await pilot.press("k", "r", "i", "s")
+            await pilot.pause()
+            strip = pilot.app.screen.query_one("#host-tabs")
+            self.assertFalse(strip.display)
+            # Esc clears the input.
+            await pilot.press("escape")
+            await pilot.pause()
+            # Esc again blurs back to the dashboard / sibling widget.
+            await pilot.press("escape")
+            await pilot.pause()
+            # Tab navigation still works after the SearchBar lost focus.
+            await pilot.press("]")
+            await pilot.pause()
+            await pilot.press("q")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -276,6 +276,10 @@ class DrainAfterLaunchTests(unittest.TestCase):
         trace = run_python_snippet(
             code,
             [
+                # SearchBar Input has default focus on MainScreen mount
+                # (Task 9). Esc blurs it so subsequent digit/letter keys
+                # reach the screen-level bindings.
+                (1.0, b"\x1b"),
                 (8.0, b"1", "1 normal"),
                 (4.0, b"\r"),
                 (1.0, b"2"),

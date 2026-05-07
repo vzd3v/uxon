@@ -129,3 +129,10 @@ ConfirmPhrase > Vertical {
 Button {
     margin: 0 1;
 }
+
+/* ── SearchBar ──────────────────────────────────────────────────── */
+
+SearchBar {
+    margin-top: 1;
+    margin-bottom: 0;
+}

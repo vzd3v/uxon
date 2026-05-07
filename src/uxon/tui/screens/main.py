@@ -44,7 +44,7 @@ from ..dashboard.layout import LayoutFlags, build_active_columns
 from ..dashboard.model import select_dashboard_model
 from ..dashboard.reconcile import diff
 from ..dashboard.row import SessionRow
-from ..dashboard.ui_state import DashboardUiState, set_view_mode
+from ..dashboard.ui_state import DashboardUiState, set_filter, set_view_mode
 from ..events import debug as _debug
 from ..keymap import bindings_with_aliases
 from ..state import (
@@ -59,6 +59,7 @@ from ..state import (
 from ..widgets import ActionRow, DetectedAgentsBanner
 from ..widgets.host_status_bar import HostStatusBar
 from ..widgets.host_tab_strip import HostTabActivated, HostTabStrip
+from ..widgets.search_bar import FilterChanged, SearchBar
 from ..widgets.session_dashboard_table import SessionDashboardTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
@@ -110,6 +111,7 @@ class MainScreen(Screen):
         Binding("v", "toggle_view", "View", show=True),
         Binding("[", "prev_tab", "Prev host", show=True),
         Binding("]", "next_tab", "Next host", show=True),
+        Binding("/", "focus_search", "Search", show=True),
         # Detected-agents banner: only does something when the banner is
         # visible (``visible_detected_agents(...)`` is non-empty). When the
         # banner is hidden these bindings are no-ops; the footer hides
@@ -229,6 +231,7 @@ class MainScreen(Screen):
             # other-user + remote per-host rows all flow through this
             # one widget; the USER column appears when ``cross_user``
             # is set, the HOST column when ``multi_host`` is set.
+            yield SearchBar(id="search-bar")
             yield Static("── sessions ──", classes="segment-header")
             note = "Loading sessions…" if self.ctx.loading else "No active sessions."
             note_classes = "empty-note"
@@ -306,6 +309,12 @@ class MainScreen(Screen):
         # :class:`SessionDashboardTable`) owns row display end-to-end.
         self._refresh_dashboard()
         self.call_after_refresh(self._update_status_line)
+        # Default focus on the search bar so typing immediately filters.
+        try:
+            bar = self.query_one("#search-bar", SearchBar)
+            bar.input.focus()
+        except Exception:
+            pass
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
             # Stage 10a — ``UXON_DEBUG=startup``: closest proxy to "first
             # frame painted" Textual exposes without a renderer hook. By
@@ -408,9 +417,19 @@ class MainScreen(Screen):
         rows = select_dashboard_model(state, cfg_view, self._dashboard_ui)  # type: ignore[arg-type]
         # Commit 12: full model — local (host=None) + remote (host=peer).
         all_rows = rows
-        # Task 8: in by_host view, filter visible rows to the active tab.
-        # The filter-forces-flat branch lands in Task 9 (search).
-        if self._dashboard_ui.view_mode == "by_host" and not self._dashboard_ui.filter_text:
+        # Task 9: a non-empty filter forces flat render; the tab strip is
+        # hidden (no buckets) so the operator sees every match across
+        # hosts in one list.
+        needle = self._dashboard_ui.filter_text.strip()
+        forced_flat = bool(needle)
+        in_by_host = self._dashboard_ui.view_mode == "by_host" and not forced_flat
+        # Tab strip visible only when in_by_host.
+        try:
+            tab_strip_widget = self.query_one("#host-tabs", HostTabStrip)
+            tab_strip_widget.display = in_by_host
+        except Exception:
+            pass
+        if in_by_host:
             buckets = select_host_buckets(rows, cfg_view, state)
             try:
                 tab_strip = self.query_one("#host-tabs", HostTabStrip)
@@ -722,6 +741,22 @@ class MainScreen(Screen):
         self._dashboard_ui = set_view_mode(self._dashboard_ui, new_mode)
         self._refresh_dashboard()
         self.app.notify(f"View: {new_mode.replace('_', ' ')}")
+
+    def action_focus_search(self) -> None:
+        try:
+            self.query_one("#search-bar", SearchBar).input.focus()
+        except Exception:
+            pass
+
+    def on_filter_changed(self, event: FilterChanged) -> None:
+        self._dashboard_ui = set_filter(self._dashboard_ui, event.text)
+        self._refresh_dashboard()
+        # Update match counter.
+        try:
+            bar = self.query_one("#search-bar", SearchBar)
+            bar.set_match_count(len(self._dashboard_rows))
+        except Exception:
+            pass
 
     def action_prev_tab(self) -> None:
         try:
@@ -1241,6 +1276,16 @@ class MainScreen(Screen):
         status.set_class(line.alert, "-alert")
 
     def _focus_default_action(self) -> None:
+        # When the search bar is mounted, leave focus on its input — the
+        # operator's first interaction is most often "type to filter",
+        # not "Tab to action rows". Falling through to action-cwd here
+        # would yank focus back from the SearchBar after on_mount
+        # scheduled it via call_later.
+        try:
+            self.query_one("#search-bar", SearchBar)
+            return
+        except Exception:
+            pass
         try:
             self.query_one("#action-cwd", ActionRow).focus()
         except Exception:  # pragma: no cover

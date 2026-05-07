@@ -75,6 +75,11 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         app = UxonApp(_mk_ctx(), probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
+            # SearchBar has default focus; Esc blurs it so ``q``
+            # reaches the screen-level binding instead of being
+            # consumed as Input text.
+            await pilot.press("escape")
+            await pilot.pause()
             await pilot.press("q")
             await pilot.pause()
         self.assertEqual(app.quit_rc, 0)
@@ -88,6 +93,9 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             screen = app.screen
             screen._launch_cwd = lambda: calls.append("cwd")
+            # Blur the SearchBar (default focus) so digit-jump fires.
+            await pilot.press("escape")
+            await pilot.pause()
             await pilot.press("1")
             await pilot.pause()
         self.assertEqual(calls, ["cwd"])
@@ -198,6 +206,10 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             app._kick_host_probe = lambda: kicks.append(None)  # type: ignore[method-assign]
+            # Blur the SearchBar so ``r`` hits action_refresh rather
+            # than being consumed by the Input.
+            await pilot.press("escape")
+            await pilot.pause()
             await pilot.press("r")
             await pilot.pause()
         self.assertEqual(len(kicks), 1, msg="action_refresh did not kick the host probe")
