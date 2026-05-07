@@ -768,10 +768,11 @@ class StateSelectorTests(unittest.TestCase):
     def test_select_layout_signature_returns_five_tuple(self) -> None:
         """Pin the 5-tuple shape so a future drift back to 4-tuple fails fast.
 
-        Element 5 is ``cross_user``; commit 10 hardcodes ``False`` and
-        commit 11 will flip it to data-driven. Future widenings must
-        keep the tuple at five booleans for the existing
-        ``apply_loaded_ctx`` short-circuit to behave correctly.
+        Element 5 is ``cross_user``. Commit 11 makes it data-driven:
+        ``False`` when no other-user local rows exist, ``True``
+        otherwise. The flip is what triggers the
+        ``apply_loaded_ctx`` recompose so the dashboard widget gets
+        rebuilt with the USER column.
         """
         from uxon.tui.context import TuiContext
         from uxon.tui.state import select_layout_signature
@@ -788,8 +789,65 @@ class StateSelectorTests(unittest.TestCase):
         )
         sig = select_layout_signature(ctx)
         self.assertEqual(len(sig), 5)
-        # Element 5 is cross_user; commit 10 hardcodes False.
+        # No other-user rows present → cross_user is False.
         self.assertEqual(sig[4], False)
+
+    def test_select_layout_signature_cross_user_flips_with_other_sessions(self) -> None:
+        """``cross_user`` (5th bool) tracks ``bool(ctx.other_sessions)``.
+
+        Commit 11 wires the bool to the rebuild path's
+        ``other_sessions`` filter — every other-user local row the
+        rebuild discovers flips the bool to ``True``, recomposing the
+        widget with a USER column visible.
+        """
+        from uxon.tui.context import SudoCapability, TuiContext, TuiSession
+        from uxon.tui.state import select_layout_signature
+
+        sudo_caps = SudoCapability(reachable_users=frozenset({"alice"}))
+        other = TuiSession(
+            name="alice.foo",
+            short="foo",
+            attached=False,
+            pid="1",
+            cpu="0",
+            ram="0",
+            created="0s",
+            last_activity="0s",
+            cmd="codex",
+            path="/srv",
+            user="alice",
+        )
+        ctx_with = TuiContext(
+            sessions=[],
+            other_sessions=[other],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+            sudo_caps=sudo_caps,
+        )
+        ctx_without = TuiContext(
+            sessions=[],
+            other_sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+            sudo_caps=sudo_caps,
+        )
+        self.assertEqual(select_layout_signature(ctx_with)[4], True)
+        self.assertEqual(select_layout_signature(ctx_without)[4], False)
+        # The signatures must differ — that's the recompose trigger.
+        self.assertNotEqual(
+            select_layout_signature(ctx_with),
+            select_layout_signature(ctx_without),
+        )
 
     def test_select_remote_health_badge_per_host_keyed(self) -> None:
         """Cache is per-host: replacing host A's snapshot does not

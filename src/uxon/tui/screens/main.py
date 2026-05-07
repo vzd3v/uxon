@@ -6,11 +6,14 @@ Layout:
     │ ActionRow action-new                             │
     │ ActionRow action-open                            │
     │ ── sessions ──                                   │
-    │ SessionTable (own sessions)                      │
-    │ ── superuser ──                                  │
-    │ SessionTable (other sessions, show_user=True)    │
+    │ SessionDashboardTable (own + other-user rows;    │
+    │   USER column visible iff cross_user is True)    │
+    │ ── superuser ── (when reachable_users is set)    │
     │ ActionRow settings                               │
     │ ActionRow kill-all-global                        │
+    │ ── remote sessions ── (multi-host)               │
+    │ RemoteSessionTable (peer rows; commit 12 folds   │
+    │   into the dashboard)                            │
     └ Footer ──────────────────────────────────────────┘
 
 T7a ships layout + core bindings (q/escape/f1/d/D/r). Digit-jump
@@ -158,14 +161,17 @@ class MainScreen(Screen):
         )
         # Compute the active dashboard columns once and reuse from
         # ``compose`` and ``_refresh_dashboard``. Two independent calls
-        # would be fragile when commits 11/12 widen the flags — easy to
+        # would be fragile when commit 12 widens the flags — easy to
         # drift one path. ``MainScreen`` is reconstructed via
         # ``switch_screen(MainScreen)`` on the recompose path, so a
-        # ``cross_user`` flip in commit 11 will pick up the new columns
-        # naturally because ``__init__`` runs again.
+        # ``cross_user`` flip picks up the new columns naturally
+        # because ``__init__`` runs again. The signature's fifth bool
+        # (``select_layout_signature``) tracks ``bool(ctx.other_sessions)``
+        # — the same predicate used here — so the flip and the
+        # column-set rebuild are wired through the same source.
         flags = LayoutFlags(
             multi_host=bool(ctx.remote_hosts),
-            cross_user=False,
+            cross_user=bool(ctx.other_sessions),
         )
         self._active_columns = build_active_columns(
             cfg_columns=ctx.tui_table_columns,
@@ -217,18 +223,19 @@ class MainScreen(Screen):
                 enabled=self.ctx.loading or bool(self.ctx.existing_projects),
                 id="action-open",
             )
-            show_agent = len(self.ctx.enabled_agents) > 1
             # Sessions header + unified dashboard. The dashboard is
             # mounted unconditionally — empty-state copy is rendered by
             # the ``#sessions-note`` Static above it (toggled by class
-            # in ``_refresh_dashboard_note``). This is the bridge in
-            # commit 10: only own-user local rows land in the dashboard;
-            # the legacy ``#sessions-other`` / ``#sessions-remote``
-            # widgets keep their existing semantics until commits 11/12.
+            # in ``_refresh_dashboard_note``). Commit 11 folds local
+            # other-user rows into the dashboard alongside own rows
+            # (the USER column appears via the data-driven
+            # ``cross_user`` flag in ``__init__``); the legacy
+            # ``#sessions-remote`` widget keeps its semantics until
+            # commit 12.
             yield Static("── sessions ──", classes="segment-header")
             note = "Loading sessions…" if self.ctx.loading else "No active sessions."
             note_classes = "empty-note"
-            if self.ctx.sessions:
+            if self.ctx.sessions or self.ctx.other_sessions:
                 # Dashboard will populate momentarily — start hidden so
                 # the layout doesn't flicker an empty-note at first paint.
                 note_classes = "empty-note -hidden"
@@ -236,10 +243,6 @@ class MainScreen(Screen):
             yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
             if bool(self.ctx.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
-                if self.ctx.other_sessions:
-                    yield SessionTable(
-                        show_user=True, show_agent_column=show_agent, id="sessions-other"
-                    )
                 yield ActionRow(
                     kind="settings",
                     label="⚙ Settings",
@@ -334,11 +337,6 @@ class MainScreen(Screen):
         # response. The legacy ``#sessions-own`` populate path is gone in
         # commit 10; the dashboard owns the own-row display.
         self._refresh_dashboard()
-        if bool(self.ctx.sudo_caps.reachable_users) and self.ctx.other_sessions:
-            try:
-                self.query_one("#sessions-other", SessionTable).populate(self.ctx.other_sessions)
-            except Exception:  # pragma: no cover — defensive
-                pass
         if self.ctx.remote_hosts:
             try:
                 self._populate_remote_table()
@@ -397,19 +395,20 @@ class MainScreen(Screen):
         except Exception:  # pragma: no cover — defensive (widget not ready)
             return None
 
-    def _refresh_dashboard_note(self, own_rows: tuple[SessionRow, ...]) -> None:
+    def _refresh_dashboard_note(self, local_rows: tuple[SessionRow, ...]) -> None:
         """Toggle the ``#sessions-note`` placeholder above the dashboard.
 
-        Visible when no own-rows are present (Loading… on cold start,
-        "No active sessions." once the rebuild has landed). The class
-        toggle keeps the layout signature stable across the empty/non-
-        empty transition — the Static is mounted unconditionally.
+        Visible when no local rows are present (Loading… on cold
+        start, "No active sessions." once the rebuild has landed).
+        The class toggle keeps the layout signature stable across the
+        empty/non-empty transition — the Static is mounted
+        unconditionally.
         """
         try:
             note = self.query_one("#sessions-note", Static)
         except Exception:  # pragma: no cover — note not yet mounted
             return
-        if own_rows:
+        if local_rows:
             note.set_class(True, "-hidden")
         else:
             note.set_class(False, "-hidden")
@@ -419,29 +418,39 @@ class MainScreen(Screen):
         """Compute new model, diff against the previous, apply to the widget.
 
         Owns the dashboard's per-tick lifecycle: pull state, build the
-        row tuple via :func:`select_dashboard_model`, filter to local-own
-        rows for this bridge commit, diff against the previous tuple,
-        apply the ops to the widget, then pin the cursor by row-key so
-        a no-op tick leaves it where it was.
+        row tuple via :func:`select_dashboard_model`, filter to local
+        rows (own + other-user; remote rows land in commit 12), diff
+        against the previous tuple, apply the ops to the widget, then
+        pin the cursor by row-key so a no-op tick leaves it where it
+        was.
+
+        ``cross_user`` is *not* recomputed here. The active column
+        tuple is fixed at ``__init__`` time; a flip in
+        ``bool(ctx.other_sessions)`` changes the layout signature
+        (``select_layout_signature``) and forces the outer
+        ``apply_loaded_ctx`` recompose path, which constructs a new
+        :class:`MainScreen` whose ``__init__`` rebuilds
+        ``_active_columns`` with the new flag. The patch path
+        (this method) only applies row-level ops.
         """
         state = getattr(self.app, "state", None)
         if state is None:
             return
         cfg_view = self._build_dashboard_cfg_view()
         rows = select_dashboard_model(state, cfg_view, self._dashboard_ui)  # type: ignore[arg-type]
-        # Commit 10 bridge: only own rows go into the dashboard. Commit
-        # 11 widens to all local rows; commit 12 widens to local + remote.
-        own_rows = tuple(r for r in rows if r.host is None and r.user == self.ctx.current_user)
+        # Commit 11 bridge: all local rows (own + other-user) go into
+        # the dashboard. Commit 12 widens to local + remote.
+        local_rows = tuple(r for r in rows if r.host is None)
         try:
             widget = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:  # pragma: no cover — not yet mounted
             return
         prev_cursor_key = self._cursor_row_key(widget)
-        ops = diff(self._dashboard_rows, own_rows, self._active_columns)
+        ops = diff(self._dashboard_rows, local_rows, self._active_columns)
         widget.apply(ops)
-        self._dashboard_rows = own_rows
+        self._dashboard_rows = local_rows
         widget.pin_cursor_to(prev_cursor_key)
-        self._refresh_dashboard_note(own_rows)
+        self._refresh_dashboard_note(local_rows)
 
     # ── Remote sessions block (multi-host) ────────────────────────────
 
@@ -936,17 +945,12 @@ class MainScreen(Screen):
         except Exception:
             return False
 
-        # Own sessions render through the dashboard widget; the legacy
-        # ``#sessions-own`` populate path is gone in commit 10. The
-        # dashboard is repopulated below (after the other-user block) so
-        # the model selector sees a consistent ``state.main`` snapshot.
-
-        try:
-            other_table = self.query_one("#sessions-other", SessionTable)
-        except Exception:
-            other_table = None
-        if other_table is not None:
-            other_table.populate(self.ctx.other_sessions)
+        # Local sessions (own + other-user) render through the
+        # dashboard widget. The legacy ``#sessions-own`` populate path
+        # was removed in commit 10; the dedicated ``#sessions-other``
+        # populate path was removed in commit 11. The dashboard is
+        # repopulated below so the model selector sees a consistent
+        # ``state.main`` snapshot.
 
         # Remote-sessions table is owned by the per-host SSH workers via
         # ``apply_remote_snapshot``. The local ctx-rebuild path does not
@@ -970,11 +974,11 @@ class MainScreen(Screen):
         # The "Loading sessions…" / "No active sessions." placeholder
         # is owned by ``_refresh_dashboard_note`` (called from
         # ``_refresh_dashboard`` below), which also toggles its
-        # visibility based on the current own-row count.
+        # visibility based on the current local-row count.
 
         # Dashboard repopulate: pulls a fresh model from ``state.main``
-        # and applies the diff. Runs after the other-user populate so a
-        # synchronous mid-tick observer would see both panes consistent.
+        # and applies the diff. Owns own + other-user local rows after
+        # commit 11.
         self._refresh_dashboard()
 
         self._update_status_line()
@@ -1086,14 +1090,18 @@ class MainScreen(Screen):
     def action_kill(self) -> None:
         """Confirm then kill the session under focus.
 
-        Handles three focus targets in commit 10:
+        Handles two focus targets after commit 11:
 
-        * :class:`SessionTable` (legacy ``#sessions-other``) — resolves
-          via ``focused.session_at(cursor_row)``.
         * :class:`SessionDashboardTable` (``#sessions-dashboard``) —
           resolves via the cursor index into ``self._dashboard_rows``.
-          A remote-host row in the dashboard is rejected with a
-          warning until commit 12 wires ``ctx.on_remote_kill`` here.
+          Local rows (own + other-user) dispatch to ``ctx.on_kill``;
+          ``row.user`` carries the target user so other-user rows
+          take the existing sudo path inside the kill callback. A
+          remote-host row in the dashboard is rejected with a warning
+          until commit 12 wires ``ctx.on_remote_kill`` here.
+        * :class:`SessionTable` — defensive isinstance branch retained
+          for the multi-host transition; the legacy
+          ``#sessions-other`` widget is no longer mounted in commit 11.
         * Anything else — warn and bail.
         """
         focused = self.focused
@@ -1249,24 +1257,27 @@ class MainScreen(Screen):
 
     def _focus_index(self, idx: int) -> None:
         """Move focus to the widget backing ``idx`` on the current screen."""
-        own_start, other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
+        own_start, _other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
+        # Local-rows segment in the dashboard. Own + other-user are
+        # both mounted in ``#sessions-dashboard`` (commit 11), so the
+        # visual segment ends at ``settings_idx`` (when sudo) or
+        # ``own_start + len(ctx.sessions)`` (no sudo — there's no
+        # other-user segment at all).
+        local_end = settings_idx if has_super else own_start + len(self.ctx.sessions)
         try:
             if idx < own_start:
                 action_ids = ("action-cwd", "action-new", "action-open")
                 self.query_one(f"#{action_ids[idx]}", ActionRow).focus()
                 return
-            if idx < other_start:
-                # Own-segment math still applies — the dashboard's
-                # own-row count equals the legacy ``#sessions-own``
-                # count in this bridge commit because the call-site
-                # filter discards everything that isn't a local own row.
+            if idx < local_end:
+                # Single dashboard widget for own + other-user rows.
+                # The visual cursor row offset is ``idx - own_start``;
+                # this is best-effort focus (the dashboard sorts by
+                # ``ui.sort_by`` so the visual order may not match
+                # ``ctx.sessions + ctx.other_sessions``). Out-of-range
+                # cursor moves are silently no-op.
                 t = self.query_one("#sessions-dashboard", SessionDashboardTable)
                 t.move_cursor(row=idx - own_start)
-                t.focus()
-                return
-            if has_super and idx < settings_idx:
-                t = self.query_one("#sessions-other", SessionTable)
-                t.move_cursor(row=idx - other_start)
                 t.focus()
                 return
             if has_super and idx == settings_idx:
@@ -1287,16 +1298,20 @@ class MainScreen(Screen):
             if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
                 return ""
             row = self._dashboard_rows[idx]
-            # Commit 10 dashboard only carries own rows (host=None).
+            # Local rows (own + other-user) carry ``host=None``.
+            # Other-user rows are tagged with the row's user so a
+            # focus restore after recompose lands on the right row
+            # rather than colliding with an own-session of the same
+            # name. Remote rows (commit 12) will branch here.
             if row.host is None:
+                if row.user and row.user != self.ctx.current_user:
+                    return f"other:{row.user}/{row.name}"
                 return f"own:{row.name}"
             return ""
         if isinstance(focused, SessionTable):
             session = focused.session_at(focused.cursor_row)
             if session is None:
                 return ""
-            if focused.id == "sessions-other":
-                return f"other:{session.user}/{session.name}"
             return f"own:{session.name}"
         if isinstance(focused, RemoteSessionTable):
             entry = focused.row_at(focused.cursor_row)
@@ -1324,8 +1339,8 @@ class MainScreen(Screen):
         if key.startswith("own:"):
             return self._focus_dashboard_own(key.removeprefix("own:"))
         if key.startswith("other:"):
-            _, _, session_name = key.removeprefix("other:").partition("/")
-            return self._focus_session_key("#sessions-other", session_name)
+            user, _, session_name = key.removeprefix("other:").partition("/")
+            return self._focus_dashboard_other(user, session_name)
         if key.startswith("remote:"):
             return self._focus_remote_key(key.removeprefix("remote:"))
         return False
@@ -1359,31 +1374,45 @@ class MainScreen(Screen):
             return True
         return False
 
-    def _focus_session_key(self, selector: str, session_name: str) -> bool:
-        try:
-            table = self.query_one(selector, SessionTable)
-        except Exception:
-            return False
-        for idx, session in enumerate(table._session_index):
-            if session.name == session_name:
-                table.focus()
-                table.move_cursor(row=idx)
-                return True
-        return False
-
     def _focus_dashboard_own(self, session_name: str) -> bool:
         """Restore focus on the dashboard row matching ``session_name``.
 
         The dashboard model is owned by ``self._dashboard_rows``; we
         index that tuple instead of the widget's row keys to avoid a
-        round-trip through the private DataTable index.
+        round-trip through the private DataTable index. Matches own
+        rows only — ``row.user`` either equals the current user or
+        is empty (legacy adapter fall-through).
         """
         try:
             table = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:
             return False
+        current_user = self.ctx.current_user
         for idx, row in enumerate(self._dashboard_rows):
-            if row.host is None and row.name == session_name:
+            if row.host is not None or row.name != session_name:
+                continue
+            if row.user and row.user != current_user:
+                continue
+            table.focus()
+            table.move_cursor(row=idx)
+            return True
+        return False
+
+    def _focus_dashboard_other(self, user: str, session_name: str) -> bool:
+        """Restore focus on the dashboard row matching ``user/session_name``.
+
+        Mirrors :meth:`_focus_dashboard_own` for other-user rows folded
+        into the dashboard in commit 11. ``user`` must be non-empty —
+        an own-user focus key never serialises through this path.
+        """
+        if not (user and session_name):
+            return False
+        try:
+            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
+        except Exception:
+            return False
+        for idx, row in enumerate(self._dashboard_rows):
+            if row.host is None and row.user == user and row.name == session_name:
                 table.focus()
                 table.move_cursor(row=idx)
                 return True

@@ -327,5 +327,234 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(widget.cursor_row, 1)
 
 
+def _other_session(name: str = "alice.bar", short: str = "bar", user: str = "alice"):
+    """Other-user :class:`TuiSession` used by the commit-11 sudo flows."""
+    from uxon.tui.context import TuiSession
+
+    return TuiSession(
+        name=name,
+        short=short,
+        attached=False,
+        pid="2",
+        cpu="2.0",
+        ram="2M",
+        created="2s",
+        last_activity="2s",
+        cmd="codex",
+        path="/srv/work",
+        user=user,
+    )
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
+    """Pilot tests for commit 11: other-user (sudo) rows folded into the dashboard."""
+
+    def setUp(self) -> None:
+        from uxon.tui.dashboard import model as _dashboard_model
+
+        _dashboard_model._LAST_OUTPUT = ()
+
+    def tearDown(self) -> None:
+        from uxon.tui.dashboard import model as _dashboard_model
+
+        _dashboard_model._LAST_OUTPUT = ()
+
+    async def test_other_user_row_appears_in_dashboard(self) -> None:
+        """An ``other_sessions`` row lands in ``#sessions-dashboard``.
+
+        The legacy ``#sessions-other`` widget is no longer mounted —
+        verify the dashboard carries both own and other-user rows.
+        """
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import SudoCapability
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        ctx = _mk_ctx(
+            sessions=[_own_session()],
+            other_sessions=[_other_session()],
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            _seed_state_main(app, ctx)
+            app.screen._refresh_dashboard()
+            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            self.assertEqual(widget.row_count, 2)
+            users = sorted(r.user for r in app.screen._dashboard_rows)
+            self.assertEqual(users, ["alice", "devagent"])
+            # Legacy #sessions-other widget must NOT exist.
+            from uxon.tui.widgets import SessionTable
+
+            self.assertEqual(len(app.screen.query("#sessions-other")), 0)
+            self.assertEqual(
+                len([w for w in app.screen.query(SessionTable)]),
+                0,
+            )
+
+    async def test_sudo_attach_via_dashboard(self) -> None:
+        """Enter on an other-user dashboard row dispatches ``ctx.on_attach`` with the row's user."""
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import LaunchRequest, SudoCapability
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        attach_calls: list[tuple[str, str]] = []
+
+        def fake_attach(user: str, name: str) -> LaunchRequest:
+            attach_calls.append((user, name))
+            return LaunchRequest(cmd=("/bin/true",), label=f"attach {name}")
+
+        ctx = _mk_ctx(
+            sessions=[],
+            other_sessions=[_other_session()],
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+            on_attach=fake_attach,
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        launch_requests: list[LaunchRequest] = []
+        app.request_launch = launch_requests.append  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            _seed_state_main(app, ctx)
+            app.screen._refresh_dashboard()
+            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            # Locate the row for "alice.bar" — sort_by may reorder.
+            target_idx = next(
+                i
+                for i, r in enumerate(app.screen._dashboard_rows)
+                if r.user == "alice" and r.name == "alice.bar"
+            )
+            widget.focus()
+            widget.move_cursor(row=target_idx)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        self.assertEqual(attach_calls, [("alice", "alice.bar")])
+        self.assertEqual(len(launch_requests), 1)
+
+    async def test_sudo_kill_via_dashboard(self) -> None:
+        """``d`` + confirm on an other-user dashboard row dispatches ``ctx.on_kill`` with the row's user."""
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import SudoCapability
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        kill_calls: list[tuple[str, str]] = []
+
+        def fake_kill(user: str, name: str) -> None:
+            kill_calls.append((user, name))
+
+        ctx = _mk_ctx(
+            sessions=[],
+            other_sessions=[_other_session()],
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+            on_kill=fake_kill,
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            _seed_state_main(app, ctx)
+            app.screen._refresh_dashboard()
+            app.screen.action_refresh = lambda: None
+            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            target_idx = next(
+                i
+                for i, r in enumerate(app.screen._dashboard_rows)
+                if r.user == "alice" and r.name == "alice.bar"
+            )
+            widget.focus()
+            widget.move_cursor(row=target_idx)
+            await pilot.pause()
+            await pilot.press("d")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+        self.assertEqual(kill_calls, [("alice", "alice.bar")])
+
+    async def test_user_column_present_when_cross_user_true(self) -> None:
+        """Construction with ``other_sessions`` non-empty includes the USER column."""
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import SudoCapability
+
+        ctx = _mk_ctx(
+            sessions=[_own_session()],
+            other_sessions=[_other_session()],
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            ids = tuple(c.id for c in app.screen._active_columns)
+            self.assertIn("user", ids)
+
+    async def test_user_column_absent_when_cross_user_false(self) -> None:
+        """Construction with no ``other_sessions`` omits the USER column."""
+        from uxon.tui.app import UxonApp
+
+        ctx = _mk_ctx(sessions=[_own_session()])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            ids = tuple(c.id for c in app.screen._active_columns)
+            self.assertNotIn("user", ids)
+
+    async def test_recompose_when_cross_user_flips_true(self) -> None:
+        """A refresh that lands an other-user row triggers recompose → USER column appears."""
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import SudoCapability
+        from uxon.tui.screens.main import MainScreen
+
+        ctx = _mk_ctx(
+            sessions=[_own_session()],
+            other_sessions=[],
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            old_screen = app.screen
+            self.assertNotIn("user", tuple(c.id for c in old_screen._active_columns))
+            # Synthesise the rebuilt ctx with an other-user session and
+            # apply it via the same path the worker uses.
+            new_ctx = _mk_ctx(
+                sessions=[_own_session()],
+                other_sessions=[_other_session()],
+                sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+            )
+            old_screen.apply_loaded_ctx(new_ctx, focus_key="")
+            await pilot.pause()
+            # The screen must have been recomposed (signature flipped).
+            self.assertIsNot(app.screen, old_screen)
+            self.assertIsInstance(app.screen, MainScreen)
+            self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
+
+    async def test_recompose_when_cross_user_flips_false(self) -> None:
+        """A refresh that drops the last other-user row recomposes → USER column gone."""
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import SudoCapability
+        from uxon.tui.screens.main import MainScreen
+
+        ctx = _mk_ctx(
+            sessions=[_own_session()],
+            other_sessions=[_other_session()],
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            old_screen = app.screen
+            self.assertIn("user", tuple(c.id for c in old_screen._active_columns))
+            new_ctx = _mk_ctx(
+                sessions=[_own_session()],
+                other_sessions=[],
+                sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+            )
+            old_screen.apply_loaded_ctx(new_ctx, focus_key="")
+            await pilot.pause()
+            self.assertIsNot(app.screen, old_screen)
+            self.assertIsInstance(app.screen, MainScreen)
+            self.assertNotIn("user", tuple(c.id for c in app.screen._active_columns))
+
+
 if __name__ == "__main__":
     unittest.main()
