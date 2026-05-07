@@ -43,7 +43,7 @@ from ..dashboard.layout import LayoutFlags, build_active_columns
 from ..dashboard.model import select_dashboard_model
 from ..dashboard.reconcile import diff
 from ..dashboard.row import SessionRow
-from ..dashboard.ui_state import DashboardUiState
+from ..dashboard.ui_state import DashboardUiState, set_view_mode
 from ..events import debug as _debug
 from ..keymap import bindings_with_aliases
 from ..state import (
@@ -104,6 +104,7 @@ class MainScreen(Screen):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
+        Binding("v", "toggle_view", "View", show=True),
         # Detected-agents banner: only does something when the banner is
         # visible (``visible_detected_agents(...)`` is non-empty). When the
         # banner is hidden these bindings are no-ops; the footer hides
@@ -150,7 +151,7 @@ class MainScreen(Screen):
         # Commit 10 bridges only own local rows into the dashboard;
         # commits 11/12 fold other-user and remote rows.
         self._dashboard_rows: tuple[SessionRow, ...] = ()
-        self._dashboard_ui = DashboardUiState()
+        self._dashboard_ui = DashboardUiState(view_mode=self.ctx.tui_table_default_view)
         # Compute the active dashboard columns once and reuse from
         # ``compose`` and ``_refresh_dashboard``. Two independent calls
         # would be fragile when the flags widen — easy to drift one
@@ -691,6 +692,12 @@ class MainScreen(Screen):
         kick = getattr(self.app, "_kick_host_probe", None)
         if callable(kick):
             kick()
+
+    def action_toggle_view(self) -> None:
+        new_mode = "flat" if self._dashboard_ui.view_mode == "by_host" else "by_host"
+        self._dashboard_ui = set_view_mode(self._dashboard_ui, new_mode)
+        self._refresh_dashboard()
+        self.app.notify(f"View: {new_mode.replace('_', ' ')}")
 
     def action_enable_detected(self) -> None:
         """Banner action: add the first detected agent to ``[agents].enabled``."""

@@ -290,6 +290,10 @@ class TuiContext:
     # explicit tuple is the user's column order from
     # ``[tui.table] columns = [...]``.
     tui_table_columns: tuple[str, ...] | None = None
+    tui_table_default_view: str = "by_host"
+    tui_search_fields: tuple[str, ...] = ("name", "user")
+    tui_color_palette: tuple[str, ...] = ("cyan", "blue")
+    local_host_color: str = "green"
     # ``remote_snapshots`` is exposed via the property defined after
     # the class body. Reads return either a flattened view of
     # ``self._state.remote`` (when a state is linked) or the legacy

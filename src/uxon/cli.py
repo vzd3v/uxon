@@ -80,8 +80,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tui": {
         "table": {
             "columns": [],
+            "default_view": "by_host",
         },
+        "search": {"fields": ["name", "user"]},
+        "color_palette": ["cyan", "blue"],
     },
+    "local_host": {"color": "green"},
     # Stage 5: ssh transport hardening.
     # ``ssh_multiplex = "auto"`` adds ControlMaster/Path/Persist to the
     # default fetch template (warm tick: 5-20 ms vs cold 200-500 ms).
@@ -175,6 +179,10 @@ class Config:
     # in TOML both collapse to ``None`` here. ``build_active_columns``
     # consumes this contract directly.
     tui_table_columns: tuple[str, ...] | None = None
+    tui_table_default_view: str = "by_host"
+    tui_search_fields: tuple[str, ...] = ("name", "user")
+    tui_color_palette: tuple[str, ...] = ("cyan", "blue")
+    local_host_color: str = "green"
 
 
 @dataclass
@@ -548,6 +556,42 @@ def load_config(cwd: str) -> Config:
             # Telemetry, not a correctness path.
             pass
 
+    tui_table_default_view_raw = tui_table_tbl.get("default_view", "by_host")
+    if tui_table_default_view_raw not in ("by_host", "flat"):
+        fail(
+            f"tui.table.default_view must be 'by_host' or 'flat', "
+            f"got {tui_table_default_view_raw!r}"
+        )
+    tui_table_default_view = str(tui_table_default_view_raw)
+
+    tui_search_tbl = tui_tbl.get("search", {})
+    if not isinstance(tui_search_tbl, dict):
+        fail("'tui.search' must be a TOML table")
+    fields_raw = tui_search_tbl.get("fields", ["name", "user"])
+    allowed = {"name", "user", "host", "path", "cmd"}
+    if not isinstance(fields_raw, list) or not all(f in allowed for f in fields_raw):
+        bad = (
+            [f for f in fields_raw if f not in allowed]
+            if isinstance(fields_raw, list)
+            else fields_raw
+        )
+        fail(f"tui.search.fields: unknown entries {bad!r}; allowed {sorted(allowed)!r}")
+    tui_search_fields = tuple(fields_raw)
+
+    palette_raw = tui_tbl.get("color_palette", ["cyan", "blue"])
+    if not isinstance(palette_raw, list) or not all(
+        isinstance(c, str) and c for c in palette_raw
+    ):
+        fail("tui.color_palette must be a list of non-empty strings")
+    tui_color_palette = tuple(palette_raw)
+
+    local_host_tbl = merged.get("local_host", {})
+    if not isinstance(local_host_tbl, dict):
+        fail("'local_host' must be a TOML table")
+    local_host_color = str(local_host_tbl.get("color", "green"))
+    if not local_host_color:
+        fail("local_host.color must be non-empty")
+
     ssh_multiplex = str(merged.get("ssh_multiplex", DEFAULT_CONFIG["ssh_multiplex"]))
     if ssh_multiplex not in ("auto", "off"):
         fail(f"ssh_multiplex must be 'auto' or 'off', got {ssh_multiplex!r}")
@@ -622,6 +666,10 @@ def load_config(cwd: str) -> Config:
         audit_enabled=audit_enabled,
         audit_syslog_facility=audit_syslog_facility,
         tui_table_columns=tui_table_columns,
+        tui_table_default_view=tui_table_default_view,
+        tui_search_fields=tui_search_fields,
+        tui_color_palette=tui_color_palette,
+        local_host_color=local_host_color,
     )
 
 
@@ -5043,6 +5091,10 @@ def _build_tui_context(
         refresh_sources=refresh_sources,
         remote_hosts=list(cfg.remote_hosts),
         tui_table_columns=cfg.tui_table_columns,
+        tui_table_default_view=cfg.tui_table_default_view,
+        tui_search_fields=cfg.tui_search_fields,
+        tui_color_palette=cfg.tui_color_palette,
+        local_host_color=cfg.local_host_color,
     )
 
 

@@ -104,6 +104,29 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "string",
         "Profile name used when --git-remote default is passed or picked as TUI default.",
     ),
+    SettingSpec(
+        "tui.table.default_view",
+        "enum",
+        "Default dashboard view (by_host or flat).",
+        choices=("by_host", "flat"),
+    ),
+    SettingSpec(
+        "tui.search.fields",
+        "array",
+        "Fields the SearchBar substring-matches against. "
+        "Allowed: name, user, host, path, cmd. Default ['name','user'].",
+    ),
+    SettingSpec(
+        "tui.color_palette",
+        "array",
+        "Auto-cycle palette for remote-host blocks (Rich style names). "
+        "Default ['cyan','blue']; no magenta, no red, no yellow.",
+    ),
+    SettingSpec(
+        "local_host.color",
+        "string",
+        "Rich style spec painting the locals block. Default 'green'.",
+    ),
 )
 
 TABLE_KEYS: tuple[str, ...] = tuple(spec.key for spec in SETTINGS_SPECS if spec.kind == "table")
