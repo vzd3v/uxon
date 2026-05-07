@@ -1,45 +1,139 @@
-# uxon host config. Every key, with the use case for each, is
-# documented in docs/configuration.md
-# (https://github.com/vzd3v/uxon/blob/main/docs/configuration.md).
+# uxon host config. Full guide: docs/index.md
+# (https://github.com/vzd3v/uxon/blob/main/docs/index.md).
 #
-# This example targets a shared host with a sandboxed "agent" user.
-# For a single-user laptop, leave allowed_roots empty and set
-# default_launch_mode = "caller".
+# ── Recommended workflow ──────────────────────────────────────────
+# Pair each shell user with a low-privilege OS account that owns
+# the agent's runtime — e.g. `vz` (you) + `vz_agent`. The agent
+# runs as `<user>_agent` via `sudo -iu`. With `--dsp` ("yolo"), the
+# blast radius of a runaway tool is `<user>_agent`'s sandbox, not
+# your home directory or your team's filesystem. In team setups
+# this also gives the operator supervision without impersonation —
+# see docs/explain/supervision-without-impersonation.md.
+#
+# This file ships in the SIMPLEST mode (agent runs as the caller),
+# so it copies and runs without any extra OS setup. To switch to
+# the recommended paired sandbox, read
+# docs/scenarios/solo-1.md (or the relevant team
+# section) and replace the active block with the snippet shown
+# there. Scenario blocks below are commented out as starting points.
+#
+# Scenarios:
+#   - Solo on a single host    (active default)
+#   - Solo on multiple hosts   → add [[remote_hosts]] aggregation
+#   - Team on a single host    → per-caller paired sandbox / shared sandbox
+#   - Team on multiple hosts   → both
+#
+# Every key is documented in docs/reference/configuration.md.
 
-runtime_user = "agent"
-default_launch_mode = "fixed"
-enable_all_users_list = false
-session_prefix = "uxon-"
-# Empty by default. If you changed `session_prefix` and still have
-# running sessions under the previous value, list it here (e.g.
-# ["old-"]) so list/attach/kill see them. New installs leave empty.
-legacy_session_prefixes = []
-allowed_roots = [
-  "/srv/projects",
-]
-session_users = [
-  "agent",
-]
-new_project_root = "/srv/projects"
-repeat_noninteractive_mode = "fail"
-tmux_socket_template = "/tmp/uxon-{user}.sock"
+default_launch_mode = "caller"
+session_prefix      = "uxon-"
+
+# Required only for `uxon new <name>` (project scaffolding). Leave
+# both unset to use just `uxon run` and the TUI's "New session in
+# current folder" — those gate on write access and accept any
+# writable directory.
+# allowed_roots    = ["~/projects"]
+# new_project_root = "~/projects"
 
 [agents]
-enabled = [
-  "claude",
-]
+enabled = ["claude"]
 default = "claude"
 
 [agents.claude]
-default_args = [
-]
+default_args = []
 
-[agents.codex]
-default_args = [
-]
+# [agents.codex]
+# default_args = []
+#
+# [agents.cursor]
+# default_args = []
 
-[agents.cursor]
-default_args = [
-]
 
-[launch_user_by_caller]
+# ─── Solo on a single host (recommended: paired sandbox) ──────────
+# docs/scenarios/solo-1.md
+#
+# One-time host setup:
+#   sudo useradd -m -s /bin/bash vz_agent
+#   echo 'vz ALL=(vz_agent) NOPASSWD: ALL' \
+#     | sudo tee /etc/sudoers.d/uxon-vz-agent
+#   sudo chmod 440 /etc/sudoers.d/uxon-vz-agent
+#   sudo install -d -o vz_agent -g vz_agent /srv/projects
+#
+# Then replace the active "default_launch_mode = caller" line above
+# with the block below:
+#
+# default_launch_mode = "fixed"
+# runtime_user        = "vz_agent"
+# session_users       = ["vz_agent"]
+# allowed_roots       = ["/srv/projects"]
+# new_project_root    = "/srv/projects"
+
+
+# ─── Solo on multiple hosts ───────────────────────────────────────
+# docs/scenarios/solo-n.md
+#
+# Each peer runs its own uxon install with its own paired-sandbox
+# config. On the aggregator, add one block per peer. Auth, port,
+# ProxyJump etc. live in ~/.ssh/config — uxon does not duplicate them.
+#
+# [[remote_hosts]]
+# name        = "vz-prod1"
+# ssh_alias   = "vz-prod1"
+# description = "primary EU"   # optional, shown in TUI tooltips
+# remote_uxon = "uxon"         # optional, default "uxon"
+
+
+# ─── Team on a single host ────────────────────────────────────────
+# docs/scenarios/team-1.md
+#
+# Pick ONE of (a) / (b) / (c) below.
+#
+# (a) Recommended: per-caller paired sandbox.
+#     One <user>_agent per developer.
+#
+# default_launch_mode   = "fixed"
+# runtime_user          = "team_agent"   # fallback for unmapped callers
+# session_users         = ["alice_agent", "bob_agent", "carol_agent"]
+# enable_all_users_list = true
+# allowed_roots         = ["/srv/projects"]
+# new_project_root      = "/srv/projects"
+#
+# [launch_user_by_caller]
+# alice = "alice_agent"
+# bob   = "bob_agent"
+# carol = "carol_agent"
+#
+# (b) Shared sandbox user (one OS account for all agents).
+#     Useful when the agent needs shared workspace/state across devs.
+#
+# default_launch_mode = "fixed"
+# runtime_user        = "team_agent"
+# session_users       = ["team_agent"]
+# allowed_roots       = ["/srv/projects"]
+# new_project_root    = "/srv/projects"
+#
+# (c) No sandbox: each developer's agent runs as the developer.
+#     Simplest; agent inherits the caller's trust boundary.
+#
+# default_launch_mode   = "caller"
+# session_users         = ["alice", "bob", "carol"]
+# enable_all_users_list = true
+
+
+# ─── Team on multiple hosts ───────────────────────────────────────
+# docs/scenarios/team-n.md
+#
+# Combine the team-on-a-single-host keys above with [[remote_hosts]]
+# blocks like in the solo-on-multiple-hosts section.
+
+
+# ─── Dashboard columns (TUI) ──────────────────────────────────────
+# docs/guides/customise/customise-dashboard.md
+#
+# Empty / absent uses the built-in registry defaults. Listing
+# columns explicitly opts into a fixed visual order; unknown ids
+# from older / newer uxon versions are silently dropped.
+#
+# [tui.table]
+# columns         = ["name", "user", "cpu", "ram", "last", "cmd"]
+# default_sort_by = "cpu"

@@ -78,45 +78,15 @@ ActionRow.destructive,
     color: $uxon-sudo;
 }
 
-/* ── SessionTable ────────────────────────────────────────────────── */
+/* ── SessionDashboardTable ───────────────────────────────────────── */
 
-/* height: 1fr — DataTable manages its own scroll viewport.
- * `height: auto` (Textual #2959) makes the table grow past its container
- * and the parent scrolls instead of the table — visually the whole table
- * "moves as a single block" when the cursor advances. */
-SessionTable {
-    width: 1fr;
-    height: 1fr;
-    min-height: 3;
-}
-
-SessionTable > .datatable--hover {
-    background: $boost;
-}
-
-SessionTable > .datatable--cursor {
-    background: $accent 40%;
-    text-style: bold;
-}
-
-SessionTable .attached {
-    color: $uxon-attached;
-    text-style: bold;
-}
-
-SessionTable .cpu-hot {
-    color: $uxon-hot;
-    text-style: bold;
-}
-
-SessionTable .cpu-warm {
-    color: $uxon-warm;
-}
-
-SessionTable .sudo-only {
-    color: $uxon-sudo;
-    text-style: bold;
-}
+/* Width / height / min-height + hover come from
+ * :class:`FocusReleasingDataTable` ``DEFAULT_CSS`` (the single source
+ * of truth shared by every session-listing DataTable). Per-cell colour
+ * (attached green, CPU hot/warm, sudo-only highlights) is emitted
+ * inline via ``rich.text.Text(..., style=...)`` from
+ * ``dashboard/columns.py`` formatters, so no class-bound rules are
+ * needed here. The cursor highlight is the textual default. */
 
 /* ── Modals (ConfirmYesNo, ConfirmPhrase, Permissions, etc.) ─────── */
 

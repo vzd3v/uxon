@@ -58,6 +58,18 @@ from uxon.tui.state import (
 
 
 def _ctx(**overrides) -> uxon_tui.TuiContext:
+    """Build a TuiContext for tests.
+
+    Translates the legacy ``has_sudo=True/False`` kwarg into the new
+    per-target ``sudo_caps`` shape: ``has_sudo=True`` is modelled as
+    "one synthetic reachable user" so the visibility predicate
+    (``bool(sudo_caps.reachable_users)``) flips on. Tests that need
+    fine-grained control pass ``sudo_caps=...`` directly and skip
+    ``has_sudo``.
+    """
+    from uxon.tui.context import SudoCapability
+
+    has_sudo = overrides.pop("has_sudo", None)
     base = dict(
         sessions=[],
         total_cpu="0",
@@ -70,6 +82,11 @@ def _ctx(**overrides) -> uxon_tui.TuiContext:
         cwd_writable=True,
     )
     base.update(overrides)
+    if has_sudo is not None and "sudo_caps" not in base:
+        base["sudo_caps"] = SudoCapability(
+            reachable_users=frozenset({"_synthetic_reachable_"} if has_sudo else set()),
+            can_root=bool(has_sudo),
+        )
     return uxon_tui.TuiContext(**base)
 
 
@@ -717,6 +734,99 @@ class LaunchRequestShapeTests(unittest.TestCase):
 
     def test_callback_error_is_exception(self) -> None:
         self.assertTrue(issubclass(uxon_tui.CallbackError, Exception))
+
+
+class HostHealthBadgeTests(unittest.TestCase):
+    """``host_health_badge`` derives a per-host badge from a
+    ``RemoteSnapshot`` (or ``None``). Stage 6 reads the snapshot's
+    ``error`` / ``from_cache`` / ``cached_at_epoch`` directly — the
+    SlotState[T] surface lands at stage 8."""
+
+    def _snap(self, **overrides):
+        from uxon.remote_collector import RemoteSnapshot
+
+        defaults: dict[str, object] = dict(
+            host_name="prod",
+            fetched_at_epoch=1000.0,
+            from_cache=False,
+            error=None,
+            sessions=[],
+            cached_at_epoch=1000.0,
+        )
+        defaults.update(overrides)
+        return RemoteSnapshot(**defaults)  # type: ignore[arg-type]
+
+    def test_none_snapshot_is_loading(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(None)
+        self.assertEqual(b.status, "loading")
+        self.assertEqual(b.text, "loading")
+
+    def test_fresh_success_is_ok(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(self._snap())
+        self.assertEqual(b.status, "ok")
+        self.assertEqual(b.text, "ok")
+
+    def test_from_cache_no_error_is_stale_with_age(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(self._snap(from_cache=True), now=1027.0)
+        self.assertEqual(b.status, "stale")
+        self.assertEqual(b.text, "cache 27s")
+
+    def test_from_cache_minutes_age(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(self._snap(from_cache=True), now=1000.0 + 90)
+        self.assertEqual(b.text, "cache 1m")
+
+    def test_from_cache_hours_age(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(self._snap(from_cache=True), now=1000.0 + 7200)
+        self.assertEqual(b.text, "cache 2h")
+
+    def test_from_cache_with_live_error_appends_err(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(
+            self._snap(from_cache=True, error="ssh timeout after 5s"),
+            now=1010.0,
+        )
+        self.assertEqual(b.status, "stale")
+        self.assertIn("cache 10s", b.text)
+        self.assertIn("err", b.text)
+
+    def test_error_no_cache_is_down_with_short_message(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(
+            self._snap(from_cache=False, error="ssh timeout after 5s", cached_at_epoch=None)
+        )
+        self.assertEqual(b.status, "down")
+        self.assertTrue(b.text.startswith("err: "))
+        self.assertIn("ssh timeout", b.text)
+
+    def test_error_message_first_line_only(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        b = host_health_badge(
+            self._snap(from_cache=False, error="line one\nline two", cached_at_epoch=None)
+        )
+        self.assertNotIn("\n", b.text)
+        self.assertNotIn("line two", b.text)
+
+    def test_error_message_truncated_when_long(self) -> None:
+        from uxon.tui.state import host_health_badge
+
+        long_err = "x" * 200
+        b = host_health_badge(self._snap(from_cache=False, error=long_err, cached_at_epoch=None))
+        # Bounded badge length keeps the section header / table cell
+        # from wrapping under pathological peer error strings.
+        self.assertLessEqual(len(b.text), 60)
 
 
 if __name__ == "__main__":

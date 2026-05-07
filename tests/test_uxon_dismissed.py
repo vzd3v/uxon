@@ -19,11 +19,13 @@ class StateDirTests(unittest.TestCase):
                 self.assertEqual(ud.state_dir(), Path(tmp) / "uxon")
 
     def test_falls_back_to_local_state(self) -> None:
+        # When ``$XDG_STATE_HOME`` is unset, platformdirs derives the
+        # path from ``$HOME`` per the XDG Base Directory spec.
         env = dict(os.environ)
         env.pop("XDG_STATE_HOME", None)
+        env["HOME"] = "/home/x"
         with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch("os.path.expanduser", return_value="/home/x"):
-                self.assertEqual(ud.state_dir(), Path("/home/x/.local/state/uxon"))
+            self.assertEqual(ud.state_dir(), Path("/home/x/.local/state/uxon"))
 
 
 class LoadDismissedTests(unittest.TestCase):

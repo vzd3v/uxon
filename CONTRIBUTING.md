@@ -78,7 +78,7 @@ Then add a matching entry to [`CHANGELOG.md`](CHANGELOG.md) under
 
 ## Architectural rules a contributor will hit
 
-These are non-negotiable — see [`docs/architecture.md`](docs/architecture.md)
+These are non-negotiable — see [`docs/architecture.md`](docs/explain/architecture.md)
 for the full picture. Quick list:
 
 - **`textual` is imported lazily inside `do_interactive`.** Non-TUI
@@ -120,7 +120,8 @@ for the full picture. Quick list:
 3. Add a matching `SettingSpec` in
    `src/uxon/settings.py::SETTINGS_SPECS` so the TUI Settings screen
    exposes it.
-4. Document it in the README config table.
+4. Document it in [`docs/reference/configuration.md`](docs/reference/configuration.md)
+   (use case + the reference table).
 5. Add a `load_config` test in `tests/test_uxon.py` and a
    round-trip test in `tests/test_uxon_settings.py` if the value
    has non-trivial encoding.

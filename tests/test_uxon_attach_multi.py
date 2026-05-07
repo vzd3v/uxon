@@ -1,0 +1,282 @@
+"""Tests for ``uxon attach --user`` and ``uxon attach --host`` (multi-host).
+
+Symmetric to ``test_uxon_kill_multi.py``. Parser-level tests live
+here; behaviour tests for cross-user / cross-host execution paths
+live in companion classes below.
+"""
+
+from __future__ import annotations
+
+import io
+import unittest
+from contextlib import redirect_stdout
+from unittest import mock
+
+from helpers import make_config as _make_config
+
+from uxon import cli as uxon
+from uxon.remote_hosts import RemoteHost
+
+
+class AttachParserTests(unittest.TestCase):
+    def test_attach_with_user(self) -> None:
+        a = uxon.parse_args(["attach", "demo@claude", "--user", "alice"])
+        self.assertEqual(a.action, "attach")
+        self.assertEqual(a.target_id, "demo@claude")
+        self.assertEqual(a.user, "alice")
+        self.assertIsNone(a.host)
+
+    def test_attach_with_host_and_user(self) -> None:
+        a = uxon.parse_args(["attach", "demo@claude", "--host", "box-b", "--user", "alice"])
+        self.assertEqual(a.host, "box-b")
+        self.assertEqual(a.user, "alice")
+
+    def test_attach_with_host_without_user_fails(self) -> None:
+        # --host without --user is rejected at parse time: implicit
+        # peer-login-user defaults invite "where did this attach
+        # actually go?" surprises.
+        with self.assertRaises(SystemExit):
+            uxon.parse_args(["attach", "demo@claude", "--host", "box-b"])
+
+    def test_attach_dry_run(self) -> None:
+        a = uxon.parse_args(
+            ["attach", "demo@claude", "--host", "box-b", "--user", "alice", "--dry-run"]
+        )
+        self.assertTrue(a.dry_run)
+
+    def test_attach_unknown_flag(self) -> None:
+        with self.assertRaises(SystemExit):
+            uxon.parse_args(["attach", "demo@claude", "--unknown"])
+
+    def test_peer_side_parses_remote_attach_argv_built_by_local(self) -> None:
+        # Regression: ``_do_attach_remote`` and TUI ``on_remote_attach``
+        # construct ``uxon attach <target> --user <u> --audit-correlation-id <uuid>``.
+        # A previous shape put flags before ``<target>``, which made
+        # ``parse_subcommand`` treat ``--user`` as the target_id and
+        # reject the rest. Peer-side parse of the new shape must
+        # succeed.
+        argv = [
+            "attach",
+            "demo@claude",
+            "--user",
+            "alice",
+            "--audit-correlation-id",
+            "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f",
+        ]
+        parsed = uxon.parse_args(argv)
+        self.assertEqual(parsed.action, "attach")
+        self.assertEqual(parsed.target_id, "demo@claude")
+        self.assertEqual(parsed.user, "alice")
+        self.assertEqual(parsed.audit_correlation_id, "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f")
+
+
+class AttachCrossUserTests(unittest.TestCase):
+    """Peer-side ``uxon attach --user`` cross-user gating.
+
+    Mirror of ``KillUserCrossUserTests`` in test_uxon_kill_multi.py.
+    """
+
+    def _cfg(self) -> uxon.Config:
+        return _make_config()
+
+    def test_same_user_no_sudo_path(self) -> None:
+        cfg = self._cfg()
+        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="u-vz", dry_run=True)
+        with (
+            mock.patch.object(uxon, "collect_sessions") as cs,
+            mock.patch.object(uxon, "resolve_session") as rs,
+            mock.patch.object(uxon, "attach_session", return_value=0) as att,
+        ):
+            cs.return_value = []
+            rs.return_value = mock.Mock(name="demo@claude")
+            rc = uxon.do_attach(args, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+        # No probe needed when target == launch_user
+        att.assert_called_once()
+
+    def test_cross_user_unreachable_emits_stable_tag(self) -> None:
+        cfg = self._cfg()
+        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
+        from uxon.sudo_probe import SudoCapability
+
+        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        buf = io.StringIO()
+        with (
+            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            redirect_stdout(buf),
+        ):
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                rc = uxon.do_attach(args, cfg, "u-vz")
+        # Stable error tag — aggregator's UI surfaces it via
+        # pause_on_launch_failure.
+        self.assertEqual(rc, 1)
+        self.assertIn("uxon-error: not-reachable", err.getvalue())
+
+    def test_peer_inbound_unreachable_emits_attach_remote_in_denied(self) -> None:
+        # Spec lines 207-209: state-changing events emit on success AND
+        # failure.  Spec line 299: ``attach.remote.in`` *replaces*
+        # ``session.attach`` on the peer side.  Combined: a peer
+        # receiving an attach for an unreachable target must record
+        # ``attach.remote.in outcome=denied`` (not a stale ``ok``, and
+        # not a suppressed ``session.attach``).  Regression for the
+        # pre-fix bug where the peer-inbound branch unconditionally
+        # emitted ``outcome=ok`` at the top of ``do_attach`` and
+        # suppressed every downstream failure-path emit.
+        from uxon.sudo_probe import SudoCapability
+
+        cfg = self._cfg()
+        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
+        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        from uxon import audit as uxon_audit
+
+        with (
+            mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
+            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+            mock.patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            rc = uxon.do_attach(args, cfg, "u-vz")
+
+        self.assertEqual(rc, 1)
+        # Exactly one attach.remote.in emit, with outcome=denied.  No
+        # phantom ``ok`` may slip in, and no ``session.attach`` may be
+        # emitted in parallel (``replaces`` semantics).
+        rin_emits = [e for e in recorded if e[0] == "attach.remote.in"]
+        local_emits = [e for e in recorded if e[0] == "session.attach"]
+        self.assertEqual(local_emits, [])
+        self.assertEqual(len(rin_emits), 1)
+        self.assertEqual(rin_emits[0][1]["outcome"], "denied")
+        self.assertEqual(rin_emits[0][1]["target_session"], "demo@claude")
+        self.assertEqual(rin_emits[0][1]["target_user"], "alice")
+
+    def test_cross_user_reachable_dry_run_shows_sudo_prefix(self) -> None:
+        cfg = self._cfg()
+        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice", dry_run=True)
+        from uxon.sudo_probe import SudoCapability
+
+        caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
+        buf = io.StringIO()
+        with (
+            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch.object(uxon, "collect_sessions", return_value=[]),
+            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
+            mock.patch.object(uxon, "process_user", return_value="u-vz"),
+            mock.patch.object(uxon, "resolve_session") as rs,
+        ):
+            rs.return_value = mock.Mock(name="demo@claude")
+            rs.return_value.name = "demo@claude"
+            with redirect_stdout(buf):
+                rc = uxon.do_attach(args, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("sudo", out)
+        self.assertIn("alice", out)
+        self.assertIn("tmux", out)
+
+
+class AttachHostRemoteTests(unittest.TestCase):
+    """``uxon attach --host <alias> --user <u>`` SSH-routed dispatch."""
+
+    def _cfg_with_host(self, **host_kwargs) -> uxon.Config:
+        return _make_config(
+            remote_hosts=[
+                RemoteHost(
+                    name="box-b",
+                    ssh_alias="ssh-b",
+                    description="",
+                    remote_uxon="uxon",
+                    **host_kwargs,
+                )
+            ]
+        )
+
+    def test_host_dry_run_prints_ssh_attach_command(self) -> None:
+        cfg = self._cfg_with_host()
+        args = uxon.ParsedArgs(
+            action="attach",
+            target_id="demo@claude",
+            host="box-b",
+            user="alice",
+            dry_run=True,
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = uxon.do_attach(args, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("ssh", out)
+        self.assertIn("-tt", out)  # interactive PTY
+        self.assertIn("ssh-b", out)
+        self.assertIn("uxon attach", out)
+        self.assertIn("--user", out)
+        self.assertIn("alice", out)
+        self.assertIn("demo@claude", out)
+
+    def test_host_honours_command_template(self) -> None:
+        cfg = self._cfg_with_host(
+            command_template=("ssh", "-J", "bastion", "{ssh_alias}", "{remote_command}"),
+        )
+        args = uxon.ParsedArgs(
+            action="attach",
+            target_id="demo@claude",
+            host="box-b",
+            user="alice",
+            dry_run=True,
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            uxon.do_attach(args, cfg, "u-vz")
+        out = buf.getvalue()
+        self.assertIn("-J", out)
+        self.assertIn("bastion", out)
+        # -tt still injected after the outermost ssh.
+        first_ssh = out.find("ssh")
+        first_tt = out.find("-tt")
+        self.assertGreater(first_tt, first_ssh)
+
+    def test_host_unknown_alias_fails(self) -> None:
+        cfg = self._cfg_with_host()
+        args = uxon.ParsedArgs(
+            action="attach",
+            target_id="demo@claude",
+            host="unknown",
+            user="alice",
+        )
+        with self.assertRaises(SystemExit):
+            uxon.do_attach(args, cfg, "u-vz")
+
+
+class OnRemoteAttachCallbackTests(unittest.TestCase):
+    """The TUI-side on_remote_attach callback builds the right LaunchRequest."""
+
+    def test_builds_interactive_ssh_launch_request(self) -> None:
+        cfg = _make_config(
+            remote_hosts=[
+                RemoteHost(
+                    name="box-b",
+                    ssh_alias="ssh-b",
+                    description="",
+                    remote_uxon="uxon",
+                )
+            ]
+        )
+        callback = uxon._build_on_remote_attach_callback(cfg)
+        req = callback("box-b", "alice", "demo@claude")
+        argv = list(req.cmd)
+        self.assertEqual(argv[0], "ssh")
+        self.assertIn("-tt", argv)
+        self.assertIn("ssh-b", argv)
+        # Remote command should carry --user alice and the target id.
+        remote_cmd = argv[-1]
+        self.assertIn("uxon attach", remote_cmd)
+        self.assertIn("--user", remote_cmd)
+        self.assertIn("alice", remote_cmd)
+        self.assertIn("demo@claude", remote_cmd)
+        # Label is descriptive for pause_on_launch_failure.
+        self.assertIn("attach", req.label)
+        self.assertIn("box-b", req.label)

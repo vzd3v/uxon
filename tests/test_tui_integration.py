@@ -65,6 +65,7 @@ except ImportError:  # pragma: no cover
 _CHILD_SCRIPT = r"""
 import sys, os
 from uxon import tui as uxon_tui
+from uxon.tui.context import SudoCapability
 
 ctx = uxon_tui.TuiContext(
     sessions=[],
@@ -77,7 +78,9 @@ ctx = uxon_tui.TuiContext(
     existing_projects=[],
     cwd_writable=True,
     current_user="u-den",
-    has_sudo=True,
+    sudo_caps=SudoCapability(
+        reachable_users=frozenset({"_synthetic_"}), can_root=True
+    ),
     other_sessions=[],
 )
 rc = uxon_tui.run(ctx)
@@ -227,7 +230,6 @@ ctx = uxon_tui.TuiContext(
     existing_projects=[],
     cwd_writable=True,
     current_user="u-den",
-    has_sudo=False,
     on_launch_cwd=fake_launch_cwd,
     on_launch_new=fake_launch_new,
     on_refresh=lambda: ctx,

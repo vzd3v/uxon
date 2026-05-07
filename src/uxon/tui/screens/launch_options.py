@@ -54,27 +54,48 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     def __init__(self, ctx) -> None:
         super().__init__()
         self.ctx = ctx
+        # Stage 8 commit 5c: ``availability`` is no longer
+        # snapshot-once-at-construction. Compute the initial visible
+        # set from whatever availability is current right now (read
+        # through ``ctx.agent_availability``, which after commit 5b
+        # is a read-through onto ``state.agent_availability.value``).
+        # ``_rebuild_agent_list`` re-reads on every probe-result
+        # dispatch so the modal reflects fresh data without a
+        # re-open.
         state = launch_options_state(
             enabled_agents=tuple(ctx.enabled_agents),
             default_agent=ctx.default_agent,
-            availability=ctx.agent_availability,
+            availability=self._availability_now(),
         )
         self._visible_agents = list(state.visible_agents)
         self._single_agent = state.single_agent
         self._active_panel = state.active_panel
         self._current_agent = state.current_agent
 
+    def _availability_now(self) -> dict:
+        """Read the current availability dict from the live slot store.
+
+        Stage 8 commit 5c: prefers ``app.state.agent_availability.value``
+        over going through the ``ctx.agent_availability`` shim, so the
+        modal reads the canonical store directly. The shim is the
+        compatibility path for unit tests that build a bare ctx; the
+        screen-side prefer-state path is what production runs.
+        """
+        state = getattr(self.app, "state", None)
+        if state is not None and state.agent_availability.value is not None:
+            return state.agent_availability.value
+        return self.ctx.agent_availability
+
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="agent-panel"):
                 yield Static("Agent", classes="panel-title")
                 items = []
+                avail = self._availability_now()
                 for idx, aid in enumerate(self._visible_agents, start=1):
                     items.append(
                         ListItem(
-                            Static(
-                                agent_list_label(idx, aid, self.ctx.agent_availability.get(aid))
-                            ),
+                            Static(agent_list_label(idx, aid, avail.get(aid))),
                             id=f"agent-{aid}",
                         )
                     )
@@ -166,7 +187,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         decision = launch_commit_decision(
             active_panel=self._active_panel,
             current_agent=self._current_agent,
-            availability=self.ctx.agent_availability,
+            availability=self._availability_now(),
             mode_index=(self.query_one("#mode-list", ListView).index or 0),
         )
         if decision.action == "ignore":
@@ -193,7 +214,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         may have been popped and its DOM detached. Bail out quietly when
         the panels are no longer in the tree.
         """
-        avail = self.ctx.agent_availability
+        avail = self._availability_now()
         update = update_launch_options_after_availability(
             enabled_agents=tuple(self.ctx.enabled_agents),
             default_agent=self.ctx.default_agent,

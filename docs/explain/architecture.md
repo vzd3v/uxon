@@ -1,7 +1,7 @@
 # Architecture
 
 Public architectural overview of `uxon`. Read
-[`CONTRIBUTING.md`](../CONTRIBUTING.md) first for setup and the
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md) first for setup and the
 contribution workflow; this document focuses on *what the code looks
 like and why*.
 
@@ -17,8 +17,32 @@ TUI session picker.
 There is no daemon. There is no database. State lives in:
 - `tmux` sessions on a per-user dedicated socket;
 - `config/config.toml` (host config) and `.uxon.toml` (per-project);
-- `${XDG_STATE_HOME:-~/.local/state}/uxon/` (best-effort JSONL event
-  log; override with `UXON_LOG_DIR`).
+- the host's platform log channel (journald native or `/dev/log`
+  syslog), for the `audit` channel;
+- `${XDG_STATE_HOME:-~/.local/state}/uxon/`, for the developer-facing
+  `debug` and `metrics` channels (override with `UXON_LOG_DIR`).
+
+### Logging channels
+
+Three non-overlapping channels.  Audit is on by default; the other
+two are off and operator-opt-in.
+
+| Channel  | Sink                          | Default | Audience            |
+|----------|-------------------------------|---------|---------------------|
+| `audit`  | journald native / `/dev/log`  | on      | operator / lead     |
+| `debug`  | `~/.local/state/uxon/…`       | off     | developer           |
+| `metrics`| `~/.local/state/uxon/…`       | off     | developer           |
+
+`audit` is the application-level operational record (who attached,
+who killed, who launched, with cross-host correlation).  Per-event
+schema and field reference in
+[`../reference/audit-events.md`](../reference/audit-events.md); operational topology and
+query recipes in [`../guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-audit-to-collector.md).
+`debug` is gated on `UXON_DEBUG=<topic>` and writes one JSONL line
+per instrumentation point — left in code permanently because it
+costs a single set-membership check when the env var is unset.
+`metrics` is gated on `UXON_METRICS=1` and writes per-fetch latency
+for the remote-collector pollers.
 
 ## Top-level layout
 
@@ -28,7 +52,11 @@ src/uxon/                     Python package (pipx / uv tool / pip installable).
   __main__.py                 `python -m uxon` shim → cli.main().
   cli.py                      Single-file CLI entrypoint.
   settings.py                 Settings schema, layered TOML read/write.
+  audit.py                    Audit channel — journald / syslog emit.
   agents.py                   Pure-data agent catalog and probe.
+  wire_schema.py              Versioned JSON envelope for `--json` output.
+  remote_hosts.py             [[remote_hosts]] schema and validation.
+  remote_collector.py         SSH transport + on-disk snapshot cache for peers.
   git_profiles.py             [[git_remote_profiles]] schema.
   git_backend_gh.py           `gh repo create` backend.
   git_backend_token.py        GitHub REST + fine-grained PAT backend.
@@ -75,17 +103,81 @@ Sub-modules under `src/uxon/tui/`:
 - `state.py` — pure UI state decisions (filter, validation, key
   routing, focus transitions). Tested with plain `unittest`,
   no `Pilot`.
-- `events.py` — best-effort JSONL event log.
+- `events.py` — `debug` and `metrics` channels (both off by default).
+  The audit channel lives in `uxon.audit`, not here.
 - `launch.py` — fork-and-wait helper plus the failure-pause banner.
   Runs **outside** the Textual `App` between round-trips.
 - `hints.py` — `TEXTUAL_MISSING_HINT` install guidance.
 - `app.py` — `UxonApp(App)` and the outer `run(ctx)` re-entrant loop.
+- `refresh.py` — pluggable refresh-source registry (`SourceSpec`,
+  `SourceResult`, `run_source`). One source per stream — local
+  tmux, each `[[remote_hosts]]` peer — runs in its own worker
+  group so a slow peer never stalls the others.
 - `screens/` — one module per screen: `main`, `confirm`,
   `launch_options`, `new_project`, `git_profile`, `existing`,
   `settings`, `git_remotes`, `agents_unavailable`.
-- `widgets/` — `ActionRow` and `SessionTable`. Everything else is
+- `widgets/` — `ActionRow`, `DetectedAgentsBanner`,
+  `SessionDashboardTable` (the unified session table), and
+  `FocusReleasingDataTable` (internal base). Everything else is
   stock `textual`.
+- `dashboard/` — pure layers behind `SessionDashboardTable`
+  (`row.py`, `columns.py`, `layout.py`, `ui_state.py`, `model.py`,
+  `reconcile.py`). See § "Session dashboard" below.
 - `styles.tcss` — Textual CSS for the whole app.
+
+## Session dashboard
+
+`SessionDashboardTable` (one row per visible session — local own,
+local other-user under sudo, and one row per session on every
+configured peer) is built on four pure layers under
+[`src/uxon/tui/dashboard/`](../../src/uxon/tui/dashboard/) plus the
+widget shell at
+[`src/uxon/tui/widgets/session_dashboard_table.py`](../../src/uxon/tui/widgets/session_dashboard_table.py):
+
+1. **`row.py` — `SessionRow`.** A single frozen dataclass is the
+   unified row type. Two adapters land the legacy shapes onto it:
+   `from_tui_session(...)` for local rows (own + sudo), and
+   `from_wire_record(host, rec)` for one row of a peer
+   `RemoteSnapshot`. Equality is value-based — two ticks producing
+   identical rows compare equal under `is`-stable identity once
+   they go through the model selector.
+2. **`columns.py` — `ColumnSpec` registry.** The single source of
+   truth for which columns exist, how each one renders, and how
+   each one sorts. `REGISTRY` is the column id → spec map;
+   formatters return `rich.text.Text` with inline style (no CSS
+   class names). `sort_keys` exposes the key function used by the
+   model layer.
+3. **`layout.py` — `build_active_columns(flags, cfg)`.** Pure
+   selector that picks the active column subset from `REGISTRY`
+   based on runtime flags (`multi_host`, `cross_user`) and the
+   operator-supplied `[tui.table] columns`. Unknown ids in `cfg`
+   are silently dropped — older operator configs survive a column
+   removal.
+4. **`ui_state.py` — `DashboardUiState`.** Frozen dataclass
+   holding `sort_by`, `sort_dir`, and any UI-only state.
+   `cycle_sort` and `toggle_sort_dir` are pure reducers, wired to
+   the `s` and `S` keybindings on `MainScreen`.
+
+The selector and reconciler tie those layers to the widget:
+
+5. **`model.py` — `select_dashboard_model(...)`.** Identity-stable
+   selector: returns the same `(rows, columns, ui)` tuple by `is`
+   when nothing changed since the previous call, so a no-op tick
+   short-circuits the reconciler. The cache lives in
+   `_LAST_OUTPUT`.
+6. **`reconcile.py` — `diff(old, new, columns)`.** Pure reconciler
+   over rows × columns. Emits the minimal sequence of mutate ops
+   the widget will apply (add row / remove row / update cell). A
+   no-op tick produces zero ops and zero log lines on the
+   `tui-table` debug channel. Per-host repaint: a single peer's
+   snapshot landing produces ops only for that peer's rows; every
+   other row compares equal and is skipped.
+
+The widget at `widgets/session_dashboard_table.py` is a thin
+shell. Its `apply(ops)` mutates the underlying Textual `DataTable`;
+all decisions about what to display live in the layers above. The
+widget subclasses `FocusReleasingDataTable` for boundary-aware
+navigation.
 
 ## Module boundaries
 
@@ -163,7 +255,7 @@ changes in `src/uxon/cli.py`.
 
 ## Security boundaries
 
-See [`SECURITY.md`](../SECURITY.md) for the threat model. The short
+See [`SECURITY.md`](../../SECURITY.md) for the threat model. The short
 version: the operator's `sudoers` config is the authorisation model;
 `uxon` enforces `allowed_roots`, the `git_remote_profiles` whitelist,
 and atomic config writes; everything inside the launched agent

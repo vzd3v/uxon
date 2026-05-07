@@ -98,7 +98,12 @@ def _current_user() -> str:
     return pwd.getpwuid(os.getuid()).pw_name
 
 
-def _probe_one(binary: str, launch_user: str | None) -> AgentAvailability:
+def _probe_one(
+    binary: str,
+    launch_user: str | None,
+    *,
+    timeout_override: float | None = None,
+) -> AgentAvailability:
     """Run ``<binary> --version`` (under sudo if launch_user differs from caller)
     and return a status-tagged :class:`AgentAvailability`.
 
@@ -107,7 +112,12 @@ def _probe_one(binary: str, launch_user: str | None) -> AgentAvailability:
     parallel multi-agent driver (``probe_agents``) was removed in 0.5.x
     once the host-wide probe replaced it everywhere except the doctor's
     per-binary version detail.
+
+    ``timeout_override`` lets the doctor caller (which probes in parallel)
+    use a tighter 2 s deadline; the TUI host-probe path keeps the 10 s
+    default since it is async and off the event loop.
     """
+    timeout = PROBE_TIMEOUT_SEC if timeout_override is None else timeout_override
     if launch_user and launch_user != _current_user():
         # Match the login-env semantics that ``command_prefix_for_user``
         # in ``uxon.cli`` uses for the actual launch (``sudo -iu``). The
@@ -125,7 +135,7 @@ def _probe_one(binary: str, launch_user: str | None) -> AgentAvailability:
             cmd,
             capture_output=True,
             text=True,
-            timeout=PROBE_TIMEOUT_SEC,
+            timeout=timeout,
         )
     except FileNotFoundError as exc:
         return AgentAvailability(status="missing", error=str(exc))

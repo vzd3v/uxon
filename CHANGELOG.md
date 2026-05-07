@@ -6,7 +6,132 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.3.0] — 2026-05-07
+
+### Documentation
+
+- User-facing site under [`docs/`](docs/) reorganised to follow
+  the [Diátaxis](https://diataxis.fr) model. Old `docs/configuration.md`,
+  `docs/deployment.md`, `docs/getting-started.md` removed; bookmarks
+  redirect via [`docs/index.md`](docs/index.md). README slimmed to
+  pitch + install + pointers.
+- New operations runbooks under
+  [`docs/guides/operate/`](docs/guides/operate/) — onboarding, incident
+  response, fleet upgrade, aggregator-loss recovery, central audit
+  forwarding, backup/restore, credential rotation.
+- New developer-privacy disclosure at
+  [`docs/privacy.md`](docs/privacy.md).
+
+### Changed (breaking)
+
+- Audit events now go to the platform log (journald native on
+  systemd hosts, `/dev/log` syslog fallback otherwise) instead of
+  `~/.local/state/uxon/tui-{user}-{date}.log`.  That file is no
+  longer written.  Query via `journalctl SYSLOG_IDENTIFIER=uxon` on
+  systemd hosts.
+- `uxon.tui.LOG_DIR` public import removed.  Out-of-tree code that
+  imported `from uxon.tui import LOG_DIR` will fail at import.
+- Peer protocol: `list`, `attach`, `kill` now accept an internal
+  `--audit-correlation-id <uuid>` flag (hidden from `--help`).  All
+  peers in a fleet must run the same major version (existing
+  upgrade posture).
+
+### Added
+
+- `uxon doctor` reports the audit-channel state on its own line:
+  `audit:    enabled, sink=journald-native` (or `sink=syslog` /
+  `sink=no-sink`; `enabled` flips to `disabled` when the channel is
+  off).  JSON envelope carries the same data under `data.audit`.
+- New `[audit]` config table: `enabled` (bool, default `true`) and
+  `syslog_facility` (string, default `"user"`, consulted only on
+  the `/dev/log` fallback path).  No environment-variable override
+  — the only kill-switch is the config table.
+- 15 audit events covering CLI startup, TUI lifecycle, session
+  create/attach/end/kill, cross-host dispatch, and `git.remote.create`
+  / `config.error`.  Schema and per-event field reference in
+  [`docs/reference/audit-events.md`](docs/reference/audit-events.md).
+- Multi-host: configure peers under `[[remote_hosts]]` in `config.toml`;
+  `uxon list --host <alias>` and `uxon list --all-hosts` aggregate
+  sessions across the fleet.
+- TUI session dashboard: a single sortable table that mounts local
+  own, local other-user (when sudo block is active), and remote
+  rows together. A HOST column appears automatically when peers
+  are configured; per-host health badges
+  (`[ok]`, `[cache 12s]`, `[err: …]`, `[loading]`) live in the
+  section header.
+- New `[tui.table]` config block: `columns` (list of column ids in
+  display order) and `default_sort_by` (initial sort column).
+  Empty/absent uses built-in defaults; unknown ids are silently
+  dropped for forward-compat. Reference:
+  [`docs/reference/configuration.md`](docs/reference/configuration.md);
+  use cases:
+  [`docs/guides/customise/customise-dashboard.md`](docs/guides/customise/customise-dashboard.md).
+- `uxon attach --host <alias> --user <name> [--dry-run]` opens a remote
+  session over SSH; pressing Enter on a TUI remote row does the same.
+- `uxon kill --host <alias> [--user <name>] <id>` kills a single
+  session on a peer; `d` on a TUI remote row dispatches the same.
+  Bulk `kill-all` stays local.
+- `uxon kill --user <name> <id>` kills another launch user's session
+  when the caller has per-target NOPASSWD to that user.
+- TUI superuser block now scopes to users you can `sudo -niu` into;
+  header shows `(N/M users reachable)` when `session_users` lists more
+  candidates than the caller can reach. Probed once at TUI startup.
+- Cross-host `--all-users` aggregation: peers with
+  `enable_all_users_list = false` are labelled `(own only)` in the
+  section header or HOST column.
+- `--json` output for `uxon list`, `doctor`, `version`, `kill`,
+  `kill-all` — one wire-schema envelope per call.
+- SSH `ControlMaster=auto` is the default for `[[remote_hosts]]`
+  fetches; control socket under `${XDG_CACHE_HOME:-~/.cache}/uxon/ssh-%C`,
+  60 s lifetime. Set `ssh_multiplex = "off"` to opt out.
+- Per-host overrides in `[[remote_hosts]]`: `interval`,
+  `connect_timeout`, `total_timeout` (`"5s"`, `"500ms"`, `"2m"`, or
+  bare seconds), `extra_ssh_options`, and `command_template`
+  (kubectl-exec / docker-exec recipes in `docs/reference/configuration.md`).
+- `fetch_concurrency` (default `16`) caps concurrent SSH workers
+  fleet-wide.
+- Per-host circuit breaker: three consecutive failures open a peer for
+  one interval before the next probe.
+- `uxon doctor --remote` probes every configured peer once and reports
+  reachability, latency, and session count; default `uxon doctor`
+  keeps zero SSH I/O.
+- `UXON_DEBUG=startup` logs `mount_started` / `first_paint` /
+  `first_data_landed` timestamps to the per-day debug log.
+- `UXON_METRICS=1` writes one JSON line per source attempt to
+  `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files).
+- Press `s` in the TUI to cycle the dashboard sort across cpu / ram /
+  last / name. `S` (Shift+s) toggles sort direction. The new sort
+  applies across local own, local other-user, and every peer's rows
+  in one flat list.
+
+### Changed
+
+- Local and remote sessions now render in a single sortable session
+  dashboard. The HOST column appears automatically when peers are
+  configured; the USER column appears when other-user rows are
+  visible. The dedicated remote-sessions section is gone.
+- `kill ALL uxon sessions` action renamed to `kill all reachable
+  users`; confirmation phrase is now `kill-all-reachable` (was
+  `kill-all-global`).
+- `uxon list --all-users` scopes to the reachable subset of
+  `session_users`; unreachable users surface on stderr and as
+  `data.scope_skipped` in JSON.
+- `uxon doctor` runs agent probes in parallel with a 2 s per-probe
+  deadline; slow agents surface as `TIMEOUT (>2.0s)` instead of
+  inflating wall time.
+
+### Removed
+
+- The `k` keybinding (remote-only kill) is removed. `d` covers all
+  kills now — local rows and remote rows alike.
+
+### Fixed
+
+- Dashboard sort by `last` / `new` columns now ranks local sessions
+  correctly (previously they sank to the bottom regardless of age).
+- Offline peers no longer show a misleading "full visibility" badge
+  from the cache fallback path; `scope_limited` / `scope_skipped`
+  round-trip through the on-disk cache.
 
 ## [3.2.2] — 2026-05-02
 
@@ -47,7 +172,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `uxon doctor` is no longer mentioned in README's "After install"
   quick-start; the TUI surfaces the same issues in line. The full
   `doctor` reference still lives in
-  [`docs/cli.md`](docs/cli.md#doctor).
+  [`docs/reference/cli.md`](docs/reference/cli.md#doctor).
 
 ### Fixed
 

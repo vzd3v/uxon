@@ -1,0 +1,50 @@
+# Audit fragment for uxon's paired-account / supervision pattern.
+#
+# Drop into /etc/sudoers.d/uxon-audit (or merge into the file that
+# already grants the lead's NOPASSWD rules). `visudo -c -f` to
+# validate before saving — a syntactically broken sudoers file
+# locks everyone out.
+#
+# Layout assumed:
+#
+#   alice          shell user
+#   alice_agent    paired low-priv launch user (agent runs here)
+#   bob, bob_agent ditto
+#   lead           operator account (team lead / instructor)
+#
+# What this captures:
+#
+#   Every interactive sudo into a *_agent account by the lead is
+#   recorded — keystrokes (log_input) and screen output
+#   (log_output). Files land under
+#       /var/log/sudo-io/<lead>/<YYYYMMDD-HHMMSS>/{ttyin,ttyout,...}
+#   one directory per session. `sudoreplay -d /var/log/sudo-io <id>`
+#   plays back a session.
+#
+# What this does NOT do:
+#
+#   - It does not capture sessions where the developer themselves
+#     sudoes into their own *_agent account (that would log every
+#     own-session as well; usually too noisy).
+#   - It does not log uxon's own non-interactive `sudo -niu ... -- true`
+#     reachability probe (BatchMode short-circuits before a session
+#     starts).
+#   - It is not a substitute for centralised SIEM forwarding —
+#     /var/log/sudo-io should be shipped off the host on a schedule
+#     if you need tamper-evident retention.
+#
+# Disk: I/O logs grow with use. Plan rotation (logrotate /
+# systemd-tmpfiles) and decide retention per your audit policy.
+# A 10-minute pair-debugging session is typically 1–10 MB.
+
+Cmnd_Alias UXON_AGENT_OPS = /usr/bin/tmux, /bin/bash, /bin/sh, /usr/bin/env
+
+# Per-target grants — supervision without impersonation.
+# Lead can become *_agent accounts but NOT alice / bob themselves.
+lead    ALL=(alice_agent,bob_agent) NOPASSWD: ALL
+
+# Audit only the lead's invocations against agent accounts.
+# Restrict the I/O log to the listed Cmnd_Alias to keep volume
+# bounded.
+Defaults:lead    log_input, log_output, !iolog_stdin, iolog_file=%{user}/%{epoch}, iolog_dir=/var/log/sudo-io
+Defaults:lead    log_year, logfile=/var/log/sudo-uxon.log

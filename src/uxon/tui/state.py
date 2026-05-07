@@ -7,6 +7,7 @@ without running a Textual event loop.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -369,6 +370,7 @@ class MainIntent:
     index: int | None = None
     user: str = ""
     session_name: str = ""
+    host: str = ""
 
 
 def main_action_intent(kind: str) -> MainIntent | None:
@@ -443,6 +445,113 @@ def project_name_valid(value: str) -> bool:
     if name in (".", ".."):
         return False
     return True
+
+
+@dataclass(frozen=True)
+class HostHealthBadge:
+    """Per-host health summary derived from a ``RemoteSnapshot``.
+
+    Stage 6 reads ``RemoteSnapshot.error``/``from_cache``/``cached_at_epoch``
+    directly. The richer ``SlotState[T]`` (latency ring, ``in_flight``,
+    ``consecutive_failures``) and the p50-latency tooltip land at stage 8.
+
+    Status values:
+      - ``loading`` — no snapshot yet (the worker has not produced a result).
+      - ``ok`` — last fetch succeeded (``error is None`` and not from cache).
+      - ``stale`` — table is rendering cached data (``from_cache=True``);
+        the live fetch may have failed (badge then carries ``+ err``).
+      - ``down`` — last fetch failed AND no cache exists (no data shown).
+    """
+
+    status: str
+    text: str
+
+
+def _format_age_seconds(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def _short_error(msg: str | None, *, limit: int = 48) -> str:
+    if not msg:
+        return "error"
+    first = msg.splitlines()[0].strip()
+    if len(first) > limit:
+        return first[: limit - 1] + "…"
+    return first or "error"
+
+
+# ── Stage 9 selectors ─────────────────────────────────────────────────
+#
+# Pure, identity-stable selectors over the existing :class:`TuiContext`
+# shape. Stage 8 deliberately deferred the ``TuiContext`` →
+# ``TuiState``/``MainData`` split, so these operate on the live ctx +
+# per-host ``RemoteSnapshot`` mapping rather than on a future state
+# container. The identity-stable contract (selector returns the same
+# object across calls when inputs are unchanged by ``is`` comparison)
+# still applies and is testable today; the eventual reactive wiring
+# will plug into these helpers without changing their signatures.
+
+
+def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
+    """Return the four-bool layout signature for ``MainScreen`` patch-vs-recompose.
+
+    Mirrors ``MainScreen._layout_signature``: ``(has_own_sessions,
+    has_super, has_other_sessions, kill_visible)``. Pure; memoisation
+    is unnecessary because the result is a tuple of bools (cheap to
+    recompute, equality-compared by callers).
+
+    The recompose-on-cross-user flip is carried by
+    ``has_other_sessions`` (position 2): once the dashboard owns
+    other-user rows, ``bool(ctx.other_sessions)`` flipping is the
+    same predicate as "USER column needs to appear/disappear", so a
+    separate ``cross_user`` bool would be redundant. The flip
+    triggers the ``MainScreen`` recompose path; the new ``__init__``
+    rebuilds ``_active_columns`` from ``LayoutFlags(cross_user=
+    bool(ctx.other_sessions))``.
+    """
+    has_super = bool(ctx.sudo_caps.reachable_users)
+    return (
+        bool(ctx.sessions),
+        has_super,
+        bool(ctx.other_sessions),
+        has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
+    )
+
+
+def host_health_badge(snapshot: Any, *, now: float | None = None) -> HostHealthBadge:
+    """Compute a per-host health badge from a (possibly ``None``) snapshot.
+
+    Pure helper: no Textual, no time-source side effects (``now`` is the
+    seam). Returned ``text`` is short enough to drop into a section
+    header or a HOST-column cell without wrapping.
+    """
+    if snapshot is None:
+        return HostHealthBadge(status="loading", text="loading")
+    error = getattr(snapshot, "error", None)
+    from_cache = bool(getattr(snapshot, "from_cache", False))
+    if error is None and not from_cache:
+        return HostHealthBadge(status="ok", text="ok")
+    if from_cache:
+        cached_at = getattr(snapshot, "cached_at_epoch", None)
+        if cached_at is None:
+            # from_cache=True but no cached_at — should not happen in practice,
+            # treat as "stale" without an age stamp rather than guess.
+            text = "cache" if error is None else "cache + err"
+            return HostHealthBadge(status="stale", text=text)
+        if now is None:
+            now = time.time()
+        age = _format_age_seconds(int(now - float(cached_at)))
+        text = f"cache {age}" if error is None else f"cache {age} + err"
+        return HostHealthBadge(status="stale", text=text)
+    # error path with no cache — no data shown.
+    return HostHealthBadge(status="down", text=f"err: {_short_error(error)}")
 
 
 def project_name_error(value: str) -> str:

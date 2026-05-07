@@ -284,6 +284,96 @@ class UxonTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg("tui_refresh_interval_seconds = 0\n", tmpdir)
 
+    def test_load_config_tui_table_defaults_when_section_absent(self) -> None:
+        # No ``[tui.table]`` block — defaults must hold and the columns
+        # signal must be ``None`` (not ``()``), since ``None`` is the
+        # contract that ``build_active_columns`` uses to mean
+        # "fall back to the registry defaults".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("", tmpdir)
+        self.assertIsNone(cfg.tui_table_columns)
+        self.assertEqual(cfg.tui_table_default_sort_by, "cpu")
+
+    def test_load_config_tui_table_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [tui.table]
+                    columns         = ["name", "user", "cpu", "ram", "last"]
+                    default_sort_by = "ram"
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        self.assertEqual(cfg.tui_table_columns, ("name", "user", "cpu", "ram", "last"))
+        self.assertEqual(cfg.tui_table_default_sort_by, "ram")
+
+    def test_load_config_tui_table_empty_columns_collapses_to_none(self) -> None:
+        # Explicit empty list and absent key both signal "use registry
+        # defaults"; we never expose an empty-tuple state.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [tui.table]
+                    columns = []
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        self.assertIsNone(cfg.tui_table_columns)
+
+    def test_load_config_tui_table_rejects_non_list_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [tui.table]
+                        columns = "name"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+
+    def test_load_config_tui_table_rejects_non_string_default_sort_by(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [tui.table]
+                        default_sort_by = 1
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+
+    def test_load_config_tui_table_unknown_default_sort_by_falls_back(self) -> None:
+        # Unknown id → soft-fallback to "cpu" with a debug-log entry.
+        # Patch the lazy events.debug import so the test does not
+        # depend on UXON_DEBUG being set, and to capture the call.
+        from uxon.tui import events as _events
+
+        seen: list[tuple[str, dict]] = []
+
+        def _spy(topic: str, **fields: object) -> None:
+            seen.append((topic, dict(fields)))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(_events, "debug", _spy):
+                cfg = self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [tui.table]
+                        default_sort_by = "no-such-column"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertEqual(cfg.tui_table_default_sort_by, "cpu")
+        self.assertEqual(len(seen), 1)
+        topic, fields = seen[0]
+        self.assertEqual(topic, "tui")
+        self.assertEqual(fields.get("reason"), "unknown_default_sort_by")
+        self.assertEqual(fields.get("id"), "no-such-column")
+
     def test_load_config_reads_git_remote_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg(
@@ -323,6 +413,68 @@ class UxonTests(unittest.TestCase):
                     'default_git_remote_profile = "missing"\n',
                     tmpdir,
                 )
+
+    def test_load_config_reads_remote_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [[remote_hosts]]
+                    name = "vz-prod1"
+                    ssh_alias = "vz-prod1"
+                    description = "primary EU"
+
+                    [[remote_hosts]]
+                    name = "edge.eu"
+                    ssh_alias = "edge-eu"
+                    remote_uxon = "/opt/uxon/bin/uxon"
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        self.assertEqual([h.name for h in cfg.remote_hosts], ["vz-prod1", "edge.eu"])
+        self.assertEqual(cfg.remote_hosts[0].description, "primary EU")
+        self.assertEqual(cfg.remote_hosts[1].remote_uxon, "/opt/uxon/bin/uxon")
+
+    def test_load_config_remote_hosts_default_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("", tmpdir)
+        self.assertEqual(cfg.remote_hosts, [])
+
+    def test_load_config_rejects_invalid_remote_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [[remote_hosts]]
+                        name = "vz prod"
+                        ssh_alias = "vz-prod"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+
+    def test_skeleton_ctx_carries_main_ctx_rebuild_source(self) -> None:
+        # MainScreen.on_mount fans out across ctx.refresh_sources only.
+        # If the skeleton ctx ships an empty list the "Loading sessions…"
+        # placeholder never gets replaced — the worker that produces the
+        # real ctx is never spawned. Pin that the skeleton carries the
+        # ``main_ctx_rebuild`` source so the initial fan-out kicks the
+        # rebuild even before any periodic timer fires.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [[remote_hosts]]
+                    name = "peer1"
+                    ssh_alias = "peer1"
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+            ctx = uxon._build_tui_context(cfg, "devagent", tmpdir, skeleton=True)
+        self.assertTrue(ctx.loading)
+        names = [s.name for s in ctx.refresh_sources]
+        self.assertIn("main_ctx_rebuild", names)
+        self.assertIn("remote:peer1", names)
 
     def test_load_config_defaults_enable_claude_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1550,6 +1702,70 @@ class CliPreflightTests(unittest.TestCase):
                     rc = uxon.main(["list"])
                 # Should not have failed; list doesn't require agents.
                 self.assertEqual(rc, 0)
+
+    def test_peer_inbound_list_all_users_disabled_emits_remote_in_denied(self) -> None:
+        # Spec lines 207-209: state-changing events emit on success AND
+        # failure paths.  Spec line 306: peer-inbound list emits
+        # ``list.remote.in`` instead of ``list.peek``.  Combined: a
+        # peer that refuses ``--all-users`` (because
+        # ``enable_all_users_list = false``) must record exactly one
+        # ``list.remote.in outcome=denied``, no parallel ``list.peek``,
+        # and no stale ``outcome=ok`` from a top-of-block emit.
+        # Regression for the pre-fix bug where the peer-inbound branch
+        # emitted ``outcome=ok`` *before* the gate check, then ``fail``
+        # raised SystemExit unaudited.
+        import uxon.cli as cli
+        from uxon import audit as uxon_audit
+
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        cfg = cli.Config(
+            runtime_user="",
+            default_launch_mode="caller",
+            enable_all_users_list=False,
+            launch_user_by_caller={},
+            session_users=[],
+            allowed_roots=["/srv/repos"],
+            session_prefix="uxon-",
+            legacy_session_prefixes=(),
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_default_args={"claude": (), "codex": (), "cursor": ()},
+            new_project_root="/srv/repos",
+            repeat_noninteractive_mode="fail",
+            tmux_socket_template="/tmp/uxon-{user}.sock",
+            tui_refresh_interval_seconds=2.0,
+            git_create_enabled=False,
+            default_git_remote_profile="",
+            git_remote_profiles=[],
+        )
+
+        with mock.patch("uxon.probes.probe_host") as probe:
+            mock_report = mock.MagicMock()
+            mock_report.tmux.path = "/usr/bin/tmux"
+            mock_report.enabled = {"claude": mock.MagicMock(path=None)}
+            probe.return_value = mock_report
+            with (
+                mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
+                mock.patch.object(cli, "load_config", return_value=cfg),
+                mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+                mock.patch("sys.stderr", new_callable=io.StringIO),
+            ):
+                with self.assertRaises(SystemExit):
+                    uxon.main(["list", "--all-users"])
+
+        list_emits = [e for e in recorded if e[0] in ("list.remote.in", "list.peek")]
+        peek_emits = [e for e in list_emits if e[0] == "list.peek"]
+        rin_emits = [e for e in list_emits if e[0] == "list.remote.in"]
+        # ``replaces`` semantics: on the peer-inbound path, no
+        # ``list.peek`` may be emitted alongside.
+        self.assertEqual(peek_emits, [])
+        self.assertEqual(len(rin_emits), 1)
+        self.assertEqual(rin_emits[0][1]["outcome"], "denied")
+        self.assertEqual(rin_emits[0][1]["scope"], "all-users")
 
 
 class DoInteractiveTextualMissingTests(unittest.TestCase):
