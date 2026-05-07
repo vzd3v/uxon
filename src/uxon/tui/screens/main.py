@@ -240,12 +240,14 @@ class MainScreen(Screen):
                 # the layout doesn't flicker an empty-note at first paint.
                 note_classes = "empty-note -hidden"
             yield Static(note, id="sessions-note", classes=note_classes)
-            if self._dashboard_ui.view_mode == "by_host":
-                yield HostTabStrip([], id="host-tabs")
-                yield HostStatusBar(mode="compact", id="host-status-compact")
-            # Expanded bar is always mounted; ``display`` is toggled by
-            # ``_refresh_dashboard`` based on view mode + filter so the
-            # widget tree stays stable across mode flips.
+            # Tab strip + status bars are always mounted regardless of the
+            # initial view mode; ``_refresh_dashboard`` toggles ``display``
+            # so the widget tree stays stable across ``v`` flips. Mounting
+            # only when ``view_mode == "by_host"`` would silently break
+            # ``v`` for operators who configure ``default_view = "flat"``
+            # (the toggle would have no widgets to show).
+            yield HostTabStrip([], id="host-tabs")
+            yield HostStatusBar(mode="compact", id="host-status-compact")
             yield HostStatusBar(mode="expanded", id="host-status-expanded")
             yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
             if bool(self.ctx.sudo_caps.reachable_users):
