@@ -10,28 +10,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
-- The user-facing site under [`docs/`](docs/) reorganised to
-  follow the [Diátaxis](https://diataxis.fr) model
-  (tutorials in [`docs/start/`](docs/start/), how-tos in
-  [`docs/guides/`](docs/guides/), reference in
-  [`docs/reference/`](docs/reference/), explainers in
-  [`docs/explain/`](docs/explain/)) plus per-scenario hubs at
-  [`docs/scenarios/`](docs/scenarios/).
-  - Old `docs/configuration.md`, `docs/deployment.md`, and
-    `docs/getting-started.md` removed; content lives in the
-    new tree (single source of truth per fact).
-  - New operations runbooks under `docs/guides/operate/` —
-    onboarding, offboarding, incident response, fleet rolling
-    upgrade, aggregator-loss recovery, central audit
-    forwarding, backup/restore, credential rotation.
-  - New hardening recipes under `docs/guides/harden/` —
-    per-UID resource limits, shared-projects ACLs, read-only
-    attach, `hidepid=2` interaction.
-  - New developer-privacy disclosure at
-    [`docs/privacy.md`](docs/privacy.md).
-  - Migration notes consolidated at
-    [`docs/migrations.md`](docs/migrations.md).
-  - README slimmed to pitch + install + pointers.
+- User-facing site under [`docs/`](docs/) reorganised to follow
+  the [Diátaxis](https://diataxis.fr) model. Old `docs/configuration.md`,
+  `docs/deployment.md`, `docs/getting-started.md` removed; bookmarks
+  redirect via [`docs/index.md`](docs/index.md). README slimmed to
+  pitch + install + pointers.
+- New operations runbooks under
+  [`docs/guides/operate/`](docs/guides/operate/) — onboarding, incident
+  response, fleet upgrade, aggregator-loss recovery, central audit
+  forwarding, backup/restore, credential rotation.
+- New developer-privacy disclosure at
+  [`docs/privacy.md`](docs/privacy.md).
 
 ### Changed (breaking)
 
@@ -50,9 +39,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `uxon doctor` reports the audit-channel state on its own line:
-  `audit:    enabled, sink=journald-native` (or `sink=syslog`,
-  `sink=disabled`, `sink=no-sink`).  JSON envelope carries the same
-  data under `data.audit`.
+  `audit:    enabled, sink=journald-native` (or `sink=syslog` /
+  `sink=no-sink`; `enabled` flips to `disabled` when the channel is
+  off).  JSON envelope carries the same data under `data.audit`.
 - New `[audit]` config table: `enabled` (bool, default `true`) and
   `syslog_facility` (string, default `"user"`, consulted only on
   the `/dev/log` fallback path).  No environment-variable override
@@ -60,7 +49,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - 15 audit events covering CLI startup, TUI lifecycle, session
   create/attach/end/kill, cross-host dispatch, and `git.remote.create`
   / `config.error`.  Schema and per-event field reference in
-  [`docs/audit-events.md`](docs/reference/audit-events.md).
+  [`docs/reference/audit-events.md`](docs/reference/audit-events.md).
 - Multi-host: configure peers under `[[remote_hosts]]` in `config.toml`;
   `uxon list --host <alias>` and `uxon list --all-hosts` aggregate
   sessions across the fleet.
@@ -73,9 +62,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - New `[tui.table]` config block: `columns` (list of column ids in
   display order) and `default_sort_by` (initial sort column).
   Empty/absent uses built-in defaults; unknown ids are silently
-  dropped for forward-compat. See
-  [`docs/reference/configuration.md`](docs/guides/customise/customise-dashboard.md)
-  for the full reference.
+  dropped for forward-compat. Reference:
+  [`docs/reference/configuration.md`](docs/reference/configuration.md);
+  use cases:
+  [`docs/guides/customise/customise-dashboard.md`](docs/guides/customise/customise-dashboard.md).
 - `uxon attach --host <alias> --user <name> [--dry-run]` opens a remote
   session over SSH; pressing Enter on a TUI remote row does the same.
 - `uxon kill --host <alias> [--user <name>] <id>` kills a single
@@ -114,13 +104,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   applies across local own, local other-user, and every peer's rows
   in one flat list.
 
-### Fixed
-
-- Local sessions now rank correctly when sorting the dashboard by
-  `last` / `new` columns. Previously they sank to the bottom
-  regardless of age because the TUI carried only pre-formatted
-  relative time strings.
-
 ### Changed
 
 - Local and remote sessions now render in a single sortable session
@@ -144,11 +127,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- TUI remote-sessions table no longer flickers or empties on refresh
-  ticks; focus on a remote row is preserved across re-composes.
-- Remote-host on-disk cache round-trips `scope_limited` /
-  `scope_skipped`, so an offline peer no longer shows a misleading
-  "full visibility" badge from the cache fallback path.
+- Dashboard sort by `last` / `new` columns now ranks local sessions
+  correctly (previously they sank to the bottom regardless of age).
+- Offline peers no longer show a misleading "full visibility" badge
+  from the cache fallback path; `scope_limited` / `scope_skipped`
+  round-trip through the on-disk cache.
 
 ## [3.2.2] — 2026-05-02
 
