@@ -42,7 +42,7 @@ from ..dashboard.layout import LayoutFlags, build_active_columns
 from ..dashboard.model import select_dashboard_model
 from ..dashboard.reconcile import diff
 from ..dashboard.row import SessionRow
-from ..dashboard.ui_state import DashboardUiState
+from ..dashboard.ui_state import DashboardUiState, cycle_sort, toggle_sort_dir
 from ..events import debug as _debug
 from ..state import (
     MainIntent,
@@ -103,6 +103,13 @@ class MainScreen(Screen):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
+        # Dashboard sort controls. ``s`` cycles through cpu / ram /
+        # last / name (filtered by visible columns); ``S`` (Shift+s)
+        # toggles asc/desc. Both reducers live in
+        # ``dashboard/ui_state.py`` and are pure — the screen owns the
+        # re-render after applying the new state.
+        Binding("s", "cycle_sort", "Sort cycle", show=True),
+        Binding("S", "toggle_sort_dir", "Sort dir", show=True),
         # Detected-agents banner: only does something when the banner is
         # visible (``visible_detected_agents(...)`` is non-empty). When the
         # banner is hidden these bindings are no-ops; the footer hides
@@ -961,6 +968,24 @@ class MainScreen(Screen):
             ConfirmYesNo(f"Kill {session_name} (user={session_user})?"),
             after_confirm,
         )
+
+    def action_cycle_sort(self) -> None:
+        """Cycle dashboard ``sort_by`` through cpu / ram / last / name.
+
+        The reducer (:func:`cycle_sort`) is filtered to the currently
+        active columns, so a hidden column never becomes the sort
+        target. ``_refresh_dashboard`` re-runs the model selector with
+        the new ``DashboardUiState`` and the diff applies the reorder.
+        """
+        self._dashboard_ui = cycle_sort(self._dashboard_ui, columns=self._active_columns)
+        self._refresh_dashboard()
+        self.app.notify(f"Sort: {self._dashboard_ui.sort_by} {self._dashboard_ui.sort_dir}")
+
+    def action_toggle_sort_dir(self) -> None:
+        """Toggle dashboard sort direction between ``asc`` and ``desc``."""
+        self._dashboard_ui = toggle_sort_dir(self._dashboard_ui)
+        self._refresh_dashboard()
+        self.app.notify(f"Sort: {self._dashboard_ui.sort_by} {self._dashboard_ui.sort_dir}")
 
     def action_kill_all_own(self) -> None:
         if not self.ctx.sessions:

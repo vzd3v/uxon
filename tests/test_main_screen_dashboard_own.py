@@ -625,5 +625,122 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("user", tuple(c.id for c in app.screen._active_columns))
 
 
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class DashboardSortKeybindingTests(unittest.IsolatedAsyncioTestCase):
+    """Pilot tests for ``s`` / ``S`` keybinding wiring (Goal 4).
+
+    The pure reducers ``cycle_sort`` / ``toggle_sort_dir`` are unit
+    tested separately. Here we verify the screen action methods are
+    wired to the keybindings, mutate ``_dashboard_ui``, and trigger a
+    dashboard re-render so the new ranking is visible.
+    """
+
+    def setUp(self) -> None:
+        from uxon.tui.dashboard import model as _dashboard_model
+
+        _dashboard_model._LAST_OUTPUT = ()
+
+    def tearDown(self) -> None:
+        from uxon.tui.dashboard import model as _dashboard_model
+
+        _dashboard_model._LAST_OUTPUT = ()
+
+    async def test_cycle_sort_via_s_keybinding(self) -> None:
+        """Press ``s`` advances ``sort_by`` to the next entry in the cycle."""
+        from uxon.tui.app import UxonApp
+
+        ctx = _mk_ctx(sessions=[_own_session()])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            _seed_state_main(app, ctx)
+            app.screen._refresh_dashboard()
+            # Default sort is "cpu" (TuiContext default).
+            self.assertEqual(app.screen._dashboard_ui.sort_by, "cpu")
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertEqual(app.screen._dashboard_ui.sort_by, "ram")
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertEqual(app.screen._dashboard_ui.sort_by, "last")
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertEqual(app.screen._dashboard_ui.sort_by, "name")
+            # Round-trip back to cpu.
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertEqual(app.screen._dashboard_ui.sort_by, "cpu")
+
+    async def test_cycle_sort_changes_visible_order(self) -> None:
+        """Pressing ``s`` once re-orders rows: CPU desc → RAM desc.
+
+        Build two sessions with deliberately swapped CPU vs RAM
+        rankings, then verify the visible row at index 0 changes
+        when sort_by advances.
+        """
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import TuiSession
+
+        # Session A: high CPU, low RAM. Session B: low CPU, high RAM.
+        sess_a = TuiSession(
+            name="devagent.high-cpu",
+            short="high-cpu",
+            attached=False,
+            pid="1",
+            cpu="90.0",
+            ram="10M",
+            created="1s",
+            last_activity="1s",
+            cmd="claude",
+            path="/srv/work",
+            user="devagent",
+        )
+        sess_b = TuiSession(
+            name="devagent.high-ram",
+            short="high-ram",
+            attached=False,
+            pid="2",
+            cpu="1.0",
+            ram="900M",
+            created="1s",
+            last_activity="1s",
+            cmd="claude",
+            path="/srv/work",
+            user="devagent",
+        )
+        ctx = _mk_ctx(sessions=[sess_a, sess_b])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            _seed_state_main(app, ctx)
+            app.screen._refresh_dashboard()
+            # Default cpu desc — high-cpu first.
+            self.assertEqual(app.screen._dashboard_ui.sort_by, "cpu")
+            self.assertEqual(app.screen._dashboard_rows[0].name, "devagent.high-cpu")
+            # Press s → ram desc — high-ram first.
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertEqual(app.screen._dashboard_ui.sort_by, "ram")
+            self.assertEqual(app.screen._dashboard_rows[0].name, "devagent.high-ram")
+
+    async def test_toggle_sort_dir_via_S_keybinding(self) -> None:
+        """Press ``S`` (Shift+s) flips ``sort_dir`` from desc to asc."""
+        from uxon.tui.app import UxonApp
+
+        ctx = _mk_ctx(sessions=[_own_session()])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            _seed_state_main(app, ctx)
+            app.screen._refresh_dashboard()
+            self.assertEqual(app.screen._dashboard_ui.sort_dir, "desc")
+            await pilot.press("S")
+            await pilot.pause()
+            self.assertEqual(app.screen._dashboard_ui.sort_dir, "asc")
+            await pilot.press("S")
+            await pilot.pause()
+            self.assertEqual(app.screen._dashboard_ui.sort_dir, "desc")
+
+
 if __name__ == "__main__":
     unittest.main()

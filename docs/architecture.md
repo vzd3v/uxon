@@ -155,7 +155,8 @@ widget shell at
    removal.
 4. **`ui_state.py` — `DashboardUiState`.** Frozen dataclass
    holding `sort_by`, `sort_dir`, and any UI-only state.
-   `cycle_sort` and `toggle_sort_dir` are pure reducers.
+   `cycle_sort` and `toggle_sort_dir` are pure reducers, wired to
+   the `s` and `S` keybindings on `MainScreen`.
 
 The selector and reconciler tie those layers to the widget:
 

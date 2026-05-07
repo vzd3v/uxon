@@ -349,6 +349,10 @@ uniformly; the per-target sudo gating happens on the peer's
 `uxon kill`. Bulk `kill-all` (`D`) stays local to the host where
 it is invoked.
 
+Press `s` to cycle the sort column (CPU → RAM → LAST → NAME); `S`
+(Shift+s) toggles direction. The new ranking applies across local
+own, local other-user, and every peer's rows in one flat list.
+
 The remote collector is fail-soft: a dead or slow peer falls back
 to the on-disk snapshot
 (`~/.local/state/uxon/remote/<name>.json`) and never stalls the

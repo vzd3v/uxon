@@ -84,6 +84,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `first_data_landed` timestamps to the per-day debug log.
 - `UXON_METRICS=1` writes one JSON line per source attempt to
   `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files).
+- Press `s` in the TUI to cycle the dashboard sort across cpu / ram /
+  last / name. `S` (Shift+s) toggles sort direction. The new sort
+  applies across local own, local other-user, and every peer's rows
+  in one flat list.
 
 ### Changed
 
