@@ -4,6 +4,70 @@ Per-version upgrade notes for changes that need operator
 attention beyond a routine `pipx upgrade`. For the full release
 log see [`CHANGELOG.md`](../CHANGELOG.md).
 
+## 3.4.0
+
+### Dashboard views, search, and a hard sort contract
+
+- **Sort is no longer configurable.** Rows now appear in a
+  fixed order: locals first (own then other-user), then
+  remotes in `[[remote_hosts]]` declaration order, with
+  within-block ranking by last-attach descending then name
+  ascending. The legacy `tui.table.default_sort_by` key is
+  silently ignored on load (one `UXON_DEBUG=tui` line per
+  occurrence) — no error, no fallback. The `s` / `S` cycle
+  bindings are gone.
+- **`tui.table.default_view` (new)** — `"by_host"` (default)
+  shows a per-host tab strip and status bar; `"flat"` is a
+  single ranked list across the fleet. Toggle at runtime with
+  `v`. An active search forces `flat` until the query is
+  cleared.
+- **Search bar.** Focused by default on TUI mount; press `/`
+  from anywhere to refocus, `Esc` to clear-and-blur. Configure
+  searchable fields via `tui.search.fields` (default
+  `["name", "user"]`).
+- **`PATH` column hidden by default.** Operators who relied on
+  it must now list `"path"` in `tui.table.columns` to opt
+  back in.
+
+### Block colour and attach indicator
+
+- **Per-host block colour.** Each remote host gets a hue
+  applied to its tab, status-bar name token, and rows. Pin a
+  hue with `[[remote_hosts]] color = "..."`; otherwise the
+  TUI auto-cycles through `tui.color_palette` (default
+  `["cyan", "blue"]`). Local rows take `local_host.color`
+  (default `"green"`).
+- **Attached state shown by glyph.** `●` filled when attached,
+  `○` hollow otherwise — replacing the previous bold-green
+  name colour.
+
+### Keymap
+
+- **`Esc` no longer quits.** Quit is `q` / `й` only. `Esc`
+  is a scoped cancel: clear search, close modal, leave field.
+  Operators who muscle-memoried `Esc → quit` should rebind in
+  their head.
+- **Layout-invariant twins.** Every dashboard key has a
+  JCUKEN twin (`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `v`/`м`)
+  so the keymap survives a Russian keyboard layout without
+  touching `xkb`.
+
+### SSH multiplex
+
+- **`ssh_control_persist_seconds` (new)** — `ControlPersist`
+  lifetime in seconds. Default `300` (was a hard-coded `60`).
+  Must be `> 0`; to disable multiplexing entirely set
+  `ssh_multiplex = "off"` rather than zeroing this out.
+
+### Peer protocol
+
+- **`host_stats` envelope field (additive).** The `list` JSON
+  envelope now carries an optional `host_stats` block (CPU /
+  RAM / loadavg / uptime / kernel) used by the aggregator's
+  per-host status bar. The wire schema version stays `"1"` —
+  3.3.0 peers continue to aggregate cleanly, the field is
+  silently absent in their output.
+
 ## 3.3.0
 
 ### Audit channel — new sink

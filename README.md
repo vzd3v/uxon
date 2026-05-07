@@ -109,12 +109,16 @@ Top-level pointers:
 - **Open existing project** — pick a directory under
   `new_project_root` and launch.
 
-Below that: a single sortable session dashboard mounting your
-own sessions, other-user sessions visible via `sudo` (when the
+Below that: a unified session dashboard mounting your own
+sessions, other-user sessions visible via `sudo` (when the
 superuser block is active), and one row per session on each
-configured `[[remote_hosts]]` peer. Per-row data: agent, working
-dir, live CPU / RAM, attached marker, creation time, last
-activity time. `Enter` attaches; `d` kills with confirmation.
+configured `[[remote_hosts]]` peer. Two view modes — `by_host`
+(default; per-host tabs and a status bar) and `flat` (single
+ranked list); toggle with `v`. A search bar at the top filters
+across all rows; `/` refocuses it. Per-row data: agent, working
+dir, live CPU / RAM, attached glyph (`●`/`○`), creation time,
+last activity time. `Enter` attaches; `d` kills with
+confirmation.
 
 Every launch asks whether to start in normal mode or with
 `--dangerously-skip-permissions` ("yolo") — the TUI does not

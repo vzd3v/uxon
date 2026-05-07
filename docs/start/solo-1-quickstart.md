@@ -116,8 +116,9 @@ In the TUI:
 - `1`–`9` to jump to an item by number.
 - `d` kills the highlighted session (with `kill` confirmation).
 - `D` kills *all your sessions* (with `kill-all` confirmation).
-- `s` cycles sort (cpu → ram → last → name); `S` toggles direction.
-- `q` / `Esc` quits.
+- `v` toggles between `by_host` and `flat` view (multi-host only).
+- `/` focuses the search bar; `Esc` clears + blurs it.
+- `q` quits. `Esc` is a scoped cancel and never quits.
 
 When the launched session exits — or you `Ctrl-b d` to detach —
 the TUI returns with a refreshed list. The same binary you

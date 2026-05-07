@@ -13,11 +13,20 @@ the visible subset.
 | `Enter` | Activate (launch / attach) |
 | `d` | Kill highlighted session (with confirmation) |
 | `D` (Shift+d) | Kill all *own* sessions (`kill-all` to confirm) |
-| `s` | Cycle dashboard sort column (cpu → ram → last → name) |
-| `S` (Shift+s) | Toggle sort direction |
+| `v` | Toggle dashboard view (`by_host` ↔ `flat`) |
+| `[` / `]` | Cycle host tabs (in `by_host` view) |
+| `/` | Focus the search bar from anywhere |
 | `r` | Refresh |
-| `q` / `Esc` | Quit |
+| `q` | Quit |
+| `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
 | `F1` | Help (hidden) |
+
+Sort is a fixed contract (locals → cfg-order remotes →
+within-block by recency); there are no sort bindings.
+
+JCUKEN twins: every dashboard key has a Russian-layout twin
+(`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `v`/`м`) so the keymap
+survives a Cyrillic layout without `xkb` tweaks.
 
 When the agent-detection banner is showing:
 
@@ -49,7 +58,7 @@ When the agent-detection banner is showing:
 |---|---|
 | `Enter` | Edit selected key |
 | `x` | Reset selected key to default |
-| `Esc` / `q` | Back to main screen |
+| `q` | Back to main screen (`Esc` cancels in-flight edits) |
 
 The edit modal accepts `Esc` to cancel and `↑` / `↓` to focus
 between input and OK button.

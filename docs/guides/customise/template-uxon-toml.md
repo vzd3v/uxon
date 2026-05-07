@@ -53,8 +53,8 @@ this project tree.
 ```toml
 # .uxon.toml in a multi-session worktree project
 [tui.table]
-columns = ["name", "agent", "path", "cpu", "ram", "last"]
-default_sort_by = "path"
+columns      = ["name", "agent", "path", "cpu", "ram", "last"]
+default_view = "flat"
 ```
 
 The TUI re-reads `.uxon.toml` when navigating into the project

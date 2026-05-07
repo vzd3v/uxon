@@ -154,9 +154,11 @@ widget shell at
    are silently dropped — older operator configs survive a column
    removal.
 4. **`ui_state.py` — `DashboardUiState`.** Frozen dataclass
-   holding `sort_by`, `sort_dir`, and any UI-only state.
-   `cycle_sort` and `toggle_sort_dir` are pure reducers, wired to
-   the `s` and `S` keybindings on `MainScreen`.
+   holding `view_mode` (`"by_host" | "flat"`) and `filter_text`.
+   `set_view_mode` and `set_filter` are pure reducers, wired to
+   `v` and the search bar respectively. Sort is **not** UI state
+   — it is a fixed contract owned by the model selector
+   (locals → cfg-order remotes → within-block by recency).
 
 The selector and reconciler tie those layers to the widget:
 
