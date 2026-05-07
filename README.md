@@ -133,20 +133,31 @@ Requires **Python 3.11+**, `tmux`, and Linux. Dependencies
 (`textual`, `tomlkit`) come in automatically.
 
 ```bash
-uv tool install uxon              # per-user (recommended)
-pipx install uxon                 # equivalent
-sudo pipx install --global uxon   # host-wide (pipx 1.5+)
+# Team / shared host (recommended): one root-owned binary in
+# /usr/local/bin/uxon. Operator owns the version and the install
+# path; launch users can emit audit events but cannot edit the
+# binary or the trail.
+sudo pipx install --global uxon
+
+# Solo / single-owner: each OS user manages their own copy.
+uv tool install uxon              # or:  pipx install uxon
+
 uxon                              # launch the TUI; it self-diagnoses
 ```
 
-The host-wide path plus passwordless `sudo` to launch users plus a
-`session_users` list unlocks the TUI's cross-user dashboard
-(see [The TUI](#the-tui) below). For the bundled installer
-(Ansible / Puppet rollout), PEP 668 caveats, the bootstrap
-config snippet, and unreleased-from-`main` builds, see
-[`docs/getting-started.md`](docs/getting-started.md). For
-multi-host rollout, JSON-rendered configs, and pinned refs, see
-[`docs/deployment.md`](docs/deployment.md). For the **client
+The host-wide path is what makes the audit channel tamper-evident
+(`uxon` and the journald / syslog sinks all root-owned), and it is
+the prerequisite for the TUI's cross-user dashboard once you add
+passwordless `sudo` to launch users plus a `session_users` list
+(see [The TUI](#the-tui) below). The per-user path suits a single
+owner who wants their own version pin and easy `uninstall` — fine
+for solo, not the recommended posture on a shared host.
+
+For the bundled installer (Ansible / Puppet rollout), PEP 668
+caveats, the bootstrap config snippet, and unreleased-from-`main`
+builds, see [`docs/getting-started.md`](docs/getting-started.md).
+For multi-host rollout, JSON-rendered configs, and pinned refs,
+see [`docs/deployment.md`](docs/deployment.md). For the **client
 side** (laptop, phone, tablet) connecting to the host, see
 [`docs/clients.md`](docs/clients.md).
 

@@ -12,21 +12,60 @@ install path below.
 
 Two install flavours, picked by who owns the binary on the host:
 
+- **Host-wide install (recommended on shared / team hosts)** — one
+  root-owned `uxon` in `/usr/local/bin/`. Operator owns the
+  version, the update path, and the install location; launch users
+  can append audit events but cannot edit the binary or the trail.
+  Prerequisite for the TUI's cross-user dashboard (combined with
+  passwordless `sudo` to launch users plus a `session_users` list).
 - **Per-user install** — each OS user manages their own copy.
   Independently versioned, no `sudo` needed, easy to uninstall.
-  The common case for solo developers and small teams.
-- **Host-wide install** — one shared `uxon` in `/usr/local/bin/`.
-  Single version, single update path. Combined with passwordless
-  `sudo` to launch users plus a `session_users` list, gives the
-  operator the cross-user dashboard described in
-  [README §The TUI](../README.md#the-tui).
+  Suits a single-owner host where the developer is also the
+  operator; on a multi-user box it weakens audit integrity (a user
+  who can edit their own copy can change what it logs).
 
-## Per-user install (recommended)
-
-Each OS user runs one of these in their own account:
+## Host-wide install (recommended for shared / team hosts)
 
 ```bash
-# uv tool — recommended for isolated CLI installs.
+# Simple: pipx as a system installer (pipx 1.5+).
+sudo pipx install --global uxon
+# Updates: sudo pipx upgrade --global uxon
+```
+
+```bash
+# Explicit: bundled installer. Useful for fleet rollout (Ansible /
+# Puppet) and when ops conventions pin paths like /opt/uxon/venv.
+git clone https://github.com/vzd3v/uxon.git
+cd uxon
+sudo python3 install/install_uxon.py \
+  --repo-dir "$(pwd)" \
+  --install-path /usr/local/bin/uxon
+# (uses /opt/uxon/venv by default; override with --venv-dir)
+# Updates: re-run with --reinstall
+```
+
+Both isolate `uxon`'s Python deps in a dedicated venv and put the
+console script on `PATH` via a `/usr/local/bin/uxon` shim. The
+package files end up root-owned, which is what makes the audit
+trail tamper-evident — `uxon` does not try to defend at runtime
+against a launch user running their own copy, so the host-wide,
+root-owned install is what enforces the property.
+
+**Don't** use `sudo pip install uxon` — it dumps `textual` /
+`tomlkit` / etc. into the system Python `site-packages` and
+conflicts with the distro's package manager (this is what PEP 668
+protects against).
+
+For multi-host rollout, JSON-rendered configs, and pinned refs,
+see [`docs/deployment.md`](deployment.md).
+
+## Per-user install
+
+For solo / single-owner hosts where the developer is also the
+operator. Each OS user runs one of these in their own account:
+
+```bash
+# uv tool — fast, isolated CLI install.
 uv tool install uxon
 
 # pipx — equivalent. Same console-script entrypoint.
@@ -63,37 +102,6 @@ PEP 668 doesn't apply.
 uv tool install git+https://github.com/vzd3v/uxon.git
 # or:  pipx install git+https://github.com/vzd3v/uxon.git
 ```
-
-## Host-wide install
-
-```bash
-# Simple: pipx as a system installer (pipx 1.5+).
-sudo pipx install --global uxon
-# Updates: sudo pipx upgrade --global uxon
-```
-
-```bash
-# Explicit: bundled installer. Useful for fleet rollout (Ansible /
-# Puppet) and when ops conventions pin paths like /opt/uxon/venv.
-git clone https://github.com/vzd3v/uxon.git
-cd uxon
-sudo python3 install/install_uxon.py \
-  --repo-dir "$(pwd)" \
-  --install-path /usr/local/bin/uxon
-# (uses /opt/uxon/venv by default; override with --venv-dir)
-# Updates: re-run with --reinstall
-```
-
-Both isolate `uxon`'s Python deps in a dedicated venv and put the
-console script on `PATH` via a `/usr/local/bin/uxon` shim.
-
-**Don't** use `sudo pip install uxon` — it dumps `textual` /
-`tomlkit` / etc. into the system Python `site-packages` and
-conflicts with the distro's package manager (this is what PEP 668
-protects against).
-
-For multi-host rollout, JSON-rendered configs, and pinned refs,
-see [`docs/deployment.md`](deployment.md).
 
 ## After install
 
