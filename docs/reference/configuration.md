@@ -37,7 +37,8 @@ The TUI's ⚙ Settings screen rewrites repo config in place via a
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback when `uxon new` finds an existing matching session. |
 | `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
 | `default_git_remote_profile` | string | `""` | Profile picked by `--git-remote default` and the TUI default. |
-| `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=60s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
+| `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=<ssh_control_persist_seconds>s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
+| `ssh_control_persist_seconds` | int | `300` | `ControlPersist` lifetime (seconds) for the multiplex master. Must be `> 0`; to disable multiplexing entirely set `ssh_multiplex = "off"` rather than zeroing this out. Ignored when `ssh_multiplex = "off"` and per-host when `command_template` is set. |
 | `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. |
 
 ## `[agents]` table
@@ -56,14 +57,51 @@ not configurable here — see [`reference/cli.md`](cli.md) under
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
-| `tui.table.columns` | array | `[]` | Dashboard columns in display order. Empty (or absent) uses the registry defaults; listing ids opts into a fixed order. Unknown ids are dropped silently (forward-compat). |
-| `tui.table.default_sort_by` | string | `"cpu"` | Initial sort column id. Unknown values fall back to `"cpu"` (logged via `UXON_DEBUG=tui`). |
+| `tui.table.columns` | array | `[]` | Dashboard columns in display order. Empty (or absent) uses the registry defaults; listing ids opts into a fixed order. Unknown ids are dropped silently (forward-compat). The `path` column is hidden by default — opt back in by listing `"path"` here. |
+| `tui.table.default_view` | `"by_host"` / `"flat"` | `"by_host"` | Initial dashboard layout. `by_host` shows the per-host tab strip and status bar; `flat` is a single ranked list across the fleet. Toggle at runtime with `v`. |
 
 Available column ids: `host`, `user`, `name`, `agent`, `cpu`,
 `ram`, `new`, `last`, `cmd`, `path`, `pid`, `wins`. The full
 contract (which ids are gated by which runtime flags, alignment,
 formatting) lives in
 [`src/uxon/tui/dashboard/columns.py`](../../src/uxon/tui/dashboard/columns.py).
+
+## Dashboard view + sort
+
+Sort is a fixed contract owned by the selector — locals first
+(own then other-user), then remotes in `[[remote_hosts]]`
+declaration order, with within-block ranking by last-attach
+descending then name ascending. There is no sort setting:
+the legacy `tui.table.default_sort_by` key is silently ignored
+on load (one `UXON_DEBUG=tui` line per occurrence) and the
+`s` / `S` cycle bindings are gone.
+
+The attach indicator is a glyph in the NAME column: `●` filled
+when the session is attached, `○` hollow otherwise. No bold
+green override.
+
+## `[tui.search]` table
+
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `tui.search.fields` | array | `["name", "user"]` | Fields the dashboard search bar matches against. Allowed values: `name`, `user`, `host`, `path`, `cmd`. Unknown entries fail loud at load. |
+
+The search bar takes focus by default on TUI mount; press `/`
+from anywhere to refocus it, `Esc` to clear-and-blur (scoped
+cancel — never quits). An active search forces the `flat`
+view; clearing the query restores the previous view mode.
+
+## `[tui]` colour palette
+
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `tui.color_palette` | array | `["cyan", "blue"]` | Hue cycle assigned to remote hosts that don't pin their own colour via `[[remote_hosts]] color`. |
+
+## `[local_host]` table
+
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `local_host.color` | string | `"green"` | Block colour applied to local rows in the dashboard (own and other-user). |
 
 ## `[audit]` table
 
@@ -90,6 +128,7 @@ One entry per peer host the local `uxon` aggregates over SSH.
 | `total_timeout` | duration | no | `15s` | Hard wall on the whole fetch (connect + remote run + parse). |
 | `extra_ssh_options` | array | no | `[]` | Extra `ssh` tokens inserted immediately before `{ssh_alias}` in the default template. Use for `ProxyJump` / `-i identity` pinning per peer. |
 | `command_template` | array | no | `[]` | Full-argv override for the fetch. Replaces the entire SSH command. Substitutes `{ssh_alias}` / `{remote_uxon}` / `{connect_timeout}` / `{ssh_control_dir}` / `{remote_command}`. When set, `extra_ssh_options` and `ssh_multiplex` are ignored — the operator owns the transport (kubectl-exec / docker-exec recipes). |
+| `color` | string | no | unset | Operator pin for the host's block colour. When unset, the TUI auto-assigns from `tui.color_palette`. Operator pins win unconditionally over the auto-cycle. |
 
 Unknown keys in a peer block are rejected at load time with a
 clear error so typos like `ssh_alaias` fail loud rather than
@@ -111,6 +150,28 @@ One entry per allowed GitHub repo-creation target.
 
 `uxon` only ever creates repos for profiles in this whitelist —
 no `<owner>` outside the array is reachable.
+
+## Dashboard key bindings (summary)
+
+The full keymap lives in
+[`reference/keybindings.md`](keybindings.md); this is the
+short list that the dashboard commits to:
+
+| Key | Action |
+|-----|--------|
+| `q` (`й`) | Quit. Only `q` quits — `Esc` never does. |
+| `r` (`к`) | Refresh now. |
+| `d` (`в`) | Kill highlighted session (typed-phrase confirm). |
+| `D` (`В`) | Kill all own sessions. |
+| `v` (`м`) | Toggle dashboard view between `by_host` and `flat`. |
+| `[` / `]` | Cycle host tabs (by_host view). `]` from the last tab returns to `All`. |
+| `/` | Focus the search bar from anywhere. |
+| `1`–`9` | Jump to row by number. |
+| `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
+
+JCUKEN aliases (`й`/`к`/`в`/`м`) bind alongside their QWERTY
+twins so the keymap survives a Russian keyboard layout without
+touching `xkb`.
 
 ## Environment variables
 
