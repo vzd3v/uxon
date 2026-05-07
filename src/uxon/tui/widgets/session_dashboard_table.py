@@ -52,8 +52,9 @@ from __future__ import annotations
 
 import inspect
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from rich.text import Text
 from textual.widgets._data_table import DataTable as _PrivateDataTable
 from textual.widgets._data_table import RowKey
 
@@ -93,6 +94,36 @@ class SessionDashboardTable(FocusReleasingDataTable):
     ) -> None:
         super().__init__(id=id)
         self._columns: tuple[ColumnSpec, ...] = columns
+        self._block_meta: dict[str, tuple[str, int]] = {}
+
+    def set_block_meta(self, meta: dict[str, tuple[str, int]]) -> None:
+        """Update the ``row_key → (block_color, row_in_block)`` map.
+
+        Called by the screen on every tick before :meth:`apply`. The
+        map's values seed the block-hue + zebra wrapping done by
+        :meth:`_wrap_cell` when dispatching ``RowAdd`` / ``CellUpdate``.
+        """
+        self._block_meta = meta
+
+    def _wrap_cell(self, row_key: str, col_id: str, value: Any) -> Any:
+        """Apply block hue + zebra dim to NAME / HOST cells.
+
+        Other columns are passed through unchanged. CPU danger styling
+        is per-cell already (set by ``format_cpu``); we never overwrite
+        it.
+        """
+        if col_id not in ("name", "host"):
+            return value
+        meta = self._block_meta.get(row_key)
+        if meta is None:
+            return value
+        block_color, row_in_block = meta
+        style = block_color
+        if row_in_block % 2 == 1:
+            style = f"{style} dim"
+        if isinstance(value, Text):
+            return Text(value.plain, style=style)
+        return Text(str(value), style=style)
 
     def on_mount(self) -> None:
         for col in self._columns:
@@ -147,14 +178,18 @@ class SessionDashboardTable(FocusReleasingDataTable):
         debug("tui-table", ms=elapsed_ms, ops=counts, rows=self.row_count)
 
     def _apply_add(self, op: RowAdd) -> None:
+        cells = tuple(
+            self._wrap_cell(op.row_key, col.id, cell)
+            for col, cell in zip(self._columns, op.cells, strict=True)
+        )
         # Append-only fast path: no anchor, or anchor is the last visible row.
         if op.before_key is None:
-            self.add_row(*op.cells, key=op.row_key)
+            self.add_row(*cells, key=op.row_key)
             return
         anchor_idx = self._row_index_of(op.before_key)
         if anchor_idx is None or anchor_idx >= self.row_count:
             # Anchor not present (perhaps already removed) — append.
-            self.add_row(*op.cells, key=op.row_key)
+            self.add_row(*cells, key=op.row_key)
             return
         # Inline insert: snapshot rows that should sit *after* the new
         # row in the final layout, drop them, append the new row, then
@@ -173,13 +208,13 @@ class SessionDashboardTable(FocusReleasingDataTable):
                 key_str = key_obj.value
             else:
                 key_str = str(key_obj)
-            cells = tuple(self.get_row(key_obj))
-            trailing.append((key_str, cells))
+            row_cells = tuple(self.get_row(key_obj))
+            trailing.append((key_str, row_cells))
         for key_str, _ in trailing:
             self.remove_row(key_str)
-        self.add_row(*op.cells, key=op.row_key)
-        for key_str, cells in trailing:
-            self.add_row(*cells, key=key_str)
+        self.add_row(*cells, key=op.row_key)
+        for key_str, row_cells in trailing:
+            self.add_row(*row_cells, key=key_str)
 
     def _apply_remove(self, op: RowRemove) -> None:
         try:
@@ -192,7 +227,8 @@ class SessionDashboardTable(FocusReleasingDataTable):
 
     def _apply_update(self, op: CellUpdate) -> None:
         try:
-            self.update_cell(op.row_key, op.col_id, op.value)
+            wrapped = self._wrap_cell(op.row_key, op.col_id, op.value)
+            self.update_cell(op.row_key, op.col_id, wrapped)
         except Exception:
             debug("tui-table", op="update_miss", key=op.row_key, col=op.col_id)
 

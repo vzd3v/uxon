@@ -14,15 +14,17 @@ they MUST stay closure-free over mutable state.
 
 from __future__ import annotations
 
-import hashlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from rich.text import Text
 
 from .row import SessionRow
+
+if TYPE_CHECKING:
+    from uxon.remote_hosts import RemoteHost
 
 
 @dataclass(frozen=True)
@@ -44,36 +46,37 @@ class ColumnSpec:
     show_when: Literal["always", "multi_host", "cross_user"] = "always"
 
 
-# Stable palette of Rich style specs the host glyph cycles through.
-# Order is deterministic. The palette is intentionally small (3
-# entries) so a typical multi-host operator sees a clean zebra rather
-# than a spread of unfamiliar colours; collisions past 3 hosts are
-# disambiguated by the HOST column itself. Red and yellow are
-# deliberately excluded — those are reserved for danger / warning
-# semantics elsewhere in the TUI (CPU thresholds, error toasts) and
-# must not appear as a benign per-host marker.
-_HOST_PALETTE: tuple[str, ...] = (
-    "cyan",
-    "blue",
-    "magenta",
-)
+def assign_block_colors(
+    remote_hosts: tuple[RemoteHost, ...],
+    *,
+    local_color: str,
+    palette: tuple[str, ...],
+) -> dict[str | None, str]:
+    """Map ``host_name`` (None == locals) → Rich style spec.
 
-# Local rows render with this style on the NAME glyph and HOST cell.
-# Distinct from the remote palette so operators can tell at a glance
-# which sessions live on the local host.
-_LOCAL_STYLE = "green"
-
-
-def host_colour(host_name: str) -> str:
-    """Return a deterministic Rich style spec for ``host_name``.
-
-    Stable across calls and across processes — uses md5 of the host
-    name modulo the palette size. With a 3-entry palette collisions
-    are common past 3 hosts; the HOST column carries the resolving
-    label.
+    Operator pins (``RemoteHost.color``) win unconditionally — no
+    palette validation, no adjacency check against pinned colours.
+    Auto-cycle (remotes with ``color is None``) walks ``palette``
+    with an adjacency-skip against the previous block's colour
+    (whatever its source). Empty ``palette`` falls through to a
+    single ``"dim"`` style.
     """
-    digest = hashlib.md5(host_name.encode("utf-8")).hexdigest()
-    return _HOST_PALETTE[int(digest, 16) % len(_HOST_PALETTE)]
+    out: dict[str | None, str] = {None: local_color}
+    prev = local_color
+    cycle_idx = 0
+    fallback_palette = palette or ("dim",)
+    for host in remote_hosts:
+        if host.color is not None:
+            color = host.color
+        else:
+            color = fallback_palette[cycle_idx % len(fallback_palette)]
+            cycle_idx += 1
+            if color == prev and len(fallback_palette) > 1:
+                color = fallback_palette[cycle_idx % len(fallback_palette)]
+                cycle_idx += 1
+        out[host.name] = color
+        prev = color
+    return out
 
 
 def format_cpu(row: SessionRow) -> Text:
@@ -130,9 +133,7 @@ def format_relative_time(epoch: float | None, now: float | None = None) -> str:
 
 
 def _format_host(row: SessionRow) -> Text:
-    if row.host is None:
-        return Text("local", style=_LOCAL_STYLE)
-    return Text(row.host, style=host_colour(row.host))
+    return Text(row.host or "local")
 
 
 def _format_user(row: SessionRow) -> Text:
@@ -145,19 +146,15 @@ def _format_user(row: SessionRow) -> Text:
 
 
 def _format_name(row: SessionRow) -> Text:
-    """Render the NAME cell with a left-edge host-coloured glyph.
+    """Emit ``●``/``○`` attach glyph + plain name.
 
-    The glyph survives sort even when the HOST column is hidden, so
-    operators retain per-row host attribution in single-list view.
+    Block hue and zebra dim are layered by the widget at render
+    time; this formatter stays pure data so the reconciler can
+    diff cells without knowing positional metadata.
     """
-    glyph_style = host_colour(row.host) if row.host is not None else _LOCAL_STYLE
-    text = Text("● ", style=glyph_style)
-    display = row.short or row.name or "-"
-    if row.attached:
-        text.append(display, style="bold green")
-        text.append(" ●", style="green")
-    else:
-        text.append(display)
+    glyph = "● " if row.attached else "○ "
+    text = Text(glyph)
+    text.append(row.short or row.name or "-")
     return text
 
 
@@ -271,7 +268,13 @@ REGISTRY: tuple[ColumnSpec, ...] = (
     ColumnSpec(id="new", label="NEW", format=_format_new, sort_key=_sort_new, align="right"),
     ColumnSpec(id="last", label="LAST", format=_format_last, sort_key=_sort_last, align="right"),
     ColumnSpec(id="cmd", label="CMD", format=_format_cmd, sort_key=_sort_cmd),
-    ColumnSpec(id="path", label="PATH", format=_format_path, sort_key=_sort_path),
+    ColumnSpec(
+        id="path",
+        label="PATH",
+        format=_format_path,
+        sort_key=_sort_path,
+        default_visible=False,
+    ),
     ColumnSpec(
         id="pid",
         label="PID",

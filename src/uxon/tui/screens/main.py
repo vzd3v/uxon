@@ -404,10 +404,38 @@ class MainScreen(Screen):
             return
         prev_cursor_key = self._cursor_row_key(widget)
         plan = diff(self._dashboard_rows, all_rows, self._active_columns)
+        widget.set_block_meta(self._build_block_meta(all_rows))
         widget.apply(plan)
         self._dashboard_rows = all_rows
         widget.pin_cursor_to(prev_cursor_key)
         self._refresh_dashboard_note(all_rows)
+
+    def _build_block_meta(
+        self,
+        rows: tuple[SessionRow, ...],
+    ) -> dict[str, tuple[str, int]]:
+        """Map each row's reconciler key to (block_color, row_in_block).
+
+        ``block_color`` comes from :func:`assign_block_colors` on the
+        cfg's remote hosts; ``row_in_block`` is the row's index inside
+        its host block (0, 1, 2, ...) for zebra parity.
+        """
+        # Local import keeps the module import graph tidy.
+        from ..dashboard.columns import assign_block_colors
+
+        palette = tuple(getattr(self.ctx, "tui_color_palette", ("cyan", "blue")))
+        local_color = getattr(self.ctx, "local_host_color", "green")
+        remote_hosts = tuple(self.ctx.remote_hosts)
+        colors = assign_block_colors(remote_hosts, local_color=local_color, palette=palette)
+        out: dict[str, tuple[str, int]] = {}
+        counters: dict[str | None, int] = {}
+        for row in rows:
+            host_key = row.host  # None for locals
+            idx = counters.get(host_key, 0)
+            counters[host_key] = idx + 1
+            key = f"{row.host or 'local'}/{row.user}/{row.name}"
+            out[key] = (colors.get(host_key, local_color), idx)
+        return out
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 

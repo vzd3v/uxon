@@ -41,10 +41,10 @@ class DefaultsPathTests(_LayoutTestBase):
         flags = LayoutFlags(multi_host=False, cross_user=False)
         cols = build_active_columns(cfg_columns=None, flags=flags)
         # Defaults: every default_visible column, in registry order.
-        # host/user/pid/wins are default_visible=False so excluded.
+        # host/user/path/pid/wins are default_visible=False so excluded.
         self.assertEqual(
             _ids(cols),
-            ["name", "agent", "cpu", "ram", "new", "last", "cmd", "path"],
+            ["name", "agent", "cpu", "ram", "new", "last", "cmd"],
         )
 
     def test_no_cfg_multi_host_pulls_in_host(self) -> None:
