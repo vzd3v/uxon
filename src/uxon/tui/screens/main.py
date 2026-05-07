@@ -111,7 +111,8 @@ class MainScreen(Screen):
         Binding("v", "toggle_view", "View", show=True),
         Binding("[", "prev_tab", "Prev host", show=True),
         Binding("]", "next_tab", "Next host", show=True),
-        Binding("/", "focus_search", "Search", show=True),
+        Binding("s", "focus_search", "Search", show=True),
+        Binding("/", "focus_search", "", show=False),
         # Detected-agents banner: only does something when the banner is
         # visible (``visible_detected_agents(...)`` is non-empty). When the
         # banner is hidden these bindings are no-ops; the footer hides
@@ -785,10 +786,15 @@ class MainScreen(Screen):
         self.app.notify(f"View: {new_mode.replace('_', ' ')}")
 
     def action_focus_search(self) -> None:
+        # Remember which widget summoned the bar so Esc can return
+        # focus to it instead of always falling back to action-cwd.
+        focused = self.focused
+        return_id = focused.id if focused is not None else None
         try:
-            self.query_one("#search-bar", SearchBar).input.focus()
+            bar = self.query_one("#search-bar", SearchBar)
         except Exception:
-            pass
+            return
+        bar.show(return_focus_id=return_id)
 
     def on_filter_changed(self, event: FilterChanged) -> None:
         self._dashboard_ui = set_filter(self._dashboard_ui, event.text)

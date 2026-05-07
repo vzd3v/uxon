@@ -23,23 +23,51 @@ class _Harness(App):
 async def test_search_bar_emits_filter_changed_on_typing():
     app = _Harness()
     async with app.run_test() as pilot:
+        app.bar.show()
+        await pilot.pause()
         app.bar.input.value = "kris"
         await pilot.pause()
         assert app.events[-1] == "kris"
 
 
 @pytest.mark.asyncio
-async def test_search_bar_esc_clears_then_blurs():
+async def test_search_bar_starts_hidden_with_input_unfocusable():
+    """Default state: ``-shown`` class absent and Input.can_focus=False
+    so Tab/Shift+Tab skip the invisible bar."""
     app = _Harness()
     async with app.run_test() as pilot:
-        app.bar.input.focus()
+        await pilot.pause()
+        assert not app.bar.has_class("-shown")
+        assert app.bar.input.can_focus is False
+
+
+@pytest.mark.asyncio
+async def test_search_bar_show_reveals_and_focuses_input():
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.bar.show()
+        await pilot.pause()
+        assert app.bar.has_class("-shown")
+        assert app.bar.input.can_focus is True
+        assert app.focused is app.bar.input
+
+
+@pytest.mark.asyncio
+async def test_search_bar_esc_clears_then_hides():
+    app = _Harness()
+    async with app.run_test() as pilot:
+        app.bar.show()
         await pilot.pause()
         app.bar.input.value = "abc"
         await pilot.pause()
-        await pilot.press("escape")  # clears
+        await pilot.press("escape")  # clears text, bar stays open
         await pilot.pause()
         assert app.bar.input.value == ""
-        assert app.focused is app.bar.input  # still focused
-        await pilot.press("escape")  # blurs
+        assert app.bar.has_class("-shown")
+        assert app.focused is app.bar.input
+        await pilot.press("escape")  # hides bar, blurs input
         await pilot.pause()
+        assert not app.bar.has_class("-shown")
+        assert app.bar.input.can_focus is False
         assert app.focused is not app.bar.input
