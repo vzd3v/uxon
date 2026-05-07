@@ -337,6 +337,23 @@ class MainScreen(Screen):
 
     # ── Dashboard (commit 10 bridge: own-only) ───────────────────────
 
+    def _block_colors(self) -> dict[str | None, str]:
+        """Map ``host_name → block colour``, shared by tab strip + table glyphs.
+
+        Single source for the palette/local-host pair so the strip
+        and the dashboard rows can never disagree on hue. Local
+        import keeps the module graph tidy.
+        """
+        from ..dashboard.columns import assign_block_colors
+
+        palette = tuple(getattr(self.ctx, "tui_color_palette", ("cyan", "blue")))
+        local_color = getattr(self.ctx, "local_host_color", "green")
+        return assign_block_colors(
+            tuple(self.ctx.remote_hosts),
+            local_color=local_color,
+            palette=palette,
+        )
+
     def _build_dashboard_cfg_view(self) -> SimpleNamespace:
         """Minimal cfg view consumed by :func:`select_dashboard_model`.
 
@@ -437,7 +454,7 @@ class MainScreen(Screen):
             except Exception:
                 active_idx = 0
             else:
-                tab_strip.set_buckets(list(buckets))
+                tab_strip.set_buckets(list(buckets), colors=self._block_colors())
                 active_idx = tab_strip.active_index
             if buckets:
                 active_bucket = (
@@ -495,13 +512,8 @@ class MainScreen(Screen):
         cfg's remote hosts; ``row_in_block`` is the row's index inside
         its host block (0, 1, 2, ...) for zebra parity.
         """
-        # Local import keeps the module import graph tidy.
-        from ..dashboard.columns import assign_block_colors
-
-        palette = tuple(getattr(self.ctx, "tui_color_palette", ("cyan", "blue")))
-        local_color = getattr(self.ctx, "local_host_color", "green")
-        remote_hosts = tuple(self.ctx.remote_hosts)
-        colors = assign_block_colors(remote_hosts, local_color=local_color, palette=palette)
+        colors = self._block_colors()
+        local_color = colors.get(None, "green")
         out: dict[str, tuple[str, int]] = {}
         counters: dict[str | None, int] = {}
         for row in rows:
