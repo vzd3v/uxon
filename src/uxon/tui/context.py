@@ -106,6 +106,12 @@ class TuiSession:
     stem: str = ""  # bare project stem, e.g. "myproject"
     agent: str = "claude"  # agent id, e.g. "claude", "codex", "cursor"
     legacy: bool = False  # True when parsed from old cc-<stem> naming
+    # Raw ISO 8601 timestamps preserved alongside the pre-formatted
+    # display strings so dashboard sort by ``new`` / ``last`` ranks
+    # local rows correctly. Empty string mirrors the wire schema
+    # convention for "missing".
+    created_iso: str = ""
+    last_attached_iso: str = ""
 
 
 @dataclass(frozen=True)

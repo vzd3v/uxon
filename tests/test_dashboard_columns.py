@@ -360,10 +360,14 @@ class SortKeyTests(unittest.TestCase):
         self.assertEqual([r.name for r in ordered], ["b", "c", "a"])
 
     def test_new_and_last_sort_with_mixed_none_and_float(self) -> None:
-        # Two locals (created_epoch=None) + two remotes (epoch set):
-        # sort by ``_sort_new`` must be deterministic and not crash.
-        # ``float("-inf")`` fallback puts None-epoch rows first asc,
-        # last desc — pinning the ordering so a future tweak surfaces.
+        # Defensive: a row may still have ``created_epoch=None`` when
+        # the source carries no ISO timestamp at all (older test
+        # fixtures, partial wire records, or a local TuiSession built
+        # without ``created_iso``). Sort by ``_sort_new`` must be
+        # deterministic and not crash. ``float("-inf")`` fallback puts
+        # None-epoch rows first asc, last desc — pinning the ordering
+        # so a future tweak surfaces. Production local rows now carry
+        # real epochs (Goal 4); this test exercises only the fallback.
         rows = [
             _row(name="local1", host=None, created_epoch=None),
             _row(name="local2", host=None, created_epoch=None),

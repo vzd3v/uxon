@@ -4062,6 +4062,8 @@ def _to_tui_session(
         stem=stem,
         agent=agent,
         legacy=legacy,
+        created_iso=s.created,
+        last_attached_iso=s.last_attached,
     )
 
 

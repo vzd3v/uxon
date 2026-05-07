@@ -95,10 +95,66 @@ class FromTuiSessionTests(unittest.TestCase):
         self.assertEqual(from_tui_session(_make_tui_session(ram="")).rss_kib, 0)
         self.assertEqual(from_tui_session(_make_tui_session(ram="garbage")).rss_kib, 0)
 
-    def test_local_epochs_are_none(self) -> None:
+    def test_local_epochs_default_none_when_iso_missing(self) -> None:
+        # Default fixture omits the ISO fields → empty string default →
+        # epoch falls back to None. Defensive case: production paths
+        # always supply ISO, but old fixtures and out-of-tree callers
+        # may not.
         row = from_tui_session(_make_tui_session())
         self.assertIsNone(row.created_epoch)
         self.assertIsNone(row.last_attached_epoch)
+
+    def test_local_epochs_parsed_from_iso(self) -> None:
+        # ISO 8601 UTC string → epoch seconds. Pinned values let later
+        # tweaks to the parser surface as test diffs rather than silent
+        # ranking changes.
+        s = _make_tui_session(
+            created_iso="2026-05-01T12:00:00+00:00",
+            last_attached_iso="2026-05-01T13:00:00+00:00",
+        )
+        row = from_tui_session(s)
+        # 2026-05-01T12:00:00+00:00 = 1777636800.0 epoch seconds.
+        self.assertEqual(row.created_epoch, 1777636800.0)
+        self.assertEqual(row.last_attached_epoch, 1777636800.0 + 3600.0)
+
+    def test_local_empty_iso_string_collapses_to_none(self) -> None:
+        s = _make_tui_session(created_iso="", last_attached_iso="")
+        row = from_tui_session(s)
+        self.assertIsNone(row.created_epoch)
+        self.assertIsNone(row.last_attached_epoch)
+
+    def test_local_row_outranks_older_remote_when_sorting_by_last(self) -> None:
+        # Goal 4 regression test: a local session with a more-recent
+        # ``last_attached_iso`` must rank ABOVE an older remote when
+        # sorting by ``last`` desc. Before this fix local rows carried
+        # ``last_attached_epoch=None`` and were pushed to the bottom
+        # under the ``float("-inf")`` sort fallback.
+        from uxon.tui.dashboard.columns import REGISTRY  # noqa: PLC0415
+
+        local = from_tui_session(
+            _make_tui_session(
+                name="local-fresh",
+                last_attached_iso="2026-05-02T10:00:00+00:00",
+            )
+        )
+        remote_dict = {
+            "user": "alice",
+            "name": "remote-stale",
+            "short_id": "stale",
+            "agent": "claude",
+            "attached": False,
+            "created": "2026-05-01T08:00:00+00:00",
+            "last_attached": "2026-05-01T08:00:00+00:00",
+            "active_pid": 9999,
+            "cpu_pct": 0.0,
+            "rss_kib": 0,
+            "active_cmd": "claude",
+            "active_path": "/tmp",
+        }
+        remote = from_wire_record("peer-a", remote_dict)
+        last_spec = next(c for c in REGISTRY if c.id == "last")
+        ordered = sorted([remote, local], key=last_spec.sort_key, reverse=True)
+        self.assertEqual([r.name for r in ordered], ["local-fresh", "remote-stale"])
 
     def test_legacy_flag_preserved(self) -> None:
         self.assertFalse(from_tui_session(_make_tui_session(legacy=False)).legacy)

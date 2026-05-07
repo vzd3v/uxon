@@ -125,10 +125,11 @@ def from_tui_session(s: TuiSession) -> SessionRow:
 
     ``host`` is always ``None`` — this is the local-row marker that
     later action routing branches on. ``created_epoch`` /
-    ``last_attached_epoch`` are ``None`` because ``TuiSession`` carries
-    pre-formatted display strings, not the original ISO source. A
-    follow-up may thread the raw timestamps through
-    ``cli._build_tui_context`` to give local rows their epochs back.
+    ``last_attached_epoch`` are parsed from the raw ISO strings the
+    CLI threads through alongside the pre-formatted display strings,
+    so local rows rank correctly when the dashboard sorts by ``new``
+    or ``last``. Empty ISO strings (the wire-schema "missing"
+    sentinel) collapse to ``None``.
     """
     return SessionRow(
         host=None,
@@ -141,8 +142,10 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         pid=_parse_pid(s.pid),
         cpu_pct=_parse_cpu(s.cpu),
         rss_kib=_parse_ram_to_kib(s.ram),
-        created_epoch=None,
-        last_attached_epoch=None,
+        created_epoch=_parse_iso_to_epoch(s.created_iso) if s.created_iso else None,
+        last_attached_epoch=(
+            _parse_iso_to_epoch(s.last_attached_iso) if s.last_attached_iso else None
+        ),
         cmd=s.cmd,
         path=s.path,
     )

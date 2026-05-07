@@ -89,6 +89,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   applies across local own, local other-user, and every peer's rows
   in one flat list.
 
+### Fixed
+
+- Local sessions now rank correctly when sorting the dashboard by
+  `last` / `new` columns. Previously they sank to the bottom
+  regardless of age because the TUI carried only pre-formatted
+  relative time strings.
+
 ### Changed
 
 - Local and remote sessions now render in a single sortable session

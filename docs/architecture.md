@@ -137,7 +137,7 @@ widget shell at
 1. **`row.py` — `SessionRow`.** A single frozen dataclass is the
    unified row type. Two adapters land the legacy shapes onto it:
    `from_tui_session(...)` for local rows (own + sudo), and
-   `from_remote_session_record(...)` for one row of a peer
+   `from_wire_record(host, rec)` for one row of a peer
    `RemoteSnapshot`. Equality is value-based — two ticks producing
    identical rows compare equal under `is`-stable identity once
    they go through the model selector.
