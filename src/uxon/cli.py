@@ -516,7 +516,7 @@ def load_config(cwd: str) -> Config:
     # ── [tui.table] dashboard column layout ──────────────────────────
     # Read defensively. Both ``tui`` and ``tui.table`` may be absent
     # from the TOML; that maps to "use REGISTRY defaults" (signalled
-    # by ``tui_table_columns is None``) and ``default_sort_by="cpu"``.
+    # by ``tui_table_columns is None``).
     tui_tbl = merged.get("tui", {})
     if not isinstance(tui_tbl, dict):
         fail("'tui' must be a TOML table")

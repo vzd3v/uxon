@@ -114,8 +114,9 @@ def select_dashboard_model(
 
     Returns ``tuple[SessionRow, ...]`` containing every local
     (``host=None``) and remote (``host=<peer>``) row, filtered by
-    ``ui.filter_text`` and globally sorted by ``ui.sort_by`` /
-    ``ui.sort_dir``.
+    ``ui.filter_text`` and ordered by the hard sort contract:
+    locals → cfg-order remotes → within each block by recency
+    (``-last_attached_epoch``, then name).
 
     ``cross_user`` is *not* part of the return type — the caller
     computes it from the returned rows when assembling

@@ -14,7 +14,8 @@ Layout:
     │ ActionRow kill-all-global                        │
     └ Footer ──────────────────────────────────────────┘
 
-T7a ships layout + core bindings (q/escape/f1/d/D/r). Digit-jump
+T7a shipped layout + core bindings (q/f1/d/D/r); 3.4 dropped
+``escape → quit`` and added layout-invariant JCUKEN twins. Digit-jump
 arrives in T7b; activation wiring in T7c. The screen holds a
 reference to the current :class:`TuiContext` and refreshes it on ``r``.
 """
@@ -1043,8 +1044,9 @@ class MainScreen(Screen):
             if idx < local_end:
                 # Single dashboard widget for own + other-user rows.
                 # The visual cursor row offset is ``idx - own_start``;
-                # this is best-effort focus (the dashboard sorts by
-                # ``ui.sort_by`` so the visual order may not match
+                # this is best-effort focus (the dashboard applies the
+                # hard sort contract and a substring filter, so the
+                # visual order may not match
                 # ``ctx.sessions + ctx.other_sessions``). Out-of-range
                 # cursor moves are silently no-op.
                 t = self.query_one("#sessions-dashboard", SessionDashboardTable)
