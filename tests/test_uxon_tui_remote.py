@@ -461,64 +461,6 @@ class RemoteFocusKeyTests(unittest.TestCase):
         self.assertFalse(screen._focus_key("remote:vz-prod1/alice/uxon-foo@claude"))
 
 
-class RemoteRowActivationTests(unittest.TestCase):
-    """``_run_intent`` handles ``attach-remote`` by calling
-    ``ctx.on_remote_attach`` and dispatching the resulting LaunchRequest.
-    """
-
-    def test_run_intent_attach_remote_calls_callback(self) -> None:
-        from uxon.tui.context import LaunchRequest, TuiContext
-        from uxon.tui.screens.main import MainScreen
-        from uxon.tui.state import MainIntent
-
-        attach_calls: list[tuple[str, str, str]] = []
-
-        def fake_attach(host: str, user: str, name: str) -> LaunchRequest:
-            attach_calls.append((host, user, name))
-            return LaunchRequest(cmd=("true",), label="t")
-
-        captured: list[LaunchRequest] = []
-
-        class _FakeApp:
-            def notify(self, *_a: object, **_kw: object) -> None:
-                pass
-
-            def request_launch(self, req: LaunchRequest) -> None:
-                captured.append(req)
-
-        ctx = TuiContext(
-            sessions=[],
-            total_cpu="",
-            total_ram="",
-            version="",
-            cwd="",
-            cwd_short="",
-            new_project_root="",
-            existing_projects=[],
-            on_remote_attach=fake_attach,
-        )
-
-        fake_app = _FakeApp()
-
-        class _StubScreen(MainScreen):  # type: ignore[misc]
-            app = fake_app  # shadows MessagePump descriptor
-
-        screen = _StubScreen.__new__(_StubScreen)
-        screen.ctx = ctx
-
-        intent = MainIntent(
-            kind="attach-remote",
-            host="vz-prod1",
-            user="alice",
-            session_name="demo@claude",
-        )
-        screen._run_intent(intent)
-
-        self.assertEqual(attach_calls, [("vz-prod1", "alice", "demo@claude")])
-        self.assertEqual(len(captured), 1)
-        self.assertEqual(captured[0].label, "t")
-
-
 class StateSelectorTests(unittest.TestCase):
     """The dashboard model selector preserves identity-stable
     memoisation: when state.remote slots are unchanged across calls,

@@ -588,46 +588,6 @@ class MainScreenIntentStateTests(unittest.TestCase):
         )
 
 
-class RemoteSessionIntentTests(unittest.TestCase):
-    def test_basic(self) -> None:
-        from uxon.tui.state import MainIntent, remote_session_intent
-
-        intent = remote_session_intent(
-            "vz-prod1",
-            {"user": "alice", "name": "demo@claude", "short_id": "abc"},
-            current_user="vasily",
-        )
-        self.assertEqual(
-            intent,
-            MainIntent(
-                kind="attach-remote",
-                host="vz-prod1",
-                user="alice",
-                session_name="demo@claude",
-            ),
-        )
-
-    def test_strips_own_only_suffix(self) -> None:
-        from uxon.tui.state import remote_session_intent
-
-        intent = remote_session_intent(
-            "vz-prod1 (own only)",
-            {"user": "alice", "name": "x"},
-            current_user="vasily",
-        )
-        self.assertEqual(intent.host, "vz-prod1")
-
-    def test_falls_back_to_current_user_when_record_missing_user(self) -> None:
-        from uxon.tui.state import remote_session_intent
-
-        intent = remote_session_intent(
-            "vz-prod1",
-            {"name": "x"},
-            current_user="vasily",
-        )
-        self.assertEqual(intent.user, "vasily")
-
-
 class ModalStateTests(unittest.TestCase):
     def test_confirm_phrase_matches_after_strip_only(self) -> None:
         self.assertTrue(confirm_phrase_matches(" kill-all ", "kill-all"))

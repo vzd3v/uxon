@@ -468,8 +468,6 @@ class MainScreen(Screen):
             self._kill_all_global()
         elif intent.kind == "attach":
             self._attach_session(intent.user, intent.session_name)
-        elif intent.kind == "attach-remote":
-            self._attach_remote_session(intent.host, intent.user, intent.session_name)
         elif intent.kind == "focus-only":
             self.app.notify("Press Enter to open Settings / Kill-ALL (digit moves cursor only)")
 
@@ -478,24 +476,6 @@ class MainScreen(Screen):
             req = self.ctx.on_attach(user, session_name)
         except CallbackError as exc:
             self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
-            return
-        self.app.request_launch(req)  # type: ignore[attr-defined]
-
-    def _attach_remote_session(self, host: str, user: str, name: str) -> None:
-        """TUI dispatch: attach to ``name`` belonging to ``user`` on peer ``host``.
-
-        Mirrors :meth:`_attach_session` (local). Calls
-        ``ctx.on_remote_attach`` to obtain a LaunchRequest carrying
-        the ssh+remote-uxon argv, then hands it to
-        ``app.request_launch`` (fork-and-wait, re-enters TUI on
-        tmux detach). Failures from the callback surface as red
-        toasts via ``CallbackError``; ssh-time failures surface
-        through ``pause_on_launch_failure`` after fork-and-wait.
-        """
-        try:
-            req = self.ctx.on_remote_attach(host, user, name)
-        except CallbackError as exc:
-            self.app.notify(f"Remote attach failed: {exc}", severity="error", timeout=6)
             return
         self.app.request_launch(req)  # type: ignore[attr-defined]
 

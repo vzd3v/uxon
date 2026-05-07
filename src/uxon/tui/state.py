@@ -393,27 +393,6 @@ def session_intent(session: TuiSession, current_user: str) -> MainIntent:
     )
 
 
-def remote_session_intent(
-    host_name: str,
-    rec: dict,
-    current_user: str,
-) -> MainIntent:
-    """Build a MainIntent for activating a remote-host session row.
-
-    ``host_name`` is the display name as carried on the row tuple —
-    may include a trailing " (own only)" suffix; we strip it.
-    ``rec`` is the wire-schema session record (dict). Falls back to
-    ``current_user`` when the record lacks a ``user`` field.
-    """
-    bare_host = host_name.split(" ", 1)[0]
-    return MainIntent(
-        kind="attach-remote",
-        host=bare_host,
-        user=str(rec.get("user") or current_user),
-        session_name=str(rec.get("name") or ""),
-    )
-
-
 def activate_main_index(ctx: TuiContext, idx: int) -> MainIntent | None:
     own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
     if idx < 0 or idx >= _total_items(ctx):
