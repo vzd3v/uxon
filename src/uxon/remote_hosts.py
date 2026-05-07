@@ -170,9 +170,7 @@ def _validate_host(raw: dict, index: int, seen_names: set[str]) -> RemoteHost:
     elif isinstance(color_raw, str) and color_raw.strip():
         color = color_raw.strip()
     else:
-        raise RemoteHostError(
-            f"remote_hosts[{name}]: color must be a non-empty string when set"
-        )
+        raise RemoteHostError(f"remote_hosts[{name}]: color must be a non-empty string when set")
 
     # Reject unknown keys — better to fail loudly than silently ignore a
     # typo (e.g. ``ssh_alaias = "..."``) the operator expected to take

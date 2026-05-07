@@ -43,15 +43,27 @@ def _iter_screen_classes():
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class DestructiveBindingVisibilityTests(unittest.TestCase):
-    """Every destructive binding must be visible in the footer."""
+    """Every destructive binding must be visible in the footer.
+
+    JCUKEN twins (added by :func:`uxon.tui.keymap.bindings_with_aliases`)
+    legitimately ride along with ``show=False`` — the primary QWERTY
+    key carries the visible footer entry and the twin shares its
+    action 1:1. We exempt only those exact twin keys.
+    """
 
     def test_destructive_bindings_are_shown(self) -> None:
+        from uxon.tui.keymap import LAYOUT_ALIASES
+
+        twin_keys = set(LAYOUT_ALIASES.values())
         offenders: list[str] = []
         for mod, cls in _iter_screen_classes():
             bindings = getattr(cls, "BINDINGS", [])
             for b in bindings:
                 action_name = _action_name(b)
                 if not action_name.startswith("kill"):
+                    continue
+                if _binding_key(b) in twin_keys:
+                    # Hidden RU twin of a primary visible binding.
                     continue
                 show = getattr(b, "show", True)
                 description = getattr(b, "description", "") or ""
@@ -135,6 +147,29 @@ class MainScreenSortBindingsRetiredTests(unittest.TestCase):
         keys = {_binding_key(b) for b in MainScreen.BINDINGS}
         for k in ("q", "r", "d", "D"):
             self.assertIn(k, keys, f"{k} must still be bound on MainScreen")
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class MainScreenQuitBindingsTests(unittest.TestCase):
+    """``q`` (and the JCUKEN twin ``й``) quit; ``escape`` no longer does.
+
+    Removing ``escape → quit`` in 3.4 makes Esc scope-local on each
+    modal/screen — operators no longer accidentally dump out of the
+    app from a sub-screen.
+    """
+
+    def test_q_and_jcuken_twin_present(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
+        self.assertIn("q", keys)
+        self.assertIn("й", keys)
+
+    def test_escape_not_bound(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
+        self.assertNotIn("escape", keys)
 
 
 def _action_name(binding) -> str:

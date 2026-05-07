@@ -27,6 +27,7 @@ from textual.widgets import (
 )
 
 from ..context import CallbackError
+from ..keymap import bindings_with_aliases
 
 GIT_REMOTES_VIEW_LABEL = "Git remote profiles (view)"
 
@@ -67,12 +68,12 @@ class SettingsScreen(Screen):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "back", "Back", show=True),
         Binding("q", "back", "Back", show=False),
         Binding("x", "reset", "Reset", show=True),
         Binding("enter", "edit", "Edit", show=True),
-    ]
+    )
 
     def __init__(self, cbs: Any) -> None:
         super().__init__()
@@ -273,11 +274,11 @@ class _EditModalBase(ModalScreen[bool]):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "cancel", "Cancel", show=True),
         Binding("up", "app.focus_previous", "", show=False),
         Binding("down", "app.focus_next", "", show=False),
-    ]
+    )
 
     def __init__(self, entry: Any, cbs: Any) -> None:
         super().__init__()

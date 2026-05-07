@@ -19,6 +19,8 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from ..keymap import bindings_with_aliases
+
 
 class AgentsUnavailableScreen(ModalScreen[None]):
     DEFAULT_CSS = """
@@ -34,11 +36,11 @@ class AgentsUnavailableScreen(ModalScreen[None]):
     AgentsUnavailableScreen .footer-hint { color: $text-muted; }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "dismiss_screen", "Close", show=True),
         Binding("enter", "dismiss_screen", "Close", show=True),
         Binding("q", "dismiss_screen", "Close", show=False),
-    ]
+    )
 
     def __init__(self, enabled_agents: tuple[str, ...]) -> None:
         super().__init__()

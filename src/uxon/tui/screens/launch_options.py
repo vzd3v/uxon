@@ -23,6 +23,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import ListItem, ListView, Static
 
+from ..keymap import bindings_with_aliases
 from ..state import (
     agent_list_label,
     launch_commit_decision,
@@ -44,12 +45,12 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     LaunchOptionsScreen ListView { height: auto; min-height: 3; }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "cancel", "Cancel", show=True),
         Binding("left", "focus_left", "Agent", show=True),
         Binding("right", "focus_right", "Mode", show=True),
         Binding("enter", "commit", "Select", show=True, priority=True),
-    ]
+    )
 
     def __init__(self, ctx) -> None:
         super().__init__()

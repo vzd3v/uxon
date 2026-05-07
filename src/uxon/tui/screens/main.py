@@ -44,6 +44,7 @@ from ..dashboard.reconcile import diff
 from ..dashboard.row import SessionRow
 from ..dashboard.ui_state import DashboardUiState
 from ..events import debug as _debug
+from ..keymap import bindings_with_aliases
 from ..state import (
     MainIntent,
     activate_main_index,
@@ -96,9 +97,8 @@ class MainScreen(Screen):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("q", "quit", "Quit", show=True),
-        Binding("escape", "quit", "Quit", show=False),
         Binding("f1", "help", "Help", show=False),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
@@ -124,7 +124,7 @@ class MainScreen(Screen):
         Binding("7", "digit_jump(7)", "", show=False, priority=True),
         Binding("8", "digit_jump(8)", "", show=False, priority=True),
         Binding("9", "digit_jump(9)", "", show=False, priority=True),
-    ]
+    )
 
     # Stage 8 commit 3: writable reactive driving the
     # ``#sessions-note`` re-render when the first ``MainData`` lands.
