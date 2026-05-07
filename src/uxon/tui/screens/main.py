@@ -315,12 +315,6 @@ class MainScreen(Screen):
         # :class:`SessionDashboardTable`) owns row display end-to-end.
         self._refresh_dashboard()
         self.call_after_refresh(self._update_status_line)
-        # Default focus on the search bar so typing immediately filters.
-        try:
-            bar = self.query_one("#search-bar", SearchBar)
-            bar.input.focus()
-        except Exception:
-            pass
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
             # Stage 10a — ``UXON_DEBUG=startup``: closest proxy to "first
             # frame painted" Textual exposes without a renderer hook. By
@@ -1312,16 +1306,6 @@ class MainScreen(Screen):
         status.set_class(line.alert, "-alert")
 
     def _focus_default_action(self) -> None:
-        # When the search bar is mounted, leave focus on its input — the
-        # operator's first interaction is most often "type to filter",
-        # not "Tab to action rows". Falling through to action-cwd here
-        # would yank focus back from the SearchBar after on_mount
-        # scheduled it via call_later.
-        try:
-            self.query_one("#search-bar", SearchBar)
-            return
-        except Exception:
-            pass
         try:
             self.query_one("#action-cwd", ActionRow).focus()
         except Exception:  # pragma: no cover
