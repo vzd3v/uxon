@@ -22,15 +22,26 @@ def test_buckets_in_cfg_order_with_locals_first_and_empty_kept():
 
 
 def test_status_block_aggregates_per_host():
+    from uxon.probes import HostStatsResult
+
     rows = (_row(None, "a", cpu=10), _row(None, "b", cpu=20, attached=True))
     cfg = SimpleNamespace(remote_hosts=[])
-    state = SimpleNamespace(main=SimpleNamespace(host_stats=None))
-    lines = select_host_status_block(rows, state, host_stats_local=None, cfg=cfg)
+    stats = HostStatsResult(
+        cpu_pct=0.0,
+        mem_used_kib=6_193_872,
+        mem_total_kib=16_376_344,
+        loadavg_1m=0.35,
+        uptime_s=7_835_551,
+        kernel="test",
+    )
+    state = SimpleNamespace(main=SimpleNamespace(host_stats=stats))
+    lines = select_host_status_block(rows, state, host_stats_local=stats, cfg=cfg)
     local_line = lines[0]
     assert local_line.host_name is None
     assert local_line.session_count == 2
     assert local_line.attached_count == 1
     assert abs(local_line.cpu_pct_sum - 30.0) < 1e-6
+    assert local_line.mem_used_kib == 6_193_872
 
 
 def test_status_block_marks_pending_when_no_snapshot():

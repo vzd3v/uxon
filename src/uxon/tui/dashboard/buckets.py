@@ -71,10 +71,12 @@ def _bucket_state(host_name: str | None, state) -> str:
     return ""
 
 
-def _hs_field(stats: dict[str, Any] | None, key: str, default: Any = 0) -> Any:
+def _hs_field(stats: Any, key: str, default: Any = 0) -> Any:
     if stats is None:
         return default
-    return stats.get(key, default)
+    if isinstance(stats, dict):
+        return stats.get(key, default)
+    return getattr(stats, key, default)
 
 
 def select_host_status_block(
