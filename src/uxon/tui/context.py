@@ -364,9 +364,9 @@ TuiContext.refresh_tick = property(  # type: ignore[assignment]
 # legacy dict so test paths that don't run inside an App keep working.
 #
 # The flattened view is rebuilt on every access — sub-optimal, but
-# selectors cache around it (``select_remote_rows`` keys on
-# ``id(slot.value)`` not ``id(snapshots)``) so the rebuild cost is
-# bounded by the number of configured hosts.
+# the dashboard model selector keys on ``id(slot.value)`` (not on
+# ``id(snapshots)``), so the rebuild cost is bounded by the number
+# of configured hosts.
 
 
 def _tui_remote_snapshots_get(self: TuiContext) -> dict:

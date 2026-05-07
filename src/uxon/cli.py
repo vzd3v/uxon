@@ -4507,8 +4507,9 @@ def _build_tui_context(
         already prompted before this callback fires).
 
         Failures surface as :class:`CallbackError` via the
-        ``_wrap_tui_callback`` shim — :meth:`MainScreen.action_kill_remote`
-        renders them as a red toast.
+        ``_wrap_tui_callback`` shim — :meth:`MainScreen.action_kill`
+        renders them as a red toast (the dashboard's ``d`` binding
+        dispatches here when the cursor sits on a remote row).
         """
         import uuid as _uuid
 

@@ -244,8 +244,9 @@ def apply(
     the previously-stored value, the new :class:`SlotState`'s
     ``value`` reuses ``prev.value``'s identity. This makes
     ``id(slot.value)`` stable across a no-op tick — selectors that
-    key on it (e.g. ``select_remote_rows``) cache-hit and the
-    per-host repaint path elides the row recompute. Other fields
+    key on it (e.g. the dashboard's ``select_dashboard_model``)
+    cache-hit and the per-host repaint path elides the row
+    recompute. Other fields
     (``last_attempt_at``, the ring, ``from_cache``) still advance:
     the *attempt* did happen and must be visible to staleness logic.
 

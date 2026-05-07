@@ -1,10 +1,11 @@
 """Shared base for uxon's session-listing DataTables.
 
-:class:`SessionTable` (local sessions) and :class:`RemoteSessionTable`
-(peer-aggregated sessions) are populated from different shapes, but
-their navigation contract is identical: they sit between the action
-rows above and (potentially) more focusable widgets below, and
-*release* focus to the surrounding focus chain when the cursor would
+:class:`SessionTable` (legacy local table) and
+:class:`SessionDashboardTable` (the unified dashboard) are populated
+from different shapes, but their navigation contract is identical:
+they sit between the action rows above and (potentially) more
+focusable widgets below, and *release* focus to the surrounding
+focus chain when the cursor would
 otherwise hit a row boundary. Without that, ``↑`` on row 0 and ``↓``
 on the last row leave the user trapped inside the table — the bug
 that made this base necessary.

@@ -2,9 +2,9 @@
 
 Each formatter is a pure function over a :class:`SessionRow`; sort
 keys are pure functions producing comparable values. Visual semantics
-must match the legacy ``SessionTable`` / ``RemoteSessionTable``: bold
-green for attached, red/yellow CPU at >50/>10, deterministic per-host
-glyph on the NAME column.
+must match the legacy local / remote tables: bold green for
+attached, red/yellow CPU at >50/>10, deterministic per-host glyph
+on the NAME column.
 """
 
 from __future__ import annotations

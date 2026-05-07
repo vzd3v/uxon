@@ -6,14 +6,12 @@ Layout:
     │ ActionRow action-new                             │
     │ ActionRow action-open                            │
     │ ── sessions ──                                   │
-    │ SessionDashboardTable (own + other-user rows;    │
-    │   USER column visible iff cross_user is True)    │
+    │ SessionDashboardTable (own + other-user + remote │
+    │   rows; USER column iff cross_user, HOST column  │
+    │   iff multi_host)                                │
     │ ── superuser ── (when reachable_users is set)    │
     │ ActionRow settings                               │
     │ ActionRow kill-all-global                        │
-    │ ── remote sessions ── (multi-host)               │
-    │ RemoteSessionTable (peer rows; commit 12 folds   │
-    │   into the dashboard)                            │
     └ Footer ──────────────────────────────────────────┘
 
 T7a ships layout + core bindings (q/escape/f1/d/D/r). Digit-jump
@@ -52,13 +50,10 @@ from ..state import (
     digit_jump_intent,
     main_action_intent,
     main_status_line,
-    remote_session_intent,
     select_layout_signature,
-    select_remote_health_badge,
-    select_remote_rows,
     visible_detected_agents,
 )
-from ..widgets import ActionRow, DetectedAgentsBanner, RemoteSessionTable
+from ..widgets import ActionRow, DetectedAgentsBanner
 from ..widgets.session_dashboard_table import SessionDashboardTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
@@ -108,7 +103,6 @@ class MainScreen(Screen):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
-        Binding("k", "kill_remote", "Kill remote", show=True),
         # Detected-agents banner: only does something when the banner is
         # visible (``visible_detected_agents(...)`` is non-empty). When the
         # banner is hidden these bindings are no-ops; the footer hides
@@ -226,12 +220,10 @@ class MainScreen(Screen):
             # Sessions header + unified dashboard. The dashboard is
             # mounted unconditionally — empty-state copy is rendered by
             # the ``#sessions-note`` Static above it (toggled by class
-            # in ``_refresh_dashboard_note``). Commit 11 folds local
-            # other-user rows into the dashboard alongside own rows
-            # (the USER column appears via the data-driven
-            # ``cross_user`` flag in ``__init__``); the legacy
-            # ``#sessions-remote`` widget keeps its semantics until
-            # commit 12.
+            # in ``_refresh_dashboard_note``). Local own + local
+            # other-user + remote per-host rows all flow through this
+            # one widget; the USER column appears when ``cross_user``
+            # is set, the HOST column when ``multi_host`` is set.
             yield Static("── sessions ──", classes="segment-header")
             note = "Loading sessions…" if self.ctx.loading else "No active sessions."
             note_classes = "empty-note"
@@ -264,24 +256,12 @@ class MainScreen(Screen):
                         enabled=True,
                         id="action-kill-all-global",
                     )
-            # Multi-host: a separate Remote-sessions block. Rendered
-            # only when at least one peer is configured (an empty
-            # ctx.remote_hosts skips the section entirely so a
-            # single-host operator sees no extra UI). The HOST column
-            # is added when more than one peer is configured — the
-            # one-host case prints just the table; the host name is
-            # implicit from the section header.
-            if self.ctx.remote_hosts:
-                show_host = len(self.ctx.remote_hosts) > 1
-                yield Static(
-                    self._remote_header(),
-                    classes="segment-header",
-                    id="remote-section-header",
-                )
-                # Lazy: the table is empty at first paint anyway (the
-                # first SSH tick has not landed yet); deferring its mount
-                # frees the first frame for the local-sessions content.
-                yield Lazy(RemoteSessionTable(show_host=show_host, id="sessions-remote"))
+            # Multi-host: remote rows fold into the unified dashboard
+            # above. The HOST column is auto-prepended when the
+            # ``multi_host`` LayoutFlag is True (data-driven via
+            # ``cfg.remote_hosts`` in ``__init__``). No separate widget
+            # / section header is needed — per-host attribution lives on
+            # each row's HOST cell + the dashboard's host colour glyph.
         yield Footer()
 
     def _superuser_header(self) -> str:
@@ -298,26 +278,6 @@ class MainScreen(Screen):
         if skipped and total:
             return f"── superuser ── ({len(reachable)}/{total} users reachable)"
         return "── superuser ──"
-
-    def _remote_header(self) -> str:
-        # Single-host case: peer name + "(own only)" badge if the peer
-        # rejected --all-users (enable_all_users_list = false there) +
-        # health badge ([ok] / [cache 12s] / [err: …] / [loading]).
-        # Reads through the slot store: ``state.remote[name].value`` is
-        # the live :class:`RemoteSnapshot` (or ``None`` until the first
-        # landing). Multi-host case puts scope/health badges on the
-        # per-row HOST column in ``_flatten_remote_rows`` instead.
-        if len(self.ctx.remote_hosts) == 1:
-            host = self.ctx.remote_hosts[0]
-            state = getattr(self.app, "state", None)
-            slot = state.remote.get(host.name) if state is not None else None
-            snap = slot.value if slot is not None else None
-            scope = (
-                " (own only)" if snap is not None and getattr(snap, "scope_limited", False) else ""
-            )
-            health = select_remote_health_badge(host.name, snap)
-            return f"── remote sessions ── {host.name}{scope} [{health.text}]"
-        return f"── remote sessions ── {len(self.ctx.remote_hosts)} hosts"
 
     def _cwd_detail(self) -> str:
         if self.ctx.cwd_writable is False:
@@ -337,11 +297,6 @@ class MainScreen(Screen):
         # response. The legacy ``#sessions-own`` populate path is gone in
         # commit 10; the dashboard owns the own-row display.
         self._refresh_dashboard()
-        if self.ctx.remote_hosts:
-            try:
-                self._populate_remote_table()
-            except Exception:  # pragma: no cover — defensive
-                pass
         self.call_after_refresh(self._update_status_line)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
             # Stage 10a — ``UXON_DEBUG=startup``: closest proxy to "first
@@ -395,12 +350,12 @@ class MainScreen(Screen):
         except Exception:  # pragma: no cover — defensive (widget not ready)
             return None
 
-    def _refresh_dashboard_note(self, local_rows: tuple[SessionRow, ...]) -> None:
+    def _refresh_dashboard_note(self, all_rows: tuple[SessionRow, ...]) -> None:
         """Toggle the ``#sessions-note`` placeholder above the dashboard.
 
-        Visible when no local rows are present (Loading… on cold
-        start, "No active sessions." once the rebuild has landed).
-        The class toggle keeps the layout signature stable across the
+        Visible when no rows are present (Loading… on cold start,
+        "No active sessions." once the rebuild has landed). The class
+        toggle keeps the layout signature stable across the
         empty/non-empty transition — the Static is mounted
         unconditionally.
         """
@@ -408,7 +363,7 @@ class MainScreen(Screen):
             note = self.query_one("#sessions-note", Static)
         except Exception:  # pragma: no cover — note not yet mounted
             return
-        if local_rows:
+        if all_rows:
             note.set_class(True, "-hidden")
         else:
             note.set_class(False, "-hidden")
@@ -418,11 +373,10 @@ class MainScreen(Screen):
         """Compute new model, diff against the previous, apply to the widget.
 
         Owns the dashboard's per-tick lifecycle: pull state, build the
-        row tuple via :func:`select_dashboard_model`, filter to local
-        rows (own + other-user; remote rows land in commit 12), diff
-        against the previous tuple, apply the ops to the widget, then
-        pin the cursor by row-key so a no-op tick leaves it where it
-        was.
+        row tuple via :func:`select_dashboard_model` (full model — local
+        own + local other-user + remote per-host rows), diff against the
+        previous tuple, apply the ops to the widget, then pin the cursor
+        by row-key so a no-op tick leaves it where it was.
 
         ``cross_user`` is *not* recomputed here. The active column
         tuple is fixed at ``__init__`` time; a flip in
@@ -432,142 +386,30 @@ class MainScreen(Screen):
         :class:`MainScreen` whose ``__init__`` rebuilds
         ``_active_columns`` with the new flag. The patch path
         (this method) only applies row-level ops.
+
+        Per-host repaint optimisation is preserved structurally: the
+        model selector's identity-stable contract returns the same
+        tuple object when no slot changed, and a single-host slot
+        replacement yields a tuple where only that host's rows differ;
+        the reconciler emits ops only for those rows.
         """
         state = getattr(self.app, "state", None)
         if state is None:
             return
         cfg_view = self._build_dashboard_cfg_view()
         rows = select_dashboard_model(state, cfg_view, self._dashboard_ui)  # type: ignore[arg-type]
-        # Commit 11 bridge: all local rows (own + other-user) go into
-        # the dashboard. Commit 12 widens to local + remote.
-        local_rows = tuple(r for r in rows if r.host is None)
+        # Commit 12: full model — local (host=None) + remote (host=peer).
+        all_rows = rows
         try:
             widget = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:  # pragma: no cover — not yet mounted
             return
         prev_cursor_key = self._cursor_row_key(widget)
-        ops = diff(self._dashboard_rows, local_rows, self._active_columns)
+        ops = diff(self._dashboard_rows, all_rows, self._active_columns)
         widget.apply(ops)
-        self._dashboard_rows = local_rows
+        self._dashboard_rows = all_rows
         widget.pin_cursor_to(prev_cursor_key)
-        self._refresh_dashboard_note(local_rows)
-
-    # ── Remote sessions block (multi-host) ────────────────────────────
-
-    def _flatten_remote_rows(self) -> list[tuple[str, dict]]:
-        """Flatten the per-host slot store into a list the table can render.
-
-        Thin shim over :func:`select_remote_rows` — the pure selector
-        keys on ``id(slot.value)``, so an unchanged-value tick returns
-        the same tuple object and downstream Textual code can
-        ``is``-compare to skip a re-render. We return a fresh ``list``
-        each call (the table's ``populate`` mutates it).
-
-        Stub-app safety: tests that build a ``_FakeApp`` without a
-        ``state`` attribute fall through to an empty result —
-        equivalent to "no slots have landed yet", which is a valid
-        zero state.
-        """
-        state = getattr(self.app, "state", None)
-        if state is None:
-            return []
-        return list(select_remote_rows(state, self.ctx.remote_hosts))
-
-    def _populate_remote_table(self) -> None:
-        table = self.query_one("#sessions-remote", RemoteSessionTable)
-        table.populate(self._flatten_remote_rows())
-
-    def _refresh_remote_section_header(self, host_name: str) -> None:
-        """Update the single-host remote-section header in place.
-
-        Stage 8 commit 11: split out from the (deprecated)
-        ``apply_remote_snapshot`` path. Used by the App-level
-        dispatcher to refresh only the header text after a single
-        peer's slot landing — the ``(own only)`` badge depends on
-        the newly-landed scope flag, which isn't visible to the
-        coalesced row dispatch.
-        """
-        if not self.ctx.remote_hosts or len(self.ctx.remote_hosts) != 1:
-            return
-        try:
-            self.query_one("#remote-section-header", Static).update(self._remote_header())
-        except Exception:  # pragma: no cover — header not yet mounted
-            pass
-
-    def _dispatch_remote_rows(self, old_rows: tuple, new_rows: tuple) -> None:
-        """Apply a coalesced row-tuple change to the remote table.
-
-        Stage 8 commit 11. ``old_rows`` and ``new_rows`` come from
-        ``select_remote_rows`` invocations across two refresh cycles.
-        We diff by host (the bare host name is the first
-        space-delimited token of the first row tuple element) and
-        dispatch ``update_host_rows`` only for hosts whose row list
-        actually changed. Unchanged hosts produce zero
-        ``add_row`` / ``remove_row`` calls — pinned by the
-        ``test_only_changed_host_touched`` regression test.
-        """
-        if not self.ctx.remote_hosts:
-            return
-        try:
-            table = self.query_one("#sessions-remote", RemoteSessionTable)
-        except Exception:  # pragma: no cover — table not yet mounted
-            return
-
-        def _group_by_host(rows: tuple) -> dict[str, list[tuple]]:
-            grouped: dict[str, list[tuple]] = {}
-            for display_name, rec in rows:
-                host = display_name.split(" ", 1)[0]
-                grouped.setdefault(host, []).append((display_name, rec))
-            return grouped
-
-        old_by_host = _group_by_host(old_rows)
-        new_by_host = _group_by_host(new_rows)
-        # Hosts that disappeared from the new tuple → drop their rows.
-        for host in old_by_host:
-            if host not in new_by_host:
-                table.update_host_rows(host, [])
-        # Hosts whose rows changed (or are new).
-        for host, rows in new_by_host.items():
-            if old_by_host.get(host) != rows:
-                table.update_host_rows(host, rows)
-
-    def apply_remote_snapshot(self, host_name: str, snapshot) -> None:
-        """Hook called by the app dispatch when a per-host SourceSpec
-        result lands. Re-renders the rows for one peer.
-
-        Stage 8 commit 4: the canonical store is ``state.remote`` —
-        the dispatcher (``UxonApp._handle_remote_snapshot``) writes
-        through ``slot_state.apply`` *before* calling this method,
-        so the screen only triggers a repaint here. The repaint is
-        per-host: we update only the rows for ``host_name`` via
-        :meth:`RemoteSessionTable.update_host_rows`, leaving every
-        other peer's rows untouched. The single-host section header
-        still re-renders because its ``(own only)`` badge depends on
-        the freshly-landed scope flag.
-        """
-        if not self.ctx.remote_hosts:
-            return
-        try:
-            table = self.query_one("#sessions-remote", RemoteSessionTable)
-        except Exception:  # pragma: no cover — table not yet mounted
-            return
-        rows: list[tuple[str, dict]] = []
-        if snapshot is not None:
-            multi_host = len(self.ctx.remote_hosts) > 1
-            display_name = host_name
-            if multi_host:
-                if bool(getattr(snapshot, "scope_limited", False)):
-                    display_name = f"{display_name} (own only)"
-                badge = select_remote_health_badge(host_name, snapshot)
-                display_name = f"{display_name} [{badge.text}]"
-            for rec in snapshot.sessions:
-                rows.append((display_name, rec))
-        table.update_host_rows(host_name, rows)
-        if len(self.ctx.remote_hosts) == 1:
-            try:
-                self.query_one("#remote-section-header", Static).update(self._remote_header())
-            except Exception:  # pragma: no cover — header not yet mounted
-                pass
+        self._refresh_dashboard_note(all_rows)
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 
@@ -584,11 +426,10 @@ class MainScreen(Screen):
     def on_data_table_row_selected(self, event) -> None:  # type: ignore[no-untyped-def]
         """Enter/click on a session row attaches to that session.
 
-        SessionDashboardTable rows dispatch the local on_attach
-        callback directly — remote rows in the dashboard are rejected
-        until ctx.on_remote_attach is wired into the dashboard.
-        RemoteSessionTable rows fire the remote_session_intent path,
-        which dispatches via ctx.on_remote_attach over SSH.
+        SessionDashboardTable rows dispatch the right callback based
+        on ``row.host``: local rows (``host is None``) go through
+        ``ctx.on_attach``; remote rows go through
+        ``ctx.on_remote_attach`` (SSH).
         """
         table = event.data_table
         if isinstance(table, SessionDashboardTable):
@@ -597,22 +438,17 @@ class MainScreen(Screen):
                 return
             row = self._dashboard_rows[idx]
             if row.host is not None:
-                # Bridge guard: remote-attach from the dashboard is
-                # not yet wired here.
-                self.app.notify(
-                    "Remote attach from dashboard not yet wired.",
-                    severity="warning",
-                )
+                # Remote: dispatch via ctx.on_remote_attach over SSH.
+                user = row.user or self.ctx.current_user
+                try:
+                    req = self.ctx.on_remote_attach(row.host, user, row.name)
+                except CallbackError as exc:
+                    self.app.notify(f"Remote attach failed: {exc}", severity="error", timeout=6)
+                    return
+                self.app.request_launch(req)  # type: ignore[attr-defined]
                 return
             session_user = row.user or self.ctx.current_user
             self._attach_session(session_user, row.name)
-            return
-        if isinstance(table, RemoteSessionTable):
-            entry = table.row_at(event.cursor_row)
-            if entry is None:
-                return
-            host_name, rec = entry
-            self._run_intent(remote_session_intent(host_name, rec, self.ctx.current_user))
             return
 
     def _run_intent(self, intent: MainIntent | None) -> None:
@@ -938,17 +774,13 @@ class MainScreen(Screen):
         except Exception:
             return False
 
-        # Local sessions (own + other-user) render through the
+        # All sessions (own + other-user + remote) render through the
         # unified dashboard widget. The dashboard is repopulated
-        # below so the model selector sees a consistent
-        # ``state.main`` snapshot.
-
-        # Remote-sessions table is owned by the per-host SSH workers via
-        # ``apply_remote_snapshot``. The local ctx-rebuild path does not
-        # contribute rows to it (the snapshots dict is carried across
-        # rebuilds, see ``apply_loaded_ctx``), so re-populating here on
-        # every local tick would clear+re-add identical rows and produce
-        # a visible flicker.
+        # below so the model selector sees a consistent ``state.main``
+        # + ``state.remote`` snapshot. Per-host repaint optimisation
+        # is preserved structurally by the model's identity-stable
+        # contract: an unchanged-host slot does not produce new
+        # ops in ``diff``.
 
         if bool(self.ctx.sudo_caps.reachable_users):
             try:
@@ -1083,36 +915,51 @@ class MainScreen(Screen):
 
         Only fires on :class:`SessionDashboardTable`
         (``#sessions-dashboard``). Resolves via the cursor index into
-        ``self._dashboard_rows``: local rows (own + other-user)
-        dispatch to ``ctx.on_kill``; ``row.user`` carries the target
-        user so other-user rows take the existing sudo path inside
-        the kill callback. A remote-host row in the dashboard is
-        rejected with a warning until ``ctx.on_remote_kill`` is wired
-        through here. Any other focus target falls through to the
-        "select a session" notify.
+        ``self._dashboard_rows``:
+
+        * Local rows (``row.host is None``) dispatch to ``ctx.on_kill``;
+          ``row.user`` carries the target user so other-user rows take
+          the existing sudo path inside the kill callback.
+        * Remote rows (``row.host`` set) dispatch to
+          ``ctx.on_remote_kill(host, user, name)`` — the local CLI runs
+          ``uxon kill --force --host <h> --user <u> <name>`` over SSH.
+
+        Any other focus target falls through to the "select a session"
+        notify.
         """
         focused = self.focused
-        session_user: str
-        session_name: str
-        session_short: str
-        if isinstance(focused, SessionDashboardTable):
-            idx = focused.cursor_row
-            if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
-                return
-            row = self._dashboard_rows[idx]
-            if row.host is not None:
-                # Bridge guard: remote rows in the dashboard are not
-                # yet wired through ctx.on_remote_kill here.
-                self.app.notify(
-                    "Remote kill from dashboard not yet wired.",
-                    severity="warning",
-                )
-                return
-            session_user = row.user or self.ctx.current_user
-            session_name = row.name
-            session_short = row.short or row.name
-        else:
+        if not isinstance(focused, SessionDashboardTable):
             self.app.notify("Select a session first.", severity="warning")
+            return
+        idx = focused.cursor_row
+        if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
+            return
+        row = self._dashboard_rows[idx]
+        session_user = row.user or self.ctx.current_user
+        session_name = row.name
+        session_short = row.short or row.name
+
+        if row.host is not None:
+            # Remote: dispatch via SSH through ctx.on_remote_kill.
+            host = row.host
+
+            def after_confirm_remote(ok: bool | None) -> None:
+                if not ok:
+                    return
+                try:
+                    self.ctx.on_remote_kill(host, session_user, session_name)
+                    self.app.notify(
+                        f"Killed {session_short} on {host}; remote table will update on next poll"
+                    )
+                except CallbackError as exc:
+                    self.app.notify(f"Remote kill failed: {exc}", severity="error", timeout=6)
+                    return
+                self.action_refresh()
+
+            self.app.push_screen(
+                ConfirmYesNo(f"Kill {session_name} on {host} (user={session_user})?"),
+                after_confirm_remote,
+            )
             return
 
         def after_confirm(ok: bool | None) -> None:
@@ -1153,67 +1000,6 @@ class MainScreen(Screen):
 
         self.app.push_screen(
             ConfirmPhrase(f"Kill ALL {n} sessions?", "kill-all"),
-            after_confirm,
-        )
-
-    def action_kill_remote(self) -> None:
-        """Confirm then kill the remote session under focus.
-
-        Only fires when focus sits on the :class:`RemoteSessionTable`.
-        Resolves the row to ``(host_name, record)`` via
-        :meth:`RemoteSessionTable.row_at` and dispatches via
-        ``ctx.on_remote_kill(host, user, name)`` — the local CLI runs
-        ``uxon kill --force --host <h> --user <u> <name>`` over SSH on
-        the peer. The peer's own ``uxon kill`` does the per-target
-        sudo gating; the local TUI never needs the peer's user table.
-
-        After a successful kill we kick the existing refresh — the
-        per-host poller will repull on its next cadence tick. There
-        is no force-single-host repoll path today; the cadence is
-        seconds, not minutes, so the lag is short.
-        """
-        focused = self.focused
-        if not isinstance(focused, RemoteSessionTable):
-            self.app.notify("Select a remote session first.", severity="warning")
-            return
-        row = focused.cursor_row
-        entry = focused.row_at(row)
-        if entry is None:
-            return
-        host_name, record = entry
-        # Strip any trailing ``" (own only)"`` badge from the displayed
-        # host name so the dispatcher receives the bare ``RemoteHost.name``
-        # — the badge is a TUI display detail.
-        clean_host = host_name.split(" ", 1)[0]
-        user = str(record.get("user") or "").strip()
-        name = str(record.get("name") or "").strip()
-        if not user or not name:
-            self.app.notify(
-                "Remote row is missing user/name; cannot dispatch kill.",
-                severity="error",
-                timeout=6,
-            )
-            return
-
-        def after_confirm(ok: bool | None) -> None:
-            if not ok:
-                return
-            try:
-                self.ctx.on_remote_kill(clean_host, user, name)
-                self.app.notify(
-                    f"Killed {name} on {clean_host}; remote table will update on next poll"
-                )
-            except CallbackError as exc:
-                self.app.notify(
-                    f"Remote kill failed: {exc}",
-                    severity="error",
-                    timeout=6,
-                )
-                return
-            self.action_refresh()
-
-        self.app.push_screen(
-            ConfirmYesNo(f"Kill {name} on {clean_host} (user={user})?"),
             after_confirm,
         )
 
@@ -1277,27 +1063,19 @@ class MainScreen(Screen):
             if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
                 return ""
             row = self._dashboard_rows[idx]
+            # Remote rows carry ``host=peer``; serialise as
+            # ``remote:host/user/name`` so a recompose can pin the
+            # cursor back onto the right peer's session.
+            if row.host is not None:
+                return f"remote:{row.host}/{row.user}/{row.name}"
             # Local rows (own + other-user) carry ``host=None``.
             # Other-user rows are tagged with the row's user so a
             # focus restore after recompose lands on the right row
             # rather than colliding with an own-session of the same
-            # name. Remote rows will branch here once folded in.
-            if row.host is None:
-                if row.user and row.user != self.ctx.current_user:
-                    return f"other:{row.user}/{row.name}"
-                return f"own:{row.name}"
-            return ""
-        if isinstance(focused, RemoteSessionTable):
-            entry = focused.row_at(focused.cursor_row)
-            if entry is None:
-                return ""
-            host_name, rec = entry
-            # Strip any trailing ``" (own only)"`` badge — focus identity
-            # is the bare host name, mirroring ``action_kill_remote``.
-            clean_host = host_name.split(" ", 1)[0]
-            user = str(rec.get("user") or "")
-            name = str(rec.get("name") or "")
-            return f"remote:{clean_host}/{user}/{name}"
+            # name.
+            if row.user and row.user != self.ctx.current_user:
+                return f"other:{row.user}/{row.name}"
+            return f"own:{row.name}"
         return ""
 
     def _focus_key(self, key: str) -> bool:
@@ -1320,11 +1098,11 @@ class MainScreen(Screen):
         return False
 
     def _focus_remote_key(self, suffix: str) -> bool:
-        """Restore focus on a ``RemoteSessionTable`` row keyed by ``host/user/name``.
+        """Restore focus on a dashboard remote row keyed by ``host/user/name``.
 
         Suffix shape mirrors :meth:`_current_focus_key`: ``host/user/name``.
-        Falls back gracefully when the table is not mounted, the row no
-        longer exists (peer dropped the session between the focus
+        Falls back gracefully when the dashboard is not mounted, the row
+        no longer exists (peer dropped the session between the focus
         capture and the restore), or the suffix is malformed.
         """
         host, _, rest = suffix.partition("/")
@@ -1332,16 +1110,13 @@ class MainScreen(Screen):
         if not (host and name):
             return False
         try:
-            table = self.query_one("#sessions-remote", RemoteSessionTable)
+            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:
             return False
-        for idx, (row_host, rec) in enumerate(table._row_index):
-            clean_host = row_host.split(" ", 1)[0]
-            if clean_host != host:
+        for idx, row in enumerate(self._dashboard_rows):
+            if row.host != host or row.name != name:
                 continue
-            if name and str(rec.get("name") or "") != name:
-                continue
-            if user and str(rec.get("user") or "") != user:
+            if user and row.user and row.user != user:
                 continue
             table.focus()
             table.move_cursor(row=idx)

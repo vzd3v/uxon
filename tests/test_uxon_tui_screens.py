@@ -280,16 +280,16 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 class LazyWidgetsTests(unittest.IsolatedAsyncioTestCase):
     """Lazy-mounted MainScreen children resolve post first paint.
 
-    ``DetectedAgentsBanner`` and ``RemoteSessionTable`` are wrapped in
-    ``textual.lazy.Lazy`` so they do not block first paint. Verify
-    (a) they ARE present after Pilot's ``pause()`` ticks, and
-    (b) focus did not jump to the deferred-mounted widgets.
+    ``DetectedAgentsBanner`` is wrapped in ``textual.lazy.Lazy`` so it
+    does not block first paint. Verify (a) it IS present after Pilot's
+    ``pause()`` ticks, and (b) focus did not jump to the deferred-
+    mounted widget.
     """
 
-    async def test_lazy_children_mount_after_pause_and_keep_focus(self) -> None:
+    async def test_lazy_banner_mounts_after_pause_and_keeps_focus(self) -> None:
         from uxon.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets import DetectedAgentsBanner, RemoteSessionTable
+        from uxon.tui.widgets import DetectedAgentsBanner
 
         ctx = _mk_ctx(
             remote_hosts=(
@@ -301,13 +301,12 @@ class LazyWidgetsTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()  # second tick: Lazy wrappers swap in their children
             screen = app.screen
-            # Inner widgets resolve by their original ids (Lazy wrapper
+            # Inner widget resolves by its original id (Lazy wrapper
             # removes itself after mounting the child).
-            screen.query_one("#sessions-remote", RemoteSessionTable)
             screen.query_one("#detected-banner", DetectedAgentsBanner)
-            # Focus stayed on a non-remote, non-banner row.
+            # Focus stayed on a non-banner row.
             focused_id = screen.focused.id if screen.focused else None
-            self.assertNotIn(focused_id, ("sessions-remote", "detected-banner"))
+            self.assertNotEqual(focused_id, "detected-banner")
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")

@@ -23,7 +23,6 @@ from typing import Any, ClassVar
 from textual.app import App
 from textual.binding import Binding
 from textual.message import Message
-from textual.reactive import reactive
 from textual.worker import Worker, WorkerState
 
 from .config import TuiConfig
@@ -221,18 +220,6 @@ class UxonApp(App):
 
     CSS_PATH = "styles.tcss"
 
-    # Stage 8 commit 11: writable reactive carrying the flattened
-    # multi-host row tuple. The coalescer (``_mark_remote_rows_dirty``
-    # / ``_drain_remote_rows``) collapses N back-to-back per-host
-    # slot writes within one event-loop cycle into a single
-    # ``select_remote_rows`` invocation. Plain assignment only — NO
-    # ``compute_remote_rows`` method (textual/reactive.py:330-333
-    # marks the descriptor read-only when ``hasattr(obj,
-    # compute_name)`` holds, and any subsequent assignment raises).
-    # The introspection regression test in
-    # tests/test_uxon_tui_remote_table.py guards against this trap.
-    remote_rows: reactive[tuple] = reactive(())
-
     # Process-wide monotonic counter feeding ``self._instance_epoch``.
     # Each ``UxonApp.__init__`` snapshots-and-increments this so a
     # worker spawned by instance N can be distinguished from one
@@ -350,25 +337,10 @@ class UxonApp(App):
         # Stage 8 commit 11: dirty-flag for the remote-rows coalescer.
         # Multiple per-host slot writes within the same event-loop
         # cycle flip the flag once; the drainer (scheduled via
-        # ``call_after_refresh``) runs ``select_remote_rows`` and
-        # assigns ``self.remote_rows`` exactly once per refresh
-        # cycle. Independent of Textual's internal callable
-        # deduplication for ``call_after_refresh``: the dirty flag
-        # is the coalescing mechanism.
+        # ``call_after_refresh``) calls ``MainScreen._refresh_dashboard``
+        # exactly once per refresh cycle so the dashboard's selector
+        # runs once for the whole multi-host fan-in.
         self._remote_rows_dirty: bool = False
-        # Stage 8 commit 11 followup: reset module-level selector
-        # caches at every App-instance birth. The TTY-handoff loop
-        # (``run()`` outside this class) creates a fresh App after
-        # each launch; module-level caches in
-        # :mod:`uxon.tui.state` would otherwise leak prior-instance
-        # data into the new one. The keys typically differ, but the
-        # reset makes the contract explicit and shifts any cache
-        # invalidation cost to the cold path.
-        from .state import _HOST_HEALTH_BADGE_CACHE, _REMOTE_ROWS_CACHE
-
-        _REMOTE_ROWS_CACHE["key"] = None
-        _REMOTE_ROWS_CACHE["value"] = ()
-        _HOST_HEALTH_BADGE_CACHE.clear()
 
     def on_mount(self) -> None:
         # Stage 10a — ``UXON_DEBUG=startup`` channel: log mount entry
@@ -671,26 +643,25 @@ class UxonApp(App):
         prev = self.state.remote.get(host_name) or SlotState[RemoteSnapshot]()
         self.state.remote[host_name] = apply_slot(prev, result)
 
-        # Stage 8 commit 11: mark the remote-rows reactive dirty.
-        # The drainer collapses multiple same-cycle slot writes into
-        # a single selector invocation + a single per-host diff
-        # against the previous tuple. The single-host section
-        # header still refreshes imperatively (it depends on the
-        # newly-landed scope flag, not on the row tuple itself).
+        # Stage 8 commit 11 / 12: mark the dashboard dirty so
+        # ``_drain_remote_rows`` runs ``_refresh_dashboard`` once per
+        # refresh cycle even when N peer slots land back-to-back.
+        # The dashboard's selector (``select_dashboard_model``) reads
+        # ``state.remote`` directly, so we no longer need a separate
+        # row-tuple reactive.
         self._mark_remote_rows_dirty()
-        top = self.screen_stack[-1] if self.screen_stack else None
-        if top is not None and isinstance(top, MainScreen) and len(self.cfg.remote_hosts) == 1:
-            top._refresh_remote_section_header(host_name)
 
     # ── Remote-rows coalescer ────────────────────────────────────────
     #
-    # Stage 8 commit 11. Multiple per-host slot writes within the same
-    # event-loop cycle would otherwise trigger N back-to-back
-    # ``select_remote_rows`` invocations and N table-update fanouts.
-    # The coalescer collapses them: the dirty flag flips on the first
-    # write, ``call_after_refresh`` schedules a single drain at the
-    # end of the cycle, the drain runs the selector and dispatches
-    # the row tuple to the table once.
+    # Stage 8 commit 11 / 12. Multiple per-host slot writes within the
+    # same event-loop cycle would otherwise trigger N back-to-back
+    # dashboard refreshes. The coalescer collapses them: the dirty
+    # flag flips on the first write, ``call_after_refresh`` schedules
+    # a single drain at the end of the cycle, the drain calls the
+    # active :class:`MainScreen`'s ``_refresh_dashboard`` once. The
+    # dashboard's ``select_dashboard_model`` reads ``state.remote``
+    # directly and the reconciler only emits ops for rows that
+    # changed — so unchanged hosts produce zero structural mutations.
 
     def _mark_remote_rows_dirty(self) -> None:
         if self._remote_rows_dirty:
@@ -708,35 +679,23 @@ class UxonApp(App):
             self.call_later(self._drain_remote_rows)
 
     def _drain_remote_rows(self) -> None:
-        """Run :func:`select_remote_rows` once and dispatch the result.
+        """Refresh the unified dashboard once per coalesced cycle.
 
-        Reads ``self.state.remote`` and ``self.cfg.remote_hosts`` (both
-        snapshot-frozen for the purposes of this drain), assigns the
-        flattened tuple to ``self.remote_rows``, then dispatches a
-        per-host diff to the active :class:`MainScreen`'s remote
-        table. The dispatch (rather than data_bind) keeps the
-        screen-side per-host ``update_host_rows`` optimisation
-        introduced in commit 4 — only changed hosts trigger
-        ``add_row`` / ``remove_row``.
+        Per-host slot writes within one event-loop cycle flip
+        ``_remote_rows_dirty``; this drain runs at most once per
+        cycle and re-pulls the full dashboard model. The model
+        selector's identity-stable contract means an unchanged-host
+        slot does not produce new ops (the diff sees identical rows
+        and emits no patches), preserving the per-host repaint
+        optimisation structurally rather than via a separate
+        row-tuple comparator.
         """
         if not self._remote_rows_dirty:
             return
         self._remote_rows_dirty = False
-        from .state import select_remote_rows
-
-        new_rows = select_remote_rows(self.state, self.cfg.remote_hosts)
-        old_rows = self.remote_rows
-        self.remote_rows = new_rows
-        # Tuple equality short-circuits the assignment in Textual's
-        # ``Reactive._set`` (current_value != value gate). When the
-        # selector cache hits (id(slot.value) preserved by the
-        # identity-stable apply), ``new_rows is old_rows`` so the
-        # assignment is a no-op and we skip the screen dispatch too.
-        if new_rows is old_rows:
-            return
         screen = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
         if screen is not None:
-            screen._dispatch_remote_rows(old_rows, new_rows)
+            screen._refresh_dashboard()
 
     def _build_source_dispatch(
         self,

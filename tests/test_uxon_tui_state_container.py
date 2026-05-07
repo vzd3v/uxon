@@ -278,21 +278,22 @@ class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
     cache-miss every tick — defeating the entire point of the
     identity-stable apply.
 
-    Pin it: ``select_remote_rows(state, hosts)`` returns the same
-    tuple object across a ``refresh_tick`` increment with no
-    remote-slot change.
+    Pin it: the dashboard model selector returns the same tuple
+    object across a ``refresh_tick`` increment with no
+    state.remote / state.main change.
     """
 
-    def test_select_remote_rows_stable_across_refresh_tick(self) -> None:
+    def test_select_dashboard_model_stable_across_refresh_tick(self) -> None:
         from uxon.remote_collector import RemoteSnapshot
         from uxon.remote_hosts import RemoteHost
+        from uxon.tui.dashboard import model as dashboard_model
+        from uxon.tui.dashboard.model import select_dashboard_model
+        from uxon.tui.dashboard.ui_state import DashboardUiState
         from uxon.tui.slot_state import SlotState
-        from uxon.tui.state import _REMOTE_ROWS_CACHE, select_remote_rows
         from uxon.tui.tui_state import TuiState
 
         # Reset module-level cache so this test stands alone.
-        _REMOTE_ROWS_CACHE.clear()
-        _REMOTE_ROWS_CACHE.update({"key": None, "value": ()})
+        dashboard_model._LAST_OUTPUT = ()
 
         host = RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")
         snap = RemoteSnapshot(
@@ -306,11 +307,16 @@ class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
         state = TuiState()
         state.remote["prod"] = SlotState(value=snap, last_attempt_at=1.0)
 
-        first = select_remote_rows(state, [host])
+        from types import SimpleNamespace
+
+        cfg = SimpleNamespace(remote_hosts=[host], current_user="u1")
+        ui = DashboardUiState(sort_by="cpu")
+
+        first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         # Advance refresh_tick — selector must NOT cache-miss.
         state.refresh_tick += 1
         state.refresh_tick += 1
-        second = select_remote_rows(state, [host])
+        second = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         self.assertIs(first, second)
 
 

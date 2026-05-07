@@ -2,11 +2,11 @@
 
 Each column ships its own ``format`` (row → cell value) and
 ``sort_key`` (row → comparable). Formatters are pure functions that
-preserve the visual semantics of the legacy ``SessionTable`` /
-``RemoteSessionTable``: bold-green for attached, red/yellow CPU
-thresholds at >50 / >10, yellow user marker, deterministic per-host
-colour glyph on the NAME column so per-row attribution survives sort
-even with the HOST column hidden.
+preserve the visual semantics of the legacy local / remote tables:
+bold-green for attached, red/yellow CPU thresholds at >50 / >10,
+yellow user marker, deterministic per-host colour glyph on the NAME
+column so per-row attribution survives sort even with the HOST
+column hidden.
 
 These callables are invoked many times per tick by the reconciler;
 they MUST stay closure-free over mutable state.
