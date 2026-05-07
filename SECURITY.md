@@ -113,7 +113,7 @@ boundaries are:
 - **Centralised RBAC, SSO, or audit infrastructure.** uxon is the
   runtime layer beneath these — it emits structured audit events
   to the host's platform log channel (journald native or `/dev/log`
-  syslog; see [`docs/audit-events.md`](docs/audit-events.md)) and
+  syslog; see [`docs/audit-events.md`](docs/reference/audit-events.md)) and
   the host's own `sudo` trail covers cross-user invocations, but
   uxon is not a replacement for an enterprise audit pipeline.
 
@@ -173,13 +173,13 @@ The layers compose.
 - **Run agents as a dedicated, low-privilege OS user.** The
   paired-account pattern (`alice` shell user + `alice_agent`
   launch user) is the recommended team setup. See
-  [`docs/configuration.md`](docs/configuration.md#team-on-a-single-host)
+  [`docs/reference/configuration.md`](docs/scenarios/team-1.md)
   for the full template.
 
 - **Audit `sudo` invocations against `*_agent` accounts.** uxon's
   own audit channel (journald / syslog) records who attached, who
   killed, and what was launched at the application level — see
-  [`docs/audit-events.md`](docs/audit-events.md). For an
+  [`docs/audit-events.md`](docs/reference/audit-events.md). For an
   authoritative OS-level record (and full keystroke I/O), pair it
   with `sudo`'s own log via the following in `/etc/sudoers.d/`
   alongside the operator grants:
@@ -202,7 +202,7 @@ The layers compose.
 - **`ControlMaster` for multi-host operators.** Without SSH
   connection multiplexing, every TUI refresh tick to a peer opens
   a fresh handshake — slow, noisy in the peer's `auth.log`. See
-  [`docs/deployment.md` § SSH config](docs/deployment.md#ssh-config-is-the-source-of-truth)
+  [`docs/explain/multi-host-philosophy.md`](docs/explain/multi-host-philosophy.md)
   for the recommended `~/.ssh/config` snippet.
 
 - **Do not store long-lived credentials in `<user>_agent` home.**

@@ -8,10 +8,10 @@ automatic and one-shot per process; the wire layer is stdlib-only.
 This document is the **event reference**: what each event means, when
 it fires, what fields it carries.  For operational topology (where
 events land, ACLs, rotation) and for copy-pasteable `journalctl`
-recipes see [`docs/deployment.md`](deployment.md#audit-channel).
+recipes see [`../guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-audit-to-collector.md).
 For the config keys that gate the channel (`audit.enabled`,
 `audit.syslog_facility`) see
-[`docs/configuration.md`](configuration.md).
+[`configuration.md`](configuration.md).
 
 ## Envelope
 
@@ -64,7 +64,7 @@ sweep of everything that didn't go through.
 
 | Event                | When it fires                                                                                            | Extra fields beyond envelope                                                                                                  | Outcomes observed                |
 |----------------------|----------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|----------------------------------|
-| `cli.start`          | Top of `main()` after argv parse.  Skipped for pure `--help`/`--version`.                                | `flags` (sanitised list), `agents_enabled` (list), `enable_all_users_list` (bool), `audit_enabled` (bool, continuity marker), `allowed_roots_count` (int), `remote_hosts_count` (int) | `ok`                             |
+| `cli.start`          | Non-TUI subcommand startup, after argv parse.  Skipped for `--help`, `--version`, and the bare-TUI invocation (which emits `tui.open` instead). | `flags` (sanitised list), `agents_enabled` (list), `enable_all_users_list` (bool), `audit_enabled` (bool, continuity marker — same value as `cli.start` carries on the next non-TUI invocation; lets a query distinguish "channel was off" from "events not emitted"), `allowed_roots_count` (int), `remote_hosts_count` (int) | `ok`                             |
 | `tui.open`           | TUI process started (`uxon` with no args on a TTY).                                                      | (envelope only)                                                                                                              | `ok`                             |
 | `session.new`        | `uxon run` / `uxon new` / TUI launch-new created and dispatched a session.                               | `agent` (`claude` \| `codex` \| `cursor`), `project` (abs path), `branch` (or empty), `session`, `dry_run`                   | `ok`, `error`                    |
 | `session.attach`     | Local `uxon attach` or TUI Enter on a local row.                                                         | `session`, `target_user`                                                                                                     | `ok`, `denied`, `error`, `not_found` |
@@ -111,7 +111,7 @@ debugging across hosts.
 Set `audit.enabled = false` in `config.toml` to silence the channel
 entirely (no events, no sink detection).  There is no
 environment-variable override — the only kill-switch is the config
-table.  See [`docs/configuration.md`](configuration.md) for the
+table.  See [`configuration.md`](configuration.md) for the
 `[audit]` table reference.
 
 ## Schema stability

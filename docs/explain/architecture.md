@@ -1,7 +1,7 @@
 # Architecture
 
 Public architectural overview of `uxon`. Read
-[`CONTRIBUTING.md`](../CONTRIBUTING.md) first for setup and the
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md) first for setup and the
 contribution workflow; this document focuses on *what the code looks
 like and why*.
 
@@ -36,8 +36,8 @@ two are off and operator-opt-in.
 `audit` is the application-level operational record (who attached,
 who killed, who launched, with cross-host correlation).  Per-event
 schema and field reference in
-[`docs/audit-events.md`](audit-events.md); operational topology and
-query recipes in [`docs/deployment.md`](deployment.md#audit-channel).
+[`../reference/audit-events.md`](../reference/audit-events.md); operational topology and
+query recipes in [`../guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-audit-to-collector.md).
 `debug` is gated on `UXON_DEBUG=<topic>` and writes one JSONL line
 per instrumentation point — left in code permanently because it
 costs a single set-membership check when the env var is unset.
@@ -130,9 +130,9 @@ Sub-modules under `src/uxon/tui/`:
 `SessionDashboardTable` (one row per visible session — local own,
 local other-user under sudo, and one row per session on every
 configured peer) is built on four pure layers under
-[`src/uxon/tui/dashboard/`](../src/uxon/tui/dashboard/) plus the
+[`src/uxon/tui/dashboard/`](../../src/uxon/tui/dashboard/) plus the
 widget shell at
-[`src/uxon/tui/widgets/session_dashboard_table.py`](../src/uxon/tui/widgets/session_dashboard_table.py):
+[`src/uxon/tui/widgets/session_dashboard_table.py`](../../src/uxon/tui/widgets/session_dashboard_table.py):
 
 1. **`row.py` — `SessionRow`.** A single frozen dataclass is the
    unified row type. Two adapters land the legacy shapes onto it:
@@ -255,7 +255,7 @@ changes in `src/uxon/cli.py`.
 
 ## Security boundaries
 
-See [`SECURITY.md`](../SECURITY.md) for the threat model. The short
+See [`SECURITY.md`](../../SECURITY.md) for the threat model. The short
 version: the operator's `sudoers` config is the authorisation model;
 `uxon` enforces `allowed_roots`, the `git_remote_profiles` whitelist,
 and atomic config writes; everything inside the launched agent

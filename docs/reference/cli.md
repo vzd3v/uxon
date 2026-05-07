@@ -2,7 +2,7 @@
 
 Full reference for `uxon`'s non-interactive subcommands. The
 recommended entry point is the interactive TUI (`uxon` with no args
-on a TTY) — see [README.md](../README.md#the-tui). Use this page
+on a TTY) — see [README.md](../../README.md#quick-tui-tour). Use this page
 when you need a flag, an exit code, or a piece of behaviour the
 README's command summary doesn't cover.
 
@@ -22,12 +22,12 @@ flagged in each section.
 - Unknown flags after `run` / `new` are forwarded to the selected
   agent binary verbatim.
 - All subcommands honour the launch-user resolution described in
-  [`docs/configuration.md`](configuration.md#team-on-a-single-host)
-  and run `tmux` / `git` / `mkdir` under the launch user via
-  `sudo -iu` when caller ≠ launch user.
+  [`scenarios/team-1.md`](../scenarios/team-1.md) and run `tmux` /
+  `git` / `mkdir` under the launch user via `sudo -iu` when
+  caller ≠ launch user.
 - Every state-changing subcommand emits one audit event per
   invocation (success or failure) to the platform log channel —
-  see [`docs/audit-events.md`](audit-events.md) for which event each
+  see [`audit-events.md`](audit-events.md) for which event each
   command fires and the fields it carries.
 
 ## `uxon` (no arguments)
@@ -70,7 +70,7 @@ be a git repo — `uxon` never creates worktrees for you).
 | Flag | Effect |
 |------|--------|
 | `--attach-existing` / `--new-session` | Bypass the repeat prompt (see [Repeat behaviour](#repeat-behaviour)). |
-| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](configuration.md#use-case-github-repo-creation-on-new-project). `default` uses `default_git_remote_profile`. Incompatible with `-w`. Without this flag, no git is touched (CLI is non-interactive). |
+| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses `default_git_remote_profile`. Incompatible with `-w`. Without this flag, no git is touched (CLI is non-interactive). |
 | `--git-visibility private\|public` | Override the profile's visibility default for this one call. |
 | `--no-git` | Explicit "don't touch git" (same as omitting `--git-remote`). |
 
@@ -97,14 +97,14 @@ attach, current command, and path.
   `uxon-error: all-users-disabled`, which the multi-host aggregator
   uses to fall back to per-peer "own only" mode.
 - `--host <name>`: route to a configured peer over SSH (see
-  `[[remote_hosts]]` in `docs/deployment.md`). Mutually exclusive
+  `[[remote_hosts]]` in `explain/multi-host-philosophy.md`). Mutually exclusive
   with `--all-hosts`.
 - `--all-hosts`: print local block first, then one block per
   configured peer.
 - `--json`: emit a wire-schema envelope (or JSON Lines stream for
   `--all-hosts`) instead of the human table.
 
-## `uxon attach <id>`
+## `uxon attach <id> [--user <name>] [--host <alias>] [--dry-run]`
 
 Short form: `uxon -a <id>`. Re-attaches to an existing session.
 
@@ -118,6 +118,29 @@ Identifier resolution (first match wins):
 
 If `$TMUX` names the **same** socket as `uxon` for the launch user,
 `attach` becomes `tmux switch-client` automatically.
+
+**`--user <name>`** attaches to a session belonging to a different
+launch user on the same host. `<name>` is the OS account that owns
+the tmux socket (typically `<dev>_agent` in the recommended
+paired-account setup). Requires per-target NOPASSWD
+(`sudo -niu <name>`) — the same gating the TUI applies to its
+superuser block. Probed once for the single target; an unreachable
+target fails fast with the stable error tag `uxon-error:
+not-reachable` on stderr and exit code `1`. Passing `--user <self>`
+is a no-op.
+
+**`--host <alias>`** routes the attach to a configured
+`[[remote_hosts]]` peer over SSH. **Requires `--user`** (the peer
+is the sole authority on who can attach to what — the local side
+delegates the per-target sudo gate to the peer's own
+`uxon attach --user`). Wire command:
+`ssh <alias> uxon attach <id> --user <name>` with an
+`--audit-correlation-id <uuid>` internal flag so caller-side
+(`attach.remote.out`) and peer-side (`attach.remote.in`) audit
+events join.
+
+**`--dry-run`** prints the would-be tmux argv (local) or the SSH
+command line (remote) instead of executing it.
 
 ## `uxon kill <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]`
 
@@ -173,14 +196,14 @@ This **only** kills sessions for the current launch user. The
 operation is TUI-only, requires passwordless `sudo`, and prompts
 for `kill-all-reachable` to confirm.
 
-## `uxon doctor` <a id="doctor"></a>
+## `uxon doctor [--remote] [--json]` <a id="doctor"></a>
 
 Read-only diagnostics. Always safe to run.
 
-The TUI now surfaces `tmux` and per-agent issues in line, so most
-users won't need this. Use `uxon doctor` when an in-line hint is not
-enough — for example to script host inspection, capture a snapshot for
-a bug report, or audit several launch users at once.
+The TUI surfaces `tmux` and per-agent issues in line, so most users
+won't need this. Use `uxon doctor` when an in-line hint is not
+enough — to script host inspection, capture a snapshot for a bug
+report, or audit several launch users at once.
 
 Prints:
 - caller user vs launch user;
@@ -192,10 +215,24 @@ Prints:
 - current sessions on the dedicated socket;
 - any sessions on the default `tmux` socket that match
   `legacy_session_prefixes` (managed but worth noting);
+- audit-channel state on its own line:
+  `audit:    {enabled|disabled}, sink={journald-native|syslog|no-sink}`.
+  When `audit.enabled = false` the line reads
+  `audit:    disabled, sink=no-sink`;
 - per-profile status for `[[git_remote_profiles]]` (`ok` /
   `warn:<reason>` — passwordless sudo to `creds_user`, presence of
   `gh`, login status or token-file readability);
 - a list of detected configuration issues.
+
+**`--remote`** probes every configured `[[remote_hosts]]` peer
+once and reports reachability, latency, and session count. Default
+`uxon doctor` does **zero** SSH I/O — `--remote` is the explicit
+operator gesture for fleet health checks. The wire-schema envelope
+includes a `remote_hosts` array under `data`.
+
+**`--json`** emits the full report as a wire-schema envelope (see
+[`reference/wire-schema.md`](wire-schema.md)). Suitable for piping
+into observability pipelines.
 
 Use this first whenever behaviour is unexpected.
 

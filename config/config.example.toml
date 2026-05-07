@@ -1,5 +1,5 @@
-# uxon host config. Full guide: docs/configuration.md
-# (https://github.com/vzd3v/uxon/blob/main/docs/configuration.md).
+# uxon host config. Full guide: docs/index.md
+# (https://github.com/vzd3v/uxon/blob/main/docs/index.md).
 #
 # ── Recommended workflow ──────────────────────────────────────────
 # Pair each shell user with a low-privilege OS account that owns
@@ -8,12 +8,12 @@
 # blast radius of a runaway tool is `<user>_agent`'s sandbox, not
 # your home directory or your team's filesystem. In team setups
 # this also gives the operator supervision without impersonation —
-# see docs/configuration.md#operator-view-who-sees-whose-sessions.
+# see docs/explain/supervision-without-impersonation.md.
 #
 # This file ships in the SIMPLEST mode (agent runs as the caller),
 # so it copies and runs without any extra OS setup. To switch to
 # the recommended paired sandbox, read
-# docs/configuration.md#solo-on-a-single-host (or the relevant team
+# docs/scenarios/solo-1.md (or the relevant team
 # section) and replace the active block with the snippet shown
 # there. Scenario blocks below are commented out as starting points.
 #
@@ -23,7 +23,7 @@
 #   - Team on a single host    → per-caller paired sandbox / shared sandbox
 #   - Team on multiple hosts   → both
 #
-# Every key is documented in docs/configuration.md § Reference.
+# Every key is documented in docs/reference/configuration.md.
 
 default_launch_mode = "caller"
 session_prefix      = "uxon-"
@@ -50,7 +50,7 @@ default_args = []
 
 
 # ─── Solo on a single host (recommended: paired sandbox) ──────────
-# docs/configuration.md#solo-on-a-single-host
+# docs/scenarios/solo-1.md
 #
 # One-time host setup:
 #   sudo useradd -m -s /bin/bash vz_agent
@@ -70,7 +70,7 @@ default_args = []
 
 
 # ─── Solo on multiple hosts ───────────────────────────────────────
-# docs/configuration.md#solo-on-multiple-hosts
+# docs/scenarios/solo-n.md
 #
 # Each peer runs its own uxon install with its own paired-sandbox
 # config. On the aggregator, add one block per peer. Auth, port,
@@ -84,7 +84,7 @@ default_args = []
 
 
 # ─── Team on a single host ────────────────────────────────────────
-# docs/configuration.md#team-on-a-single-host
+# docs/scenarios/team-1.md
 #
 # Pick ONE of (a) / (b) / (c) below.
 #
@@ -121,14 +121,14 @@ default_args = []
 
 
 # ─── Team on multiple hosts ───────────────────────────────────────
-# docs/configuration.md#team-on-multiple-hosts
+# docs/scenarios/team-n.md
 #
 # Combine the team-on-a-single-host keys above with [[remote_hosts]]
 # blocks like in the solo-on-multiple-hosts section.
 
 
 # ─── Dashboard columns (TUI) ──────────────────────────────────────
-# docs/configuration.md#dashboard-columns
+# docs/guides/customise/customise-dashboard.md
 #
 # Empty / absent uses the built-in registry defaults. Listing
 # columns explicitly opts into a fixed visual order; unknown ids

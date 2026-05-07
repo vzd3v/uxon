@@ -8,6 +8,31 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — target version 3.3.0
 
+### Documentation
+
+- The user-facing site under [`docs/`](docs/) reorganised to
+  follow the [Diátaxis](https://diataxis.fr) model
+  (tutorials in [`docs/start/`](docs/start/), how-tos in
+  [`docs/guides/`](docs/guides/), reference in
+  [`docs/reference/`](docs/reference/), explainers in
+  [`docs/explain/`](docs/explain/)) plus per-scenario hubs at
+  [`docs/scenarios/`](docs/scenarios/).
+  - Old `docs/configuration.md`, `docs/deployment.md`, and
+    `docs/getting-started.md` removed; content lives in the
+    new tree (single source of truth per fact).
+  - New operations runbooks under `docs/guides/operate/` —
+    onboarding, offboarding, incident response, fleet rolling
+    upgrade, aggregator-loss recovery, central audit
+    forwarding, backup/restore, credential rotation.
+  - New hardening recipes under `docs/guides/harden/` —
+    per-UID resource limits, shared-projects ACLs, read-only
+    attach, `hidepid=2` interaction.
+  - New developer-privacy disclosure at
+    [`docs/privacy.md`](docs/privacy.md).
+  - Migration notes consolidated at
+    [`docs/migrations.md`](docs/migrations.md).
+  - README slimmed to pitch + install + pointers.
+
 ### Changed (breaking)
 
 - Audit events now go to the platform log (journald native on
@@ -35,7 +60,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - 15 audit events covering CLI startup, TUI lifecycle, session
   create/attach/end/kill, cross-host dispatch, and `git.remote.create`
   / `config.error`.  Schema and per-event field reference in
-  [`docs/audit-events.md`](docs/audit-events.md).
+  [`docs/audit-events.md`](docs/reference/audit-events.md).
 - Multi-host: configure peers under `[[remote_hosts]]` in `config.toml`;
   `uxon list --host <alias>` and `uxon list --all-hosts` aggregate
   sessions across the fleet.
@@ -49,7 +74,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   display order) and `default_sort_by` (initial sort column).
   Empty/absent uses built-in defaults; unknown ids are silently
   dropped for forward-compat. See
-  [`docs/configuration.md`](docs/configuration.md#use-case-dashboard-columns)
+  [`docs/reference/configuration.md`](docs/guides/customise/customise-dashboard.md)
   for the full reference.
 - `uxon attach --host <alias> --user <name> [--dry-run]` opens a remote
   session over SSH; pressing Enter on a TUI remote row does the same.
@@ -72,7 +97,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Per-host overrides in `[[remote_hosts]]`: `interval`,
   `connect_timeout`, `total_timeout` (`"5s"`, `"500ms"`, `"2m"`, or
   bare seconds), `extra_ssh_options`, and `command_template`
-  (kubectl-exec / docker-exec recipes in `docs/configuration.md`).
+  (kubectl-exec / docker-exec recipes in `docs/reference/configuration.md`).
 - `fetch_concurrency` (default `16`) caps concurrent SSH workers
   fleet-wide.
 - Per-host circuit breaker: three consecutive failures open a peer for
@@ -164,7 +189,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `uxon doctor` is no longer mentioned in README's "After install"
   quick-start; the TUI surfaces the same issues in line. The full
   `doctor` reference still lives in
-  [`docs/cli.md`](docs/cli.md#doctor).
+  [`docs/reference/cli.md`](docs/reference/cli.md#doctor).
 
 ### Fixed
 

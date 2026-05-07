@@ -5,7 +5,7 @@ Lead behaviour (post-restructure): create a dedicated venv at
 ``--venv-dir`` (default ``/opt/uxon/venv``), ``pip install`` the
 checkout into it, then symlink the generated console script to
 ``--install-path``. This preserves the multi-host symlink rollout
-documented in ``docs/deployment.md`` while picking up dependencies
+documented in ``docs/start/install.md`` while picking up dependencies
 (textual, tomlkit) automatically — no system packages required.
 
 Compatibility: the previous CLI accepted ``--repo-dir`` and
