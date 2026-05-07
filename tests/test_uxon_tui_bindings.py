@@ -114,6 +114,29 @@ class SettingsGKeyRetiredTests(unittest.TestCase):
         self.assertNotIn("g", keys, "g must not be a SettingsScreen binding")
 
 
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class MainScreenSortBindingsRetiredTests(unittest.TestCase):
+    """``s`` / ``S`` (sort cycle / sort dir) are gone in 3.4.
+
+    Sort is now a hard contract owned by the model selector — there's
+    no UI-state knob to flip. ``q`` and ``r`` / ``d`` / ``D`` remain.
+    """
+
+    def test_s_and_S_not_bound(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
+        self.assertNotIn("s", keys)
+        self.assertNotIn("S", keys)
+
+    def test_core_keys_remain(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
+        for k in ("q", "r", "d", "D"):
+            self.assertIn(k, keys, f"{k} must still be bound on MainScreen")
+
+
 def _action_name(binding) -> str:
     """Extract the action name from a Binding, stripping arguments."""
     action = getattr(binding, "action", "")

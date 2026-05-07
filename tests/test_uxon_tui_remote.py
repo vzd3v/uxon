@@ -72,7 +72,7 @@ class DashboardRemoteRowsTests(unittest.TestCase):
         _reset_dashboard_cache()
         state = _state_with_snapshots(snapshots)
         cfg = SimpleNamespace(remote_hosts=hosts, current_user="u1")
-        ui = DashboardUiState(sort_by="name", sort_dir="asc")
+        ui = DashboardUiState()
         return select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
 
     def test_empty_when_no_hosts(self) -> None:
@@ -107,7 +107,7 @@ class DashboardRemoteRowsTests(unittest.TestCase):
         _reset_dashboard_cache()
         state = _state_with_snapshots(snapshots)
         cfg = SimpleNamespace(remote_hosts=hosts, current_user="u1")
-        ui = DashboardUiState(sort_by="user", sort_dir="asc")
+        ui = DashboardUiState()
         return select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
 
     def test_pairs_each_record_with_its_host(self) -> None:
@@ -480,7 +480,7 @@ class StateSelectorTests(unittest.TestCase):
             }
         )
         cfg = SimpleNamespace(remote_hosts=hosts, current_user="u1")
-        ui = DashboardUiState(sort_by="cpu")
+        ui = DashboardUiState()
         first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         second = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         self.assertIs(first, second)
@@ -495,7 +495,7 @@ class StateSelectorTests(unittest.TestCase):
         hosts = [_host("prod")]
         state = _state_with_snapshots({"prod": _snap("prod", [{"user": "u1", "name": "n1"}])})
         cfg = SimpleNamespace(remote_hosts=hosts, current_user="u1")
-        ui = DashboardUiState(sort_by="cpu")
+        ui = DashboardUiState()
         first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         # Replace the slot's value with a different snapshot.
         state.remote["prod"] = SlotState(

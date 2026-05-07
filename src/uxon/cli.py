@@ -75,13 +75,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tui_ssh_refresh_interval_seconds": 10.0,
     # Dashboard column layout. ``columns`` is a list of column ids (see
     # :data:`uxon.tui.dashboard.KNOWN_COLUMN_IDS`); empty / absent means
-    # "use the registry defaults". ``default_sort_by`` picks the initial
-    # sort column; unknown ids fall back to ``"cpu"`` (logged via
-    # ``UXON_DEBUG=tui``).
+    # "use the registry defaults". Sort is a hard contract owned by the
+    # selector (locals → cfg-order remotes → recency), not configurable.
     "tui": {
         "table": {
             "columns": [],
-            "default_sort_by": "cpu",
         },
     },
     # Stage 5: ssh transport hardening.
@@ -177,7 +175,6 @@ class Config:
     # in TOML both collapse to ``None`` here. ``build_active_columns``
     # consumes this contract directly.
     tui_table_columns: tuple[str, ...] | None = None
-    tui_table_default_sort_by: str = "cpu"
 
 
 @dataclass
@@ -534,32 +531,22 @@ def load_config(cwd: str) -> Config:
         fail("tui.table.columns must be a list of column ids")
     else:
         tui_table_columns = tuple(str(x) for x in tui_table_columns_raw)
-    tui_table_default_sort_by_raw = tui_table_tbl.get("default_sort_by", "cpu")
-    if not isinstance(tui_table_default_sort_by_raw, str):
-        fail("tui.table.default_sort_by must be a string")
-    tui_table_default_sort_by = tui_table_default_sort_by_raw
-    # Unknown values are soft-fallback (``"cpu"``) with a debug-log
-    # entry — operators upgrading uxon may carry config from a version
-    # that named columns differently and we don't want to break TUI
-    # boot for cosmetic settings. Validation pulls the lightweight
-    # ``KNOWN_COLUMN_IDS`` constant from the dashboard package
-    # (no Rich / Textual import); the debug log goes through the same
-    # lazy path so ``import uxon.cli`` stays Rich-free.
-    from uxon.tui.dashboard import KNOWN_COLUMN_IDS as _KNOWN_COLUMN_IDS
-
-    if tui_table_default_sort_by not in _KNOWN_COLUMN_IDS:
+    # ``tui.table.default_sort_by`` was removed in 3.4 (sort is now a
+    # hard contract — locals → cfg-order remotes → recency). Any value
+    # carried over from older configs is silently ignored; emit one
+    # ``UXON_DEBUG=tui`` line so operators can spot the fossil.
+    if "default_sort_by" in tui_table_tbl:
         try:
             from uxon.tui.events import debug as _events_debug
 
             _events_debug(
                 "tui",
-                reason="unknown_default_sort_by",
-                id=tui_table_default_sort_by,
+                reason="ignored_default_sort_by",
+                id=str(tui_table_tbl.get("default_sort_by", "")),
             )
         except Exception:
             # Telemetry, not a correctness path.
             pass
-        tui_table_default_sort_by = "cpu"
 
     ssh_multiplex = str(merged.get("ssh_multiplex", DEFAULT_CONFIG["ssh_multiplex"]))
     if ssh_multiplex not in ("auto", "off"):
@@ -635,7 +622,6 @@ def load_config(cwd: str) -> Config:
         audit_enabled=audit_enabled,
         audit_syslog_facility=audit_syslog_facility,
         tui_table_columns=tui_table_columns,
-        tui_table_default_sort_by=tui_table_default_sort_by,
     )
 
 
@@ -5057,7 +5043,6 @@ def _build_tui_context(
         refresh_sources=refresh_sources,
         remote_hosts=list(cfg.remote_hosts),
         tui_table_columns=cfg.tui_table_columns,
-        tui_table_default_sort_by=cfg.tui_table_default_sort_by,
     )
 
 

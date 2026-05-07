@@ -288,12 +288,8 @@ class TuiContext:
     # Mirror the matching fields on :class:`uxon.cli.Config`.
     # ``tui_table_columns is None`` means "use registry defaults"; an
     # explicit tuple is the user's column order from
-    # ``[tui.table] columns = [...]``. ``tui_table_default_sort_by`` is
-    # the active sort column id at first paint (validated by
-    # ``cli.load_config`` to the registry's known ids; falls back to
-    # ``"cpu"`` when the config carries an unknown id).
+    # ``[tui.table] columns = [...]``.
     tui_table_columns: tuple[str, ...] | None = None
-    tui_table_default_sort_by: str = "cpu"
     # ``remote_snapshots`` is exposed via the property defined after
     # the class body. Reads return either a flattened view of
     # ``self._state.remote`` (when a state is linked) or the legacy

@@ -292,7 +292,6 @@ class UxonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("", tmpdir)
         self.assertIsNone(cfg.tui_table_columns)
-        self.assertEqual(cfg.tui_table_default_sort_by, "cpu")
 
     def test_load_config_tui_table_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -300,13 +299,11 @@ class UxonTests(unittest.TestCase):
                 textwrap.dedent("""
                     [tui.table]
                     columns         = ["name", "user", "cpu", "ram", "last"]
-                    default_sort_by = "ram"
                 """).strip()
                 + "\n",
                 tmpdir,
             )
         self.assertEqual(cfg.tui_table_columns, ("name", "user", "cpu", "ram", "last"))
-        self.assertEqual(cfg.tui_table_default_sort_by, "ram")
 
     def test_load_config_tui_table_empty_columns_collapses_to_none(self) -> None:
         # Explicit empty list and absent key both signal "use registry
@@ -334,22 +331,11 @@ class UxonTests(unittest.TestCase):
                     tmpdir,
                 )
 
-    def test_load_config_tui_table_rejects_non_string_default_sort_by(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaises(SystemExit):
-                self._write_and_load_cfg(
-                    textwrap.dedent("""
-                        [tui.table]
-                        default_sort_by = 1
-                    """).strip()
-                    + "\n",
-                    tmpdir,
-                )
-
-    def test_load_config_tui_table_unknown_default_sort_by_falls_back(self) -> None:
-        # Unknown id → soft-fallback to "cpu" with a debug-log entry.
-        # Patch the lazy events.debug import so the test does not
-        # depend on UXON_DEBUG being set, and to capture the call.
+    def test_load_config_tui_table_default_sort_by_ignored_with_debug_log(self) -> None:
+        # ``tui.table.default_sort_by`` was removed in 3.4 — sort is
+        # now a hard contract. Any value carried over from older
+        # configs is silently ignored; the loader emits one
+        # ``UXON_DEBUG=tui`` line so operators can spot the fossil.
         from uxon.tui import events as _events
 
         seen: list[tuple[str, dict]] = []
@@ -362,17 +348,17 @@ class UxonTests(unittest.TestCase):
                 cfg = self._write_and_load_cfg(
                     textwrap.dedent("""
                         [tui.table]
-                        default_sort_by = "no-such-column"
+                        default_sort_by = "ram"
                     """).strip()
                     + "\n",
                     tmpdir,
                 )
-        self.assertEqual(cfg.tui_table_default_sort_by, "cpu")
+        self.assertFalse(hasattr(cfg, "tui_table_default_sort_by"))
         self.assertEqual(len(seen), 1)
         topic, fields = seen[0]
         self.assertEqual(topic, "tui")
-        self.assertEqual(fields.get("reason"), "unknown_default_sort_by")
-        self.assertEqual(fields.get("id"), "no-such-column")
+        self.assertEqual(fields.get("reason"), "ignored_default_sort_by")
+        self.assertEqual(fields.get("id"), "ram")
 
     def test_load_config_reads_git_remote_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

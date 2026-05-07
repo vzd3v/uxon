@@ -204,8 +204,8 @@ class IdentityStabilityTests(_ModelTestBase):
 
 
 class SortingAndFilteringTests(_ModelTestBase):
-    def test_cross_host_sort_by_cpu_desc(self) -> None:
-        ui = DashboardUiState(sort_by="cpu", sort_dir="desc")
+    def test_cross_host_locals_first_then_cfg_order(self) -> None:
+        ui = DashboardUiState()
         cfg = _cfg(host_names=("h1", "h2"))
         state = TuiState(main=_main_data(sessions=(_session(cpu="3.0"),)))
         state.remote["h1"] = SlotState(
@@ -224,23 +224,15 @@ class SortingAndFilteringTests(_ModelTestBase):
             )
         )
         rows = select_dashboard_model(state, cfg, ui)
-        # Locals form the leading block regardless of CPU. The single
-        # local row (CPU 3.0) appears first even though h1 has a row at
-        # CPU 99.0 — within-block CPU ordering is the user-chosen sort.
+        # Locals form the leading block regardless of remote CPU.
         self.assertIsNone(rows[0].host)
-        self.assertEqual(rows[0].cpu_pct, 3.0)
-        # Then h1 in cfg order, sorted by CPU desc within the host.
+        # Then h1 in cfg order, then h2. CPU is irrelevant to the sort
+        # contract — only host priority + within-block recency matter.
         self.assertEqual([r.host for r in rows[1:3]], ["h1", "h1"])
-        self.assertEqual([r.name for r in rows[1:3]], ["uxon-high@claude", "uxon-low@claude"])
-        # Then h2.
         self.assertEqual(rows[3].host, "h2")
         self.assertEqual(rows[3].name, "uxon-mid@claude")
-        # CPU monotonically non-increasing within each host block.
-        h1_cpus = [r.cpu_pct for r in rows if r.host == "h1"]
-        self.assertEqual(h1_cpus, sorted(h1_cpus, reverse=True))
 
-    def test_filter_substring_matches_name_cmd_path_user(self) -> None:
-        ui_base = DashboardUiState(filter_text="")
+    def test_filter_substring_matches_name_and_user_by_default(self) -> None:
         cfg = _cfg()
         sess = (
             _session(name="uxon-foo@claude", user="alice", cmd="claude", path="/srv/foo"),
@@ -250,63 +242,39 @@ class SortingAndFilteringTests(_ModelTestBase):
         state = TuiState(main=_main_data(sessions=sess))
 
         # Filter on name fragment.
-        rows = select_dashboard_model(
-            state, cfg, DashboardUiState(filter_text="foo", sort_by="name", sort_dir="asc")
-        )
+        rows = select_dashboard_model(state, cfg, DashboardUiState(filter_text="foo"))
         self.assertEqual([r.name for r in rows], ["uxon-foo@claude"])
 
         # Filter on user. Reset cache so the previous result doesn't
         # accidentally compare equal (it won't — but be explicit).
         model_mod._LAST_OUTPUT = ()
-        rows = select_dashboard_model(
-            state, cfg, DashboardUiState(filter_text="bob", sort_by="name", sort_dir="asc")
-        )
+        rows = select_dashboard_model(state, cfg, DashboardUiState(filter_text="bob"))
         self.assertEqual([r.user for r in rows], ["bob"])
 
-        # Filter on cmd.
+        # Case-insensitive name match.
         model_mod._LAST_OUTPUT = ()
-        rows = select_dashboard_model(
-            state, cfg, DashboardUiState(filter_text="codex", sort_by="name", sort_dir="asc")
+        rows = select_dashboard_model(state, cfg, DashboardUiState(filter_text="BAR"))
+        self.assertEqual([r.name for r in rows], ["uxon-bar@claude"])
+
+    def test_filter_search_fields_extends_to_path_and_cmd(self) -> None:
+        # Operators can opt into extra fields via cfg.tui_search_fields.
+        cfg = SimpleNamespace(
+            current_user="alice",
+            remote_hosts=(),
+            tui_search_fields=("name", "user", "path", "cmd"),
         )
+        sess = (
+            _session(name="uxon-foo@claude", user="alice", cmd="claude", path="/srv/foo"),
+            _session(name="uxon-bar@claude", user="bob", cmd="codex", path="/srv/bar"),
+            _session(name="uxon-baz@claude", user="carol", cmd="claude", path="/home/x"),
+        )
+        state = TuiState(main=_main_data(sessions=sess))
+
+        rows = select_dashboard_model(state, cfg, DashboardUiState(filter_text="codex"))
         self.assertEqual([r.cmd for r in rows], ["codex"])
-
-        # Filter on path.
         model_mod._LAST_OUTPUT = ()
-        rows = select_dashboard_model(
-            state, cfg, DashboardUiState(filter_text="/home", sort_by="name", sort_dir="asc")
-        )
+        rows = select_dashboard_model(state, cfg, DashboardUiState(filter_text="/home"))
         self.assertEqual([r.path for r in rows], ["/home/x"])
-
-        # Case-insensitive.
-        model_mod._LAST_OUTPUT = ()
-        rows = select_dashboard_model(
-            state, cfg, DashboardUiState(filter_text="ALICE", sort_by="name", sort_dir="asc")
-        )
-        self.assertEqual([r.user for r in rows], ["alice"])
-
-        # Suppress unused warning.
-        del ui_base
-
-    def test_unknown_sort_by_falls_back_to_cpu(self) -> None:
-        cfg = _cfg(host_names=("h1",))
-        state = TuiState(main=_main_data(sessions=(_session(cpu="20.0"),)))
-        state.remote["h1"] = SlotState(
-            value=_snapshot(
-                "h1",
-                [
-                    _wire_rec(name="uxon-a@claude", cpu_pct=80.0),
-                    _wire_rec(name="uxon-b@claude", cpu_pct=10.0),
-                ],
-            )
-        )
-        rows_bogus = select_dashboard_model(
-            state, cfg, DashboardUiState(sort_by="bogus", sort_dir="desc")
-        )
-        model_mod._LAST_OUTPUT = ()
-        rows_cpu = select_dashboard_model(
-            state, cfg, DashboardUiState(sort_by="cpu", sort_dir="desc")
-        )
-        self.assertEqual(rows_bogus, rows_cpu)
 
     def test_no_main_yields_only_remote_rows(self) -> None:
         cfg = _cfg(host_names=("h1",))

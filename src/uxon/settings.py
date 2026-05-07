@@ -98,11 +98,6 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "array",
         "Dashboard columns in display order. Empty == REGISTRY defaults.",
     ),
-    SettingSpec(
-        "tui.table.default_sort_by",
-        "string",
-        "Initial sort column id (must match REGISTRY).",
-    ),
     SettingSpec("git_create_enabled", "bool", "Enable the git-remote-on-new-project flow."),
     SettingSpec(
         "default_git_remote_profile",

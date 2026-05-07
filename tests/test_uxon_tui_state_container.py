@@ -310,7 +310,7 @@ class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
         from types import SimpleNamespace
 
         cfg = SimpleNamespace(remote_hosts=[host], current_user="u1")
-        ui = DashboardUiState(sort_by="cpu")
+        ui = DashboardUiState()
 
         first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         # Advance refresh_tick — selector must NOT cache-miss.

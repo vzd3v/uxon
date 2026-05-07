@@ -131,7 +131,7 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
         host_a = RemoteHost(name="a", ssh_alias="a", description="", remote_uxon="uxon")
         host_b = RemoteHost(name="b", ssh_alias="b", description="", remote_uxon="uxon")
         cfg = SimpleNamespace(remote_hosts=[host_a, host_b], current_user="u1")
-        ui = DashboardUiState(sort_by="cpu")
+        ui = DashboardUiState()
         cols = build_active_columns(
             cfg_columns=None,
             flags=LayoutFlags(multi_host=True, cross_user=False),
