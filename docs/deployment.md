@@ -46,7 +46,7 @@ session, which agent, which project, correlation across hosts.
 `uxon doctor` reports the channel state on its own line:
 
 ```
-audit:    enabled, sink=journald-native    (or sink=syslog / disabled / no-sink)
+audit:    enabled, sink=journald-native    (or sink=syslog / sink=no-sink; "disabled" replaces "enabled" when audit.enabled = false)
 ```
 
 Disable per-host with `[audit]\nenabled = false` in `config.toml`;
@@ -400,18 +400,16 @@ peer). Requires the same SSH plumbing as `list --host`: BatchMode
 is mandatory (no interactive prompts) and the peer must have
 NOPASSWD `sudo -niu <name>` configured. `kill --json` is
 non-interactive and refuses to run without `--force` or
-`--dry-run`. The TUI mirrors this from the remote-sessions table:
-pressing `k` on a row prompts for confirmation and dispatches the
-same `--host`/`--user` SSH call.
+`--dry-run`. The TUI mirrors this from the unified session
+dashboard: pressing `d` on a remote row prompts for confirmation
+and dispatches the same `--host`/`--user` SSH call.
 
 ### TUI
 
 When at least one `[[remote_hosts]]` entry is configured, the
-main screen renders a "── remote sessions ──" header below the
-local block, with a `RemoteSessionTable` filled from the latest
-snapshots. The `HOST` column appears only when more than one
-peer is configured; the single-host case puts the host name in
-the section header and skips the column.
+main screen's session dashboard adds one row per session on each
+peer alongside local rows. A `HOST` column appears automatically
+when peers are configured.
 
 Per-host pollers run on the existing pluggable refresh registry —
 each peer in its own worker group, so a slow or dead peer never
@@ -420,7 +418,7 @@ is `tui_ssh_refresh_interval_seconds` (default 10s), separate
 from the local-tmux cadence.
 
 Activating a remote row (Enter) attaches to that peer's session
-over SSH. Pressing `k` on a remote row dispatches the per-session
+over SSH. Pressing `d` on a remote row dispatches the per-session
 kill described above (`uxon kill --host ... --user ... <id>` over
 SSH); bulk kill across hosts remains intentionally out of scope.
 

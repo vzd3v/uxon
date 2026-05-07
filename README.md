@@ -412,13 +412,13 @@ Inside the block:
 
 | Key                | Action |
 |--------------------|--------|
-| `↑` `↓` / `j` `k`  | Navigate |
+| `↑` `↓`            | Navigate |
 | `1`–`9`            | Jump to item by number |
 | `Enter`            | Activate (launch / attach) |
 | `d`                | Kill highlighted session (with confirmation) |
 | `D`                | Kill all *own* sessions (`kill-all` to confirm) |
+| `s` / `S`          | Cycle sort column / toggle direction |
 | `r`                | Refresh |
-| `g` / `G`          | Jump to first / last |
 | `q` / `Esc`        | Quit (or back, in sub-screens) |
 
 ### Detach and re-enter

@@ -181,8 +181,9 @@ ssh_alias = "vz-scratch"
 
 What this unlocks:
 
-- The TUI grows a `── remote sessions ──` block with sessions from
-  every peer, refreshed on `tui_ssh_refresh_interval_seconds`.
+- The TUI's session dashboard adds one row per session on each peer
+  (a `HOST` column appears automatically when peers are configured),
+  refreshed on `tui_ssh_refresh_interval_seconds`.
 - `uxon list --all-hosts` and `uxon list --host <name>` work from
   the CLI; pair with `--json` for scripting (JSON Lines, one
   envelope per source).
@@ -380,10 +381,10 @@ ssh_alias = "vz-prod2"
 
 Operating model:
 
-- The TUI shows local users' sessions and remote hosts' sessions in
-  separate blocks; the operator sees everything in one screen.
+- The TUI shows local and remote sessions in a single dashboard
+  with a `HOST` column; the operator sees everything in one screen.
 - `Enter` on a remote row attaches to that peer's session through
-  SSH; `k` kills one highlighted remote session through the peer's
+  SSH; `d` kills one highlighted remote session through the peer's
   own `uxon kill --host ... --user ...` path.
 - `uxon list --all-hosts --json` is the integration surface — JSON
   Lines, one envelope per source, suitable for piping into log

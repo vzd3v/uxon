@@ -111,9 +111,11 @@ boundaries are:
   cgroups, AppArmor, seccomp, kernel namespaces, or per-UID
   network policies.
 - **Centralised RBAC, SSO, or audit infrastructure.** uxon is the
-  runtime layer beneath these — it surfaces events on its own
-  best-effort JSONL log and via the host's `sudoers` audit, but it
-  is not a replacement for an enterprise audit pipeline.
+  runtime layer beneath these — it emits structured audit events
+  to the host's platform log channel (journald native or `/dev/log`
+  syslog; see [`docs/audit-events.md`](docs/audit-events.md)) and
+  the host's own `sudo` trail covers cross-user invocations, but
+  uxon is not a replacement for an enterprise audit pipeline.
 
 ## Hardening recommendations
 
@@ -123,9 +125,12 @@ boundaries are:
   [`docs/configuration.md`](docs/configuration.md#team-on-a-single-host)
   for the full template.
 
-- **Audit `sudo` invocations against `*_agent` accounts.** uxon
-  does not log attaches itself; the canonical record lives in the
-  host's `sudo` audit. Add the following to `/etc/sudoers.d/`
+- **Audit `sudo` invocations against `*_agent` accounts.** uxon's
+  own audit channel (journald / syslog) records who attached, who
+  killed, and what was launched at the application level — see
+  [`docs/audit-events.md`](docs/audit-events.md). For an
+  authoritative OS-level record (and full keystroke I/O), pair it
+  with `sudo`'s own log via the following in `/etc/sudoers.d/`
   alongside the operator grants:
 
   ```

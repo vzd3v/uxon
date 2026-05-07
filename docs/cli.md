@@ -169,9 +169,9 @@ the current launch user. Requires interactive confirmation (typing
 `kill-all`) or `--force`.
 
 This **only** kills sessions for the current launch user. The
-"kill all sessions for every user on this host" operation is
-TUI-only, requires passwordless `sudo`, and prompts for
-`kill-all-global` to confirm.
+"kill all sessions for every reachable user on this host"
+operation is TUI-only, requires passwordless `sudo`, and prompts
+for `kill-all-reachable` to confirm.
 
 ## `uxon doctor` <a id="doctor"></a>
 
