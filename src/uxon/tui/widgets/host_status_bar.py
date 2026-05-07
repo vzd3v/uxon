@@ -60,7 +60,11 @@ class HostStatusBar(Widget):
         height: auto;
         padding: 0 1;
     }
-    HostStatusBar > Static {
+    HostStatusBar > Vertical {
+        height: auto;
+    }
+    HostStatusBar > Vertical > Static {
+        height: auto;
         color: $text-muted;
     }
     """
