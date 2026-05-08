@@ -65,13 +65,13 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         # ``priority=True`` on every binding so they fire even while
         # focus sits on the FilterInput's inner Input — operators
         # navigate / pick / cancel without ever leaving the search
-        # field.
+        # field. No vim ``j``/``k`` aliases here: when the operator
+        # is typing into the filter, navigation letters are noise,
+        # and arrow keys cover the gesture cleanly.
         Binding("escape", "cancel", "Cancel", show=True, priority=True),
         Binding("enter", "pick", "Select", show=True, priority=True),
         Binding("up", "cursor_up", "", show=False, priority=True),
         Binding("down", "cursor_down", "", show=False, priority=True),
-        Binding("k", "cursor_up", "", show=False, priority=True),
-        Binding("j", "cursor_down", "", show=False, priority=True),
     )
 
     def __init__(self, projects: list[tuple[str, str]], project_root: str) -> None:

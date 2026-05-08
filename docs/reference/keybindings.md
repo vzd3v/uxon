@@ -43,7 +43,7 @@ list. Cursor and selection bindings work without leaving the input.
 | Key | Action |
 |---|---|
 | typing | Filter the list (case-insensitive substring on name) |
-| `↑` / `↓` (or `k` / `j`) | Navigate the (filtered) list |
+| `↑` / `↓` | Navigate the (filtered) list |
 | `Enter` | Confirm the row under the cursor |
 | `Esc` | Clear filter when non-empty, otherwise cancel |
 
