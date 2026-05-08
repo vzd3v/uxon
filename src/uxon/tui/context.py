@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from uxon.probes import HostStatsResult
@@ -297,7 +297,7 @@ class TuiContext:
     # explicit tuple is the user's column order from
     # ``[tui.table] columns = [...]``.
     tui_table_columns: tuple[str, ...] | None = None
-    tui_table_default_view: str = "by_host"
+    tui_table_default_view: Literal["by_host", "flat"] = "by_host"
     tui_search_fields: tuple[str, ...] = ("name", "user")
     tui_color_palette: tuple[str, ...] = ("cyan", "blue")
     local_host_color: str = "green"

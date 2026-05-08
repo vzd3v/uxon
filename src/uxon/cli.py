@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 if TYPE_CHECKING:
     from uxon.sudo_probe import SudoCapability
@@ -184,7 +184,7 @@ class Config:
     # in TOML both collapse to ``None`` here. ``build_active_columns``
     # consumes this contract directly.
     tui_table_columns: tuple[str, ...] | None = None
-    tui_table_default_view: str = "by_host"
+    tui_table_default_view: Literal["by_host", "flat"] = "by_host"
     tui_search_fields: tuple[str, ...] = ("name", "user")
     tui_color_palette: tuple[str, ...] = ("cyan", "blue")
     local_host_color: str = "green"
@@ -567,7 +567,7 @@ def load_config(cwd: str) -> Config:
             f"tui.table.default_view must be 'by_host' or 'flat', "
             f"got {tui_table_default_view_raw!r}"
         )
-    tui_table_default_view = str(tui_table_default_view_raw)
+    tui_table_default_view: Literal["by_host", "flat"] = tui_table_default_view_raw
 
     tui_search_tbl = tui_tbl.get("search", {})
     if not isinstance(tui_search_tbl, dict):
