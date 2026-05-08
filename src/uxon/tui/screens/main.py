@@ -82,7 +82,6 @@ class MainScreen(Screen):
     .segment-header {
         color: $text-muted;
         padding: 0 1;
-        margin-top: 1;
     }
     .empty-note {
         color: $text-muted;
