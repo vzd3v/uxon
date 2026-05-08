@@ -57,18 +57,19 @@ def test_status_block_marks_cached_when_snapshot_from_cache():
     rows = ()
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name="kris")])
     snap = SimpleNamespace(from_cache=True, host_stats=None)
-    slot = SimpleNamespace(value=snap, breaker_open=False)
+    slot = SimpleNamespace(value=snap, consecutive_failures=0)
     state = SimpleNamespace(remote={"kris": slot}, main=None)
     lines = select_host_status_block(rows, state, host_stats_local=None, cfg=cfg)
     kris = next(line for line in lines if line.host_name == "kris")
     assert kris.state == "(cached)"
 
 
-def test_status_block_marks_unreachable_when_breaker_open():
+def test_status_block_marks_unreachable_after_consecutive_failures():
     rows = ()
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name="kris")])
     snap = SimpleNamespace(from_cache=False, host_stats=None)
-    slot = SimpleNamespace(value=snap, breaker_open=True)
+    # Threshold mirrors BreakerSpec.trip_after default of 3.
+    slot = SimpleNamespace(value=snap, consecutive_failures=3)
     state = SimpleNamespace(remote={"kris": slot}, main=None)
     lines = select_host_status_block(rows, state, host_stats_local=None, cfg=cfg)
     kris = next(line for line in lines if line.host_name == "kris")

@@ -66,7 +66,12 @@ def _bucket_state(host_name: str | None, state) -> str:
     snap = slot.value
     if getattr(snap, "from_cache", False):
         return "(cached)"
-    if getattr(slot, "breaker_open", False):
+    # The breaker is owned by the scheduler and never round-trips into
+    # the slot, so we read ``consecutive_failures`` directly from
+    # :class:`SlotState`. ``BreakerSpec.trip_after`` defaults to 3, so
+    # we mirror that threshold here — keeping the two in sync is a
+    # known coupling, called out in :class:`BreakerSpec`'s docstring.
+    if getattr(slot, "consecutive_failures", 0) >= 3:
         return "unreachable"
     return ""
 
