@@ -341,6 +341,17 @@ class UxonApp(App):
         # exactly once per refresh cycle so the dashboard's selector
         # runs once for the whole multi-host fan-in.
         self._remote_rows_dirty: bool = False
+        # Recompose-safe transient UI state for ``MainScreen``. Lives
+        # here (not on the screen) because ``apply_loaded_ctx`` builds
+        # a fresh screen on layout-signature flips, and three pieces
+        # of state used to die with it: dashboard view/filter, host
+        # tab index, and the tab-focus-restore flag. See
+        # :class:`MainScreenUiState` for the rationale.
+        from .dashboard.ui_state import DashboardUiState, MainScreenUiState
+
+        self.main_ui = MainScreenUiState(
+            ui=DashboardUiState(view_mode=ctx.tui_table_default_view),
+        )
 
     def on_mount(self) -> None:
         # Stage 10a — ``UXON_DEBUG=startup`` channel: log mount entry

@@ -191,6 +191,54 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
                 msg="detected_agents was dropped on ctx swap",
             )
 
+    async def test_main_ui_survives_recompose(self) -> None:
+        """Dashboard view, tab index, and focus-restore flag survive
+        a layout-signature recompose.
+
+        Regression for a bug class: ``apply_loaded_ctx`` builds a
+        fresh ``MainScreen`` whenever ``select_layout_signature``
+        flips (e.g. another user starts a session). Three pieces of
+        operator-set UI state used to die with the old screen — view
+        mode, active host tab, pending tab-focus-restore — silently
+        snapping the operator back to defaults mid-session. The fix
+        moved them to ``self.app.main_ui`` (a
+        :class:`MainScreenUiState`), which the App keeps stable
+        across screen swaps.
+        """
+        from types import SimpleNamespace
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.dashboard.ui_state import set_view_mode
+
+        skeleton = _mk_ctx()
+        # Loaded ctx flips ``has_other_sessions`` → forces recompose.
+        loaded = _mk_ctx(
+            other_sessions=[
+                SimpleNamespace(user="alice", name="proj@claude", status="active")
+            ]
+        )
+
+        app = UxonApp(skeleton, probe_agents=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            old_screen = app.screen
+            old_main_ui = app.main_ui
+            # Mutate every field the contract claims to preserve.
+            app.main_ui.ui = set_view_mode(app.main_ui.ui, "flat")
+            app.main_ui.active_tab_index = 2
+            app.main_ui.pending_tab_focus_restore = True
+            # Swap to a ctx with a different layout signature → triggers
+            # the ``MainScreen(self.ctx)`` rebuild + ``switch_screen`` path.
+            app.screen.apply_loaded_ctx(loaded)
+            await pilot.pause()
+            self.assertIsNot(
+                app.screen, old_screen, msg="layout flip should have produced a fresh MainScreen"
+            )
+            self.assertIs(app.main_ui, old_main_ui, msg="main_ui must survive the screen swap")
+            self.assertEqual(app.main_ui.ui.view_mode, "flat")
+            self.assertEqual(app.main_ui.active_tab_index, 2)
+            self.assertTrue(app.main_ui.pending_tab_focus_restore)
+
     async def test_refresh_keypress_kicks_host_probe(self) -> None:
         """Pressing ``r`` re-runs the host probe.
 

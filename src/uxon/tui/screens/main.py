@@ -152,17 +152,13 @@ class MainScreen(Screen):
         self.ctx = ctx
         self.loading = bool(ctx.loading)
         self._restore_focus_key = ""
-        # Dashboard tracking. The widget is a view; MainScreen owns the
-        # SessionRow tuple and the UI state so action_kill /
-        # on_data_table_row_selected can map cursor → SessionRow.
-        # Commit 10 bridges only own local rows into the dashboard;
-        # commits 11/12 fold other-user and remote rows.
+        # Dashboard rows are an in-flight repaint cache, not UI state —
+        # they're rebuilt from ``state`` on every tick, so dying with
+        # the screen on recompose is harmless. Filter/view/tab state
+        # is different: it lives on ``self.app.main_ui`` (see
+        # :class:`MainScreenUiState`) so a layout-signature flip
+        # doesn't silently snap the operator back to defaults.
         self._dashboard_rows: tuple[SessionRow, ...] = ()
-        self._dashboard_ui = DashboardUiState(view_mode=self.ctx.tui_table_default_view)
-        # Set on by_host→flat when focus was inside the tab strip;
-        # consumed on the return flat→by_host flip to put focus back
-        # on the active tab. See ``action_toggle_view``.
-        self._tab_focus_pending_restore = False
         # Compute the active dashboard columns once and reuse from
         # ``compose`` and ``_refresh_dashboard``. Two independent calls
         # would be fragile when the flags widen — easy to drift one
@@ -182,6 +178,29 @@ class MainScreen(Screen):
             cfg_columns=ctx.tui_table_columns,
             flags=flags,
         )
+
+    # ── Recompose-safe UI state proxies ──────────────────────────────
+    #
+    # These three properties tunnel through to ``self.app.main_ui``
+    # (the :class:`MainScreenUiState` the App owns). They keep the
+    # call sites in this screen unchanged while making the underlying
+    # storage stable across the ``apply_loaded_ctx`` recompose path.
+
+    @property
+    def _dashboard_ui(self) -> DashboardUiState:
+        return self.app.main_ui.ui  # type: ignore[attr-defined]
+
+    @_dashboard_ui.setter
+    def _dashboard_ui(self, value: DashboardUiState) -> None:
+        self.app.main_ui.ui = value  # type: ignore[attr-defined]
+
+    @property
+    def _tab_focus_pending_restore(self) -> bool:
+        return self.app.main_ui.pending_tab_focus_restore  # type: ignore[attr-defined]
+
+    @_tab_focus_pending_restore.setter
+    def _tab_focus_pending_restore(self, value: bool) -> None:
+        self.app.main_ui.pending_tab_focus_restore = value  # type: ignore[attr-defined]
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -453,11 +472,21 @@ class MainScreen(Screen):
         active_bucket = None
         if in_by_host:
             buckets = select_host_buckets(rows, cfg_view)
+            # The App holds the surviving tab index so a recompose
+            # doesn't snap the operator back to "local". Apply it
+            # before ``set_buckets`` so the strip mounts already
+            # showing the right tab (avoids a one-frame flicker).
+            saved_idx = self.app.main_ui.active_tab_index  # type: ignore[attr-defined]
+            if buckets and saved_idx >= len(buckets):
+                saved_idx = max(0, len(buckets) - 1)
+                self.app.main_ui.active_tab_index = saved_idx  # type: ignore[attr-defined]
             try:
                 tab_strip = self.query_one("#host-tabs", HostTabStrip)
             except Exception:
-                active_idx = 0
+                active_idx = saved_idx if buckets else 0
             else:
+                if tab_strip.active_index != saved_idx:
+                    tab_strip.active_index = saved_idx
                 tab_strip.set_buckets(list(buckets), colors=self._block_colors())
                 active_idx = tab_strip.active_index
             if buckets:
@@ -869,6 +898,11 @@ class MainScreen(Screen):
         strip.active_index = (strip.active_index + 1) % n
 
     def on_host_tab_activated(self, event: HostTabActivated) -> None:
+        # Persist the new index on the App so a recompose mid-session
+        # restores the same tab. ``_refresh_dashboard`` re-reads from
+        # ``self.app.main_ui.active_tab_index`` and feeds it back into
+        # the strip, keeping the two in lockstep.
+        self.app.main_ui.active_tab_index = event.index  # type: ignore[attr-defined]
         self._refresh_dashboard()
 
     def action_enable_detected(self) -> None:
