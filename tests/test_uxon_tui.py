@@ -35,6 +35,7 @@ from uxon.tui.state import (
     compute_all_missing,
     confirm_phrase_matches,
     digit_jump_intent,
+    filter_existing_projects,
     launch_commit_decision,
     launch_mode_id,
     launch_options_state,
@@ -533,6 +534,46 @@ class PickIndexStateTests(unittest.TestCase):
 
     def test_pick_index_preserves_empty_string_sentinel(self) -> None:
         self.assertEqual(pick_index([("", "skip"), ("main", "desc")], 0), "")
+
+
+class FilterExistingProjectsTests(unittest.TestCase):
+    def test_empty_needle_returns_full_list_in_order(self) -> None:
+        rows = [("zebra", "1s"), ("alpha", "2s"), ("Mango", "3s")]
+        self.assertEqual(filter_existing_projects(rows, ""), rows)
+
+    def test_whitespace_only_needle_returns_full_list(self) -> None:
+        rows = [("alpha", "1s"), ("beta", "2s")]
+        self.assertEqual(filter_existing_projects(rows, "   "), rows)
+
+    def test_substring_match_is_case_insensitive(self) -> None:
+        rows = [("Alpha", "1s"), ("beta", "2s"), ("AlphaBeta", "3s")]
+        self.assertEqual(
+            filter_existing_projects(rows, "ALP"),
+            [("Alpha", "1s"), ("AlphaBeta", "3s")],
+        )
+
+    def test_no_match_returns_empty_list(self) -> None:
+        rows = [("alpha", "1s"), ("beta", "2s")]
+        self.assertEqual(filter_existing_projects(rows, "zzz"), [])
+
+    def test_filter_preserves_input_order(self) -> None:
+        # mtime-desc order from the loader must survive the filter —
+        # we never re-rank by match position.
+        rows = [("zeta-foo", "1s"), ("foo-bar", "2s"), ("alpha-foo", "3s")]
+        self.assertEqual(
+            filter_existing_projects(rows, "foo"),
+            rows,
+        )
+
+    def test_match_inside_name_not_only_prefix(self) -> None:
+        rows = [("my-secret-tool", "1s")]
+        self.assertEqual(filter_existing_projects(rows, "secret"), rows)
+
+    def test_does_not_match_against_mtime_column(self) -> None:
+        # Filter is name-only — the mtime suffix shouldn't sneak into
+        # the haystack and surface false matches like "1s".
+        rows = [("alpha", "1s"), ("beta", "2s")]
+        self.assertEqual(filter_existing_projects(rows, "1s"), [])
 
 
 class MainScreenIntentStateTests(unittest.TestCase):

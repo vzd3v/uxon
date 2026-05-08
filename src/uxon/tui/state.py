@@ -302,6 +302,22 @@ def pick_index(rows: list[tuple[str, str]] | tuple[tuple[str, str], ...], index:
     return None
 
 
+def filter_existing_projects(
+    projects: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    needle: str,
+) -> list[tuple[str, str]]:
+    """Substring-filter a project list by name (case-insensitive).
+
+    Original order is preserved — the screen sorts by mtime desc when
+    it builds the list, and the filter must not reshuffle that. An
+    empty (or whitespace-only) needle returns every project.
+    """
+    n = needle.strip().lower()
+    if not n:
+        return list(projects)
+    return [p for p in projects if n in p[0].lower()]
+
+
 def selected_setting_index(*, row: int, has_git_view: bool, entry_count: int) -> int | None:
     idx = row - 1 if has_git_view else row
     if has_git_view and row == 0:
