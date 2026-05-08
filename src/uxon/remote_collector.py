@@ -40,7 +40,7 @@ import os
 import shlex
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -712,15 +712,16 @@ def fetch_remote_snapshot(
     # not actually represent.
     cached = read_cached_snapshot(host.name, override_dir=override_state_dir)
     if cached is not None:
-        return RemoteSnapshot(
-            host_name=host.name,
+        # ``replace`` over a field-by-field copy: every other field
+        # round-trips automatically, so adding a new attribute to
+        # :class:`RemoteSnapshot` (e.g. ``host_stats`` in 3.4) doesn't
+        # silently get dropped on the failure path the way it did
+        # before this refactor.
+        return replace(
+            cached,
             fetched_at_epoch=fetched_at,
             from_cache=True,
             error=error,
-            sessions=cached.sessions,
-            cached_at_epoch=cached.cached_at_epoch,
-            scope_limited=cached.scope_limited,
-            scope_skipped=cached.scope_skipped,
         )
     return RemoteSnapshot(
         host_name=host.name,
