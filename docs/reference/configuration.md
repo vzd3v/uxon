@@ -80,6 +80,13 @@ The attach indicator is a glyph in the NAME column: `●` filled
 when the session is attached, `○` hollow otherwise. No bold
 green override.
 
+The NAME column renders the project stem only. The `@<agent>`
+suffix carried by the underlying tmux session name (visible in
+`tmux ls` and the CLI `uxon list` table) is omitted here because
+the AGENT column carries it. The `-N` disambiguator that
+distinguishes siblings on the same stem is preserved
+(`proj@claude-2` → `proj-2`).
+
 ## `[tui.search]` table
 
 | Key | Type | Default | Purpose |

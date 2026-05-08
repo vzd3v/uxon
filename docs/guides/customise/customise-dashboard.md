@@ -81,6 +81,12 @@ columns = ["name", "path", "last"]
 - Attached state is shown by a glyph in the NAME column: `●`
   filled when attached, `○` hollow otherwise. There is no bold
   green override.
+- The NAME column shows the project stem only — the `@<agent>`
+  suffix that lives in the underlying tmux session name (and
+  that `tmux ls` would print) is dropped here because the AGENT
+  column carries it. Sibling sessions on the same stem keep
+  their `-N` index so they stay visually distinct
+  (`proj@claude-2` → `proj-2`).
 
 ## Colour and accessibility
 

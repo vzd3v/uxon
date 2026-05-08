@@ -19,6 +19,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - Sort is now a hard contract, not a setting: locals first (own then other-user), then `[[remote_hosts]]` declaration order, with within-block ranking by last-attach desc then name asc. The `tui.table.default_sort_by` key is silently ignored.
 - Attached state is shown by a glyph in the NAME column — `●` filled when attached, `○` hollow otherwise — instead of a bold green name.
+- NAME column drops the `@<agent>` suffix (the agent has its own column already). The disambiguator index `-N` is preserved so siblings stay distinct, e.g. `proj@claude-2` renders as `proj-2`.
 - Quit is `q` / `й` only. `Esc` is a scoped cancel (clear search, close modal, leave field) and never quits the TUI.
 - `PATH` column hidden by default. Operators opt back in by listing `"path"` in `tui.table.columns`.
 

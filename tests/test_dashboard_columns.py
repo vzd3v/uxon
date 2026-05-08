@@ -223,6 +223,38 @@ class NameFormatterTests(unittest.TestCase):
         # Attach state is encoded by the glyph (●/○), not by colour.
         self.assertEqual(text.plain, "● foo")
 
+    def test_strips_agent_suffix(self) -> None:
+        # Sessions are named ``<prefix><stem>@<agent>``; ``row.short``
+        # is the prefix-stripped form ``<stem>@<agent>``. The AGENT
+        # column carries the agent already, so NAME drops it.
+        col = _by_id("name")
+        text = col.format(_row(short="vz_devagent_cli_tool@claude", agent="claude"))
+        self.assertEqual(text.plain, "○ vz_devagent_cli_tool")
+
+    def test_preserves_disambiguator_index(self) -> None:
+        # ``-N`` comes after ``@<agent>`` in the session name. Two
+        # siblings at the same stem rely on this number to stay
+        # visually distinct after the agent is stripped.
+        col = _by_id("name")
+        text = col.format(_row(short="proj@claude-2", agent="claude"))
+        self.assertEqual(text.plain, "○ proj-2")
+
+    def test_agent_substring_in_stem_is_safe(self) -> None:
+        # If a stem coincidentally contains ``@<agent>`` (unlikely but
+        # not impossible when stems are derived from filesystem
+        # paths), only the trailing suffix is stripped — not the
+        # earlier substring match.
+        col = _by_id("name")
+        text = col.format(_row(short="weird@claude_in_name@claude", agent="claude"))
+        self.assertEqual(text.plain, "○ weird@claude_in_name")
+
+    def test_unparseable_short_passes_through(self) -> None:
+        # Legacy / unrecognised names that don't carry the suffix
+        # render as-is — never invent a stripped form.
+        col = _by_id("name")
+        text = col.format(_row(short="legacy-name", agent="claude"))
+        self.assertEqual(text.plain, "○ legacy-name")
+
 
 class AgentFormatterTests(unittest.TestCase):
     def test_legacy_claude_marked(self) -> None:

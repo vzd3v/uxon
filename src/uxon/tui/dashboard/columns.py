@@ -145,16 +145,45 @@ def _format_user(row: SessionRow) -> Text:
     return Text(row.user or "-")
 
 
-def _format_name(row: SessionRow) -> Text:
-    """Emit ``●``/``○`` attach glyph + plain name.
+def _strip_agent_suffix(short: str, agent: str) -> str:
+    """Drop the ``@<agent>`` token from a prefix-stripped session name.
 
-    Block hue and zebra dim are layered by the widget at render
-    time; this formatter stays pure data so the reconciler can
-    diff cells without knowing positional metadata.
+    Session names follow ``<prefix><stem>@<agent>[-N]`` (see
+    :func:`uxon.cli.parse_session_name`). ``row.short`` is the
+    name with the prefix removed — i.e. ``<stem>@<agent>[-N]``.
+    The dashboard renders the agent in its own AGENT column, so
+    showing ``@<agent>`` in NAME is redundant. We strip the last
+    occurrence of ``@<agent>`` and preserve the trailing ``-N``
+    disambiguator (so ``proj@claude-2`` becomes ``proj-2``, not
+    ``proj`` — otherwise two siblings would collide visually).
+
+    ``rpartition`` over ``find``: a stem like ``foo@claude_helper``
+    happens to contain the agent name as a substring; partitioning
+    from the right matches the actual suffix.
+    """
+    if not agent:
+        return short
+    needle = f"@{agent}"
+    if needle not in short:
+        return short
+    base, _, tail = short.rpartition(needle)
+    return base + tail
+
+
+def _format_name(row: SessionRow) -> Text:
+    """Emit ``●``/``○`` attach glyph + display name.
+
+    Display name strips the ``@<agent>`` suffix from ``row.short``
+    (the AGENT column carries that already) but keeps the ``-N``
+    disambiguator so siblings remain distinguishable. Block hue and
+    zebra dim are layered by the widget at render time; this
+    formatter stays pure data so the reconciler can diff cells
+    without knowing positional metadata.
     """
     glyph = "● " if row.attached else "○ "
     text = Text(glyph)
-    text.append(row.short or row.name or "-")
+    base = row.short or row.name or "-"
+    text.append(_strip_agent_suffix(base, row.agent))
     return text
 
 
@@ -203,7 +232,11 @@ def _sort_user(row: SessionRow) -> str:
 
 
 def _sort_name(row: SessionRow) -> str:
-    return row.short or row.name
+    # Sort by the same display label the operator sees in NAME, not
+    # by ``<stem>@<agent>``. Otherwise two same-stem siblings on
+    # different agents interleave with unrelated rows whose stem
+    # happens to alphabetise between them.
+    return _strip_agent_suffix(row.short or row.name, row.agent)
 
 
 def _sort_agent(row: SessionRow) -> str:
