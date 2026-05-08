@@ -78,7 +78,14 @@ class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            # SearchBar Input has focus by default after on_mount.
+            # Default focus lands on action-cwd; the search bar is
+            # hidden until summoned with ``s``.
+            bar = pilot.app.screen.query_one("#search-bar")
+            self.assertFalse(bar.has_class("-shown"))
+            # Summon the search bar.
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertTrue(bar.has_class("-shown"))
             focused = pilot.app.focused
             self.assertIsNotNone(focused)
             self.assertIn("Input", type(focused).__name__)
@@ -87,13 +94,15 @@ class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             strip = pilot.app.screen.query_one("#host-tabs")
             self.assertFalse(strip.display)
-            # Esc clears the input.
+            # First Esc clears the input but leaves the bar visible.
             await pilot.press("escape")
             await pilot.pause()
-            # Esc again blurs back to the dashboard / sibling widget.
+            self.assertTrue(bar.has_class("-shown"))
+            # Second Esc hides the bar and returns focus to the caller.
             await pilot.press("escape")
             await pilot.pause()
-            # Tab navigation still works after the SearchBar lost focus.
+            self.assertFalse(bar.has_class("-shown"))
+            # Tab navigation still works after the SearchBar hides.
             await pilot.press("]")
             await pilot.pause()
             await pilot.press("q")

@@ -134,12 +134,19 @@ class MainScreenSortBindingsRetiredTests(unittest.TestCase):
     no UI-state knob to flip. ``q`` and ``r`` / ``d`` / ``D`` remain.
     """
 
-    def test_s_and_S_not_bound(self) -> None:
+    def test_s_does_not_trigger_sort(self) -> None:
+        """``s`` is repurposed as the search-summon shortcut (3.4).
+        The old sort-cycle action is gone — this guards against it
+        sneaking back in under the same key.
+        """
         from uxon.tui.screens.main import MainScreen
 
-        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
-        self.assertNotIn("s", keys)
-        self.assertNotIn("S", keys)
+        for b in MainScreen.BINDINGS:
+            key = _binding_key(b)
+            if key in ("s", "S"):
+                self.assertNotIn(
+                    "sort", b.action, f"{key} must not trigger any sort action"
+                )
 
     def test_core_keys_remain(self) -> None:
         from uxon.tui.screens.main import MainScreen
