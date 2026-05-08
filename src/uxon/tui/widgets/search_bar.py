@@ -64,9 +64,12 @@ class SearchBar(Widget):
         self._filter.input.can_focus = False
 
     @property
-    def input(self):  # noqa: D401 — backward-compat alias for tests/callers.
-        """Inner :class:`Input` (delegated through the FilterInput primitive)."""
-        return self._filter.input
+    def value(self) -> str:
+        return self._filter.value
+
+    @value.setter
+    def value(self, text: str) -> None:
+        self._filter.value = text
 
     def set_match_count(self, count: int) -> None:
         self._filter.set_match_count(count)
