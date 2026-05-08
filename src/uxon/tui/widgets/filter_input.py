@@ -60,6 +60,11 @@ class FilterInput(Widget):
             yield self._counter
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        # The inner Input.Changed is an implementation detail — the
+        # public event is FilterChanged. ``stop()`` keeps the raw
+        # message from leaking to consumers that mix a FilterInput
+        # with a sibling Input on the same screen.
+        event.stop()
         self.post_message(FilterChanged(event.value))
 
     def set_match_count(self, count: int) -> None:
