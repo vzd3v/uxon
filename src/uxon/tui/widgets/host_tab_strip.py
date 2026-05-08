@@ -203,6 +203,12 @@ class HostTabStrip(Widget):
         self._buckets = buckets
         if colors is not None:
             self._colors = colors
+        # Clamp the active index when the bucket list shrinks (e.g. a
+        # remote host disappears mid-session). Without this, the
+        # highlighted tab and the active row group can drift apart
+        # until the operator presses ``[`` / ``]``.
+        if buckets and self.active_index >= len(buckets):
+            self.active_index = len(buckets) - 1
         try:
             container = self.query_one(Horizontal)
         except Exception:
