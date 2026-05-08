@@ -91,8 +91,15 @@ class SearchBar(Widget):
         subsequent Esc returns focus to the same widget the
         operator summoned the bar from.
         """
+        # ``None`` means "caller didn't supply one — keep the existing
+        # fallback". An explicit empty string would be a caller bug;
+        # ignore it the same way to avoid clobbering the default.
         if return_focus_id:
             self._fallback_focus_id = return_focus_id
+        elif return_focus_id is None:
+            # Reset to the default so a previous show() doesn't leak
+            # a stale fallback into a later id-less invocation.
+            self._fallback_focus_id = "action-cwd"
         self.add_class("-shown")
         self.input.can_focus = True
         self.input.focus()
