@@ -37,12 +37,15 @@ When the agent-detection banner is showing:
 
 ## "Open existing project" screen
 
+The filter input owns focus on mount — start typing to narrow the
+list. Cursor and selection bindings work without leaving the input.
+
 | Key | Action |
 |---|---|
-| `↑` / `↓` (or `k` / `j`) | Navigate |
-| `1`–`9` | Pick by number |
-| `Enter` | Confirm |
-| `Esc` | Cancel |
+| typing | Filter the list (case-insensitive substring on name) |
+| `↑` / `↓` (or `k` / `j`) | Navigate the (filtered) list |
+| `Enter` | Confirm the row under the cursor |
+| `Esc` | Clear filter when non-empty, otherwise cancel |
 
 ## "Pick git remote profile" screen
 

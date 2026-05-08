@@ -213,9 +213,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         skeleton = _mk_ctx()
         # Loaded ctx flips ``has_other_sessions`` → forces recompose.
         loaded = _mk_ctx(
-            other_sessions=[
-                SimpleNamespace(user="alice", name="proj@claude", status="active")
-            ]
+            other_sessions=[SimpleNamespace(user="alice", name="proj@claude", status="active")]
         )
 
         app = UxonApp(skeleton, probe_agents=False)
@@ -693,9 +691,97 @@ class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
                 press_keys("up", "enter"),
                 "beta",
             ),
+            ScreenScenario(
+                # 'p' narrows [alpha,beta,gamma] → [alpha]; cursor lands on 0;
+                # Enter picks the only match.
+                "type-narrows-and-picks",
+                lambda: ExistingProjectScreen(
+                    [("alpha", ""), ("beta", ""), ("gamma", "")], "/srv/work"
+                ),
+                press_keys("p", "enter"),
+                "alpha",
+            ),
+            ScreenScenario(
+                # 'z' narrows to []; Enter is a no-op so no dismiss fires
+                # and the harness's "unset" sentinel survives.
+                "type-no-match-enter-noop",
+                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
+                press_keys("z", "enter"),
+                "unset",
+            ),
+            ScreenScenario(
+                # First Esc clears the (non-empty) filter; second Esc
+                # dismisses with None because the input is empty.
+                "esc-clears-then-cancels",
+                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
+                press_keys("a", "escape", "escape"),
+                None,
+            ),
         ]
         results = await run_screen_scenarios(scenarios)
         self.assertEqual(results, [s.expected for s in scenarios])
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
+    """Standalone pilot tests for live-search wiring: focus-on-mount and
+    the match counter — assertions that need direct widget queries
+    rather than the dismiss-value harness."""
+
+    async def test_filter_input_focused_on_mount(self) -> None:
+        from textual.app import App
+
+        from uxon.tui.screens.existing import ExistingProjectScreen
+        from uxon.tui.widgets.filter_input import FilterInput
+
+        class Host(App):
+            def __init__(self) -> None:
+                super().__init__()
+                self.scr = ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work")
+
+            def on_mount(self) -> None:
+                self.push_screen(self.scr)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            fi = app.scr.query_one(FilterInput)
+            self.assertIs(app.focused, fi.input)
+
+    async def test_match_counter_updates_with_typing(self) -> None:
+        from textual.app import App
+        from textual.widgets import Static
+
+        from uxon.tui.screens.existing import ExistingProjectScreen
+        from uxon.tui.widgets.filter_input import FilterInput
+
+        class Host(App):
+            def __init__(self) -> None:
+                super().__init__()
+                self.scr = ExistingProjectScreen(
+                    [("alpha", ""), ("beta", ""), ("gamma", "")], "/srv/work"
+                )
+
+            def on_mount(self) -> None:
+                self.push_screen(self.scr)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            fi = app.scr.query_one(FilterInput)
+            counter = fi.query_one("#match-count", Static)
+            # Empty filter → counter blank.
+            self.assertEqual(str(counter.content), "")
+            await pilot.press("a")  # 'a' matches alpha + gamma + beta — wait, beta?
+            await pilot.pause()
+            # 'a' is in alpha, gamma, beta — three matches.
+            self.assertEqual(str(counter.content), "3 matches")
+            await pilot.press("l")  # filter is now "al" → only alpha
+            await pilot.pause()
+            self.assertEqual(str(counter.content), "1 match")
+            await pilot.press("z")  # "alz" → no matches
+            await pilot.pause()
+            self.assertEqual(str(counter.content), "0 matches")
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
