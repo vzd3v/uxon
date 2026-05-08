@@ -6,16 +6,12 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 3.5.0
-
-### Added
-- "Open existing project" modal lands directly on a search input — type to narrow the project list (case-insensitive substring on name), `↑`/`↓`/`k`/`j` navigate the filtered view, `Enter` confirms, `Esc` clears a non-empty filter (otherwise cancels). Quick-pick by digit `1`–`9` removed in favour of typing.
-
 ## [3.4.0] — 2026-05-08
 
 ### Added
 - Session dashboard `by_host` view (now default) with a per-host tab strip and status bar; toggle to a single ranked `flat` list with `v`. Configure the initial mode via `tui.table.default_view`.
 - Search bar across the dashboard: focused by default on TUI mount, refocus from anywhere with `/`, clear with `Esc`. Configure searchable fields via `tui.search.fields` (default `name`, `user`; allowed `name`, `user`, `host`, `path`, `cmd`).
+- "Open existing project" modal lands directly on a search input — type to narrow the project list (case-insensitive substring on name), `↑` / `↓` navigate the filtered view, `Enter` confirms, `Esc` clears a non-empty filter (otherwise cancels). Quick-pick by digit `1`–`9` removed in favour of typing.
 - Per-host block colour: pin a hue with `[[remote_hosts]] color = "..."`, customise the auto-cycle palette with `[tui] color_palette`, and the local block colour with `[local_host] color`.
 - `ssh_control_persist_seconds` setting (default `300`; must be `> 0`). Disable multiplexing with `ssh_multiplex = "off"`.
 - Layout-invariant bindings: every dashboard key has a JCUKEN twin (`q`/`й`, `r`/`к`, `d`/`в`, `v`/`м`, …) so the keymap survives a Russian keyboard layout.
