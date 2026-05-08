@@ -16,7 +16,7 @@ def _row(host, name, attached=False, cpu=0.0, user="me"):
 def test_buckets_in_cfg_order_with_locals_first_and_empty_kept():
     rows = (_row(None, "a"), _row("kris", "k1"), _row("kris", "k2"))
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name="kris"), SimpleNamespace(name="ada")])
-    buckets = select_host_buckets(rows, cfg, state=SimpleNamespace())
+    buckets = select_host_buckets(rows, cfg)
     assert [b.host_name for b in buckets] == [None, "kris", "ada"]
     assert [len(b.rows) for b in buckets] == [1, 2, 0]
 

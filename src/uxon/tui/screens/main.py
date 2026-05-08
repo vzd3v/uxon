@@ -452,7 +452,7 @@ class MainScreen(Screen):
             pass
         active_bucket = None
         if in_by_host:
-            buckets = select_host_buckets(rows, cfg_view, state)
+            buckets = select_host_buckets(rows, cfg_view)
             try:
                 tab_strip = self.query_one("#host-tabs", HostTabStrip)
             except Exception:

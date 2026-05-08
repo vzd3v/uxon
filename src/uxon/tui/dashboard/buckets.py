@@ -42,7 +42,6 @@ class HostStatusLine:
 def select_host_buckets(
     rows: tuple[SessionRow, ...],
     cfg,
-    state,
 ) -> tuple[HostBucket, ...]:
     grouped: dict[str | None, list] = {None: []}
     for host in cfg.remote_hosts:
@@ -90,7 +89,7 @@ def select_host_status_block(
     host_stats_local: Any,
     cfg,
 ) -> tuple[HostStatusLine, ...]:
-    buckets = select_host_buckets(rows, cfg, state)
+    buckets = select_host_buckets(rows, cfg)
     out: list[HostStatusLine] = []
     for bucket in buckets:
         if bucket.host_name is None:
