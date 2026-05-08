@@ -92,4 +92,10 @@ def test_host_status_bar_renders_a_line():
         state="",
     )
     rendered = _render(line)
-    assert "local" in rendered and "3 sess" in rendered and "1 attached" in rendered
+    # Compact contract (commit b8d69d4): sessions fold into "N/M sess",
+    # CPU is a bare percent, mem is "U/TG", load is two decimals.
+    assert "local" in rendered
+    assert "3/1 sess" in rendered
+    assert "cpu 42%" in rendered
+    assert "mem 7.6/15G" in rendered
+    assert "la 0.42" in rendered
