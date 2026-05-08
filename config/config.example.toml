@@ -135,5 +135,5 @@ default_args = []
 # from older / newer uxon versions are silently dropped.
 #
 # [tui.table]
-# columns         = ["name", "user", "cpu", "ram", "last", "cmd"]
+# columns         = ["name", "user", "cpu", "ram", "last"]
 # default_sort_by = "cpu"

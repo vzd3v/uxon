@@ -92,10 +92,13 @@ class RegistryShapeTests(unittest.TestCase):
         self.assertFalse(_by_id("user").default_visible)
         self.assertFalse(_by_id("pid").default_visible)
         self.assertFalse(_by_id("wins").default_visible)
-        # PATH flips to off-by-default in 3.4 — it pushed CMD off-screen
-        # in narrow terminals; operators opt-in via ``[tui.table] columns``.
+        # PATH and CMD flip to off-by-default in 3.4 — both duplicate
+        # information already in NAME/AGENT for uxon-launched sessions
+        # and pushed useful columns off-screen on narrow terminals.
+        # Operators opt back in via ``[tui.table] columns``.
         self.assertFalse(_by_id("path").default_visible)
-        for col_id in ("name", "agent", "cpu", "ram", "new", "last", "cmd"):
+        self.assertFalse(_by_id("cmd").default_visible)
+        for col_id in ("name", "agent", "cpu", "ram", "new", "last"):
             self.assertTrue(_by_id(col_id).default_visible, col_id)
 
     def test_alignment(self) -> None:

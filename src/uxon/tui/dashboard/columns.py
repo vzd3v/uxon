@@ -300,7 +300,13 @@ REGISTRY: tuple[ColumnSpec, ...] = (
     ColumnSpec(id="ram", label="RAM", format=format_ram, sort_key=_sort_ram, align="right"),
     ColumnSpec(id="new", label="NEW", format=_format_new, sort_key=_sort_new, align="right"),
     ColumnSpec(id="last", label="LAST", format=_format_last, sort_key=_sort_last, align="right"),
-    ColumnSpec(id="cmd", label="CMD", format=_format_cmd, sort_key=_sort_cmd),
+    ColumnSpec(
+        id="cmd",
+        label="CMD",
+        format=_format_cmd,
+        sort_key=_sort_cmd,
+        default_visible=False,
+    ),
     ColumnSpec(
         id="path",
         label="PATH",

@@ -57,7 +57,7 @@ not configurable here — see [`reference/cli.md`](cli.md) under
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
-| `tui.table.columns` | array | `[]` | Dashboard columns in display order. Empty (or absent) uses the registry defaults; listing ids opts into a fixed order. Unknown ids are dropped silently (forward-compat). The `path` column is hidden by default — opt back in by listing `"path"` here. |
+| `tui.table.columns` | array | `[]` | Dashboard columns in display order. Empty (or absent) uses the registry defaults; listing ids opts into a fixed order. Unknown ids are dropped silently (forward-compat). The `path` and `cmd` columns are hidden by default — opt back in by listing `"path"` / `"cmd"` here. |
 | `tui.table.default_view` | `"by_host"` / `"flat"` | `"by_host"` | Initial dashboard layout. `by_host` shows the per-host tab strip and status bar; `flat` is a single ranked list across the fleet. Toggle at runtime with `v`. |
 
 Available column ids: `host`, `user`, `name`, `agent`, `cpu`,

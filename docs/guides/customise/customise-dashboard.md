@@ -5,7 +5,7 @@ suits most setups. The `[tui.table]` block lets you override it.
 
 ```toml
 [tui.table]
-columns      = ["name", "user", "cpu", "ram", "last", "cmd"]
+columns      = ["name", "user", "cpu", "ram", "last"]
 default_view = "by_host"
 ```
 
@@ -18,8 +18,9 @@ default_view = "by_host"
   when other-user rows are visible). Listing columns explicitly
   opts into a fixed visual order; ids unknown to the running
   `uxon` version are silently dropped (an older config carrying
-  a since-removed column id stays loadable). The `path` column
-  is hidden by default — opt back in by listing `"path"` here.
+  a since-removed column id stays loadable). The `path` and
+  `cmd` columns are hidden by default — opt back in by listing
+  `"path"` / `"cmd"` here.
 - **`tui.table.default_view`** — `"by_host"` (default) or
   `"flat"`. `by_host` shows the per-host tab strip and status
   bar; `flat` is a single ranked list across the fleet. Toggle
