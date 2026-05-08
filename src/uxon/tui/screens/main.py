@@ -160,6 +160,10 @@ class MainScreen(Screen):
         # commits 11/12 fold other-user and remote rows.
         self._dashboard_rows: tuple[SessionRow, ...] = ()
         self._dashboard_ui = DashboardUiState(view_mode=self.ctx.tui_table_default_view)
+        # Set on by_host→flat when focus was inside the tab strip;
+        # consumed on the return flat→by_host flip to put focus back
+        # on the active tab. See ``action_toggle_view``.
+        self._tab_focus_pending_restore = False
         # Compute the active dashboard columns once and reuse from
         # ``compose`` and ``_refresh_dashboard``. Two independent calls
         # would be fragile when the flags widen — easy to drift one
@@ -781,9 +785,48 @@ class MainScreen(Screen):
 
     def action_toggle_view(self) -> None:
         new_mode = "flat" if self._dashboard_ui.view_mode == "by_host" else "by_host"
+        # The tab strip is hidden in flat mode. If focus is currently
+        # inside the strip, ``_refresh_dashboard`` is about to strand
+        # it on a ``display: none`` widget — move it to the dashboard
+        # table now and remember the position so we can return focus
+        # to the active tab when the strip reappears.
+        was_on_strip = self._focus_in_tab_strip()
+        if new_mode == "flat" and was_on_strip:
+            try:
+                self.query_one("#sessions-dashboard", SessionDashboardTable).focus()
+            except Exception:
+                pass
         self._dashboard_ui = set_view_mode(self._dashboard_ui, new_mode)
         self._refresh_dashboard()
+        if new_mode == "by_host" and self._tab_focus_pending_restore:
+            self._restore_focus_to_active_tab()
+        # Pending-restore flag flips on flat→by_host but only when we
+        # left the strip on the previous toggle. Set after the restore
+        # check so the same toggle doesn't fire it twice.
+        self._tab_focus_pending_restore = was_on_strip and new_mode == "flat"
         self.app.notify(f"View: {new_mode.replace('_', ' ')}")
+
+    def _focus_in_tab_strip(self) -> bool:
+        """True iff the currently-focused widget is inside ``#host-tabs``."""
+        node = self.focused
+        while node is not None:
+            if isinstance(node, HostTabStrip):
+                return True
+            node = node.parent
+        return False
+
+    def _restore_focus_to_active_tab(self) -> None:
+        """Focus the active ``_TabButton`` after a flat→by_host flip."""
+        try:
+            strip = self.query_one("#host-tabs", HostTabStrip)
+        except Exception:
+            return
+        idx = strip.active_index
+        try:
+            tab = strip.query_one(f"#tab-{idx}")
+        except Exception:
+            return
+        tab.focus()
 
     def action_focus_search(self) -> None:
         # Remember which widget summoned the bar so Esc can return
