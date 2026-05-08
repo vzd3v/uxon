@@ -29,6 +29,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - Dashboard rows no longer briefly reorder on tab switches and large refresh diffs (an apply-order bug that dropped or shuffled inserted rows when several appeared in one tick).
 - Remote attach (CLI `uxon attach --host` and TUI Enter on a remote row) opens a fresh ssh connection instead of reusing the poller's `ControlMaster`. A wedged multiplex master could previously hang the interactive ssh at `unix_wait_for_peer`, leaving the user with a frozen terminal and no remote tmux. Polling and remote `kill` continue to multiplex.
+- Wedged `ControlMaster` now self-heals on every multiplex-using path: polling fetch, CLI `uxon kill --host`, and TUI remote-row kill. After a `subprocess.TimeoutExpired` against the default ssh template, the collector tries `ssh -O exit`, then resolves the `%C` socket path via `ssh -G`, finds the master pid in `/proc` and `SIGKILL`s it, then unlinks the stale socket. The next ssh attempt spawns a fresh master. Without this, an unresponsive master kept every subsequent slave hanging at `unix_wait_for_peer` until killed by hand — and a CLI-only kill (no TUI poller running) had no recovery path at all.
 
 ## [3.3.0] — 2026-05-07
 

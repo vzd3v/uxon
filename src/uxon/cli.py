@@ -2829,6 +2829,7 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     from uxon.remote_collector import (
         DEFAULT_CONNECT_TIMEOUT_SEC,
         DEFAULT_TOTAL_TIMEOUT_SEC,
+        _recover_wedged_master,
         build_peer_ssh_argv,
     )
     from uxon.remote_hosts import find_host
@@ -2928,6 +2929,13 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
             timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired:
+        # Same wedge-recovery as the polling path — without it a CLI
+        # ``uxon kill --host`` invoked when no TUI is running has no
+        # other consumer to drive recovery, and every retry will hang
+        # identically until the master is killed by hand. See
+        # ``fetch_remote_snapshot._run_one`` for the rationale.
+        if cfg.ssh_multiplex != "off":
+            _recover_wedged_master(target_host)
         _emit_kill_remote_error("ssh timeout", 124)
         eprint(f"uxon: --host {target_host.name}: ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s")
         return 1
@@ -4615,6 +4623,7 @@ def _build_tui_context(
         from uxon.remote_collector import (
             DEFAULT_CONNECT_TIMEOUT_SEC,
             DEFAULT_TOTAL_TIMEOUT_SEC,
+            _recover_wedged_master,
             build_peer_ssh_argv,
         )
         from uxon.remote_hosts import find_host
@@ -4678,6 +4687,8 @@ def _build_tui_context(
                 timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
             )
         except subprocess.TimeoutExpired:
+            if cfg.ssh_multiplex != "off":
+                _recover_wedged_master(peer)
             _emit_kill_remote_error("ssh timeout", 124)
             fail(f"ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s talking to {host_name}", 1)
         except FileNotFoundError:

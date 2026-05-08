@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
@@ -410,6 +411,169 @@ def _build_fetch_argv(
     )
 
 
+# ── Wedged-master self-heal ─────────────────────────────────────────
+
+
+# How long any one recovery subprocess is allowed to block. Each step
+# (``ssh -O exit``, ``ssh -G``) is bounded independently so a single
+# wedged invocation cannot stall the whole sequence.
+_RECOVER_STEP_TIMEOUT_SEC = 2
+
+
+def _resolved_control_path(
+    ssh_alias: str,
+    control_dir: str,
+    *,
+    _runner: Any = None,
+) -> str | None:
+    """Resolve ``%C`` in our default ControlPath template for ``ssh_alias``.
+
+    Uses ``ssh -G`` — the option-resolution mode that prints the effective
+    config without opening a connection. Returns the absolute socket path
+    or ``None`` on any subprocess failure / timeout / parse miss.
+
+    ``_runner`` is the ``subprocess.run``-compatible seam used by tests;
+    a ``None`` default is resolved to the module-level ``subprocess.run``
+    at call time so a test that patches ``subprocess.run`` at the module
+    level (e.g. via ``mock.patch.object(uxon.subprocess, "run", ...)``)
+    propagates into this seam too. Capturing ``subprocess.run`` as a
+    direct default would freeze the original reference at def-time and
+    bypass any later patch.
+    """
+    runner = subprocess.run if _runner is None else _runner
+    template = f"{control_dir}/ssh-%C"
+    try:
+        cp = runner(
+            ["ssh", "-G", "-o", f"ControlPath={template}", ssh_alias],
+            capture_output=True,
+            text=True,
+            timeout=_RECOVER_STEP_TIMEOUT_SEC,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if cp.returncode != 0:
+        return None
+    for line in cp.stdout.splitlines():
+        # ``ssh -G`` lower-cases option names; the value follows a
+        # single space.
+        if line.lower().startswith("controlpath "):
+            return line.split(" ", 1)[1].strip()
+    return None
+
+
+def _find_master_pid_by_path(control_path: str) -> int | None:
+    """Find the SSH ``ControlMaster`` pid by scanning ``/proc``.
+
+    OpenSSH's master writes its argv to ``ssh: <control-path> [mux]``
+    once it backgrounds; that string is a stable, unambiguous needle
+    in ``/proc/<pid>/cmdline``. Returns the pid or ``None`` when the
+    master is gone, ``/proc`` is unreadable (rare on Linux, possible
+    in stripped containers), or the cmdline has been replaced.
+
+    Linux-only — uxon is a Linux tool, so the ``/proc`` dependency is
+    fine. Falling back to ``pgrep`` would add another dependency for
+    no benefit on supported platforms.
+    """
+    needle = f"ssh: {control_path} [mux]"
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                # cmdline fields are NUL-separated; ssh's master cmdline
+                # is a single field (the ``ssh: ...`` string), so just
+                # strip the trailing NUL.
+                raw = fh.read().rstrip(b"\x00").decode("utf-8", errors="ignore")
+        except OSError:
+            continue
+        if raw == needle:
+            try:
+                return int(entry)
+            except ValueError:
+                return None
+    return None
+
+
+def _recover_wedged_master(
+    host: RemoteHost,
+    *,
+    _runner: Any = None,
+    _resolve: Any = None,
+    _find_pid: Any = None,
+    _kill: Any = None,
+) -> None:
+    """Best-effort cleanup of a wedged ControlMaster after a slave timeout.
+
+    A poll/kill slave that hits ``subprocess.TimeoutExpired`` is almost
+    always blocked at ``unix_wait_for_peer`` against an unresponsive
+    master. The slave gets killed by the timeout itself; the master
+    survives and every subsequent slave hangs identically. This routine
+    breaks that loop:
+
+    1. ``ssh -O exit`` (graceful) — works against any responsive master,
+       no-op otherwise. Bounded by :data:`_RECOVER_STEP_TIMEOUT_SEC`.
+    2. If the socket file survived, find the master pid via ``/proc``
+       and ``SIGKILL`` it.
+    3. ``unlink`` the socket file if anything is left.
+
+    Skipped when the host uses a custom ``command_template`` (we don't
+    own that argv) or when multiplexing is off (no master to clean).
+    Never raises — failure of any step is acceptable, the next tick's
+    breaker half-open will get another chance.
+
+    All shell-out points and the kill primitive are dependency-injected
+    so tests don't need to fork real ``ssh`` or scan a real ``/proc``.
+    """
+    if host.command_template:
+        return
+    # Resolve seams at call time (not at def time) so module-level
+    # patches of ``subprocess.run`` / ``os.kill`` propagate into both
+    # the production callers (which don't pass kwargs) and any test
+    # that patches the module attribute rather than injecting kwargs.
+    runner = subprocess.run if _runner is None else _runner
+    resolve = _resolved_control_path if _resolve is None else _resolve
+    find_pid = _find_master_pid_by_path if _find_pid is None else _find_pid
+    kill = os.kill if _kill is None else _kill
+
+    control_dir = _ssh_control_dir()
+    template = f"{control_dir}/ssh-%C"
+
+    # Step 1: graceful exit through the control socket.
+    try:
+        runner(
+            ["ssh", "-O", "exit", "-o", f"ControlPath={template}", host.ssh_alias],
+            capture_output=True,
+            timeout=_RECOVER_STEP_TIMEOUT_SEC,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Step 2: hard-kill any master that survived.
+    resolved = resolve(host.ssh_alias, control_dir, _runner=runner)
+    if resolved is None:
+        return
+    socket_path = Path(resolved)
+    if socket_path.exists():
+        pid = find_pid(resolved)
+        if pid is not None:
+            try:
+                kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+
+    # Step 3: unlink stale socket so the next ssh becomes a fresh master
+    # (with a stale socket present, ``ControlMaster=auto`` would still
+    # try the slave path and hang).
+    try:
+        socket_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 # Stable substring emitted by a peer whose ``enable_all_users_list =
 # false`` rejects ``list --all-users``. The collector greps stderr for
 # this marker to decide whether to retry with the legacy
@@ -649,6 +813,13 @@ def fetch_remote_snapshot(
         try:
             cp = _runner(argv, capture_output=True, text=True, timeout=eff_total)
         except subprocess.TimeoutExpired:
+            # Slave hung — almost always wedged ControlMaster (the
+            # subprocess timeout already killed our slave; siblings
+            # share the same %C socket and would loop on the same
+            # wedge). Cleanup is a no-op for non-multiplexed paths
+            # and operator-supplied command_template hosts.
+            if ssh_multiplex != "off":
+                _recover_wedged_master(host, _runner=_runner)
             return f"ssh timeout after {eff_total}s", None, ""
         except FileNotFoundError:
             return "ssh not installed on local host", None, ""
