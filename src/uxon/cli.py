@@ -2545,7 +2545,12 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         remote_command=remote_cmd,
         allocate_tty=True,
         connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
-        ssh_multiplex=cfg.ssh_multiplex,
+        # Interactive attach is a one-shot connection: the multiplex
+        # savings (200-500 ms vs 5-20 ms) are negligible against a
+        # human-paced session, while sharing the poller's
+        # ControlMaster means a wedged master can hang the user's
+        # terminal at ``unix_wait_for_peer``. Force a fresh connection.
+        ssh_multiplex="off",
         ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
     )
     # Audit must fire *before* ``os.execvp`` (Bug 7) — once the process
@@ -4410,7 +4415,10 @@ def _build_on_remote_attach_callback(cfg: Config):
             remote_command=remote_cmd,
             allocate_tty=True,
             connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
-            ssh_multiplex=cfg.ssh_multiplex,
+            # See _do_attach_remote: interactive attach must not share
+            # the poller's ControlMaster — a wedged master would hang
+            # the TUI handoff at ``unix_wait_for_peer``.
+            ssh_multiplex="off",
             ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         )
         return LaunchRequest(cmd=tuple(argv), label=f"attach {name}@{host_name}")

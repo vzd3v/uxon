@@ -137,7 +137,10 @@ delegates the per-target sudo gate to the peer's own
 `ssh <alias> uxon attach <id> --user <name>` with an
 `--audit-correlation-id <uuid>` internal flag so caller-side
 (`attach.remote.out`) and peer-side (`attach.remote.in`) audit
-events join.
+events join. The interactive attach always opens a fresh ssh
+connection — `ControlMaster`/`ControlPath` are stripped from the
+default template regardless of `ssh_multiplex`, so a wedged poller
+master can never hang the TUI handoff.
 
 **`--dry-run`** prints the would-be tmux argv (local) or the SSH
 command line (remote) instead of executing it.
