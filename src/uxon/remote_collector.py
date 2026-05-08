@@ -520,6 +520,8 @@ def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> Remo
         scope_skipped = [str(u) for u in raw_skipped if isinstance(u, str)]
     else:
         scope_skipped = []
+    raw_host_stats = blob.get("host_stats")
+    host_stats = raw_host_stats if isinstance(raw_host_stats, dict) else None
     return RemoteSnapshot(
         host_name=name,
         fetched_at_epoch=float(cached_at),
@@ -529,6 +531,7 @@ def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> Remo
         cached_at_epoch=float(cached_at),
         scope_limited=scope_limited,
         scope_skipped=scope_skipped,
+        host_stats=host_stats,
     )
 
 
@@ -560,7 +563,7 @@ def write_cached_snapshot(snapshot: RemoteSnapshot, *, override_dir: Path | None
         # the failure on the actual write below; nothing useful to do
         # here.
         pass
-    blob = {
+    blob: dict[str, Any] = {
         "host_name": snapshot.host_name,
         "cached_at_epoch": snapshot.fetched_at_epoch,
         "sessions": snapshot.sessions,
@@ -572,6 +575,10 @@ def write_cached_snapshot(snapshot: RemoteSnapshot, *, override_dir: Path | None
         "scope_limited": bool(snapshot.scope_limited),
         "scope_skipped": list(snapshot.scope_skipped),
     }
+    # Optional host-level metrics block; older caches predate this
+    # field and ``read_cached_snapshot`` tolerates its absence.
+    if snapshot.host_stats is not None:
+        blob["host_stats"] = snapshot.host_stats
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_text(json.dumps(blob), encoding="utf-8")
