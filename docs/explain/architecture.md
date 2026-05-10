@@ -117,19 +117,26 @@ Sub-modules under `src/uxon/tui/`:
   `launch_options`, `new_project`, `git_profile`, `existing`,
   `settings`, `git_remotes`, `agents_unavailable`.
 - `widgets/` — `ActionRow`, `DetectedAgentsBanner`,
-  `SessionDashboardTable` (the unified session table), and
+  `SessionDashboardTable` (the unified session table),
+  `HostTabStrip` (per-host tabs above the table in `by_host`
+  view), `HostStatusBar` (per-host CPU/RAM/load line, compact
+  under the active tab and expanded above the flat list),
+  `SearchBar` (summoned filter input), and
   `FocusReleasingDataTable` (internal base). Everything else is
   stock `textual`.
 - `dashboard/` — pure layers behind `SessionDashboardTable`
   (`row.py`, `columns.py`, `layout.py`, `ui_state.py`, `model.py`,
-  `reconcile.py`). See § "Session dashboard" below.
+  `reconcile.py`, `buckets.py`). See § "Session dashboard" below.
+- `keymap.py` — `bindings_with_aliases(...)` decorator that
+  attaches JCUKEN twins to QWERTY bindings so the keymap survives
+  a Russian layout without `xkb`.
 - `styles.tcss` — Textual CSS for the whole app.
 
 ## Session dashboard
 
 `SessionDashboardTable` (one row per visible session — local own,
 local other-user under sudo, and one row per session on every
-configured peer) is built on four pure layers under
+configured peer) is built on pure layers under
 [`src/uxon/tui/dashboard/`](../../src/uxon/tui/dashboard/) plus the
 widget shell at
 [`src/uxon/tui/widgets/session_dashboard_table.py`](../../src/uxon/tui/widgets/session_dashboard_table.py):
@@ -146,40 +153,58 @@ widget shell at
    each one sorts. `REGISTRY` is the column id → spec map;
    formatters return `rich.text.Text` with inline style (no CSS
    class names). `sort_keys` exposes the key function used by the
-   model layer.
+   model layer. The attach indicator is a glyph in the NAME
+   column (`●` filled / `○` hollow); per-host block colour is
+   carried by the same `assign_block_colors` map shared with
+   `HostTabStrip` and `HostStatusBar`.
 3. **`layout.py` — `build_active_columns(flags, cfg)`.** Pure
    selector that picks the active column subset from `REGISTRY`
    based on runtime flags (`multi_host`, `cross_user`) and the
    operator-supplied `[tui.table] columns`. Unknown ids in `cfg`
    are silently dropped — older operator configs survive a column
-   removal.
+   removal. `path` and `cmd` are hidden by default and require an
+   explicit opt-in via `[tui.table] columns`.
 4. **`ui_state.py` — `DashboardUiState`.** Frozen dataclass
-   holding `view_mode` (`"by_host" | "flat"`) and `filter_text`.
-   `set_view_mode` and `set_filter` are pure reducers, wired to
-   `v` and the search bar respectively. Sort is **not** UI state
-   — it is a fixed contract owned by the model selector
+   holding `view_mode` (`"by_host" | "flat"`), `filter_text`, and
+   `active_tab_index`. `set_view_mode`, `set_filter`, and
+   `set_active_tab_index` are pure reducers, wired to `v`, the
+   search bar, and the tab strip respectively. An active filter
+   forces `flat` until the query is cleared. Sort is **not** UI
+   state — it is a fixed contract owned by the model selector
    (locals → cfg-order remotes → within-block by recency).
 
-The selector and reconciler tie those layers to the widget:
+The selector, bucket layer, and reconciler tie those to the widgets:
 
 5. **`model.py` — `select_dashboard_model(...)`.** Identity-stable
    selector: returns the same `(rows, columns, ui)` tuple by `is`
    when nothing changed since the previous call, so a no-op tick
    short-circuits the reconciler. The cache lives in
    `_LAST_OUTPUT`.
-6. **`reconcile.py` — `diff(old, new, columns)`.** Pure reconciler
-   over rows × columns. Emits the minimal sequence of mutate ops
-   the widget will apply (add row / remove row / update cell). A
-   no-op tick produces zero ops and zero log lines on the
-   `tui-table` debug channel. Per-host repaint: a single peer's
-   snapshot landing produces ops only for that peer's rows; every
-   other row compares equal and is skipped.
+6. **`buckets.py` — `select_host_buckets(...)`,
+   `select_host_status_block(...)`.** Two pure selectors layered
+   on the row tuple. The first groups rows into a `HostBucket`
+   per configured host (locals + each `[[remote_hosts]]` peer,
+   preserved across empty hosts so the tab strip is stable). The
+   second aggregates per-bucket CPU / RAM / loadavg / uptime /
+   kernel into a `HostStatusLine` tuple consumed by
+   `HostStatusBar`. Per-host metrics ride the wire envelope as
+   the optional additive `host_stats` block; absence renders the
+   bar without metrics.
+7. **`reconcile.py` — `diff(old, new, columns)` →
+   `ApplyPlan`.** Pure reconciler over rows × columns. Returns an
+   `ApplyPlan` (the minimal ops tuple plus the new key list) that
+   the widget applies. A no-op tick produces zero ops and zero log
+   lines on the `tui-table` debug channel. Per-host repaint: a
+   single peer's snapshot landing produces ops only for that
+   peer's rows; every other row compares equal and is skipped.
+   `RowAdd` ops are applied in reverse new-index order so multiple
+   inserts in one tick land at the right positions.
 
 The widget at `widgets/session_dashboard_table.py` is a thin
-shell. Its `apply(ops)` mutates the underlying Textual `DataTable`;
-all decisions about what to display live in the layers above. The
-widget subclasses `FocusReleasingDataTable` for boundary-aware
-navigation.
+shell. Its `apply(plan)` mutates the underlying Textual `DataTable`
+from the `ApplyPlan`; all decisions about what to display live in
+the layers above. The widget subclasses
+`FocusReleasingDataTable` for boundary-aware navigation.
 
 ## Module boundaries
 

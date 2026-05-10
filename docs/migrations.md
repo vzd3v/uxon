@@ -21,12 +21,14 @@ log see [`CHANGELOG.md`](../CHANGELOG.md).
   single ranked list across the fleet. Toggle at runtime with
   `v`. An active search forces `flat` until the query is
   cleared.
-- **Search bar.** Focused by default on TUI mount; press `/`
-  from anywhere to refocus, `Esc` to clear-and-blur. Configure
-  searchable fields via `tui.search.fields` (default
+- **Search bar.** Focused by default on TUI mount; press `s`
+  (or `/`) from anywhere to refocus, `Esc` to clear-and-blur.
+  Configure searchable fields via `tui.search.fields` (default
   `["name", "user"]`).
-- **`PATH` column hidden by default.** Operators who relied on
-  it must now list `"path"` in `tui.table.columns` to opt
+- **`PATH` and `CMD` columns hidden by default.** For
+  uxon-launched sessions `CMD` only echoed the agent name (already
+  shown in the AGENT column). Operators who relied on either column
+  must now list `"path"` / `"cmd"` in `tui.table.columns` to opt
   back in.
 
 ### Block colour and attach indicator

@@ -93,10 +93,10 @@ distinguishes siblings on the same stem is preserved
 |-----|------|---------|---------|
 | `tui.search.fields` | array | `["name", "user"]` | Fields the dashboard search bar matches against. Allowed values: `name`, `user`, `host`, `path`, `cmd`. Unknown entries fail loud at load. |
 
-The search bar takes focus by default on TUI mount; press `/`
-from anywhere to refocus it, `Esc` to clear-and-blur (scoped
-cancel — never quits). An active search forces the `flat`
-view; clearing the query restores the previous view mode.
+The search bar takes focus by default on TUI mount; press `s`
+(or `/`) from anywhere to refocus it, `Esc` to clear-and-blur
+(scoped cancel — never quits). An active search forces the
+`flat` view; clearing the query restores the previous view mode.
 
 ## `[tui]` colour palette
 
@@ -172,7 +172,7 @@ short list that the dashboard commits to:
 | `D` (`В`) | Kill all own sessions. |
 | `v` (`м`) | Toggle dashboard view between `by_host` and `flat`. |
 | `[` / `]` | Cycle host tabs (by_host view). `]` from the last tab returns to `All`. |
-| `/` | Focus the search bar from anywhere. |
+| `s` (or `/`) | Focus the search bar from anywhere. |
 | `1`–`9` | Jump to row by number. |
 | `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
 

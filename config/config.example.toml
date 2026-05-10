@@ -127,13 +127,65 @@ default_args = []
 # blocks like in the solo-on-multiple-hosts section.
 
 
-# ─── Dashboard columns (TUI) ──────────────────────────────────────
+# ─── Dashboard columns + view (TUI) ───────────────────────────────
 # docs/guides/customise/customise-dashboard.md
 #
-# Empty / absent uses the built-in registry defaults. Listing
-# columns explicitly opts into a fixed visual order; unknown ids
-# from older / newer uxon versions are silently dropped.
+# Empty / absent ``columns`` uses the built-in registry defaults.
+# Listing columns explicitly opts into a fixed visual order;
+# unknown ids from older / newer uxon versions are silently
+# dropped. The ``path`` and ``cmd`` columns are hidden by default
+# — opt back in by listing them here.
+#
+# ``default_view`` picks the initial dashboard layout. ``by_host``
+# (default) shows a per-host tab strip and status bar; ``flat`` is
+# a single ranked list across the fleet. Toggle at runtime with
+# ``v``. (The legacy ``default_sort_by`` key is silently ignored
+# — sort is a fixed contract, see configuration.md.)
 #
 # [tui.table]
-# columns         = ["name", "user", "cpu", "ram", "last"]
-# default_sort_by = "cpu"
+# columns      = ["name", "user", "cpu", "ram", "last"]
+# default_view = "by_host"
+
+
+# ─── Dashboard search bar (TUI) ───────────────────────────────────
+# docs/reference/configuration.md#tuisearch-table
+#
+# The bar takes focus on TUI mount; press ``s`` (or ``/``) to refocus
+# from anywhere, ``Esc`` to clear-and-blur. ``fields`` controls which
+# row attributes the query matches against (allowed values:
+# ``name``, ``user``, ``host``, ``path``, ``cmd``). Unknown entries
+# fail loud at load.
+#
+# [tui.search]
+# fields = ["name", "user"]
+
+
+# ─── Block colours (TUI) ──────────────────────────────────────────
+# docs/guides/customise/customise-dashboard.md
+#
+# Each remote host gets a hue applied to its tab, status-bar name
+# token, and rows. Pin a hue per peer with
+# ``[[remote_hosts]] color = "..."`` (overrides auto-cycle); otherwise
+# the TUI cycles through ``tui.color_palette``. Local rows take
+# ``local_host.color``.
+#
+# [tui]
+# color_palette = ["cyan", "blue"]
+#
+# [local_host]
+# color = "green"
+
+
+# ─── SSH multiplexing ─────────────────────────────────────────────
+# docs/reference/configuration.md (top-level keys)
+#
+# ``ssh_multiplex`` toggles ``ControlMaster=auto`` /
+# ``ControlPath`` / ``ControlPersist`` on the default fetch template
+# (warm tick: 5–20 ms vs cold 200–500 ms). Set ``"off"`` only in
+# environments that prohibit ControlPersist sockets.
+# ``ssh_control_persist_seconds`` is the master's lifetime; must be
+# ``> 0``. To disable multiplexing entirely set
+# ``ssh_multiplex = "off"`` rather than zeroing this out.
+#
+# ssh_multiplex                = "auto"
+# ssh_control_persist_seconds  = 300

@@ -15,7 +15,7 @@ the visible subset.
 | `D` (Shift+d) | Kill all *own* sessions (`kill-all` to confirm) |
 | `v` | Toggle dashboard view (`by_host` ↔ `flat`) |
 | `[` / `]` | Cycle host tabs (in `by_host` view) |
-| `/` | Focus the search bar from anywhere |
+| `s` (or `/`) | Focus the search bar from anywhere |
 | `r` | Refresh |
 | `q` | Quit |
 | `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
