@@ -902,6 +902,13 @@ class MainScreen(Screen):
         # restores the same tab. ``_refresh_dashboard`` re-reads from
         # ``self.app.main_ui.active_tab_index`` and feeds it back into
         # the strip, keeping the two in lockstep.
+        # Short-circuit when the message just echoes the App's
+        # current state — `_refresh_dashboard` itself sets
+        # ``tab_strip.active_index`` to sync with `main_ui`, which
+        # posts this message back; without the guard each refresh
+        # would trigger a second redundant refresh per tick.
+        if self.app.main_ui.active_tab_index == event.index:  # type: ignore[attr-defined]
+            return
         self.app.main_ui.active_tab_index = event.index  # type: ignore[attr-defined]
         self._refresh_dashboard()
 
