@@ -16,8 +16,6 @@ from textual.binding import Binding
 
 LAYOUT_ALIASES: dict[str, str] = {
     # JCUKEN ↔ QWERTY shared positions.
-    "[": "х",
-    "]": "ъ",
     "d": "в",
     "D": "В",
     "r": "к",

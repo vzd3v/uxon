@@ -14,6 +14,45 @@ if TYPE_CHECKING:
     from .row import SessionRow
 
 
+def compute_block_starts(
+    rows: tuple[SessionRow, ...],
+    current_user: str,
+) -> tuple[int, ...]:
+    """Row indices where the (host, own/other) key changes.
+
+    Used by ←/→ on the dashboard in flat view: each press jumps the
+    cursor cyclically to the next/previous block start.
+
+    Block key:
+
+    * Local rows (``host is None``): ``(None, "own")`` for the current
+      user, ``(None, "other")`` otherwise.
+    * Remote rows: ``(host, "")`` — remotes do not split on user.
+
+    Note that the dashboard model selector sorts the local block by
+    recency, **not** by user. Own and other-user rows can therefore
+    interleave, in which case this function legitimately emits more
+    than one boundary inside the local host. The contract is "any
+    transition is a jump point", not "exactly three sections".
+
+    Pure function — kept here so unit tests don't need to construct
+    a Textual screen. ``rows`` is the identity-stable tuple emitted
+    by :func:`select_dashboard_model`; ``current_user`` is the string
+    on the active :class:`uxon.tui.context.TuiContext`.
+    """
+    starts: list[int] = []
+    prev_key: object = object()  # unique sentinel — first row always starts a block
+    for i, row in enumerate(rows):
+        if row.host is None:
+            key: tuple[str | None, str] = (None, "own" if row.user == current_user else "other")
+        else:
+            key = (row.host, "")
+        if key != prev_key:
+            starts.append(i)
+            prev_key = key
+    return tuple(starts)
+
+
 @dataclass(frozen=True, slots=True)
 class HostBucket:
     """One per configured host plus locals; preserved across empty hosts."""

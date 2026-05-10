@@ -112,13 +112,15 @@ Top-level pointers:
 Below that: a unified session dashboard mounting your own
 sessions, other-user sessions visible via `sudo` (when the
 superuser block is active), and one row per session on each
-configured `[[remote_hosts]]` peer. Two view modes — `by_host`
-(default; per-host tabs and a status bar) and `flat` (single
-ranked list); toggle with `v`. A search bar at the top filters
-across all rows; `/` refocuses it. Per-row data: agent, working
-dir, live CPU / RAM, attached glyph (`●`/`○`), creation time,
-last activity time. `Enter` attaches; `d` kills with
-confirmation.
+configured `[[remote_hosts]]` peer. Two view modes — `flat`
+(default; single ranked list) and `by_host` (per-host tabs and
+a status bar); toggle with `v`. ←/→ on the dashboard cycles
+between hosts (host tabs in `by_host`, `(host, own/other)`
+transitions in `flat`).
+A search bar at the top filters across all rows; `/` refocuses
+it. Per-row data: agent, working dir, live CPU / RAM, attached
+glyph (`●`/`○`), creation time, last activity time. `Enter`
+attaches; `d` kills with confirmation.
 
 Every launch asks whether to start in normal mode or with
 `--dangerously-skip-permissions` ("yolo") — the TUI does not

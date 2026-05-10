@@ -24,7 +24,7 @@ from uxon.tui.dashboard.ui_state import (
 class DashboardUiStateShapeTests(unittest.TestCase):
     def test_defaults(self) -> None:
         ui = DashboardUiState()
-        self.assertEqual(ui.view_mode, "by_host")
+        self.assertEqual(ui.view_mode, "flat")
         self.assertEqual(ui.filter_text, "")
 
     def test_frozen(self) -> None:
@@ -35,13 +35,13 @@ class DashboardUiStateShapeTests(unittest.TestCase):
 
 def test_set_view_mode_returns_identity_on_noop():
     ui = DashboardUiState()
-    assert set_view_mode(ui, "by_host") is ui
+    assert set_view_mode(ui, "flat") is ui
 
 
 def test_set_view_mode_flips():
     ui = DashboardUiState()
-    out = set_view_mode(ui, "flat")
-    assert out.view_mode == "flat" and out is not ui
+    out = set_view_mode(ui, "by_host")
+    assert out.view_mode == "by_host" and out is not ui
 
 
 def test_set_filter_identity_on_noop():

@@ -6,7 +6,7 @@ suits most setups. The `[tui.table]` block lets you override it.
 ```toml
 [tui.table]
 columns      = ["name", "user", "cpu", "ram", "last"]
-default_view = "by_host"
+default_view = "flat"
 ```
 
 ## What each key does
@@ -21,10 +21,10 @@ default_view = "by_host"
   a since-removed column id stays loadable). The `path` and
   `cmd` columns are hidden by default — opt back in by listing
   `"path"` / `"cmd"` here.
-- **`tui.table.default_view`** — `"by_host"` (default) or
-  `"flat"`. `by_host` shows the per-host tab strip and status
-  bar; `flat` is a single ranked list across the fleet. Toggle
-  at runtime with `v`.
+- **`tui.table.default_view`** — `"flat"` (default) or
+  `"by_host"`. `flat` is a single ranked list across the
+  fleet; `by_host` shows the per-host tab strip and status
+  bar. Toggle at runtime with `v`.
 
 There is no sort setting. Sort is a fixed contract owned by
 the model selector — locals first (own then other-user), then
@@ -69,9 +69,11 @@ columns = ["name", "path", "last"]
 
 ## View, search, attach indicator
 
-- `v` toggles between `by_host` (per-host tabs + status bar)
-  and `flat` (single ranked list). Configure the initial view
-  with `tui.table.default_view`.
+- `v` toggles between `flat` (single ranked list, default) and
+  `by_host` (per-host tabs + status bar). Configure the initial
+  view with `tui.table.default_view`. ←/→ on the dashboard
+  cycles between hosts: tabs in `by_host`, `(host, own/other)`
+  transitions in `flat`; both cyclic.
 - The dashboard search bar takes focus on TUI mount; press `/`
   from anywhere to refocus, `Esc` to clear-and-blur. While a
   search query is active, the view is forced to `flat` so

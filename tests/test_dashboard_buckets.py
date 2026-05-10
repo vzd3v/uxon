@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from uxon.tui.dashboard.buckets import (
     HostStatusLine,
+    compute_block_starts,
     select_host_buckets,
     select_host_status_block,
 )
@@ -11,6 +12,37 @@ from uxon.tui.dashboard.buckets import (
 
 def _row(host, name, attached=False, cpu=0.0, user="me"):
     return SimpleNamespace(host=host, name=name, attached=attached, cpu_pct=cpu, user=user)
+
+
+# ── compute_block_starts ─────────────────────────────────────────────
+
+
+def test_compute_block_starts_all_own_one_block():
+    """Same (host, own/other) → exactly one block start (no false splits)."""
+    rows = (_row(None, "a", user="me"), _row(None, "b", user="me"), _row(None, "c", user="me"))
+    assert compute_block_starts(rows, "me") == (0,)
+
+
+def test_compute_block_starts_own_then_other_user_split():
+    """Own vs other-user inside the local host produces two blocks."""
+    rows = (
+        _row(None, "a", user="me"),
+        _row(None, "b", user="me"),
+        _row(None, "c", user="alice"),
+    )
+    assert compute_block_starts(rows, "me") == (0, 2)
+
+
+def test_compute_block_starts_own_other_remote_three_blocks():
+    """Full mix: own → other-user → per-remote-host. Remotes do NOT split on user."""
+    rows = (
+        _row(None, "a", user="me"),
+        _row(None, "b", user="alice"),
+        _row("kris", "k1", user="me"),
+        _row("kris", "k2", user="alice"),
+        _row("ada", "a1", user="me"),
+    )
+    assert compute_block_starts(rows, "me") == (0, 1, 2, 4)
 
 
 def test_buckets_in_cfg_order_with_locals_first_and_empty_kept():

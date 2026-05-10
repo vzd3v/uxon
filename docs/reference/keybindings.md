@@ -9,12 +9,12 @@ the visible subset.
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Navigate items |
+| `←` / `→` | Top action row: cycle the three buttons cyclically. Dashboard: in `by_host` advance the active host tab; in `flat` jump the cursor across `(host, own/other)` transitions cyclically. |
 | `1`–`9` | Jump to item by number |
 | `Enter` | Activate (launch / attach) |
 | `d` | Kill highlighted session (with confirmation) |
 | `D` (Shift+d) | Kill all *own* sessions (`kill-all` to confirm) |
-| `v` | Toggle dashboard view (`by_host` ↔ `flat`) |
-| `[` / `]` | Cycle host tabs (in `by_host` view) |
+| `v` | Toggle dashboard view (`flat` ↔ `by_host`) |
 | `s` (or `/`) | Focus the search bar from anywhere |
 | `r` | Refresh |
 | `q` | Quit |

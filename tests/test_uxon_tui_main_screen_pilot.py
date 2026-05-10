@@ -78,6 +78,14 @@ class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
+            # Default view is now ``flat`` — flip to ``by_host`` first
+            # so the strip is actually visible before the search test.
+            # Without this, the strip is hidden regardless of search
+            # state and the assertion below would pass vacuously.
+            await pilot.press("v")
+            await pilot.pause()
+            strip = pilot.app.screen.query_one("#host-tabs")
+            self.assertTrue(strip.display, "by_host should expose the strip")
             # Default focus lands on action-cwd; the search bar is
             # hidden until summoned with ``s``.
             bar = pilot.app.screen.query_one("#search-bar")
@@ -89,22 +97,22 @@ class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
             focused = pilot.app.focused
             self.assertIsNotNone(focused)
             self.assertIn("Input", type(focused).__name__)
-            # Type "kris" — non-empty filter forces flat render.
+            # Type "kris" — non-empty filter forces flat render: the
+            # strip must hide even though ``view_mode`` is still by_host.
             await pilot.press("k", "r", "i", "s")
             await pilot.pause()
-            strip = pilot.app.screen.query_one("#host-tabs")
-            self.assertFalse(strip.display)
+            self.assertFalse(strip.display, "non-empty filter must force flat (strip hidden)")
             # First Esc clears the input but leaves the bar visible.
             await pilot.press("escape")
             await pilot.pause()
             self.assertTrue(bar.has_class("-shown"))
+            # Filter cleared → forced_flat lifts → strip visible again
+            # (we're still in by_host view_mode).
+            self.assertTrue(strip.display, "clearing the filter must restore by_host strip")
             # Second Esc hides the bar and returns focus to the caller.
             await pilot.press("escape")
             await pilot.pause()
             self.assertFalse(bar.has_class("-shown"))
-            # Tab navigation still works after the SearchBar hides.
-            await pilot.press("]")
-            await pilot.pause()
             await pilot.press("q")
 
 

@@ -9,7 +9,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [3.4.0] — 2026-05-08
 
 ### Added
-- Session dashboard `by_host` view (now default) with a per-host tab strip and status bar; toggle to a single ranked `flat` list with `v`. Configure the initial mode via `tui.table.default_view`.
+- Session dashboard `by_host` view with a per-host tab strip and status bar; toggle to the default `flat` (single ranked list) with `v`. Configure the initial mode via `tui.table.default_view` (default `"flat"`).
+- Top action row laid out as three side-by-side buttons; ←/→ cycles cyclically inside the row, ↓ exits to the dashboard.
+- ←/→ on the dashboard cycles between hosts: in `by_host` it advances the active host tab cyclically; in `flat` it jumps the cursor across `(host, own/other)` transitions cyclically. Within the local host, own and other-user rows can interleave by recency, so each user transition is a jump point.
 - Search bar across the dashboard: focused by default on TUI mount, refocus from anywhere with `s` (or `/`), clear with `Esc`. Configure searchable fields via `tui.search.fields` (default `name`, `user`; allowed `name`, `user`, `host`, `path`, `cmd`).
 - "Open existing project" modal lands directly on a search input — type to narrow the project list (case-insensitive substring on name), `↑` / `↓` navigate the filtered view, `Enter` confirms, `Esc` clears a non-empty filter (otherwise cancels). Quick-pick by digit `1`–`9` removed in favour of typing.
 - Per-host block colour: pin a hue with `[[remote_hosts]] color = "..."`, customise the auto-cycle palette with `[tui] color_palette`, and the local block colour with `[local_host] color`.
@@ -26,6 +28,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 - Sort cycle bindings (`s`, `S`) and the `tui.table.default_sort_by` setting.
+- `[` / `]` host-cycling bindings — use ←/→ on the dashboard or the host tab strip instead.
 
 ### Fixed
 - Dashboard rows no longer briefly reorder on tab switches and large refresh diffs (an apply-order bug that dropped or shuffled inserted rows when several appeared in one tick).

@@ -136,15 +136,15 @@ default_args = []
 # dropped. The ``path`` and ``cmd`` columns are hidden by default
 # — opt back in by listing them here.
 #
-# ``default_view`` picks the initial dashboard layout. ``by_host``
-# (default) shows a per-host tab strip and status bar; ``flat`` is
-# a single ranked list across the fleet. Toggle at runtime with
-# ``v``. (The legacy ``default_sort_by`` key is silently ignored
-# — sort is a fixed contract, see configuration.md.)
+# ``default_view`` picks the initial dashboard layout. ``flat``
+# (default) is a single ranked list across the fleet; ``by_host``
+# shows a per-host tab strip and status bar. Toggle at runtime
+# with ``v``. (The legacy ``default_sort_by`` key is silently
+# ignored — sort is a fixed contract, see configuration.md.)
 #
 # [tui.table]
 # columns      = ["name", "user", "cpu", "ram", "last"]
-# default_view = "by_host"
+# default_view = "flat"
 
 
 # ─── Dashboard search bar (TUI) ───────────────────────────────────

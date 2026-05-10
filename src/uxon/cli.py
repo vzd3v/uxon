@@ -80,7 +80,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tui": {
         "table": {
             "columns": [],
-            "default_view": "by_host",
+            "default_view": "flat",
         },
         "search": {"fields": ["name", "user"]},
         "color_palette": ["cyan", "blue"],
@@ -184,7 +184,7 @@ class Config:
     # in TOML both collapse to ``None`` here. ``build_active_columns``
     # consumes this contract directly.
     tui_table_columns: tuple[str, ...] | None = None
-    tui_table_default_view: Literal["by_host", "flat"] = "by_host"
+    tui_table_default_view: Literal["by_host", "flat"] = "flat"
     tui_search_fields: tuple[str, ...] = ("name", "user")
     tui_color_palette: tuple[str, ...] = ("cyan", "blue")
     local_host_color: str = "green"
@@ -561,7 +561,7 @@ def load_config(cwd: str) -> Config:
             # Telemetry, not a correctness path.
             pass
 
-    tui_table_default_view_raw = tui_table_tbl.get("default_view", "by_host")
+    tui_table_default_view_raw = tui_table_tbl.get("default_view", "flat")
     if tui_table_default_view_raw not in ("by_host", "flat"):
         fail(
             f"tui.table.default_view must be 'by_host' or 'flat', "

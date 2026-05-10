@@ -23,6 +23,14 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Static
 
+# Container ID that signals a row-of-buttons group. ActionRows whose
+# parent carries this id get cyclic ←/→ navigation and a single-step
+# ↑/↓ exit; rows under any other parent fall through to the standard
+# focus chain. The id-based marker is robust to wrapping (a future
+# Lazy / styled wrapper around the container can't break the test
+# the way an isinstance(parent, Horizontal) check would).
+ACTION_GROUP_CONTAINER_ID = "top-actions"
+
 
 def action_row_can_activate(enabled: bool) -> bool:
     return enabled
@@ -60,6 +68,14 @@ class ActionRow(Static):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "activate", "Activate", show=False),
+        # Cyclic ←/→ within a Horizontal group of ActionRows. No-op when
+        # the row sits in a Vertical (settings / kill-all rows).
+        Binding("left", "cycle(-1)", "", show=False),
+        Binding("right", "cycle(1)", "", show=False),
+        # In a Horizontal group, ↑/↓ skip past the whole group; outside
+        # one, fall through to the standard focus_previous/focus_next.
+        Binding("up", "leave_group(-1)", "", show=False),
+        Binding("down", "leave_group(1)", "", show=False),
     ]
 
     class Activated(Message):
@@ -119,6 +135,75 @@ class ActionRow(Static):
         self.focus()
         if action_row_can_activate(self._enabled):
             self.post_message(self.Activated(self))
+
+    # ── Group navigation ─────────────────────────────────────────────
+
+    def _group_siblings(self) -> list[ActionRow] | None:
+        """Return sibling ActionRows when this row sits in the action group.
+
+        Group membership is keyed off the parent's id
+        (:data:`ACTION_GROUP_CONTAINER_ID`), not its widget class — so
+        a future styled wrapper or a switch from ``Horizontal`` to
+        another layout container can't silently disable arrow-key
+        cycling. ``None`` means the row is a singleton (e.g. settings,
+        kill-all): ←/→ are no-ops and ↑/↓ fall through to the standard
+        focus chain.
+        """
+        parent = self.parent
+        if parent is None or parent.id != ACTION_GROUP_CONTAINER_ID:
+            return None
+        return [c for c in parent.children if isinstance(c, ActionRow)]
+
+    def action_cycle(self, delta: int) -> None:
+        siblings = self._group_siblings()
+        if siblings is None or len(siblings) <= 1:
+            return
+        try:
+            idx = siblings.index(self)
+        except ValueError:
+            return
+        new_idx = (idx + delta) % len(siblings)
+        siblings[new_idx].focus()
+
+    def action_leave_group(self, direction: int) -> None:
+        siblings = self._group_siblings()
+        # Use ``app.action_focus_*`` to match the existing convention
+        # in :class:`FocusReleasingDataTable` and the MainScreen
+        # ↑/↓ bindings — one consistent spelling for "step the focus
+        # chain" across the TUI.
+        if siblings is None:
+            # Singleton — preserve default ↑/↓ focus-chain traversal.
+            if direction < 0:
+                self.app.action_focus_previous()
+            else:
+                self.app.action_focus_next()
+            return
+        # Inside a group: walk the focus chain past every sibling so
+        # ↑/↓ exit the row of buttons in one keystroke. The bound
+        # ``len(siblings) + 1`` covers the normal case (one step per
+        # sibling plus the step that lands outside the group). If
+        # the screen has no other focusable widget, the focus chain
+        # wraps back into the group and ``seen`` aborts the loop —
+        # focus then stays on a sibling rather than escaping. Real
+        # screens always have other focusable widgets (search bar,
+        # dashboard table) so this best-effort fallback is fine in
+        # practice.
+        screen = self.screen
+        seen: set[int] = set()
+        for _ in range(len(siblings) + 1):
+            if direction < 0:
+                self.app.action_focus_previous()
+            else:
+                self.app.action_focus_next()
+            focused = screen.focused
+            if focused is None:
+                return
+            fid = id(focused)
+            if fid in seen:
+                return
+            seen.add(fid)
+            if not isinstance(focused, ActionRow) or focused not in siblings:
+                return
 
 
 @dataclass(frozen=True)

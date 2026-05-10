@@ -58,7 +58,7 @@ not configurable here — see [`reference/cli.md`](cli.md) under
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
 | `tui.table.columns` | array | `[]` | Dashboard columns in display order. Empty (or absent) uses the registry defaults; listing ids opts into a fixed order. Unknown ids are dropped silently (forward-compat). The `path` and `cmd` columns are hidden by default — opt back in by listing `"path"` / `"cmd"` here. |
-| `tui.table.default_view` | `"by_host"` / `"flat"` | `"by_host"` | Initial dashboard layout. `by_host` shows the per-host tab strip and status bar; `flat` is a single ranked list across the fleet. Toggle at runtime with `v`. |
+| `tui.table.default_view` | `"by_host"` / `"flat"` | `"flat"` | Initial dashboard layout. `flat` is a single ranked list across the fleet; `by_host` shows the per-host tab strip and status bar. Toggle at runtime with `v`. ←/→ on the dashboard cycles between hosts: tabs in `by_host`, `(host, own/other)` transitions in `flat`. |
 
 Available column ids: `host`, `user`, `name`, `agent`, `cpu`,
 `ram`, `new`, `last`, `cmd`, `path`, `pid`, `wins`. The full
@@ -170,8 +170,8 @@ short list that the dashboard commits to:
 | `r` (`к`) | Refresh now. |
 | `d` (`в`) | Kill highlighted session (typed-phrase confirm). |
 | `D` (`В`) | Kill all own sessions. |
-| `v` (`м`) | Toggle dashboard view between `by_host` and `flat`. |
-| `[` / `]` | Cycle host tabs (by_host view). `]` from the last tab returns to `All`. |
+| `v` (`м`) | Toggle dashboard view between `flat` and `by_host`. |
+| `←` / `→` | Top action row: cycle the three buttons cyclically. Dashboard: in `by_host` advance the active host tab; in `flat` jump across `(host, own/other)` transitions; both cyclic. |
 | `s` (or `/`) | Focus the search bar from anywhere. |
 | `1`–`9` | Jump to row by number. |
 | `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |

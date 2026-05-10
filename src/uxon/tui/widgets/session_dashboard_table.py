@@ -55,6 +55,8 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
+from textual.binding import Binding
+from textual.message import Message
 from textual.widgets._data_table import DataTable as _PrivateDataTable
 from textual.widgets._data_table import RowKey
 
@@ -86,6 +88,23 @@ class SessionDashboardTable(FocusReleasingDataTable):
     up by id.
     """
 
+    BINDINGS = [
+        # ←/→ on the table dispatch to the screen, which interprets
+        # them by view mode: cycle host tabs in by_host, jump cursor
+        # between host blocks in flat. The widget posts a message
+        # rather than acting directly because the rule needs the
+        # screen's view-mode state.
+        Binding("left", "host_navigate(-1)", "", show=False),
+        Binding("right", "host_navigate(1)", "", show=False),
+    ]
+
+    class HostNavigate(Message):
+        """Posted on ←/→ — the screen cycles tabs or jumps blocks."""
+
+        def __init__(self, direction: int) -> None:
+            super().__init__()
+            self.direction = direction
+
     def __init__(
         self,
         columns: tuple[ColumnSpec, ...],
@@ -95,6 +114,23 @@ class SessionDashboardTable(FocusReleasingDataTable):
         super().__init__(id=id)
         self._columns: tuple[ColumnSpec, ...] = columns
         self._block_meta: dict[str, tuple[str, int]] = {}
+        self._block_starts: tuple[int, ...] = ()
+
+    def set_block_starts(self, starts: tuple[int, ...]) -> None:
+        """Update the row indices that begin a logical block (host/user).
+
+        Consumed by ``action_host_navigate`` in flat mode to jump the
+        cursor between blocks. The screen recomputes this after every
+        model rebuild and feeds it back in.
+        """
+        self._block_starts = starts
+
+    @property
+    def block_starts(self) -> tuple[int, ...]:
+        return self._block_starts
+
+    def action_host_navigate(self, direction: int) -> None:
+        self.post_message(self.HostNavigate(direction))
 
     def set_block_meta(self, meta: dict[str, tuple[str, int]]) -> None:
         """Update the ``row_key → (block_color, row_in_block)`` map.

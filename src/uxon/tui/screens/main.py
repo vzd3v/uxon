@@ -2,9 +2,9 @@
 
 Layout:
     ┌ Header ──────────────────────────────────────────┐
-    │ ActionRow action-cwd                             │
-    │ ActionRow action-new                             │
-    │ ActionRow action-open                            │
+    │ ┌─ #top-actions ──────────────────────────────┐  │
+    │ │ action-cwd │ action-new │ action-open       │  │
+    │ └─────────────────────────────────────────────┘  │
     │ ── sessions ──                                   │
     │ SessionDashboardTable (own + other-user + remote │
     │   rows; USER column iff cross_user, HOST column  │
@@ -27,7 +27,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.lazy import Lazy
 from textual.reactive import reactive
 from textual.screen import Screen
@@ -39,7 +39,11 @@ from ..context import (
     TuiContext,
     _segments,
 )
-from ..dashboard.buckets import select_host_buckets, select_host_status_block
+from ..dashboard.buckets import (
+    compute_block_starts,
+    select_host_buckets,
+    select_host_status_block,
+)
 from ..dashboard.layout import LayoutFlags, build_active_columns
 from ..dashboard.model import select_dashboard_model
 from ..dashboard.reconcile import diff
@@ -57,6 +61,7 @@ from ..state import (
     visible_detected_agents,
 )
 from ..widgets import ActionRow, DetectedAgentsBanner
+from ..widgets.action_row import ACTION_GROUP_CONTAINER_ID
 from ..widgets.host_status_bar import HostStatusBar
 from ..widgets.host_tab_strip import HostTabActivated, HostTabStrip
 from ..widgets.search_bar import FilterChanged, SearchBar
@@ -78,6 +83,14 @@ class MainScreen(Screen):
     #main-body {
         width: 1fr;
         height: 1fr;
+    }
+    /* The literal id below mirrors ACTION_GROUP_CONTAINER_ID in
+       widgets/action_row.py. CSS can't reference Python constants;
+       keep the two in sync (the constant is what the group's
+       ←/→/↑/↓ navigation keys off). */
+    #top-actions {
+        height: 1;
+        width: 1fr;
     }
     .segment-header {
         color: $text-muted;
@@ -108,8 +121,6 @@ class MainScreen(Screen):
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
         Binding("v", "toggle_view", "View", show=True),
-        Binding("[", "prev_tab", "Prev host", show=True),
-        Binding("]", "next_tab", "Next host", show=True),
         Binding("s", "focus_search", "Search", show=True),
         Binding("/", "focus_search", "", show=False),
         # Detected-agents banner: only does something when the banner is
@@ -219,34 +230,37 @@ class MainScreen(Screen):
             # the banner is hidden at mount and only becomes visible after
             # the host probe lands and ``_refresh_detected_banner`` runs.
             yield Lazy(DetectedAgentsBanner("", id="detected-banner", classes="-hidden"))
-            # Action rows
-            yield ActionRow(
-                kind="action-cwd",
-                label="New session in current folder",
-                detail=self._cwd_detail(),
-                digit=1,
-                enabled=self.ctx.cwd_writable is not False,
-                id="action-cwd",
-            )
-            yield ActionRow(
-                kind="action-new",
-                label="Create new project",
-                detail=f"({self.ctx.new_project_root}/…)",
-                digit=2,
-                enabled=True,
-                id="action-new",
-            )
-            yield ActionRow(
-                kind="action-open",
-                label="Open existing project",
-                detail=self._open_detail(),
-                digit=3,
-                # While loading we don't yet know whether projects exist.
-                # Keep the row enabled so it isn't dimmed; activation falls
-                # through to the existing "no projects" notify path.
-                enabled=self.ctx.loading or bool(self.ctx.existing_projects),
-                id="action-open",
-            )
+            # Top action row — three side-by-side buttons. ←/→ cycle
+            # cyclically inside the group; ↓ exits the group to the
+            # sessions block below; ↑ exits upward.
+            with Horizontal(id=ACTION_GROUP_CONTAINER_ID):
+                yield ActionRow(
+                    kind="action-cwd",
+                    label="New session in current folder",
+                    detail=self._cwd_detail(),
+                    digit=1,
+                    enabled=self.ctx.cwd_writable is not False,
+                    id="action-cwd",
+                )
+                yield ActionRow(
+                    kind="action-new",
+                    label="Create new project",
+                    detail=f"({self.ctx.new_project_root}/…)",
+                    digit=2,
+                    enabled=True,
+                    id="action-new",
+                )
+                yield ActionRow(
+                    kind="action-open",
+                    label="Open existing project",
+                    detail=self._open_detail(),
+                    digit=3,
+                    # While loading we don't yet know whether projects exist.
+                    # Keep the row enabled so it isn't dimmed; activation falls
+                    # through to the existing "no projects" notify path.
+                    enabled=self.ctx.loading or bool(self.ctx.existing_projects),
+                    id="action-open",
+                )
             # Sessions header + unified dashboard. The dashboard is
             # mounted unconditionally — empty-state copy is rendered by
             # the ``#sessions-note`` Static above it (toggled by class
@@ -501,6 +515,7 @@ class MainScreen(Screen):
         prev_cursor_key = self._cursor_row_key(widget)
         plan = diff(self._dashboard_rows, rows, self._active_columns)
         widget.set_block_meta(self._build_block_meta(rows))
+        widget.set_block_starts(compute_block_starts(rows, self.ctx.current_user))
         widget.apply(plan)
         self._dashboard_rows = rows
         widget.pin_cursor_to(prev_cursor_key)
@@ -896,6 +911,45 @@ class MainScreen(Screen):
         if n <= 1:
             return
         strip.active_index = (strip.active_index + 1) % n
+
+    def on_session_dashboard_table_host_navigate(
+        self,
+        event: SessionDashboardTable.HostNavigate,
+    ) -> None:
+        """Route ←/→ on the dashboard.
+
+        by_host (no active search): cycle the active host tab cyclically.
+        flat — or by_host forced flat by an active search filter: jump
+        the cursor to the first row of the next/previous block (own /
+        other-user / per-host remote). The search-active branch is
+        critical: a non-empty filter renders flat *while* ``view_mode``
+        stays ``by_host`` (see ``_refresh_dashboard``); without this
+        guard ←/→ would silently cycle the hidden tab strip and
+        clearing the search would land on an unexpected tab.
+        """
+        forced_flat = bool(self._dashboard_ui.filter_text.strip())
+        if self._dashboard_ui.view_mode == "by_host" and not forced_flat:
+            if event.direction < 0:
+                self.action_prev_tab()
+            else:
+                self.action_next_tab()
+            return
+        try:
+            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
+        except Exception:
+            return
+        starts = table.block_starts
+        if len(starts) <= 1:
+            return
+        cur = table.cursor_row
+        block_idx = 0
+        for i, s in enumerate(starts):
+            if s <= cur:
+                block_idx = i
+            else:
+                break
+        new_block = (block_idx + (1 if event.direction > 0 else -1)) % len(starts)
+        table.move_cursor(row=starts[new_block])
 
     def on_host_tab_activated(self, event: HostTabActivated) -> None:
         # Persist the new index on the App so a recompose mid-session

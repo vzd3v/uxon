@@ -16,11 +16,13 @@ log see [`CHANGELOG.md`](../CHANGELOG.md).
   silently ignored on load (one `UXON_DEBUG=tui` line per
   occurrence) — no error, no fallback. The `s` / `S` cycle
   bindings are gone.
-- **`tui.table.default_view` (new)** — `"by_host"` (default)
-  shows a per-host tab strip and status bar; `"flat"` is a
-  single ranked list across the fleet. Toggle at runtime with
+- **`tui.table.default_view` (new)** — `"flat"` (default) is a
+  single ranked list across the fleet; `"by_host"` shows a
+  per-host tab strip and status bar. Toggle at runtime with
   `v`. An active search forces `flat` until the query is
-  cleared.
+  cleared. ←/→ on the dashboard cycles between hosts: tabs
+  in `by_host`, `(host, own/other)` transitions in `flat`.
+  The legacy `[` / `]` shortcut is gone.
 - **Search bar.** Focused by default on TUI mount; press `s`
   (or `/`) from anywhere to refocus, `Esc` to clear-and-blur.
   Configure searchable fields via `tui.search.fields` (default

@@ -20,7 +20,7 @@ from typing import Literal
 
 @dataclass(frozen=True, slots=True)
 class DashboardUiState:
-    view_mode: Literal["by_host", "flat"] = "by_host"
+    view_mode: Literal["by_host", "flat"] = "flat"
     filter_text: str = ""
 
 
