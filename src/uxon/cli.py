@@ -2066,7 +2066,7 @@ def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> Non
             from uxon.probes import read_host_stats
 
             hs = read_host_stats()
-            env["host_stats"] = {  # type: ignore[typeddict-unknown-key]
+            env["host_stats"] = {
                 "cpu_pct": hs.cpu_pct,
                 "mem_used_kib": hs.mem_used_kib,
                 "mem_total_kib": hs.mem_total_kib,

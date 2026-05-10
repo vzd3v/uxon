@@ -53,7 +53,7 @@ Top-level optional fields (also forward-compatible, no version bump):
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Literal, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 WIRE_SCHEMA_VERSION = "1"
 """Current wire-schema version. Bump on incompatible changes only."""
@@ -229,15 +229,19 @@ class Envelope(TypedDict):
 
     Carries the schema version, the producing uxon's own version, and
     the kind discriminator that tells a consumer which ``data`` shape
-    to expect. ``host`` is an optional top-level field added later by
-    the multi-host RemoteCollector to attribute a snapshot to its
-    source host; local ``--json`` output omits it.
+    to expect. ``host`` is added by the multi-host RemoteCollector to
+    attribute a snapshot to its source host; local ``--json`` output
+    omits it. ``host_stats`` is the additive forward-compatible
+    per-host metrics block (see module docstring) populated only for
+    ``kind == "list"``.
     """
 
     schema_version: str
     uxon_version: str
     kind: EnvelopeKind
     data: dict[str, Any]
+    host: NotRequired[str]
+    host_stats: NotRequired[HostStats]
 
 
 def make_envelope(
@@ -261,5 +265,5 @@ def make_envelope(
         "data": data,
     }
     if host is not None:
-        env["host"] = host  # type: ignore[typeddict-unknown-key]
+        env["host"] = host
     return env
