@@ -59,6 +59,16 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
     ExistingProjectScreen ListItem {
         padding: 0 1;
     }
+    /* Focus lives on the FilterInput, so Textual would render the
+       ListView cursor in its dim ``blurred`` palette — operators read
+       that as "nothing selected" and press ``down`` to navigate, then
+       complain the cursor "skipped to row 2". Force the bright,
+       focused-style cursor regardless of where focus actually sits. */
+    ExistingProjectScreen ListView > ListItem.-highlight {
+        color: $block-cursor-foreground;
+        background: $block-cursor-background;
+        text-style: $block-cursor-text-style;
+    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
@@ -92,11 +102,21 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
             yield ListView(*items, id="existing-list")
 
     def on_mount(self) -> None:
-        # Land directly on the filter input so the operator can type
-        # immediately. ListView navigation and Enter still work via
-        # the screen's priority bindings — no need to surrender focus.
-        self.query_one(FilterInput).focus_input()
+        # Defer focus to the next event-loop tick: ``Widget.focus()``
+        # itself schedules ``set_focus`` via ``call_later``, and a
+        # synchronous focus call from ``on_mount`` races the screen's
+        # activation — operators saw the first 1–3 keystrokes vanish
+        # because the Input wasn't yet wired up to receive them.
+        self.call_later(self._focus_filter)
         self._sync_match_count()
+
+    def on_show(self) -> None:
+        # ``on_mount`` only fires once; ``on_show`` covers the case
+        # where the screen is re-shown after a child modal dismissed.
+        self.call_later(self._focus_filter)
+
+    def _focus_filter(self) -> None:
+        self.query_one(FilterInput).focus_input()
 
     def action_cancel(self) -> None:
         fi = self.query_one(FilterInput)
