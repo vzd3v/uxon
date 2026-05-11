@@ -29,9 +29,7 @@ class LayoutFlags:
 
     ``multi_host`` reflects ``cfg.remote_hosts`` being non-empty;
     ``cross_user`` reflects whether the current model contains any
-    local row owned by a user other than the current operator. Both
-    are passed wide from the start so commit 11 doesn't widen this
-    signature retroactively.
+    local row owned by a user other than the current operator.
     """
 
     multi_host: bool

@@ -143,11 +143,10 @@ def debug(topic: str, **fields: Any) -> None:
 
 # ── Metrics (off by default; enable via UXON_METRICS=1) ──────────────
 #
-# Stage 10b — opt-in JSONL of source-attempt records, rotated at 1 MiB
-# into ``.1`` and ``.2`` (cap 3 files total). Telemetry, not a
-# correctness path: failures are swallowed, never raised. The path
-# lives next to the event-log + debug-log under platformdirs'
-# ``user_state_dir("uxon")``.
+# Opt-in JSONL of source-attempt records, rotated at 1 MiB into ``.1``
+# and ``.2`` (cap 3 files total). Telemetry, not a correctness path:
+# failures are swallowed, never raised. The path lives next to the
+# event-log + debug-log under platformdirs' ``user_state_dir("uxon")``.
 
 # Test seam: rotation threshold in bytes. Production default is 1 MiB
 # (per spec). Tests override to a small value to exercise rotation

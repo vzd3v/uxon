@@ -5,8 +5,7 @@ navigation contract and base CSS). Mounts no rows on construction; takes
 ``columns: tuple[ColumnSpec, ...]`` and registers a column per entry, keyed by
 ``col.id`` so :meth:`update_cell` lookups work later.
 
-The widget is consumed by ``MainScreen`` (commit 10) but lives in isolation
-in this commit, fully tested. The reconciler in
+The widget is consumed by ``MainScreen``. The reconciler in
 :mod:`uxon.tui.dashboard.reconcile` produces the op stream that
 :meth:`apply` dispatches.
 
@@ -73,8 +72,7 @@ if TYPE_CHECKING:
 # (the attribute is created inside ``__init__``); inspect the source instead.
 assert "_row_locations" in inspect.getsource(_PrivateDataTable.__init__), (
     "Textual API changed: _row_locations no longer initialised on DataTable. "
-    "See plan 2026-05-06-session-dashboard-unified.md and "
-    "https://github.com/Textualize/textual/issues/2587 for the public-API "
+    "See https://github.com/Textualize/textual/issues/2587 for the public-API "
     "follow-up. Pin Textual version in pyproject.toml until resolved."
 )
 
@@ -130,7 +128,53 @@ class SessionDashboardTable(FocusReleasingDataTable):
         return self._block_starts
 
     def action_host_navigate(self, direction: int) -> None:
+        debug("keys", at="dashboard_host_navigate", direction=direction)
         self.post_message(self.HostNavigate(direction))
+
+    def action_cursor_down(self) -> None:
+        before = self.cursor_row
+        super().action_cursor_down()
+        debug(
+            "keys",
+            at="dashboard_cursor_down",
+            from_row=before,
+            to_row=self.cursor_row,
+            row_count=self.row_count,
+        )
+
+    def action_cursor_up(self) -> None:
+        before = self.cursor_row
+        debug(
+            "keys",
+            at="dashboard_cursor_up",
+            from_row=before,
+            row_count=self.row_count,
+        )
+        # Default focus-release walks the focus chain backwards, which
+        # lands on the *last* ActionRow in #top-actions (action-open) —
+        # the rightmost button. Operators expect ↑ to land on the
+        # leftmost button (action-cwd), matching how the row reads
+        # left-to-right. Walk #top-actions explicitly when present;
+        # fall back to the base contract otherwise (singleton screens,
+        # tests without an action group).
+        if self.cursor_row <= 0:
+            from .action_row import ACTION_GROUP_CONTAINER_ID, ActionRow
+
+            try:
+                group = self.screen.query_one(f"#{ACTION_GROUP_CONTAINER_ID}")
+            except Exception:
+                group = None
+            if group is not None:
+                for child in group.children:
+                    if isinstance(child, ActionRow):
+                        child.focus()
+                        return
+        super().action_cursor_up()
+        debug(
+            "keys",
+            at="dashboard_cursor_up_after",
+            to_row=self.cursor_row,
+        )
 
     def set_block_meta(self, meta: dict[str, tuple[str, int]]) -> None:
         """Update the ``row_key → (block_color, row_in_block)`` map.
@@ -184,8 +228,8 @@ class SessionDashboardTable(FocusReleasingDataTable):
         working.
         """
         if not plan.ops:
-            # Silence-on-no-op is part of the contract; commit 9's perf
-            # test asserts on the absence of any log line here.
+            # Silence-on-no-op is part of the contract; the perf test
+            # asserts on the absence of any log line here.
             return
         t0 = time.perf_counter()
         counts = {"add": 0, "remove": 0, "update": 0}

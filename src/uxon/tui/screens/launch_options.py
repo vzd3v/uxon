@@ -55,14 +55,9 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     def __init__(self, ctx) -> None:
         super().__init__()
         self.ctx = ctx
-        # Stage 8 commit 5c: ``availability`` is no longer
-        # snapshot-once-at-construction. Compute the initial visible
-        # set from whatever availability is current right now (read
-        # through ``ctx.agent_availability``, which after commit 5b
-        # is a read-through onto ``state.agent_availability.value``).
+        # Compute the initial visible set from current availability.
         # ``_rebuild_agent_list`` re-reads on every probe-result
-        # dispatch so the modal reflects fresh data without a
-        # re-open.
+        # dispatch so the modal reflects fresh data without a re-open.
         state = launch_options_state(
             enabled_agents=tuple(ctx.enabled_agents),
             default_agent=ctx.default_agent,
@@ -76,11 +71,8 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     def _availability_now(self) -> dict:
         """Read the current availability dict from the live slot store.
 
-        Stage 8 commit 5c: prefers ``app.state.agent_availability.value``
-        over going through the ``ctx.agent_availability`` shim, so the
-        modal reads the canonical store directly. The shim is the
-        compatibility path for unit tests that build a bare ctx; the
-        screen-side prefer-state path is what production runs.
+        Falls back to ``ctx.agent_availability`` for unit tests that
+        build a bare ctx without an App.
         """
         state = getattr(self.app, "state", None)
         if state is not None and state.agent_availability.value is not None:

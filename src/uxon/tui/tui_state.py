@@ -1,37 +1,25 @@
 """Mutable :class:`TuiState` — the async-side of the TUI's state.
 
-Stage 8 of the multi-host design splits :class:`TuiContext` into three
-containers with distinct ontologies. :class:`TuiState` is the
-async-source-owned container: it holds the rebuild output (``main``),
-a counter (``refresh_tick``) and one :class:`SlotState` per async
-source (link health, cwd-write probe, agent availability, detected
-agents) plus a per-host slot map for remote SSH polls.
+:class:`TuiState` is the async-source-owned container: it holds the
+rebuild output (``main``), a counter (``refresh_tick``), one
+:class:`SlotState` per async source (link health, cwd-write probe,
+agent availability, detected agents), plus a per-host slot map for
+remote SSH polls.
 
 Field-level mutability only — the container is replaced *in place*
 on each event-loop dispatch (``state.link_health = apply(...)``); the
 slot values themselves are frozen :class:`SlotState` instances so a
 selector that captured a previous slot identity can ``is``-compare to
-detect change.
-
-The mixed style (mutable container, frozen leaves) is deliberate.
-Promoting :class:`TuiState` to ``frozen=True`` would force a
-whole-state replacement on every slot landing (allocator pressure on
-the hot path) and would defeat the per-host write granularity that
-drives the per-host repaint optimisation in commit 11.
-
-This commit (3) lands the type and wires it onto :class:`UxonApp`;
-no slot is canonical yet — the carry-list inside
-``MainScreen.apply_loaded_ctx`` still owns each async field. The
-canonical-owner table in the migration plan flips field-by-field
-across commits 4–6b. Until then the slots in :class:`TuiState` are
-empty fixtures that selectors and the dispatcher will start
-consuming as each field migrates.
+detect change. Promoting :class:`TuiState` to ``frozen=True`` would
+force a whole-state replacement on every slot landing (allocator
+pressure on the hot path) and would defeat the per-host write
+granularity that drives the per-host repaint optimisation.
 
 ``main`` uses ``None`` as the "never loaded" sentinel rather than a
 module-level ``_NEVER_LOADED = object()`` symbol — Pyright reports
 the latter as ``MainData | object``, which is incompatible with
-type-narrowing helpers; ``MainData | None`` is idiomatic and admits
-``is None`` checks at call sites.
+type-narrowing helpers; ``MainData | None`` admits ``is None`` checks
+at call sites.
 """
 
 from __future__ import annotations
@@ -90,8 +78,8 @@ class TuiState:
     # ── Async slots (one per source) ─────────────────────────────────
     # ``agent_availability`` and ``detected_agents`` are mapped types
     # whose value is a dict — one slot per probe tick replaces the
-    # whole dict via ``apply`` (commit 5b removes the in-place worker
-    # mutation). ``link_health`` and ``cwd_writable`` are scalar slots.
+    # whole dict via ``apply``. ``link_health`` and ``cwd_writable``
+    # are scalar slots.
     agent_availability: SlotState[dict[str, Any]] = field(default_factory=_empty_dict_slot)
     detected_agents: SlotState[dict[str, Any]] = field(default_factory=_empty_dict_slot)
     link_health: SlotState[LinkHealthStatus] = field(default_factory=_empty_link_health_slot)
@@ -101,6 +89,5 @@ class TuiState:
     # entries are inserted lazily on the first landing for that host.
     # ``RemoteSnapshot`` lives in :mod:`uxon.remote_collector`; the
     # dict-of-slots shape is what makes per-host repaints O(rows in
-    # changed host) instead of O(total sessions across all peers) —
-    # see plan commit 4 for the per-host update path.
+    # changed host) instead of O(total sessions across all peers).
     remote: dict[str, SlotState[Any]] = field(default_factory=dict)

@@ -3,7 +3,7 @@
 Two shapes:
   - :class:`ConfirmYesNo` — yes/no buttons + y/n keyboard.
   - :class:`ConfirmPhrase` — user must type the phrase verbatim
-    (matches the legacy ``kill-all`` / ``kill-all-global`` gesture).
+    (the ``kill-all`` / ``kill-all-global`` destructive gesture).
 
 Both return ``True`` on positive confirmation, ``False`` on cancel.
 """

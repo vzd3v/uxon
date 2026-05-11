@@ -1,9 +1,9 @@
 """Pure dashboard reconciler: diff two ``tuple[SessionRow, ...]`` models.
 
-The widget (commit 8) consumes the resulting op stream and applies it
-to a Textual ``DataTable`` without re-rendering rows that have not
-changed. Keeping diff-emission pure means the per-tick repaint cost
-is bounded by *changed cells* rather than total rows.
+:class:`SessionDashboardTable` consumes the resulting op stream and
+applies it to a Textual ``DataTable`` without re-rendering rows that
+have not changed. Keeping diff-emission pure means the per-tick
+repaint cost is bounded by *changed cells* rather than total rows.
 
 Algorithm
 ---------

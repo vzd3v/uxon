@@ -60,10 +60,10 @@ def compute_all_missing(
 ) -> bool:
     """Return True when every enabled agent has a resolved missing/timeout status.
 
-    Distinct from :func:`should_show_agents_unavailable` because the new
-    transition-based push gate (``should_push_agents_unavailable``) needs the
-    raw "is this state all-missing now" predicate, decoupled from the
-    previously-shown latch.
+    Distinct from :func:`should_show_agents_unavailable` because the
+    transition-based push gate (``should_push_agents_unavailable``)
+    needs the raw "is this state all-missing now" predicate,
+    decoupled from the previously-shown latch.
     """
     if not enabled_agents:
         return False
@@ -467,10 +467,6 @@ def project_name_valid(value: str) -> bool:
 class HostHealthBadge:
     """Per-host health summary derived from a ``RemoteSnapshot``.
 
-    Stage 6 reads ``RemoteSnapshot.error``/``from_cache``/``cached_at_epoch``
-    directly. The richer ``SlotState[T]`` (latency ring, ``in_flight``,
-    ``consecutive_failures``) and the p50-latency tooltip land at stage 8.
-
     Status values:
       - ``loading`` — no snapshot yet (the worker has not produced a result).
       - ``ok`` — last fetch succeeded (``error is None`` and not from cache).
@@ -503,16 +499,12 @@ def _short_error(msg: str | None, *, limit: int = 48) -> str:
     return first or "error"
 
 
-# ── Stage 9 selectors ─────────────────────────────────────────────────
+# ── Selectors ─────────────────────────────────────────────────────────
 #
-# Pure, identity-stable selectors over the existing :class:`TuiContext`
-# shape. Stage 8 deliberately deferred the ``TuiContext`` →
-# ``TuiState``/``MainData`` split, so these operate on the live ctx +
-# per-host ``RemoteSnapshot`` mapping rather than on a future state
-# container. The identity-stable contract (selector returns the same
-# object across calls when inputs are unchanged by ``is`` comparison)
-# still applies and is testable today; the eventual reactive wiring
-# will plug into these helpers without changing their signatures.
+# Pure, identity-stable selectors over :class:`TuiContext` and the
+# per-host ``RemoteSnapshot`` mapping: a selector returns the same
+# object across calls when inputs are unchanged by ``is`` comparison,
+# so consumers can cache on the result identity.
 
 
 def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
