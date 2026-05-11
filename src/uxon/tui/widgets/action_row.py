@@ -23,6 +23,8 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Static
 
+from ..events import debug as _debug
+
 # Container ID that signals a row-of-buttons group. ActionRows whose
 # parent carries this id get cyclic ←/→ navigation and a single-step
 # ↑/↓ exit; rows under any other parent fall through to the standard
@@ -49,11 +51,14 @@ class ActionRow(Static):
     DEFAULT_CSS = """
     ActionRow {
         width: 1fr;
-        height: 1;
+        height: 3;
         padding: 0 1;
-        content-align: left middle;
+        content-align: center middle;
+        border: round $primary;
+        background: $surface;
     }
     ActionRow:focus {
+        border: round $accent;
         background: $accent 30%;
         text-style: bold;
     }
@@ -63,6 +68,26 @@ class ActionRow(Static):
     ActionRow.-disabled {
         color: $text-muted;
         text-style: dim;
+        border: round gray;
+    }
+    /* Singleton rows (Settings, Kill-ALL) sit in the bottom Vertical
+       block, not the horizontal #top-actions group. They keep the
+       previous flat single-line look so the heavy bordered chrome
+       stays focused on the primary actions at the top. */
+    ActionRow.-singleton {
+        height: 1;
+        border: none;
+        padding: 0 1;
+        content-align: left middle;
+        background: transparent;
+    }
+    ActionRow.-singleton:focus {
+        background: $accent 30%;
+        border: none;
+    }
+    ActionRow.-singleton:hover {
+        background: $boost;
+        border: none;
     }
     """
 
@@ -94,6 +119,7 @@ class ActionRow(Static):
         digit: int | None = None,
         enabled: bool = True,
         id: str | None = None,
+        singleton: bool = False,
     ) -> None:
         super().__init__(id=id)
         self.kind = kind
@@ -101,18 +127,34 @@ class ActionRow(Static):
         self.detail = detail
         self.digit = digit
         self._enabled = enabled
+        self._singleton = singleton
+        if singleton:
+            self.add_class("-singleton")
         self._render_text()
 
     def _render_text(self) -> None:
         t = Text()
-        if self.digit is not None:
-            t.append(f"{self.digit} ", style="dim")
+        if self._singleton:
+            # Compact single-line layout for Settings / Kill-ALL rows
+            # in the bottom Vertical. Mirrors the pre-3.4 visuals of
+            # the action group rows.
+            if self.digit is not None:
+                t.append(f"{self.digit} ", style="dim")
+            else:
+                t.append("  ")
+            t.append("+ ", style="bold green")
+            t.append(self.label, style="bold")
+            if self.detail:
+                t.append(f"  {self.detail}", style="dim")
         else:
-            t.append("  ")
-        t.append("+ ", style="bold green")
-        t.append(self.label, style="bold")
-        if self.detail:
-            t.append(f"  {self.detail}", style="dim")
+            # Bordered button in #top-actions: digit hint + label,
+            # centered. The detail (cwd path / project root) is
+            # rendered separately as a caption line below the row so
+            # the button itself stays narrow enough for the label to
+            # survive a 1/3-width split.
+            if self.digit is not None:
+                t.append(f"{self.digit}  ", style="dim")
+            t.append(self.label, style="bold")
         self.update(t)
         if not self._enabled:
             self.add_class("-disabled")
@@ -157,16 +199,38 @@ class ActionRow(Static):
     def action_cycle(self, delta: int) -> None:
         siblings = self._group_siblings()
         if siblings is None or len(siblings) <= 1:
+            _debug(
+                "keys",
+                at="action_row_cycle",
+                action="noop",
+                row=self.id,
+                reason="not_in_group" if siblings is None else "single_sibling",
+            )
             return
         try:
             idx = siblings.index(self)
         except ValueError:
             return
         new_idx = (idx + delta) % len(siblings)
+        _debug(
+            "keys",
+            at="action_row_cycle",
+            row=self.id,
+            delta=delta,
+            from_idx=idx,
+            to_idx=new_idx,
+        )
         siblings[new_idx].focus()
 
     def action_leave_group(self, direction: int) -> None:
         siblings = self._group_siblings()
+        _debug(
+            "keys",
+            at="action_row_leave",
+            row=self.id,
+            direction=direction,
+            siblings=len(siblings) if siblings is not None else 0,
+        )
         # Use ``app.action_focus_*`` to match the existing convention
         # in :class:`FocusReleasingDataTable` and the MainScreen
         # ↑/↓ bindings — one consistent spelling for "step the focus
@@ -203,6 +267,20 @@ class ActionRow(Static):
                 return
             seen.add(fid)
             if not isinstance(focused, ActionRow) or focused not in siblings:
+                # On either direction, force the dashboard's cursor to
+                # the symmetric edge of the table so that the visual
+                # transition matches the keypress. Without this, the
+                # DataTable preserves its prior ``cursor_row`` (e.g.
+                # row 13 if the operator went ↑ from row 13 to the
+                # buttons earlier in the same session), and pressing
+                # ↓ from a button lands "wherever I was before" — a
+                # surprising teleport. Duck-typed to keep this widget
+                # independent of the concrete dashboard subclass.
+                from textual.widgets import DataTable as _DataTable
+
+                if isinstance(focused, _DataTable) and focused.row_count > 0:
+                    target = focused.row_count - 1 if direction < 0 else 0
+                    focused.move_cursor(row=target)
                 return
 
 

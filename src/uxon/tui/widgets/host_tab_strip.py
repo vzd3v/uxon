@@ -104,6 +104,22 @@ class _TabButton(Static):
             self.screen.focus_next()
         elif event.key == "up":
             event.stop()
+            # Same rationale as SessionDashboardTable.action_cursor_up:
+            # walking the focus chain backwards lands on the last
+            # ActionRow (action-open / rightmost), not the leftmost
+            # button operators expect. Resolve #top-actions's first
+            # child explicitly when reachable.
+            from .action_row import ACTION_GROUP_CONTAINER_ID, ActionRow
+
+            try:
+                group = self.screen.query_one(f"#{ACTION_GROUP_CONTAINER_ID}")
+            except Exception:
+                group = None
+            if group is not None:
+                for child in group.children:
+                    if isinstance(child, ActionRow):
+                        child.focus()
+                        return
             self.screen.focus_previous()
 
     def _cycle(self, delta: int) -> None:

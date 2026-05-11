@@ -138,6 +138,122 @@ class TopActionRowCyclingTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class UpFromButtonsLandsOnLastRowTests(unittest.IsolatedAsyncioTestCase):
+    """↑ from any top button wraps to the LAST row of the dashboard.
+
+    There is nothing visually above the action row, so the focus chain
+    wraps to the bottom widget. Without the wrap-cursor fixup the
+    table's cursor stays at row 0 (its default), which reads as "↑
+    jumped to the FIRST row" — the opposite of what the wrap should
+    do. This test pins ``cursor_row == row_count - 1`` after ↑.
+    """
+
+    async def test_up_from_first_button_focuses_last_row(self) -> None:
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets import ActionRow
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        ctx = _mk_ctx(sessions=[_session("a"), _session("b"), _session("c")])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app.kick_refresh()
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            self.assertGreaterEqual(table.row_count, 2, msg="need ≥2 rows so first/last differ")
+            screen.query_one("#action-cwd", ActionRow).focus()
+            await pilot.pause()
+            await pilot.press("up")
+            await pilot.pause()
+            self.assertIsInstance(app.focused, SessionDashboardTable)
+            self.assertEqual(
+                table.cursor_row,
+                table.row_count - 1,
+                msg="↑ from buttons must land on the LAST row, not the first",
+            )
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class DownFromButtonsLandsOnFirstRowTests(unittest.IsolatedAsyncioTestCase):
+    """↓ from any top button forces the dashboard cursor to row 0.
+
+    Without the symmetric ``move_cursor(row=0)`` in
+    :meth:`ActionRow.action_leave_group`, the DataTable preserves its
+    prior ``cursor_row`` (e.g. wherever the operator left it before
+    going ↑ to the buttons). Pressing ↓ from a button then teleports
+    them back to that prior position rather than to the natural top of
+    the list. This regression check pins ``cursor_row == 0`` after ↓.
+    """
+
+    async def test_down_from_first_button_focuses_first_row(self) -> None:
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets import ActionRow
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        ctx = _mk_ctx(sessions=[_session("a"), _session("b"), _session("c")])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app.kick_refresh()
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            self.assertGreaterEqual(table.row_count, 2)
+            # Pre-position the cursor on the LAST row so that landing
+            # on row 0 is observably different from "no-op preserve".
+            table.move_cursor(row=table.row_count - 1)
+            screen.query_one("#action-cwd", ActionRow).focus()
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            self.assertIsInstance(app.focused, SessionDashboardTable)
+            self.assertEqual(
+                table.cursor_row,
+                0,
+                msg="↓ from buttons must land on row 0, not preserve prior position",
+            )
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class DashboardUpFocusFirstButtonTests(unittest.IsolatedAsyncioTestCase):
+    """↑ on the dashboard's top row must land on the first action button.
+
+    Regression for the bug where ``app.action_focus_previous()`` walks
+    the focus chain backwards and lands on ``action-open`` (3rd / right-
+    most button), which doesn't match how operators read the row left
+    to right. The override on :class:`SessionDashboardTable` jumps to
+    ``#top-actions``'s first child instead.
+    """
+
+    async def test_up_from_top_row_focuses_first_button(self) -> None:
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        ctx = _mk_ctx(sessions=[_session("a-own1")])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app.kick_refresh()
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table.focus()
+            table.move_cursor(row=0)
+            await pilot.pause()
+            await pilot.press("up")
+            await pilot.pause()
+            self.assertEqual(
+                app.focused.id,
+                "action-cwd",
+                msg="↑ from row 0 must focus the first ActionRow, not the last",
+            )
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class FlatBlockJumpTests(unittest.IsolatedAsyncioTestCase):
     """←/→ on the dashboard in flat view jumps cursor between blocks."""
 
@@ -186,6 +302,7 @@ class FlatBlockJumpTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("right")
             await pilot.pause()
             self.assertEqual(table.cursor_row, 0)
+
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
