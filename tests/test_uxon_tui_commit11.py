@@ -1,18 +1,13 @@
-"""Stage 8 commit 11 — dirty-flag coalescer + dashboard refresh.
+"""Reactive read-only trap on ``MainScreen.loading`` and per-host
+diff-op isolation in ``select_dashboard_model`` + ``diff``.
 
-Pinned contracts:
-
-* ``MainScreen.loading`` is writable; no ``compute_loading`` method
-  (which would mark the descriptor read-only per
-  textual/reactive.py:330-333).
-* Multiple per-host slot writes within one event-loop cycle collapse
-  into a single dashboard refresh via the dirty-flag coalescer.
+(Render-coalescer contract is pinned by
+``tests/test_render_scheduler.py``.)
 """
 
 from __future__ import annotations
 
 import unittest
-from unittest import mock
 
 
 def _textual_available() -> bool:
@@ -27,9 +22,7 @@ def _textual_available() -> bool:
 class ReactiveReadOnlyTrapTests(unittest.TestCase):
     """``MainScreen.loading`` may not have a corresponding
     ``compute_loading`` method. Such a method marks the descriptor
-    read-only and any later ``__set__`` raises AttributeError. The
-    plan-mandated plain-assignment dispatcher pattern relies on this
-    guarantee.
+    read-only and any later ``__set__`` raises AttributeError.
     """
 
     def test_main_screen_loading_has_no_compute(self) -> None:
@@ -39,50 +32,6 @@ class ReactiveReadOnlyTrapTests(unittest.TestCase):
             hasattr(MainScreen, "compute_loading"),
             "MainScreen.compute_loading must not exist — would make loading read-only.",
         )
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class CoalescerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_two_dirty_marks_collapse_to_one_drain(self) -> None:
-        """The dirty-flag coalescer collapses N synchronous calls to
-        ``_mark_remote_rows_dirty`` within one event-loop cycle into a
-        single ``_drain_remote_rows`` invocation. Calling the
-        coalescer directly (rather than relying on post_message
-        ordering) keeps the assertion deterministic across xdist
-        parallelism.
-        """
-        from uxon.remote_hosts import RemoteHost
-        from uxon.tui.app import UxonApp
-        from uxon.tui.context import TuiContext
-
-        ctx = TuiContext(
-            sessions=[],
-            total_cpu="",
-            total_ram="",
-            version="",
-            cwd="",
-            cwd_short="",
-            new_project_root="",
-            existing_projects=[],
-            remote_hosts=[
-                RemoteHost(name="a", ssh_alias="a", description="", remote_uxon="uxon"),
-                RemoteHost(name="b", ssh_alias="b", description="", remote_uxon="uxon"),
-            ],
-        )
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(80, 24)) as pilot:
-            with mock.patch.object(UxonApp, "_drain_remote_rows", autospec=True) as drain_spy:
-                # Two synchronous mark-dirty calls before any
-                # event-loop tick advances.
-                app._mark_remote_rows_dirty()
-                app._mark_remote_rows_dirty()
-                # The dirty flag flipped once, scheduling exactly
-                # one drain via call_after_refresh.
-                self.assertTrue(app._remote_rows_dirty)
-                # Advance the refresh cycle so the drain runs.
-                await pilot.pause()
-                # Drain ran exactly once.
-                self.assertEqual(drain_spy.call_count, 1)
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")

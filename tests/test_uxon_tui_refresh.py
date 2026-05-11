@@ -178,21 +178,19 @@ class DispatchRegistryTests(unittest.TestCase):
         prefixes = [p for p, _ in app._source_dispatch_prefix]  # type: ignore[attr-defined]
         self.assertIn("remote:", prefixes)
 
-    def test_main_ctx_handler_posts_main_ctx_loaded(self) -> None:
-        from uxon.tui.app import _MainCtxLoaded, _RefreshSourceLanded
+    def test_main_ctx_handler_requests_render(self) -> None:
+        from uxon.tui.app import _RefreshSourceLanded
 
         app = self._make_app()
         ctx = app.ctx  # type: ignore[attr-defined]
-        # Capture posted messages instead of letting them route.
-        posted: list[object] = []
-        app.post_message = posted.append  # type: ignore[method-assign]
+        requests: list[str] = []
+        app._render.request = requests.append  # type: ignore[attr-defined,method-assign]
 
         handler = app._source_dispatch_exact["main_ctx_rebuild"]  # type: ignore[attr-defined]
         handler(_RefreshSourceLanded(name="main_ctx_rebuild", value=ctx))
 
-        self.assertEqual(len(posted), 1)
-        self.assertIsInstance(posted[0], _MainCtxLoaded)
-        self.assertIs(posted[0].ctx, ctx)  # type: ignore[union-attr]
+        self.assertEqual(requests, ["main_ctx"])
+        self.assertIs(app._latest_ctx, ctx)  # type: ignore[attr-defined]
 
     def test_event_default_epoch_is_unstamped_sentinel(self) -> None:
         """Default ``instance_epoch=-1`` means "synthetic / unstamped"
@@ -234,11 +232,11 @@ class DispatchRegistryTests(unittest.TestCase):
         dispatched normally — the gate's job is to drop *stale*
         events, not all stamped events.
         """
-        from uxon.tui.app import _MainCtxLoaded, _RefreshSourceLanded
+        from uxon.tui.app import _RefreshSourceLanded
 
         app = self._make_app()
-        posted: list[object] = []
-        app.post_message = posted.append  # type: ignore[method-assign]
+        requests: list[str] = []
+        app._render.request = requests.append  # type: ignore[attr-defined,method-assign]
 
         ev = _RefreshSourceLanded(
             name="main_ctx_rebuild",
@@ -246,8 +244,7 @@ class DispatchRegistryTests(unittest.TestCase):
             instance_epoch=app._instance_epoch,  # type: ignore[attr-defined]
         )
         app.on__refresh_source_landed(ev)  # type: ignore[attr-defined]
-        self.assertEqual(len(posted), 1)
-        self.assertIsInstance(posted[0], _MainCtxLoaded)
+        self.assertEqual(requests, ["main_ctx"])
 
     def test_unknown_name_falls_through_to_drop(self) -> None:
         from uxon.tui.app import _RefreshSourceLanded

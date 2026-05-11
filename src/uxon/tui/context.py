@@ -159,6 +159,8 @@ class TuiContext:
     refresh_tick: int = field(default=0, init=False)
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
+    tui_render_debounce_ms: int = 100
+    tui_render_max_latency_ms: int = 1000
     # Multi-host transport knobs. Forwarded into per-host fetch
     # closures by ``cli._build_tui_context`` and snapshotted into
     # :class:`uxon.tui.config.TuiConfig` at App-construction time.
@@ -291,7 +293,7 @@ class TuiContext:
     # are kicked.
     remote_hosts: list = field(default_factory=list)  # list[RemoteHost]
 
-    # ── Dashboard table preferences (commit 10) ──────────────────────
+    # ── Dashboard table preferences ──────────────────────────────────
     # Mirror the matching fields on :class:`uxon.cli.Config`.
     # ``tui_table_columns is None`` means "use registry defaults"; an
     # explicit tuple is the user's column order from
@@ -301,14 +303,11 @@ class TuiContext:
     tui_search_fields: tuple[str, ...] = ("name", "user")
     tui_color_palette: tuple[str, ...] = ("cyan", "blue")
     local_host_color: str = "green"
-    # ``remote_snapshots`` is exposed via the property defined after
-    # the class body. Reads return either a flattened view of
-    # ``self._state.remote`` (when a state is linked) or the legacy
-    # dict slot below. Writes go to the legacy slot only — the
+    # Exposed via the property defined after the class body. Reads
+    # return a flattened view of ``self._state.remote`` when a state
+    # is linked, or the kwarg-stored dict for unit tests that don't
+    # build an App. Writes go to the kwarg-stored dict only — the
     # dispatcher mutates ``state.remote`` directly via ``apply``.
-    # Test fixtures keep passing ``remote_snapshots={...}`` as a
-    # kwarg, which lands in the legacy slot for unit tests that
-    # don't build an App.
     remote_snapshots: dict = field(default_factory=dict)  # dict[str, RemoteSnapshot]
 
     # Pluggable refresh sources. Each entry is a ``SourceSpec`` (see
@@ -326,11 +325,11 @@ class TuiContext:
 
     # Linked :class:`uxon.tui.tui_state.TuiState` — the App sets this
     # at ``__init__`` time so the canonical ``refresh_tick`` (and
-    # later: every async slot) is shared between the live ctx and the
-    # state container. Defaults to ``None`` for tests and the
-    # skeleton ctx that don't run inside an App; the property
-    # accessors below fall back to a private legacy slot. Excluded
-    # from ``__repr__`` to keep test failures readable.
+    # every async slot) is shared between the live ctx and the state
+    # container. Defaults to ``None`` for tests and the skeleton ctx
+    # that don't run inside an App; the property accessors below fall
+    # back to a private kwarg-stored slot. Excluded from ``__repr__``
+    # to keep test failures readable.
     _state: TuiState | None = field(default=None, repr=False, compare=False)
 
 
@@ -339,12 +338,8 @@ class TuiContext:
 # Defined after the dataclass body so the property descriptor is not
 # shadowed by the @dataclass-generated ``__init__`` field assignment.
 # When ``_state`` is linked (App is running), reads/writes go through
-# ``state.refresh_tick``; otherwise a private legacy slot in
-# ``__dict__`` keeps the dataclass-style attribute semantics intact.
-#
-# Stage 8 commit 3 introduces this proxy; commit 6b makes
-# ``state.refresh_tick`` canonical and the legacy slot becomes dead
-# weight (removed in commit 10 with the rest of the shim).
+# ``state.refresh_tick``; otherwise a private slot in ``__dict__``
+# keeps the dataclass-style attribute semantics intact.
 
 
 def _tui_refresh_tick_get(self: TuiContext) -> int:
@@ -370,11 +365,10 @@ TuiContext.refresh_tick = property(  # type: ignore[assignment]
 
 # ── remote_snapshots property (read-through view onto state.remote) ─
 #
-# Stage 8 commit 4: ``state.remote`` is the canonical store. Reads
-# through the shim flatten the slot dict to the legacy
-# ``dict[str, RemoteSnapshot]`` shape; writes (rare; mostly test
-# fixtures setting via the constructor kwarg) land on a private
-# legacy dict so test paths that don't run inside an App keep working.
+# ``state.remote`` is the canonical store. Reads flatten the slot
+# dict to ``dict[str, RemoteSnapshot]``; writes (rare; mostly test
+# fixtures setting via the constructor kwarg) land on a private dict
+# so test paths that don't run inside an App keep working.
 #
 # The flattened view is rebuilt on every access — sub-optimal, but
 # the dashboard model selector keys on ``id(slot.value)`` (not on
@@ -399,19 +393,13 @@ TuiContext.remote_snapshots = property(  # type: ignore[assignment]
 )
 
 
-# ── agent_availability / detected_agents shim properties ────────────
+# ── agent_availability / detected_agents read-through properties ────
 #
-# Stage 8 commit 5a: the canonical store moves to
-# ``state.agent_availability`` and ``state.detected_agents`` (each a
-# :class:`SlotState[dict[...]]`). The shim properties read
-# ``state.<slot>.value`` when a state is linked — and crucially
-# *expose the same dict object* the slot holds, so today's
-# worker-thread in-place mutations
-# (``self.ctx.agent_availability[aid] = …``) continue to land on
-# state. This commit does not change semantics: the worker-thread
-# race is identical to today's. The race fix lands in commit 5b
-# (``_probe_host_worker`` builds local dicts and posts a
-# :class:`SlotResult`; the on-loop handler runs ``apply``).
+# Canonical store: ``state.agent_availability`` /
+# ``state.detected_agents`` (each a :class:`SlotState[dict[...]]`).
+# Reads return ``state.<slot>.value`` when a state is linked, falling
+# back to a private kwarg-stored dict for unit tests that build a
+# bare ctx without an App.
 
 
 def _availability_get(self: TuiContext) -> dict:
@@ -446,15 +434,11 @@ TuiContext.detected_agents = property(  # type: ignore[assignment]
 )
 
 
-# ── link_health_status / cwd_writable shim properties ───────────────
+# ── link_health_status / cwd_writable read-through properties ───────
 #
-# Stage 8 commit 6: ``state.link_health`` and ``state.cwd_writable``
-# become canonical. Unlike ``agent_availability`` / ``detected_agents``
-# (commit 5), these were never thread-race targets — both the
-# link-health and cwd probes already posted messages and the on-loop
-# handlers wrote ``ctx.<field>`` single-threaded. The migration is a
-# data-shape rename so the carry-list can disappear, plus the
-# cwd-change invalidation in the rebuild dispatcher.
+# Canonical: ``state.link_health`` / ``state.cwd_writable``. Reads
+# return ``state.<slot>.value``; the kwarg-stored fallback covers
+# unit tests that build a bare ctx without an App.
 
 
 def _link_health_get(self: TuiContext) -> LinkHealthStatus:
@@ -471,18 +455,13 @@ def _link_health_set(self: TuiContext, value: LinkHealthStatus) -> None:
 def _cwd_writable_get(self: TuiContext) -> bool | None:
     """Return the cached cwd-writable flag.
 
-    Three-valued semantics survive the slot migration:
+    Three-valued semantics:
       ``None``  — probe still in flight or never ran
       ``True``  — launchable
       ``False`` — not launchable
 
-    Pre-commit-6 ``ctx.cwd_writable is None`` doubled as the
-    "loading" sentinel. Post-commit-6 the loading-vs-loaded
-    distinction is structural: ``state.cwd_writable.last_attempt_at
-    is None`` means never-loaded, regardless of value. Existing
-    readers that only need the tri-state result (the launch-row
-    decoration) still see the ``bool | None`` value through this
-    shim.
+    "Never loaded" is structural: ``state.cwd_writable.last_attempt_at
+    is None`` regardless of value.
     """
     state = getattr(self, "_state", None)
     if state is not None and state.cwd_writable.last_attempt_at is not None:

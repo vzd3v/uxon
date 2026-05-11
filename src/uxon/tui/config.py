@@ -1,26 +1,17 @@
 """Frozen :class:`TuiConfig` — the immutable side of the TUI's state.
 
-Stage 8 of the multi-host design spec splits the monolithic
-:class:`uxon.tui.context.TuiContext` into three containers with
-distinct ontologies:
+The TUI's state is split across three containers:
 
 * **Configuration** — values fixed for the lifetime of the App
   (``enabled_agents``, refresh cadences, callbacks, the
   ``remote_hosts`` registry, …). Lives in :class:`TuiConfig`.
 * **Async slots** — per-source state mutated by message-loop
-  handlers. Lives in :class:`uxon.tui.state.TuiState` (later commit).
+  handlers. Lives in :class:`uxon.tui.state.TuiState`.
 * **Rebuild output** — fields the local rebuild source emits each
-  tick. Lives in :class:`uxon.tui.main_data.MainData` (later commit).
+  tick. Lives in :class:`uxon.tui.main_data.MainData`.
 
-This module ships *only* :class:`TuiConfig`; the other two land in
-follow-up commits and reference the same factory pattern. Existing
-code keeps reading :class:`TuiContext`; :class:`TuiConfig` is initially
-duplicated state populated from the live ctx at App-construction time
-so the migration does not have to flip every reader at once.
-
-The dataclass is ``frozen=True`` so callers cannot mutate it after
-construction; the lifetime invariant ("immutable across rebuilds")
-becomes a type-level guarantee.
+The dataclass is ``frozen=True`` so the lifetime invariant
+("immutable across rebuilds") is type-level.
 """
 
 from __future__ import annotations
@@ -74,6 +65,8 @@ class TuiConfig:
     # ── Cadence knobs ────────────────────────────────────────────────
     tui_refresh_interval_seconds: float
     tui_ssh_refresh_interval_seconds: float
+    tui_render_debounce_ms: int
+    tui_render_max_latency_ms: int
 
     # ── Multi-host transport ─────────────────────────────────────────
     ssh_multiplex: str
@@ -129,6 +122,8 @@ class TuiConfig:
             default_agent=ctx.default_agent,
             tui_refresh_interval_seconds=float(ctx.tui_refresh_interval_seconds),
             tui_ssh_refresh_interval_seconds=float(ctx.tui_ssh_refresh_interval_seconds),
+            tui_render_debounce_ms=int(ctx.tui_render_debounce_ms),
+            tui_render_max_latency_ms=int(ctx.tui_render_max_latency_ms),
             ssh_multiplex=ctx.ssh_multiplex,
             fetch_concurrency=ctx.fetch_concurrency,
             remote_hosts=tuple(ctx.remote_hosts),

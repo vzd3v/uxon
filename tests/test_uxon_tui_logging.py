@@ -60,31 +60,47 @@ class StartupChannelTests(unittest.TestCase):
             )
 
     def test_handle_main_ctx_rebuild_logs_first_data_landed_once(self) -> None:
-        """The ``first_data_landed`` latch fires once per app instance."""
+        """The ``first_data_landed`` latch fires once per app instance —
+        on the first successful landing. Error/empty landings do not
+        consume the latch.
+        """
         from unittest.mock import MagicMock
 
         from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.context import TuiContext
         from uxon.tui.tui_state import TuiState
 
-        # Build an app stub that bypasses ``__init__`` (Textual's
-        # ``App.__init__`` requires a running event loop). We only need
-        # ``_first_data_landed_logged``, ``post_message``, and
-        # ``state`` (the rebuild handler advances state.refresh_tick
-        # since commit 6b).
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+        )
+
         app = UxonApp.__new__(UxonApp)
         app._first_data_landed_logged = False  # type: ignore[attr-defined]
         app.state = TuiState()  # type: ignore[attr-defined]
         app.post_message = MagicMock()  # type: ignore[method-assign]
+        app._render = MagicMock()  # type: ignore[attr-defined]
 
         captured: list[dict] = []
 
         def _fake_debug(topic: str, **fields):  # type: ignore[no-untyped-def]
             captured.append({"topic": topic, **fields})
 
-        with mock.patch("uxon.tui.app._debug", _fake_debug):
-            ev1 = _RefreshSourceLanded(name="main_ctx_rebuild", value=None)
+        with (
+            mock.patch("uxon.tui.app._debug", _fake_debug),
+            mock.patch.object(
+                UxonApp, "screen_stack", new_callable=mock.PropertyMock, return_value=[]
+            ),
+        ):
+            ev1 = _RefreshSourceLanded(name="main_ctx_rebuild", value=ctx)
             UxonApp._handle_main_ctx_rebuild(app, ev1)
-            ev2 = _RefreshSourceLanded(name="main_ctx_rebuild", value=None)
+            ev2 = _RefreshSourceLanded(name="main_ctx_rebuild", value=ctx)
             UxonApp._handle_main_ctx_rebuild(app, ev2)
 
         startup_records = [r for r in captured if r["topic"] == "startup"]
