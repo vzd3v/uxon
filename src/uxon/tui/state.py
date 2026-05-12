@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .context import (
     CallbackError,
@@ -21,6 +21,9 @@ from .context import (
     _segments,
     _total_items,
 )
+
+if TYPE_CHECKING:
+    from .dashboard.ui_state import MainScreenUiState
 
 
 def effective_agents(
@@ -509,28 +512,33 @@ def _short_error(msg: str | None, *, limit: int = 48) -> str:
 # so consumers can cache on the result identity.
 
 
-def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
+def select_layout_signature(
+    ctx: TuiContext, ui: MainScreenUiState
+) -> tuple[bool, bool, bool, bool]:
     """Return the four-bool layout signature for ``MainScreen`` patch-vs-recompose.
 
-    Mirrors ``MainScreen._layout_signature``: ``(has_own_sessions,
-    has_super, has_other_sessions, kill_visible)``. Pure; memoisation
-    is unnecessary because the result is a tuple of bools (cheap to
-    recompute, equality-compared by callers).
+    Tuple shape: ``(has_own_sessions, has_super, cross_user_latched,
+    kill_visible)``. Pure; memoisation is unnecessary because the
+    result is a tuple of bools (cheap to recompute, equality-compared
+    by callers).
 
-    The recompose-on-cross-user flip is carried by
-    ``has_other_sessions`` (position 2): once the dashboard owns
-    other-user rows, ``bool(ctx.other_sessions)`` flipping is the
-    same predicate as "USER column needs to appear/disappear", so a
-    separate ``cross_user`` bool would be redundant. The flip
-    triggers the ``MainScreen`` recompose path; the new ``__init__``
-    rebuilds ``_active_columns`` from ``LayoutFlags(cross_user=
-    bool(ctx.other_sessions))``.
+    Position 2 (``cross_user_latched``) is the monotonic latch that
+    drives the USER column: ``True`` once two distinct usernames have
+    been observed anywhere in the dashboard model (local own, local
+    other, remote peers). Reads from
+    :attr:`MainScreenUiState.seen_users` — see
+    :func:`uxon.tui.dashboard.seen_users.cross_user_latched` for the
+    contract. The latch never resets within a process lifetime, so
+    the False→True flip is the only transition that triggers a
+    recompose of ``MainScreen`` for this bit.
     """
+    from .dashboard.seen_users import cross_user_latched
+
     has_super = bool(ctx.sudo_caps.reachable_users)
     return (
         bool(ctx.sessions),
         has_super,
-        bool(ctx.other_sessions),
+        cross_user_latched(ui),
         has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
     )
 

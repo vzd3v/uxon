@@ -262,6 +262,143 @@ class DispatchRegistryTests(unittest.TestCase):
         self.assertEqual(posted, [])
 
 
+class RemoteSnapshotSeenUsersTests(unittest.TestCase):
+    """``_handle_remote_snapshot`` folds peer-emitted user names into
+    the App's ``seen_users`` accumulator and escalates the render kind
+    from ``"remote"`` to ``"main_ctx"`` on the False→True latch flip.
+
+    Without escalation, a remote tick that introduced the very first
+    foreign user would only schedule a row-level patch — the USER
+    column would not mount until the next ``main_ctx_rebuild`` (up to
+    a tick of latency). Detecting the flip at the state-mutation site
+    closes that window.
+    """
+
+    def _make_app(self) -> object:
+        try:
+            from uxon.tui.app import UxonApp
+        except ImportError:
+            self.skipTest("textual not available")
+        from uxon.tui.context import LaunchRequest, TuiContext
+
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="0",
+            total_ram="0",
+            version="0.0",
+            cwd="/tmp",
+            cwd_short="tmp",
+            new_project_root="/tmp",
+            existing_projects=[],
+            cwd_writable=True,
+            current_user="alice",
+            on_launch_cwd=lambda agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+            on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
+                cmd=("/bin/true",), label="new"
+            ),
+            on_launch_existing=lambda n, agent_id, mode_id: LaunchRequest(
+                cmd=("/bin/true",), label="existing"
+            ),
+        )
+        return UxonApp(ctx, probe_agents=False)
+
+    def _snapshot(self, host: str, users: list[str]):
+        from uxon.remote_collector import RemoteSnapshot
+
+        sessions = [
+            {
+                "user": u,
+                "name": f"uxon-{u}@claude",
+                "short_id": u,
+                "agent": "claude",
+                "attached": False,
+                "windows": "1",
+                "created": "",
+                "last_attached": "",
+                "pane_pids": [],
+                "active_pid": None,
+                "active_cmd": "claude",
+                "active_path": "/",
+                "cpu_pct": 0.0,
+                "rss_kib": 0,
+                "legacy": False,
+            }
+            for u in users
+        ]
+        return RemoteSnapshot(
+            host_name=host,
+            fetched_at_epoch=0.0,
+            from_cache=False,
+            error=None,
+            sessions=sessions,
+        )
+
+    def test_handler_feeds_seen_users_from_snapshot(self) -> None:
+        from uxon.tui.app import _RefreshSourceLanded
+
+        app = self._make_app()
+        # Seed the accumulator with the local user so the latch is
+        # currently False (one distinct user).
+        app.main_ui.seen_users.add("alice")  # type: ignore[attr-defined]
+        snap = self._snapshot("vz-prod1", ["bob"])
+
+        handler = app._source_dispatch_prefix[0][1]  # type: ignore[attr-defined]
+        handler(_RefreshSourceLanded(name="remote:vz-prod1", value=snap))
+
+        self.assertIn("bob", app.main_ui.seen_users)  # type: ignore[attr-defined]
+
+    def test_handler_escalates_to_main_ctx_on_latch_flip(self) -> None:
+        from uxon.tui.app import _RefreshSourceLanded
+
+        app = self._make_app()
+        app.main_ui.seen_users.add("alice")  # type: ignore[attr-defined]
+        requests: list[str] = []
+        app._render.request = requests.append  # type: ignore[attr-defined,method-assign]
+
+        snap = self._snapshot("vz-prod1", ["bob"])
+        handler = app._source_dispatch_prefix[0][1]  # type: ignore[attr-defined]
+        handler(_RefreshSourceLanded(name="remote:vz-prod1", value=snap))
+
+        # Latch flipped False→True; render must take the main_ctx path
+        # so apply_loaded_ctx re-evaluates the layout signature.
+        self.assertEqual(requests, ["main_ctx"])
+
+    def test_handler_keeps_remote_fast_path_when_latch_already_set(self) -> None:
+        from uxon.tui.app import _RefreshSourceLanded
+
+        app = self._make_app()
+        # Latch already True — accumulator has two users.
+        app.main_ui.seen_users.update({"alice", "bob"})  # type: ignore[attr-defined]
+        requests: list[str] = []
+        app._render.request = requests.append  # type: ignore[attr-defined,method-assign]
+
+        snap = self._snapshot("vz-prod1", ["carol"])
+        handler = app._source_dispatch_prefix[0][1]  # type: ignore[attr-defined]
+        handler(_RefreshSourceLanded(name="remote:vz-prod1", value=snap))
+
+        # Latch was already True; row-level fast path stays in play.
+        # Accumulator still grows (monotonic, ``carol`` joins) but the
+        # render kind is ``remote``, not ``main_ctx``.
+        self.assertEqual(requests, ["remote"])
+        self.assertIn("carol", app.main_ui.seen_users)  # type: ignore[attr-defined]
+
+    def test_handler_no_flip_when_remote_user_already_known(self) -> None:
+        from uxon.tui.app import _RefreshSourceLanded
+
+        app = self._make_app()
+        # Latch is False (only one user); remote brings the same user.
+        app.main_ui.seen_users.add("alice")  # type: ignore[attr-defined]
+        requests: list[str] = []
+        app._render.request = requests.append  # type: ignore[attr-defined,method-assign]
+
+        snap = self._snapshot("vz-prod1", ["alice"])
+        handler = app._source_dispatch_prefix[0][1]  # type: ignore[attr-defined]
+        handler(_RefreshSourceLanded(name="remote:vz-prod1", value=snap))
+
+        # Set didn't grow past the threshold — fast path.
+        self.assertEqual(requests, ["remote"])
+
+
 class WorkerDrainTests(unittest.TestCase):
     """Stage 8 § Worker lifetime: ``UxonApp._drain_workers`` cancels
     every tracked handle and waits a bounded grace before returning,

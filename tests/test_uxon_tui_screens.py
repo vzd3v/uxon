@@ -167,15 +167,47 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         :class:`MainScreenUiState`), which the App keeps stable
         across screen swaps.
         """
-        from types import SimpleNamespace
-
         from uxon.tui.app import UxonApp
+        from uxon.tui.context import TuiSession
         from uxon.tui.dashboard.ui_state import set_view_mode
 
-        skeleton = _mk_ctx()
-        # Loaded ctx flips ``has_other_sessions`` → forces recompose.
+        # Skeleton has a single-user dashboard (devagent's own row);
+        # loaded ctx introduces a second user (alice), flipping the
+        # cross_user latch False→True and forcing the recompose path.
+        # Real :class:`TuiSession` instances are required because
+        # ``apply_loaded_ctx`` now syncs ``state.main`` from the ctx
+        # so the dashboard model walks the rows downstream.
+        own = TuiSession(
+            name="devagent.foo",
+            short="foo",
+            attached=False,
+            pid="1",
+            cpu="0",
+            ram="0",
+            created="0s",
+            last_activity="0s",
+            cmd="claude",
+            path="/srv",
+            user="devagent",
+        )
+        skeleton = _mk_ctx(sessions=[own])
         loaded = _mk_ctx(
-            other_sessions=[SimpleNamespace(user="alice", name="proj@claude", status="active")]
+            sessions=[own],
+            other_sessions=[
+                TuiSession(
+                    name="alice.proj",
+                    short="proj",
+                    attached=False,
+                    pid="1",
+                    cpu="0",
+                    ram="0",
+                    created="0s",
+                    last_activity="0s",
+                    cmd="codex",
+                    path="/srv",
+                    user="alice",
+                )
+            ],
         )
 
         app = UxonApp(skeleton, probe_agents=False)

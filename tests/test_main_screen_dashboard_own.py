@@ -597,11 +597,18 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(cursor_row.name, "devagent.foo")
             self.assertEqual(cursor_row.user, "devagent")
 
-    async def test_recompose_when_cross_user_flips_false(self) -> None:
-        """A refresh that drops the last other-user row recomposes → USER column gone."""
+    async def test_user_column_stays_after_other_sessions_disappear(self) -> None:
+        """Cross-user latch is monotonic: once mounted, the USER column
+        does not auto-hide when the other-user row that triggered it
+        goes away.
+
+        Auto-hiding under the operator while they are using the column
+        is the broken behaviour the latch exists to prevent — losing
+        the column on every transient remote-snapshot dropout or
+        filter narrowing was the very bug this design fixes.
+        """
         from uxon.tui.app import UxonApp
         from uxon.tui.context import SudoCapability
-        from uxon.tui.screens.main import MainScreen
 
         ctx = _mk_ctx(
             sessions=[_own_session()],
@@ -620,9 +627,85 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             )
             old_screen.apply_loaded_ctx(new_ctx, focus_key="")
             await pilot.pause()
-            self.assertIsNot(app.screen, old_screen)
+            # The column survives whatever happens to the underlying
+            # rows — same screen (no recompose, signature unchanged)
+            # or a fresh one, USER must still be there.
+            self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
+
+    async def test_user_column_appears_on_remote_snapshot_with_foreign_user(self) -> None:
+        """Multi-host scenario: app starts with a single-user local
+        dashboard; a remote-peer snapshot lands carrying a row owned
+        by a different user → USER column mounts on the very tick of
+        the snapshot landing.
+
+        Regression for the headline bug this design fixes: the old
+        ``cross_user`` predicate read ``bool(ctx.other_sessions)``
+        and ignored remote rows entirely, so a multi-host dashboard
+        with sessions from a foreign user on a remote peer rendered
+        without the USER column — making the user column ambiguous
+        across the rows.
+        """
+        from uxon.remote_collector import RemoteSnapshot
+        from uxon.remote_hosts import RemoteHost
+        from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.screens.main import MainScreen
+
+        ctx = _mk_ctx(
+            sessions=[_own_session()],
+            remote_hosts=[
+                RemoteHost(
+                    name="vz-prod1",
+                    ssh_alias="vz-prod1",
+                    description="",
+                    remote_uxon="uxon",
+                )
+            ],
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            initial_cols = tuple(c.id for c in app.screen._active_columns)
+            self.assertNotIn("user", initial_cols)
+            # Inject a remote snapshot carrying a row from a foreign
+            # user. The handler must fold ``alice`` into the latch
+            # accumulator and escalate the render kind so the layout
+            # signature is re-evaluated.
+            snap = RemoteSnapshot(
+                host_name="vz-prod1",
+                fetched_at_epoch=0.0,
+                from_cache=False,
+                error=None,
+                sessions=[
+                    {
+                        "user": "alice",
+                        "name": "uxon-bar@claude",
+                        "short_id": "bar",
+                        "agent": "claude",
+                        "attached": False,
+                        "windows": "1",
+                        "created": "",
+                        "last_attached": "",
+                        "pane_pids": [],
+                        "active_pid": None,
+                        "active_cmd": "claude",
+                        "active_path": "/srv",
+                        "cpu_pct": 0.0,
+                        "rss_kib": 0,
+                        "legacy": False,
+                    }
+                ],
+            )
+            # Manually drive _latest_ctx so the main_ctx escalation has
+            # a context to apply (production sets this from the first
+            # main_ctx_rebuild tick, which our deterministic fixture
+            # doesn't run).
+            app._latest_ctx = ctx  # type: ignore[attr-defined]
+            handler = app._source_dispatch_prefix[0][1]  # type: ignore[attr-defined]
+            handler(_RefreshSourceLanded(name="remote:vz-prod1", value=snap))
+            await pilot.pause()
+            # Column appeared via the apply_loaded_ctx → recompose path.
             self.assertIsInstance(app.screen, MainScreen)
-            self.assertNotIn("user", tuple(c.id for c in app.screen._active_columns))
+            self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
 
 
 if __name__ == "__main__":

@@ -47,7 +47,8 @@ from ..dashboard.layout import LayoutFlags, build_active_columns
 from ..dashboard.model import select_dashboard_model
 from ..dashboard.reconcile import diff
 from ..dashboard.row import SessionRow
-from ..dashboard.ui_state import DashboardUiState, set_filter, set_view_mode
+from ..dashboard.seen_users import collect_user_set, cross_user_latched
+from ..dashboard.ui_state import DashboardUiState, MainScreenUiState, set_filter, set_view_mode
 from ..events import debug as _debug
 from ..keymap import bindings_with_aliases
 from ..state import (
@@ -155,18 +156,58 @@ class MainScreen(Screen):
         # doesn't silently snap the operator back to defaults.
         self._dashboard_rows: tuple[SessionRow, ...] = ()
         # Compute active dashboard columns once and reuse from
-        # ``compose`` and ``_refresh_dashboard``. The layout signature
-        # tracks ``bool(ctx.other_sessions)`` — the same predicate
-        # used here — so a ``cross_user`` flip recomposes the screen
-        # and ``__init__`` rebuilds the column set.
+        # ``compose`` and ``_refresh_dashboard``. ``cross_user`` reads
+        # the monotonic latch on ``app.main_ui.seen_users`` (see
+        # :mod:`uxon.tui.dashboard.seen_users`) so the USER column
+        # mounts whenever two distinct users have been observed
+        # across any source — local own, local other-user, or remote
+        # peers. The latch never resets, so the column doesn't flicker
+        # when a foreign user's sessions die or filtering narrows the
+        # row set. The same accessor backs ``select_layout_signature``,
+        # keeping recompose-trigger and column-mount predicate in
+        # lockstep.
         flags = LayoutFlags(
             multi_host=bool(ctx.remote_hosts),
-            cross_user=bool(ctx.other_sessions),
+            cross_user=cross_user_latched(self._main_ui_or_empty()),
         )
         self._active_columns = build_active_columns(
             cfg_columns=ctx.tui_table_columns,
             flags=flags,
         )
+        # Cached layout signature for the patch-vs-recompose decision.
+        # Captured here at construction; refreshed at the end of every
+        # :meth:`apply_loaded_ctx` call. Caching is the only way the
+        # ``cross_user_latched`` predicate (a side-channel through
+        # ``app.main_ui.seen_users``) can drive a recompose: callers
+        # that flip the latch from outside ``apply_loaded_ctx`` (e.g.
+        # :meth:`UxonApp._handle_remote_snapshot` folding a foreign
+        # user from a peer's snapshot) update the live set first, so
+        # an entry-time recomputation of "old signature" would already
+        # see the flipped value and miss the transition. The cached
+        # value is the *previous* signature — what was committed last
+        # time apply_loaded_ctx finished — making the False→True
+        # transition observable regardless of who flipped the latch.
+        self._cached_signature = select_layout_signature(ctx, self._main_ui_or_empty())
+
+    def _main_ui_or_empty(self) -> MainScreenUiState:
+        """Return ``app.main_ui`` if reachable, otherwise a fresh empty
+        :class:`MainScreenUiState`.
+
+        ``MainScreen.__init__`` runs before Textual attaches the
+        screen to the App in some unit tests (``MainScreen.__new__``
+        construction) and before App readiness on the very first
+        mount. Falling back to an empty UI state in those windows is
+        equivalent to "the latch has not been observed yet" — the
+        feeder fills it on the next dispatch and the next recompose
+        picks up the real value.
+        """
+        try:
+            ui = self.app.main_ui  # type: ignore[attr-defined]
+        except Exception:
+            return MainScreenUiState()
+        if isinstance(ui, MainScreenUiState):
+            return ui
+        return MainScreenUiState()
 
     # ── Recompose-safe UI state proxies ──────────────────────────────
     #
@@ -946,10 +987,13 @@ class MainScreen(Screen):
     def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
         """Instance-method wrapper over :func:`select_layout_signature`.
 
-        Kept on the class so tests that synthesise a screen and call
-        this directly stay unchanged.
+        Pulls the App-owned :class:`MainScreenUiState` (which carries
+        the ``seen_users`` accumulator) and forwards it. Falls back to
+        a fresh empty UI state when the screen is not attached to the
+        App yet — keeps the unit-test path that builds a screen via
+        ``MainScreen.__new__`` working.
         """
-        return select_layout_signature(ctx)
+        return select_layout_signature(ctx, self._main_ui_or_empty())
 
     def _refresh_cwd_row(self) -> None:
         """Re-render the cwd action row from the current ctx.cwd_writable."""
@@ -1020,7 +1064,22 @@ class MainScreen(Screen):
         )
         if focus_key is None:
             focus_key = self._current_focus_key()
-        old_signature = self._layout_signature(self.ctx)
+        # ``old_signature`` is the value committed on the prior
+        # apply_loaded_ctx call (or on ``__init__`` for the first
+        # mount). Reading from the cache rather than recomputing
+        # against ``self.ctx`` makes the comparison sensitive to
+        # ``cross_user`` latch flips applied by handlers that update
+        # ``app.main_ui.seen_users`` directly (see the field's
+        # docstring on ``__init__``).
+        #
+        # Hand-stubbed test screens (``MainScreen.__new__`` paths) can
+        # skip ``__init__`` and therefore lack the cache; in that
+        # case fall back to a fresh computation from the current
+        # ctx — preserves the original (pre-cache) behaviour for
+        # those legacy stubs.
+        old_signature = getattr(self, "_cached_signature", None)
+        if old_signature is None:
+            old_signature = self._layout_signature(self.ctx)
         # Link the new ctx to the App's TuiState before writing
         # through the ``refresh_tick`` proxy. Without this link the
         # assignment would land on the new ctx's own default-factory
@@ -1053,7 +1112,33 @@ class MainScreen(Screen):
         # Keep app.ctx in lockstep so the probe worker's writes target the
         # same dict that screens read from.
         self.app.ctx = new_ctx  # type: ignore[attr-defined]
-        if self._layout_signature(self.ctx) == old_signature and self._apply_ctx_refresh():
+        # Defensive feed: walk the current state (with ``state.main``
+        # synced from ``new_ctx``) and fold any new users into the
+        # cross-user latch accumulator. Production already feeds via
+        # :meth:`UxonApp._handle_remote_snapshot` for remote ticks, but
+        # this site closes two extra paths:
+        #
+        # 1. Direct callers that bypass the dispatcher (some unit
+        #    tests call ``apply_loaded_ctx`` with a fresh ``new_ctx``
+        #    without ever running a refresh source).
+        # 2. The ``main_ctx_rebuild`` tick itself — the local-rebuild
+        #    handler only wires ``state.main``; this is where the
+        #    accumulator picks up the new local own / other-user
+        #    rows it produced.
+        #
+        # ``state.main = MainData.from_context(new_ctx)`` is idempotent
+        # with the dispatcher's earlier write in production; the sync
+        # keeps the dashboard model aligned with ``self.ctx`` for the
+        # in-place patch path below regardless of who called us.
+        main_ui = getattr(self.app, "main_ui", None)
+        if isinstance(main_ui, MainScreenUiState) and app_state is not None:
+            from uxon.tui.main_data import MainData as _MainData
+
+            app_state.main = _MainData.from_context(new_ctx)
+            main_ui.seen_users |= collect_user_set(app_state)
+        new_signature = self._layout_signature(self.ctx)
+        self._cached_signature = new_signature
+        if new_signature == old_signature and self._apply_ctx_refresh():
             _debug("keys", at="apply_loaded_ctx", path="patch", focus_key=focus_key)
             if focus_key and self._focus_key(focus_key):
                 return
@@ -1070,7 +1155,7 @@ class MainScreen(Screen):
             path="switch_screen",
             focus_key=focus_key,
             old_sig=str(old_signature),
-            new_sig=str(self._layout_signature(self.ctx)),
+            new_sig=str(new_signature),
         )
         new_screen = MainScreen(self.ctx)
         new_screen._restore_focus_key = focus_key

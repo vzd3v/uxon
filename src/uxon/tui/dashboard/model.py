@@ -118,9 +118,17 @@ def select_dashboard_model(
     locals → cfg-order remotes → within each block by recency
     (``-last_attached_epoch``, then name).
 
-    ``cross_user`` is *not* part of the return type — the caller
-    computes it from the returned rows when assembling
-    :class:`uxon.tui.dashboard.layout.LayoutFlags`.
+    ``cross_user`` is *not* part of the return type. It is a latched,
+    process-lifetime predicate carried on
+    :attr:`uxon.tui.dashboard.ui_state.MainScreenUiState.seen_users`
+    and read via
+    :func:`uxon.tui.dashboard.seen_users.cross_user_latched`. The
+    accumulator is fed by the rebuild dispatcher (see
+    :meth:`uxon.tui.app.UxonApp._handle_remote_snapshot` and
+    :meth:`uxon.tui.screens.main.MainScreen.apply_loaded_ctx`) so a
+    filter that narrows the returned rows down to one user does NOT
+    auto-hide the USER column — the latch reflects what has been
+    observed, not what is currently filtered.
 
     Identity stability: a no-op rebuild returns the previous tuple
     by ``is`` (see module docstring).

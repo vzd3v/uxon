@@ -324,6 +324,20 @@ class UxonApp(App):
         self.main_ui = MainScreenUiState(
             ui=DashboardUiState(view_mode=ctx.tui_table_default_view),
         )
+        # Seed the cross-user accumulator from the initial ctx so the
+        # very first ``MainScreen.__init__`` mounts with the right
+        # column set when the launching ctx already carries multi-user
+        # data (the synchronous build path in ``cli._build_tui_context``
+        # populates ``other_sessions`` before the TUI runs at all).
+        # Remote landings feed the same set lazily in
+        # :meth:`_handle_remote_snapshot`; local rebuilds in
+        # :meth:`MainScreen.apply_loaded_ctx`.
+        for s in ctx.sessions:
+            if s.user:
+                self.main_ui.seen_users.add(s.user)
+        for s in ctx.other_sessions:
+            if s.user:
+                self.main_ui.seen_users.add(s.user)
 
     def on_key(self, event: _events.Key) -> None:
         """Diagnostic log for keys that fall through unhandled.
@@ -582,7 +596,25 @@ class UxonApp(App):
         )
         prev = self.state.remote.get(host_name) or SlotState[RemoteSnapshot]()
         self.state.remote[host_name] = apply_slot(prev, result)
-        self._render.request("remote")
+
+        # Fold peer-emitted users into the cross-user latch accumulator.
+        # If this snapshot brings the very first foreign user, the latch
+        # flips False→True — request the ``main_ctx`` render kind so
+        # :meth:`MainScreen.apply_loaded_ctx` re-evaluates the layout
+        # signature (and mounts the USER column). Otherwise the
+        # ``remote`` fast path is enough — row-level diff against the
+        # updated slot, no recompose.
+        prev_latched = len(self.main_ui.seen_users) > 1
+        if snap is not None:
+            for rec in snap.sessions:
+                user = rec.get("user") if isinstance(rec, dict) else None
+                if user:
+                    self.main_ui.seen_users.add(str(user))
+        new_latched = len(self.main_ui.seen_users) > 1
+        if not prev_latched and new_latched:
+            self._render.request("main_ctx")
+        else:
+            self._render.request("remote")
 
     def _render_dirty(self, kinds: frozenset[str]) -> bool:
         """Single render-dispatch entry. Called by :class:`RenderScheduler`.

@@ -36,11 +36,20 @@ class MainScreenUiState:
     active host tab, and the pending tab-focus-restore flag. The App
     is stable for the whole TUI session, so storing them here makes
     them recompose-safe.
+
+    ``seen_users`` is the monotonic accumulator behind the USER
+    column's cross_user latch: once two distinct usernames have been
+    observed across any combination of local + remote sources, the
+    column stays mounted for the rest of the process. Filtering or
+    transient remote-snapshot loss never shrinks it — the column
+    would otherwise disappear under the operator while they were
+    using it.
     """
 
     ui: DashboardUiState = field(default_factory=DashboardUiState)
     active_tab_index: int = 0
     pending_tab_focus_restore: bool = False
+    seen_users: set[str] = field(default_factory=set)
 
 
 def set_view_mode(

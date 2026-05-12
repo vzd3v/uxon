@@ -81,5 +81,38 @@ class SetFilterTests(unittest.TestCase):
         self.assertIs(nxt, ui)
 
 
+class MainScreenUiStateSeenUsersTests(unittest.TestCase):
+    """``seen_users`` is the monotonic accumulator that drives the USER
+    column's cross_user-latch contract. Once two distinct users have
+    been observed in this process, the bit stays set — auto-shrinking
+    on filter / refresh would hide the column the operator was just
+    using, which is the broken behaviour the latch exists to prevent.
+    """
+
+    def test_default_is_empty_set(self) -> None:
+        from uxon.tui.dashboard.ui_state import MainScreenUiState
+
+        ui = MainScreenUiState()
+        self.assertEqual(ui.seen_users, set())
+
+    def test_field_is_mutable_set(self) -> None:
+        from uxon.tui.dashboard.ui_state import MainScreenUiState
+
+        ui = MainScreenUiState()
+        ui.seen_users.add("alice")
+        ui.seen_users.add("bob")
+        self.assertEqual(ui.seen_users, {"alice", "bob"})
+
+    def test_independent_instances_do_not_share_set(self) -> None:
+        # default_factory contract — two instances must get separate sets
+        # so a test mutating one doesn't contaminate the next.
+        from uxon.tui.dashboard.ui_state import MainScreenUiState
+
+        a = MainScreenUiState()
+        b = MainScreenUiState()
+        a.seen_users.add("alice")
+        self.assertEqual(b.seen_users, set())
+
+
 if __name__ == "__main__":
     unittest.main()
