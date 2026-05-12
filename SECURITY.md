@@ -65,6 +65,24 @@ boundaries are:
      tokens, per-session secret managers) rather than long-lived
      keys in agent home directories.
 
+   Note on the developer's own grant. The recommended
+   `<dev> ALL=(<dev>_agent) NOPASSWD: ALL` lets the developer run
+   *any* command as `<dev>_agent`, including launching `tmux`
+   directly on the per-user socket outside `uxon`. A session
+   started that way without `uxon`'s session-name prefix is not
+   surfaced by the TUI's scanner. This is intentional: the
+   developer is the trust root on the host — they already have a
+   shell, and could run agents under their own shell user without
+   `uxon` ever seeing them. The grant's job is to bound the
+   *agent*'s blast radius (a yolo run cannot touch `~<dev>`),
+   not to constrain the developer. A command whitelist would not
+   reduce the developer's attack surface; it would break every
+   time an agent binary, launcher, or wrapper changed. Lead-side
+   visibility is anchored to the OS account, not to the `uxon`
+   process: the lead's `ALL=(<dev>_agent)` grant lets them
+   `sudo -niu <dev>_agent tmux ls` and attach to whatever is
+   running, prefix-matching or not.
+
 2. **Per-peer authority.** Cross-host operation does not delegate
    trust between peers. Each peer's `sudoers` is evaluated
    independently by that peer's own SSH daemon. A compromised

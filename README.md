@@ -35,9 +35,9 @@ deployment, one tool:
   UUID `correlation_id` joining caller-side and peer-side
   events.
 
-There is no daemon, no database, no central control plane.
-Each host stays independently configured and independently
-authorised.
+Aggregation is client-side: the lead's TUI fans out over SSH.
+No daemon, no database, no central server to deploy. Each host
+stays independently configured and independently authorised.
 
 ## Install
 
