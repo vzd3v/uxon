@@ -77,7 +77,6 @@ def _main_data(
         total_cpu="",
         total_ram="",
         version="3.3.0.dev0",
-        repo_config_writable=True,
     )
 
 

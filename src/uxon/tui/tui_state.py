@@ -76,12 +76,10 @@ class TuiState:
     refresh_tick: int = 0
 
     # ── Async slots (one per source) ─────────────────────────────────
-    # ``agent_availability`` and ``detected_agents`` are mapped types
-    # whose value is a dict — one slot per probe tick replaces the
-    # whole dict via ``apply``. ``link_health`` and ``cwd_writable``
-    # are scalar slots.
+    # ``agent_availability`` is a mapped type whose value is a dict —
+    # one slot per probe tick replaces the whole dict via ``apply``.
+    # ``link_health`` and ``cwd_writable`` are scalar slots.
     agent_availability: SlotState[dict[str, Any]] = field(default_factory=_empty_dict_slot)
-    detected_agents: SlotState[dict[str, Any]] = field(default_factory=_empty_dict_slot)
     link_health: SlotState[LinkHealthStatus] = field(default_factory=_empty_link_health_slot)
     cwd_writable: SlotState[bool | None] = field(default_factory=_empty_cwd_writable_slot)
 

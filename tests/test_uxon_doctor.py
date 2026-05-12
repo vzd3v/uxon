@@ -47,14 +47,16 @@ class DoctorParallelProbeTests(unittest.TestCase):
     def _stub_probe_host(self, *, present: tuple[str, ...] = ("claude", "codex", "cursor")):
         from uxon import probes
 
-        enabled = {
-            aid: probes.BinaryStatus(name=aid, path=f"/fake/{aid}", install_hint="")
-            for aid in present
-        }
+        agents = {}
+        for aid in ("claude", "codex", "cursor"):
+            agents[aid] = probes.BinaryStatus(
+                name=aid,
+                path=f"/fake/{aid}" if aid in present else None,
+                install_hint="",
+            )
         return probes.HostReport(
             tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
-            enabled=enabled,
-            detected={},
+            agents=agents,
             launch_user=_USER,
         )
 
@@ -208,10 +210,13 @@ class DoctorRemoteFlagTests(unittest.TestCase):
 
         return probes.HostReport(
             tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
-            enabled={
-                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint="")
+            agents={
+                "claude": probes.BinaryStatus(
+                    name="claude", path="/fake/claude", install_hint=""
+                ),
+                "codex": probes.BinaryStatus(name="codex", path=None, install_hint=""),
+                "cursor": probes.BinaryStatus(name="cursor-agent", path=None, install_hint=""),
             },
-            detected={},
             launch_user=_USER,
         )
 
@@ -408,10 +413,13 @@ class DoctorAuditLineTests(unittest.TestCase):
 
         return probes.HostReport(
             tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
-            enabled={
-                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint="")
+            agents={
+                "claude": probes.BinaryStatus(
+                    name="claude", path="/fake/claude", install_hint=""
+                ),
+                "codex": probes.BinaryStatus(name="codex", path=None, install_hint=""),
+                "cursor": probes.BinaryStatus(name="cursor-agent", path=None, install_hint=""),
             },
-            detected={},
             launch_user=_USER,
         )
 

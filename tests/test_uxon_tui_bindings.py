@@ -157,6 +157,32 @@ class MainScreenSortBindingsRetiredTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class MainScreenDigitJumpRetiredTests(unittest.TestCase):
+    """Digit ``1``–``9`` quick-jump is gone in 3.4.
+
+    Priority screen-level digit bindings stole keystrokes from the
+    SearchBar Input (typing ``1`` to filter sessions used to fire a
+    jump). The retirement removes both the bindings on MainScreen and
+    the delegating ``BINDINGS`` on UxonApp; this guard prevents either
+    side from sneaking back in.
+    """
+
+    def test_no_digit_keys_on_main_screen(self) -> None:
+        from uxon.tui.screens.main import MainScreen
+
+        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
+        for digit in "123456789":
+            self.assertNotIn(digit, keys, f"{digit} must not be bound on MainScreen")
+
+    def test_no_digit_keys_on_app(self) -> None:
+        from uxon.tui.app import UxonApp
+
+        keys = {_binding_key(b) for b in getattr(UxonApp, "BINDINGS", [])}
+        for digit in "123456789":
+            self.assertNotIn(digit, keys, f"{digit} must not be bound on UxonApp")
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class MainScreenQuitBindingsTests(unittest.TestCase):
     """``q`` (and the JCUKEN twin ``й``) quit; ``escape`` no longer does.
 

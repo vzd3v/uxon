@@ -26,11 +26,17 @@ class BinaryStatus:
 
 @dataclass(frozen=True)
 class HostReport:
-    """Complete host availability snapshot."""
+    """Complete host availability snapshot.
+
+    ``agents`` carries one entry per ``CATALOG`` id; consumers decide
+    which subset is "in scope" (the strict whitelist from
+    ``[agents].enabled`` if non-empty, or the auto-mode set of all
+    installed agents otherwise). The previous ``enabled``/``detected``
+    split was tied to the now-removed detected-agents banner.
+    """
 
     tmux: BinaryStatus
-    enabled: dict[str, BinaryStatus]  # keys = cfg.enabled_agents (agent ids)
-    detected: dict[str, BinaryStatus]  # keys = CATALOG ids NOT in enabled, but installed
+    agents: dict[str, BinaryStatus]
     launch_user: str
 
 
@@ -180,76 +186,52 @@ _INSTALL_HINTS = {
 # ── Main probe API ───────────────────────────────────────────────────
 
 
-def probe_host(cfg, launch_user: str) -> HostReport:
-    """Probe all binaries on the host for the given launch_user.
+def probe_host(launch_user: str) -> HostReport:
+    """Probe tmux + every ``CATALOG`` agent on the host for ``launch_user``.
 
-    Returns a HostReport with:
-      - tmux: BinaryStatus for tmux
-      - enabled: dict[agent_id -> BinaryStatus] for cfg.enabled_agents
-      - detected: dict[agent_id -> BinaryStatus] for agents in the CATALOG
-                  that are installed but not in enabled_agents
-      - launch_user: the user for which the probe was run
+    Returns a :class:`HostReport` with:
+      - ``tmux``: :class:`BinaryStatus` for tmux
+      - ``agents``: dict[agent_id -> BinaryStatus] for every agent in
+        :data:`uxon.agents.CATALOG`. Entries with ``path=None`` are not
+        installed (used for "missing" status in auto-mode this just
+        omits them; in strict-whitelist mode the consumer surfaces
+        them as "missing").
+      - ``launch_user``: the user for which the probe was run
 
-    The probe uses `sh -lc 'command -v X'` via sudo if launch_user differs
-    from the current user, or directly if it's the same user. This matches
-    the login-shell semantics used by the launch builder.
+    The probe uses ``sh -lc 'command -v X'`` via sudo if ``launch_user``
+    differs from the current user, or directly if it's the same user.
+    This matches the login-shell semantics used by the launch builder.
     """
     from uxon import agents as uxon_agents
-
-    # Determine which binaries to probe.
-    tmux_names = ["tmux"]
-    enabled_agent_names = []
-    enabled_agent_ids = []
-    for aid in cfg.enabled_agents:
-        if aid in uxon_agents.CATALOG:
-            enabled_agent_names.append(uxon_agents.CATALOG[aid].binary)
-            enabled_agent_ids.append(aid)
 
     all_agent_names = [s.binary for s in uxon_agents.CATALOG.values()]
     all_agent_ids = list(uxon_agents.CATALOG.keys())
 
-    # Single round-trip probe: tmux + all agents.
-    probe_names = tmux_names + all_agent_names
+    # Single round-trip probe: tmux + every CATALOG agent.
+    probe_names = ["tmux", *all_agent_names]
     if launch_user == _current_user():
         paths = _resolve_paths_local(probe_names)
     else:
         paths = _resolve_paths_remote(probe_names, launch_user)
 
-    # Build tmux status.
-    tmux_path = paths.get("tmux")
     tmux_status = BinaryStatus(
         name="tmux",
-        path=tmux_path,
+        path=paths.get("tmux"),
         install_hint=_INSTALL_HINTS["tmux"],
     )
 
-    # Build enabled agents dict.
-    enabled: dict[str, BinaryStatus] = {}
-    for aid, binary_name in zip(enabled_agent_ids, enabled_agent_names, strict=True):
-        path = paths.get(binary_name)
-        enabled[aid] = BinaryStatus(
+    agents: dict[str, BinaryStatus] = {}
+    for aid in all_agent_ids:
+        binary_name = uxon_agents.CATALOG[aid].binary
+        agents[aid] = BinaryStatus(
             name=aid,
-            path=path,
+            path=paths.get(binary_name),
             install_hint=_INSTALL_HINTS.get(binary_name, ""),
         )
 
-    # Build detected agents dict (those installed but not in enabled).
-    detected: dict[str, BinaryStatus] = {}
-    for aid in all_agent_ids:
-        if aid not in cfg.enabled_agents:
-            binary_name = uxon_agents.CATALOG[aid].binary
-            path = paths.get(binary_name)
-            if path is not None:  # only include if actually found
-                detected[aid] = BinaryStatus(
-                    name=aid,
-                    path=path,
-                    install_hint=_INSTALL_HINTS.get(binary_name, ""),
-                )
-
     return HostReport(
         tmux=tmux_status,
-        enabled=enabled,
-        detected=detected,
+        agents=agents,
         launch_user=launch_user,
     )
 

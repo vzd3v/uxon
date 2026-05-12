@@ -74,16 +74,16 @@ class _AgentAvailabilityUpdated(Message):
 class _HostReportUpdated(Message):
     """Posted by ``_probe_host_worker`` once a fresh :class:`HostReport` lands.
 
-    Carries the locally-built availability and detected dicts; the
-    on-loop handler folds the payload into the slot store via
-    :func:`slot_state.apply`. On failure ``error`` is non-empty and
-    the dicts may be empty; the handler skips the slot apply but
-    still triggers the availability-dispatch path so the UI
-    re-renders with whatever state currently holds.
+    Carries the locally-built availability dict; the on-loop handler
+    folds the payload into the slot store via :func:`slot_state.apply`.
+    On failure ``error`` is non-empty and the dict may be ``None``;
+    the handler skips the slot apply but still triggers the
+    availability-dispatch path so the UI re-renders with whatever
+    state currently holds.
 
-    ``availability`` / ``detected`` defaulting to ``None`` is the
-    "skip the slot apply" signal used by tests that mutate the slot
-    directly and post a bare message to wake the handler.
+    ``availability`` defaulting to ``None`` is the "skip the slot
+    apply" signal used by tests that mutate the slot directly and
+    post a bare message to wake the handler.
     """
 
     bubble = False
@@ -91,13 +91,11 @@ class _HostReportUpdated(Message):
     def __init__(
         self,
         availability: dict | None = None,
-        detected: dict | None = None,
         error: str = "",
         elapsed_ms: int = 0,
     ) -> None:
         super().__init__()
         self.availability = availability
-        self.detected = detected
         self.error = error
         self.elapsed_ms = elapsed_ms
 
@@ -211,17 +209,7 @@ class UxonApp(App):
     # MainScreen so its Footer displays them; delegating to screens
     # keeps the ``Footer`` widget single-source-of-truth (T18 drift
     # guard depends on this).
-    BINDINGS = [
-        Binding("1", "main_digit_jump(1)", "", show=False, priority=True),
-        Binding("2", "main_digit_jump(2)", "", show=False, priority=True),
-        Binding("3", "main_digit_jump(3)", "", show=False, priority=True),
-        Binding("4", "main_digit_jump(4)", "", show=False, priority=True),
-        Binding("5", "main_digit_jump(5)", "", show=False, priority=True),
-        Binding("6", "main_digit_jump(6)", "", show=False, priority=True),
-        Binding("7", "main_digit_jump(7)", "", show=False, priority=True),
-        Binding("8", "main_digit_jump(8)", "", show=False, priority=True),
-        Binding("9", "main_digit_jump(9)", "", show=False, priority=True),
-    ]
+    BINDINGS: ClassVar[list[Binding]] = []
 
     def __init__(
         self,
@@ -252,10 +240,6 @@ class UxonApp(App):
         self.state.agent_availability = _replace(
             self.state.agent_availability,
             value=dict(ctx.agent_availability),
-        )
-        self.state.detected_agents = _replace(
-            self.state.detected_agents,
-            value=dict(ctx.detected_agents),
         )
         self.ctx._state = self.state
         self.pending_launch: LaunchRequest | None = None
@@ -300,6 +284,19 @@ class UxonApp(App):
         # state recovers — see ``should_push_agents_unavailable`` in
         # ``state.py`` for the rationale.
         self._last_all_missing: bool | None = None
+        # True once the host probe has produced *any* result (success
+        # or error). Auto-mode uses this to gate the "no agents
+        # installed" modal — an empty availability dict before the
+        # probe lands is not "all missing", it is "not yet probed".
+        # An errored probe still flips the flag so the modal can
+        # surface the diagnostic instead of leaving the user staring
+        # at a silently-empty agent list.
+        self._host_probe_landed: bool = False
+        # Last probe error (e.g. sudo failure). Empty on success.
+        # Carried into :class:`AgentsUnavailableScreen` so the user
+        # sees *why* nothing was probed rather than a generic "no
+        # agents" message.
+        self._host_probe_error: str = ""
         # Latest TuiContext from a successful ``main_ctx_rebuild`` landing.
         # The render scheduler reads it when firing a "main_ctx" dirty
         # batch into ``MainScreen.apply_loaded_ctx``. Stays ``None`` until
@@ -375,10 +372,9 @@ class UxonApp(App):
         if self.ctx.loading:
             self._kick_initial_sources()
         # Kick off background host probe (tmux + all known agents).
-        # Probe even with an empty ``enabled_agents`` so the
-        # detected-agents banner can surface CATALOG agents that the
-        # user has never enabled (e.g., fresh install with the default
-        # config).
+        # Probes every CATALOG agent regardless of cfg.enabled_agents
+        # so auto-mode (empty enabled list) sees what is installed for
+        # ``launch_user``.
         if self.probe_agents:
             self._kick_host_probe()
         # Cross-user case: the synchronous path leaves ``cwd_writable``
@@ -418,15 +414,6 @@ class UxonApp(App):
                 self.ctx.tui_ssh_refresh_interval_seconds,
                 self._kick_link_health_probe,
             )
-            # Re-run the host probe on each ctx-refresh tick so freshly
-            # installed tmux/agents surface without restarting uxon.
-            # Same cadence as the local-sessions source keeps banner
-            # state and agent_availability advancing in lockstep.
-            if self.probe_agents:
-                self.set_interval(
-                    self.ctx.tui_refresh_interval_seconds,
-                    self._kick_host_probe,
-                )
 
     def _kick_initial_sources(self) -> None:
         """Kick every refresh source whose ``kick_on_mount`` is True.
@@ -715,13 +702,13 @@ class UxonApp(App):
     def _kick_host_probe(self) -> None:
         """Schedule the host probe iff one isn't already in flight.
 
-        Wired into ``on_mount`` (initial), the periodic refresh interval
-        (so freshly-installed binaries surface without restart) and
-        ``MainScreen.action_refresh`` (so the manual ``r`` keybinding
-        does the same). Honours ``self.probe_agents`` so tests that
-        opt out of probing (Pilot tests with ``probe_agents=False``,
-        the pty integration suite that stubs ``probes.probe_host``)
-        do not start a real subprocess from the manual-refresh path.
+        Wired into ``on_mount`` (initial) and ``MainScreen.action_refresh``
+        (manual ``r`` keybinding). The probe is one-shot on mount; the
+        user picks up freshly-installed binaries via ``r``. Honours
+        ``self.probe_agents`` so tests that opt out of probing (Pilot
+        tests with ``probe_agents=False``, the pty integration suite
+        that stubs ``probes.probe_host``) do not start a real subprocess
+        from the manual-refresh path.
         """
         if not self.probe_agents:
             return
@@ -734,33 +721,25 @@ class UxonApp(App):
     def _probe_host_worker(self) -> None:
         """Background thread: probe tmux + all known agent binaries.
 
-        Race-free: the worker builds local dicts (availability +
-        detected) and posts them in a single
-        :class:`_HostReportUpdated`; the on-loop handler folds the
-        payload into ``state.agent_availability`` /
-        ``state.detected_agents`` via :func:`slot_state.apply`. No
-        ``self.ctx.<field>`` access from the thread.
+        Race-free: the worker builds a local availability dict and
+        posts it in a single :class:`_HostReportUpdated`; the on-loop
+        handler folds the payload into ``state.agent_availability``
+        via :func:`slot_state.apply`. No ``self.ctx.<field>`` access
+        from the thread.
 
         Uses ``probes.probe_host`` so one ``sh -lc`` round-trip covers
-        every binary; detected-but-not-enabled agents surface in
-        ``state.detected_agents.value`` for the suggestion banner.
+        every CATALOG agent.
         """
         import time as _time
 
         from uxon import agents as uxon_agents
         from uxon import probes as uxon_probes
 
-        # Build a minimal cfg-shaped object with what probe_host needs.
-        # Both fields are read off the frozen :class:`TuiConfig`
-        # snapshot — no mutable ctx access from the worker thread.
-        class _Cfg:
-            enabled_agents = self.cfg.enabled_agents
-
         target_user = self.cfg.launch_user or uxon_probes._current_user()
 
         t0 = _time.monotonic()
         try:
-            report = uxon_probes.probe_host(_Cfg(), target_user)
+            report = uxon_probes.probe_host(target_user)
         except Exception as exc:  # pragma: no cover — defensive
             self.post_message(
                 _HostReportUpdated(
@@ -770,23 +749,37 @@ class UxonApp(App):
             )
             return
 
+        # Strict-whitelist mode (``enabled_agents`` non-empty): surface
+        # exactly the enabled ids, marking absent binaries as "missing"
+        # so the unavailable-modal can fire. Auto-mode (empty config):
+        # surface only what is actually installed; un-installed
+        # CATALOG ids stay out of the availability map entirely.
+        configured = self.cfg.enabled_agents
         availability: dict = {}
-        for aid, status in report.enabled.items():
-            if status.path is not None:
-                availability[aid] = uxon_agents.AgentAvailability(
-                    status="ok",
-                    path=status.path,
-                )
-            else:
-                availability[aid] = uxon_agents.AgentAvailability(
-                    status="missing",
-                    error=f"{status.name} not found on PATH",
-                )
-        detected = dict(report.detected)
+        if configured:
+            for aid in configured:
+                status = report.agents.get(aid)
+                if status is not None and status.path is not None:
+                    availability[aid] = uxon_agents.AgentAvailability(
+                        status="ok",
+                        path=status.path,
+                    )
+                else:
+                    binary = uxon_agents.CATALOG[aid].binary if aid in uxon_agents.CATALOG else aid
+                    availability[aid] = uxon_agents.AgentAvailability(
+                        status="missing",
+                        error=f"{binary} not found on PATH",
+                    )
+        else:
+            for aid, status in report.agents.items():
+                if status.path is not None:
+                    availability[aid] = uxon_agents.AgentAvailability(
+                        status="ok",
+                        path=status.path,
+                    )
         self.post_message(
             _HostReportUpdated(
                 availability=availability,
-                detected=detected,
                 elapsed_ms=int((_time.monotonic() - t0) * 1000),
             )
         )
@@ -894,18 +887,26 @@ class UxonApp(App):
             # call_later schedules the coroutine on the event loop and
             # does not go through the message-pump / bubbling path.
             self.call_later(top._rebuild_agent_list)
-        # Refresh the detected-agents banner on the main screen if we
-        # have one — does nothing when the screen has not mounted yet.
-        main = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
-        if main is not None:
-            self.call_later(main._refresh_detected_banner)
 
         availability = self.state.agent_availability.value or {}
-        enabled = self.cfg.enabled_agents
-        current_all_missing = compute_all_missing(
-            enabled_agents=enabled,
-            availability=availability,
-        )
+        configured = self.cfg.enabled_agents
+        if configured:
+            current_all_missing = compute_all_missing(
+                enabled_agents=configured,
+                availability=availability,
+            )
+            modal_arg: tuple[str, ...] = tuple(configured)
+        else:
+            # Auto-mode: "all missing" iff the probe landed and found
+            # zero installed agents.
+            current_all_missing = self._host_probe_landed and not availability
+            modal_arg = ()
+        # An errored probe is independently fatal — neither mode can
+        # know what is installed, so surface the diagnostic via the
+        # same modal rather than leaving the user with a silent empty
+        # list. Overrides the per-mode predicates above.
+        if self._host_probe_error:
+            current_all_missing = True
         modal_on_stack = any(isinstance(s, AgentsUnavailableScreen) for s in self.screen_stack)
         push = should_push_agents_unavailable(
             last_all_missing=self._last_all_missing,
@@ -914,24 +915,25 @@ class UxonApp(App):
             pending_launch=self.pending_launch is not None,
         )
         if push:
-            self.push_screen(AgentsUnavailableScreen(tuple(enabled)))
-        # Update the transition tracker only after we have observed at
-        # least one resolved availability set; ``compute_all_missing``
-        # returns False both for "all ok" and for "still pending" — we
-        # don't want a single pending tick to clear ``_last_all_missing``
-        # back to False and re-arm a push when the next tick lands.
+            self.push_screen(
+                AgentsUnavailableScreen(modal_arg, error=self._host_probe_error)
+            )
         if self._availability_resolved():
             self._last_all_missing = current_all_missing
 
     def _availability_resolved(self) -> bool:
-        """True iff every enabled agent has a non-pending availability entry."""
-        enabled = self.cfg.enabled_agents
-        if not enabled:
-            return False
+        """True iff the availability snapshot is settled.
+
+        Strict mode: every enabled agent has a non-pending entry.
+        Auto-mode: the host probe has landed at least once.
+        """
+        configured = self.cfg.enabled_agents
+        if not configured:
+            return self._host_probe_landed
         availability = self.state.agent_availability.value or {}
         return all(
             aid in availability and getattr(availability[aid], "status", "pending") != "pending"
-            for aid in enabled
+            for aid in configured
         )
 
     def on__agent_availability_updated(self, event: _AgentAvailabilityUpdated) -> None:
@@ -941,50 +943,36 @@ class UxonApp(App):
     def on__host_report_updated(self, event: _HostReportUpdated) -> None:
         """Handler for the probe_host worker.
 
-        Folds the worker's locally-built dicts into
-        ``state.agent_availability`` / ``state.detected_agents`` via
-        :func:`slot_state.apply`. The dispatcher is the *only* on-loop
-        site that mutates these slots, so observers see a consistent
-        fresh dict on each tick. ``ctx.agent_availability`` returns
-        ``state.<slot>.value`` — the freshly-allocated dict — so
-        by-reference snapshots captured at modal-construction time
-        would go stale.
+        Folds the worker's availability dict into
+        ``state.agent_availability`` via :func:`slot_state.apply`.
+        The dispatcher is the *only* on-loop site that mutates this
+        slot, so observers see a consistent fresh dict on each tick.
+        ``ctx.agent_availability`` returns ``state.<slot>.value`` —
+        the freshly-allocated dict — so by-reference snapshots
+        captured at modal-construction time would go stale.
         """
         from .slot_state import SlotResult
         from .slot_state import apply as apply_slot
 
-        # Apply the slot updates transactionally — the two fields are
-        # coupled (same probe produces both) and must not desync.
-        # ``availability is None and detected is None`` is the
-        # bare-post pattern used by tests that mutate the slot
-        # directly. An asymmetric payload is a programming error;
-        # drop without partial mutation.
-        avail_present = event.availability is not None
-        detect_present = event.detected is not None
-        if not event.error and avail_present and detect_present:
-            attempted_at = time.time()
+        # ``availability is None`` is the bare-post pattern used by
+        # tests that mutate the slot directly and post a bare message
+        # to wake the handler — no slot apply, no flag flip.
+        if event.availability is not None:
             avail_result: SlotResult[dict] = SlotResult(
                 value=event.availability,
                 error=None,
                 elapsed_ms=event.elapsed_ms,
-                attempted_at=attempted_at,
+                attempted_at=time.time(),
             )
             self.state.agent_availability = apply_slot(self.state.agent_availability, avail_result)
-            detect_result: SlotResult[dict] = SlotResult(
-                value=event.detected,
-                error=None,
-                elapsed_ms=event.elapsed_ms,
-                attempted_at=attempted_at,
-            )
-            self.state.detected_agents = apply_slot(self.state.detected_agents, detect_result)
-        elif avail_present != detect_present:
-            _debug(
-                "refresh",
-                at="host_report_partial",
-                action="drop",
-                avail_present=avail_present,
-                detect_present=detect_present,
-            )
+        # Any non-bare result lands the probe — success *and* error.
+        # Errors leave ``availability`` empty (the worker only posts a
+        # dict on the success path) but still flip the gate so the
+        # auto-mode unavailable-modal surfaces the diagnostic instead
+        # of silently waiting forever.
+        if event.availability is not None or event.error:
+            self._host_probe_landed = True
+            self._host_probe_error = event.error
         self._dispatch_availability_change()
 
     def on__link_health_updated(self, event: _LinkHealthUpdated) -> None:
@@ -1002,11 +990,6 @@ class UxonApp(App):
         top = self.screen_stack[-1] if self.screen_stack else None
         if isinstance(top, MainScreen):
             self.call_later(top._update_status_line)
-
-    def action_main_digit_jump(self, n: int) -> None:
-        top = self.screen_stack[-1] if self.screen_stack else None
-        if isinstance(top, MainScreen):
-            top.action_digit_jump(n)
 
     # ── Worker drain on teardown ────────────────────────────────────
 
@@ -1090,6 +1073,7 @@ class UxonApp(App):
         workers from this hook is exactly the "before App.run()
         returns" point the spec calls for.
         """
+        self._render.shutdown()
         self._drain_workers()
 
     def pop_until_main(self) -> None:

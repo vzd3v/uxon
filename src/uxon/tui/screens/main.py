@@ -28,7 +28,6 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.lazy import Lazy
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
@@ -54,13 +53,11 @@ from ..keymap import bindings_with_aliases
 from ..state import (
     MainIntent,
     activate_main_index,
-    digit_jump_intent,
     main_action_intent,
     main_status_line,
     select_layout_signature,
-    visible_detected_agents,
 )
-from ..widgets import ActionRow, DetectedAgentsBanner
+from ..widgets import ActionRow
 from ..widgets.action_row import ACTION_GROUP_CONTAINER_ID
 from ..widgets.host_status_bar import HostStatusBar
 from ..widgets.host_tab_strip import HostTabActivated, HostTabStrip
@@ -130,27 +127,11 @@ class MainScreen(Screen):
         Binding("v", "toggle_view", "View", show=True),
         Binding("s", "focus_search", "Search", show=True),
         Binding("/", "focus_search", "", show=False),
-        # Detected-agents banner: only does something when the banner is
-        # visible (``visible_detected_agents(...)`` is non-empty). When the
-        # banner is hidden these bindings are no-ops; the footer hides
-        # them via ``show=False`` to avoid clutter.
-        Binding("a", "enable_detected", "Enable detected", show=False),
-        Binding("x", "dismiss_detected", "Dismiss detected", show=False),
         # Arrow navigation across focusable widgets. DataTable consumes
         # up/down internally for row navigation, so these only fire when
         # focus sits on an ActionRow — crossing widget boundaries.
         Binding("up", "app.focus_previous", "", show=False),
         Binding("down", "app.focus_next", "", show=False),
-        # Digit 1-9 jump — resolver guards Settings / Kill-ALL.
-        Binding("1", "digit_jump(1)", "1-9 jump", show=True, priority=True),
-        Binding("2", "digit_jump(2)", "", show=False, priority=True),
-        Binding("3", "digit_jump(3)", "", show=False, priority=True),
-        Binding("4", "digit_jump(4)", "", show=False, priority=True),
-        Binding("5", "digit_jump(5)", "", show=False, priority=True),
-        Binding("6", "digit_jump(6)", "", show=False, priority=True),
-        Binding("7", "digit_jump(7)", "", show=False, priority=True),
-        Binding("8", "digit_jump(8)", "", show=False, priority=True),
-        Binding("9", "digit_jump(9)", "", show=False, priority=True),
     )
 
     # Writable reactive driving the ``#sessions-note`` re-render when
@@ -220,13 +201,6 @@ class MainScreen(Screen):
                 loading=self.ctx.loading,
             )
             yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
-            # Detected-agents banner. Hidden by default; the host probe
-            # worker populates ctx.detected_agents and triggers
-            # ``_refresh_detected_banner``.
-            # Wrapped in Lazy so it does not contend with first paint;
-            # the banner is hidden at mount and only becomes visible after
-            # the host probe lands and ``_refresh_detected_banner`` runs.
-            yield Lazy(DetectedAgentsBanner("", id="detected-banner", classes="-hidden"))
             # Top action row — three side-by-side bordered buttons.
             # ←/→ cycle cyclically inside the group; ↓ exits the group
             # to the sessions block below; ↑ exits upward. Per-button
@@ -238,21 +212,18 @@ class MainScreen(Screen):
                 yield ActionRow(
                     kind="action-cwd",
                     label="New session in current folder",
-                    digit=1,
                     enabled=self.ctx.cwd_writable is not False,
                     id="action-cwd",
                 )
                 yield ActionRow(
                     kind="action-new",
                     label="Create new project",
-                    digit=2,
                     enabled=True,
                     id="action-new",
                 )
                 yield ActionRow(
                     kind="action-open",
                     label="Open existing project",
-                    digit=3,
                     # While loading we don't yet know whether projects exist.
                     # Keep the row enabled so it isn't dimmed; activation falls
                     # through to the existing "no projects" notify path.
@@ -292,7 +263,6 @@ class MainScreen(Screen):
                     kind="settings",
                     label="⚙ Settings",
                     detail="(repo-level config.toml)",
-                    digit=None,
                     enabled=True,
                     id="action-settings",
                     singleton=True,
@@ -306,7 +276,6 @@ class MainScreen(Screen):
                             f"⚡ Kill ALL uxon sessions (reachable users, {total_sessions} total)"
                         ),
                         detail=f"({', '.join(reachable_users)} + self)",
-                        digit=None,
                         enabled=True,
                         id="action-kill-all-global",
                         singleton=True,
@@ -642,8 +611,6 @@ class MainScreen(Screen):
             self._kill_all_global()
         elif intent.kind == "attach":
             self._attach_session(intent.user, intent.session_name)
-        elif intent.kind == "focus-only":
-            self.app.notify("Press Enter to open Settings / Kill-ALL (digit moves cursor only)")
 
     def _attach_session(self, user: str, session_name: str) -> None:
         try:
@@ -976,64 +943,6 @@ class MainScreen(Screen):
         self.app.main_ui.active_tab_index = event.index  # type: ignore[attr-defined]
         self._refresh_dashboard()
 
-    def action_enable_detected(self) -> None:
-        """Banner action: add the first detected agent to ``[agents].enabled``."""
-        ids = self._visible_detected()
-        if not ids:
-            return
-        if not self.ctx.repo_config_writable:
-            self.app.notify(
-                "Repo config is read-only; ask your operator to enable in [agents].enabled.",
-                severity="warning",
-                timeout=6,
-            )
-            return
-        agent_id = ids[0]
-        try:
-            self.ctx.on_enable_detected_agent(agent_id)
-        except CallbackError as exc:
-            self.app.notify(f"Enable failed: {exc}", severity="error", timeout=6)
-            return
-        self.app.notify(f"Enabled '{agent_id}' in [agents].enabled.")
-        # Trigger a full refresh so cfg.enabled_agents picks up the new
-        # agent and the banner re-evaluates.
-        self.app.kick_refresh()  # type: ignore[attr-defined]
-
-    def action_dismiss_detected(self) -> None:
-        """Banner action: dismiss the first detected agent (per-user state file)."""
-        ids = self._visible_detected()
-        if not ids:
-            return
-        agent_id = ids[0]
-        try:
-            self.ctx.on_dismiss_detected_agent(agent_id)
-        except CallbackError as exc:
-            self.app.notify(f"Dismiss failed: {exc}", severity="error", timeout=6)
-            return
-        self._refresh_detected_banner()
-
-    def _visible_detected(self) -> list[str]:
-        try:
-            dismissed = self.ctx.get_dismissed_detected_agents()
-        except CallbackError:
-            dismissed = []
-        return visible_detected_agents(
-            detected=self.ctx.detected_agents,
-            enabled_agents=tuple(self.ctx.enabled_agents),
-            dismissed=dismissed,
-        )
-
-    def _refresh_detected_banner(self) -> None:
-        """Recompute and apply the banner text. No-op if banner not mounted."""
-        try:
-            banner = self.query_one("#detected-banner", DetectedAgentsBanner)
-        except Exception:  # pragma: no cover — DOM not mounted yet
-            return
-        banner.update_from(
-            self._visible_detected(),
-            repo_config_writable=self.ctx.repo_config_writable,
-        )
-
     def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
         """Instance-method wrapper over :func:`select_layout_signature`.
 
@@ -1260,19 +1169,6 @@ class MainScreen(Screen):
             after_confirm,
         )
 
-    # ── Digit-jump ───────────────────────────────────────────────────
-
-    def action_digit_jump(self, n: int) -> None:
-        """Jump to (and activate) the item hinted by digit ``n``.
-
-        Guard (ported verbatim from ``DigitJumpGuardTests``): on an
-        empty-superuser state, digit ACTION_COUNT+1 lands on Settings /
-        Kill-ALL, which must NOT auto-activate — it's a "move cursor
-        only" row, reachable by arrow-down + Enter. Same rule applies
-        in the textual flavour via :func:`_digit_hinted_indices`.
-        """
-        self._run_intent(digit_jump_intent(self.ctx, n))
-
     def _activate_index(self, idx: int) -> None:
         """Resolve index into a concrete item and fire its activation."""
         self._run_intent(activate_main_index(self.ctx, idx))
@@ -1444,7 +1340,7 @@ class MainScreen(Screen):
     # ── Convenience ──────────────────────────────────────────────────
 
     def segments(self) -> tuple[int, int, int, int, bool]:
-        """Expose segment indices for tests / digit-jump math."""
+        """Expose segment indices for tests and intent-routing math."""
         return _segments(self.ctx)
 
     def action_count(self) -> int:

@@ -10,7 +10,6 @@ the visible subset.
 |---|---|
 | `↑` / `↓` | Navigate items |
 | `←` / `→` | Top action row: cycle the three buttons cyclically. Dashboard: in `by_host` advance the active host tab; in `flat` jump the cursor across `(host, own/other)` transitions cyclically. |
-| `1`–`9` | Jump to item by number |
 | `Enter` | Activate (launch / attach) |
 | `d` | Kill highlighted session (with confirmation) |
 | `D` (Shift+d) | Kill all *own* sessions (`kill-all` to confirm) |
@@ -27,13 +26,6 @@ within-block by recency); there are no sort bindings.
 JCUKEN twins: every dashboard key has a Russian-layout twin
 (`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `v`/`м`) so the keymap
 survives a Cyrillic layout without `xkb` tweaks.
-
-When the agent-detection banner is showing:
-
-| Key | Action |
-|---|---|
-| `a` | Enable detected agent in repo `config.toml` |
-| `x` | Dismiss the suggestion (per-user, persisted) |
 
 ## "Open existing project" screen
 

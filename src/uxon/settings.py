@@ -136,8 +136,8 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "ssh_control_persist_seconds",
         "number",
-        "ControlPersist for the multiplexed SSH master, seconds. Must be > 0; "
-        "disable multiplexing via ssh_multiplex=off.",
+        "ControlPersist for the multiplexed SSH master, integer seconds. "
+        "Must be > 0; disable multiplexing via ssh_multiplex=off.",
     ),
 )
 

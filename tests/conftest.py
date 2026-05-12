@@ -9,9 +9,44 @@ state) per-test via its own ``_reset_audit_state`` helper.
 
 from __future__ import annotations
 
+from unittest import mock
+
 import pytest
 
 from uxon import audit as _audit
+from uxon import probes as _probes
+
+
+# Fully-installed CATALOG, used as the autouse ``probe_host`` stub. Tests
+# that exercise the install-gate path explicitly mock ``probe_host`` in
+# their own scope (the inner ``with mock.patch`` shadows this fixture for
+# the duration of that block).
+_STUB_HOST_REPORT = _probes.HostReport(
+    tmux=_probes.BinaryStatus("tmux", "/usr/bin/tmux", ""),
+    agents={
+        "claude": _probes.BinaryStatus("claude", "/usr/local/bin/claude", ""),
+        "codex": _probes.BinaryStatus("codex", "/usr/local/bin/codex", ""),
+        "cursor": _probes.BinaryStatus("cursor-agent", "/usr/local/bin/cursor-agent", ""),
+    },
+    launch_user="",
+)
+
+
+@pytest.fixture(autouse=True)
+def _stub_probe_host_by_default(request: pytest.FixtureRequest):
+    """Default ``probes.probe_host`` to a fully-installed CATALOG.
+
+    ``resolve_agent_id`` install-gates the resolved agent against
+    ``probe_host``; without this stub every unit test that drives a
+    launch path would have to mock the probe itself. Tests in
+    ``tests/test_uxon_probes.py`` exercise the probe internals
+    directly and opt out so the real implementation runs.
+    """
+    if request.node.fspath.basename == "test_uxon_probes.py":
+        yield
+        return
+    with mock.patch("uxon.probes.probe_host", return_value=_STUB_HOST_REPORT):
+        yield
 
 
 @pytest.fixture(autouse=True)

@@ -57,7 +57,6 @@ def _mk_ctx(**overrides) -> TuiContext:
         sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
         scope_skipped_users=("bob",),
         other_sessions=[],
-        repo_config_writable=True,
         on_attach=lambda u, n: LaunchRequest(cmd=("/bin/true",), label="attach"),
     )
     base.update(overrides)
@@ -80,7 +79,6 @@ class FromContextTests(unittest.TestCase):
         self.assertEqual(md.total_cpu, "13")
         self.assertEqual(md.total_ram, "800M")
         self.assertEqual(md.version, "0.0.0-test")
-        self.assertTrue(md.repo_config_writable)
 
     def test_sequences_are_tuples(self) -> None:
         ctx = _mk_ctx()

@@ -51,7 +51,6 @@ class MainData:
     total_cpu: str
     total_ram: str
     version: str
-    repo_config_writable: bool
     host_stats: HostStatsResult | None = None
 
     @classmethod
@@ -75,6 +74,5 @@ class MainData:
             total_cpu=ctx.total_cpu,
             total_ram=ctx.total_ram,
             version=ctx.version,
-            repo_config_writable=ctx.repo_config_writable,
             host_stats=getattr(ctx, "host_stats", None),
         )

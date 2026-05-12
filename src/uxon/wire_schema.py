@@ -250,13 +250,18 @@ def make_envelope(
     *,
     uxon_version: str,
     host: str | None = None,
+    host_stats: HostStats | None = None,
 ) -> Envelope:
     """Construct a versioned envelope for one ``--json`` payload.
 
     ``kind`` discriminates the data shape; ``data`` is the kind-specific
     body. ``uxon_version`` is supplied by the caller (``cli.read_repo_version``)
     so this module stays free of cli imports. ``host`` is added only
-    when given — local invocations leave it absent.
+    when given — local invocations leave it absent. ``host_stats`` is
+    the additive forward-compatible per-host metrics block populated
+    only for ``kind == "list"``; producers that can't read ``/proc``
+    pass ``None`` and the field is left absent (consumers ``.get(...)``
+    on it).
     """
     env: Envelope = {
         "schema_version": WIRE_SCHEMA_VERSION,
@@ -266,4 +271,6 @@ def make_envelope(
     }
     if host is not None:
         env["host"] = host
+    if host_stats is not None:
+        env["host_stats"] = host_stats
     return env

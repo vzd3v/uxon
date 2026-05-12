@@ -45,9 +45,23 @@ The TUI's ⚙ Settings screen rewrites repo config in place via a
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
-| `agents.enabled` | array | `["claude"]` | Ordered list of enabled agent ids (`claude`, `codex`, `cursor`). |
-| `agents.default` | string | `"claude"` | Default agent when `--agent` is not passed. Must be in `agents.enabled`. |
+| `agents.enabled` | array | `[]` | Strict whitelist of agent ids when non-empty (`claude`, `codex`, `cursor`); empty or absent flips uxon into **auto-mode** where every installed CATALOG agent is launchable for the launch user. |
+| `agents.default` | string | `""` | Default agent when `--agent` is not passed. Optional; if unset uxon picks the first entry of `agents.enabled` (strict mode) or the first installed agent (auto-mode). Must be in `agents.enabled` when both are set. |
 | `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of that agent. |
+
+Auto-mode vs strict whitelist:
+
+- **`enabled = []` or absent** — auto-mode. uxon probes the host at
+  startup and treats every installed CATALOG agent as launchable.
+  `r` on the main screen re-probes (e.g. after `npm i -g …`).
+- **`enabled = ["claude", "codex"]`** — strict whitelist. Only the
+  listed agents are launchable, even if more are installed. Use this
+  to pin a fleet to an approved subset (operator/CI scenarios).
+
+`agents.enabled = []` and an absent `[agents].enabled` are
+semantically identical — both mean auto. There is no explicit
+"disable" mode; if you want uxon to refuse to launch anything,
+uninstall the agent binaries.
 
 Per-agent permission-mode flags are fixed by the agent binary and
 not configurable here — see [`reference/cli.md`](cli.md) under
@@ -173,7 +187,6 @@ short list that the dashboard commits to:
 | `v` (`м`) | Toggle dashboard view between `flat` and `by_host`. |
 | `←` / `→` | Top action row: cycle the three buttons cyclically. Dashboard: in `by_host` advance the active host tab; in `flat` jump across `(host, own/other)` transitions; both cyclic. |
 | `s` (or `/`) | Focus the search bar from anywhere. |
-| `1`–`9` | Jump to row by number. |
 | `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
 
 JCUKEN aliases (`й`/`к`/`в`/`м`) bind alongside their QWERTY

@@ -1,7 +1,7 @@
 """Pilot tests for textual screens (T8+).
 
-Uses ``App.run_test()`` + ``Pilot`` to drive the TUI in-process. Covers
-MainScreen routing, digit-jump guard, kill flow, CallbackError → toast,
+Uses ``App.run_test()`` + ``Pilot`` to drive the TUI in-process.
+Covers MainScreen routing, kill flow, CallbackError → toast,
 refresh re-calls ``on_refresh``.
 
 See ``tests/harness/pty_tui.py`` for end-to-end pty tests.
@@ -84,7 +84,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
         self.assertEqual(app.quit_rc, 0)
 
-    async def test_digit_1_activates_action_cwd(self) -> None:
+    async def test_enter_on_default_focus_activates_action_cwd(self) -> None:
         from uxon.tui.app import UxonApp
 
         app = UxonApp(_mk_ctx(), probe_agents=False)
@@ -93,10 +93,8 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             screen = app.screen
             screen._launch_cwd = lambda: calls.append("cwd")
-            # Blur the SearchBar (default focus) so digit-jump fires.
-            await pilot.press("escape")
-            await pilot.pause()
-            await pilot.press("1")
+            # action-cwd holds default focus; Enter activates it.
+            await pilot.press("enter")
             await pilot.pause()
         self.assertEqual(calls, ["cwd"])
 
@@ -153,42 +151,6 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
                 app.ctx,
                 app.screen.ctx,
                 msg="app.ctx and screen.ctx must point to the same TuiContext",
-            )
-
-    async def test_skeleton_swap_preserves_detected_agents(self) -> None:
-        """``detected_agents`` survives ``apply_loaded_ctx``.
-
-        Regression for a bug where the periodic refresh tick wiped the
-        suggestion banner one tick after it appeared: the probe worker
-        writes detected agents to ``app.ctx.detected_agents`` and the
-        next ctx swap clobbered that dict with a fresh empty one.
-        """
-        from uxon.probes import BinaryStatus
-        from uxon.tui.app import UxonApp
-
-        loaded = _mk_ctx()  # loaded ctx with its own fresh detected dict
-
-        def fake_refresh():
-            return _mk_ctx(on_refresh=fake_refresh)
-
-        skeleton = _mk_ctx(loading=True, on_refresh=fake_refresh)
-        # Pre-seed the skeleton's detected dict — emulates the probe
-        # finding codex installed but not yet in [agents].enabled.
-        skeleton.detected_agents["codex"] = BinaryStatus(
-            name="codex",
-            path="/usr/bin/codex",
-            install_hint="npm install -g @openai/codex",
-        )
-
-        app = UxonApp(skeleton, probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            app.screen.apply_loaded_ctx(loaded)
-            await pilot.pause()
-            self.assertIn(
-                "codex",
-                app.screen.ctx.detected_agents,
-                msg="detected_agents was dropped on ctx swap",
             )
 
     async def test_main_ui_survives_recompose(self) -> None:
@@ -332,39 +294,6 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("q")
             await pilot.pause()
         self.assertEqual(kill_calls, [("devagent", "devagent.foo")])
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class LazyWidgetsTests(unittest.IsolatedAsyncioTestCase):
-    """Lazy-mounted MainScreen children resolve post first paint.
-
-    ``DetectedAgentsBanner`` is wrapped in ``textual.lazy.Lazy`` so it
-    does not block first paint. Verify (a) it IS present after Pilot's
-    ``pause()`` ticks, and (b) focus did not jump to the deferred-
-    mounted widget.
-    """
-
-    async def test_lazy_banner_mounts_after_pause_and_keeps_focus(self) -> None:
-        from uxon.remote_hosts import RemoteHost
-        from uxon.tui.app import UxonApp
-        from uxon.tui.widgets import DetectedAgentsBanner
-
-        ctx = _mk_ctx(
-            remote_hosts=(
-                RemoteHost(name="peer", ssh_alias="peer", description="", remote_uxon="uxon"),
-            )
-        )
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            await pilot.pause()  # second tick: Lazy wrappers swap in their children
-            screen = app.screen
-            # Inner widget resolves by its original id (Lazy wrapper
-            # removes itself after mounting the child).
-            screen.query_one("#detected-banner", DetectedAgentsBanner)
-            # Focus stayed on a non-banner row.
-            focused_id = screen.focused.id if screen.focused else None
-            self.assertNotEqual(focused_id, "detected-banner")
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")

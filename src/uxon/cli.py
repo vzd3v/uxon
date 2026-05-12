@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 if TYPE_CHECKING:
+    from uxon import probes
     from uxon.sudo_probe import SudoCapability
 
 try:
@@ -41,6 +42,75 @@ if TYPE_CHECKING:
 # declared here as a literal so CLI parsing doesn't need the lazy lib import.
 VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
 
+
+def resolve_agent_id(
+    cfg: "Config",
+    launch_user: str,
+    requested: str | None,
+    *,
+    report: "probes.HostReport | None" = None,
+) -> str:
+    """Pick an agent to launch and verify the binary is on PATH.
+
+    Policy precedence:
+
+    1. ``--agent <id>`` if given (must be valid + in whitelist).
+    2. ``cfg.default_agent`` if set.
+    3. ``cfg.enabled_agents[0]`` (strict mode).
+    4. Auto-mode (empty whitelist, no default): the first installed
+       ``CATALOG`` agent.
+
+    Whatever the policy picks, this function probes the host once
+    (or reuses ``report``) and verifies the binary is actually
+    installed for ``launch_user``. Missing binaries fail with a
+    uxon-level message rather than punting to a tmux ``execvp``
+    failure. ``report`` is the optional escape-hatch for callers
+    that already probed (TUI, doctor) — pass it to avoid the
+    double round-trip.
+    """
+    if requested and requested not in VALID_AGENT_IDS:
+        fail(f"--agent must be one of {VALID_AGENT_IDS}, got {requested!r}")
+    if requested and cfg.enabled_agents and requested not in cfg.enabled_agents:
+        fail(f"agent {requested!r} is not in agents.enabled={list(cfg.enabled_agents)}")
+
+    if requested:
+        candidate, source = requested, "--agent"
+    elif cfg.default_agent:
+        candidate, source = cfg.default_agent, "agents.default"
+    elif cfg.enabled_agents:
+        candidate, source = cfg.enabled_agents[0], "agents.enabled"
+    else:
+        candidate, source = None, "auto"
+
+    from uxon import agents as uxon_agents
+    from uxon import probes as uxon_probes
+
+    if report is None:
+        report = uxon_probes.probe_host(launch_user)
+
+    if candidate is not None:
+        status = report.agents.get(candidate)
+        if status is None or status.path is None:
+            hint = status.install_hint if status is not None else ""
+            fail(
+                f"agent {candidate!r} (from {source}) is not installed for "
+                f"{launch_user!r}." + (f"\n{hint}" if hint else ""),
+                1,
+            )
+        return candidate
+
+    for aid in uxon_agents.CATALOG:
+        status = report.agents.get(aid)
+        if status is not None and status.path is not None:
+            return aid
+    fail(
+        f"no agent binary found on PATH for {launch_user!r}. "
+        f"Install one of {VALID_AGENT_IDS} or set agents.enabled / "
+        "agents.default in the repo config.",
+        1,
+    )
+    raise AssertionError("unreachable")  # fail() never returns
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "runtime_user": "",
     "default_launch_mode": "caller",
@@ -61,9 +131,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # different ``session_prefix`` add the previous value here to keep
     # already-running sessions reachable; new installs leave it empty.
     "legacy_session_prefixes": [],
+    # ``enabled`` is empty by default — auto-mode: uxon picks up
+    # whichever agents are actually installed for the launch user.
+    # Set it to a non-empty list (e.g. ``["claude", "codex"]``) to
+    # switch to strict-whitelist mode. ``default`` may also be empty;
+    # consumers fall back to the first available agent at launch time.
     "agents": {
-        "enabled": ["claude"],
-        "default": "claude",
+        "enabled": [],
+        "default": "",
         "claude": {"default_args": []},
         "codex": {"default_args": []},
         "cursor": {"default_args": []},
@@ -232,6 +307,12 @@ class ParsedArgs:
     # Stripped from argv by :func:`uxon.audit.extract_correlation_id` before
     # the per-parser walk sees it; never surfaces in ``--help``.
     audit_correlation_id: str | None = None
+    # Populated by ``main()``'s preflight when it probes the host for
+    # tmux. Downstream ``resolve_agent_id`` reuses it to install-gate
+    # the picked agent without a second probe. ``None`` everywhere
+    # else (interactive/version paths, TUI-side ParsedArgs
+    # construction in ``_plan_tui_*_agent``).
+    host_report: "probes.HostReport | None" = None
 
 
 def eprint(msg: str) -> None:
@@ -470,16 +551,24 @@ def load_config(cwd: str) -> Config:
     agents_tbl = merged.get("agents", {})
     if not isinstance(agents_tbl, dict):
         fail("'agents' must be a TOML table")
-    enabled_raw = agents_tbl.get("enabled", ["claude"])
-    if not isinstance(enabled_raw, list) or not enabled_raw:
-        fail("'agents.enabled' must be a non-empty list")
+    # ``enabled`` empty/absent = auto-mode (every installed CATALOG
+    # agent is launchable). Non-empty list = strict whitelist.
+    enabled_raw = agents_tbl.get("enabled", [])
+    if not isinstance(enabled_raw, list):
+        fail("'agents.enabled' must be a list (use [] for auto-mode)")
     enabled = tuple(str(x) for x in enabled_raw)
     for aid in enabled:
         if aid not in VALID_AGENT_IDS:
             fail(f"unknown agent id in agents.enabled: {aid!r} (expected one of {VALID_AGENT_IDS})")
-    default_agent = str(agents_tbl.get("default", enabled[0]))
-    if default_agent not in enabled:
-        fail(f"agents.default={default_agent!r} is not in agents.enabled={list(enabled)}")
+    default_agent = str(agents_tbl.get("default", ""))
+    if default_agent:
+        if default_agent not in VALID_AGENT_IDS:
+            fail(
+                f"unknown agent id in agents.default: {default_agent!r} "
+                f"(expected one of {VALID_AGENT_IDS})"
+            )
+        if enabled and default_agent not in enabled:
+            fail(f"agents.default={default_agent!r} is not in agents.enabled={list(enabled)}")
 
     agent_default_args: dict[str, tuple[str, ...]] = {}
     for aid in VALID_AGENT_IDS:
@@ -603,10 +692,12 @@ def load_config(cwd: str) -> Config:
     persist_raw = merged.get(
         "ssh_control_persist_seconds", DEFAULT_CONFIG["ssh_control_persist_seconds"]
     )
-    try:
-        ssh_control_persist_seconds = int(persist_raw)
-    except (TypeError, ValueError):
-        fail(f"ssh_control_persist_seconds must be an integer, got {persist_raw!r}")
+    # SSH's ControlPersist option only accepts whole seconds — reject
+    # floats outright rather than truncating them silently. ``bool`` is
+    # an ``int`` subclass in Python, so it needs its own guard.
+    if isinstance(persist_raw, bool) or not isinstance(persist_raw, int):
+        fail(f"ssh_control_persist_seconds must be a positive integer, got {persist_raw!r}")
+    ssh_control_persist_seconds = persist_raw
     if ssh_control_persist_seconds <= 0:
         fail("ssh_control_persist_seconds must be > 0; disable via ssh_multiplex=off")
     try:
@@ -2053,20 +2144,16 @@ def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> Non
     """
     from uxon.wire_schema import make_envelope
 
-    env = make_envelope(
-        kind,  # type: ignore[arg-type]
-        data,
-        uxon_version=read_repo_version(),
-    )
+    # Additive optional ``host_stats`` block for ``list`` envelopes —
+    # producer must never abort the list output if /proc is partially
+    # unavailable; absence is the documented forward-compatible signal.
+    host_stats: dict[str, Any] | None = None
     if kind == "list":
-        # Additive optional ``host_stats`` block. Producer must never
-        # abort the list output if /proc is partially unavailable;
-        # absence is the documented forward-compatible signal.
         try:
             from uxon.probes import read_host_stats
 
             hs = read_host_stats()
-            env["host_stats"] = {
+            host_stats = {
                 "cpu_pct": hs.cpu_pct,
                 "mem_used_kib": hs.mem_used_kib,
                 "mem_total_kib": hs.mem_total_kib,
@@ -2078,6 +2165,12 @@ def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> Non
             from uxon.tui.events import debug
 
             debug("probes", err=type(exc).__name__, msg=str(exc))
+    env = make_envelope(
+        kind,  # type: ignore[arg-type]
+        data,
+        uxon_version=read_repo_version(),
+        host_stats=host_stats,  # type: ignore[arg-type]
+    )
     if compact:
         print(json.dumps(env, sort_keys=False))
     else:
@@ -3256,13 +3349,23 @@ def _build_tmux_launch_request(
     This is the single place where the agent command line is built
     (see AGENTS.md "hard rules"). Both the CLI execvp path
     (:func:`launch_in_tmux`) and the TUI fork-and-wait path reuse it.
+
+    The agent is expected to be resolved before this is called —
+    install-gating is owned by :func:`resolve_agent_id` (run from
+    the action handlers and TUI callbacks). This function only
+    enforces that the picked id is in ``CATALOG``; if ``args.agent``
+    is unset it falls back to ``cfg.default_agent`` as a last-ditch
+    policy hook for callers that legitimately skip resolution
+    (dry-run tests, etc.).
     """
     from uxon import agents as uxon_agents
 
     LaunchRequest = _tui_launch_request_cls()
     agent_id = args.agent or cfg.default_agent
-    if agent_id not in cfg.enabled_agents:
-        fail(f"agent {agent_id!r} is not in agents.enabled={list(cfg.enabled_agents)}")
+    if not agent_id:
+        fail("internal: no agent resolved before _build_tmux_launch_request")
+    if agent_id not in uxon_agents.CATALOG:
+        fail(f"unknown agent id {agent_id!r}")
     spec = uxon_agents.CATALOG[agent_id]
     mode_obj = uxon_agents.permission_mode_for(spec, args.permission_mode)
     if mode_obj is None:
@@ -3383,7 +3486,10 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if args.git_remote:
         _do_create_git_remote(args, cfg, launch_user, project_dir, name, branch)
 
-    _agent = args.agent or cfg.default_agent
+    _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
+    # See ``do_run``: pin resolved id back to args so the downstream
+    # assembler does not re-derive it from cfg.default_agent.
+    args.agent = _agent
     sessions = collect_sessions([launch_user], cfg)
     existing = compatible_indexed_sessions(
         session_stem,
@@ -3570,7 +3676,11 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         target_dir = cwd
         session_stem = session_stem_for_path(target_dir)
         compatibility_root = target_dir
-    _agent = args.agent or cfg.default_agent
+    _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
+    # Pin the resolved id back to ``args.agent`` so the downstream
+    # ``_build_tmux_launch_request`` does not re-derive it from
+    # ``cfg.default_agent`` (which can disagree with auto-mode pick).
+    args.agent = _agent
     sessions = collect_sessions([launch_user], cfg)
     session = allocate_session_name(
         session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
@@ -3723,9 +3833,19 @@ def doctor_issues(
         issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
     if tmux_path is None:
         issues.append(f"'tmux' is not resolvable for {launch_user}")
-    for aid, path in agent_paths.items():
-        if path is None:
-            issues.append(f"'{aid}' agent binary is not resolvable for {launch_user}")
+    # Strict-whitelist: every enabled agent must resolve. Auto-mode:
+    # missing agents are not issues — they're just outside what the
+    # user can launch, and the doctor's per-agent table already shows
+    # the full installed/missing landscape.
+    if cfg.enabled_agents:
+        for aid in cfg.enabled_agents:
+            if agent_paths.get(aid) is None:
+                issues.append(f"'{aid}' agent binary is not resolvable for {launch_user}")
+    elif all(path is None for path in agent_paths.values()):
+        issues.append(
+            f"no agent binary is resolvable for {launch_user} (auto-mode); "
+            f"install one of {VALID_AGENT_IDS}"
+        )
     if legacy_sessions and not current_sessions:
         issues.append(
             "legacy default-socket uxon sessions exist while the dedicated uxon socket has none"
@@ -3756,18 +3876,21 @@ def do_doctor(
 
     _, config_sources = resolve_config_layers(cwd)
     socket_path = tmux_socket_path(cfg, launch_user)
-    # Single-round-trip probe for tmux + every enabled / catalogued agent.
-    report = uxon_probes.probe_host(cfg, launch_user)
+    # Single-round-trip probe for tmux + every catalogued agent.
+    report = uxon_probes.probe_host(launch_user)
     tmux_path = report.tmux.path
+    # Doctor shows every CATALOG agent regardless of strict/auto mode —
+    # the operator wants to see the full landscape ("is X installed?")
+    # not just the configured whitelist.
+    doctor_agent_ids: tuple[str, ...] = tuple(uxon_agents.CATALOG)
     agent_paths: dict[str, str | None] = {
-        aid: report.enabled[aid].path for aid in cfg.enabled_agents if aid in report.enabled
+        aid: report.agents[aid].path for aid in doctor_agent_ids if aid in report.agents
     }
     # Per-present-binary version detail. Probes run in parallel with a
     # 2 s per-probe deadline — slow agents (e.g. cold ``cursor-agent``)
     # surface as TIMEOUT instead of inflating doctor's wall time. The
     # host probe above already established presence; ``--version`` is
-    # informational. Output order follows ``cfg.enabled_agents`` so the
-    # rendered report is deterministic regardless of thread arrival.
+    # informational.
     import concurrent.futures  # noqa: PLC0415
 
     def _probe(aid: str) -> tuple[str, uxon_agents.AgentAvailability]:
@@ -3781,7 +3904,7 @@ def do_doctor(
 
     availability: dict[str, uxon_agents.AgentAvailability] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        for aid, result in pool.map(_probe, cfg.enabled_agents):
+        for aid, result in pool.map(_probe, doctor_agent_ids):
             availability[aid] = result
     current_sessions = collect_sessions([launch_user], cfg)
     legacy_sessions = collect_sessions_for_user(
@@ -3805,7 +3928,7 @@ def do_doctor(
 
     if json_output:
         agents_block: dict[str, dict[str, Any]] = {}
-        for aid in cfg.enabled_agents:
+        for aid in doctor_agent_ids:
             avail = availability.get(aid)
             agents_block[aid] = {
                 "path": agent_paths.get(aid),
@@ -3882,7 +4005,7 @@ def do_doctor(
         f"tmux_socket_parent_writable={'yes' if user_can_write_dir(str(Path(socket_path).parent), launch_user) else 'no'}"
     )
     # Per-agent status block.
-    for aid in cfg.enabled_agents:
+    for aid in doctor_agent_ids:
         spec = uxon_agents.CATALOG[aid]
         path = agent_paths.get(aid) or "-"
         avail = availability.get(aid)
@@ -4184,11 +4307,13 @@ def _load_settings_sources(cwd: str) -> tuple[dict, dict, Path | None]:
 
 
 def _plan_tui_run_agent(cfg: Config, launch_user: str, cwd: str, agent_id: str, mode_id: str):
-    """Agent-aware variant of ``_plan_tui_run``; used by the new callbacks.
+    """Build a LaunchRequest for the TUI "New session in current folder" action.
 
-    Gates on the same :func:`ensure_launch_target_allowed` predicate as
-    ``do_run`` so the TUI and CLI honour identical rules: writable
-    target, plus ``allowed_roots`` whitelist when configured.
+    Mirrors :func:`do_run` minus the terminal handoff: gates via
+    :func:`ensure_launch_target_allowed` (writable + ``allowed_roots``
+    whitelist when configured), allocates a session name, returns a
+    LaunchRequest. The agent and permission mode are picked by the TUI
+    callback before this is called — no probe needed here.
     """
     ensure_launch_target_allowed(cfg, launch_user, cwd)
     target_dir = cwd
@@ -4209,7 +4334,16 @@ def _plan_tui_create_new_agent(
     mode_id: str,
     git_profile: str,
 ):
-    """Agent-aware variant of ``_plan_tui_create_new``."""
+    """Build a LaunchRequest for the TUI "Create new project" flow.
+
+    Creates the project directory (if missing), optionally creates the
+    git remote, and — when a compatible session already exists — forces
+    ``attach`` semantics (the TUI cannot safely prompt via stdin inside
+    a blessed context). ``git_profile`` is the (possibly empty) name of
+    a ``[[git_remote_profiles]]`` entry; when set this calls
+    :func:`_do_create_git_remote`. The "Open existing project" flow must
+    never call this — see :func:`_plan_tui_open_existing_agent`.
+    """
     project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
     args = ParsedArgs(
         action="new",
@@ -4231,7 +4365,13 @@ def _plan_tui_open_existing_agent(
     agent_id: str,
     mode_id: str,
 ):
-    """Agent-aware variant of ``_plan_tui_open_existing``."""
+    """Build a LaunchRequest for the TUI "Open existing project" flow.
+
+    By construction this function has **no** ``git_profile`` parameter
+    and never calls :func:`_do_create_git_remote`: opening an existing
+    project must not have any git side effect, regardless of
+    ``git_create_enabled`` or profile configuration.
+    """
     project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
     args = ParsedArgs(
         action="new",
@@ -4242,27 +4382,6 @@ def _plan_tui_open_existing_agent(
         repeat_mode="attach",
     )
     return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
-
-
-def _plan_tui_run(cfg: Config, launch_user: str, cwd: str, dsp: bool):
-    """Build a LaunchRequest for the TUI "New session in current folder" action.
-
-    Mirrors :func:`do_run` minus the terminal handoff: gates via
-    :func:`ensure_launch_target_allowed` (writable + ``allowed_roots``
-    whitelist when configured), allocates a session name, returns a
-    LaunchRequest. No ``-w branch`` support — the TUI does not expose
-    that knob.
-    """
-    ensure_launch_target_allowed(cfg, launch_user, cwd)
-    target_dir = cwd
-    session_stem = session_stem_for_path(target_dir)
-    _agent = cfg.default_agent
-    sessions = collect_sessions([launch_user], cfg)
-    session = allocate_session_name(
-        session_stem, _agent, target_dir, sessions, prefix=cfg.session_prefix
-    )
-    args = ParsedArgs(action="run", permission_mode="yolo" if dsp else "normal")
-    return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
 
 
 def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
@@ -4292,7 +4411,8 @@ def _plan_tui_existing_session_or_launch(
     """
     session_stem = session_stem_for_path(project_dir)
     compatibility_root = project_dir
-    _agent = (args.agent if args.agent else None) or cfg.default_agent
+    _agent = resolve_agent_id(cfg, launch_user, args.agent or None, report=args.host_report)
+    args.agent = _agent
     sessions = collect_sessions([launch_user], cfg)
     existing = compatible_indexed_sessions(
         session_stem,
@@ -4317,64 +4437,6 @@ def _plan_tui_existing_session_or_launch(
         session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
     )
     return _build_tmux_launch_request(project_dir, session, args, cfg, None, launch_user)
-
-
-def _plan_tui_create_new(
-    cfg: Config,
-    launch_user: str,
-    name: str,
-    dsp: bool,
-    git_profile: str,
-):
-    """Build a LaunchRequest for the TUI "Create new project" flow.
-
-    Mirrors :func:`do_new` minus the terminal handoff: creates the project
-    directory (if missing), optionally creates the git remote, and — when
-    a compatible session already exists — forces ``attach`` semantics
-    (the TUI cannot safely prompt via stdin inside a blessed context).
-
-    ``git_profile`` is the (possibly empty) name of a `[[git_remote_profiles]]`
-    entry. When set, this function calls :func:`_do_create_git_remote`.
-    The "Open existing project" flow must never call this function — see
-    :func:`_plan_tui_open_existing`.
-    """
-    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
-    args = ParsedArgs(
-        action="new",
-        target_id=name,
-        permission_mode="yolo" if dsp else "normal",
-        git_remote=git_profile or None,
-        repeat_mode="attach",  # TUI cannot prompt stdin inside blessed context
-    )
-    if args.git_remote:
-        _do_create_git_remote(args, cfg, launch_user, project_dir, name, None)
-    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
-
-
-def _plan_tui_open_existing(
-    cfg: Config,
-    launch_user: str,
-    name: str,
-    dsp: bool,
-):
-    """Build a LaunchRequest for the TUI "Open existing project" flow.
-
-    By construction this function has **no** git_profile parameter and
-    never calls :func:`_do_create_git_remote`. That is an enforced
-    invariant: opening an existing project must not have any git side
-    effect, regardless of `git_create_enabled` or profile configuration.
-    A static AST check in tests/test_uxon_tui.py verifies that
-    ``_do_create_git_remote`` is not referenced from this function.
-    """
-    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
-    args = ParsedArgs(
-        action="new",
-        target_id=name,
-        permission_mode="yolo" if dsp else "normal",
-        git_remote=None,  # Locked: open-existing never creates a git remote.
-        repeat_mode="attach",
-    )
-    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
 
 
 def _build_on_remote_attach_callback(cfg: Config):
@@ -4779,28 +4841,6 @@ def _build_tui_context(
     def on_setting_save_mapping(key: str, mapping: dict) -> None:
         uxon_settings.persist_repo_config_updates(repo_config_path(), {key: mapping})
 
-    def on_enable_detected_agent(agent_id: str) -> None:
-        # Append to the existing enabled list and write back via the
-        # round-trip writer so comments / sibling keys survive.
-        current = list(cfg.enabled_agents)
-        if agent_id in current:
-            return
-        new = [*current, agent_id]
-        uxon_settings.persist_repo_config_updates(
-            repo_config_path(),
-            {"agents.enabled": new},
-        )
-
-    def on_dismiss_detected_agent(agent_id: str) -> None:
-        from uxon import dismissed as uxon_dismissed
-
-        uxon_dismissed.add_dismissed(agent_id)
-
-    def get_dismissed_detected_agents() -> list[str]:
-        from uxon import dismissed as uxon_dismissed
-
-        return uxon_dismissed.load_dismissed()
-
     def get_git_remote_profile_rows() -> list:
         return [
             (
@@ -4929,20 +4969,6 @@ def _build_tui_context(
     on_setting_remove = _wrap_tui_callback(on_setting_remove, _CbErr)
     on_setting_save_mapping = _wrap_tui_callback(on_setting_save_mapping, _CbErr)
     get_git_remote_profile_rows = _wrap_tui_callback(get_git_remote_profile_rows, _CbErr)
-    on_enable_detected_agent = _wrap_tui_callback(on_enable_detected_agent, _CbErr)
-    on_dismiss_detected_agent = _wrap_tui_callback(on_dismiss_detected_agent, _CbErr)
-    get_dismissed_detected_agents = _wrap_tui_callback(get_dismissed_detected_agents, _CbErr)
-
-    # Repo-config write gate: same predicate as ``write_repo_config_toml``.
-    # Direct-write fast path covers operator-owned-checkout case;
-    # ``sudo tee`` fallback covers root-NOPASSWD case. Per-target
-    # sudo doesn't help here — there is no ``<user>`` to sudo into;
-    # we need to write a root-owned file via ``sudo tee`` (i.e. the
-    # caller must have ``can_root``).
-    try:
-        repo_cfg_writable = os.access(str(repo_config_path()), os.W_OK) or sudo_caps.can_root
-    except OSError:
-        repo_cfg_writable = sudo_caps.can_root
 
     from uxon import agents as _uxon_agents
 
@@ -5161,10 +5187,6 @@ def _build_tui_context(
         git_create_enabled=cfg.git_create_enabled,
         default_git_remote_profile=cfg.default_git_remote_profile,
         git_remote_profile_options=git_profile_options,
-        repo_config_writable=repo_cfg_writable,
-        on_enable_detected_agent=on_enable_detected_agent,
-        on_dismiss_detected_agent=on_dismiss_detected_agent,
-        get_dismissed_detected_agents=get_dismissed_detected_agents,
         refresh_sources=refresh_sources,
         remote_hosts=list(cfg.remote_hosts),
         tui_table_columns=cfg.tui_table_columns,
@@ -5241,16 +5263,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.action in {"run", "new", "attach", "list", "kill", "kill-all"}:
         from uxon import probes as uxon_probes
 
-        report = uxon_probes.probe_host(cfg, launch_user)
+        report = uxon_probes.probe_host(launch_user)
         if report.tmux.path is None:
             fail(f"tmux is not installed.\n{report.tmux.install_hint}", 1)
-        if args.action in {"run", "new"}:
-            agent_id = args.agent or cfg.default_agent
-            if agent_id in report.enabled and report.enabled[agent_id].path is None:
-                fail(
-                    f"{agent_id} is not installed for {launch_user}.\n{report.enabled[agent_id].install_hint}",
-                    1,
-                )
+        # Stash the report on ``args`` so downstream ``resolve_agent_id``
+        # reuses it instead of paying a second sudo round-trip. Agent
+        # install-gating is owned by ``resolve_agent_id`` — it now
+        # validates the picked candidate (including ``--agent`` and
+        # ``agents.default``) against this same report.
+        args.host_report = report
 
     if args.action == "interactive":
         return do_interactive(cfg, launch_user)

@@ -17,7 +17,6 @@ from uxon.tui.context import (
     _ACTION_KINDS,
     ACTION_COUNT,
     ServerStatus,
-    _digit_hinted_indices,
     _segments,
     _total_items,
     build_items,
@@ -34,7 +33,6 @@ from uxon.tui.state import (
     callback_failure_to_toast,
     compute_all_missing,
     confirm_phrase_matches,
-    digit_jump_intent,
     filter_existing_projects,
     launch_commit_decision,
     launch_mode_id,
@@ -51,10 +49,8 @@ from uxon.tui.state import (
     session_intent,
     should_push_agents_unavailable,
     should_show_agents_unavailable,
-    should_start_agent_probe,
     update_launch_options_after_availability,
     visible_agent_ids,
-    visible_detected_agents,
 )
 
 
@@ -142,11 +138,6 @@ class TuiContextShapeTests(unittest.TestCase):
 
 
 class AgentsUnavailableGateStateTests(unittest.TestCase):
-    def test_probe_starts_only_when_enabled(self) -> None:
-        self.assertTrue(should_start_agent_probe(probe_agents=True, enabled_agents=("claude",)))
-        self.assertFalse(should_start_agent_probe(probe_agents=False, enabled_agents=("claude",)))
-        self.assertFalse(should_start_agent_probe(probe_agents=True, enabled_agents=()))
-
     def test_gate_false_when_already_shown(self) -> None:
         result = should_show_agents_unavailable(
             enabled_agents=("claude",),
@@ -294,72 +285,6 @@ class ShouldPushAgentsUnavailableTests(unittest.TestCase):
                 pending_launch=False,
             )
         )
-
-
-class VisibleDetectedAgentsTests(unittest.TestCase):
-    def test_empty_when_nothing_detected(self) -> None:
-        self.assertEqual(
-            visible_detected_agents(detected={}, enabled_agents=("claude",), dismissed=[]),
-            [],
-        )
-
-    def test_filters_already_enabled(self) -> None:
-        self.assertEqual(
-            visible_detected_agents(
-                detected={"claude": object(), "codex": object()},
-                enabled_agents=("claude",),
-                dismissed=[],
-            ),
-            ["codex"],
-        )
-
-    def test_filters_dismissed(self) -> None:
-        self.assertEqual(
-            visible_detected_agents(
-                detected={"codex": object(), "cursor": object()},
-                enabled_agents=("claude",),
-                dismissed=["codex"],
-            ),
-            ["cursor"],
-        )
-
-    def test_keeps_order_of_detected_iter(self) -> None:
-        from collections import OrderedDict
-
-        det = OrderedDict()
-        det["cursor"] = object()
-        det["codex"] = object()
-        self.assertEqual(
-            visible_detected_agents(
-                detected=det,
-                enabled_agents=("claude",),
-                dismissed=[],
-            ),
-            ["cursor", "codex"],
-        )
-
-
-class DetectedBannerRenderTests(unittest.TestCase):
-    def test_empty_when_no_detected(self) -> None:
-        from uxon.tui.widgets.detected_banner import render_banner_text
-
-        self.assertEqual(render_banner_text([], repo_config_writable=True), "")
-
-    def test_single_agent_writable(self) -> None:
-        from uxon.tui.widgets.detected_banner import render_banner_text
-
-        text = render_banner_text(["codex"], repo_config_writable=True)
-        self.assertIn("codex is installed", text)
-        self.assertIn("[a]", text)
-        self.assertIn("[x] dismiss", text)
-
-    def test_multi_agent_readonly(self) -> None:
-        from uxon.tui.widgets.detected_banner import render_banner_text
-
-        text = render_banner_text(["codex", "cursor"], repo_config_writable=False)
-        self.assertIn("codex", text)
-        self.assertIn("cursor", text)
-        self.assertIn("read-only", text)
 
 
 class LaunchOptionsStateTests(unittest.TestCase):
@@ -585,23 +510,12 @@ class MainScreenIntentStateTests(unittest.TestCase):
         self.assertEqual(main_action_intent("kill-all-global"), MainIntent("kill-all-global"))
         self.assertIsNone(main_action_intent("unknown"))
 
-    def test_digit_jump_activates_hinted_action(self) -> None:
-        ctx = _ctx()
-        self.assertEqual(digit_jump_intent(ctx, 1), MainIntent("launch-cwd", index=0))
-
     def test_refresh_is_screen_wiring_only(self) -> None:
         self.assertEqual(main_action_intent("action-cwd"), MainIntent("launch-cwd"))
 
     def test_callback_failure_to_toast(self) -> None:
         failure = callback_failure_to_toast("Refresh failed", uxon_tui.CallbackError("nope"))
         self.assertEqual(failure, CallbackFailure("Refresh failed: nope", "error"))
-
-    def test_digit_jump_focuses_settings_without_activation(self) -> None:
-        ctx = _ctx(has_sudo=True)
-        self.assertEqual(digit_jump_intent(ctx, 4), MainIntent("focus-only", index=3))
-
-    def test_digit_jump_out_of_range_is_none(self) -> None:
-        self.assertIsNone(digit_jump_intent(_ctx(), 9))
 
     def test_activate_main_index_attaches_own_session(self) -> None:
         ctx = _ctx(sessions=[_session("dev.foo", "stored-owner")], current_user="dev")
@@ -707,22 +621,6 @@ class BuildItemsTests(unittest.TestCase):
         items = build_items(_ctx())
         self.assertEqual([i.kind for i in items[:3]], list(_ACTION_KINDS))
 
-    def test_action_items_have_digit_hints_1_through_3(self) -> None:
-        items = build_items(_ctx())
-        self.assertEqual([i.digit_hint for i in items[:3]], [1, 2, 3])
-
-    def test_settings_item_has_no_digit_hint(self) -> None:
-        ctx = _ctx(has_sudo=True)
-        items = build_items(ctx)
-        [settings] = [i for i in items if i.kind == "settings"]
-        self.assertIsNone(settings.digit_hint)
-
-    def test_kill_all_item_has_no_digit_hint(self) -> None:
-        ctx = _ctx(has_sudo=True, sessions=[_session("a")])
-        items = build_items(ctx)
-        [kill] = [i for i in items if i.kind == "kill-all-global"]
-        self.assertIsNone(kill.digit_hint)
-
     def test_action_open_identity_stable_under_session_change(self) -> None:
         ctx0 = _ctx()
         ctx1 = _ctx(sessions=[_session("a"), _session("b")])
@@ -736,32 +634,6 @@ class BuildItemsTests(unittest.TestCase):
 
     def test_action_count_derived_from_action_kinds(self) -> None:
         self.assertEqual(ACTION_COUNT, len(_ACTION_KINDS))
-
-
-class DigitHintedIndicesTests(unittest.TestCase):
-    def test_digit_allowed_excludes_settings_and_kill(self) -> None:
-        ctx = _ctx(has_sudo=True)  # fresh superuser; settings at ACTION_COUNT
-        allowed = _digit_hinted_indices(ctx)
-        self.assertNotIn(ACTION_COUNT, allowed)  # Settings excluded.
-
-    def test_digit_allowed_is_subset_of_valid_items(self) -> None:
-        ctx = _ctx(has_sudo=True, sessions=[_session("a")])
-        allowed = _digit_hinted_indices(ctx)
-        total = _total_items(ctx)
-        for i in allowed:
-            self.assertLess(i, total)
-
-    def test_digit_allowed_actions_always_included(self) -> None:
-        ctx = _ctx()
-        allowed = _digit_hinted_indices(ctx)
-        for i in range(ACTION_COUNT):
-            self.assertIn(i, allowed)
-
-    def test_digit_allowed_includes_session_rows(self) -> None:
-        ctx = _ctx(sessions=[_session("a"), _session("b")])
-        allowed = _digit_hinted_indices(ctx)
-        self.assertIn(ACTION_COUNT, allowed)
-        self.assertIn(ACTION_COUNT + 1, allowed)
 
 
 class LaunchRequestShapeTests(unittest.TestCase):

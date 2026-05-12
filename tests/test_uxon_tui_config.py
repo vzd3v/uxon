@@ -70,9 +70,6 @@ def _mk_ctx(**overrides) -> TuiContext:
         on_setting_remove=lambda k: None,
         on_setting_save_mapping=lambda k, m: None,
         get_git_remote_profile_rows=lambda: [],
-        on_enable_detected_agent=lambda aid: None,
-        on_dismiss_detected_agent=lambda aid: None,
-        get_dismissed_detected_agents=lambda: [],
     )
     base.update(overrides)
     return TuiContext(**base)
@@ -121,9 +118,6 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertIs(cfg.on_setting_remove, ctx.on_setting_remove)
         self.assertIs(cfg.on_setting_save_mapping, ctx.on_setting_save_mapping)
         self.assertIs(cfg.get_git_remote_profile_rows, ctx.get_git_remote_profile_rows)
-        self.assertIs(cfg.on_enable_detected_agent, ctx.on_enable_detected_agent)
-        self.assertIs(cfg.on_dismiss_detected_agent, ctx.on_dismiss_detected_agent)
-        self.assertIs(cfg.get_dismissed_detected_agents, ctx.get_dismissed_detected_agents)
 
 
 class OnRemoteAttachPropagatedTests(unittest.TestCase):

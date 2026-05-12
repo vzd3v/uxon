@@ -14,7 +14,6 @@ hint describing why it's disabled.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import ClassVar
 
 from rich.text import Text
@@ -41,9 +40,9 @@ def action_row_can_activate(enabled: bool) -> bool:
 class ActionRow(Static):
     """A focusable row with a keyboard/mouse-activated payload.
 
-    Parent screens declare their own BINDINGS for digit-jump etc. and
-    use :attr:`ActionRow.kind` to dispatch activation. The widget emits
-    :class:`Activated` on Enter or a mouse click release.
+    Parent screens use :attr:`ActionRow.kind` to dispatch activation.
+    The widget emits :class:`Activated` on Enter or a mouse click
+    release.
     """
 
     can_focus = True
@@ -116,7 +115,6 @@ class ActionRow(Static):
         kind: str,
         label: str,
         detail: str = "",
-        digit: int | None = None,
         enabled: bool = True,
         id: str | None = None,
         singleton: bool = False,
@@ -125,7 +123,6 @@ class ActionRow(Static):
         self.kind = kind
         self.label = label
         self.detail = detail
-        self.digit = digit
         self._enabled = enabled
         self._singleton = singleton
         if singleton:
@@ -138,22 +135,16 @@ class ActionRow(Static):
             # Compact single-line layout for Settings / Kill-ALL rows
             # in the bottom Vertical. Mirrors the pre-3.4 visuals of
             # the action group rows.
-            if self.digit is not None:
-                t.append(f"{self.digit} ", style="dim")
-            else:
-                t.append("  ")
             t.append("+ ", style="bold green")
             t.append(self.label, style="bold")
             if self.detail:
                 t.append(f"  {self.detail}", style="dim")
         else:
-            # Bordered button in #top-actions: digit hint + label,
-            # centered. The detail (cwd path / project root) is
-            # rendered separately as a caption line below the row so
-            # the button itself stays narrow enough for the label to
-            # survive a 1/3-width split.
-            if self.digit is not None:
-                t.append(f"{self.digit}  ", style="dim")
+            # Bordered button in #top-actions: centered label. The
+            # detail (cwd path / project root) is rendered separately
+            # as a caption line below the row so the button itself
+            # stays narrow enough for the label to survive a 1/3-width
+            # split.
             t.append(self.label, style="bold")
         self.update(t)
         if not self._enabled:
@@ -282,14 +273,3 @@ class ActionRow(Static):
                     target = focused.row_count - 1 if direction < 0 else 0
                     focused.move_cursor(row=target)
                 return
-
-
-@dataclass(frozen=True)
-class ActionRowSpec:
-    """Helper: declarative description of one MainScreen action row."""
-
-    kind: str
-    label: str
-    detail: str
-    digit: int
-    enabled: bool

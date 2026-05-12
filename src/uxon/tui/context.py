@@ -203,20 +203,17 @@ class TuiContext:
     scope_skipped_users: tuple[str, ...] = ()
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
 
-    # Multi-agent fields (Task 7+)
-    enabled_agents: tuple[str, ...] = ("claude",)
-    default_agent: str = "claude"
+    # Multi-agent fields (Task 7+).
+    # ``enabled_agents`` is a strict whitelist when non-empty; an empty
+    # tuple (matching an absent or ``[]`` ``[agents].enabled`` in repo
+    # config) flips uxon into auto-mode where every installed CATALOG
+    # agent is launchable. ``default_agent`` may be ``""`` — consumers
+    # fall back to the first available agent.
+    enabled_agents: tuple[str, ...] = ()
+    default_agent: str = ""
     launch_user: str = ""
     # Maps agent_id → AgentAvailability (status: "pending"|"ok"|"missing"|"timeout")
     agent_availability: dict[str, Any] = field(default_factory=dict)
-    # Maps agent_id → BinaryStatus for agents installed on the host but not
-    # listed in ``enabled_agents``. Populated by the ``probe_host`` worker so
-    # the main screen can suggest enabling them.
-    detected_agents: dict[str, Any] = field(default_factory=dict)
-    # Whether the repo-config file is writable by the current user (directly
-    # via ``os.access`` or indirectly via passwordless sudo). Used by the
-    # detected-agents banner to decide whether the ``[a]`` action is live.
-    repo_config_writable: bool = False
 
     # Callbacks — TUI calls these, uxon provides them.
     # Launch/attach callbacks return a LaunchRequest; the outer run() loop
@@ -275,14 +272,6 @@ class TuiContext:
     on_setting_remove: Callable[[str], None] = lambda key: None
     on_setting_save_mapping: Callable[[str, dict], None] = lambda key, mapping: None
     get_git_remote_profile_rows: Callable[[], list] = lambda: []
-
-    # Detected-agents banner callbacks. ``on_enable_detected_agent`` mutates
-    # ``[agents].enabled`` in repo config; ``on_dismiss_detected_agent``
-    # appends to the per-user dismissed-list state file. ``get_dismissed``
-    # is read each tick so external state edits show up after a refresh.
-    on_enable_detected_agent: Callable[[str], None] = lambda agent_id: None
-    on_dismiss_detected_agent: Callable[[str], None] = lambda agent_id: None
-    get_dismissed_detected_agents: Callable[[], list[str]] = list
 
     # Multi-host (Task #11): peer machines polled over SSH for their
     # session lists. ``remote_hosts`` is the static config (parsed
@@ -393,13 +382,13 @@ TuiContext.remote_snapshots = property(  # type: ignore[assignment]
 )
 
 
-# ── agent_availability / detected_agents read-through properties ────
+# ── agent_availability read-through property ────────────────────────
 #
-# Canonical store: ``state.agent_availability`` /
-# ``state.detected_agents`` (each a :class:`SlotState[dict[...]]`).
-# Reads return ``state.<slot>.value`` when a state is linked, falling
-# back to a private kwarg-stored dict for unit tests that build a
-# bare ctx without an App.
+# Canonical store: ``state.agent_availability``
+# (a :class:`SlotState[dict[...]]`). Reads return
+# ``state.<slot>.value`` when a state is linked, falling back to a
+# private kwarg-stored dict for unit tests that build a bare ctx
+# without an App.
 
 
 def _availability_get(self: TuiContext) -> dict:
@@ -413,24 +402,9 @@ def _availability_set(self: TuiContext, value: dict) -> None:
     self.__dict__["_legacy_agent_availability"] = value
 
 
-def _detected_get(self: TuiContext) -> dict:
-    state = getattr(self, "_state", None)
-    if state is not None and state.detected_agents.value is not None:
-        return state.detected_agents.value
-    return self.__dict__.get("_legacy_detected_agents", {})
-
-
-def _detected_set(self: TuiContext, value: dict) -> None:
-    self.__dict__["_legacy_detected_agents"] = value
-
-
 TuiContext.agent_availability = property(  # type: ignore[assignment]
     _availability_get,
     _availability_set,
-)
-TuiContext.detected_agents = property(  # type: ignore[assignment]
-    _detected_get,
-    _detected_set,
 )
 
 
@@ -499,11 +473,6 @@ ACTION_COUNT = len(_ACTION_KINDS)
 class Item:
     """One row on the main TUI screen, described by identity rather than index.
 
-    ``kind`` names the semantic role of the row. ``digit_hint`` is the
-    digit that would activate it on keypress, or None if the row cannot
-    be reached by a digit jump (Settings, Kill-ALL).
-
-    This is the type-safe replacement for the integer-cursor scheme.
     Activation should dispatch on ``kind``, not on the position of the
     row inside the flat list — session-count changes shift every index
     below the new/removed session, but ``kind`` is stable.
@@ -514,9 +483,8 @@ class Item:
     #                    settings, kill-all-global
     label: str
     enabled: bool = True
-    # Payloads (only one is populated per kind):
+    # Payload (populated for session rows only):
     session: TuiSession | None = None
-    digit_hint: int | None = None  # 1..9, or None if not digit-reachable
 
 
 def build_items(ctx: TuiContext) -> list[Item]:
@@ -534,13 +502,12 @@ def build_items(ctx: TuiContext) -> list[Item]:
     be "Open existing project" remains the same Item.
     """
     items: list[Item] = []
-    # Actions (indices 0..ACTION_COUNT-1). Digit hints are 1..3.
+    # Actions (indices 0..ACTION_COUNT-1).
     items.append(
         Item(
             kind="action-cwd",
             label="New session in current folder",
             enabled=ctx.cwd_writable is not False,
-            digit_hint=1,
         )
     )
     items.append(
@@ -548,7 +515,6 @@ def build_items(ctx: TuiContext) -> list[Item]:
             kind="action-new",
             label="Create new project",
             enabled=True,
-            digit_hint=2,
         )
     )
     items.append(
@@ -556,43 +522,32 @@ def build_items(ctx: TuiContext) -> list[Item]:
             kind="action-open",
             label="Open existing project",
             enabled=bool(ctx.existing_projects),
-            digit_hint=3,
         )
     )
     # Own sessions
-    for i, s in enumerate(ctx.sessions):
-        pos = ACTION_COUNT + i  # 0-based position in the final list
-        hint = pos + 1 if 1 <= pos + 1 <= 9 else None
+    for s in ctx.sessions:
         items.append(
             Item(
                 kind="own-session",
                 label=s.short,
                 enabled=True,
                 session=s,
-                digit_hint=hint,
             )
         )
     # Superuser block: other-user sessions, settings, kill-all-reachable.
     # Visibility gate is now per-target sudo: any reachable peer user
-    # exposes the block. Settings remains gated on the same predicate
-    # for backward layout compatibility — its writability separately
-    # depends on ``sudo_caps.can_root`` and is wired through
-    # ``repo_config_writable`` in ``cli._build_tui_context``.
+    # exposes the block. Settings is also gated on the same predicate.
     has_super = bool(ctx.sudo_caps.reachable_users)
     if has_super:
-        for i, s in enumerate(ctx.other_sessions):
-            pos = ACTION_COUNT + len(ctx.sessions) + i
-            hint = pos + 1 if 1 <= pos + 1 <= 9 else None
+        for s in ctx.other_sessions:
             items.append(
                 Item(
                     kind="other-session",
                     label=f"{s.user}/{s.short}",
                     enabled=True,
                     session=s,
-                    digit_hint=hint,
                 )
             )
-        # Settings: no digit_hint — PR 2 invariant.
         items.append(
             Item(
                 kind="settings",
@@ -602,7 +557,6 @@ def build_items(ctx: TuiContext) -> list[Item]:
         )
         total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
         if total_sessions > 0:
-            # Kill-ALL (reachable users): no digit_hint — PR 2 invariant.
             # ``kind`` is kept as the legacy ``"kill-all-global"`` string
             # so the screen / state dispatch tables don't all need to
             # rename in lock-step with the user-visible relabel.
@@ -651,32 +605,3 @@ def _total_items(ctx: TuiContext) -> int:
     if kill_idx >= 0:
         return kill_idx + 1
     return settings_idx + 1
-
-
-def _digit_hinted_indices(ctx: TuiContext) -> set[int]:
-    """Return the set of item indices reachable via a digit keypress.
-
-    Digit 1..9 maps to index 0..8. Only items whose index is in this set
-    may be activated by a digit keypress. Settings and Kill-ALL are
-    deliberately excluded — they are non-destructive-to-read but
-    surprising-to-land-on for a new user, and on empty superuser state
-    `settings_idx` collapses to `ACTION_COUNT` which makes a mis-typed
-    digit dangerously ambiguous. Both remain reachable via
-    arrow-down + Enter, which is a deliberate two-step gesture.
-    """
-    own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
-    total = _total_items(ctx)
-    allowed: set[int] = set()
-    # Actions (0..ACTION_COUNT-1)
-    for i in range(min(ACTION_COUNT, total)):
-        allowed.add(i)
-    # Own sessions
-    for i in range(own_start, min(other_start, total)):
-        allowed.add(i)
-    # Other users' sessions (still session rows, safe to jump to)
-    if has_super:
-        other_end = settings_idx if settings_idx >= 0 else total
-        for i in range(other_start, min(other_end, total)):
-            allowed.add(i)
-    # Settings and Kill-ALL are intentionally excluded.
-    return allowed

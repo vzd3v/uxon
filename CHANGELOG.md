@@ -6,6 +6,17 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Agents are now auto-detected by default. With `[agents].enabled` empty or absent in config, uxon probes the host on launch and treats every installed CATALOG agent (`claude`, `codex`, `cursor`) as launchable. Setting `enabled = ["claude", "codex"]` switches to a strict whitelist (only listed agents are launchable, even if more are installed). The old hardcoded `enabled = ["claude"]` default is gone. `agents.default` is also optional now — when unset, uxon falls back to the first available agent.
+- Host probe runs once on mount; pick up freshly installed agents via the existing `r` refresh binding instead of the previous 2-second interval re-probe.
+- Whichever agent is picked (`--agent`, `agents.default`, `agents.enabled[0]`, or the auto-mode probe) is now verified against the host probe before launch — a missing binary fails with a uxon-level message and install hint (exit code `1`) instead of an opaque tmux exec failure.
+- TUI surfaces probe failures (sudo missing, NOPASSWD misconfig, etc.) via the "agents unavailable" modal with the error and install hints, instead of leaving the agent list silently empty.
+
+### Removed
+- "Detected but not enabled" banner on the main screen, plus the `[a]` add-to-config / `[x]` dismiss bindings and the per-user dismissed-list state file (`~/.local/state/uxon/dismissed.json`). With auto-mode, installed agents are launchable automatically; with strict mode, the operator owns the whitelist by editing config directly.
+
 ## [3.4.0] — 2026-05-08
 
 ### Added
@@ -29,6 +40,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Removed
 - Sort cycle bindings (`s`, `S`) and the `tui.table.default_sort_by` setting.
 - `[` / `]` host-cycling bindings — use ←/→ on the dashboard or the host tab strip instead.
+- Digit `1`–`9` quick-jump on the main screen. The arrow keys + Enter now drive every reachable row; digit-jump conflicted with the search input (typing `1` to filter sessions used to fire a jump instead of inserting the character).
 
 ### Fixed
 - Dashboard rows no longer briefly reorder on tab switches and large refresh diffs (an apply-order bug that dropped or shuffled inserted rows when several appeared in one tick).

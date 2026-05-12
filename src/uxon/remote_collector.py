@@ -465,10 +465,14 @@ def _find_master_pid_by_path(control_path: str) -> int | None:
     """Find the SSH ``ControlMaster`` pid by scanning ``/proc``.
 
     OpenSSH's master writes its argv to ``ssh: <control-path> [mux]``
-    once it backgrounds; that string is a stable, unambiguous needle
-    in ``/proc/<pid>/cmdline``. Returns the pid or ``None`` when the
-    master is gone, ``/proc`` is unreadable (rare on Linux, possible
-    in stripped containers), or the cmdline has been replaced.
+    once it backgrounds; that string is the value of ``argv[0]``. On
+    builds where ``setproctitle`` zeroes the rest of the argv block
+    the cmdline collapses to that single NUL-padded field; on builds
+    where it doesn't, the original ``argv[1:]`` survives as additional
+    NUL-separated tokens. Either way, ``cmdline.split(b"\\x00", 1)[0]``
+    is the proctitle. Returns the pid or ``None`` when the master is
+    gone, ``/proc`` is unreadable (rare on Linux, possible in stripped
+    containers), or the cmdline has been replaced.
 
     Linux-only — uxon is a Linux tool, so the ``/proc`` dependency is
     fine. Falling back to ``pgrep`` would add another dependency for
@@ -484,10 +488,8 @@ def _find_master_pid_by_path(control_path: str) -> int | None:
             continue
         try:
             with open(f"/proc/{entry}/cmdline", "rb") as fh:
-                # cmdline fields are NUL-separated; ssh's master cmdline
-                # is a single field (the ``ssh: ...`` string), so just
-                # strip the trailing NUL.
-                raw = fh.read().rstrip(b"\x00").decode("utf-8", errors="ignore")
+                first = fh.read().split(b"\x00", 1)[0]
+                raw = first.decode("utf-8", errors="ignore")
         except OSError:
             continue
         if raw == needle:
@@ -552,22 +554,25 @@ def _recover_wedged_master(
     except (subprocess.TimeoutExpired, OSError):
         pass
 
-    # Step 2: hard-kill any master that survived.
+    # Step 2: hard-kill any master that survived, then unlink the stale
+    # socket so the next ssh becomes a fresh master (a stale socket
+    # left behind would keep ``ControlMaster=auto`` trying the slave
+    # path and hang). Both steps are gated on the same ``exists()``
+    # check so a socket that appeared between Step 1 and Step 2 (a
+    # concurrent fetch on the same host raced past us) is left alone
+    # rather than killed-and-unlinked from under the new master.
     resolved = resolve(host.ssh_alias, control_dir, _runner=runner)
     if resolved is None:
         return
     socket_path = Path(resolved)
-    if socket_path.exists():
-        pid = find_pid(resolved)
-        if pid is not None:
-            try:
-                kill(pid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
-
-    # Step 3: unlink stale socket so the next ssh becomes a fresh master
-    # (with a stale socket present, ``ControlMaster=auto`` would still
-    # try the slave path and hang).
+    if not socket_path.exists():
+        return
+    pid = find_pid(resolved)
+    if pid is not None:
+        try:
+            kill(pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
     try:
         socket_path.unlink(missing_ok=True)
     except OSError:

@@ -17,9 +17,10 @@ makes the whole strip a single stop in the surrounding focus chain:
   strip on the active tab and leaves it on the next focusable
   widget (action row above, dashboard table below).
 * ← / → on the active tab cycle ``active_index`` and move focus
-  with it.
+  with it. The dashboard table forwards ← / → via a
+  :class:`HostNavigate` event so the same gesture cycles hosts
+  even when the cursor lives on a row.
 * Click on any tab activates it and pulls focus.
-* ``[`` / ``]`` (screen-level bindings) cycle regardless of focus.
 """
 
 from __future__ import annotations

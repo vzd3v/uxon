@@ -18,10 +18,32 @@ from .context import (
     ServerStatus,
     TuiContext,
     TuiSession,
-    _digit_hinted_indices,
     _segments,
     _total_items,
 )
+
+
+def effective_agents(
+    *,
+    configured: tuple[str, ...],
+    available_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return the agent ids the user can actually launch.
+
+    - ``configured`` non-empty → strict whitelist; return as-is.
+    - ``configured`` empty → auto-mode; return every CATALOG id that
+      ``available_ids`` reports as installed for ``launch_user``.
+
+    Empty/absent ``[agents].enabled`` in repo config and ``[]`` are
+    treated identically — both mean "auto-detect from what is
+    installed". Explicit "disable everything" is not supported (YAGNI:
+    nobody installs uxon to forbid launching).
+    """
+    if configured:
+        return configured
+    from uxon import agents as uxon_agents
+
+    return tuple(aid for aid in uxon_agents.CATALOG if aid in available_ids)
 
 
 def should_show_agents_unavailable(
@@ -49,10 +71,6 @@ def should_show_agents_unavailable(
     )
 
 
-def should_start_agent_probe(*, probe_agents: bool, enabled_agents: tuple[str, ...]) -> bool:
-    return probe_agents and bool(enabled_agents)
-
-
 def compute_all_missing(
     *,
     enabled_agents: tuple[str, ...],
@@ -77,30 +95,6 @@ def compute_all_missing(
         getattr(availability[aid], "status", None) in ("missing", "timeout")
         for aid in enabled_agents
     )
-
-
-def visible_detected_agents(
-    *,
-    detected: Mapping[str, Any],
-    enabled_agents: tuple[str, ...],
-    dismissed: list[str],
-) -> list[str]:
-    """Return the agent ids that should appear in the detected banner.
-
-    An entry is shown when it is detected on the host (``detected``
-    map populated by ``probe_host``), is **not** already in
-    ``enabled_agents`` (defensive — the worker should have filtered
-    these out), and the user has not dismissed it.
-    """
-    enabled_set = set(enabled_agents)
-    out: list[str] = []
-    for aid in detected:
-        if aid in enabled_set:
-            continue
-        if aid in dismissed:
-            continue
-        out.append(aid)
-    return out
 
 
 def should_push_agents_unavailable(
@@ -172,11 +166,31 @@ def visible_agent_ids(
     enabled_agents: tuple[str, ...],
     availability: Mapping[str, Any],
 ) -> tuple[str, ...]:
+    """Agent ids the LaunchOptions screen should expose.
+
+    Strict mode (``enabled_agents`` non-empty): the configured list,
+    minus any with a resolved ``missing``/``timeout`` status. Pending
+    entries stay visible so the row renders as "(checking…)" rather
+    than vanishing mid-probe.
+
+    Auto-mode (``enabled_agents`` empty): every ``CATALOG`` id that
+    has resolved to ``ok`` in ``availability``. No "missing" rows —
+    the auto-mode probe never inserts un-installed entries, so a
+    missing/timeout entry would have to be a stale strict-mode hangover.
+    """
+    if enabled_agents:
+        return tuple(
+            aid
+            for aid in enabled_agents
+            if availability.get(aid) is None
+            or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
+        )
+    from uxon import agents as uxon_agents
+
     return tuple(
         aid
-        for aid in enabled_agents
-        if availability.get(aid) is None
-        or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
+        for aid in uxon_agents.CATALOG
+        if aid in availability and getattr(availability[aid], "status", None) == "ok"
     )
 
 
@@ -433,18 +447,6 @@ def activate_main_index(ctx: TuiContext, idx: int) -> MainIntent | None:
         return MainIntent("open-settings", index=idx)
     if has_super and idx == kill_idx:
         return MainIntent("kill-all-global", index=idx)
-    return None
-
-
-def digit_jump_intent(ctx: TuiContext, n: int) -> MainIntent | None:
-    idx = n - 1
-    if idx < 0 or idx >= _total_items(ctx):
-        return None
-    if idx in _digit_hinted_indices(ctx):
-        return activate_main_index(ctx, idx)
-    own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
-    if has_super and idx in (settings_idx, kill_idx):
-        return MainIntent("focus-only", index=idx)
     return None
 
 

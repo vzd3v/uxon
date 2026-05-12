@@ -97,9 +97,6 @@ class TuiConfig:
     on_setting_remove: Callable[[str], None]
     on_setting_save_mapping: Callable[[str, dict], None]
     get_git_remote_profile_rows: Callable[[], list]
-    on_enable_detected_agent: Callable[[str], None]
-    on_dismiss_detected_agent: Callable[[str], None]
-    get_dismissed_detected_agents: Callable[[], list[str]]
 
     @classmethod
     def from_context(cls, ctx: TuiContext) -> TuiConfig:
@@ -150,7 +147,4 @@ class TuiConfig:
             on_setting_remove=ctx.on_setting_remove,
             on_setting_save_mapping=ctx.on_setting_save_mapping,
             get_git_remote_profile_rows=ctx.get_git_remote_profile_rows,
-            on_enable_detected_agent=ctx.on_enable_detected_agent,
-            on_dismiss_detected_agent=ctx.on_dismiss_detected_agent,
-            get_dismissed_detected_agents=ctx.get_dismissed_detected_agents,
         )

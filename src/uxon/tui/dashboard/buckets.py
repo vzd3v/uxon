@@ -101,16 +101,19 @@ def _bucket_state(host_name: str | None, state) -> str:
     if slot is None or getattr(slot, "value", None) is None:
         # No snapshot yet → pending.
         return "pending…"
-    snap = slot.value
-    if getattr(snap, "from_cache", False):
-        return "(cached)"
-    # The breaker is owned by the scheduler and never round-trips into
-    # the slot, so we read ``consecutive_failures`` directly from
-    # :class:`SlotState`. ``BreakerSpec.trip_after`` defaults to 3, so
-    # we mirror that threshold here — keeping the two in sync is a
-    # known coupling, called out in :class:`BreakerSpec`'s docstring.
+    # "unreachable" wins over "(cached)" — `slot_state.apply()` preserves
+    # both `value` and `from_cache` on failure, so a host whose last
+    # successful fetch was cache-loaded and is now failing keeps
+    # `from_cache=True` indefinitely. The breaker is owned by the
+    # scheduler and never round-trips into the slot, so we read
+    # ``consecutive_failures`` directly from :class:`SlotState`.
+    # ``BreakerSpec.trip_after`` defaults to 3, so we mirror that
+    # threshold here — keeping the two in sync is a known coupling,
+    # called out in :class:`BreakerSpec`'s docstring.
     if getattr(slot, "consecutive_failures", 0) >= 3:
         return "unreachable"
+    if getattr(slot.value, "from_cache", False):
+        return "(cached)"
     return ""
 
 

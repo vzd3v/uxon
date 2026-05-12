@@ -151,15 +151,23 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_pick()
 
-    def on_filter_changed(self, event: FilterChanged) -> None:
+    async def on_filter_changed(self, event: FilterChanged) -> None:
+        # Async + await is load-bearing: ``ListView.clear()`` returns an
+        # ``AwaitRemove`` and ``extend()`` an ``AwaitMount``. Assigning
+        # ``lv.index`` before those complete races the still-pending
+        # DOM mutation — the highlight lands on a stale row (or
+        # disappears) until the operator nudges the list. Awaiting both
+        # keeps Enter pointing at the visible top match.
         self._filtered = filter_existing_projects(self.projects, event.text)
         lv = self.query_one(ListView)
-        lv.clear()
-        for name, mtime in self._filtered:
-            lv.append(ListItem(Label(_row_label(name, mtime))))
-        # Land the cursor on the top match so Enter picks something
-        # meaningful even after a wide narrowing.
-        lv.index = 0 if self._filtered else None
+        await lv.clear()
+        if self._filtered:
+            await lv.extend(
+                [ListItem(Label(_row_label(name, mtime))) for name, mtime in self._filtered]
+            )
+            lv.index = 0
+        else:
+            lv.index = None
         self._sync_match_count()
 
     def _sync_match_count(self) -> None:
