@@ -61,6 +61,7 @@ command_template = [
   - `{remote_uxon}`
   - `{connect_timeout}`
   - `{ssh_control_dir}`
+  - `{ssh_control_persist_seconds}`
   - `{remote_command}` (the standard `<remote_uxon> list
     --all-users --json …` string)
 
