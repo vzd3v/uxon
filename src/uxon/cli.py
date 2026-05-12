@@ -501,7 +501,9 @@ def load_config(cwd: str) -> Config:
     from uxon import git_profiles as uxon_git_profiles
 
     merged, _ = resolve_config_layers(cwd)
-    # Load raw repo data (before merge with defaults) to detect legacy flat keys.
+    # Load raw repo data (before merge with defaults) so the removed
+    # flat ``default_claude_args`` key surfaces an error instead of being
+    # masked by DEFAULT_CONFIG's nested ``[agents.claude]`` block.
     _raw_repo = load_toml(repo_config_path())
     runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
     default_launch_mode = str(
@@ -537,9 +539,10 @@ def load_config(cwd: str) -> Config:
         canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])
     ]
 
-    # Hard-reject legacy flat key with a clear migration message.
-    # Check raw repo config (not merged with defaults) so that the presence
-    # of agents in DEFAULT_CONFIG doesn't mask a flat-key migration failure.
+    # Hard-reject the removed flat ``default_claude_args`` key with a
+    # clear migration message. Check raw repo config (not merged with
+    # defaults) so DEFAULT_CONFIG's nested ``[agents.claude]`` block
+    # doesn't mask the failure.
     if "default_claude_args" in _raw_repo:
         fail(
             "config key 'default_claude_args' was replaced by "
@@ -1876,9 +1879,9 @@ def _list_data(
 
     ``scope_skipped`` (optional) is the per-target-sudo "users in
     ``session_users`` we probed but couldn't reach" list. It is
-    omitted from the envelope when ``None`` so legacy single-user
-    listings stay byte-identical to their previous shape; callers
-    that performed an ``--all-users`` probe pass the (possibly empty)
+    omitted from the envelope when ``None`` so single-user listings
+    stay byte-identical to their previous shape; callers that
+    performed an ``--all-users`` probe pass the (possibly empty)
     list to surface it in the envelope.
     """
     from uxon.wire_schema import build_session_records
@@ -1942,7 +1945,7 @@ def _list_data_from_records(
 
     ``scope_skipped`` (optional) propagates the per-target-sudo
     skipped-users list through; omitted when ``None`` to keep the
-    envelope shape stable for legacy callers.
+    envelope shape stable for callers that don't pass it.
     """
     body: dict[str, Any] = {
         "all_users": all_users,

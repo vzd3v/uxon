@@ -112,12 +112,11 @@ the agent forwarding inside the `sudo -iu` step).
 `uxon` (no args) — opens the TUI.
 
 In the TUI:
-- `↑` / `↓` to navigate, `Enter` to activate.
-- `1`–`9` to jump to an item by number.
+- `↑` / `↓` / `←` / `→` to navigate, `Enter` to activate.
 - `d` kills the highlighted session (with `kill` confirmation).
 - `D` kills *all your sessions* (with `kill-all` confirmation).
-- `v` toggles between `by_host` and `flat` view (multi-host only).
-- `/` focuses the search bar; `Esc` clears + blurs it.
+- `v` toggles between `flat` (default) and `by_host` view.
+- `s` (or `/`) summons the search bar; `Esc` clears the query.
 - `q` quits. `Esc` is a scoped cancel and never quits.
 
 When the launched session exits — or you `Ctrl-b d` to detach —

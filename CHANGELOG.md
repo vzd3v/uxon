@@ -23,7 +23,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Session dashboard `by_host` view with a per-host tab strip and status bar; toggle to the default `flat` (single ranked list) with `v`. Configure the initial mode via `tui.table.default_view` (default `"flat"`).
 - Top action row laid out as three side-by-side buttons; ←/→ cycles cyclically inside the row, ↓ exits to the dashboard.
 - ←/→ on the dashboard cycles between hosts: in `by_host` it advances the active host tab cyclically; in `flat` it jumps the cursor across `(host, own/other)` transitions cyclically. Within the local host, own and other-user rows can interleave by recency, so each user transition is a jump point.
-- Search bar across the dashboard: focused by default on TUI mount, refocus from anywhere with `s` (or `/`), clear with `Esc`. Configure searchable fields via `tui.search.fields` (default `name`, `user`; allowed `name`, `user`, `host`, `path`, `cmd`).
+- Search bar across the dashboard: summoned on demand with `s` (or `/`) from anywhere, hidden by default. `Esc` clears the query and returns focus to the summoning widget. Configure searchable fields via `tui.search.fields` (default `name`, `user`; allowed `name`, `user`, `host`, `path`, `cmd`).
 - "Open existing project" modal lands directly on a search input — type to narrow the project list (case-insensitive substring on name), `↑` / `↓` navigate the filtered view, `Enter` confirms, `Esc` clears a non-empty filter (otherwise cancels). Quick-pick by digit `1`–`9` removed in favour of typing.
 - Per-host block colour: pin a hue with `[[remote_hosts]] color = "..."`, customise the auto-cycle palette with `[tui] color_palette`, and the local block colour with `[local_host] color`.
 - `ssh_control_persist_seconds` setting (default `300`; must be `> 0`). Disable multiplexing with `ssh_multiplex = "off"`.
@@ -31,6 +31,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional `host_stats` block in the `list` wire envelope, surfacing per-host CPU / RAM / load to aggregating peers (additive; no schema-version bump).
 
 ### Changed
+- Adaptive render scheduler — bursty refresh-source landings now coalesce into a single repaint instead of triggering one dispatch each. Leading edge fires immediately (first paint / sparse arrivals stay snappy); subsequent requests within a 300 ms window batch into one trailing render, capped at 1 s after the first request in the batch. A render returning `False` (e.g. modal on top) preserves the dirty state so the next request re-fires immediately.
+- Per-host status line in `by_host` view compacted: `6 sess · 4 attached · cpu Σ25% · mem 6304 MiB / 15992 MiB` → `6/4 sess · cpu 25% · mem 6.3/16G`. Session/attached counts fold into one column, the Σ glyph is gone, memory renders in GiB with one decimal.
 - Sort is now a hard contract, not a setting: locals first (own then other-user), then `[[remote_hosts]]` declaration order, with within-block ranking by last-attach desc then name asc. The `tui.table.default_sort_by` key is silently ignored.
 - Attached state is shown by a glyph in the NAME column — `●` filled when attached, `○` hollow otherwise — instead of a bold green name.
 - NAME column drops the `@<agent>` suffix (the agent has its own column already). The disambiguator index `-N` is preserved so siblings stay distinct, e.g. `proj@claude-2` renders as `proj-2`.

@@ -24,8 +24,8 @@ Sort is a fixed contract (locals → cfg-order remotes →
 within-block by recency); there are no sort bindings.
 
 JCUKEN twins: every dashboard key has a Russian-layout twin
-(`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `v`/`м`) so the keymap
-survives a Cyrillic layout without `xkb` tweaks.
+(`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`) so the
+keymap survives a Cyrillic layout without `xkb` tweaks.
 
 ## "Open existing project" screen
 

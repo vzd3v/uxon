@@ -30,9 +30,7 @@ There is no sort setting. Sort is a fixed contract owned by
 the model selector — locals first (own then other-user), then
 remotes in `[[remote_hosts]]` declaration order, with
 within-block ranking by last-attach descending then name
-ascending. The legacy `tui.table.default_sort_by` key is
-silently ignored on load (one `UXON_DEBUG=tui` line per
-occurrence).
+ascending.
 
 ## Available column ids
 
@@ -74,13 +72,15 @@ columns = ["name", "path", "last"]
   view with `tui.table.default_view`. ←/→ on the dashboard
   cycles between hosts: tabs in `by_host`, `(host, own/other)`
   transitions in `flat`; both cyclic.
-- The dashboard search bar takes focus on TUI mount; press `/`
-  from anywhere to refocus, `Esc` to clear-and-blur. While a
-  search query is active, the view is forced to `flat` so
-  matches across hosts appear in one list; clearing the query
-  restores the previous view mode. Configure searchable fields
-  with `tui.search.fields` (default `["name", "user"]`; allowed
-  `name`, `user`, `host`, `path`, `cmd`).
+- The dashboard search bar is summoned on demand — hidden by
+  default, press `s` (or `/`) from anywhere to reveal and focus
+  it. `Esc` clears the query and returns focus to the summoning
+  widget. While a search query is active, the view is forced to
+  `flat` so matches across hosts appear in one list; clearing
+  the query restores the previous view mode. Configure
+  searchable fields with `tui.search.fields` (default
+  `["name", "user"]`; allowed `name`, `user`, `host`, `path`,
+  `cmd`).
 - Attached state is shown by a glyph in the NAME column: `●`
   filled when attached, `○` hollow otherwise. There is no bold
   green override.

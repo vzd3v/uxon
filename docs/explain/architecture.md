@@ -142,7 +142,7 @@ widget shell at
 [`src/uxon/tui/widgets/session_dashboard_table.py`](../../src/uxon/tui/widgets/session_dashboard_table.py):
 
 1. **`row.py` — `SessionRow`.** A single frozen dataclass is the
-   unified row type. Two adapters land the legacy shapes onto it:
+   unified row type. Two adapters land the source shapes onto it:
    `from_tui_session(...)` for local rows (own + sudo), and
    `from_wire_record(host, rec)` for one row of a peer
    `RemoteSnapshot`. Equality is value-based — two ticks producing

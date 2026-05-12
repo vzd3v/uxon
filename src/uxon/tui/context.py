@@ -153,13 +153,13 @@ class TuiContext:
     # attribute, but the property descriptor installed *after the
     # class body* (see below) replaces this default at runtime —
     # reads/writes go through ``self._state.refresh_tick`` when a
-    # state is linked, otherwise through a private legacy slot.
+    # state is linked, otherwise through a private fallback slot.
     # ``init=False`` keeps the kwarg out of ``__init__`` (no caller
     # passes ``refresh_tick=`` today).
     refresh_tick: int = field(default=0, init=False)
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
-    tui_render_debounce_ms: int = 100
+    tui_render_debounce_ms: int = 300
     tui_render_max_latency_ms: int = 1000
     # Multi-host transport knobs. Forwarded into per-host fetch
     # closures by ``cli._build_tui_context`` and snapshotted into
@@ -194,8 +194,7 @@ class TuiContext:
     current_user: str = ""
     # Per-target sudo capability. ``reachable_users`` gates the "Other
     # users' sessions" block + ``kill-all-reachable`` action;
-    # ``can_root`` gates the Settings-screen write fallback. Replaces
-    # the legacy single-boolean ``has_sudo`` gate.
+    # ``can_root`` gates the Settings-screen write fallback.
     sudo_caps: SudoCapability = field(default_factory=SudoCapability)
     # Users in ``session_users`` the per-target probe could not reach.
     # Surfaced in the TUI's "(N/M users reachable)" hint and on
@@ -557,9 +556,9 @@ def build_items(ctx: TuiContext) -> list[Item]:
         )
         total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
         if total_sessions > 0:
-            # ``kind`` is kept as the legacy ``"kill-all-global"`` string
-            # so the screen / state dispatch tables don't all need to
-            # rename in lock-step with the user-visible relabel.
+            # ``kind`` is kept as the original ``"kill-all-global"``
+            # string so the screen / state dispatch tables don't all
+            # need to rename in lock-step with the user-visible relabel.
             items.append(
                 Item(
                     kind="kill-all-global",

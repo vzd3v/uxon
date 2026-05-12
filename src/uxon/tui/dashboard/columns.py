@@ -1,12 +1,10 @@
 """Dashboard column registry: ColumnSpec + REGISTRY + formatters.
 
 Each column ships its own ``format`` (row → cell value) and
-``sort_key`` (row → comparable). Formatters are pure functions that
-preserve the visual semantics of the legacy local / remote tables:
-bold-green for attached, red/yellow CPU thresholds at >50 / >10,
-yellow user marker, deterministic per-host colour glyph on the NAME
-column so per-row attribution survives sort even with the HOST
-column hidden.
+``sort_key`` (row → comparable). Formatters are pure functions:
+red/yellow CPU thresholds at >50 / >10, deterministic per-host
+colour glyph on the NAME column so per-row attribution survives
+sort even with the HOST column hidden.
 
 These callables are invoked many times per tick by the reconciler;
 they MUST stay closure-free over mutable state.
@@ -80,13 +78,11 @@ def assign_block_colors(
 
 
 def format_cpu(row: SessionRow) -> Text:
-    """Format CPU% with the existing >50/>10 colour thresholds.
+    """Format CPU% with the >50/>10 colour thresholds.
 
-    The legacy idle-CPU rendering emitted ``"0.0"`` for an idle
-    session — only a missing input string blanked the cell. The unified
-    pipeline has already collapsed the missing/zero distinction at the
-    adapter boundary (``from_tui_session``), so we always render the
-    numeric value; an idle row shows as ``"0.0"`` to match legacy.
+    The missing/zero distinction is collapsed at the adapter boundary
+    (``from_tui_session``), so this always renders the numeric value;
+    an idle row shows as ``"0.0"``.
     """
     raw = f"{row.cpu_pct:.1f}" if row.cpu_pct < 100 else f"{row.cpu_pct:.0f}"
     if row.cpu_pct > 50:
@@ -138,10 +134,7 @@ def _format_host(row: SessionRow) -> Text:
 
 def _format_user(row: SessionRow) -> Text:
     # Render plain: in cross_user mode the column header itself flags
-    # multi-user state; per-row colour would also paint the operator's
-    # own user yellow which diverges from the legacy intent (yellow
-    # was a non-self marker on the legacy split table; in the unified
-    # table the column header itself is the multi-user signal).
+    # multi-user state, so per-row colour would be redundant.
     return Text(row.user or "-")
 
 

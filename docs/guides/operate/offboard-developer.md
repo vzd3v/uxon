@@ -114,9 +114,7 @@ sudo rm -rf /srv/projects/alice          # iff you don't need it
   step 5);
 - `~/.gitconfig` (developer's email, often tied to GitHub);
 - `~/.ssh/` for the agent account (any keys it generated for its
-  own use);
-- `~/.local/state/uxon/dismissed.json` (TUI banner state — fine
-  to lose).
+  own use).
 
 ## Step 5 — Revoke external credentials
 

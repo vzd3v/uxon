@@ -12,21 +12,20 @@ log see [`CHANGELOG.md`](../CHANGELOG.md).
   fixed order: locals first (own then other-user), then
   remotes in `[[remote_hosts]]` declaration order, with
   within-block ranking by last-attach descending then name
-  ascending. The legacy `tui.table.default_sort_by` key is
-  silently ignored on load (one `UXON_DEBUG=tui` line per
-  occurrence) — no error, no fallback. The `s` / `S` cycle
-  bindings are gone.
+  ascending. The `tui.table.default_sort_by` key is silently
+  ignored on load (one `UXON_DEBUG=tui` line per occurrence) —
+  no error, no fallback. The `s` / `S` cycle bindings are gone.
 - **`tui.table.default_view` (new)** — `"flat"` (default) is a
   single ranked list across the fleet; `"by_host"` shows a
   per-host tab strip and status bar. Toggle at runtime with
   `v`. An active search forces `flat` until the query is
   cleared. ←/→ on the dashboard cycles between hosts: tabs
   in `by_host`, `(host, own/other)` transitions in `flat`.
-  The legacy `[` / `]` shortcut is gone.
-- **Search bar.** Focused by default on TUI mount; press `s`
-  (or `/`) from anywhere to refocus, `Esc` to clear-and-blur.
-  Configure searchable fields via `tui.search.fields` (default
-  `["name", "user"]`).
+  The `[` / `]` shortcut is gone.
+- **Search bar.** Summoned on demand — hidden by default, press
+  `s` (or `/`) from anywhere to reveal it. `Esc` clears the query
+  and returns focus to the summoning widget. Configure searchable
+  fields via `tui.search.fields` (default `["name", "user"]`).
 - **`PATH` and `CMD` columns hidden by default.** For
   uxon-launched sessions `CMD` only echoed the agent name (already
   shown in the AGENT column). Operators who relied on either column
@@ -77,7 +76,7 @@ log see [`CHANGELOG.md`](../CHANGELOG.md).
 ### Audit channel — new sink
 
 The 3.3.0 release introduces a dedicated audit channel and
-removes the legacy TUI event log.
+removes the per-day TUI event-log file.
 
 - **TUI event log removed.** The per-day JSONL file at
   `${XDG_STATE_HOME:-~/.local/state}/uxon/tui-{user}-{date}.log`
@@ -172,9 +171,9 @@ default_args = []
 Manual migration per host: replace the flat
 `default_claude_args = [...]` line with the nested `[agents]`
 tables, include only agents installed on that host in
-`enabled`, then run `uxon doctor` to verify. If the legacy flat
-key is present on load, `uxon` fails with a clear error
-pointing here.
+`enabled`, then run `uxon doctor` to verify. If the flat
+`default_claude_args` key is still present on load, `uxon` fails
+with a clear error pointing here.
 
 ## Related
 

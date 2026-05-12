@@ -93,7 +93,7 @@ class RemoteSnapshot:
         scope_limited: ``True`` when the peer rejected
             ``list --all-users`` (because its
             ``enable_all_users_list = false``) and the collector fell
-            back to the legacy own-only ``list --json``. The TUI
+            back to own-only ``list --json``. The TUI
             badges the section header with ``(own only)`` so the
             operator knows the per-peer view is partial. Default
             ``False`` — fresh peers serve the all-users view.
@@ -394,7 +394,7 @@ def _build_fetch_argv(
     ``allocate_tty=False``. The remote command is the standard
     ``<remote_uxon> list [--all-users] --json`` invocation; the
     ``ALL_USERS_DISABLED_MARKER`` fallback path still works because
-    ``all_users=False`` rebuilds the argv with the legacy form.
+    ``all_users=False`` rebuilds the argv without ``--all-users``.
     """
     remote_command = (
         f"{shlex.quote(host.remote_uxon)} list --all-users --json"
@@ -581,9 +581,9 @@ def _recover_wedged_master(
 
 # Stable substring emitted by a peer whose ``enable_all_users_list =
 # false`` rejects ``list --all-users``. The collector greps stderr for
-# this marker to decide whether to retry with the legacy
-# ``list --json`` (own-only) command. Producer side: see
-# ``cli.py``'s ``--all-users`` failure paths.
+# this marker to decide whether to retry with own-only
+# ``list --json``. Producer side: see ``cli.py``'s ``--all-users``
+# failure paths.
 ALL_USERS_DISABLED_MARKER = "uxon-error: all-users-disabled"
 
 
@@ -845,8 +845,8 @@ def fetch_remote_snapshot(
     error, payload, stderr = _run_one(all_users=True)
     scope_limited = False
     # Fallback: peer rejected ``--all-users`` (its
-    # ``enable_all_users_list = false``). Retry with the legacy
-    # own-only command so the TUI still sees something for that peer.
+    # ``enable_all_users_list = false``). Retry with own-only so
+    # the TUI still sees something for that peer.
     # The marker is the stable substring documented in
     # ``ALL_USERS_DISABLED_MARKER``; anything else is a hard error.
     if error is not None and ALL_USERS_DISABLED_MARKER in stderr:

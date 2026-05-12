@@ -1,7 +1,9 @@
 # Switch default agent
 
-`uxon` ships with `claude` as the default agent. To change to
-`codex` or `cursor`, or to run several agents side by side:
+Out of the box `uxon` runs in **auto-mode** (`agents.enabled`
+empty or absent) and picks the first installed CATALOG agent for
+bare `uxon run`. To pin a specific default, or to restrict to an
+approved subset of agents, declare it explicitly:
 
 ```toml
 [agents]
@@ -9,9 +11,11 @@ enabled = ["claude", "codex"]
 default = "claude"
 ```
 
-`agents.default` must be in `agents.enabled`. The TUI's
-"New session" picker shows enabled agents only; bare
-`uxon run` uses `agents.default`.
+`agents.default` is optional in either mode. In strict-whitelist
+mode (non-empty `agents.enabled`) it must be listed in
+`enabled`; if unset uxon falls back to `agents.enabled[0]`. In
+auto-mode it falls back to the first installed agent. The TUI's
+"New session" picker shows the launchable agents only.
 
 ## Per-invocation override
 
@@ -55,13 +59,28 @@ translate to per-agent equivalents:
 `-w <branch>` (worktree) is currently **claude-only**. Using
 `-w` with `codex` or `cursor` is an error.
 
-## Auto-detection
+## Auto-mode and host probe
 
-When you install a new agent on the host, the TUI detects it on
-the next launch and offers a banner: press `a` to add it to
-`agents.enabled` (writes the repo config via `tomlkit`
-round-trip), `x` to dismiss. Dismissals are per-user, persisted
-under `~/.local/state/uxon/dismissed.json`.
+With `agents.enabled` empty or absent (the default), uxon runs in
+**auto-mode**: it probes the host once on launch and treats every
+installed CATALOG agent (`claude`, `codex`, `cursor`) as
+launchable. Install a new agent (`npm i -g …`) and re-probe with
+the existing `r` refresh binding on the main screen — no banner,
+no per-user state file, no opt-in.
+
+Set `agents.enabled` to a non-empty list to flip into **strict
+whitelist** mode — only the listed agents are launchable even if
+more are installed on the host. Use this to pin a fleet to an
+approved subset.
+
+Whichever agent ends up selected (`--agent`, `agents.default`,
+`agents.enabled[0]`, or the auto-mode probe) is verified against
+the probe before launch. A missing binary fails with a uxon-level
+error and install hint (exit code `1`) instead of an opaque tmux
+exec failure. Probe failures (sudo missing, NOPASSWD
+misconfigured, etc.) surface in the TUI via the "agents
+unavailable" modal with the error and install hints, rather than
+leaving the agent list silently empty.
 
 ## Reference
 

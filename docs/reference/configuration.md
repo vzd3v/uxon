@@ -85,10 +85,8 @@ formatting) lives in
 Sort is a fixed contract owned by the selector — locals first
 (own then other-user), then remotes in `[[remote_hosts]]`
 declaration order, with within-block ranking by last-attach
-descending then name ascending. There is no sort setting:
-the legacy `tui.table.default_sort_by` key is silently ignored
-on load (one `UXON_DEBUG=tui` line per occurrence) and the
-`s` / `S` cycle bindings are gone.
+descending then name ascending. There is no sort setting and no
+sort cycle bindings.
 
 The attach indicator is a glyph in the NAME column: `●` filled
 when the session is attached, `○` hollow otherwise. No bold
@@ -107,10 +105,12 @@ distinguishes siblings on the same stem is preserved
 |-----|------|---------|---------|
 | `tui.search.fields` | array | `["name", "user"]` | Fields the dashboard search bar matches against. Allowed values: `name`, `user`, `host`, `path`, `cmd`. Unknown entries fail loud at load. |
 
-The search bar takes focus by default on TUI mount; press `s`
-(or `/`) from anywhere to refocus it, `Esc` to clear-and-blur
-(scoped cancel — never quits). An active search forces the
-`flat` view; clearing the query restores the previous view mode.
+The search bar is summoned on demand — hidden by default, press
+`s` (or `/`) from anywhere to reveal it and focus the input.
+`Esc` clears the query and returns focus to the widget that
+summoned the bar (scoped cancel — never quits). An active search
+forces the `flat` view; clearing the query restores the previous
+view mode.
 
 ## `[tui]` colour palette
 
