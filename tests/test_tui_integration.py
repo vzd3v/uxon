@@ -120,11 +120,13 @@ class PtyTuiIntegrationTests(unittest.TestCase):
         )
         self.assertIn("controlling-tty:True:True", trace.plain)
 
-    def test_fresh_superuser_digit_4_does_not_open_git_remotes(self) -> None:
-        """PR 1 + PR 2 regression: on empty superuser state,
-        `settings_idx == ACTION_COUNT == 3` so digit '4' points at
-        Settings. A digit press must not activate Settings — and even
-        if it did, 'g' must not open the git remotes screen."""
+    def test_stray_digit_and_letter_do_not_open_git_remotes(self) -> None:
+        """Pressing an unbound digit and then ``g`` must never reach
+        the Git remote profiles screen. Historically digit-jump made
+        '4' a way into Settings on empty-superuser state (PR 1 + PR 2
+        regression); digit-jump has since been retired, so this test
+        also covers the wider class of "no random keypress walks the
+        operator into a screen they did not ask for"."""
         trace = self._run([b"4", b"g", b"q"])
         self.assertNotIn(
             "Git remote profiles",
@@ -199,13 +201,21 @@ uxon_agents.probe_agents = lambda *args, **kwargs: {{}}
 # legacy per-agent driver. Without this stub the pty child runs a
 # real ``sudo -nHu USER -- sh -lc 'command -v …'`` on the CI host,
 # finds nothing, and pushes ``AgentsUnavailableScreen`` over the
-# main screen — the digit press the test sends then lands on the
+# main screen — the keypresses the test sends then land on the
 # modal instead of the action row, and the marker file stays empty.
 class _StubReport:
     def __init__(self):
         self.tmux = type("S", (), {{"name": "tmux", "path": "/usr/bin/tmux", "install_hint": ""}})()
-        self.enabled = {{}}
-        self.detected = {{}}
+        # Pretend only claude is installed so auto-mode lands a single
+        # agent in the LaunchOptions modal (the keypress sequence in
+        # this test relies on the single-agent fast-path that skips
+        # the agent picker and lands directly on the mode list).
+        bs = lambda n, p: type("S", (), {{"name": n, "path": p, "install_hint": ""}})()
+        self.agents = {{
+            "claude": bs("claude", "/usr/bin/claude"),
+            "codex": bs("codex", None),
+            "cursor": bs("cursor-agent", None),
+        }}
         self.launch_user = "u-den"
 uxon_probes.probe_host = lambda *args, **kwargs: _StubReport()
 
@@ -260,24 +270,29 @@ class DrainAfterLaunchTests(unittest.TestCase):
         code = _DRAIN_CHILD_SCRIPT.format(
             marker_path=marker_path,
         )
-        # Sequence: digit-1 → permissions modal → pick regular →
-        # on_launch_cwd triggers request_launch → app exits →
-        # _run_launch_request runs /bin/true → re-enter.
-        # Send digit-2 immediately after the modal commit while the mocked
-        # launch command is still sleeping. It must not open NewProjectScreen
-        # after the app re-enters.
-        # Synchronize on rendered text instead of guessing delays — under
-        # -n auto CPU contention, a fixed sleep is racy. The 3-tuple form
-        # `(budget, payload, wait_for_text)` drains until the marker
-        # appears or the budget expires. We wait for "1 normal" (the
-        # first mode list item) — it renders only after the modal's
-        # async on_mount has populated the mode ListView, so Enter is
-        # guaranteed to land on a mounted, ready ListView.
+        # Sequence: Enter on action-cwd (the default-focused row on
+        # MainScreen) → permissions modal → Enter to pick the default
+        # mode → on_launch_cwd triggers request_launch → app exits →
+        # _run_launch_request runs /bin/true → re-enter. While the
+        # mocked launch is still sleeping we send a stray Enter — it
+        # must not auto-activate any row on the re-entered MainScreen.
+        # Synchronize on rendered text instead of guessing delays —
+        # under -n auto CPU contention, a fixed sleep is racy. The
+        # 3-tuple `(budget, payload, wait_for_text)` form sends the
+        # payload, then drains until the marker appears or the budget
+        # expires. We wait for "1 normal" (the first mode list item)
+        # — it renders only after the modal's async on_mount populates
+        # the mode ListView, so the follow-up Enter is guaranteed to
+        # land on a mounted, ready ListView.
         trace = run_python_snippet(
             code,
             [
-                (8.0, b"1", "1 normal"),
+                (8.0, b"\r", "1 normal"),
                 (4.0, b"\r"),
+                # Stray digit during launch — must not stale-activate
+                # any row on re-entry. ``2`` is unbound on MainScreen
+                # (digit-jump was retired) so this is a no-op; the
+                # test asserts the no-op stays a no-op.
                 (1.0, b"2"),
                 b"q",
             ],

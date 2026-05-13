@@ -38,9 +38,10 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import signal
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +93,7 @@ class RemoteSnapshot:
         scope_limited: ``True`` when the peer rejected
             ``list --all-users`` (because its
             ``enable_all_users_list = false``) and the collector fell
-            back to the legacy own-only ``list --json``. The TUI
+            back to own-only ``list --json``. The TUI
             badges the section header with ``(own only)`` so the
             operator knows the per-peer view is partial. Default
             ``False`` — fresh peers serve the all-users view.
@@ -100,6 +101,12 @@ class RemoteSnapshot:
             and could not reach. Forward-compatible: missing on older
             peers that don't emit the field — the collector treats
             that as ``[]``.
+        host_stats: Optional snapshot of host-level metrics
+            (CPU/RAM/loadavg/uptime/kernel) emitted by the peer
+            alongside the session list. Forward-compatible: missing
+            on peers that don't emit the field — the collector treats
+            that as ``None`` and the host status bar renders without
+            metrics.
     """
 
     host_name: str
@@ -110,6 +117,7 @@ class RemoteSnapshot:
     cached_at_epoch: float | None = None
     scope_limited: bool = False
     scope_skipped: list[str] = field(default_factory=list)
+    host_stats: dict[str, Any] | None = None
 
 
 def state_dir(*, override: Path | None = None) -> Path:
@@ -154,6 +162,7 @@ PLACEHOLDER_CLOSED_SET: frozenset[str] = frozenset(
         "{connect_timeout}",
         "{ssh_control_dir}",
         "{remote_command}",
+        "{ssh_control_persist_seconds}",
     }
 )
 
@@ -208,7 +217,7 @@ def _default_template() -> list[str]:
         "-o",
         "ControlPath={ssh_control_dir}/ssh-%C",
         "-o",
-        "ControlPersist=60s",
+        "ControlPersist={ssh_control_persist_seconds}s",
         "{ssh_alias}",
         "{remote_command}",
     ]
@@ -265,6 +274,7 @@ def _render_argv(
     connect_timeout: int,
     ssh_control_dir: str,
     remote_command: str,
+    ssh_control_persist_seconds: int = 300,
 ) -> list[str]:
     """Substitute placeholders in ``template``. Empty tokens after
     substitution are dropped (e.g. an empty extra-options list).
@@ -275,6 +285,7 @@ def _render_argv(
         "{connect_timeout}": str(connect_timeout),
         "{ssh_control_dir}": ssh_control_dir,
         "{remote_command}": remote_command,
+        "{ssh_control_persist_seconds}": str(ssh_control_persist_seconds),
     }
     rendered: list[str] = []
     for token in template:
@@ -316,6 +327,7 @@ def build_peer_ssh_argv(
     allocate_tty: bool,
     connect_timeout: int,
     ssh_multiplex: str,
+    ssh_control_persist_seconds: int = 300,
 ) -> list[str]:
     """Single source of truth for ssh-argv to one peer.
 
@@ -364,6 +376,7 @@ def build_peer_ssh_argv(
         connect_timeout=connect_timeout,
         ssh_control_dir=_ssh_control_dir() if needs_control_dir else "",
         remote_command=remote_command,
+        ssh_control_persist_seconds=ssh_control_persist_seconds,
     )
 
 
@@ -373,6 +386,7 @@ def _build_fetch_argv(
     connect_timeout: int,
     all_users: bool,
     ssh_multiplex: str,
+    ssh_control_persist_seconds: int = 300,
 ) -> list[str]:
     """Assemble the fetch argv for one host.
 
@@ -380,7 +394,7 @@ def _build_fetch_argv(
     ``allocate_tty=False``. The remote command is the standard
     ``<remote_uxon> list [--all-users] --json`` invocation; the
     ``ALL_USERS_DISABLED_MARKER`` fallback path still works because
-    ``all_users=False`` rebuilds the argv with the legacy form.
+    ``all_users=False`` rebuilds the argv without ``--all-users``.
     """
     remote_command = (
         f"{shlex.quote(host.remote_uxon)} list --all-users --json"
@@ -393,25 +407,194 @@ def _build_fetch_argv(
         allocate_tty=False,
         connect_timeout=connect_timeout,
         ssh_multiplex=ssh_multiplex,
+        ssh_control_persist_seconds=ssh_control_persist_seconds,
     )
+
+
+# ── Wedged-master self-heal ─────────────────────────────────────────
+
+
+# How long any one recovery subprocess is allowed to block. Each step
+# (``ssh -O exit``, ``ssh -G``) is bounded independently so a single
+# wedged invocation cannot stall the whole sequence.
+_RECOVER_STEP_TIMEOUT_SEC = 2
+
+
+def _resolved_control_path(
+    ssh_alias: str,
+    control_dir: str,
+    *,
+    _runner: Any = None,
+) -> str | None:
+    """Resolve ``%C`` in our default ControlPath template for ``ssh_alias``.
+
+    Uses ``ssh -G`` — the option-resolution mode that prints the effective
+    config without opening a connection. Returns the absolute socket path
+    or ``None`` on any subprocess failure / timeout / parse miss.
+
+    ``_runner`` is the ``subprocess.run``-compatible seam used by tests;
+    a ``None`` default is resolved to the module-level ``subprocess.run``
+    at call time so a test that patches ``subprocess.run`` at the module
+    level (e.g. via ``mock.patch.object(uxon.subprocess, "run", ...)``)
+    propagates into this seam too. Capturing ``subprocess.run`` as a
+    direct default would freeze the original reference at def-time and
+    bypass any later patch.
+    """
+    runner = subprocess.run if _runner is None else _runner
+    template = f"{control_dir}/ssh-%C"
+    try:
+        cp = runner(
+            ["ssh", "-G", "-o", f"ControlPath={template}", ssh_alias],
+            capture_output=True,
+            text=True,
+            timeout=_RECOVER_STEP_TIMEOUT_SEC,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if cp.returncode != 0:
+        return None
+    for line in cp.stdout.splitlines():
+        # ``ssh -G`` lower-cases option names; the value follows a
+        # single space.
+        if line.lower().startswith("controlpath "):
+            return line.split(" ", 1)[1].strip()
+    return None
+
+
+def _find_master_pid_by_path(control_path: str) -> int | None:
+    """Find the SSH ``ControlMaster`` pid by scanning ``/proc``.
+
+    OpenSSH's master writes its argv to ``ssh: <control-path> [mux]``
+    once it backgrounds; that string is the value of ``argv[0]``. On
+    builds where ``setproctitle`` zeroes the rest of the argv block
+    the cmdline collapses to that single NUL-padded field; on builds
+    where it doesn't, the original ``argv[1:]`` survives as additional
+    NUL-separated tokens. Either way, ``cmdline.split(b"\\x00", 1)[0]``
+    is the proctitle. Returns the pid or ``None`` when the master is
+    gone, ``/proc`` is unreadable (rare on Linux, possible in stripped
+    containers), or the cmdline has been replaced.
+
+    Linux-only — uxon is a Linux tool, so the ``/proc`` dependency is
+    fine. Falling back to ``pgrep`` would add another dependency for
+    no benefit on supported platforms.
+    """
+    needle = f"ssh: {control_path} [mux]"
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                first = fh.read().split(b"\x00", 1)[0]
+                raw = first.decode("utf-8", errors="ignore")
+        except OSError:
+            continue
+        if raw == needle:
+            try:
+                return int(entry)
+            except ValueError:
+                return None
+    return None
+
+
+def _recover_wedged_master(
+    host: RemoteHost,
+    *,
+    _runner: Any = None,
+    _resolve: Any = None,
+    _find_pid: Any = None,
+    _kill: Any = None,
+) -> None:
+    """Best-effort cleanup of a wedged ControlMaster after a slave timeout.
+
+    A poll/kill slave that hits ``subprocess.TimeoutExpired`` is almost
+    always blocked at ``unix_wait_for_peer`` against an unresponsive
+    master. The slave gets killed by the timeout itself; the master
+    survives and every subsequent slave hangs identically. This routine
+    breaks that loop:
+
+    1. ``ssh -O exit`` (graceful) — works against any responsive master,
+       no-op otherwise. Bounded by :data:`_RECOVER_STEP_TIMEOUT_SEC`.
+    2. If the socket file survived, find the master pid via ``/proc``
+       and ``SIGKILL`` it.
+    3. ``unlink`` the socket file if anything is left.
+
+    Skipped when the host uses a custom ``command_template`` (we don't
+    own that argv) or when multiplexing is off (no master to clean).
+    Never raises — failure of any step is acceptable, the next tick's
+    breaker half-open will get another chance.
+
+    All shell-out points and the kill primitive are dependency-injected
+    so tests don't need to fork real ``ssh`` or scan a real ``/proc``.
+    """
+    if host.command_template:
+        return
+    # Resolve seams at call time (not at def time) so module-level
+    # patches of ``subprocess.run`` / ``os.kill`` propagate into both
+    # the production callers (which don't pass kwargs) and any test
+    # that patches the module attribute rather than injecting kwargs.
+    runner = subprocess.run if _runner is None else _runner
+    resolve = _resolved_control_path if _resolve is None else _resolve
+    find_pid = _find_master_pid_by_path if _find_pid is None else _find_pid
+    kill = os.kill if _kill is None else _kill
+
+    control_dir = _ssh_control_dir()
+    template = f"{control_dir}/ssh-%C"
+
+    # Step 1: graceful exit through the control socket.
+    try:
+        runner(
+            ["ssh", "-O", "exit", "-o", f"ControlPath={template}", host.ssh_alias],
+            capture_output=True,
+            timeout=_RECOVER_STEP_TIMEOUT_SEC,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Step 2: hard-kill any master that survived, then unlink the stale
+    # socket so the next ssh becomes a fresh master (a stale socket
+    # left behind would keep ``ControlMaster=auto`` trying the slave
+    # path and hang). Both steps are gated on the same ``exists()``
+    # check so a socket that appeared between Step 1 and Step 2 (a
+    # concurrent fetch on the same host raced past us) is left alone
+    # rather than killed-and-unlinked from under the new master.
+    resolved = resolve(host.ssh_alias, control_dir, _runner=runner)
+    if resolved is None:
+        return
+    socket_path = Path(resolved)
+    if not socket_path.exists():
+        return
+    pid = find_pid(resolved)
+    if pid is not None:
+        try:
+            kill(pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        socket_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 # Stable substring emitted by a peer whose ``enable_all_users_list =
 # false`` rejects ``list --all-users``. The collector greps stderr for
-# this marker to decide whether to retry with the legacy
-# ``list --json`` (own-only) command. Producer side: see
-# ``cli.py``'s ``--all-users`` failure paths.
+# this marker to decide whether to retry with own-only
+# ``list --json``. Producer side: see ``cli.py``'s ``--all-users``
+# failure paths.
 ALL_USERS_DISABLED_MARKER = "uxon-error: all-users-disabled"
 
 
 def _parse_envelope(
     payload: str,
-) -> tuple[list[RemoteSessionPayload] | None, list[str], str | None]:
+) -> tuple[list[RemoteSessionPayload] | None, list[str], dict[str, Any] | None, str | None]:
     """Validate and unpack an ``uxon list --json`` envelope.
 
-    Returns ``(sessions, scope_skipped, None)`` on success, or
-    ``(None, [], error)`` when the payload is malformed. Failure
-    modes:
+    Returns ``(sessions, scope_skipped, host_stats, None)`` on success,
+    or ``(None, [], None, error)`` when the payload is malformed.
+    Failure modes:
 
     - JSON parse error.
     - Top-level shape is not a dict.
@@ -440,33 +623,38 @@ def _parse_envelope(
     try:
         env: Any = msgspec.json.decode(payload)
     except msgspec.DecodeError as exc:
-        return None, [], f"invalid JSON: {exc}"
+        return None, [], None, f"invalid JSON: {exc}"
     if not isinstance(env, dict):
-        return None, [], "envelope is not a JSON object"
+        return None, [], None, "envelope is not a JSON object"
     schema_version = env.get("schema_version")
     if schema_version != WIRE_SCHEMA_VERSION:
         return (
             None,
             [],
+            None,
             (
                 f"schema_version mismatch: peer reports {schema_version!r}, "
                 f"local expects {WIRE_SCHEMA_VERSION!r}"
             ),
         )
     if env.get("kind") != "list":
-        return None, [], f"unexpected envelope kind {env.get('kind')!r}"
+        return None, [], None, f"unexpected envelope kind {env.get('kind')!r}"
     data = env.get("data")
     if not isinstance(data, dict):
-        return None, [], "envelope.data is not an object"
+        return None, [], None, "envelope.data is not an object"
     sessions = data.get("sessions")
     if not isinstance(sessions, list):
-        return None, [], "envelope.data.sessions is not a list"
+        return None, [], None, "envelope.data.sessions is not a list"
     raw_skipped = data.get("scope_skipped", [])
     if isinstance(raw_skipped, list):
         scope_skipped = [str(u) for u in raw_skipped if isinstance(u, str)]
     else:
         scope_skipped = []
-    return sessions, scope_skipped, None
+    # Optional, additive ``host_stats`` block. Older peers omit it;
+    # we treat absence as ``None`` rather than a parse error.
+    host_stats_raw = env.get("host_stats")
+    host_stats = host_stats_raw if isinstance(host_stats_raw, dict) else None
+    return sessions, scope_skipped, host_stats, None
 
 
 def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> RemoteSnapshot | None:
@@ -501,6 +689,8 @@ def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> Remo
         scope_skipped = [str(u) for u in raw_skipped if isinstance(u, str)]
     else:
         scope_skipped = []
+    raw_host_stats = blob.get("host_stats")
+    host_stats = raw_host_stats if isinstance(raw_host_stats, dict) else None
     return RemoteSnapshot(
         host_name=name,
         fetched_at_epoch=float(cached_at),
@@ -510,6 +700,7 @@ def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> Remo
         cached_at_epoch=float(cached_at),
         scope_limited=scope_limited,
         scope_skipped=scope_skipped,
+        host_stats=host_stats,
     )
 
 
@@ -541,7 +732,7 @@ def write_cached_snapshot(snapshot: RemoteSnapshot, *, override_dir: Path | None
         # the failure on the actual write below; nothing useful to do
         # here.
         pass
-    blob = {
+    blob: dict[str, Any] = {
         "host_name": snapshot.host_name,
         "cached_at_epoch": snapshot.fetched_at_epoch,
         "sessions": snapshot.sessions,
@@ -553,6 +744,10 @@ def write_cached_snapshot(snapshot: RemoteSnapshot, *, override_dir: Path | None
         "scope_limited": bool(snapshot.scope_limited),
         "scope_skipped": list(snapshot.scope_skipped),
     }
+    # Optional host-level metrics block; older caches predate this
+    # field and ``read_cached_snapshot`` tolerates its absence.
+    if snapshot.host_stats is not None:
+        blob["host_stats"] = snapshot.host_stats
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_text(json.dumps(blob), encoding="utf-8")
@@ -574,6 +769,7 @@ def fetch_remote_snapshot(
     connect_timeout: int = DEFAULT_CONNECT_TIMEOUT_SEC,
     total_timeout: int = DEFAULT_TOTAL_TIMEOUT_SEC,
     ssh_multiplex: str = "auto",
+    ssh_control_persist_seconds: int = 300,
     override_state_dir: Path | None = None,
     _runner: Any = subprocess.run,
 ) -> RemoteSnapshot:
@@ -617,10 +813,18 @@ def fetch_remote_snapshot(
             connect_timeout=eff_connect,
             all_users=all_users,
             ssh_multiplex=ssh_multiplex,
+            ssh_control_persist_seconds=ssh_control_persist_seconds,
         )
         try:
             cp = _runner(argv, capture_output=True, text=True, timeout=eff_total)
         except subprocess.TimeoutExpired:
+            # Slave hung — almost always wedged ControlMaster (the
+            # subprocess timeout already killed our slave; siblings
+            # share the same %C socket and would loop on the same
+            # wedge). Cleanup is a no-op for non-multiplexed paths
+            # and operator-supplied command_template hosts.
+            if ssh_multiplex != "off":
+                _recover_wedged_master(host, _runner=_runner)
             return f"ssh timeout after {eff_total}s", None, ""
         except FileNotFoundError:
             return "ssh not installed on local host", None, ""
@@ -641,8 +845,8 @@ def fetch_remote_snapshot(
     error, payload, stderr = _run_one(all_users=True)
     scope_limited = False
     # Fallback: peer rejected ``--all-users`` (its
-    # ``enable_all_users_list = false``). Retry with the legacy
-    # own-only command so the TUI still sees something for that peer.
+    # ``enable_all_users_list = false``). Retry with own-only so
+    # the TUI still sees something for that peer.
     # The marker is the stable substring documented in
     # ``ALL_USERS_DISABLED_MARKER``; anything else is a hard error.
     if error is not None and ALL_USERS_DISABLED_MARKER in stderr:
@@ -650,7 +854,7 @@ def fetch_remote_snapshot(
         error, payload, _ = _run_one(all_users=False)
 
     if error is None and payload is not None:
-        sessions, scope_skipped, parse_err = _parse_envelope(payload)
+        sessions, scope_skipped, host_stats, parse_err = _parse_envelope(payload)
         if parse_err is not None:
             error = parse_err
         else:
@@ -664,6 +868,7 @@ def fetch_remote_snapshot(
                 cached_at_epoch=fetched_at,
                 scope_limited=scope_limited,
                 scope_skipped=scope_skipped,
+                host_stats=host_stats,
             )
             # A cache-write failure (disk full, perms) must not taint
             # a fresh in-memory snapshot — we still have valid data.
@@ -683,15 +888,16 @@ def fetch_remote_snapshot(
     # not actually represent.
     cached = read_cached_snapshot(host.name, override_dir=override_state_dir)
     if cached is not None:
-        return RemoteSnapshot(
-            host_name=host.name,
+        # ``replace`` over a field-by-field copy: every other field
+        # round-trips automatically, so adding a new attribute to
+        # :class:`RemoteSnapshot` (e.g. ``host_stats`` in 3.4) doesn't
+        # silently get dropped on the failure path the way it did
+        # before this refactor.
+        return replace(
+            cached,
             fetched_at_epoch=fetched_at,
             from_cache=True,
             error=error,
-            sessions=cached.sessions,
-            cached_at_epoch=cached.cached_at_epoch,
-            scope_limited=cached.scope_limited,
-            scope_skipped=cached.scope_skipped,
         )
     return RemoteSnapshot(
         host_name=host.name,

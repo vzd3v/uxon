@@ -72,7 +72,7 @@ class DashboardRemoteRowsTests(unittest.TestCase):
         _reset_dashboard_cache()
         state = _state_with_snapshots(snapshots)
         cfg = SimpleNamespace(remote_hosts=hosts, current_user="u1")
-        ui = DashboardUiState(sort_by="name", sort_dir="asc")
+        ui = DashboardUiState()
         return select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
 
     def test_empty_when_no_hosts(self) -> None:
@@ -107,7 +107,7 @@ class DashboardRemoteRowsTests(unittest.TestCase):
         _reset_dashboard_cache()
         state = _state_with_snapshots(snapshots)
         cfg = SimpleNamespace(remote_hosts=hosts, current_user="u1")
-        ui = DashboardUiState(sort_by="user", sort_dir="asc")
+        ui = DashboardUiState()
         return select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
 
     def test_pairs_each_record_with_its_host(self) -> None:
@@ -480,7 +480,7 @@ class StateSelectorTests(unittest.TestCase):
             }
         )
         cfg = SimpleNamespace(remote_hosts=hosts, current_user="u1")
-        ui = DashboardUiState(sort_by="cpu")
+        ui = DashboardUiState()
         first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         second = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         self.assertIs(first, second)
@@ -495,7 +495,7 @@ class StateSelectorTests(unittest.TestCase):
         hosts = [_host("prod")]
         state = _state_with_snapshots({"prod": _snap("prod", [{"user": "u1", "name": "n1"}])})
         cfg = SimpleNamespace(remote_hosts=hosts, current_user="u1")
-        ui = DashboardUiState(sort_by="cpu")
+        ui = DashboardUiState()
         first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         # Replace the slot's value with a different snapshot.
         state.remote["prod"] = SlotState(
@@ -505,8 +505,9 @@ class StateSelectorTests(unittest.TestCase):
         second = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         self.assertIsNot(first, second)
 
-    def test_select_layout_signature_equal_for_unchanged_ctx(self) -> None:
+    def test_select_layout_signature_equal_for_unchanged_inputs(self) -> None:
         from uxon.tui.context import TuiContext
+        from uxon.tui.dashboard.ui_state import MainScreenUiState
         from uxon.tui.state import select_layout_signature
 
         ctx = TuiContext(
@@ -519,15 +520,18 @@ class StateSelectorTests(unittest.TestCase):
             new_project_root="",
             existing_projects=[],
         )
-        self.assertEqual(select_layout_signature(ctx), select_layout_signature(ctx))
+        ui = MainScreenUiState()
+        self.assertEqual(select_layout_signature(ctx, ui), select_layout_signature(ctx, ui))
 
     def test_select_layout_signature_returns_four_tuple(self) -> None:
         """Pin the 4-tuple shape so a future drift fails fast.
 
-        Position 2 is ``has_other_sessions``. ``False`` when no
-        other-user local rows exist, ``True`` otherwise.
+        Position 2 is the cross_user latch — ``False`` while the
+        accumulator has fewer than two distinct users, ``True``
+        afterwards.
         """
         from uxon.tui.context import TuiContext
+        from uxon.tui.dashboard.ui_state import MainScreenUiState
         from uxon.tui.state import select_layout_signature
 
         ctx = TuiContext(
@@ -540,16 +544,51 @@ class StateSelectorTests(unittest.TestCase):
             new_project_root="",
             existing_projects=[],
         )
-        sig = select_layout_signature(ctx)
+        ui = MainScreenUiState()
+        sig = select_layout_signature(ctx, ui)
         self.assertEqual(len(sig), 4)
         self.assertEqual(sig[2], False)
 
-    def test_select_layout_signature_recomposes_on_other_sessions_flip(self) -> None:
-        """``has_other_sessions`` (3rd bool) tracks ``bool(ctx.other_sessions)``."""
-        from uxon.tui.context import SudoCapability, TuiContext, TuiSession
+    def test_select_layout_signature_recomposes_on_cross_user_latch_flip(self) -> None:
+        """Position 2 tracks ``cross_user_latched(ui)``, NOT
+        ``bool(ctx.other_sessions)``. The latch flips when the
+        accumulator gains its second distinct username — regardless
+        of source (local other-user or remote peer)."""
+        from uxon.tui.context import TuiContext
+        from uxon.tui.dashboard.ui_state import MainScreenUiState
         from uxon.tui.state import select_layout_signature
 
-        sudo_caps = SudoCapability(reachable_users=frozenset({"alice"}))
+        ctx = TuiContext(
+            sessions=[],
+            total_cpu="",
+            total_ram="",
+            version="",
+            cwd="",
+            cwd_short="",
+            new_project_root="",
+            existing_projects=[],
+        )
+
+        ui_one = MainScreenUiState()
+        ui_one.seen_users.add("alice")
+        ui_two = MainScreenUiState()
+        ui_two.seen_users.update({"alice", "bob"})
+
+        self.assertEqual(select_layout_signature(ctx, ui_one)[2], False)
+        self.assertEqual(select_layout_signature(ctx, ui_two)[2], True)
+        self.assertNotEqual(
+            select_layout_signature(ctx, ui_one),
+            select_layout_signature(ctx, ui_two),
+        )
+
+    def test_select_layout_signature_ignores_other_sessions_field(self) -> None:
+        """The latch lives on ``ui.seen_users``, not on ctx — so a
+        ctx carrying ``other_sessions`` but a fresh ui must report
+        position 2 = False. This pins that the old proxy is gone."""
+        from uxon.tui.context import SudoCapability, TuiContext, TuiSession
+        from uxon.tui.dashboard.ui_state import MainScreenUiState
+        from uxon.tui.state import select_layout_signature
+
         other = TuiSession(
             name="alice.foo",
             short="foo",
@@ -563,7 +602,7 @@ class StateSelectorTests(unittest.TestCase):
             path="/srv",
             user="alice",
         )
-        ctx_with = TuiContext(
+        ctx_with_other = TuiContext(
             sessions=[],
             other_sessions=[other],
             total_cpu="",
@@ -573,26 +612,10 @@ class StateSelectorTests(unittest.TestCase):
             cwd_short="",
             new_project_root="",
             existing_projects=[],
-            sudo_caps=sudo_caps,
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
         )
-        ctx_without = TuiContext(
-            sessions=[],
-            other_sessions=[],
-            total_cpu="",
-            total_ram="",
-            version="",
-            cwd="",
-            cwd_short="",
-            new_project_root="",
-            existing_projects=[],
-            sudo_caps=sudo_caps,
-        )
-        self.assertEqual(select_layout_signature(ctx_with)[2], True)
-        self.assertEqual(select_layout_signature(ctx_without)[2], False)
-        self.assertNotEqual(
-            select_layout_signature(ctx_with),
-            select_layout_signature(ctx_without),
-        )
+        ui = MainScreenUiState()  # accumulator empty — latch not flipped
+        self.assertEqual(select_layout_signature(ctx_with_other, ui)[2], False)
 
 
 if __name__ == "__main__":

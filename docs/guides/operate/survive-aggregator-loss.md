@@ -33,8 +33,6 @@ The aggregator carries:
 - `~/.local/state/uxon/remote/<peer>.json` snapshots — the cache
   fallback for the TUI when a peer is briefly unreachable. This
   is **safe to lose**: a fresh aggregator just refetches.
-- `~/.local/state/uxon/dismissed.json` — TUI banner state.
-  Cosmetic.
 - The **caller side** of `correlation_id` pairs for in-flight
   remote gestures — orphaned. The peer-side `*.remote.in` event
   carries the same id but has no matching `*.remote.out` to join

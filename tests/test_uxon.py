@@ -284,6 +284,20 @@ class UxonTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg("tui_refresh_interval_seconds = 0\n", tmpdir)
 
+    def test_ssh_control_persist_seconds_must_be_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg("ssh_control_persist_seconds = 0\n", tmpdir)
+        # ``fail()`` stashes the human-readable message on the
+        # exception; assert against that rather than ``str(SystemExit)``
+        # (which is just the rc).
+        self.assertIn("ssh_control_persist_seconds", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_ssh_control_persist_seconds_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("", tmpdir)
+        self.assertEqual(cfg.ssh_control_persist_seconds, 300)
+
     def test_load_config_tui_table_defaults_when_section_absent(self) -> None:
         # No ``[tui.table]`` block — defaults must hold and the columns
         # signal must be ``None`` (not ``()``), since ``None`` is the
@@ -292,7 +306,6 @@ class UxonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("", tmpdir)
         self.assertIsNone(cfg.tui_table_columns)
-        self.assertEqual(cfg.tui_table_default_sort_by, "cpu")
 
     def test_load_config_tui_table_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -300,13 +313,11 @@ class UxonTests(unittest.TestCase):
                 textwrap.dedent("""
                     [tui.table]
                     columns         = ["name", "user", "cpu", "ram", "last"]
-                    default_sort_by = "ram"
                 """).strip()
                 + "\n",
                 tmpdir,
             )
         self.assertEqual(cfg.tui_table_columns, ("name", "user", "cpu", "ram", "last"))
-        self.assertEqual(cfg.tui_table_default_sort_by, "ram")
 
     def test_load_config_tui_table_empty_columns_collapses_to_none(self) -> None:
         # Explicit empty list and absent key both signal "use registry
@@ -334,22 +345,11 @@ class UxonTests(unittest.TestCase):
                     tmpdir,
                 )
 
-    def test_load_config_tui_table_rejects_non_string_default_sort_by(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaises(SystemExit):
-                self._write_and_load_cfg(
-                    textwrap.dedent("""
-                        [tui.table]
-                        default_sort_by = 1
-                    """).strip()
-                    + "\n",
-                    tmpdir,
-                )
-
-    def test_load_config_tui_table_unknown_default_sort_by_falls_back(self) -> None:
-        # Unknown id → soft-fallback to "cpu" with a debug-log entry.
-        # Patch the lazy events.debug import so the test does not
-        # depend on UXON_DEBUG being set, and to capture the call.
+    def test_load_config_tui_table_default_sort_by_ignored_with_debug_log(self) -> None:
+        # ``tui.table.default_sort_by`` was removed in 3.4 — sort is
+        # now a hard contract. Any value carried over from older
+        # configs is silently ignored; the loader emits one
+        # ``UXON_DEBUG=tui`` line so operators can spot the fossil.
         from uxon.tui import events as _events
 
         seen: list[tuple[str, dict]] = []
@@ -362,17 +362,17 @@ class UxonTests(unittest.TestCase):
                 cfg = self._write_and_load_cfg(
                     textwrap.dedent("""
                         [tui.table]
-                        default_sort_by = "no-such-column"
+                        default_sort_by = "ram"
                     """).strip()
                     + "\n",
                     tmpdir,
                 )
-        self.assertEqual(cfg.tui_table_default_sort_by, "cpu")
+        self.assertFalse(hasattr(cfg, "tui_table_default_sort_by"))
         self.assertEqual(len(seen), 1)
         topic, fields = seen[0]
         self.assertEqual(topic, "tui")
-        self.assertEqual(fields.get("reason"), "unknown_default_sort_by")
-        self.assertEqual(fields.get("id"), "no-such-column")
+        self.assertEqual(fields.get("reason"), "ignored_default_sort_by")
+        self.assertEqual(fields.get("id"), "ram")
 
     def test_load_config_reads_git_remote_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -476,12 +476,27 @@ class UxonTests(unittest.TestCase):
         self.assertIn("main_ctx_rebuild", names)
         self.assertIn("remote:peer1", names)
 
-    def test_load_config_defaults_enable_claude_only(self) -> None:
+    def test_load_config_defaults_auto_mode(self) -> None:
+        """No ``[agents]`` block → auto-mode: empty enabled / default."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("", tmpdir)
-        self.assertEqual(cfg.enabled_agents, ("claude",))
-        self.assertEqual(cfg.default_agent, "claude")
+        self.assertEqual(cfg.enabled_agents, ())
+        self.assertEqual(cfg.default_agent, "")
         self.assertEqual(cfg.agent_default_args["claude"], ())
+
+    def test_load_config_empty_enabled_is_auto_mode(self) -> None:
+        """``enabled = []`` is equivalent to absent — auto-mode."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [agents]
+                    enabled = []
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        self.assertEqual(cfg.enabled_agents, ())
+        self.assertEqual(cfg.default_agent, "")
 
     def test_load_config_multi_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -868,10 +883,11 @@ class UxonTests(unittest.TestCase):
 
         host_report = uxon_probes.HostReport(
             tmux=uxon_probes.BinaryStatus("tmux", "/usr/bin/tmux", "apt"),
-            enabled={
+            agents={
                 "claude": uxon_probes.BinaryStatus("claude", "/usr/local/bin/claude", "npm"),
+                "codex": uxon_probes.BinaryStatus("codex", None, ""),
+                "cursor": uxon_probes.BinaryStatus("cursor-agent", None, ""),
             },
-            detected={},
             launch_user="u-vz",
         )
 
@@ -917,8 +933,11 @@ class UxonTests(unittest.TestCase):
         output = io.StringIO()
         host_report = uxon_probes.HostReport(
             tmux=uxon_probes.BinaryStatus("tmux", "/usr/bin/tmux", "apt"),
-            enabled={"claude": uxon_probes.BinaryStatus("claude", None, "npm install ...")},
-            detected={},
+            agents={
+                "claude": uxon_probes.BinaryStatus("claude", None, "npm install ..."),
+                "codex": uxon_probes.BinaryStatus("codex", None, ""),
+                "cursor": uxon_probes.BinaryStatus("cursor-agent", None, ""),
+            },
             launch_user="u-vz",
         )
 
@@ -1055,54 +1074,6 @@ class UxonTests(unittest.TestCase):
                     uxon.launch_in_tmux("/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz")
         run_cmd.assert_called_once()
         execvp.assert_called_once()
-
-    def test_plan_tui_run_returns_launch_request_without_execvp(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = self.make_config(allowed_roots=[tmpdir])
-            project_dir = Path(tmpdir) / "demo"
-            project_dir.mkdir()
-            with self._stub_socket_path():
-                with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
-                    with mock.patch.object(uxon, "collect_sessions", return_value=[]):
-                        with mock.patch.object(
-                            uxon, "allocate_session_name", return_value="uxon-demo"
-                        ):
-                            with mock.patch.object(uxon.os, "execvp") as execvp:
-                                req = uxon._plan_tui_run(cfg, "u-vz", str(project_dir), dsp=False)
-        self.assertIn("new-session", req.cmd)
-        self.assertIn("uxon-demo", req.cmd)
-        execvp.assert_not_called()
-
-    def test_plan_tui_create_new_forces_attach_when_existing_session(self) -> None:
-        cfg = self.make_config(allowed_roots=["/srv/repos"], new_project_root="/srv/repos")
-        existing = [self.make_session("uxon-demo@claude", "/srv/repos/demo")]
-        with self._stub_socket_path():
-            with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
-                with mock.patch.object(uxon, "run_cmd"):
-                    with mock.patch.object(uxon, "collect_sessions", return_value=existing):
-                        with mock.patch.object(uxon.os, "execvp") as execvp:
-                            req = uxon._plan_tui_create_new(
-                                cfg, "u-vz", "demo", dsp=False, git_profile=""
-                            )
-        # Existing session → attach request, not launch
-        self.assertIn("attach-session", req.cmd)
-        self.assertIn("uxon-demo@claude", req.cmd)
-        execvp.assert_not_called()
-
-    def test_plan_tui_open_existing_forces_attach_when_existing_session(self) -> None:
-        """Open-existing uses the same attach-on-compatible-session path as
-        create-new, minus any git side effects."""
-        cfg = self.make_config(allowed_roots=["/srv/repos"], new_project_root="/srv/repos")
-        existing = [self.make_session("uxon-demo@claude", "/srv/repos/demo")]
-        with self._stub_socket_path():
-            with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
-                with mock.patch.object(uxon, "run_cmd"):
-                    with mock.patch.object(uxon, "collect_sessions", return_value=existing):
-                        with mock.patch.object(uxon, "_do_create_git_remote") as git_create:
-                            req = uxon._plan_tui_open_existing(cfg, "u-vz", "demo", dsp=False)
-        self.assertIn("attach-session", req.cmd)
-        self.assertIn("uxon-demo@claude", req.cmd)
-        git_create.assert_not_called()
 
     def test_find_project_config_ignores_permission_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1615,7 +1586,7 @@ class CliPreflightTests(unittest.TestCase):
                 mock_tmux_missing = mock.MagicMock()
                 mock_tmux_missing.tmux.path = None
                 mock_tmux_missing.tmux.install_hint = "apt install tmux"
-                mock_tmux_missing.enabled = {"claude": mock.MagicMock(path="/usr/bin/claude")}
+                mock_tmux_missing.agents = {"claude": mock.MagicMock(path="/usr/bin/claude")}
                 probe.return_value = mock_tmux_missing
 
                 with self.assertRaises(SystemExit) as ctx:
@@ -1626,7 +1597,12 @@ class CliPreflightTests(unittest.TestCase):
                 self.assertIn("apt install tmux", err)
 
     def test_preflight_agent_missing_on_run_action(self) -> None:
-        """When default agent is missing on run action, should fail with friendly message."""
+        """When an explicitly requested agent is missing on ``run``,
+        :func:`resolve_agent_id` surfaces an install hint with exit
+        code 1 (environment error, not usage). The preflight only
+        owns the tmux check now; agent install-gating is centralised
+        in ``resolve_agent_id``.
+        """
         buf_err = io.StringIO()
         with mock.patch.object(sys, "stderr", buf_err):
             with mock.patch("uxon.probes.probe_host") as probe:
@@ -1635,14 +1611,15 @@ class CliPreflightTests(unittest.TestCase):
                 mock_claude = mock.MagicMock()
                 mock_claude.path = None
                 mock_claude.install_hint = "npm install -g @anthropic-ai/claude-code"
-                mock_report.enabled = {"claude": mock_claude}
+                mock_report.agents = {"claude": mock_claude}
                 probe.return_value = mock_report
 
                 with self.assertRaises(SystemExit) as ctx:
-                    uxon.main(["run"])
+                    uxon.main(["run", "--agent", "claude"])
                 self.assertEqual(ctx.exception.code, 1)
                 err = buf_err.getvalue()
-                self.assertIn("claude is not installed", err)
+                self.assertIn("'claude'", err)
+                self.assertIn("is not installed", err)
                 self.assertIn("npm install", err)
 
     def test_preflight_skipped_on_version_action(self) -> None:
@@ -1681,7 +1658,7 @@ class CliPreflightTests(unittest.TestCase):
             mock_report.tmux.path = "/usr/bin/tmux"
             mock_claude = mock.MagicMock()
             mock_claude.path = "/home/user/.npm/claude"
-            mock_report.enabled = {"claude": mock_claude}
+            mock_report.agents = {"claude": mock_claude}
             probe.return_value = mock_report
 
             with mock.patch("uxon.cli.do_run", return_value=0):
@@ -1694,7 +1671,7 @@ class CliPreflightTests(unittest.TestCase):
             mock_report = mock.MagicMock()
             mock_report.tmux.path = "/usr/bin/tmux"
             # Agent can be missing; list doesn't care.
-            mock_report.enabled = {"claude": mock.MagicMock(path=None)}
+            mock_report.agents = {"claude": mock.MagicMock(path=None)}
             probe.return_value = mock_report
 
             with mock.patch("uxon.cli.print_list", return_value=0):
@@ -1746,7 +1723,7 @@ class CliPreflightTests(unittest.TestCase):
         with mock.patch("uxon.probes.probe_host") as probe:
             mock_report = mock.MagicMock()
             mock_report.tmux.path = "/usr/bin/tmux"
-            mock_report.enabled = {"claude": mock.MagicMock(path=None)}
+            mock_report.agents = {"claude": mock.MagicMock(path=None)}
             probe.return_value = mock_report
             with (
                 mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),

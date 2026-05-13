@@ -61,6 +61,7 @@ command_template = [
   - `{remote_uxon}`
   - `{connect_timeout}`
   - `{ssh_control_dir}`
+  - `{ssh_control_persist_seconds}`
   - `{remote_command}` (the standard `<remote_uxon> list
     --all-users --json …` string)
 
@@ -68,13 +69,21 @@ command_template = [
   `ssh_multiplex` are **ignored** — the operator owns the
   transport.
 
-## Fleet-wide opt-out
+## Fleet-wide knobs
 
 `ssh_multiplex = "off"` strips `ControlMaster` /
 `ControlPersist` from the default fetch template. Useful for
 environments that prohibit `ControlPersist` sockets entirely
 (some hardened distros). Default `"auto"` gives ~5–20 ms
 warm-tick SSH cost vs. 200–500 ms cold.
+
+`ssh_control_persist_seconds` (default `300`, must be `> 0`)
+sets the `ControlPersist` lifetime when `ssh_multiplex = "auto"`.
+Bump it for fleets with sparse polling intervals — the master
+stays alive between ticks instead of cold-starting each one. To
+disable multiplexing entirely set `ssh_multiplex = "off"` rather
+than zeroing this out. Ignored when `ssh_multiplex = "off"` and
+per-host when `command_template` is set.
 
 `fetch_concurrency` (default `16`) caps concurrent SSH workers
 fleet-wide.

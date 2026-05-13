@@ -31,7 +31,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .columns import REGISTRY
 from .row import SessionRow, from_tui_session, from_wire_record
 
 if TYPE_CHECKING:
@@ -45,14 +44,27 @@ if TYPE_CHECKING:
 _LAST_OUTPUT: tuple[SessionRow, ...] = ()
 
 
-def _matches_filter(row: SessionRow, needle: str) -> bool:
-    """Case-insensitive substring match across name / cmd / path / user."""
-    return (
-        needle in row.name.lower()
-        or needle in row.cmd.lower()
-        or needle in row.path.lower()
-        or needle in row.user.lower()
-    )
+_DEFAULT_SEARCH_FIELDS: tuple[str, ...] = ("name", "user")
+
+
+def _matches_filter(row: SessionRow, needle: str, fields: tuple[str, ...]) -> bool:
+    for f in fields:
+        if f == "name" and needle in (row.short or row.name).lower():
+            return True
+        if f == "user" and needle in row.user.lower():
+            return True
+        if f == "host" and needle in (row.host or "local").lower():
+            return True
+        if f == "path" and needle in row.path.lower():
+            return True
+        if f == "cmd" and needle in row.cmd.lower():
+            return True
+    return False
+
+
+def _within_block_key(row: SessionRow) -> tuple[float, str]:
+    last = row.last_attached_epoch if row.last_attached_epoch is not None else float("-inf")
+    return (-last, (row.short or row.name or "").lower())
 
 
 def _build(
@@ -60,20 +72,12 @@ def _build(
     cfg: TuiConfig,
     ui: DashboardUiState,
 ) -> tuple[SessionRow, ...]:
-    """Build the candidate row tuple from the current state + config + ui."""
     rows: list[SessionRow] = []
-
-    # 1. Local rows. ``state.main`` is ``None`` on cold start (no
-    # rebuild has landed yet); treat that as zero local rows.
     if state.main is not None:
         for s in state.main.sessions:
             rows.append(from_tui_session(s))
         for s in state.main.other_sessions:
             rows.append(from_tui_session(s))
-
-    # 2. Per-host remote rows in cfg-declared order. Local rows always
-    # render as a leading block above any remote rows — see the
-    # post-sort grouping pass below.
     for host in cfg.remote_hosts:
         slot = state.remote.get(host.name)
         if slot is None:
@@ -84,33 +88,20 @@ def _build(
         for rec in snap.sessions:
             rows.append(from_wire_record(host.name, rec))
 
-    # 3. Filter. Empty / all-whitespace string short-circuits the
-    # predicate so the no-filter identity path is exact.
     needle = ui.filter_text.strip().lower()
     if needle:
-        rows = [r for r in rows if _matches_filter(r, needle)]
+        fields = getattr(cfg, "tui_search_fields", _DEFAULT_SEARCH_FIELDS) or _DEFAULT_SEARCH_FIELDS
+        rows = [r for r in rows if _matches_filter(r, needle, fields)]
 
-    # 4. Global sort by the active column. Look the column up in the
-    # registry rather than a layout-computed active set — the sort key
-    # is always registry-keyed. Defensive fallback to ``cpu`` so a
-    # stale ``sort_by`` from config never crashes the selector.
-    column = next((c for c in REGISTRY if c.id == ui.sort_by), None)
-    if column is None:
-        column = next(c for c in REGISTRY if c.id == "cpu")
-    rows.sort(key=column.sort_key, reverse=(ui.sort_dir == "desc"))
-
-    # 5. Group locals above remotes, with each remote host as its own
-    # contiguous block in cfg-declared order. Python's sort is stable,
-    # so the user's chosen ordering from step 4 is preserved within
-    # each block. Hosts not in cfg (shouldn't happen in practice) sort
-    # to the very end so an unexpected row stays visible without
-    # disturbing known-host ordering.
+    # Two stable sorts: within-block recency first, then by host
+    # priority. Python's stable sort preserves the within-block
+    # ordering during the host_priority pass.
+    rows.sort(key=_within_block_key)
     host_priority: dict[str | None, int] = {None: -1}
     for idx, host in enumerate(cfg.remote_hosts):
         host_priority[host.name] = idx
     tail = len(cfg.remote_hosts)
     rows.sort(key=lambda r: host_priority.get(r.host, tail))
-
     return tuple(rows)
 
 
@@ -123,12 +114,21 @@ def select_dashboard_model(
 
     Returns ``tuple[SessionRow, ...]`` containing every local
     (``host=None``) and remote (``host=<peer>``) row, filtered by
-    ``ui.filter_text`` and globally sorted by ``ui.sort_by`` /
-    ``ui.sort_dir``.
+    ``ui.filter_text`` and ordered by the hard sort contract:
+    locals → cfg-order remotes → within each block by recency
+    (``-last_attached_epoch``, then name).
 
-    ``cross_user`` is *not* part of the return type — the caller
-    computes it from the returned rows when assembling
-    :class:`uxon.tui.dashboard.layout.LayoutFlags`.
+    ``cross_user`` is *not* part of the return type. It is a latched,
+    process-lifetime predicate carried on
+    :attr:`uxon.tui.dashboard.ui_state.MainScreenUiState.seen_users`
+    and read via
+    :func:`uxon.tui.dashboard.seen_users.cross_user_latched`. The
+    accumulator is fed by the rebuild dispatcher (see
+    :meth:`uxon.tui.app.UxonApp._handle_remote_snapshot` and
+    :meth:`uxon.tui.screens.main.MainScreen.apply_loaded_ctx`) so a
+    filter that narrows the returned rows down to one user does NOT
+    auto-hide the USER column — the latch reflects what has been
+    observed, not what is currently filtered.
 
     Identity stability: a no-op rebuild returns the previous tuple
     by ``is`` (see module docstring).

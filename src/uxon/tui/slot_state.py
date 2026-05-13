@@ -1,22 +1,16 @@
 """Pure data types and transition function for the per-source slot store.
 
-Stage 8 of the multi-host design spec materialises the *slot store*: a
-small per-source container that records the latest snapshot, when it
-landed, whether it came from cache, and a small ring of recent fetch
-costs. The slot store is consumed by selectors (stage 9) which derive
-view-shaped data without coupling render code to fetch internals.
+A slot is a small per-source container recording the latest snapshot,
+when it landed, whether it came from cache, and a ring of recent fetch
+costs. Slots are consumed by selectors which derive view-shaped data
+without coupling render code to fetch internals.
 
 This module ships the *type fixtures* — :class:`SlotState`,
 :class:`SlotResult`, :class:`Source`, :class:`CadencePolicy` — plus the
-single pure transition :func:`apply`. No Textual, no I/O. Wiring into
-the existing async streams (``_RefreshSourceLanded`` →
-``_source_handles``) and folding the legacy ``TuiContext`` carry-list
-into a TuiState/MainData split happens in follow-up commits.
+single pure transition :func:`apply`. No Textual, no I/O.
 
 The PEP 695 ``class Foo[T]:`` syntax is 3.12+; ``pyproject`` pins
-``requires-python = ">=3.11"`` so we use the classic ``Generic[T]``
-form instead. ``from __future__ import annotations`` keeps the rest of
-the module's type hints parsed lazily.
+``requires-python = ">=3.11"`` so we use ``Generic[T]`` instead.
 """
 
 from __future__ import annotations
@@ -70,13 +64,12 @@ class SlotState(Generic[T]):
             milliseconds. Useful for cost diagnosis without spinning up
             a full metrics pipeline.
         p50_elapsed_ms: Pre-computed median over ``elapsed_ms_recent``,
-            re-derived inside :func:`apply` on every call. Surfaces
-            on the per-host health badge tooltip (commit 4) without
-            forcing every render path to re-sort the ring. ``None``
-            until the first attempt lands. Even-length rings use the
-            *average* of the two middle values so a noisy [10, 30]
-            history reports 20 — not the upper-median 30 — which
-            matches how operators read latency budgets.
+            re-derived inside :func:`apply` on every call so render
+            paths don't re-sort the ring. ``None`` until the first
+            attempt lands. Even-length rings use the *average* of the
+            two middle values so a noisy [10, 30] history reports 20
+            — not the upper-median 30 — which matches how operators
+            read latency budgets.
     """
 
     value: T | None = None
@@ -178,8 +171,7 @@ class Source(Generic[T]):
             can supply a richer reducer.
         cadence: How often the scheduler should kick this source.
         kick_on_mount: Whether the source should be fetched once at
-            mount time, before the first cadence tick. Defaults to
-            True (matches the legacy registry behaviour).
+            mount time, before the first cadence tick.
     """
 
     id: str
@@ -239,16 +231,15 @@ def apply(
     The ``in_flight`` flag is unchanged here — the scheduler owns that
     field; :func:`apply` only reflects post-completion state.
 
-    Identity preservation on no-op success (commit 4): when the
-    incoming success carries a *value-equal but distinct object* to
-    the previously-stored value, the new :class:`SlotState`'s
-    ``value`` reuses ``prev.value``'s identity. This makes
-    ``id(slot.value)`` stable across a no-op tick — selectors that
-    key on it (e.g. the dashboard's ``select_dashboard_model``)
-    cache-hit and the per-host repaint path elides the row
-    recompute. Other fields
-    (``last_attempt_at``, the ring, ``from_cache``) still advance:
-    the *attempt* did happen and must be visible to staleness logic.
+    Identity preservation on no-op success: when the incoming success
+    carries a *value-equal but distinct object* to the previously-stored
+    value, the new :class:`SlotState`'s ``value`` reuses
+    ``prev.value``'s identity. This makes ``id(slot.value)`` stable
+    across a no-op tick — selectors that key on it (e.g. the dashboard's
+    ``select_dashboard_model``) cache-hit and the per-host repaint path
+    elides the row recompute. Other fields (``last_attempt_at``, the
+    ring, ``from_cache``) still advance: the *attempt* did happen and
+    must be visible to staleness logic.
 
     The function is pure: same ``(prev, r, ring_size)`` always returns
     an equal :class:`SlotState`.

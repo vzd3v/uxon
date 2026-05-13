@@ -1,10 +1,10 @@
 """Tests for :mod:`uxon.tui.dashboard.columns`.
 
 Each formatter is a pure function over a :class:`SessionRow`; sort
-keys are pure functions producing comparable values. Visual semantics
-must match the legacy local / remote tables: bold green for
-attached, red/yellow CPU at >50/>10, deterministic per-host glyph
-on the NAME column.
+keys are pure functions producing comparable values. Visual semantics:
+attached state is shown via a ``●``/``○`` glyph (no colour override),
+CPU is red/yellow at >50/>10, and per-host block hue is layered by
+the widget at dispatch time — formatters emit plain ``Text``.
 """
 
 from __future__ import annotations
@@ -18,10 +18,10 @@ from uxon.tui.dashboard import KNOWN_COLUMN_IDS
 from uxon.tui.dashboard.columns import (
     REGISTRY,
     ColumnSpec,
+    assign_block_colors,
     format_cpu,
     format_ram,
     format_relative_time,
-    host_colour,
 )
 from uxon.tui.dashboard.row import SessionRow
 
@@ -92,7 +92,13 @@ class RegistryShapeTests(unittest.TestCase):
         self.assertFalse(_by_id("user").default_visible)
         self.assertFalse(_by_id("pid").default_visible)
         self.assertFalse(_by_id("wins").default_visible)
-        for col_id in ("name", "agent", "cpu", "ram", "new", "last", "cmd", "path"):
+        # PATH and CMD flip to off-by-default in 3.4 — both duplicate
+        # information already in NAME/AGENT for uxon-launched sessions
+        # and pushed useful columns off-screen on narrow terminals.
+        # Operators opt back in via ``[tui.table] columns``.
+        self.assertFalse(_by_id("path").default_visible)
+        self.assertFalse(_by_id("cmd").default_visible)
+        for col_id in ("name", "agent", "cpu", "ram", "new", "last"):
             self.assertTrue(_by_id(col_id).default_visible, col_id)
 
     def test_alignment(self) -> None:
@@ -110,17 +116,17 @@ class RegistryShapeTests(unittest.TestCase):
         self.assertEqual(KNOWN_COLUMN_IDS, tuple(c.id for c in REGISTRY))
 
 
-class HostColourTests(unittest.TestCase):
-    def test_deterministic(self) -> None:
-        self.assertEqual(host_colour("peer-1"), host_colour("peer-1"))
-        self.assertEqual(host_colour("prod-2"), host_colour("prod-2"))
+class AssignBlockColorsSmokeTests(unittest.TestCase):
+    """One smoke case for ``assign_block_colors``.
 
-    def test_different_names_usually_distinct(self) -> None:
-        # Sample a handful of names; at least two must map to different
-        # palette entries.
-        samples = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
-        colours = {host_colour(n) for n in samples}
-        self.assertGreater(len(colours), 1)
+    Full cycle / pin / adjacency coverage lives in
+    ``tests/test_dashboard_block_colors.py``. This case keeps the
+    column module wired through via at least one direct import.
+    """
+
+    def test_locals_only(self) -> None:
+        out = assign_block_colors((), local_color="green", palette=("cyan",))
+        self.assertEqual(out, {None: "green"})
 
 
 class FormatCpuTests(unittest.TestCase):
@@ -200,29 +206,57 @@ class FormatRelativeTimeTests(unittest.TestCase):
 
 
 class NameFormatterTests(unittest.TestCase):
-    def test_local_row_uses_green_glyph(self) -> None:
+    def test_local_row_emits_plain_text_with_unattached_glyph(self) -> None:
         col = _by_id("name")
-        text = col.format(_row(host=None, short="foo"))
+        text = col.format(_row(host=None, short="foo", attached=False))
         self.assertIsInstance(text, Text)
-        self.assertIn("foo", text.plain)
-        # The glyph (first chunk) carries the row's host colour — for
-        # local rows that's "green", which doubles as the at-a-glance
-        # cue that the session lives on the operator's machine.
-        self.assertEqual(str(text.style), "green")
+        # ``○`` is the unattached glyph; block hue is layered by the
+        # widget at render time, NOT by the formatter. The formatter
+        # stays pure data so the reconciler can diff cells.
+        self.assertEqual(text.plain, "○ foo")
 
-    def test_remote_row_uses_host_colour(self) -> None:
+    def test_remote_row_emits_plain_text(self) -> None:
         col = _by_id("name")
         text = col.format(_row(host="peer-1", short="bar"))
-        self.assertIn("bar", text.plain)
-        self.assertEqual(str(text.style), host_colour("peer-1"))
+        self.assertEqual(text.plain, "○ bar")
 
-    def test_attached_marker_appended(self) -> None:
+    def test_attached_uses_filled_glyph(self) -> None:
         col = _by_id("name")
         text = col.format(_row(attached=True, short="foo"))
-        self.assertIn("●", text.plain)
-        # Attached body span uses bold green, suffix uses green.
-        styles = {str(span.style) for span in text.spans}
-        self.assertIn("bold green", styles)
+        # Attach state is encoded by the glyph (●/○), not by colour.
+        self.assertEqual(text.plain, "● foo")
+
+    def test_strips_agent_suffix(self) -> None:
+        # Sessions are named ``<prefix><stem>@<agent>``; ``row.short``
+        # is the prefix-stripped form ``<stem>@<agent>``. The AGENT
+        # column carries the agent already, so NAME drops it.
+        col = _by_id("name")
+        text = col.format(_row(short="vz_devagent_cli_tool@claude", agent="claude"))
+        self.assertEqual(text.plain, "○ vz_devagent_cli_tool")
+
+    def test_preserves_disambiguator_index(self) -> None:
+        # ``-N`` comes after ``@<agent>`` in the session name. Two
+        # siblings at the same stem rely on this number to stay
+        # visually distinct after the agent is stripped.
+        col = _by_id("name")
+        text = col.format(_row(short="proj@claude-2", agent="claude"))
+        self.assertEqual(text.plain, "○ proj-2")
+
+    def test_agent_substring_in_stem_is_safe(self) -> None:
+        # If a stem coincidentally contains ``@<agent>`` (unlikely but
+        # not impossible when stems are derived from filesystem
+        # paths), only the trailing suffix is stripped — not the
+        # earlier substring match.
+        col = _by_id("name")
+        text = col.format(_row(short="weird@claude_in_name@claude", agent="claude"))
+        self.assertEqual(text.plain, "○ weird@claude_in_name")
+
+    def test_unparseable_short_passes_through(self) -> None:
+        # Legacy / unrecognised names that don't carry the suffix
+        # render as-is — never invent a stripped form.
+        col = _by_id("name")
+        text = col.format(_row(short="legacy-name", agent="claude"))
+        self.assertEqual(text.plain, "○ legacy-name")
 
 
 class AgentFormatterTests(unittest.TestCase):
@@ -266,17 +300,17 @@ class UserFormatterTests(unittest.TestCase):
 
 
 class HostFormatterTests(unittest.TestCase):
-    def test_local_renders_green_local(self) -> None:
+    def test_local_renders_local(self) -> None:
         col = _by_id("host")
         text = col.format(_row(host=None))
         self.assertEqual(text.plain, "local")
-        self.assertEqual(str(text.style), "green")
 
-    def test_remote_uses_palette(self) -> None:
+    def test_remote_renders_host_name(self) -> None:
+        # Block hue is layered by the widget at dispatch time, not by
+        # the formatter.
         col = _by_id("host")
         text = col.format(_row(host="peer-1"))
         self.assertEqual(text.plain, "peer-1")
-        self.assertEqual(str(text.style), host_colour("peer-1"))
 
 
 class SimpleFormatterTests(unittest.TestCase):

@@ -48,14 +48,30 @@ Footer {
 
 /* ── ActionRow ───────────────────────────────────────────────────── */
 
+/* Bordered button visual for the three top action rows
+ * (#action-cwd / #action-new / #action-open). Singleton rows in the
+ * bottom Vertical (Settings / Kill-ALL) opt out via the ``-singleton``
+ * class (set by ActionRow.__init__ when ``singleton=True``) — they
+ * keep the pre-3.4 flat look so the heavy bordered chrome stays on
+ * the primary actions at the top.
+ *
+ * styles.tcss takes precedence over the widget's DEFAULT_CSS
+ * (CSS_PATH on the App), so border + height live here as the single
+ * source of truth — keep them in lockstep with #top-actions in
+ * MainScreen.DEFAULT_CSS (height matches: border + 1 line + border = 3).
+ */
+
 ActionRow {
     width: 1fr;
-    height: 1;
+    height: 3;
     padding: 0 1;
-    content-align: left middle;
+    content-align: center middle;
+    border: round $accent;
+    background: $surface;
 }
 
 ActionRow:focus {
+    border: round $accent;
     background: $accent 30%;
     text-style: bold;
 }
@@ -67,6 +83,25 @@ ActionRow:hover {
 ActionRow.-disabled {
     color: $uxon-dim;
     text-style: dim;
+    border: round gray;
+}
+
+ActionRow.-singleton {
+    height: 1;
+    border: none;
+    padding: 0 1;
+    content-align: left middle;
+    background: transparent;
+}
+
+ActionRow.-singleton:focus {
+    border: none;
+    background: $accent 30%;
+}
+
+ActionRow.-singleton:hover {
+    border: none;
+    background: $boost;
 }
 
 ActionRow.destructive,
@@ -87,6 +122,18 @@ ActionRow.destructive,
  * inline via ``rich.text.Text(..., style=...)`` from
  * ``dashboard/columns.py`` formatters, so no class-bound rules are
  * needed here. The cursor highlight is the textual default. */
+
+/* ── HostTabStrip ───────────────────────────────────────────────── */
+
+HostTabStrip {
+    margin-bottom: 1;
+}
+
+/* ── HostStatusBar ──────────────────────────────────────────────── */
+
+HostStatusBar {
+    margin-bottom: 1;
+}
 
 /* ── Modals (ConfirmYesNo, ConfirmPhrase, Permissions, etc.) ─────── */
 
@@ -116,4 +163,11 @@ ConfirmPhrase > Vertical {
 
 Button {
     margin: 0 1;
+}
+
+/* ── SearchBar ──────────────────────────────────────────────────── */
+
+SearchBar {
+    margin-top: 1;
+    margin-bottom: 0;
 }

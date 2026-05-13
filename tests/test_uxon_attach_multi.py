@@ -280,3 +280,11 @@ class OnRemoteAttachCallbackTests(unittest.TestCase):
         # Label is descriptive for pause_on_launch_failure.
         self.assertIn("attach", req.label)
         self.assertIn("box-b", req.label)
+        # Interactive attach must not share the poller's ControlMaster:
+        # a wedged master would hang the TUI handoff at
+        # ``unix_wait_for_peer``. The multiplex options are stripped
+        # regardless of cfg.ssh_multiplex.
+        joined = " ".join(argv)
+        self.assertNotIn("ControlMaster", joined)
+        self.assertNotIn("ControlPath", joined)
+        self.assertNotIn("ControlPersist", joined)

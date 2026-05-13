@@ -79,12 +79,24 @@ breaker.
 
 ## Layer 7 — SSH multiplex socket stale
 
-A stale `ControlPath` socket (`~/.ssh/cm-*` from a previous
-session) can refuse new connections after a network drop. Fix:
+A wedged `ControlMaster` (still alive but unresponsive — typically
+after a network blip) makes new ssh slaves block at
+`unix_wait_for_peer` against the multiplex socket under
+`~/.cache/uxon/ssh-*`. The polling path self-heals on the next
+tick after a fetch timeout: graceful `ssh -O exit`, then `SIGKILL`
+the master via `/proc`, then unlink the stale socket. The CLI
+`uxon kill --host` and the TUI's remote-row kill do the same on
+their own timeout. Interactive `uxon attach --host` is immune by
+construction (it never multiplexes — see `docs/reference/cli.md`).
+
+If you want to clear a wedge by hand without waiting for the next
+poll tick:
 
 ```bash
-ssh -O exit <ssh_alias>          # close stale master
-# Then refresh the TUI (r).
+ssh -O exit <ssh_alias>           # graceful
+# If that hangs, pkill the master and remove its socket:
+pkill -f 'ssh: .*uxon/ssh-.* \[mux\]'
+rm -f ~/.cache/uxon/ssh-*
 ```
 
 If multiplexing is more trouble than it's worth in your

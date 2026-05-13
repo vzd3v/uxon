@@ -1,9 +1,9 @@
 """Pure dashboard reconciler: diff two ``tuple[SessionRow, ...]`` models.
 
-The widget (commit 8) consumes the resulting op stream and applies it
-to a Textual ``DataTable`` without re-rendering rows that have not
-changed. Keeping diff-emission pure means the per-tick repaint cost
-is bounded by *changed cells* rather than total rows.
+:class:`SessionDashboardTable` consumes the resulting op stream and
+applies it to a Textual ``DataTable`` without re-rendering rows that
+have not changed. Keeping diff-emission pure means the per-tick
+repaint cost is bounded by *changed cells* rather than total rows.
 
 Algorithm
 ---------
@@ -48,7 +48,8 @@ ever toggles top-level style without a plain-text change would
 silently miss an update — flag and switch to comparing
 ``(cell.plain, cell.style)`` if such a formatter is added.
 
-The diff function is pure: same inputs always produce equal op tuples.
+The diff function is pure: same inputs always produce an equal
+:class:`ApplyPlan` (ops tuple + new-key tuple).
 """
 
 from __future__ import annotations
@@ -92,6 +93,20 @@ class RowRemove:
 Op = CellUpdate | RowAdd | RowRemove
 
 
+@dataclass(frozen=True, slots=True)
+class ApplyPlan:
+    """Reconciler output: ordered ops + the new key list.
+
+    The widget needs ``new_keys`` to apply ``RowAdd`` ops in reverse
+    new-index order (so every ``before_key`` is already in the
+    table). Pairing it with ``ops`` keeps the diff function pure —
+    no widget contact, no positional metadata leakage.
+    """
+
+    ops: tuple[Op, ...]
+    new_keys: tuple[str, ...]
+
+
 def _row_key(row: SessionRow) -> str:
     """Stable identity key for a row across diffs.
 
@@ -110,12 +125,15 @@ def diff(
     old: tuple[SessionRow, ...],
     new: tuple[SessionRow, ...],
     columns: tuple[ColumnSpec, ...],
-) -> tuple[Op, ...]:
+) -> ApplyPlan:
     """Compute a deterministic op stream from ``old`` to ``new``.
 
     See the module docstring for the full algorithm. ``columns`` is
     the active-column tuple (already filtered by layout flags); the
-    diff only emits ops for these columns.
+    diff only emits ops for these columns. Returns an
+    :class:`ApplyPlan` pairing the ops with the new key list — the
+    widget uses ``new_keys`` to apply ``RowAdd`` ops in reverse
+    new-index order.
     """
     # Precompute keys once: ``_row_key`` is pure but called many times
     # per row in this hot path; reusing the precomputed list keeps the
@@ -172,4 +190,4 @@ def diff(
             if old_val != new_val:
                 ops.append(CellUpdate(k, col.id, new_val))
 
-    return tuple(ops)
+    return ApplyPlan(ops=tuple(ops), new_keys=tuple(new_keys))

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import unittest
 from pathlib import Path
@@ -28,6 +29,8 @@ from uxon.remote_collector import (
     RemoteSnapshot,
     _build_fetch_argv,
     _parse_envelope,
+    _recover_wedged_master,
+    _resolved_control_path,
     fetch_remote_snapshot,
     read_cached_snapshot,
     snapshot_cache_path,
@@ -300,7 +303,7 @@ class BuildPeerSshArgvTests(unittest.TestCase):
 
 class ParseEnvelopeTests(unittest.TestCase):
     def test_happy_path(self) -> None:
-        sessions, scope_skipped, err = _parse_envelope(
+        sessions, scope_skipped, host_stats, err = _parse_envelope(
             _good_envelope([{"name": "uxon-foo@claude"}])
         )
         self.assertIsNone(err)
@@ -308,16 +311,18 @@ class ParseEnvelopeTests(unittest.TestCase):
         # Older envelopes that omit ``scope_skipped`` parse as an
         # empty list (forward-compatible per-target-sudo addition).
         self.assertEqual(scope_skipped, [])
+        # Older envelopes also omit ``host_stats``; absence → ``None``.
+        self.assertIsNone(host_stats)
 
     def test_invalid_json(self) -> None:
-        sessions, _scope_skipped, err = _parse_envelope("{not json")
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope("{not json")
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("invalid JSON", err)
 
     def test_schema_version_mismatch_rejected(self) -> None:
         bad = json.dumps({"schema_version": "2", "kind": "list", "data": {"sessions": []}})
-        sessions, _scope_skipped, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("schema_version mismatch", err)
@@ -326,20 +331,20 @@ class ParseEnvelopeTests(unittest.TestCase):
         bad = json.dumps(
             {"schema_version": WIRE_SCHEMA_VERSION, "kind": "version", "data": {"sessions": []}}
         )
-        sessions, _scope_skipped, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("unexpected envelope kind", err)
 
     def test_missing_sessions_list(self) -> None:
         bad = json.dumps({"schema_version": WIRE_SCHEMA_VERSION, "kind": "list", "data": {}})
-        sessions, _scope_skipped, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("sessions", err)
 
     def test_top_level_must_be_object(self) -> None:
-        sessions, _scope_skipped, err = _parse_envelope("[]")
+        sessions, _scope_skipped, _host_stats, err = _parse_envelope("[]")
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("not a JSON object", err)
@@ -355,10 +360,33 @@ class ParseEnvelopeTests(unittest.TestCase):
                 },
             }
         )
-        sessions, scope_skipped, err = _parse_envelope(env)
+        sessions, scope_skipped, _host_stats, err = _parse_envelope(env)
         self.assertIsNone(err)
         self.assertEqual(sessions, [])
         self.assertEqual(scope_skipped, ["carol_agent", "dave_agent"])
+
+    def test_host_stats_extracted_when_present(self) -> None:
+        env = json.dumps(
+            {
+                "schema_version": WIRE_SCHEMA_VERSION,
+                "kind": "list",
+                "data": {"sessions": []},
+                "host_stats": {
+                    "cpu_pct": 12.5,
+                    "mem_used_kib": 1024,
+                    "mem_total_kib": 2048,
+                    "loadavg_1m": 0.42,
+                    "uptime_s": 3600,
+                    "kernel": "6.8.0",
+                },
+            }
+        )
+        sessions, _scope_skipped, host_stats, err = _parse_envelope(env)
+        self.assertIsNone(err)
+        self.assertEqual(sessions, [])
+        assert host_stats is not None
+        self.assertEqual(host_stats["kernel"], "6.8.0")
+        self.assertEqual(host_stats["mem_total_kib"], 2048)
 
 
 class CacheRoundTripTests(unittest.TestCase):
@@ -814,8 +842,17 @@ class DefaultTemplateTests(unittest.TestCase):
         flat = " ".join(tmpl)
         self.assertIn("ControlMaster=auto", flat)
         self.assertIn("ControlPath={ssh_control_dir}/ssh-%C", flat)
-        self.assertIn("ControlPersist=60s", flat)
+        # Task 10: ControlPersist is parameterised by
+        # ``ssh_control_persist_seconds`` (default 300, see
+        # ``DEFAULT_CONFIG``).
+        self.assertIn("ControlPersist={ssh_control_persist_seconds}s", flat)
         self.assertIn("ServerAliveInterval=15", flat)
+
+    def test_default_template_uses_persist_placeholder(self) -> None:
+        from uxon.remote_collector import _default_template
+
+        template = _default_template()
+        assert "ControlPersist={ssh_control_persist_seconds}s" in template
 
     def test_default_template_uses_only_closed_placeholders(self) -> None:
         from uxon.remote_collector import PLACEHOLDER_CLOSED_SET, _default_template
@@ -928,6 +965,212 @@ class ValidateCommandTemplateTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             validate_command_template([])
+
+
+class ResolvedControlPathTests(unittest.TestCase):
+    """``_resolved_control_path`` translates ``%C`` via ``ssh -G`` without
+    opening a connection — the recovery path needs the real socket
+    file path to know what to ``unlink``."""
+
+    def test_extracts_path_from_ssh_g_output(self) -> None:
+        def _runner(*_args: Any, **_kwargs: Any) -> Any:
+            return mock.Mock(
+                returncode=0,
+                stdout="user remdepl\ncontrolpath /home/u/.cache/uxon/ssh-abc123\nport 22\n",
+            )
+
+        path = _resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner)
+        self.assertEqual(path, "/home/u/.cache/uxon/ssh-abc123")
+
+    def test_returns_none_on_nonzero_rc(self) -> None:
+        def _runner(*_args: Any, **_kwargs: Any) -> Any:
+            return mock.Mock(returncode=255, stdout="")
+
+        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
+
+    def test_returns_none_on_timeout(self) -> None:
+        def _runner(*_args: Any, **_kwargs: Any) -> Any:
+            raise subprocess.TimeoutExpired(cmd="ssh", timeout=2)
+
+        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
+
+    def test_returns_none_when_output_missing_controlpath(self) -> None:
+        def _runner(*_args: Any, **_kwargs: Any) -> Any:
+            return mock.Mock(returncode=0, stdout="user remdepl\nport 22\n")
+
+        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
+
+
+class RecoverWedgedMasterTests(unittest.TestCase):
+    """Self-heal path invoked when a slave hangs on a wedged
+    ``ControlMaster``. Each step (graceful exit, hard kill, socket
+    unlink) must run independently and tolerate partial failure."""
+
+    def _capture_runner(self) -> tuple[list[list[str]], Any]:
+        calls: list[list[str]] = []
+
+        def _runner(argv: list[str], *_a: Any, **_kw: Any) -> Any:
+            calls.append(list(argv))
+            # Default: ssh -G returns the resolved path.
+            return mock.Mock(
+                returncode=0,
+                stdout="controlpath /tmp/uxon-test/ssh-resolved\n",
+                stderr="",
+            )
+
+        return calls, _runner
+
+    def test_skips_when_host_uses_command_template(self) -> None:
+        calls, runner = self._capture_runner()
+        host = _host(command_template=["docker", "exec", "uxon-c", "{remote_command}"])
+        _recover_wedged_master(host, _runner=runner)
+        self.assertEqual(calls, [])
+
+    def test_runs_graceful_then_kills_then_unlinks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            socket = Path(tmp) / "ssh-resolved"
+            socket.touch()
+            calls: list[list[str]] = []
+
+            def _runner(argv: list[str], *_a: Any, **_kw: Any) -> Any:
+                calls.append(list(argv))
+                return mock.Mock(
+                    returncode=0,
+                    stdout=f"controlpath {socket}\n",
+                    stderr="",
+                )
+
+            killed: list[tuple[int, int]] = []
+
+            def _kill(pid: int, sig: int) -> None:
+                killed.append((pid, sig))
+
+            _recover_wedged_master(
+                _host(),
+                _runner=_runner,
+                _resolve=lambda alias, ctl_dir, _runner: str(socket),
+                _find_pid=lambda path: 4242,
+                _kill=_kill,
+            )
+            # Graceful ``ssh -O exit`` ran first.
+            self.assertEqual(calls[0][:3], ["ssh", "-O", "exit"])
+            # Master was hard-killed.
+            self.assertEqual(killed, [(4242, signal.SIGKILL)])
+            # Socket file is gone.
+            self.assertFalse(socket.exists())
+
+    def test_skips_kill_when_path_unresolved(self) -> None:
+        _, runner = self._capture_runner()
+        killed: list[tuple[int, int]] = []
+        _recover_wedged_master(
+            _host(),
+            _runner=runner,
+            _resolve=lambda *a, **kw: None,
+            _find_pid=lambda _path: 999,
+            _kill=lambda pid, sig: killed.append((pid, sig)),
+        )
+        self.assertEqual(killed, [])
+
+    def test_skips_kill_when_socket_already_gone(self) -> None:
+        with TemporaryDirectory() as tmp:
+            ghost = Path(tmp) / "ssh-already-cleaned"
+            # File deliberately not created — graceful ssh -O exit removed it.
+            _, runner = self._capture_runner()
+            killed: list[tuple[int, int]] = []
+            _recover_wedged_master(
+                _host(),
+                _runner=runner,
+                _resolve=lambda *a, **kw: str(ghost),
+                _find_pid=lambda _path: 999,
+                _kill=lambda pid, sig: killed.append((pid, sig)),
+            )
+            self.assertEqual(killed, [])
+
+    def test_skips_kill_when_pid_not_found(self) -> None:
+        with TemporaryDirectory() as tmp:
+            socket = Path(tmp) / "ssh-resolved"
+            socket.touch()
+            _, runner = self._capture_runner()
+            killed: list[tuple[int, int]] = []
+            _recover_wedged_master(
+                _host(),
+                _runner=runner,
+                _resolve=lambda *a, **kw: str(socket),
+                _find_pid=lambda _path: None,
+                _kill=lambda pid, sig: killed.append((pid, sig)),
+            )
+            self.assertEqual(killed, [])
+            # Socket still gets unlinked even when no pid found —
+            # otherwise next ssh would slave-loop on the stale socket.
+            self.assertFalse(socket.exists())
+
+    def test_swallows_runner_failures(self) -> None:
+        def _boom(*_a: Any, **_kw: Any) -> Any:
+            raise subprocess.TimeoutExpired(cmd="ssh", timeout=2)
+
+        # Must not propagate even when every shell-out times out.
+        _recover_wedged_master(
+            _host(),
+            _runner=_boom,
+            _resolve=lambda *a, **kw: None,
+            _find_pid=lambda _p: None,
+            _kill=lambda *a: None,
+        )
+
+
+class FetchTimeoutRecoveryTests(unittest.TestCase):
+    """Fetch path invokes recovery exactly when its preconditions
+    hold: a real ``TimeoutExpired`` AND multiplexing is enabled."""
+
+    def _timeout_runner(self) -> Any:
+        def _runner(*_a: Any, **_kw: Any) -> Any:
+            raise subprocess.TimeoutExpired(cmd="ssh", timeout=10)
+
+        return _runner
+
+    def test_timeout_triggers_recovery_when_multiplex_on(self) -> None:
+        recovered: list[RemoteHost] = []
+
+        def _fake_recover(host: RemoteHost, *, _runner: Any) -> None:
+            recovered.append(host)
+
+        with (
+            TemporaryDirectory() as tmp,
+            mock.patch(
+                "uxon.remote_collector._recover_wedged_master",
+                side_effect=_fake_recover,
+            ),
+        ):
+            snap = fetch_remote_snapshot(
+                _host(),
+                override_state_dir=Path(tmp),
+                ssh_multiplex="auto",
+                _runner=self._timeout_runner(),
+            )
+            assert snap.error is not None
+            self.assertIn("timeout", snap.error)
+            self.assertEqual([h.name for h in recovered], ["vz-prod1"])
+
+    def test_timeout_skips_recovery_when_multiplex_off(self) -> None:
+        recovered: list[RemoteHost] = []
+
+        def _fake_recover(host: RemoteHost, *, _runner: Any) -> None:
+            recovered.append(host)
+
+        with (
+            TemporaryDirectory() as tmp,
+            mock.patch(
+                "uxon.remote_collector._recover_wedged_master",
+                side_effect=_fake_recover,
+            ),
+        ):
+            fetch_remote_snapshot(
+                _host(),
+                override_state_dir=Path(tmp),
+                ssh_multiplex="off",
+                _runner=self._timeout_runner(),
+            )
+            self.assertEqual(recovered, [])
 
 
 if __name__ == "__main__":

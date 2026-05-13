@@ -464,16 +464,25 @@ class KillHostRemoteTests(unittest.TestCase):
     def test_host_ssh_timeout_returns_1(self) -> None:
         cfg = self._cfg_with_host()
         args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
-        with mock.patch.object(
-            uxon.subprocess,
-            "run",
-            side_effect=uxon.subprocess.TimeoutExpired(cmd=["ssh"], timeout=10),
+        with (
+            mock.patch.object(
+                uxon.subprocess,
+                "run",
+                side_effect=uxon.subprocess.TimeoutExpired(cmd=["ssh"], timeout=10),
+            ),
+            # Recovery is best-effort and runs real ssh subprocesses by
+            # default; pin it to a no-op here so the test stays
+            # isolated from the local ssh setup, and assert that the
+            # CLI kill path does invoke it on timeout (mirrors the
+            # poller's wedge-recovery contract).
+            mock.patch("uxon.remote_collector._recover_wedged_master") as recover,
         ):
             err = io.StringIO()
             with redirect_stderr(err):
                 rc = uxon.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         self.assertIn("ssh timeout", err.getvalue())
+        recover.assert_called_once()
 
     def test_host_json_without_force_or_dry_run_fails(self) -> None:
         cfg = self._cfg_with_host()

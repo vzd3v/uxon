@@ -28,7 +28,6 @@ class ActionRowTests(unittest.IsolatedAsyncioTestCase):
                     kind="action-cwd",
                     label="New session",
                     detail="(cwd)",
-                    digit=1,
                     id="row",
                 )
 

@@ -34,9 +34,13 @@ existing again.
 
 ## Triage in 30 seconds
 
-1. **Identify** the offending session in the TUI: `s` to sort
-   by CPU, `S` to flip direction. The runaway is at the top.
-   Note the `USER`, `HOST`, `NAME`, and the `cmd` / `path`.
+1. **Identify** the offending session in the TUI. Sort is a
+   fixed contract (locals first, then `[[remote_hosts]]` order,
+   within-block by last-attach desc) — a runaway under heavy CPU
+   stands out by the red `CPU` cell. `s` (or `/`) summons the
+   search bar to narrow by `user` / `name` / `host` / `path` /
+   `cmd` if you already have a lead. Note the `USER`, `HOST`,
+   `NAME`, and the `cmd` / `path`.
 2. **Suspend** before killing if you want to inspect state. From
    another shell on the same host:
    ```bash

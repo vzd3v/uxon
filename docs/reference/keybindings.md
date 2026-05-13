@@ -9,31 +9,35 @@ the visible subset.
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Navigate items |
-| `1`–`9` | Jump to item by number |
+| `←` / `→` | Top action row: cycle the three buttons cyclically. Dashboard: in `by_host` advance the active host tab; in `flat` jump the cursor across `(host, own/other)` transitions cyclically. |
 | `Enter` | Activate (launch / attach) |
 | `d` | Kill highlighted session (with confirmation) |
 | `D` (Shift+d) | Kill all *own* sessions (`kill-all` to confirm) |
-| `s` | Cycle dashboard sort column (cpu → ram → last → name) |
-| `S` (Shift+s) | Toggle sort direction |
+| `v` | Toggle dashboard view (`flat` ↔ `by_host`) |
+| `s` (or `/`) | Focus the search bar from anywhere |
 | `r` | Refresh |
-| `q` / `Esc` | Quit |
+| `q` | Quit |
+| `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
 | `F1` | Help (hidden) |
 
-When the agent-detection banner is showing:
+Sort is a fixed contract (locals → cfg-order remotes →
+within-block by recency); there are no sort bindings.
 
-| Key | Action |
-|---|---|
-| `a` | Enable detected agent in repo `config.toml` |
-| `x` | Dismiss the suggestion (per-user, persisted) |
+JCUKEN twins: every dashboard key has a Russian-layout twin
+(`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`) so the
+keymap survives a Cyrillic layout without `xkb` tweaks.
 
 ## "Open existing project" screen
 
+The filter input owns focus on mount — start typing to narrow the
+list. Cursor and selection bindings work without leaving the input.
+
 | Key | Action |
 |---|---|
-| `↑` / `↓` (or `k` / `j`) | Navigate |
-| `1`–`9` | Pick by number |
-| `Enter` | Confirm |
-| `Esc` | Cancel |
+| typing | Filter the list (case-insensitive substring on name) |
+| `↑` / `↓` | Navigate the (filtered) list |
+| `Enter` | Confirm the row under the cursor |
+| `Esc` | Clear filter when non-empty, otherwise cancel |
 
 ## "Pick git remote profile" screen
 
@@ -49,7 +53,7 @@ When the agent-detection banner is showing:
 |---|---|
 | `Enter` | Edit selected key |
 | `x` | Reset selected key to default |
-| `Esc` / `q` | Back to main screen |
+| `q` | Back to main screen (`Esc` cancels in-flight edits) |
 
 The edit modal accepts `Esc` to cancel and `↑` / `↓` to focus
 between input and OK button.

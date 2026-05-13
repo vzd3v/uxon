@@ -54,7 +54,6 @@ class TuiStateZeroStateTests(unittest.TestCase):
         s = TuiState()
         for slot_name in (
             "agent_availability",
-            "detected_agents",
             "link_health",
             "cwd_writable",
         ):
@@ -162,13 +161,10 @@ class MainScreenLoadingReactiveTests(unittest.TestCase):
 
 
 class AvailabilityShimTests(unittest.TestCase):
-    """Stage 8 commit 5a: ``ctx.agent_availability`` and
-    ``ctx.detected_agents`` are now read-through properties onto
-    ``state.<slot>.value``. The shim must expose the *same dict
-    object* the slot stores so today's worker-thread in-place
-    mutations continue to land on state. The race fix (worker stops
-    mutating from the thread) lands in commit 5b; commit 5a only
-    pins the structural read-through.
+    """``ctx.agent_availability`` is a read-through property onto
+    ``state.agent_availability.value``. The shim exposes the *same
+    dict object* the slot stores so worker-thread snapshots and
+    on-loop reads see consistent state.
     """
 
     def test_availability_reads_state_slot_value(self) -> None:
@@ -204,19 +200,6 @@ class AvailabilityShimTests(unittest.TestCase):
         app = UxonApp(ctx, probe_agents=False)
         app.ctx.agent_availability["codex"] = "ok"
         self.assertEqual(app.state.agent_availability.value, {"codex": "ok"})
-
-    def test_detected_agents_shim(self) -> None:
-        try:
-            import textual  # noqa: F401
-        except ImportError:
-            self.skipTest("textual not available")
-        from uxon.tui.app import UxonApp
-
-        ctx = _bare_ctx(loading=True)
-        ctx.detected_agents = {"codex": "binary"}
-        app = UxonApp(ctx, probe_agents=False)
-        self.assertEqual(app.ctx.detected_agents, {"codex": "binary"})
-        self.assertIs(app.ctx.detected_agents, app.state.detected_agents.value)
 
     def test_legacy_fallback_when_no_state_linked(self) -> None:
         ctx = _bare_ctx()
@@ -310,7 +293,7 @@ class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
         from types import SimpleNamespace
 
         cfg = SimpleNamespace(remote_hosts=[host], current_user="u1")
-        ui = DashboardUiState(sort_by="cpu")
+        ui = DashboardUiState()
 
         first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         # Advance refresh_tick — selector must NOT cache-miss.

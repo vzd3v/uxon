@@ -1,29 +1,18 @@
-"""Stage 8 commit 5b regression tests for the worker-thread race fix.
+"""Regression tests for the probe worker-thread race fix.
 
-Pre-5b: ``_probe_host_worker`` ran under ``run_worker(..., thread=True)``
-and mutated ``self.ctx.agent_availability[aid] = …`` and
-``self.ctx.detected_agents.clear()/update(...)`` directly from the
-worker thread, while selectors and screens read those same dicts on
-the event loop. Latent data race.
-
-Post-5b: the worker builds two local dicts and posts them in a
-:class:`_HostReportUpdated` message; the on-loop handler folds the
-payload into the slot store via :func:`slot_state.apply`. No
-``self.ctx.<field>`` is touched from the thread.
+The worker (``_probe_host_worker``) runs under ``run_worker(thread=True)``
+and must not mutate ``self.ctx.<field>`` directly: it builds a local
+availability dict and posts it in a :class:`_HostReportUpdated`
+message; the on-loop handler folds the payload into the slot store
+via :func:`slot_state.apply`. No ctx field is touched from the thread.
 
 The test pins both halves of the contract:
 
-1. **Thread-id**: a probe captures ``threading.get_ident()`` whenever
-   ``slot_state.apply`` runs against ``state.agent_availability`` or
-   ``state.detected_agents``. The recorded thread ids must include
-   only the event-loop thread.
-
-2. **Payload**: ``state.agent_availability.value`` reflects the
-   worker's payload via the message path — verifies the data made
-   it through, not just that nothing wrote on the wrong thread.
-
-Both assertions are necessary: thread-id alone passes if ``apply``
-never runs; payload alone passes if ``apply`` runs from any thread.
+1. **Thread-id**: ``slot_state.apply`` records ``threading.get_ident()``
+   every call. Recorded ids must all be the event-loop thread.
+2. **Payload**: ``state.agent_availability.value`` reflects the worker's
+   payload via the message path — verifies the data made it through,
+   not just that nothing wrote on the wrong thread.
 """
 
 from __future__ import annotations
@@ -55,7 +44,6 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="devagent",
-        enabled_agents=("claude",),
         on_launch_cwd=lambda agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="cwd"),
         on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
             cmd=("/bin/true",), label="new"
@@ -99,12 +87,11 @@ class ProbeWorkerRaceFixTests(unittest.IsolatedAsyncioTestCase):
                 app.post_message(
                     _HostReportUpdated(
                         availability={"claude": "OK"},
-                        detected={"codex": "BIN"},
                     )
                 )
                 await pilot.pause()
-                # Apply was called at least twice (availability + detected).
-                self.assertGreaterEqual(len(thread_ids), 2)
+                # Apply was called at least once for availability.
+                self.assertGreaterEqual(len(thread_ids), 1)
                 # Every call ran on the event-loop thread.
                 self.assertTrue(
                     all(tid == event_loop_tid for tid in thread_ids),
@@ -113,7 +100,6 @@ class ProbeWorkerRaceFixTests(unittest.IsolatedAsyncioTestCase):
                 )
                 # Payload landed in state.
                 self.assertEqual(app.state.agent_availability.value, {"claude": "OK"})
-                self.assertEqual(app.state.detected_agents.value, {"codex": "BIN"})
         finally:
             ss_mod.apply = real_apply  # type: ignore[assignment]
             # Silence unused-import in case asyncio import got optimized.
@@ -142,12 +128,15 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
                 self.path = path
 
         class _Report:
-            enabled = {"claude": _BinaryStatus("claude", "/usr/bin/claude")}
-            detected = {"codex": _BinaryStatus("codex", "/usr/bin/codex")}
+            agents = {
+                "claude": _BinaryStatus("claude", "/usr/bin/claude"),
+                "codex": _BinaryStatus("codex", None),
+                "cursor": _BinaryStatus("cursor-agent", None),
+            }
             tmux = _BinaryStatus("tmux", "/usr/bin/tmux")
 
         original_probe = uxon_probes.probe_host
-        uxon_probes.probe_host = lambda _cfg, _user: _Report()  # type: ignore[assignment]
+        uxon_probes.probe_host = lambda _user: _Report()  # type: ignore[assignment]
 
         try:
             ctx = _mk_ctx()
@@ -192,7 +181,11 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
                     msg.availability["claude"],  # type: ignore[index]
                     uxon_agents.AgentAvailability(status="ok", path="/usr/bin/claude"),
                 )
-                self.assertIn("codex", msg.detected or {})
+                # ``ctx`` here uses the new default empty enabled_agents,
+                # so the worker is in auto-mode: only installed agents
+                # are surfaced in the availability dict (no "missing"
+                # entries).
+                self.assertNotIn("codex", msg.availability or {})
         finally:
             uxon_probes.probe_host = original_probe  # type: ignore[assignment]
 

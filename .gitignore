@@ -21,6 +21,10 @@ experiments/
 # Misc
 _external_sources/
 
+# uv resolver lockfile — intentionally untracked; runtime constraints
+# ship via pyproject.toml, not a pinned lockfile.
+uv.lock
+
 # Local environments and editor / OS junk
 .venv/
 .env

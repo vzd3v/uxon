@@ -27,11 +27,21 @@ from .columns import REGISTRY, ColumnSpec
 class LayoutFlags:
     """Runtime gate inputs for column visibility.
 
-    ``multi_host`` reflects ``cfg.remote_hosts`` being non-empty;
-    ``cross_user`` reflects whether the current model contains any
-    local row owned by a user other than the current operator. Both
-    are passed wide from the start so commit 11 doesn't widen this
-    signature retroactively.
+    ``multi_host`` is config-driven: ``True`` iff ``cfg.remote_hosts``
+    is non-empty. Stays set even when remote slots are empty so the
+    HOST column stays mounted whenever the operator is "in multi-host
+    mode" — its job is to disambiguate the cell, not to indicate that
+    data is currently present.
+
+    ``cross_user`` is data-driven but *latched*: ``True`` once two
+    distinct usernames have been observed in this process across any
+    of the model's three sources (local own, local other-user, remote
+    peers). The accumulator behind it lives on
+    :attr:`uxon.tui.dashboard.ui_state.MainScreenUiState.seen_users`
+    and never shrinks for the App's lifetime, so the USER column does
+    not flicker when a foreign user's sessions die, a remote peer
+    drops a tick, or the operator narrows the table with a filter.
+    See :mod:`uxon.tui.dashboard.seen_users` for the contract.
     """
 
     multi_host: bool

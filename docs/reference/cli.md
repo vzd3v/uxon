@@ -43,7 +43,7 @@ Start an agent in the **current working directory**.
 |------|--------|
 | `--agent claude\|codex\|cursor` | Pick the agent. Default: `agents.default` from config. |
 | `--auto` | Agent's "auto" permission mode. `claude` → `--permission-mode auto`. `codex` → `--full-auto`. **Not supported by `cursor`** (error). |
-| `--dsp` | Agent's "yolo" permission mode. `claude` → `--dangerously-skip-permissions`. `codex` → `--dangerously-bypass-approvals-and-sandbox`. `cursor` → `--yolo`. Legacy aliases: `--dap`, `-dap`, `-dsp`. |
+| `--dsp` | Agent's "yolo" permission mode. Short for `--dangerously-skip-permissions` (both forms accepted). `claude` → `--dangerously-skip-permissions`. `codex` → `--dangerously-bypass-approvals-and-sandbox`. `cursor` → `--yolo`. Legacy aliases: `--dap`, `-dap`, `-dsp`. |
 | `-w <branch>` | Run inside an existing git worktree branch at `cwd`. **claude only** — error for other agents. |
 | `--dry-run` | Print the `tmux` command instead of executing. |
 
@@ -137,7 +137,10 @@ delegates the per-target sudo gate to the peer's own
 `ssh <alias> uxon attach <id> --user <name>` with an
 `--audit-correlation-id <uuid>` internal flag so caller-side
 (`attach.remote.out`) and peer-side (`attach.remote.in`) audit
-events join.
+events join. The interactive attach always opens a fresh ssh
+connection — `ControlMaster`/`ControlPath` are stripped from the
+default template regardless of `ssh_multiplex`, so a wedged poller
+master can never hang the TUI handoff.
 
 **`--dry-run`** prints the would-be tmux argv (local) or the SSH
 command line (remote) instead of executing it.
@@ -309,7 +312,7 @@ Legacy aliases accepted for back-compat: `--dap`, `-dap`, `-dsp`.
 | Code | Meaning |
 |------|---------|
 | `0` | Success. |
-| `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), live `--host` fetch failed without a usable cache, SSH timeout, peer rc non-zero. |
+| `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), live `--host` fetch failed without a usable cache, SSH timeout, peer rc non-zero, agent binary not installed on the launch user's host (`run`/`new` / TUI launch, with install hint). |
 | `2` | Usage error (bad flags, no TTY for the bare TUI invocation, unknown subcommand, unknown `--host` alias). |
 | `130` | User cancelled the confirmation prompt. |
 | `non-zero from forked tmux/agent` | Surfaced to the caller as-is. The TUI pauses with a banner so you can read stderr. `0` (success) and `130` (Ctrl-C inside the agent) do not pause. |
