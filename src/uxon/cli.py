@@ -44,11 +44,11 @@ VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
 
 
 def resolve_agent_id(
-    cfg: "Config",
+    cfg: Config,
     launch_user: str,
     requested: str | None,
     *,
-    report: "probes.HostReport | None" = None,
+    report: probes.HostReport | None = None,
 ) -> str:
     """Pick an agent to launch and verify the binary is on PATH.
 
@@ -312,7 +312,7 @@ class ParsedArgs:
     # the picked agent without a second probe. ``None`` everywhere
     # else (interactive/version paths, TUI-side ParsedArgs
     # construction in ``_plan_tui_*_agent``).
-    host_report: "probes.HostReport | None" = None
+    host_report: probes.HostReport | None = None
 
 
 def eprint(msg: str) -> None:

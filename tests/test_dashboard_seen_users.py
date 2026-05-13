@@ -15,7 +15,6 @@ in this process».
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 from typing import Any
 
 from uxon.remote_collector import RemoteSnapshot

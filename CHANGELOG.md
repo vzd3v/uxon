@@ -6,18 +6,7 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Changed
-- Agents are now auto-detected by default. With `[agents].enabled` empty or absent in config, uxon probes the host on launch and treats every installed CATALOG agent (`claude`, `codex`, `cursor`) as launchable. Setting `enabled = ["claude", "codex"]` switches to a strict whitelist (only listed agents are launchable, even if more are installed). The old hardcoded `enabled = ["claude"]` default is gone. `agents.default` is also optional now — when unset, uxon falls back to the first available agent.
-- Host probe runs once on mount; pick up freshly installed agents via the existing `r` refresh binding instead of the previous 2-second interval re-probe.
-- Whichever agent is picked (`--agent`, `agents.default`, `agents.enabled[0]`, or the auto-mode probe) is now verified against the host probe before launch — a missing binary fails with a uxon-level message and install hint (exit code `1`) instead of an opaque tmux exec failure.
-- TUI surfaces probe failures (sudo missing, NOPASSWD misconfig, etc.) via the "agents unavailable" modal with the error and install hints, instead of leaving the agent list silently empty.
-
-### Removed
-- "Detected but not enabled" banner on the main screen, plus the `[a]` add-to-config / `[x]` dismiss bindings and the per-user dismissed-list state file (`~/.local/state/uxon/dismissed.json`). With auto-mode, installed agents are launchable automatically; with strict mode, the operator owns the whitelist by editing config directly.
-
-## [3.4.0] — 2026-05-08
+## [3.4.0] — 2026-05-13
 
 ### Added
 - Session dashboard `by_host` view with a per-host tab strip and status bar; toggle to the default `flat` (single ranked list) with `v`. Configure the initial mode via `tui.table.default_view` (default `"flat"`).
@@ -31,6 +20,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional `host_stats` block in the `list` wire envelope, surfacing per-host CPU / RAM / load to aggregating peers (additive; no schema-version bump).
 
 ### Changed
+- Agents are now auto-detected by default. With `[agents].enabled` empty or absent in config, uxon probes the host on launch and treats every installed CATALOG agent (`claude`, `codex`, `cursor`) as launchable. Setting `enabled = ["claude", "codex"]` switches to a strict whitelist (only listed agents are launchable, even if more are installed). The old hardcoded `enabled = ["claude"]` default is gone. `agents.default` is also optional now — when unset, uxon falls back to the first available agent.
+- Host probe runs once on mount; pick up freshly installed agents via the existing `r` refresh binding instead of the previous 2-second interval re-probe.
+- Whichever agent is picked (`--agent`, `agents.default`, `agents.enabled[0]`, or the auto-mode probe) is now verified against the host probe before launch — a missing binary fails with a uxon-level message and install hint (exit code `1`) instead of an opaque tmux exec failure.
+- TUI surfaces probe failures (sudo missing, NOPASSWD misconfig, etc.) via the "agents unavailable" modal with the error and install hints, instead of leaving the agent list silently empty.
 - Adaptive render scheduler — bursty refresh-source landings now coalesce into a single repaint instead of triggering one dispatch each. Leading edge fires immediately (first paint / sparse arrivals stay snappy); subsequent requests within a 300 ms window batch into one trailing render, capped at 1 s after the first request in the batch. A render returning `False` (e.g. modal on top) preserves the dirty state so the next request re-fires immediately.
 - Per-host status line in `by_host` view compacted: `6 sess · 4 attached · cpu Σ25% · mem 6304 MiB / 15992 MiB` → `6/4 sess · cpu 25% · mem 6.3/16G`. Session/attached counts fold into one column, the Σ glyph is gone, memory renders in GiB with one decimal.
 - Sort is now a hard contract, not a setting: locals first (own then other-user), then `[[remote_hosts]]` declaration order, with within-block ranking by last-attach desc then name asc. The `tui.table.default_sort_by` key is silently ignored.
@@ -40,6 +33,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `PATH` and `CMD` columns hidden by default. For uxon-launched sessions `CMD` only echoed the agent name (already shown in the AGENT column); operators opt back in by listing `"path"` / `"cmd"` in `tui.table.columns`.
 
 ### Removed
+- "Detected but not enabled" banner on the main screen, plus the `[a]` add-to-config / `[x]` dismiss bindings and the per-user dismissed-list state file (`~/.local/state/uxon/dismissed.json`). With auto-mode, installed agents are launchable automatically; with strict mode, the operator owns the whitelist by editing config directly.
 - Sort cycle bindings (`s`, `S`) and the `tui.table.default_sort_by` setting.
 - `[` / `]` host-cycling bindings — use ←/→ on the dashboard or the host tab strip instead.
 - Digit `1`–`9` quick-jump on the main screen. The arrow keys + Enter now drive every reachable row; digit-jump conflicted with the search input (typing `1` to filter sessions used to fire a jump instead of inserting the character).

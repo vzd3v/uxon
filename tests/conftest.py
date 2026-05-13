@@ -16,7 +16,6 @@ import pytest
 from uxon import audit as _audit
 from uxon import probes as _probes
 
-
 # Fully-installed CATALOG, used as the autouse ``probe_host`` stub. Tests
 # that exercise the install-gate path explicitly mock ``probe_host`` in
 # their own scope (the inner ``with mock.patch`` shadows this fixture for
