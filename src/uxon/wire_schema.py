@@ -124,12 +124,12 @@ class HostStats(TypedDict, total=False):
     consumer should ``.get(...)`` defensively.
     """
 
-    cpu_pct: float        # /proc/stat delta over ~50 ms
-    mem_used_kib: int     # MemTotal - MemAvailable
-    mem_total_kib: int    # MemTotal
-    loadavg_1m: float     # /proc/loadavg field 0
-    uptime_s: int         # /proc/uptime field 0
-    kernel: str           # uname -r
+    cpu_pct: float  # /proc/stat delta over ~50 ms
+    mem_used_kib: int  # MemTotal - MemAvailable
+    mem_total_kib: int  # MemTotal
+    loadavg_1m: float  # /proc/loadavg field 0
+    uptime_s: int  # /proc/uptime field 0
+    kernel: str  # uname -r
 
 
 RemoteSessionPayload = dict[str, Any]

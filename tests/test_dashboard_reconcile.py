@@ -208,7 +208,9 @@ class ReorderTests(unittest.TestCase):
 
 def test_reverse_permutation_lands_in_new_order():
     """`[A,B,C,D] → [D,C,B,A]` must end visually as `[D,C,B,A]`."""
-    cols = (ColumnSpec(id="name", label="NAME", format=lambda r: r.name, sort_key=lambda r: r.name),)
+    cols = (
+        ColumnSpec(id="name", label="NAME", format=lambda r: r.name, sort_key=lambda r: r.name),
+    )
     old = tuple(_row(name=n) for n in ("a", "b", "c", "d"))
     new = tuple(_row(name=n) for n in ("d", "c", "b", "a"))
     plan = diff(old, new, cols)

@@ -947,9 +947,7 @@ class UxonApp(App):
             pending_launch=self.pending_launch is not None,
         )
         if push:
-            self.push_screen(
-                AgentsUnavailableScreen(modal_arg, error=self._host_probe_error)
-            )
+            self.push_screen(AgentsUnavailableScreen(modal_arg, error=self._host_probe_error))
         if self._availability_resolved():
             self._last_all_missing = current_all_missing
 

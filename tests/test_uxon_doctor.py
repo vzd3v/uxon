@@ -211,9 +211,7 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         return probes.HostReport(
             tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
             agents={
-                "claude": probes.BinaryStatus(
-                    name="claude", path="/fake/claude", install_hint=""
-                ),
+                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
                 "codex": probes.BinaryStatus(name="codex", path=None, install_hint=""),
                 "cursor": probes.BinaryStatus(name="cursor-agent", path=None, install_hint=""),
             },
@@ -414,9 +412,7 @@ class DoctorAuditLineTests(unittest.TestCase):
         return probes.HostReport(
             tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
             agents={
-                "claude": probes.BinaryStatus(
-                    name="claude", path="/fake/claude", install_hint=""
-                ),
+                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
                 "codex": probes.BinaryStatus(name="codex", path=None, install_hint=""),
                 "cursor": probes.BinaryStatus(name="cursor-agent", path=None, install_hint=""),
             },

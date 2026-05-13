@@ -1,4 +1,5 @@
 """Verify ``read_host_stats`` against fixture ``/proc/*`` files."""
+
 from __future__ import annotations
 
 from uxon.probes import read_host_stats
@@ -8,13 +9,9 @@ def test_read_host_stats_returns_sane_ranges(tmp_path, monkeypatch):
     proc = tmp_path / "proc"
     proc.mkdir()
     (proc / "stat").write_text(
-        "cpu  100 0 50 1000 0 0 0 0 0 0\n"
-        "cpu0 100 0 50 1000 0 0 0 0 0 0\n",
+        "cpu  100 0 50 1000 0 0 0 0 0 0\ncpu0 100 0 50 1000 0 0 0 0 0 0\n",
     )
-    (proc / "meminfo").write_text(
-        "MemTotal:       16384000 kB\n"
-        "MemAvailable:    8000000 kB\n"
-    )
+    (proc / "meminfo").write_text("MemTotal:       16384000 kB\nMemAvailable:    8000000 kB\n")
     (proc / "loadavg").write_text("0.42 0.50 0.55 1/123 4567\n")
     (proc / "uptime").write_text("12345.67 99999.00\n")
     monkeypatch.setattr("uxon.probes._PROC", str(proc))

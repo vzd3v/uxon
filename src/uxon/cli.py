@@ -111,6 +111,7 @@ def resolve_agent_id(
     )
     raise AssertionError("unreachable")  # fail() never returns
 
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "runtime_user": "",
     "default_launch_mode": "caller",
@@ -676,9 +677,7 @@ def load_config(cwd: str) -> Config:
     tui_search_fields = tuple(fields_raw)
 
     palette_raw = tui_tbl.get("color_palette", ["cyan", "blue"])
-    if not isinstance(palette_raw, list) or not all(
-        isinstance(c, str) and c for c in palette_raw
-    ):
+    if not isinstance(palette_raw, list) or not all(isinstance(c, str) and c for c in palette_raw):
         fail("tui.color_palette must be a list of non-empty strings")
     tui_color_palette = tuple(palette_raw)
 

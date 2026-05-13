@@ -144,9 +144,7 @@ class MainScreenSortBindingsRetiredTests(unittest.TestCase):
         for b in MainScreen.BINDINGS:
             key = _binding_key(b)
             if key in ("s", "S"):
-                self.assertNotIn(
-                    "sort", b.action, f"{key} must not trigger any sort action"
-                )
+                self.assertNotIn("sort", b.action, f"{key} must not trigger any sort action")
 
     def test_core_keys_remain(self) -> None:
         from uxon.tui.screens.main import MainScreen

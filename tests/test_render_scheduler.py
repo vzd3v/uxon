@@ -45,7 +45,9 @@ class _FakeApp:
 
 
 class RenderSchedulerTests(unittest.TestCase):
-    def _make(self, debounce_ms: int = 100, max_latency_ms: int = 1000, render_returns: bool = True):
+    def _make(
+        self, debounce_ms: int = 100, max_latency_ms: int = 1000, render_returns: bool = True
+    ):
         app = _FakeApp()
         calls: list[frozenset[str]] = []
 
