@@ -23,6 +23,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import ListItem, ListView, Static
 
+from ..keymap import bindings_with_aliases
 from ..state import (
     agent_list_label,
     launch_commit_decision,
@@ -44,24 +45,19 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     LaunchOptionsScreen ListView { height: auto; min-height: 3; }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "cancel", "Cancel", show=True),
         Binding("left", "focus_left", "Agent", show=True),
         Binding("right", "focus_right", "Mode", show=True),
         Binding("enter", "commit", "Select", show=True, priority=True),
-    ]
+    )
 
     def __init__(self, ctx) -> None:
         super().__init__()
         self.ctx = ctx
-        # Stage 8 commit 5c: ``availability`` is no longer
-        # snapshot-once-at-construction. Compute the initial visible
-        # set from whatever availability is current right now (read
-        # through ``ctx.agent_availability``, which after commit 5b
-        # is a read-through onto ``state.agent_availability.value``).
+        # Compute the initial visible set from current availability.
         # ``_rebuild_agent_list`` re-reads on every probe-result
-        # dispatch so the modal reflects fresh data without a
-        # re-open.
+        # dispatch so the modal reflects fresh data without a re-open.
         state = launch_options_state(
             enabled_agents=tuple(ctx.enabled_agents),
             default_agent=ctx.default_agent,
@@ -75,11 +71,8 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     def _availability_now(self) -> dict:
         """Read the current availability dict from the live slot store.
 
-        Stage 8 commit 5c: prefers ``app.state.agent_availability.value``
-        over going through the ``ctx.agent_availability`` shim, so the
-        modal reads the canonical store directly. The shim is the
-        compatibility path for unit tests that build a bare ctx; the
-        screen-side prefer-state path is what production runs.
+        Falls back to ``ctx.agent_availability`` for unit tests that
+        build a bare ctx without an App.
         """
         state = getattr(self.app, "state", None)
         if state is not None and state.agent_availability.value is not None:

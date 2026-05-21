@@ -114,7 +114,7 @@ biometric / touch confirmation.
   successors and OpenSSH-for-Windows can route through Windows
   Hello or a hardware token similarly. Use PowerShell 7 or a
   modern terminal (Windows Terminal, Wezterm, Alacritty); avoid
-  the legacy `cmd.exe` shell.
+  the bare `cmd.exe` shell.
 
 A passphrase-only key on a laptop hard drive is the floor. If the
 host is shared with other developers, raise it.

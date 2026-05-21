@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from uxon.probes import HostStatsResult
+
     from .tui_state import TuiState
 
 
@@ -151,18 +153,21 @@ class TuiContext:
     # attribute, but the property descriptor installed *after the
     # class body* (see below) replaces this default at runtime —
     # reads/writes go through ``self._state.refresh_tick`` when a
-    # state is linked, otherwise through a private legacy slot.
+    # state is linked, otherwise through a private fallback slot.
     # ``init=False`` keeps the kwarg out of ``__init__`` (no caller
     # passes ``refresh_tick=`` today).
     refresh_tick: int = field(default=0, init=False)
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
+    tui_render_debounce_ms: int = 300
+    tui_render_max_latency_ms: int = 1000
     # Multi-host transport knobs. Forwarded into per-host fetch
     # closures by ``cli._build_tui_context`` and snapshotted into
     # :class:`uxon.tui.config.TuiConfig` at App-construction time.
     # Defaults mirror :data:`uxon.cli.DEFAULT_CONFIG` so test fixtures
     # that build a bare ``TuiContext`` keep working unchanged.
     ssh_multiplex: str = "auto"
+    ssh_control_persist_seconds: int = 300
     fetch_concurrency: int = 16
 
     # True until the first real refresh lands. The TUI distinguishes this
@@ -170,6 +175,10 @@ class TuiContext:
     # session areas, server status and existing-projects detail; a fully
     # loaded ctx with no sessions renders "No active sessions." instead.
     loading: bool = False
+    # Local-host /proc snapshot consumed by ``HostStatusBar`` for the
+    # locals bucket. ``None`` on cold start (skeleton ctx) and on probe
+    # failure — the widget renders "pending…" in that case.
+    host_stats: HostStatsResult | None = None
 
     # Whether ``cwd`` is a valid launch target for ``launch_user`` under
     # the current policy: write access, plus membership in
@@ -185,8 +194,7 @@ class TuiContext:
     current_user: str = ""
     # Per-target sudo capability. ``reachable_users`` gates the "Other
     # users' sessions" block + ``kill-all-reachable`` action;
-    # ``can_root`` gates the Settings-screen write fallback. Replaces
-    # the legacy single-boolean ``has_sudo`` gate.
+    # ``can_root`` gates the Settings-screen write fallback.
     sudo_caps: SudoCapability = field(default_factory=SudoCapability)
     # Users in ``session_users`` the per-target probe could not reach.
     # Surfaced in the TUI's "(N/M users reachable)" hint and on
@@ -194,20 +202,17 @@ class TuiContext:
     scope_skipped_users: tuple[str, ...] = ()
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
 
-    # Multi-agent fields (Task 7+)
-    enabled_agents: tuple[str, ...] = ("claude",)
-    default_agent: str = "claude"
+    # Multi-agent fields (Task 7+).
+    # ``enabled_agents`` is a strict whitelist when non-empty; an empty
+    # tuple (matching an absent or ``[]`` ``[agents].enabled`` in repo
+    # config) flips uxon into auto-mode where every installed CATALOG
+    # agent is launchable. ``default_agent`` may be ``""`` — consumers
+    # fall back to the first available agent.
+    enabled_agents: tuple[str, ...] = ()
+    default_agent: str = ""
     launch_user: str = ""
     # Maps agent_id → AgentAvailability (status: "pending"|"ok"|"missing"|"timeout")
     agent_availability: dict[str, Any] = field(default_factory=dict)
-    # Maps agent_id → BinaryStatus for agents installed on the host but not
-    # listed in ``enabled_agents``. Populated by the ``probe_host`` worker so
-    # the main screen can suggest enabling them.
-    detected_agents: dict[str, Any] = field(default_factory=dict)
-    # Whether the repo-config file is writable by the current user (directly
-    # via ``os.access`` or indirectly via passwordless sudo). Used by the
-    # detected-agents banner to decide whether the ``[a]`` action is live.
-    repo_config_writable: bool = False
 
     # Callbacks — TUI calls these, uxon provides them.
     # Launch/attach callbacks return a LaunchRequest; the outer run() loop
@@ -267,14 +272,6 @@ class TuiContext:
     on_setting_save_mapping: Callable[[str, dict], None] = lambda key, mapping: None
     get_git_remote_profile_rows: Callable[[], list] = lambda: []
 
-    # Detected-agents banner callbacks. ``on_enable_detected_agent`` mutates
-    # ``[agents].enabled`` in repo config; ``on_dismiss_detected_agent``
-    # appends to the per-user dismissed-list state file. ``get_dismissed``
-    # is read each tick so external state edits show up after a refresh.
-    on_enable_detected_agent: Callable[[str], None] = lambda agent_id: None
-    on_dismiss_detected_agent: Callable[[str], None] = lambda agent_id: None
-    get_dismissed_detected_agents: Callable[[], list[str]] = list
-
     # Multi-host (Task #11): peer machines polled over SSH for their
     # session lists. ``remote_hosts`` is the static config (parsed
     # once at load_config time); ``remote_snapshots`` is the live
@@ -284,24 +281,21 @@ class TuiContext:
     # are kicked.
     remote_hosts: list = field(default_factory=list)  # list[RemoteHost]
 
-    # ── Dashboard table preferences (commit 10) ──────────────────────
+    # ── Dashboard table preferences ──────────────────────────────────
     # Mirror the matching fields on :class:`uxon.cli.Config`.
     # ``tui_table_columns is None`` means "use registry defaults"; an
     # explicit tuple is the user's column order from
-    # ``[tui.table] columns = [...]``. ``tui_table_default_sort_by`` is
-    # the active sort column id at first paint (validated by
-    # ``cli.load_config`` to the registry's known ids; falls back to
-    # ``"cpu"`` when the config carries an unknown id).
+    # ``[tui.table] columns = [...]``.
     tui_table_columns: tuple[str, ...] | None = None
-    tui_table_default_sort_by: str = "cpu"
-    # ``remote_snapshots`` is exposed via the property defined after
-    # the class body. Reads return either a flattened view of
-    # ``self._state.remote`` (when a state is linked) or the legacy
-    # dict slot below. Writes go to the legacy slot only — the
+    tui_table_default_view: Literal["by_host", "flat"] = "flat"
+    tui_search_fields: tuple[str, ...] = ("name", "user")
+    tui_color_palette: tuple[str, ...] = ("cyan", "blue")
+    local_host_color: str = "green"
+    # Exposed via the property defined after the class body. Reads
+    # return a flattened view of ``self._state.remote`` when a state
+    # is linked, or the kwarg-stored dict for unit tests that don't
+    # build an App. Writes go to the kwarg-stored dict only — the
     # dispatcher mutates ``state.remote`` directly via ``apply``.
-    # Test fixtures keep passing ``remote_snapshots={...}`` as a
-    # kwarg, which lands in the legacy slot for unit tests that
-    # don't build an App.
     remote_snapshots: dict = field(default_factory=dict)  # dict[str, RemoteSnapshot]
 
     # Pluggable refresh sources. Each entry is a ``SourceSpec`` (see
@@ -319,11 +313,11 @@ class TuiContext:
 
     # Linked :class:`uxon.tui.tui_state.TuiState` — the App sets this
     # at ``__init__`` time so the canonical ``refresh_tick`` (and
-    # later: every async slot) is shared between the live ctx and the
-    # state container. Defaults to ``None`` for tests and the
-    # skeleton ctx that don't run inside an App; the property
-    # accessors below fall back to a private legacy slot. Excluded
-    # from ``__repr__`` to keep test failures readable.
+    # every async slot) is shared between the live ctx and the state
+    # container. Defaults to ``None`` for tests and the skeleton ctx
+    # that don't run inside an App; the property accessors below fall
+    # back to a private kwarg-stored slot. Excluded from ``__repr__``
+    # to keep test failures readable.
     _state: TuiState | None = field(default=None, repr=False, compare=False)
 
 
@@ -332,12 +326,8 @@ class TuiContext:
 # Defined after the dataclass body so the property descriptor is not
 # shadowed by the @dataclass-generated ``__init__`` field assignment.
 # When ``_state`` is linked (App is running), reads/writes go through
-# ``state.refresh_tick``; otherwise a private legacy slot in
-# ``__dict__`` keeps the dataclass-style attribute semantics intact.
-#
-# Stage 8 commit 3 introduces this proxy; commit 6b makes
-# ``state.refresh_tick`` canonical and the legacy slot becomes dead
-# weight (removed in commit 10 with the rest of the shim).
+# ``state.refresh_tick``; otherwise a private slot in ``__dict__``
+# keeps the dataclass-style attribute semantics intact.
 
 
 def _tui_refresh_tick_get(self: TuiContext) -> int:
@@ -363,11 +353,10 @@ TuiContext.refresh_tick = property(  # type: ignore[assignment]
 
 # ── remote_snapshots property (read-through view onto state.remote) ─
 #
-# Stage 8 commit 4: ``state.remote`` is the canonical store. Reads
-# through the shim flatten the slot dict to the legacy
-# ``dict[str, RemoteSnapshot]`` shape; writes (rare; mostly test
-# fixtures setting via the constructor kwarg) land on a private
-# legacy dict so test paths that don't run inside an App keep working.
+# ``state.remote`` is the canonical store. Reads flatten the slot
+# dict to ``dict[str, RemoteSnapshot]``; writes (rare; mostly test
+# fixtures setting via the constructor kwarg) land on a private dict
+# so test paths that don't run inside an App keep working.
 #
 # The flattened view is rebuilt on every access — sub-optimal, but
 # the dashboard model selector keys on ``id(slot.value)`` (not on
@@ -392,19 +381,13 @@ TuiContext.remote_snapshots = property(  # type: ignore[assignment]
 )
 
 
-# ── agent_availability / detected_agents shim properties ────────────
+# ── agent_availability read-through property ────────────────────────
 #
-# Stage 8 commit 5a: the canonical store moves to
-# ``state.agent_availability`` and ``state.detected_agents`` (each a
-# :class:`SlotState[dict[...]]`). The shim properties read
-# ``state.<slot>.value`` when a state is linked — and crucially
-# *expose the same dict object* the slot holds, so today's
-# worker-thread in-place mutations
-# (``self.ctx.agent_availability[aid] = …``) continue to land on
-# state. This commit does not change semantics: the worker-thread
-# race is identical to today's. The race fix lands in commit 5b
-# (``_probe_host_worker`` builds local dicts and posts a
-# :class:`SlotResult`; the on-loop handler runs ``apply``).
+# Canonical store: ``state.agent_availability``
+# (a :class:`SlotState[dict[...]]`). Reads return
+# ``state.<slot>.value`` when a state is linked, falling back to a
+# private kwarg-stored dict for unit tests that build a bare ctx
+# without an App.
 
 
 def _availability_get(self: TuiContext) -> dict:
@@ -418,36 +401,17 @@ def _availability_set(self: TuiContext, value: dict) -> None:
     self.__dict__["_legacy_agent_availability"] = value
 
 
-def _detected_get(self: TuiContext) -> dict:
-    state = getattr(self, "_state", None)
-    if state is not None and state.detected_agents.value is not None:
-        return state.detected_agents.value
-    return self.__dict__.get("_legacy_detected_agents", {})
-
-
-def _detected_set(self: TuiContext, value: dict) -> None:
-    self.__dict__["_legacy_detected_agents"] = value
-
-
 TuiContext.agent_availability = property(  # type: ignore[assignment]
     _availability_get,
     _availability_set,
 )
-TuiContext.detected_agents = property(  # type: ignore[assignment]
-    _detected_get,
-    _detected_set,
-)
 
 
-# ── link_health_status / cwd_writable shim properties ───────────────
+# ── link_health_status / cwd_writable read-through properties ───────
 #
-# Stage 8 commit 6: ``state.link_health`` and ``state.cwd_writable``
-# become canonical. Unlike ``agent_availability`` / ``detected_agents``
-# (commit 5), these were never thread-race targets — both the
-# link-health and cwd probes already posted messages and the on-loop
-# handlers wrote ``ctx.<field>`` single-threaded. The migration is a
-# data-shape rename so the carry-list can disappear, plus the
-# cwd-change invalidation in the rebuild dispatcher.
+# Canonical: ``state.link_health`` / ``state.cwd_writable``. Reads
+# return ``state.<slot>.value``; the kwarg-stored fallback covers
+# unit tests that build a bare ctx without an App.
 
 
 def _link_health_get(self: TuiContext) -> LinkHealthStatus:
@@ -464,18 +428,13 @@ def _link_health_set(self: TuiContext, value: LinkHealthStatus) -> None:
 def _cwd_writable_get(self: TuiContext) -> bool | None:
     """Return the cached cwd-writable flag.
 
-    Three-valued semantics survive the slot migration:
+    Three-valued semantics:
       ``None``  — probe still in flight or never ran
       ``True``  — launchable
       ``False`` — not launchable
 
-    Pre-commit-6 ``ctx.cwd_writable is None`` doubled as the
-    "loading" sentinel. Post-commit-6 the loading-vs-loaded
-    distinction is structural: ``state.cwd_writable.last_attempt_at
-    is None`` means never-loaded, regardless of value. Existing
-    readers that only need the tri-state result (the launch-row
-    decoration) still see the ``bool | None`` value through this
-    shim.
+    "Never loaded" is structural: ``state.cwd_writable.last_attempt_at
+    is None`` regardless of value.
     """
     state = getattr(self, "_state", None)
     if state is not None and state.cwd_writable.last_attempt_at is not None:
@@ -513,11 +472,6 @@ ACTION_COUNT = len(_ACTION_KINDS)
 class Item:
     """One row on the main TUI screen, described by identity rather than index.
 
-    ``kind`` names the semantic role of the row. ``digit_hint`` is the
-    digit that would activate it on keypress, or None if the row cannot
-    be reached by a digit jump (Settings, Kill-ALL).
-
-    This is the type-safe replacement for the integer-cursor scheme.
     Activation should dispatch on ``kind``, not on the position of the
     row inside the flat list — session-count changes shift every index
     below the new/removed session, but ``kind`` is stable.
@@ -528,9 +482,8 @@ class Item:
     #                    settings, kill-all-global
     label: str
     enabled: bool = True
-    # Payloads (only one is populated per kind):
+    # Payload (populated for session rows only):
     session: TuiSession | None = None
-    digit_hint: int | None = None  # 1..9, or None if not digit-reachable
 
 
 def build_items(ctx: TuiContext) -> list[Item]:
@@ -548,13 +501,12 @@ def build_items(ctx: TuiContext) -> list[Item]:
     be "Open existing project" remains the same Item.
     """
     items: list[Item] = []
-    # Actions (indices 0..ACTION_COUNT-1). Digit hints are 1..3.
+    # Actions (indices 0..ACTION_COUNT-1).
     items.append(
         Item(
             kind="action-cwd",
             label="New session in current folder",
             enabled=ctx.cwd_writable is not False,
-            digit_hint=1,
         )
     )
     items.append(
@@ -562,7 +514,6 @@ def build_items(ctx: TuiContext) -> list[Item]:
             kind="action-new",
             label="Create new project",
             enabled=True,
-            digit_hint=2,
         )
     )
     items.append(
@@ -570,43 +521,32 @@ def build_items(ctx: TuiContext) -> list[Item]:
             kind="action-open",
             label="Open existing project",
             enabled=bool(ctx.existing_projects),
-            digit_hint=3,
         )
     )
     # Own sessions
-    for i, s in enumerate(ctx.sessions):
-        pos = ACTION_COUNT + i  # 0-based position in the final list
-        hint = pos + 1 if 1 <= pos + 1 <= 9 else None
+    for s in ctx.sessions:
         items.append(
             Item(
                 kind="own-session",
                 label=s.short,
                 enabled=True,
                 session=s,
-                digit_hint=hint,
             )
         )
     # Superuser block: other-user sessions, settings, kill-all-reachable.
     # Visibility gate is now per-target sudo: any reachable peer user
-    # exposes the block. Settings remains gated on the same predicate
-    # for backward layout compatibility — its writability separately
-    # depends on ``sudo_caps.can_root`` and is wired through
-    # ``repo_config_writable`` in ``cli._build_tui_context``.
+    # exposes the block. Settings is also gated on the same predicate.
     has_super = bool(ctx.sudo_caps.reachable_users)
     if has_super:
-        for i, s in enumerate(ctx.other_sessions):
-            pos = ACTION_COUNT + len(ctx.sessions) + i
-            hint = pos + 1 if 1 <= pos + 1 <= 9 else None
+        for s in ctx.other_sessions:
             items.append(
                 Item(
                     kind="other-session",
                     label=f"{s.user}/{s.short}",
                     enabled=True,
                     session=s,
-                    digit_hint=hint,
                 )
             )
-        # Settings: no digit_hint — PR 2 invariant.
         items.append(
             Item(
                 kind="settings",
@@ -616,10 +556,9 @@ def build_items(ctx: TuiContext) -> list[Item]:
         )
         total_sessions = len(ctx.sessions) + len(ctx.other_sessions)
         if total_sessions > 0:
-            # Kill-ALL (reachable users): no digit_hint — PR 2 invariant.
-            # ``kind`` is kept as the legacy ``"kill-all-global"`` string
-            # so the screen / state dispatch tables don't all need to
-            # rename in lock-step with the user-visible relabel.
+            # ``kind`` is kept as the original ``"kill-all-global"``
+            # string so the screen / state dispatch tables don't all
+            # need to rename in lock-step with the user-visible relabel.
             items.append(
                 Item(
                     kind="kill-all-global",
@@ -665,32 +604,3 @@ def _total_items(ctx: TuiContext) -> int:
     if kill_idx >= 0:
         return kill_idx + 1
     return settings_idx + 1
-
-
-def _digit_hinted_indices(ctx: TuiContext) -> set[int]:
-    """Return the set of item indices reachable via a digit keypress.
-
-    Digit 1..9 maps to index 0..8. Only items whose index is in this set
-    may be activated by a digit keypress. Settings and Kill-ALL are
-    deliberately excluded — they are non-destructive-to-read but
-    surprising-to-land-on for a new user, and on empty superuser state
-    `settings_idx` collapses to `ACTION_COUNT` which makes a mis-typed
-    digit dangerously ambiguous. Both remain reachable via
-    arrow-down + Enter, which is a deliberate two-step gesture.
-    """
-    own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
-    total = _total_items(ctx)
-    allowed: set[int] = set()
-    # Actions (0..ACTION_COUNT-1)
-    for i in range(min(ACTION_COUNT, total)):
-        allowed.add(i)
-    # Own sessions
-    for i in range(own_start, min(other_start, total)):
-        allowed.add(i)
-    # Other users' sessions (still session rows, safe to jump to)
-    if has_super:
-        other_end = settings_idx if settings_idx >= 0 else total
-        for i in range(other_start, min(other_end, total)):
-            allowed.add(i)
-    # Settings and Kill-ALL are intentionally excluded.
-    return allowed

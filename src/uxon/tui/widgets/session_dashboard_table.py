@@ -5,8 +5,7 @@ navigation contract and base CSS). Mounts no rows on construction; takes
 ``columns: tuple[ColumnSpec, ...]`` and registers a column per entry, keyed by
 ``col.id`` so :meth:`update_cell` lookups work later.
 
-The widget is consumed by ``MainScreen`` (commit 10) but lives in isolation
-in this commit, fully tested. The reconciler in
+The widget is consumed by ``MainScreen``. The reconciler in
 :mod:`uxon.tui.dashboard.reconcile` produces the op stream that
 :meth:`apply` dispatches.
 
@@ -52,8 +51,11 @@ from __future__ import annotations
 
 import inspect
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from rich.text import Text
+from textual.binding import Binding
+from textual.message import Message
 from textual.widgets._data_table import DataTable as _PrivateDataTable
 from textual.widgets._data_table import RowKey
 
@@ -63,15 +65,14 @@ from .focus_releasing_data_table import FocusReleasingDataTable
 
 if TYPE_CHECKING:
     from ..dashboard.columns import ColumnSpec
-    from ..dashboard.reconcile import Op
+    from ..dashboard.reconcile import ApplyPlan
 
 # Import-time guard: fail loudly if Textual ever drops the private
 # ``_row_locations`` attribute we depend on. We can't ``hasattr`` the class
 # (the attribute is created inside ``__init__``); inspect the source instead.
 assert "_row_locations" in inspect.getsource(_PrivateDataTable.__init__), (
     "Textual API changed: _row_locations no longer initialised on DataTable. "
-    "See plan 2026-05-06-session-dashboard-unified.md and "
-    "https://github.com/Textualize/textual/issues/2587 for the public-API "
+    "See https://github.com/Textualize/textual/issues/2587 for the public-API "
     "follow-up. Pin Textual version in pyproject.toml until resolved."
 )
 
@@ -85,6 +86,23 @@ class SessionDashboardTable(FocusReleasingDataTable):
     up by id.
     """
 
+    BINDINGS = [
+        # ←/→ on the table dispatch to the screen, which interprets
+        # them by view mode: cycle host tabs in by_host, jump cursor
+        # between host blocks in flat. The widget posts a message
+        # rather than acting directly because the rule needs the
+        # screen's view-mode state.
+        Binding("left", "host_navigate(-1)", "", show=False),
+        Binding("right", "host_navigate(1)", "", show=False),
+    ]
+
+    class HostNavigate(Message):
+        """Posted on ←/→ — the screen cycles tabs or jumps blocks."""
+
+        def __init__(self, direction: int) -> None:
+            super().__init__()
+            self.direction = direction
+
     def __init__(
         self,
         columns: tuple[ColumnSpec, ...],
@@ -93,6 +111,99 @@ class SessionDashboardTable(FocusReleasingDataTable):
     ) -> None:
         super().__init__(id=id)
         self._columns: tuple[ColumnSpec, ...] = columns
+        self._block_meta: dict[str, tuple[str, int]] = {}
+        self._block_starts: tuple[int, ...] = ()
+
+    def set_block_starts(self, starts: tuple[int, ...]) -> None:
+        """Update the row indices that begin a logical block (host/user).
+
+        Consumed by ``action_host_navigate`` in flat mode to jump the
+        cursor between blocks. The screen recomputes this after every
+        model rebuild and feeds it back in.
+        """
+        self._block_starts = starts
+
+    @property
+    def block_starts(self) -> tuple[int, ...]:
+        return self._block_starts
+
+    def action_host_navigate(self, direction: int) -> None:
+        debug("keys", at="dashboard_host_navigate", direction=direction)
+        self.post_message(self.HostNavigate(direction))
+
+    def action_cursor_down(self) -> None:
+        before = self.cursor_row
+        super().action_cursor_down()
+        debug(
+            "keys",
+            at="dashboard_cursor_down",
+            from_row=before,
+            to_row=self.cursor_row,
+            row_count=self.row_count,
+        )
+
+    def action_cursor_up(self) -> None:
+        before = self.cursor_row
+        debug(
+            "keys",
+            at="dashboard_cursor_up",
+            from_row=before,
+            row_count=self.row_count,
+        )
+        # Default focus-release walks the focus chain backwards, which
+        # lands on the *last* ActionRow in #top-actions (action-open) —
+        # the rightmost button. Operators expect ↑ to land on the
+        # leftmost button (action-cwd), matching how the row reads
+        # left-to-right. Walk #top-actions explicitly when present;
+        # fall back to the base contract otherwise (singleton screens,
+        # tests without an action group).
+        if self.cursor_row <= 0:
+            from .action_row import ACTION_GROUP_CONTAINER_ID, ActionRow
+
+            try:
+                group = self.screen.query_one(f"#{ACTION_GROUP_CONTAINER_ID}")
+            except Exception:
+                group = None
+            if group is not None:
+                for child in group.children:
+                    if isinstance(child, ActionRow):
+                        child.focus()
+                        return
+        super().action_cursor_up()
+        debug(
+            "keys",
+            at="dashboard_cursor_up_after",
+            to_row=self.cursor_row,
+        )
+
+    def set_block_meta(self, meta: dict[str, tuple[str, int]]) -> None:
+        """Update the ``row_key → (block_color, row_in_block)`` map.
+
+        Called by the screen on every tick before :meth:`apply`. The
+        map's values seed the block-hue + zebra wrapping done by
+        :meth:`_wrap_cell` when dispatching ``RowAdd`` / ``CellUpdate``.
+        """
+        self._block_meta = meta
+
+    def _wrap_cell(self, row_key: str, col_id: str, value: Any) -> Any:
+        """Apply the block hue to NAME / HOST cells.
+
+        Other columns are passed through unchanged. CPU danger styling
+        is per-cell already (set by ``format_cpu``); we never overwrite
+        it. Background zebra is owned by DataTable's ``zebra_stripes``
+        — this method only paints the foreground hue for the host
+        block, identical for every row in the block (no per-row
+        font-level alternation).
+        """
+        if col_id not in ("name", "host"):
+            return value
+        meta = self._block_meta.get(row_key)
+        if meta is None:
+            return value
+        block_color, _row_in_block = meta
+        if isinstance(value, Text):
+            return Text(value.plain, style=block_color)
+        return Text(str(value), style=block_color)
 
     def on_mount(self) -> None:
         for col in self._columns:
@@ -100,40 +211,65 @@ class SessionDashboardTable(FocusReleasingDataTable):
 
     # ── op application ──────────────────────────────────────────────
 
-    def apply(self, ops: tuple[Op, ...]) -> None:
+    def apply(self, plan: ApplyPlan) -> None:
         """Dispatch reconciler ops against the underlying DataTable.
 
-        No-op apply (zero ops) emits NO ``tui-table`` debug line — silence
-        is the contract that proves the identity-stable diff is working.
+        RowAdd ops are applied in **reverse new-index order** so every
+        ``before_key`` is either ``None`` or refers to a row already
+        inserted earlier in this same reverse walk. The "anchor not
+        present → append" branch in :meth:`_apply_add` becomes
+        structurally unreachable in production: ``before_key`` is
+        sourced from ``plan.new_keys``, and removed keys (in old but
+        not in new) cannot appear there. The branch is kept as a
+        defensive log only.
+
+        No-op apply (zero ops) emits NO ``tui-table`` debug line —
+        silence is the contract that proves the identity-stable diff is
+        working.
         """
-        if not ops:
-            # Silence-on-no-op is part of the contract; commit 9's perf
-            # test asserts on the absence of any log line here.
+        if not plan.ops:
+            # Silence-on-no-op is part of the contract; the perf test
+            # asserts on the absence of any log line here.
             return
         t0 = time.perf_counter()
         counts = {"add": 0, "remove": 0, "update": 0}
-        for op in ops:
+        new_index = {k: i for i, k in enumerate(plan.new_keys)}
+        removes_and_updates: list[CellUpdate | RowRemove] = []
+        adds: list[RowAdd] = []
+        for op in plan.ops:
             if isinstance(op, RowAdd):
-                counts["add"] += 1
-                self._apply_add(op)
-            elif isinstance(op, RowRemove):
+                adds.append(op)
+            else:
+                removes_and_updates.append(op)
+        # RowRemoves first, then in-place CellUpdates, then RowAdds in
+        # reverse new-index order.
+        for op in removes_and_updates:
+            if isinstance(op, RowRemove):
                 counts["remove"] += 1
                 self._apply_remove(op)
-            elif isinstance(op, CellUpdate):
+            else:  # CellUpdate
                 counts["update"] += 1
                 self._apply_update(op)
+        adds.sort(key=lambda op: -new_index[op.row_key])
+        for op in adds:
+            counts["add"] += 1
+            self._apply_add(op)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         debug("tui-table", ms=elapsed_ms, ops=counts, rows=self.row_count)
 
     def _apply_add(self, op: RowAdd) -> None:
+        cells = tuple(
+            self._wrap_cell(op.row_key, col.id, cell)
+            for col, cell in zip(self._columns, op.cells, strict=True)
+        )
         # Append-only fast path: no anchor, or anchor is the last visible row.
         if op.before_key is None:
-            self.add_row(*op.cells, key=op.row_key)
+            self.add_row(*cells, key=op.row_key)
             return
         anchor_idx = self._row_index_of(op.before_key)
         if anchor_idx is None or anchor_idx >= self.row_count:
             # Anchor not present (perhaps already removed) — append.
-            self.add_row(*op.cells, key=op.row_key)
+            self.add_row(*cells, key=op.row_key)
             return
         # Inline insert: snapshot rows that should sit *after* the new
         # row in the final layout, drop them, append the new row, then
@@ -152,13 +288,13 @@ class SessionDashboardTable(FocusReleasingDataTable):
                 key_str = key_obj.value
             else:
                 key_str = str(key_obj)
-            cells = tuple(self.get_row(key_obj))
-            trailing.append((key_str, cells))
+            row_cells = tuple(self.get_row(key_obj))
+            trailing.append((key_str, row_cells))
         for key_str, _ in trailing:
             self.remove_row(key_str)
-        self.add_row(*op.cells, key=op.row_key)
-        for key_str, cells in trailing:
-            self.add_row(*cells, key=key_str)
+        self.add_row(*cells, key=op.row_key)
+        for key_str, row_cells in trailing:
+            self.add_row(*row_cells, key=key_str)
 
     def _apply_remove(self, op: RowRemove) -> None:
         try:
@@ -171,7 +307,8 @@ class SessionDashboardTable(FocusReleasingDataTable):
 
     def _apply_update(self, op: CellUpdate) -> None:
         try:
-            self.update_cell(op.row_key, op.col_id, op.value)
+            wrapped = self._wrap_cell(op.row_key, op.col_id, op.value)
+            self.update_cell(op.row_key, op.col_id, wrapped)
         except Exception:
             debug("tui-table", op="update_miss", key=op.row_key, col=op.col_id)
 

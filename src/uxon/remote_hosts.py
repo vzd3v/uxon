@@ -67,6 +67,12 @@ class RemoteHost:
             ``{ssh_control_dir}``, ``{remote_command}`` are substituted
             at call time. Used to wire kubectl-exec, docker-exec, or
             other transports.
+        color: Optional Rich style spec used to paint the per-host
+            block (tab text, NAME column glyph, HOST cell). When
+            ``None``, the TUI auto-assigns from ``tui.color_palette``
+            with adjacency skip. **Not validated against the palette**
+            — operators may pin any Rich-accepted name; collisions
+            with locals or peers are the operator's responsibility.
     """
 
     name: str
@@ -78,6 +84,7 @@ class RemoteHost:
     total_timeout: float | None = None
     extra_ssh_options: tuple[str, ...] = field(default_factory=tuple)
     command_template: tuple[str, ...] | None = None
+    color: str | None = None
 
 
 _VALID_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
@@ -157,6 +164,14 @@ def _validate_host(raw: dict, index: int, seen_names: set[str]) -> RemoteHost:
             except ValueError as exc:
                 raise RemoteHostError(f"remote_hosts[{name}]: {exc}") from exc
 
+    color_raw = raw.get("color")
+    if color_raw is None:
+        color: str | None = None
+    elif isinstance(color_raw, str) and color_raw.strip():
+        color = color_raw.strip()
+    else:
+        raise RemoteHostError(f"remote_hosts[{name}]: color must be a non-empty string when set")
+
     # Reject unknown keys — better to fail loudly than silently ignore a
     # typo (e.g. ``ssh_alaias = "..."``) the operator expected to take
     # effect.
@@ -170,6 +185,7 @@ def _validate_host(raw: dict, index: int, seen_names: set[str]) -> RemoteHost:
         "total_timeout",
         "extra_ssh_options",
         "command_template",
+        "color",
     }
     extra = set(raw.keys()) - known_keys
     if extra:
@@ -188,6 +204,7 @@ def _validate_host(raw: dict, index: int, seen_names: set[str]) -> RemoteHost:
         total_timeout=total_timeout,
         extra_ssh_options=extra_ssh_options,
         command_template=command_template,
+        color=color,
     )
 
 

@@ -37,7 +37,13 @@ sudo visudo -c -f "/etc/sudoers.d/uxon-${NEW}-agent"   # syntax check
 ```
 
 The grant lets `alice` become **`alice_agent`**, not the other
-way round.
+way round. `NOPASSWD: ALL` is the recommended shape — the grant
+bounds the *agent*'s blast radius (yolo runs cannot touch
+`~alice`), not the developer; a command whitelist would not
+reduce alice's attack surface (she already has a shell) and
+would break every time an agent binary or wrapper changed. See
+[`SECURITY.md`](../../../SECURITY.md) threat model #1 for the
+full reasoning.
 
 ## Step 3 — Project workspace
 

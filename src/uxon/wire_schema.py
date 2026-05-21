@@ -39,12 +39,21 @@ List-data optional fields (forward-compatible additions, no version bump):
   never asked (e.g. the caller themselves, filtered before probing)
   appear in neither field. Older peers that don't emit the key are
   treated as ``[]`` by the aggregator — no schema bump.
+
+Top-level optional fields (also forward-compatible, no version bump):
+
+- ``host_stats`` (``HostStats``): host-level metrics snapshot
+  (CPU/RAM/loadavg/uptime/kernel) sampled by the producer at envelope
+  build time. Older peers omit the key; the consumer treats absence as
+  ``None`` and renders the host status bar without metrics. Adding new
+  keys inside ``host_stats`` is also additive — consumers ``.get(...)``
+  defensively.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Literal, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 WIRE_SCHEMA_VERSION = "1"
 """Current wire-schema version. Bump on incompatible changes only."""
@@ -104,6 +113,23 @@ class SessionRecord(TypedDict):
     cpu_pct: float
     rss_kib: int
     legacy: bool
+
+
+class HostStats(TypedDict, total=False):
+    """Snapshot of host-level metrics returned alongside session list.
+
+    Forward-compatible: peers running schema 1 omit this field; the
+    parser treats absence as ``None``. Adding a new key here is also
+    additive — peers running an older binary omit unknown keys; the
+    consumer should ``.get(...)`` defensively.
+    """
+
+    cpu_pct: float  # /proc/stat delta over ~50 ms
+    mem_used_kib: int  # MemTotal - MemAvailable
+    mem_total_kib: int  # MemTotal
+    loadavg_1m: float  # /proc/loadavg field 0
+    uptime_s: int  # /proc/uptime field 0
+    kernel: str  # uname -r
 
 
 RemoteSessionPayload = dict[str, Any]
@@ -203,15 +229,19 @@ class Envelope(TypedDict):
 
     Carries the schema version, the producing uxon's own version, and
     the kind discriminator that tells a consumer which ``data`` shape
-    to expect. ``host`` is an optional top-level field added later by
-    the multi-host RemoteCollector to attribute a snapshot to its
-    source host; local ``--json`` output omits it.
+    to expect. ``host`` is added by the multi-host RemoteCollector to
+    attribute a snapshot to its source host; local ``--json`` output
+    omits it. ``host_stats`` is the additive forward-compatible
+    per-host metrics block (see module docstring) populated only for
+    ``kind == "list"``.
     """
 
     schema_version: str
     uxon_version: str
     kind: EnvelopeKind
     data: dict[str, Any]
+    host: NotRequired[str]
+    host_stats: NotRequired[HostStats]
 
 
 def make_envelope(
@@ -220,13 +250,18 @@ def make_envelope(
     *,
     uxon_version: str,
     host: str | None = None,
+    host_stats: HostStats | None = None,
 ) -> Envelope:
     """Construct a versioned envelope for one ``--json`` payload.
 
     ``kind`` discriminates the data shape; ``data`` is the kind-specific
     body. ``uxon_version`` is supplied by the caller (``cli.read_repo_version``)
     so this module stays free of cli imports. ``host`` is added only
-    when given — local invocations leave it absent.
+    when given — local invocations leave it absent. ``host_stats`` is
+    the additive forward-compatible per-host metrics block populated
+    only for ``kind == "list"``; producers that can't read ``/proc``
+    pass ``None`` and the field is left absent (consumers ``.get(...)``
+    on it).
     """
     env: Envelope = {
         "schema_version": WIRE_SCHEMA_VERSION,
@@ -235,5 +270,7 @@ def make_envelope(
         "data": data,
     }
     if host is not None:
-        env["host"] = host  # type: ignore[typeddict-unknown-key]
+        env["host"] = host
+    if host_stats is not None:
+        env["host_stats"] = host_stats
     return env

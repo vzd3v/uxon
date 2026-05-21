@@ -4,12 +4,79 @@ Per-version upgrade notes for changes that need operator
 attention beyond a routine `pipx upgrade`. For the full release
 log see [`CHANGELOG.md`](../CHANGELOG.md).
 
+## 3.4.0
+
+### Dashboard views, search, and a hard sort contract
+
+- **Sort is no longer configurable.** Rows now appear in a
+  fixed order: locals first (own then other-user), then
+  remotes in `[[remote_hosts]]` declaration order, with
+  within-block ranking by last-attach descending then name
+  ascending. The `tui.table.default_sort_by` key is silently
+  ignored on load (one `UXON_DEBUG=tui` line per occurrence) —
+  no error, no fallback. The `s` / `S` cycle bindings are gone.
+- **`tui.table.default_view` (new)** — `"flat"` (default) is a
+  single ranked list across the fleet; `"by_host"` shows a
+  per-host tab strip and status bar. Toggle at runtime with
+  `v`. An active search forces `flat` until the query is
+  cleared. ←/→ on the dashboard cycles between hosts: tabs
+  in `by_host`, `(host, own/other)` transitions in `flat`.
+  The `[` / `]` shortcut is gone.
+- **Search bar.** Summoned on demand — hidden by default, press
+  `s` (or `/`) from anywhere to reveal it. `Esc` clears the query
+  and returns focus to the summoning widget. Configure searchable
+  fields via `tui.search.fields` (default `["name", "user"]`).
+- **`PATH` and `CMD` columns hidden by default.** For
+  uxon-launched sessions `CMD` only echoed the agent name (already
+  shown in the AGENT column). Operators who relied on either column
+  must now list `"path"` / `"cmd"` in `tui.table.columns` to opt
+  back in.
+
+### Block colour and attach indicator
+
+- **Per-host block colour.** Each remote host gets a hue
+  applied to its tab, status-bar name token, and rows. Pin a
+  hue with `[[remote_hosts]] color = "..."`; otherwise the
+  TUI auto-cycles through `tui.color_palette` (default
+  `["cyan", "blue"]`). Local rows take `local_host.color`
+  (default `"green"`).
+- **Attached state shown by glyph.** `●` filled when attached,
+  `○` hollow otherwise — replacing the previous bold-green
+  name colour.
+
+### Keymap
+
+- **`Esc` no longer quits.** Quit is `q` / `й` only. `Esc`
+  is a scoped cancel: clear search, close modal, leave field.
+  Operators who muscle-memoried `Esc → quit` should rebind in
+  their head.
+- **Layout-invariant twins.** Every dashboard key has a
+  JCUKEN twin (`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `v`/`м`)
+  so the keymap survives a Russian keyboard layout without
+  touching `xkb`.
+
+### SSH multiplex
+
+- **`ssh_control_persist_seconds` (new)** — `ControlPersist`
+  lifetime in seconds. Default `300` (was a hard-coded `60`).
+  Must be `> 0`; to disable multiplexing entirely set
+  `ssh_multiplex = "off"` rather than zeroing this out.
+
+### Peer protocol
+
+- **`host_stats` envelope field (additive).** The `list` JSON
+  envelope now carries an optional `host_stats` block (CPU /
+  RAM / loadavg / uptime / kernel) used by the aggregator's
+  per-host status bar. The wire schema version stays `"1"` —
+  3.3.0 peers continue to aggregate cleanly, the field is
+  silently absent in their output.
+
 ## 3.3.0
 
 ### Audit channel — new sink
 
 The 3.3.0 release introduces a dedicated audit channel and
-removes the legacy TUI event log.
+removes the per-day TUI event-log file.
 
 - **TUI event log removed.** The per-day JSONL file at
   `${XDG_STATE_HOME:-~/.local/state}/uxon/tui-{user}-{date}.log`
@@ -104,9 +171,9 @@ default_args = []
 Manual migration per host: replace the flat
 `default_claude_args = [...]` line with the nested `[agents]`
 tables, include only agents installed on that host in
-`enabled`, then run `uxon doctor` to verify. If the legacy flat
-key is present on load, `uxon` fails with a clear error
-pointing here.
+`enabled`, then run `uxon doctor` to verify. If the flat
+`default_claude_args` key is still present on load, `uxon` fails
+with a clear error pointing here.
 
 ## Related
 

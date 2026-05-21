@@ -92,8 +92,8 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
         app = Host()
         async with app.run_test() as pilot:
             table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            ops = diff((), rows, cols)
-            table.apply(ops)
+            plan = diff((), rows, cols)
+            table.apply(plan)
             await pilot.pause()
             self.assertEqual(table.row_count, 15)
 
@@ -151,8 +151,8 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
                 _make_row(host="a", user="u", name="s2", cpu=42.0),  # cell change
                 _make_row(host="b", user="u", name="s3", cpu=3.0),
             )
-            ops = diff(old_rows, new_rows, cols)
-            table.apply(ops)
+            plan = diff(old_rows, new_rows, cols)
+            table.apply(plan)
             await pilot.pause()
 
             self.assertEqual(add_calls, [])
@@ -305,12 +305,12 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
             table.apply(diff((), old_rows, cols))
             await pilot.pause()
 
-            ops = diff(old_rows, new_rows, cols)
+            plan = diff(old_rows, new_rows, cols)
             # Surviving rows (a, b) keep their surviving-relative
             # position, so reconcile must not emit any CellUpdate.
-            self.assertEqual([o for o in ops if isinstance(o, CellUpdate)], [])
+            self.assertEqual([o for o in plan.ops if isinstance(o, CellUpdate)], [])
 
-            table.apply(ops)
+            table.apply(plan)
             await pilot.pause()
 
             self.assertEqual(table.row_count, 4)
@@ -328,7 +328,7 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
         """
         from textual.app import App, ComposeResult
 
-        from uxon.tui.dashboard.reconcile import RowRemove, diff
+        from uxon.tui.dashboard.reconcile import ApplyPlan, RowRemove, diff
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
         cols = _active_columns()
@@ -347,7 +347,7 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(table.row_count, 2)
 
             # Synthetic op: a key that was never added.
-            table.apply((RowRemove("nonexistent/u/x"),))
+            table.apply(ApplyPlan(ops=(RowRemove("nonexistent/u/x"),), new_keys=()))
             await pilot.pause()
             self.assertEqual(table.row_count, 2)
             # Widget remains queryable — no exception bubbled.
@@ -361,7 +361,7 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
         from rich.text import Text
         from textual.app import App, ComposeResult
 
-        from uxon.tui.dashboard.reconcile import CellUpdate, diff
+        from uxon.tui.dashboard.reconcile import ApplyPlan, CellUpdate, diff
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
         cols = _active_columns()
@@ -379,7 +379,12 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(table.row_count, 2)
 
-            table.apply((CellUpdate("nonexistent/u/x", "cpu", Text("99")),))
+            table.apply(
+                ApplyPlan(
+                    ops=(CellUpdate("nonexistent/u/x", "cpu", Text("99")),),
+                    new_keys=(),
+                )
+            )
             await pilot.pause()
             self.assertEqual(table.row_count, 2)
 

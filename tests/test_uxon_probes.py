@@ -149,24 +149,26 @@ class HostReportTests(unittest.TestCase):
     def test_host_report_creation(self) -> None:
         report = probes.HostReport(
             tmux=probes.BinaryStatus("tmux", "/usr/bin/tmux", "apt install"),
-            enabled={"claude": probes.BinaryStatus("claude", "/home/u/.npm/claude", "npm i")},
-            detected={"codex": probes.BinaryStatus("codex", "/home/u/.npm/codex", "npm i")},
+            agents={
+                "claude": probes.BinaryStatus("claude", "/home/u/.npm/claude", "npm i"),
+                "codex": probes.BinaryStatus("codex", "/home/u/.npm/codex", "npm i"),
+                "cursor": probes.BinaryStatus("cursor-agent", None, ""),
+            },
             launch_user="devuser",
         )
         self.assertEqual(report.launch_user, "devuser")
         self.assertEqual(report.tmux.path, "/usr/bin/tmux")
-        self.assertIn("claude", report.enabled)
-        self.assertIn("codex", report.detected)
+        self.assertEqual(report.agents["claude"].path, "/home/u/.npm/claude")
+        self.assertIsNone(report.agents["cursor"].path)
 
 
 class ProbeHostTests(unittest.TestCase):
-    """Integration tests for probe_host."""
+    """Integration tests for probe_host. ``probe_host`` is config-free
+    now: it returns one entry per CATALOG agent and the caller decides
+    which subset is in scope (strict whitelist or auto-mode).
+    """
 
     def test_probe_host_same_user(self) -> None:
-        # Mock the config and _resolve_paths_local.
-        mock_cfg = mock.MagicMock()
-        mock_cfg.enabled_agents = ["claude"]
-
         with mock.patch("uxon.probes._resolve_paths_local") as resolve:
             resolve.return_value = {
                 "tmux": "/usr/bin/tmux",
@@ -175,19 +177,15 @@ class ProbeHostTests(unittest.TestCase):
                 "cursor-agent": None,
             }
             with mock.patch("uxon.probes._current_user", return_value="devuser"):
-                report = probes.probe_host(mock_cfg, "devuser")
+                report = probes.probe_host("devuser")
 
         self.assertEqual(report.launch_user, "devuser")
         self.assertEqual(report.tmux.path, "/usr/bin/tmux")
-        self.assertIn("claude", report.enabled)
-        self.assertEqual(report.enabled["claude"].path, "/home/u/.npm/claude")
-        # codex is in CATALOG but not enabled and not detected (path is None).
-        self.assertNotIn("codex", report.detected)
+        self.assertEqual(report.agents["claude"].path, "/home/u/.npm/claude")
+        self.assertIsNone(report.agents["codex"].path)
+        self.assertIsNone(report.agents["cursor"].path)
 
     def test_probe_host_different_user(self) -> None:
-        mock_cfg = mock.MagicMock()
-        mock_cfg.enabled_agents = ["claude", "codex"]
-
         with mock.patch("uxon.probes._resolve_paths_remote") as resolve:
             resolve.return_value = {
                 "tmux": "/usr/bin/tmux",
@@ -196,36 +194,13 @@ class ProbeHostTests(unittest.TestCase):
                 "cursor-agent": "/home/otheruser/.cursor/cursor-agent",
             }
             with mock.patch("uxon.probes._current_user", return_value="devuser"):
-                report = probes.probe_host(mock_cfg, "otheruser")
+                report = probes.probe_host("otheruser")
 
         self.assertEqual(report.launch_user, "otheruser")
         self.assertEqual(report.tmux.path, "/usr/bin/tmux")
-        self.assertIn("claude", report.enabled)
-        self.assertIn("codex", report.enabled)
-        self.assertEqual(report.enabled["claude"].path, "/home/otheruser/.npm/claude")
-        self.assertIsNone(report.enabled["codex"].path)
-        # cursor is detected (installed but not enabled).
-        self.assertIn("cursor", report.detected)
-        self.assertEqual(report.detected["cursor"].path, "/home/otheruser/.cursor/cursor-agent")
-
-    def test_probe_host_empty_enabled(self) -> None:
-        mock_cfg = mock.MagicMock()
-        mock_cfg.enabled_agents = []
-
-        with mock.patch("uxon.probes._resolve_paths_local") as resolve:
-            resolve.return_value = {
-                "tmux": "/usr/bin/tmux",
-                "claude": "/home/u/.npm/claude",
-                "codex": None,
-                "cursor-agent": None,
-            }
-            with mock.patch("uxon.probes._current_user", return_value="devuser"):
-                report = probes.probe_host(mock_cfg, "devuser")
-
-        self.assertEqual(report.enabled, {})
-        self.assertIn("claude", report.detected)
-        self.assertNotIn("codex", report.detected)
-        self.assertNotIn("cursor", report.detected)
+        self.assertEqual(report.agents["claude"].path, "/home/otheruser/.npm/claude")
+        self.assertIsNone(report.agents["codex"].path)
+        self.assertEqual(report.agents["cursor"].path, "/home/otheruser/.cursor/cursor-agent")
 
     def test_install_hints_present(self) -> None:
         """Verify that install hints are set for all binaries."""

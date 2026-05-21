@@ -7,9 +7,11 @@ Uses only stdlib: subprocess, shlex, dataclasses, pwd.
 from __future__ import annotations
 
 import os
+import platform
 import pwd
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 
 
@@ -24,11 +26,17 @@ class BinaryStatus:
 
 @dataclass(frozen=True)
 class HostReport:
-    """Complete host availability snapshot."""
+    """Complete host availability snapshot.
+
+    ``agents`` carries one entry per ``CATALOG`` id; consumers decide
+    which subset is "in scope" (the strict whitelist from
+    ``[agents].enabled`` if non-empty, or the auto-mode set of all
+    installed agents otherwise). The previous ``enabled``/``detected``
+    split was tied to the now-removed detected-agents banner.
+    """
 
     tmux: BinaryStatus
-    enabled: dict[str, BinaryStatus]  # keys = cfg.enabled_agents (agent ids)
-    detected: dict[str, BinaryStatus]  # keys = CATALOG ids NOT in enabled, but installed
+    agents: dict[str, BinaryStatus]
     launch_user: str
 
 
@@ -178,75 +186,137 @@ _INSTALL_HINTS = {
 # ── Main probe API ───────────────────────────────────────────────────
 
 
-def probe_host(cfg, launch_user: str) -> HostReport:
-    """Probe all binaries on the host for the given launch_user.
+def probe_host(launch_user: str) -> HostReport:
+    """Probe tmux + every ``CATALOG`` agent on the host for ``launch_user``.
 
-    Returns a HostReport with:
-      - tmux: BinaryStatus for tmux
-      - enabled: dict[agent_id -> BinaryStatus] for cfg.enabled_agents
-      - detected: dict[agent_id -> BinaryStatus] for agents in the CATALOG
-                  that are installed but not in enabled_agents
-      - launch_user: the user for which the probe was run
+    Returns a :class:`HostReport` with:
+      - ``tmux``: :class:`BinaryStatus` for tmux
+      - ``agents``: dict[agent_id -> BinaryStatus] for every agent in
+        :data:`uxon.agents.CATALOG`. Entries with ``path=None`` are not
+        installed (used for "missing" status in auto-mode this just
+        omits them; in strict-whitelist mode the consumer surfaces
+        them as "missing").
+      - ``launch_user``: the user for which the probe was run
 
-    The probe uses `sh -lc 'command -v X'` via sudo if launch_user differs
-    from the current user, or directly if it's the same user. This matches
-    the login-shell semantics used by the launch builder.
+    The probe uses ``sh -lc 'command -v X'`` via sudo if ``launch_user``
+    differs from the current user, or directly if it's the same user.
+    This matches the login-shell semantics used by the launch builder.
     """
     from uxon import agents as uxon_agents
-
-    # Determine which binaries to probe.
-    tmux_names = ["tmux"]
-    enabled_agent_names = []
-    enabled_agent_ids = []
-    for aid in cfg.enabled_agents:
-        if aid in uxon_agents.CATALOG:
-            enabled_agent_names.append(uxon_agents.CATALOG[aid].binary)
-            enabled_agent_ids.append(aid)
 
     all_agent_names = [s.binary for s in uxon_agents.CATALOG.values()]
     all_agent_ids = list(uxon_agents.CATALOG.keys())
 
-    # Single round-trip probe: tmux + all agents.
-    probe_names = tmux_names + all_agent_names
+    # Single round-trip probe: tmux + every CATALOG agent.
+    probe_names = ["tmux", *all_agent_names]
     if launch_user == _current_user():
         paths = _resolve_paths_local(probe_names)
     else:
         paths = _resolve_paths_remote(probe_names, launch_user)
 
-    # Build tmux status.
-    tmux_path = paths.get("tmux")
     tmux_status = BinaryStatus(
         name="tmux",
-        path=tmux_path,
+        path=paths.get("tmux"),
         install_hint=_INSTALL_HINTS["tmux"],
     )
 
-    # Build enabled agents dict.
-    enabled: dict[str, BinaryStatus] = {}
-    for aid, binary_name in zip(enabled_agent_ids, enabled_agent_names, strict=True):
-        path = paths.get(binary_name)
-        enabled[aid] = BinaryStatus(
+    agents: dict[str, BinaryStatus] = {}
+    for aid in all_agent_ids:
+        binary_name = uxon_agents.CATALOG[aid].binary
+        agents[aid] = BinaryStatus(
             name=aid,
-            path=path,
+            path=paths.get(binary_name),
             install_hint=_INSTALL_HINTS.get(binary_name, ""),
         )
 
-    # Build detected agents dict (those installed but not in enabled).
-    detected: dict[str, BinaryStatus] = {}
-    for aid in all_agent_ids:
-        if aid not in cfg.enabled_agents:
-            binary_name = uxon_agents.CATALOG[aid].binary
-            path = paths.get(binary_name)
-            if path is not None:  # only include if actually found
-                detected[aid] = BinaryStatus(
-                    name=aid,
-                    path=path,
-                    install_hint=_INSTALL_HINTS.get(binary_name, ""),
-                )
-
     return HostReport(
         tmux=tmux_status,
-        enabled=enabled,
-        detected=detected,
+        agents=agents,
         launch_user=launch_user,
+    )
+
+
+# ── Host metrics probe ───────────────────────────────────────────────
+
+_PROC = "/proc"
+_CPU_DELAY_S = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class HostStatsResult:
+    """Concrete shape returned by :func:`read_host_stats`.
+
+    Mirrors the wire-schema ``HostStats`` typeddict; converted to a
+    plain ``dict`` by the envelope builder before serialisation.
+    """
+
+    cpu_pct: float
+    mem_used_kib: int
+    mem_total_kib: int
+    loadavg_1m: float
+    uptime_s: int
+    kernel: str
+
+
+def _cpu_busy_pair() -> tuple[int, int]:
+    with open(f"{_PROC}/stat") as fh:
+        head = fh.readline()
+    fields = [int(x) for x in head.split()[1:]]
+    idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
+    total = sum(fields)
+    return total - idle, total
+
+
+def _read_meminfo() -> tuple[int, int]:
+    try:
+        with open(f"{_PROC}/meminfo") as fh:
+            blob = fh.read()
+    except FileNotFoundError:
+        return 0, 0
+    total = 0
+    avail = 0
+    for line in blob.splitlines():
+        if line.startswith("MemTotal:"):
+            total = int(line.split()[1])
+        elif line.startswith("MemAvailable:"):
+            avail = int(line.split()[1])
+    return total, avail
+
+
+def _read_loadavg_1m() -> float:
+    try:
+        with open(f"{_PROC}/loadavg") as fh:
+            return float(fh.read().split()[0])
+    except FileNotFoundError:
+        return 0.0
+
+
+def _read_uptime() -> int:
+    try:
+        with open(f"{_PROC}/uptime") as fh:
+            return int(float(fh.read().split()[0]))
+    except FileNotFoundError:
+        return 0
+
+
+def read_host_stats() -> HostStatsResult:
+    """Sample /proc for one host_stats snapshot. Stdlib only.
+
+    Two ``/proc/stat`` reads ~50 ms apart yield a CPU delta. Memory
+    / loadavg / uptime are single-shot. ``kernel`` is ``platform.release()``.
+    """
+    busy_a, total_a = _cpu_busy_pair()
+    if _CPU_DELAY_S > 0:
+        time.sleep(_CPU_DELAY_S)
+    busy_b, total_b = _cpu_busy_pair()
+    cpu_pct = 0.0 if total_b <= total_a else 100.0 * (busy_b - busy_a) / (total_b - total_a)
+    total_kib, avail_kib = _read_meminfo()
+    used_kib = max(0, total_kib - avail_kib) if total_kib else 0
+    return HostStatsResult(
+        cpu_pct=max(0.0, min(100.0, cpu_pct)),
+        mem_used_kib=used_kib,
+        mem_total_kib=total_kib,
+        loadavg_1m=_read_loadavg_1m(),
+        uptime_s=_read_uptime(),
+        kernel=platform.release(),
     )

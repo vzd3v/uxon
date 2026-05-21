@@ -16,6 +16,7 @@ from textual.screen import ModalScreen
 from textual.validation import ValidationResult, Validator
 from textual.widgets import Button, Input, Static
 
+from ..keymap import bindings_with_aliases
 from ..state import project_name_error, project_name_valid
 
 
@@ -60,11 +61,11 @@ class NewProjectScreen(ModalScreen["str | None"]):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "cancel", "Cancel", show=True),
         Binding("up", "app.focus_previous", "", show=False),
         Binding("down", "app.focus_next", "", show=False),
-    ]
+    )
 
     def __init__(self, project_root: str) -> None:
         super().__init__()

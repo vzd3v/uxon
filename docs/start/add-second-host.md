@@ -107,7 +107,7 @@ requirements must hold on the peer:
 
 If (1) is not set, the peer exits with the stable error tag
 `uxon-error: all-users-disabled`. The aggregator detects that tag
-and falls back to the legacy own-only command, stamping the
+and falls back to the own-only command, stamping the
 snapshot with `scope_limited = true`. The TUI labels that peer
 `(own only)` in the HOST column. **No silent partial data.**
 

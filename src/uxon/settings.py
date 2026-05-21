@@ -98,16 +98,46 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "array",
         "Dashboard columns in display order. Empty == REGISTRY defaults.",
     ),
-    SettingSpec(
-        "tui.table.default_sort_by",
-        "string",
-        "Initial sort column id (must match REGISTRY).",
-    ),
     SettingSpec("git_create_enabled", "bool", "Enable the git-remote-on-new-project flow."),
     SettingSpec(
         "default_git_remote_profile",
         "string",
         "Profile name used when --git-remote default is passed or picked as TUI default.",
+    ),
+    SettingSpec(
+        "tui.table.default_view",
+        "enum",
+        "Default dashboard view (by_host or flat).",
+        choices=("by_host", "flat"),
+    ),
+    SettingSpec(
+        "tui.search.fields",
+        "array",
+        "Fields the SearchBar substring-matches against. "
+        "Allowed: name, user, host, path, cmd. Default ['name','user'].",
+    ),
+    SettingSpec(
+        "tui.color_palette",
+        "array",
+        "Auto-cycle palette for remote-host blocks (Rich style names). "
+        "Default ['cyan','blue']; no magenta, no red, no yellow.",
+    ),
+    SettingSpec(
+        "local_host.color",
+        "string",
+        "Rich style spec painting the locals block. Default 'green'.",
+    ),
+    SettingSpec(
+        "ssh_multiplex",
+        "enum",
+        "Reuse one SSH master connection across fetches.",
+        choices=("auto", "off"),
+    ),
+    SettingSpec(
+        "ssh_control_persist_seconds",
+        "number",
+        "ControlPersist for the multiplexed SSH master, integer seconds. "
+        "Must be > 0; disable multiplexing via ssh_multiplex=off.",
     ),
 )
 

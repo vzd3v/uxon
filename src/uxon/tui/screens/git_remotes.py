@@ -13,6 +13,8 @@ from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header
 
+from ..keymap import bindings_with_aliases
+
 
 class GitRemotesScreen(ModalScreen[None]):
     DEFAULT_CSS = """
@@ -25,10 +27,10 @@ class GitRemotesScreen(ModalScreen[None]):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "back", "Back", show=True),
         Binding("q", "back", "Back", show=False),
-    ]
+    )
 
     def __init__(self, rows: list[tuple]) -> None:
         super().__init__()

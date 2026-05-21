@@ -3,7 +3,7 @@
 Two shapes:
   - :class:`ConfirmYesNo` — yes/no buttons + y/n keyboard.
   - :class:`ConfirmPhrase` — user must type the phrase verbatim
-    (matches the legacy ``kill-all`` / ``kill-all-global`` gesture).
+    (the ``kill-all`` / ``kill-all-global`` destructive gesture).
 
 Both return ``True`` on positive confirmation, ``False`` on cancel.
 """
@@ -18,6 +18,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
+from ..keymap import bindings_with_aliases
 from ..state import confirm_phrase_matches
 
 
@@ -48,7 +49,7 @@ class ConfirmYesNo(ModalScreen[bool]):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("y", "confirm", "Yes", show=True),
         Binding("n", "cancel", "No", show=True),
         Binding("escape", "cancel", "Cancel", show=False),
@@ -56,7 +57,7 @@ class ConfirmYesNo(ModalScreen[bool]):
         Binding("down", "app.focus_next", "", show=False),
         Binding("left", "app.focus_previous", "", show=False),
         Binding("right", "app.focus_next", "", show=False),
-    ]
+    )
 
     def __init__(self, prompt: str) -> None:
         super().__init__()
@@ -103,9 +104,9 @@ class ConfirmPhrase(ModalScreen[bool]):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "cancel", "Cancel", show=True),
-    ]
+    )
 
     def __init__(self, prompt: str, phrase: str) -> None:
         super().__init__()

@@ -5,8 +5,8 @@ suits most setups. The `[tui.table]` block lets you override it.
 
 ```toml
 [tui.table]
-columns         = ["name", "user", "cpu", "ram", "last", "cmd"]
-default_sort_by = "cpu"
+columns      = ["name", "user", "cpu", "ram", "last"]
+default_view = "flat"
 ```
 
 ## What each key does
@@ -18,12 +18,19 @@ default_sort_by = "cpu"
   when other-user rows are visible). Listing columns explicitly
   opts into a fixed visual order; ids unknown to the running
   `uxon` version are silently dropped (an older config carrying
-  a since-removed column id stays loadable).
-- **`tui.table.default_sort_by`** — column id used as the
-  initial sort on TUI startup. Defaults to `"cpu"`. Unknown
-  values fall back to `"cpu"` (with a debug-log entry on
-  `UXON_DEBUG=tui`); the TUI never refuses to start because of
-  a cosmetic setting.
+  a since-removed column id stays loadable). The `path` and
+  `cmd` columns are hidden by default — opt back in by listing
+  `"path"` / `"cmd"` here.
+- **`tui.table.default_view`** — `"flat"` (default) or
+  `"by_host"`. `flat` is a single ranked list across the
+  fleet; `by_host` shows the per-host tab strip and status
+  bar. Toggle at runtime with `v`.
+
+There is no sort setting. Sort is a fixed contract owned by
+the model selector — locals first (own then other-user), then
+remotes in `[[remote_hosts]]` declaration order, with
+within-block ranking by last-attach descending then name
+ascending.
 
 ## Available column ids
 
@@ -43,12 +50,12 @@ alignment, formatting) lives in
 columns = ["name", "cpu", "ram", "last"]
 ```
 
-**Multi-host operator view:**
+**Multi-host operator view (start in flat mode):**
 
 ```toml
 [tui.table]
-columns = ["host", "user", "name", "agent", "cpu", "ram", "last"]
-default_sort_by = "host"
+columns      = ["host", "user", "name", "agent", "cpu", "ram", "last"]
+default_view = "flat"
 ```
 
 **Path-focused for navigation:**
@@ -56,24 +63,49 @@ default_sort_by = "host"
 ```toml
 [tui.table]
 columns = ["name", "path", "last"]
-default_sort_by = "last"
 ```
 
-## Sort keys
+## View, search, attach indicator
 
-The TUI's `s` cycles through cpu → ram → last → name; `S`
-toggles direction. `default_sort_by` only sets the initial
-column; users can change at runtime.
+- `v` toggles between `flat` (single ranked list, default) and
+  `by_host` (per-host tabs + status bar). Configure the initial
+  view with `tui.table.default_view`. ←/→ on the dashboard
+  cycles between hosts: tabs in `by_host`, `(host, own/other)`
+  transitions in `flat`; both cyclic.
+- The dashboard search bar is summoned on demand — hidden by
+  default, press `s` (or `/`) from anywhere to reveal and focus
+  it. `Esc` clears the query and returns focus to the summoning
+  widget. While a search query is active, the view is forced to
+  `flat` so matches across hosts appear in one list; clearing
+  the query restores the previous view mode. Configure
+  searchable fields with `tui.search.fields` (default
+  `["name", "user"]`; allowed `name`, `user`, `host`, `path`,
+  `cmd`).
+- Attached state is shown by a glyph in the NAME column: `●`
+  filled when attached, `○` hollow otherwise. There is no bold
+  green override.
+- The NAME column shows the project stem only — the `@<agent>`
+  suffix that lives in the underlying tmux session name (and
+  that `tmux ls` would print) is dropped here because the AGENT
+  column carries it. Sibling sessions on the same stem keep
+  their `-N` index so they stay visually distinct
+  (`proj@claude-2` → `proj-2`).
 
 ## Colour and accessibility
 
-The HOST column uses a per-host colour glyph in multi-host
-setups, and local-user rows render in a distinct colour.
+Each host gets a block colour applied to its tab, status-bar
+name token, and dashboard rows. Configure:
+
+- Per-host pin: `[[remote_hosts]] color = "..."` (any Rich
+  style spec; pin wins unconditionally over the auto-cycle).
+- Auto-cycle palette: `[tui] color_palette = ["cyan", "blue", ...]`.
+- Local block colour: `[local_host] color = "green"`.
+
 Colours are decorative — every row's HOST and USER are also
 present as text. There is currently no `UXON_COLOR=0` knob; if
 your team needs a no-colour mode, file a feature request.
 
 ## Reference
 
-- [`../../reference/configuration.md`](../../reference/configuration.md) — `[tui.table]` keys.
-- [`../../reference/keybindings.md`](../../reference/keybindings.md) — TUI keys including `s` / `S`.
+- [`../../reference/configuration.md`](../../reference/configuration.md) — `[tui.table]`, `[tui.search]`, `[tui]`, `[local_host]` keys.
+- [`../../reference/keybindings.md`](../../reference/keybindings.md) — TUI keys including `v`, `[`, `]`, `/`.

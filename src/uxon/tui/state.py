@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .context import (
     CallbackError,
@@ -18,10 +18,35 @@ from .context import (
     ServerStatus,
     TuiContext,
     TuiSession,
-    _digit_hinted_indices,
     _segments,
     _total_items,
 )
+
+if TYPE_CHECKING:
+    from .dashboard.ui_state import MainScreenUiState
+
+
+def effective_agents(
+    *,
+    configured: tuple[str, ...],
+    available_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return the agent ids the user can actually launch.
+
+    - ``configured`` non-empty → strict whitelist; return as-is.
+    - ``configured`` empty → auto-mode; return every CATALOG id that
+      ``available_ids`` reports as installed for ``launch_user``.
+
+    Empty/absent ``[agents].enabled`` in repo config and ``[]`` are
+    treated identically — both mean "auto-detect from what is
+    installed". Explicit "disable everything" is not supported (YAGNI:
+    nobody installs uxon to forbid launching).
+    """
+    if configured:
+        return configured
+    from uxon import agents as uxon_agents
+
+    return tuple(aid for aid in uxon_agents.CATALOG if aid in available_ids)
 
 
 def should_show_agents_unavailable(
@@ -49,10 +74,6 @@ def should_show_agents_unavailable(
     )
 
 
-def should_start_agent_probe(*, probe_agents: bool, enabled_agents: tuple[str, ...]) -> bool:
-    return probe_agents and bool(enabled_agents)
-
-
 def compute_all_missing(
     *,
     enabled_agents: tuple[str, ...],
@@ -60,10 +81,10 @@ def compute_all_missing(
 ) -> bool:
     """Return True when every enabled agent has a resolved missing/timeout status.
 
-    Distinct from :func:`should_show_agents_unavailable` because the new
-    transition-based push gate (``should_push_agents_unavailable``) needs the
-    raw "is this state all-missing now" predicate, decoupled from the
-    previously-shown latch.
+    Distinct from :func:`should_show_agents_unavailable` because the
+    transition-based push gate (``should_push_agents_unavailable``)
+    needs the raw "is this state all-missing now" predicate,
+    decoupled from the previously-shown latch.
     """
     if not enabled_agents:
         return False
@@ -77,30 +98,6 @@ def compute_all_missing(
         getattr(availability[aid], "status", None) in ("missing", "timeout")
         for aid in enabled_agents
     )
-
-
-def visible_detected_agents(
-    *,
-    detected: Mapping[str, Any],
-    enabled_agents: tuple[str, ...],
-    dismissed: list[str],
-) -> list[str]:
-    """Return the agent ids that should appear in the detected banner.
-
-    An entry is shown when it is detected on the host (``detected``
-    map populated by ``probe_host``), is **not** already in
-    ``enabled_agents`` (defensive — the worker should have filtered
-    these out), and the user has not dismissed it.
-    """
-    enabled_set = set(enabled_agents)
-    out: list[str] = []
-    for aid in detected:
-        if aid in enabled_set:
-            continue
-        if aid in dismissed:
-            continue
-        out.append(aid)
-    return out
 
 
 def should_push_agents_unavailable(
@@ -172,11 +169,31 @@ def visible_agent_ids(
     enabled_agents: tuple[str, ...],
     availability: Mapping[str, Any],
 ) -> tuple[str, ...]:
+    """Agent ids the LaunchOptions screen should expose.
+
+    Strict mode (``enabled_agents`` non-empty): the configured list,
+    minus any with a resolved ``missing``/``timeout`` status. Pending
+    entries stay visible so the row renders as "(checking…)" rather
+    than vanishing mid-probe.
+
+    Auto-mode (``enabled_agents`` empty): every ``CATALOG`` id that
+    has resolved to ``ok`` in ``availability``. No "missing" rows —
+    the auto-mode probe never inserts un-installed entries, so a
+    missing/timeout entry would have to be a stale strict-mode hangover.
+    """
+    if enabled_agents:
+        return tuple(
+            aid
+            for aid in enabled_agents
+            if availability.get(aid) is None
+            or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
+        )
+    from uxon import agents as uxon_agents
+
     return tuple(
         aid
-        for aid in enabled_agents
-        if availability.get(aid) is None
-        or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
+        for aid in uxon_agents.CATALOG
+        if aid in availability and getattr(availability[aid], "status", None) == "ok"
     )
 
 
@@ -302,6 +319,22 @@ def pick_index(rows: list[tuple[str, str]] | tuple[tuple[str, str], ...], index:
     return None
 
 
+def filter_existing_projects(
+    projects: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    needle: str,
+) -> list[tuple[str, str]]:
+    """Substring-filter a project list by name (case-insensitive).
+
+    Original order is preserved — the screen sorts by mtime desc when
+    it builds the list, and the filter must not reshuffle that. An
+    empty (or whitespace-only) needle returns every project.
+    """
+    n = needle.strip().lower()
+    if not n:
+        return list(projects)
+    return [p for p in projects if n in p[0].lower()]
+
+
 def selected_setting_index(*, row: int, has_git_view: bool, entry_count: int) -> int | None:
     idx = row - 1 if has_git_view else row
     if has_git_view and row == 0:
@@ -420,18 +453,6 @@ def activate_main_index(ctx: TuiContext, idx: int) -> MainIntent | None:
     return None
 
 
-def digit_jump_intent(ctx: TuiContext, n: int) -> MainIntent | None:
-    idx = n - 1
-    if idx < 0 or idx >= _total_items(ctx):
-        return None
-    if idx in _digit_hinted_indices(ctx):
-        return activate_main_index(ctx, idx)
-    own_start, other_start, settings_idx, kill_idx, has_super = _segments(ctx)
-    if has_super and idx in (settings_idx, kill_idx):
-        return MainIntent("focus-only", index=idx)
-    return None
-
-
 def confirm_phrase_matches(value: str, phrase: str) -> bool:
     return value.strip() == phrase
 
@@ -450,10 +471,6 @@ def project_name_valid(value: str) -> bool:
 @dataclass(frozen=True)
 class HostHealthBadge:
     """Per-host health summary derived from a ``RemoteSnapshot``.
-
-    Stage 6 reads ``RemoteSnapshot.error``/``from_cache``/``cached_at_epoch``
-    directly. The richer ``SlotState[T]`` (latency ring, ``in_flight``,
-    ``consecutive_failures``) and the p50-latency tooltip land at stage 8.
 
     Status values:
       - ``loading`` — no snapshot yet (the worker has not produced a result).
@@ -487,40 +504,41 @@ def _short_error(msg: str | None, *, limit: int = 48) -> str:
     return first or "error"
 
 
-# ── Stage 9 selectors ─────────────────────────────────────────────────
+# ── Selectors ─────────────────────────────────────────────────────────
 #
-# Pure, identity-stable selectors over the existing :class:`TuiContext`
-# shape. Stage 8 deliberately deferred the ``TuiContext`` →
-# ``TuiState``/``MainData`` split, so these operate on the live ctx +
-# per-host ``RemoteSnapshot`` mapping rather than on a future state
-# container. The identity-stable contract (selector returns the same
-# object across calls when inputs are unchanged by ``is`` comparison)
-# still applies and is testable today; the eventual reactive wiring
-# will plug into these helpers without changing their signatures.
+# Pure, identity-stable selectors over :class:`TuiContext` and the
+# per-host ``RemoteSnapshot`` mapping: a selector returns the same
+# object across calls when inputs are unchanged by ``is`` comparison,
+# so consumers can cache on the result identity.
 
 
-def select_layout_signature(ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
+def select_layout_signature(
+    ctx: TuiContext, ui: MainScreenUiState
+) -> tuple[bool, bool, bool, bool]:
     """Return the four-bool layout signature for ``MainScreen`` patch-vs-recompose.
 
-    Mirrors ``MainScreen._layout_signature``: ``(has_own_sessions,
-    has_super, has_other_sessions, kill_visible)``. Pure; memoisation
-    is unnecessary because the result is a tuple of bools (cheap to
-    recompute, equality-compared by callers).
+    Tuple shape: ``(has_own_sessions, has_super, cross_user_latched,
+    kill_visible)``. Pure; memoisation is unnecessary because the
+    result is a tuple of bools (cheap to recompute, equality-compared
+    by callers).
 
-    The recompose-on-cross-user flip is carried by
-    ``has_other_sessions`` (position 2): once the dashboard owns
-    other-user rows, ``bool(ctx.other_sessions)`` flipping is the
-    same predicate as "USER column needs to appear/disappear", so a
-    separate ``cross_user`` bool would be redundant. The flip
-    triggers the ``MainScreen`` recompose path; the new ``__init__``
-    rebuilds ``_active_columns`` from ``LayoutFlags(cross_user=
-    bool(ctx.other_sessions))``.
+    Position 2 (``cross_user_latched``) is the monotonic latch that
+    drives the USER column: ``True`` once two distinct usernames have
+    been observed anywhere in the dashboard model (local own, local
+    other, remote peers). Reads from
+    :attr:`MainScreenUiState.seen_users` — see
+    :func:`uxon.tui.dashboard.seen_users.cross_user_latched` for the
+    contract. The latch never resets within a process lifetime, so
+    the False→True flip is the only transition that triggers a
+    recompose of ``MainScreen`` for this bit.
     """
+    from .dashboard.seen_users import cross_user_latched
+
     has_super = bool(ctx.sudo_caps.reachable_users)
     return (
         bool(ctx.sessions),
         has_super,
-        bool(ctx.other_sessions),
+        cross_user_latched(ui),
         has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
     )
 

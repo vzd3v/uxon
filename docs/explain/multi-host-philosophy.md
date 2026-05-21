@@ -116,8 +116,8 @@ sessions to come back over the wire:
 If the peer's config has `enable_all_users_list = false`, the
 peer exits with code 1 and the stable stderr tag
 `uxon-error: all-users-disabled`. The collector detects that tag
-and retries once with the legacy `list --json` (own-only)
-command, stamping the snapshot with `scope_limited = true`. The
+and retries once with own-only `list --json`, stamping the
+snapshot with `scope_limited = true`. The
 TUI labels that peer `(own only)` — single-host case appends to
 the section header, multi-host case appends to the peer's name in
 the HOST column. **No silent partial data**: the badge is always

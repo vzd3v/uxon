@@ -1,107 +1,69 @@
 """Dashboard UI state + pure reducers.
 
-The dashboard's *transient* state — what column the rows are sorted by,
-which direction, and the operator's substring filter — lives here as an
-immutable :class:`DashboardUiState`. The selector (commit 6) consumes
-it from day one so the filter branch never goes through a "sometimes
-present" code path; reducers below let the screen layer mutate the
-state without learning the dataclass shape.
+Holds the operator's view choice (``view_mode``) and substring filter
+(``filter_text``). Sort is a hard contract owned by the model
+selector — not part of UI state.
 
-Every reducer is pure and deterministic. ``ui`` is returned by
-``is`` identity on no-ops so identity-keyed memoisation downstream
-(the reconciler diff in commit 7) stays correct without an explicit
-equality check.
+:class:`MainScreenUiState` is the recompose-safe owner of every
+transient piece of state the main screen carries (the
+:class:`DashboardUiState` above plus tab strip position and the
+focus-restore flag). It is created once on the App and survives the
+``apply_loaded_ctx`` recompose path that builds a fresh ``MainScreen``
+on layout-signature flips.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal
-
-from .columns import ColumnSpec
-
-# Fixed list of "interesting" sort columns the ``s`` keybinding cycles
-# through. Other ids in the registry (``host``, ``user``, ``new``,
-# ``cmd``, …) remain reachable via explicit config — only the rotation
-# is curated. Order is the operator's expected mental model: "see the
-# busy ones first" (cpu/ram), then recency (last), then alphabetical
-# (name) as the tie-breaker.
-_SORT_CYCLE: tuple[str, ...] = ("cpu", "ram", "last", "name")
 
 
 @dataclass(frozen=True, slots=True)
 class DashboardUiState:
-    """Transient per-screen UI state for the session dashboard.
-
-    Frozen + slotted so identity-keyed downstream caches stay valid
-    when reducers return ``self`` on a no-op (and reliably invalidate
-    when something actually changes). ``filter_text`` ships from day
-    one even though the keybinding lands later — the selector
-    consumes it unconditionally so the filter code path never goes
-    "sometimes wired".
-    """
-
-    sort_by: str = "cpu"
-    sort_dir: Literal["asc", "desc"] = "desc"
+    view_mode: Literal["by_host", "flat"] = "flat"
     filter_text: str = ""
 
 
-def cycle_sort(
+@dataclass
+class MainScreenUiState:
+    """Mutable bag of transient UI state for the main screen.
+
+    Owned by :class:`uxon.tui.app.UxonApp`, not by any individual
+    :class:`MainScreen` instance. ``apply_loaded_ctx`` replaces the
+    screen on layout-signature flips (e.g. another user starts a
+    session), and three pieces of state used to die with it:
+    ``view_mode``/``filter_text`` (the dashboard's UI state), the
+    active host tab, and the pending tab-focus-restore flag. The App
+    is stable for the whole TUI session, so storing them here makes
+    them recompose-safe.
+
+    ``seen_users`` is the monotonic accumulator behind the USER
+    column's cross_user latch: once two distinct usernames have been
+    observed across any combination of local + remote sources, the
+    column stays mounted for the rest of the process. Filtering or
+    transient remote-snapshot loss never shrinks it — the column
+    would otherwise disappear under the operator while they were
+    using it.
+    """
+
+    ui: DashboardUiState = field(default_factory=DashboardUiState)
+    active_tab_index: int = 0
+    pending_tab_focus_restore: bool = False
+    seen_users: set[str] = field(default_factory=set)
+
+
+def set_view_mode(
     ui: DashboardUiState,
-    *,
-    columns: tuple[ColumnSpec, ...],
+    mode: Literal["by_host", "flat"],
 ) -> DashboardUiState:
-    """Advance ``ui.sort_by`` to the next entry in the curated cycle.
-
-    Filtered to columns currently visible (``columns`` reflects the
-    runtime layout), so the cycle can never land on a hidden id even
-    if ``cpu`` happens to be off. If no curated id is in the active
-    set, returns ``ui`` unchanged. When the current ``sort_by`` is
-    not in the cycle (e.g. operator-pinned from config), the next
-    cycle call jumps to the first available cycle entry.
-
-    Returns ``ui`` by identity when the result would be the same
-    value (degenerate single-candidate cycle) so downstream identity
-    checks stay sound.
-    """
-    visible_ids = {c.id for c in columns}
-    candidates = [cid for cid in _SORT_CYCLE if cid in visible_ids]
-    if not candidates:
+    """Set ``view_mode``. Returns ``ui`` by identity on no-op."""
+    if mode == ui.view_mode:
         return ui
-    try:
-        idx = candidates.index(ui.sort_by)
-    except ValueError:
-        # ``sort_by`` isn't in the curated cycle — jump to the first
-        # available cycle entry. ``replace`` always builds a new
-        # instance; identity changes, which is correct here because
-        # the value changes too.
-        return replace(ui, sort_by=candidates[0])
-    nxt = candidates[(idx + 1) % len(candidates)]
-    if nxt == ui.sort_by:
-        # Single-candidate cycle: the only entry is already active.
-        return ui
-    return replace(ui, sort_by=nxt)
-
-
-def toggle_sort_dir(ui: DashboardUiState) -> DashboardUiState:
-    """Flip ``sort_dir`` between ``"asc"`` and ``"desc"``.
-
-    Always changes the value, so always returns a new instance. The
-    ``is``-identity contract still applies in spirit: callers that
-    depend on identity reuse on a no-op simply have no no-op here.
-    """
-    new: Literal["asc", "desc"] = "asc" if ui.sort_dir == "desc" else "desc"
-    return replace(ui, sort_dir=new)
+    return replace(ui, view_mode=mode)
 
 
 def set_filter(ui: DashboardUiState, text: str) -> DashboardUiState:
-    """Set ``filter_text`` to ``text``.
-
-    Returns ``ui`` by identity when ``text`` already matches — this
-    is the hot-path reducer (one call per keystroke) and the no-op
-    identity reuse keeps the reconciler from rebuilding rows when
-    the filter hasn't actually moved.
-    """
+    """Set ``filter_text``. Returns ``ui`` by identity on no-op."""
     if text == ui.filter_text:
         return ui
     return replace(ui, filter_text=text)

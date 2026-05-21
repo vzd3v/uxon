@@ -188,7 +188,7 @@ messages:
 | Tag | Meaning |
 |---|---|
 | `uxon-error: not-reachable` | Caller cannot `sudo -niu <user>` (no NOPASSWD). Exit code 1. |
-| `uxon-error: all-users-disabled` | Peer's config has `enable_all_users_list = false`. Exit code 1. The aggregator detects this tag and falls back to the legacy own-only `list --json` command, stamping the snapshot with `scope_limited = true`. |
+| `uxon-error: all-users-disabled` | Peer's config has `enable_all_users_list = false`. Exit code 1. The aggregator detects this tag and falls back to own-only `list --json`, stamping the snapshot with `scope_limited = true`. |
 
 Anything else on stderr is treated as a generic SSH/peer failure
 and falls through to the cache fallback path.

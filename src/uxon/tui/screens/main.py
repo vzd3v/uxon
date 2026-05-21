@@ -2,9 +2,9 @@
 
 Layout:
     ┌ Header ──────────────────────────────────────────┐
-    │ ActionRow action-cwd                             │
-    │ ActionRow action-new                             │
-    │ ActionRow action-open                            │
+    │ ┌─ #top-actions ──────────────────────────────┐  │
+    │ │ action-cwd │ action-new │ action-open       │  │
+    │ └─────────────────────────────────────────────┘  │
     │ ── sessions ──                                   │
     │ SessionDashboardTable (own + other-user + remote │
     │   rows; USER column iff cross_user, HOST column  │
@@ -14,7 +14,8 @@ Layout:
     │ ActionRow kill-all-global                        │
     └ Footer ──────────────────────────────────────────┘
 
-T7a ships layout + core bindings (q/escape/f1/d/D/r). Digit-jump
+T7a shipped layout + core bindings (q/f1/d/D/r); 3.4 dropped
+``escape → quit`` and added layout-invariant JCUKEN twins. Digit-jump
 arrives in T7b; activation wiring in T7c. The screen holds a
 reference to the current :class:`TuiContext` and refreshes it on ``r``.
 """
@@ -26,8 +27,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.lazy import Lazy
+from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
@@ -38,22 +38,31 @@ from ..context import (
     TuiContext,
     _segments,
 )
+from ..dashboard.buckets import (
+    compute_block_starts,
+    select_host_buckets,
+    select_host_status_block,
+)
 from ..dashboard.layout import LayoutFlags, build_active_columns
 from ..dashboard.model import select_dashboard_model
 from ..dashboard.reconcile import diff
 from ..dashboard.row import SessionRow
-from ..dashboard.ui_state import DashboardUiState, cycle_sort, toggle_sort_dir
+from ..dashboard.seen_users import collect_user_set, cross_user_latched
+from ..dashboard.ui_state import DashboardUiState, MainScreenUiState, set_filter, set_view_mode
 from ..events import debug as _debug
+from ..keymap import bindings_with_aliases
 from ..state import (
     MainIntent,
     activate_main_index,
-    digit_jump_intent,
     main_action_intent,
     main_status_line,
     select_layout_signature,
-    visible_detected_agents,
 )
-from ..widgets import ActionRow, DetectedAgentsBanner
+from ..widgets import ActionRow
+from ..widgets.action_row import ACTION_GROUP_CONTAINER_ID
+from ..widgets.host_status_bar import HostStatusBar
+from ..widgets.host_tab_strip import HostTabActivated, HostTabStrip
+from ..widgets.search_bar import FilterChanged, SearchBar
 from ..widgets.session_dashboard_table import SessionDashboardTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 from .existing import ExistingProjectScreen
@@ -73,10 +82,24 @@ class MainScreen(Screen):
         width: 1fr;
         height: 1fr;
     }
+    /* The literal id below mirrors ACTION_GROUP_CONTAINER_ID in
+       widgets/action_row.py. CSS can't reference Python constants;
+       keep the two in sync (the constant is what the group's
+       ←/→/↑/↓ navigation keys off). Height matches the bordered
+       ActionRow visual (border + 1 line + border = 3). */
+    #top-actions {
+        height: 3;
+        width: 1fr;
+    }
+    #top-actions-caption {
+        height: 1;
+        width: 1fr;
+        color: $text-muted;
+        padding: 0 1;
+    }
     .segment-header {
         color: $text-muted;
         padding: 0 1;
-        margin-top: 1;
     }
     .empty-note {
         color: $text-muted;
@@ -96,53 +119,28 @@ class MainScreen(Screen):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("q", "quit", "Quit", show=True),
-        Binding("escape", "quit", "Quit", show=False),
         Binding("f1", "help", "Help", show=False),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
-        # Dashboard sort controls. ``s`` cycles through cpu / ram /
-        # last / name (filtered by visible columns); ``S`` (Shift+s)
-        # toggles asc/desc. Both reducers live in
-        # ``dashboard/ui_state.py`` and are pure — the screen owns the
-        # re-render after applying the new state.
-        Binding("s", "cycle_sort", "Sort cycle", show=True),
-        Binding("S", "toggle_sort_dir", "Sort dir", show=True),
-        # Detected-agents banner: only does something when the banner is
-        # visible (``visible_detected_agents(...)`` is non-empty). When the
-        # banner is hidden these bindings are no-ops; the footer hides
-        # them via ``show=False`` to avoid clutter.
-        Binding("a", "enable_detected", "Enable detected", show=False),
-        Binding("x", "dismiss_detected", "Dismiss detected", show=False),
+        Binding("v", "toggle_view", "View", show=True),
+        Binding("s", "focus_search", "Search", show=True),
+        Binding("/", "focus_search", "", show=False),
         # Arrow navigation across focusable widgets. DataTable consumes
         # up/down internally for row navigation, so these only fire when
         # focus sits on an ActionRow — crossing widget boundaries.
         Binding("up", "app.focus_previous", "", show=False),
         Binding("down", "app.focus_next", "", show=False),
-        # Digit 1-9 jump — resolver guards Settings / Kill-ALL.
-        Binding("1", "digit_jump(1)", "1-9 jump", show=True, priority=True),
-        Binding("2", "digit_jump(2)", "", show=False, priority=True),
-        Binding("3", "digit_jump(3)", "", show=False, priority=True),
-        Binding("4", "digit_jump(4)", "", show=False, priority=True),
-        Binding("5", "digit_jump(5)", "", show=False, priority=True),
-        Binding("6", "digit_jump(6)", "", show=False, priority=True),
-        Binding("7", "digit_jump(7)", "", show=False, priority=True),
-        Binding("8", "digit_jump(8)", "", show=False, priority=True),
-        Binding("9", "digit_jump(9)", "", show=False, priority=True),
-    ]
+    )
 
-    # Stage 8 commit 3: writable reactive driving the
-    # ``#sessions-note`` re-render when the first ``MainData`` lands.
-    # Plain assignment only — **no** ``compute_loading`` method:
-    # Textual's ``Reactive._set`` (textual/reactive.py:330-333) marks
-    # the descriptor read-only when ``hasattr(obj, compute_name)``
-    # holds, and ``mutate_reactive`` raises immediately. The
-    # rebuild-source dispatcher (commit 7) writes
-    # ``screen.loading = (state.main is None)`` directly. Until then
-    # ``apply_loaded_ctx`` mirrors ``ctx.loading`` into this reactive
-    # so existing renderers see a consistent state.
+    # Writable reactive driving the ``#sessions-note`` re-render when
+    # the first ``MainData`` lands. Plain assignment only — defining a
+    # ``compute_loading`` method would make Textual's reactive
+    # descriptor read-only (textual/reactive.py:330-333). The
+    # rebuild-source dispatcher writes ``screen.loading = (state.main
+    # is None)`` directly.
     loading: reactive[bool] = reactive(True)
 
     def __init__(self, ctx: TuiContext) -> None:
@@ -150,34 +148,89 @@ class MainScreen(Screen):
         self.ctx = ctx
         self.loading = bool(ctx.loading)
         self._restore_focus_key = ""
-        # Dashboard tracking. The widget is a view; MainScreen owns the
-        # SessionRow tuple and the UI state so action_kill /
-        # on_data_table_row_selected can map cursor → SessionRow.
-        # Commit 10 bridges only own local rows into the dashboard;
-        # commits 11/12 fold other-user and remote rows.
+        # Dashboard rows are an in-flight repaint cache, not UI state —
+        # they're rebuilt from ``state`` on every tick, so dying with
+        # the screen on recompose is harmless. Filter/view/tab state
+        # is different: it lives on ``self.app.main_ui`` (see
+        # :class:`MainScreenUiState`) so a layout-signature flip
+        # doesn't silently snap the operator back to defaults.
         self._dashboard_rows: tuple[SessionRow, ...] = ()
-        self._dashboard_ui = DashboardUiState(
-            sort_by=ctx.tui_table_default_sort_by or "cpu",
-        )
-        # Compute the active dashboard columns once and reuse from
-        # ``compose`` and ``_refresh_dashboard``. Two independent calls
-        # would be fragile when the flags widen — easy to drift one
-        # path. ``MainScreen`` is reconstructed via
-        # ``switch_screen(MainScreen)`` on the recompose path, so a
-        # ``cross_user`` flip picks up the new columns naturally
-        # because ``__init__`` runs again. The layout signature's
-        # ``has_other_sessions`` bool (``select_layout_signature``)
-        # tracks ``bool(ctx.other_sessions)`` — the same predicate
-        # used here — so the flip and the column-set rebuild are
-        # wired through the same source.
+        # Compute active dashboard columns once and reuse from
+        # ``compose`` and ``_refresh_dashboard``. ``cross_user`` reads
+        # the monotonic latch on ``app.main_ui.seen_users`` (see
+        # :mod:`uxon.tui.dashboard.seen_users`) so the USER column
+        # mounts whenever two distinct users have been observed
+        # across any source — local own, local other-user, or remote
+        # peers. The latch never resets, so the column doesn't flicker
+        # when a foreign user's sessions die or filtering narrows the
+        # row set. The same accessor backs ``select_layout_signature``,
+        # keeping recompose-trigger and column-mount predicate in
+        # lockstep.
         flags = LayoutFlags(
             multi_host=bool(ctx.remote_hosts),
-            cross_user=bool(ctx.other_sessions),
+            cross_user=cross_user_latched(self._main_ui_or_empty()),
         )
         self._active_columns = build_active_columns(
             cfg_columns=ctx.tui_table_columns,
             flags=flags,
         )
+        # Cached layout signature for the patch-vs-recompose decision.
+        # Captured here at construction; refreshed at the end of every
+        # :meth:`apply_loaded_ctx` call. Caching is the only way the
+        # ``cross_user_latched`` predicate (a side-channel through
+        # ``app.main_ui.seen_users``) can drive a recompose: callers
+        # that flip the latch from outside ``apply_loaded_ctx`` (e.g.
+        # :meth:`UxonApp._handle_remote_snapshot` folding a foreign
+        # user from a peer's snapshot) update the live set first, so
+        # an entry-time recomputation of "old signature" would already
+        # see the flipped value and miss the transition. The cached
+        # value is the *previous* signature — what was committed last
+        # time apply_loaded_ctx finished — making the False→True
+        # transition observable regardless of who flipped the latch.
+        self._cached_signature = select_layout_signature(ctx, self._main_ui_or_empty())
+
+    def _main_ui_or_empty(self) -> MainScreenUiState:
+        """Return ``app.main_ui`` if reachable, otherwise a fresh empty
+        :class:`MainScreenUiState`.
+
+        ``MainScreen.__init__`` runs before Textual attaches the
+        screen to the App in some unit tests (``MainScreen.__new__``
+        construction) and before App readiness on the very first
+        mount. Falling back to an empty UI state in those windows is
+        equivalent to "the latch has not been observed yet" — the
+        feeder fills it on the next dispatch and the next recompose
+        picks up the real value.
+        """
+        try:
+            ui = self.app.main_ui  # type: ignore[attr-defined]
+        except Exception:
+            return MainScreenUiState()
+        if isinstance(ui, MainScreenUiState):
+            return ui
+        return MainScreenUiState()
+
+    # ── Recompose-safe UI state proxies ──────────────────────────────
+    #
+    # These three properties tunnel through to ``self.app.main_ui``
+    # (the :class:`MainScreenUiState` the App owns). They keep the
+    # call sites in this screen unchanged while making the underlying
+    # storage stable across the ``apply_loaded_ctx`` recompose path.
+
+    @property
+    def _dashboard_ui(self) -> DashboardUiState:
+        return self.app.main_ui.ui  # type: ignore[attr-defined]
+
+    @_dashboard_ui.setter
+    def _dashboard_ui(self, value: DashboardUiState) -> None:
+        self.app.main_ui.ui = value  # type: ignore[attr-defined]
+
+    @property
+    def _tab_focus_pending_restore(self) -> bool:
+        return self.app.main_ui.pending_tab_focus_restore  # type: ignore[attr-defined]
+
+    @_tab_focus_pending_restore.setter
+    def _tab_focus_pending_restore(self, value: bool) -> None:
+        self.app.main_ui.pending_tab_focus_restore = value  # type: ignore[attr-defined]
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -189,41 +242,36 @@ class MainScreen(Screen):
                 loading=self.ctx.loading,
             )
             yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
-            # Detected-agents banner. Hidden by default; the host probe
-            # worker populates ctx.detected_agents and triggers
-            # ``_refresh_detected_banner``.
-            # Wrapped in Lazy so it does not contend with first paint;
-            # the banner is hidden at mount and only becomes visible after
-            # the host probe lands and ``_refresh_detected_banner`` runs.
-            yield Lazy(DetectedAgentsBanner("", id="detected-banner", classes="-hidden"))
-            # Action rows
-            yield ActionRow(
-                kind="action-cwd",
-                label="New session in current folder",
-                detail=self._cwd_detail(),
-                digit=1,
-                enabled=self.ctx.cwd_writable is not False,
-                id="action-cwd",
-            )
-            yield ActionRow(
-                kind="action-new",
-                label="Create new project",
-                detail=f"({self.ctx.new_project_root}/…)",
-                digit=2,
-                enabled=True,
-                id="action-new",
-            )
-            yield ActionRow(
-                kind="action-open",
-                label="Open existing project",
-                detail=self._open_detail(),
-                digit=3,
-                # While loading we don't yet know whether projects exist.
-                # Keep the row enabled so it isn't dimmed; activation falls
-                # through to the existing "no projects" notify path.
-                enabled=self.ctx.loading or bool(self.ctx.existing_projects),
-                id="action-open",
-            )
+            # Top action row — three side-by-side bordered buttons.
+            # ←/→ cycle cyclically inside the group; ↓ exits the group
+            # to the sessions block below; ↑ exits upward. Per-button
+            # detail (cwd / project root) is rendered as a single
+            # caption line below the row instead of inside each button
+            # — at 1/3 of terminal width the label alone is already
+            # tight; folding detail in truncates it on most layouts.
+            with Horizontal(id=ACTION_GROUP_CONTAINER_ID):
+                yield ActionRow(
+                    kind="action-cwd",
+                    label="New session in current folder",
+                    enabled=self.ctx.cwd_writable is not False,
+                    id="action-cwd",
+                )
+                yield ActionRow(
+                    kind="action-new",
+                    label="Create new project",
+                    enabled=True,
+                    id="action-new",
+                )
+                yield ActionRow(
+                    kind="action-open",
+                    label="Open existing project",
+                    # While loading we don't yet know whether projects exist.
+                    # Keep the row enabled so it isn't dimmed; activation falls
+                    # through to the existing "no projects" notify path.
+                    enabled=self.ctx.loading or bool(self.ctx.existing_projects),
+                    id="action-open",
+                )
+            yield Static(self._top_actions_caption(), id="top-actions-caption")
             # Sessions header + unified dashboard. The dashboard is
             # mounted unconditionally — empty-state copy is rendered by
             # the ``#sessions-note`` Static above it (toggled by class
@@ -231,6 +279,7 @@ class MainScreen(Screen):
             # other-user + remote per-host rows all flow through this
             # one widget; the USER column appears when ``cross_user``
             # is set, the HOST column when ``multi_host`` is set.
+            yield SearchBar(id="search-bar")
             yield Static("── sessions ──", classes="segment-header")
             note = "Loading sessions…" if self.ctx.loading else "No active sessions."
             note_classes = "empty-note"
@@ -239,6 +288,15 @@ class MainScreen(Screen):
                 # the layout doesn't flicker an empty-note at first paint.
                 note_classes = "empty-note -hidden"
             yield Static(note, id="sessions-note", classes=note_classes)
+            # Tab strip + status bars are always mounted regardless of the
+            # initial view mode; ``_refresh_dashboard`` toggles ``display``
+            # so the widget tree stays stable across ``v`` flips. Mounting
+            # only when ``view_mode == "by_host"`` would silently break
+            # ``v`` for operators who configure ``default_view = "flat"``
+            # (the toggle would have no widgets to show).
+            yield HostTabStrip([], id="host-tabs")
+            yield HostStatusBar(mode="compact", id="host-status-compact")
+            yield HostStatusBar(mode="expanded", id="host-status-expanded")
             yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
             if bool(self.ctx.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
@@ -246,9 +304,9 @@ class MainScreen(Screen):
                     kind="settings",
                     label="⚙ Settings",
                     detail="(repo-level config.toml)",
-                    digit=None,
                     enabled=True,
                     id="action-settings",
+                    singleton=True,
                 )
                 total_sessions = len(self.ctx.sessions) + len(self.ctx.other_sessions)
                 if total_sessions > 0:
@@ -259,9 +317,9 @@ class MainScreen(Screen):
                             f"⚡ Kill ALL uxon sessions (reachable users, {total_sessions} total)"
                         ),
                         detail=f"({', '.join(reachable_users)} + self)",
-                        digit=None,
                         enabled=True,
                         id="action-kill-all-global",
+                        singleton=True,
                     )
             # Multi-host: remote rows fold into the unified dashboard
             # above. The HOST column is auto-prepended when the
@@ -297,6 +355,16 @@ class MainScreen(Screen):
             return f"({self.ctx.new_project_root}/… — loading)"
         return f"({self.ctx.new_project_root}/…)"
 
+    def _top_actions_caption(self) -> str:
+        """Single-line caption rendered under the top action buttons.
+
+        Rebuilt on every ctx swap (see :meth:`_apply_ctx_refresh`) so
+        the cwd / project-root detail stays current. Lives outside the
+        bordered buttons because at 1/3 width per button there isn't
+        room for both the label and the path.
+        """
+        return f"1: {self.ctx.cwd_short}   2 & 3: {self.ctx.new_project_root}/…"
+
     def on_mount(self) -> None:
         # Initial dashboard apply. ``state.main`` may still be ``None``
         # at this point (cold-start skeleton ctx) — ``_refresh_dashboard``
@@ -306,12 +374,9 @@ class MainScreen(Screen):
         self._refresh_dashboard()
         self.call_after_refresh(self._update_status_line)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
-            # Stage 10a — ``UXON_DEBUG=startup``: closest proxy to "first
-            # frame painted" Textual exposes without a renderer hook. By
-            # the end of ``MainScreen.on_mount`` the widgets are mounted
-            # and the next event-loop tick paints them; this is the
-            # signal we emit for the ``mount_started → first_paint``
-            # budget.
+            # Closest proxy to "first frame painted" without a renderer
+            # hook: by the end of ``on_mount`` widgets are mounted and
+            # the next event-loop tick paints them.
             import time as _time  # noqa: PLC0415
 
             _debug("startup", at="first_paint", ts=_time.monotonic())
@@ -325,7 +390,24 @@ class MainScreen(Screen):
         if not self._restore_focus_key:
             self.call_later(self._focus_default_action)
 
-    # ── Dashboard (commit 10 bridge: own-only) ───────────────────────
+    # ── Dashboard ────────────────────────────────────────────────────
+
+    def _block_colors(self) -> dict[str | None, str]:
+        """Map ``host_name → block colour``, shared by tab strip + table glyphs.
+
+        Single source for the palette/local-host pair so the strip
+        and the dashboard rows can never disagree on hue. Local
+        import keeps the module graph tidy.
+        """
+        from ..dashboard.columns import assign_block_colors
+
+        palette = tuple(getattr(self.ctx, "tui_color_palette", ("cyan", "blue")))
+        local_color = getattr(self.ctx, "local_host_color", "green")
+        return assign_block_colors(
+            tuple(self.ctx.remote_hosts),
+            local_color=local_color,
+            palette=palette,
+        )
 
     def _build_dashboard_cfg_view(self) -> SimpleNamespace:
         """Minimal cfg view consumed by :func:`select_dashboard_model`.
@@ -385,45 +467,140 @@ class MainScreen(Screen):
         previous tuple, apply the ops to the widget, then pin the cursor
         by row-key so a no-op tick leaves it where it was.
 
-        ``cross_user`` is *not* recomputed here. The active column
-        tuple is fixed at ``__init__`` time; a flip in
-        ``bool(ctx.other_sessions)`` changes the layout signature
-        (``select_layout_signature``) and forces the outer
-        ``apply_loaded_ctx`` recompose path, which constructs a new
-        :class:`MainScreen` whose ``__init__`` rebuilds
-        ``_active_columns`` with the new flag. The patch path
-        (this method) only applies row-level ops.
-
-        Per-host repaint optimisation is preserved structurally: the
-        model selector's identity-stable contract returns the same
-        tuple object when no slot changed, and a single-host slot
-        replacement yields a tuple where only that host's rows differ;
-        the reconciler emits ops only for those rows.
+        ``cross_user`` is *not* recomputed here — the active column
+        tuple is fixed at ``__init__`` time, and a flip in
+        ``bool(ctx.other_sessions)`` forces a recompose via the
+        layout signature.
         """
         state = getattr(self.app, "state", None)
         if state is None:
             return
+        # ``keys`` channel: bracket every dashboard refresh with entry +
+        # elapsed_ms so the operator can correlate "arrow press swallowed"
+        # with "main thread blocked here". Wall-clock is unsuitable
+        # (NTP jitter); ``time.monotonic`` is the safe diff source.
+        import time as _time  # noqa: PLC0415
+
+        _refresh_t0 = _time.monotonic()
+        _debug("keys", at="refresh_dashboard_enter", ts=_refresh_t0)
         cfg_view = self._build_dashboard_cfg_view()
         rows = select_dashboard_model(state, cfg_view, self._dashboard_ui)  # type: ignore[arg-type]
-        # Commit 12: full model — local (host=None) + remote (host=peer).
+        # Full model — local (host=None) + remote (host=peer).
         all_rows = rows
+        # A non-empty filter forces flat render; the tab strip is
+        # hidden (no buckets) so the operator sees every match across
+        # hosts in one list.
+        needle = self._dashboard_ui.filter_text.strip()
+        forced_flat = bool(needle)
+        in_by_host = self._dashboard_ui.view_mode == "by_host" and not forced_flat
+        # Tab strip visible only when in_by_host.
+        try:
+            tab_strip_widget = self.query_one("#host-tabs", HostTabStrip)
+            tab_strip_widget.display = in_by_host
+        except Exception:
+            pass
+        active_bucket = None
+        if in_by_host:
+            buckets = select_host_buckets(rows, cfg_view)
+            # The App holds the surviving tab index so a recompose
+            # doesn't snap the operator back to "local". Apply it
+            # before ``set_buckets`` so the strip mounts already
+            # showing the right tab (avoids a one-frame flicker).
+            saved_idx = self.app.main_ui.active_tab_index  # type: ignore[attr-defined]
+            if buckets and saved_idx >= len(buckets):
+                saved_idx = max(0, len(buckets) - 1)
+                self.app.main_ui.active_tab_index = saved_idx  # type: ignore[attr-defined]
+            try:
+                tab_strip = self.query_one("#host-tabs", HostTabStrip)
+            except Exception:
+                active_idx = saved_idx if buckets else 0
+            else:
+                if tab_strip.active_index != saved_idx:
+                    tab_strip.active_index = saved_idx
+                tab_strip.set_buckets(list(buckets), colors=self._block_colors())
+                active_idx = tab_strip.active_index
+            if buckets:
+                active_bucket = (
+                    buckets[active_idx] if 0 <= active_idx < len(buckets) else buckets[0]
+                )
+                rows = active_bucket.rows
         try:
             widget = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:  # pragma: no cover — not yet mounted
             return
         prev_cursor_key = self._cursor_row_key(widget)
-        ops = diff(self._dashboard_rows, all_rows, self._active_columns)
-        widget.apply(ops)
-        self._dashboard_rows = all_rows
+        plan = diff(self._dashboard_rows, rows, self._active_columns)
+        widget.set_block_meta(self._build_block_meta(rows))
+        widget.set_block_starts(compute_block_starts(rows, self.ctx.current_user))
+        widget.apply(plan)
+        self._dashboard_rows = rows
         widget.pin_cursor_to(prev_cursor_key)
         self._refresh_dashboard_note(all_rows)
+        # Feed the HostStatusBar(s). Status lines aggregate over the
+        # unfiltered, full row tuple so the bar reflects fleet totals
+        # even when a search filter narrows the table.
+        host_stats_local = state.main.host_stats if state.main is not None else None
+        status_lines = select_host_status_block(all_rows, state, host_stats_local, cfg_view)
+        try:
+            compact_bar = self.query_one("#host-status-compact", HostStatusBar)
+        except Exception:
+            compact_bar = None
+        try:
+            expanded_bar = self.query_one("#host-status-expanded", HostStatusBar)
+        except Exception:
+            expanded_bar = None
+        if in_by_host and active_bucket is not None and status_lines:
+            line = next(
+                (sl for sl in status_lines if sl.host_name == active_bucket.host_name),
+                status_lines[0],
+            )
+            if compact_bar is not None:
+                compact_bar.display = True
+                compact_bar.update_lines((line,))
+            if expanded_bar is not None:
+                expanded_bar.display = False
+        else:
+            if compact_bar is not None:
+                compact_bar.display = False
+            if expanded_bar is not None:
+                expanded_bar.display = True
+                expanded_bar.update_lines(status_lines)
+        _debug(
+            "keys",
+            at="refresh_dashboard_exit",
+            ms=int((_time.monotonic() - _refresh_t0) * 1000),
+            rows=len(rows),
+            view=self._dashboard_ui.view_mode,
+            forced_flat=forced_flat,
+        )
+
+    def _build_block_meta(
+        self,
+        rows: tuple[SessionRow, ...],
+    ) -> dict[str, tuple[str, int]]:
+        """Map each row's reconciler key to (block_color, row_in_block).
+
+        ``block_color`` comes from :func:`assign_block_colors` on the
+        cfg's remote hosts; ``row_in_block`` is the row's index inside
+        its host block (0, 1, 2, ...) for zebra parity.
+        """
+        colors = self._block_colors()
+        local_color = colors.get(None, "green")
+        out: dict[str, tuple[str, int]] = {}
+        counters: dict[str | None, int] = {}
+        for row in rows:
+            host_key = row.host  # None for locals
+            idx = counters.get(host_key, 0)
+            counters[host_key] = idx + 1
+            key = f"{row.host or 'local'}/{row.user}/{row.name}"
+            out[key] = (colors.get(host_key, local_color), idx)
+        return out
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 
     def on_action_row_activated(self, event: ActionRow.Activated) -> None:
         """Route an :class:`ActionRow.Activated` to the right handler.
 
-        Modal chains are stubbed here and wired through in T14.
         ``CallbackError`` from any callback renders as a red toast.
         """
         self._run_intent(main_action_intent(event.row.kind))
@@ -475,8 +652,6 @@ class MainScreen(Screen):
             self._kill_all_global()
         elif intent.kind == "attach":
             self._attach_session(intent.user, intent.session_name)
-        elif intent.kind == "focus-only":
-            self.app.notify("Press Enter to open Settings / Kill-ALL (digit moves cursor only)")
 
     def _attach_session(self, user: str, session_name: str) -> None:
         try:
@@ -490,14 +665,11 @@ class MainScreen(Screen):
 
     def _launch_cwd(self) -> None:
         # Async probe may not have landed yet (cross-user / sudo path).
-        # Run the fallback probe synchronously here so the user never
-        # gets to launch-time with an unknown answer.
-        # Stage 8 commit 6: "loading" is now structural — the slot
-        # has not been written yet (``last_attempt_at is None``). A
-        # legitimate ``value=None`` from a returned probe (rare; the
-        # callback rarely returns None) does not trigger the
-        # synchronous fallback because the slot's
-        # ``last_attempt_at`` is set.
+        # Run the fallback probe synchronously so the user never gets
+        # to launch-time with an unknown answer. "loading" is
+        # structural: the slot's ``last_attempt_at is None`` means
+        # never-written; a legitimate ``value=None`` does not retrigger
+        # the fallback because ``last_attempt_at`` is set.
         state = getattr(self.app, "state", None)
         never_loaded = (
             state is None or state.cwd_writable.last_attempt_at is None
@@ -672,72 +844,156 @@ class MainScreen(Screen):
         if callable(kick):
             kick()
 
-    def action_enable_detected(self) -> None:
-        """Banner action: add the first detected agent to ``[agents].enabled``."""
-        ids = self._visible_detected()
-        if not ids:
-            return
-        if not self.ctx.repo_config_writable:
-            self.app.notify(
-                "Repo config is read-only; ask your operator to enable in [agents].enabled.",
-                severity="warning",
-                timeout=6,
-            )
-            return
-        agent_id = ids[0]
-        try:
-            self.ctx.on_enable_detected_agent(agent_id)
-        except CallbackError as exc:
-            self.app.notify(f"Enable failed: {exc}", severity="error", timeout=6)
-            return
-        self.app.notify(f"Enabled '{agent_id}' in [agents].enabled.")
-        # Trigger a full refresh so cfg.enabled_agents picks up the new
-        # agent and the banner re-evaluates.
-        self.app.kick_refresh()  # type: ignore[attr-defined]
+    def action_toggle_view(self) -> None:
+        new_mode = "flat" if self._dashboard_ui.view_mode == "by_host" else "by_host"
+        # The tab strip is hidden in flat mode. If focus is currently
+        # inside the strip, ``_refresh_dashboard`` is about to strand
+        # it on a ``display: none`` widget — move it to the dashboard
+        # table now and remember the position so we can return focus
+        # to the active tab when the strip reappears.
+        was_on_strip = self._focus_in_tab_strip()
+        if new_mode == "flat" and was_on_strip:
+            try:
+                self.query_one("#sessions-dashboard", SessionDashboardTable).focus()
+            except Exception:
+                pass
+        self._dashboard_ui = set_view_mode(self._dashboard_ui, new_mode)
+        self._refresh_dashboard()
+        if new_mode == "by_host" and self._tab_focus_pending_restore:
+            self._restore_focus_to_active_tab()
+        # Pending-restore flag flips on flat→by_host but only when we
+        # left the strip on the previous toggle. Set after the restore
+        # check so the same toggle doesn't fire it twice.
+        self._tab_focus_pending_restore = was_on_strip and new_mode == "flat"
+        self.app.notify(f"View: {new_mode.replace('_', ' ')}")
 
-    def action_dismiss_detected(self) -> None:
-        """Banner action: dismiss the first detected agent (per-user state file)."""
-        ids = self._visible_detected()
-        if not ids:
-            return
-        agent_id = ids[0]
-        try:
-            self.ctx.on_dismiss_detected_agent(agent_id)
-        except CallbackError as exc:
-            self.app.notify(f"Dismiss failed: {exc}", severity="error", timeout=6)
-            return
-        self._refresh_detected_banner()
+    def _focus_in_tab_strip(self) -> bool:
+        """True iff the currently-focused widget is inside ``#host-tabs``."""
+        node = self.focused
+        while node is not None:
+            if isinstance(node, HostTabStrip):
+                return True
+            node = node.parent
+        return False
 
-    def _visible_detected(self) -> list[str]:
+    def _restore_focus_to_active_tab(self) -> None:
+        """Focus the active ``_TabButton`` after a flat→by_host flip."""
         try:
-            dismissed = self.ctx.get_dismissed_detected_agents()
-        except CallbackError:
-            dismissed = []
-        return visible_detected_agents(
-            detected=self.ctx.detected_agents,
-            enabled_agents=tuple(self.ctx.enabled_agents),
-            dismissed=dismissed,
-        )
-
-    def _refresh_detected_banner(self) -> None:
-        """Recompute and apply the banner text. No-op if banner not mounted."""
-        try:
-            banner = self.query_one("#detected-banner", DetectedAgentsBanner)
-        except Exception:  # pragma: no cover — DOM not mounted yet
+            strip = self.query_one("#host-tabs", HostTabStrip)
+        except Exception:
             return
-        banner.update_from(
-            self._visible_detected(),
-            repo_config_writable=self.ctx.repo_config_writable,
-        )
+        idx = strip.active_index
+        try:
+            tab = strip.query_one(f"#tab-{idx}")
+        except Exception:
+            return
+        tab.focus()
+
+    def action_focus_search(self) -> None:
+        # Remember which widget summoned the bar so Esc can return
+        # focus to it instead of always falling back to action-cwd.
+        focused = self.focused
+        return_id = focused.id if focused is not None else None
+        try:
+            bar = self.query_one("#search-bar", SearchBar)
+        except Exception:
+            return
+        bar.show(return_focus_id=return_id)
+
+    def on_filter_changed(self, event: FilterChanged) -> None:
+        self._dashboard_ui = set_filter(self._dashboard_ui, event.text)
+        self._refresh_dashboard()
+        # Update match counter.
+        try:
+            bar = self.query_one("#search-bar", SearchBar)
+            bar.set_match_count(len(self._dashboard_rows))
+        except Exception:
+            pass
+
+    def action_prev_tab(self) -> None:
+        try:
+            strip = self.query_one("#host-tabs", HostTabStrip)
+        except Exception:
+            return
+        n = len(strip._buckets)
+        if n <= 1:
+            return
+        strip.active_index = (strip.active_index - 1) % n
+
+    def action_next_tab(self) -> None:
+        try:
+            strip = self.query_one("#host-tabs", HostTabStrip)
+        except Exception:
+            return
+        n = len(strip._buckets)
+        if n <= 1:
+            return
+        strip.active_index = (strip.active_index + 1) % n
+
+    def on_session_dashboard_table_host_navigate(
+        self,
+        event: SessionDashboardTable.HostNavigate,
+    ) -> None:
+        """Route ←/→ on the dashboard.
+
+        by_host (no active search): cycle the active host tab cyclically.
+        flat — or by_host forced flat by an active search filter: jump
+        the cursor to the first row of the next/previous block (own /
+        other-user / per-host remote). The search-active branch is
+        critical: a non-empty filter renders flat *while* ``view_mode``
+        stays ``by_host`` (see ``_refresh_dashboard``); without this
+        guard ←/→ would silently cycle the hidden tab strip and
+        clearing the search would land on an unexpected tab.
+        """
+        forced_flat = bool(self._dashboard_ui.filter_text.strip())
+        if self._dashboard_ui.view_mode == "by_host" and not forced_flat:
+            if event.direction < 0:
+                self.action_prev_tab()
+            else:
+                self.action_next_tab()
+            return
+        try:
+            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
+        except Exception:
+            return
+        starts = table.block_starts
+        if len(starts) <= 1:
+            return
+        cur = table.cursor_row
+        block_idx = 0
+        for i, s in enumerate(starts):
+            if s <= cur:
+                block_idx = i
+            else:
+                break
+        new_block = (block_idx + (1 if event.direction > 0 else -1)) % len(starts)
+        table.move_cursor(row=starts[new_block])
+
+    def on_host_tab_activated(self, event: HostTabActivated) -> None:
+        # Persist the new index on the App so a recompose mid-session
+        # restores the same tab. ``_refresh_dashboard`` re-reads from
+        # ``self.app.main_ui.active_tab_index`` and feeds it back into
+        # the strip, keeping the two in lockstep.
+        # Short-circuit when the message just echoes the App's
+        # current state — `_refresh_dashboard` itself sets
+        # ``tab_strip.active_index`` to sync with `main_ui`, which
+        # posts this message back; without the guard each refresh
+        # would trigger a second redundant refresh per tick.
+        if self.app.main_ui.active_tab_index == event.index:  # type: ignore[attr-defined]
+            return
+        self.app.main_ui.active_tab_index = event.index  # type: ignore[attr-defined]
+        self._refresh_dashboard()
 
     def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
-        """Thin shim over :func:`select_layout_signature`.
+        """Instance-method wrapper over :func:`select_layout_signature`.
 
-        Kept as an instance method so the existing test surface (some
-        tests synthesise a screen and call this directly) stays
-        unchanged.
+        Pulls the App-owned :class:`MainScreenUiState` (which carries
+        the ``seen_users`` accumulator) and forwards it. Falls back to
+        a fresh empty UI state when the screen is not attached to the
+        App yet — keeps the unit-test path that builds a screen via
+        ``MainScreen.__new__`` working.
         """
-        return select_layout_signature(ctx)
+        return select_layout_signature(ctx, self._main_ui_or_empty())
 
     def _refresh_cwd_row(self) -> None:
         """Re-render the cwd action row from the current ctx.cwd_writable."""
@@ -758,16 +1014,16 @@ class MainScreen(Screen):
             self.query_one("#action-new", ActionRow).detail = f"({self.ctx.new_project_root}/…)"
             self.query_one("#action-new", ActionRow)._render_text()
             open_row._render_text()
+            try:
+                self.query_one("#top-actions-caption", Static).update(self._top_actions_caption())
+            except Exception:  # pragma: no cover — caption mounted in compose
+                pass
         except Exception:
             return False
 
         # All sessions (own + other-user + remote) render through the
-        # unified dashboard widget. The dashboard is repopulated
-        # below so the model selector sees a consistent ``state.main``
-        # + ``state.remote`` snapshot. Per-host repaint optimisation
-        # is preserved structurally by the model's identity-stable
-        # contract: an unchanged-host slot does not produce new
-        # ops in ``diff``.
+        # unified dashboard widget; ``_refresh_dashboard`` below pulls
+        # a consistent ``state.main`` + ``state.remote`` snapshot.
 
         if bool(self.ctx.sudo_caps.reachable_users):
             try:
@@ -785,10 +1041,6 @@ class MainScreen(Screen):
         # is owned by ``_refresh_dashboard_note`` (called from
         # ``_refresh_dashboard`` below), which also toggles its
         # visibility based on the current local-row count.
-
-        # Dashboard repopulate: pulls a fresh model from ``state.main``
-        # and applies the diff. Owns own + other-user local rows after
-        # commit 11.
         self._refresh_dashboard()
 
         self._update_status_line()
@@ -812,61 +1064,38 @@ class MainScreen(Screen):
         )
         if focus_key is None:
             focus_key = self._current_focus_key()
-        old_signature = self._layout_signature(self.ctx)
-        # Carry over state that lives outside the on_refresh result: the
-        # link-health status comes from a separate worker, the agent
-        # availability dict is mutated in place by the probe worker (which
-        # writes to the *app's* ctx — see UxonApp._probe_agents_worker),
-        # and refresh_tick is a TUI-internal counter. Without this the
-        # probe results are lost after the first ctx swap and every
-        # LaunchOptionsScreen would render "(checking…)" forever.
-        # Stage 8 commit 6: ``link_health_status`` no longer needs a
-        # carry — ``app.state.link_health`` is canonical and shared
-        # across ctx rebuild ticks. The shim's getter returns
-        # ``state.link_health.value`` so any consumer of the legacy
-        # attribute sees the currently-applied status regardless of
-        # which ctx it goes through.
-        # Stage 8 commit 5b: ``agent_availability`` and
-        # ``detected_agents`` no longer need carries — the canonical
-        # store is ``app.state.agent_availability`` /
-        # ``app.state.detected_agents``, shared across ctx rebuild
-        # ticks. The shim's getter returns ``state.<slot>.value`` on
-        # read so any consumer of the legacy attribute sees the
-        # currently-applied dict regardless of which ctx it goes
-        # through.
-        # Stage 8 commit 4: ``remote_snapshots`` no longer needs a
-        # carry — the canonical store is ``app.state.remote``,
-        # shared across rebuild ticks. The shim's getter flattens
-        # state.remote on read; in-place mutations of legacy slots
-        # are no longer driven by the dispatcher (which writes
-        # through ``slot_state.apply`` directly).
-        # Stage 8 commit 3: link the new ctx to the App's TuiState
-        # before writing through the ``refresh_tick`` proxy. Without
-        # this link the assignment would land on the new ctx's own
-        # default-factory state (transient and unobserved by anyone)
-        # instead of the App-owned state container. Some unit tests
-        # build a FakeApp without ``state``; fall through to the
-        # legacy slot in that case (covered by ``getattr``).
+        # ``old_signature`` is the value committed on the prior
+        # apply_loaded_ctx call (or on ``__init__`` for the first
+        # mount). Reading from the cache rather than recomputing
+        # against ``self.ctx`` makes the comparison sensitive to
+        # ``cross_user`` latch flips applied by handlers that update
+        # ``app.main_ui.seen_users`` directly (see the field's
+        # docstring on ``__init__``).
+        #
+        # Hand-stubbed test screens (``MainScreen.__new__`` paths) can
+        # skip ``__init__`` and therefore lack the cache; in that
+        # case fall back to a fresh computation from the current
+        # ctx — preserves the original (pre-cache) behaviour for
+        # those legacy stubs.
+        old_signature = getattr(self, "_cached_signature", None)
+        if old_signature is None:
+            old_signature = self._layout_signature(self.ctx)
+        # Link the new ctx to the App's TuiState before writing
+        # through the ``refresh_tick`` proxy. Without this link the
+        # assignment would land on the new ctx's own default-factory
+        # state (transient and unobserved by anyone) instead of the
+        # App-owned state container. Some unit tests build a FakeApp
+        # without ``state``; fall through in that case.
         app_state = getattr(self.app, "state", None)
         if app_state is not None:
             new_ctx._state = app_state
         else:
-            # Carry the legacy ctx's _state across so the proxy keeps
+            # Carry the prior ctx's _state across so the proxy keeps
             # round-tripping the counter when no App is in the picture.
             new_ctx._state = self.ctx._state
-        # Stage 8 commit 6b: ``state.refresh_tick`` is canonical and
-        # advanced by ``UxonApp._handle_main_ctx_rebuild`` *before*
-        # this method runs. ``apply_loaded_ctx`` no longer touches
-        # the counter — the previous ``new_ctx.refresh_tick =
-        # self.ctx.refresh_tick + 1`` line is gone.
-        # Stage 8 commit 6: cwd-change invalidation. The carry-list
-        # used to enforce this implicitly ("only carry when cwd
-        # matches"); now ``state.cwd_writable`` is canonical and a
-        # cwd transition resets the slot to its zero state so the
-        # row paints "checking…" until the next probe lands.
-        # ``state.main`` is not yet canonical (commit 7 flips it),
-        # so we compare ``new_ctx.cwd`` against the previous
-        # ``self.ctx.cwd``. Worker-side gating
+        # cwd-change invalidation: reset ``state.cwd_writable`` to its
+        # zero state so the row paints "checking…" until the next
+        # probe lands. Worker-side gating
         # (``_CwdWritableUpdated.cwd_at_start``) drops in-flight
         # probes that started against the old cwd.
         if app_state is not None and new_ctx.cwd != self.ctx.cwd:
@@ -874,25 +1103,60 @@ class MainScreen(Screen):
 
             app_state.cwd_writable = _SlotState[bool | None]()
         self.ctx = new_ctx
-        # Mirror ``ctx.loading`` into the reactive so watchers fire
-        # when the first non-skeleton ctx lands. Commit 7 flips this
-        # to ``state.main is None``; for now both sides agree. The
-        # reactive descriptor needs Textual node setup (``_id``); test
-        # stubs that bypass ``__init__`` (``MainScreen.__new__``) hit
-        # ReactiveError on assignment, so guard with a defensive
-        # ``hasattr`` rather than try/except (cheaper hot-path).
+        # The reactive descriptor needs Textual node setup (``_id``);
+        # test stubs that bypass ``__init__`` (``MainScreen.__new__``)
+        # would hit ReactiveError on assignment, so guard with
+        # ``hasattr`` rather than try/except.
         if hasattr(self, "_id"):
             self.loading = bool(new_ctx.loading)
         # Keep app.ctx in lockstep so the probe worker's writes target the
         # same dict that screens read from.
         self.app.ctx = new_ctx  # type: ignore[attr-defined]
-        if self._layout_signature(self.ctx) == old_signature and self._apply_ctx_refresh():
+        # Defensive feed: walk the current state (with ``state.main``
+        # synced from ``new_ctx``) and fold any new users into the
+        # cross-user latch accumulator. Production already feeds via
+        # :meth:`UxonApp._handle_remote_snapshot` for remote ticks, but
+        # this site closes two extra paths:
+        #
+        # 1. Direct callers that bypass the dispatcher (some unit
+        #    tests call ``apply_loaded_ctx`` with a fresh ``new_ctx``
+        #    without ever running a refresh source).
+        # 2. The ``main_ctx_rebuild`` tick itself — the local-rebuild
+        #    handler only wires ``state.main``; this is where the
+        #    accumulator picks up the new local own / other-user
+        #    rows it produced.
+        #
+        # ``state.main = MainData.from_context(new_ctx)`` is idempotent
+        # with the dispatcher's earlier write in production; the sync
+        # keeps the dashboard model aligned with ``self.ctx`` for the
+        # in-place patch path below regardless of who called us.
+        main_ui = getattr(self.app, "main_ui", None)
+        if isinstance(main_ui, MainScreenUiState) and app_state is not None:
+            from uxon.tui.main_data import MainData as _MainData
+
+            app_state.main = _MainData.from_context(new_ctx)
+            main_ui.seen_users |= collect_user_set(app_state)
+        new_signature = self._layout_signature(self.ctx)
+        self._cached_signature = new_signature
+        if new_signature == old_signature and self._apply_ctx_refresh():
+            _debug("keys", at="apply_loaded_ctx", path="patch", focus_key=focus_key)
             if focus_key and self._focus_key(focus_key):
                 return
             # Don't yank focus when the in-place patch leaves the DOM
             # untouched; the focused widget still exists and is fine.
             return
-        # Full re-compose when section structure changed.
+        # Full re-compose when section structure changed. ``keys``
+        # channel: log this path explicitly — a full screen swap drops
+        # focus and any in-flight key events targeted at the old DOM,
+        # so it's the most likely culprit when arrow keys "vanish".
+        _debug(
+            "keys",
+            at="apply_loaded_ctx",
+            path="switch_screen",
+            focus_key=focus_key,
+            old_sig=str(old_signature),
+            new_sig=str(new_signature),
+        )
         new_screen = MainScreen(self.ctx)
         new_screen._restore_focus_key = focus_key
         self.app.switch_screen(new_screen)
@@ -969,24 +1233,6 @@ class MainScreen(Screen):
             after_confirm,
         )
 
-    def action_cycle_sort(self) -> None:
-        """Cycle dashboard ``sort_by`` through cpu / ram / last / name.
-
-        The reducer (:func:`cycle_sort`) is filtered to the currently
-        active columns, so a hidden column never becomes the sort
-        target. ``_refresh_dashboard`` re-runs the model selector with
-        the new ``DashboardUiState`` and the diff applies the reorder.
-        """
-        self._dashboard_ui = cycle_sort(self._dashboard_ui, columns=self._active_columns)
-        self._refresh_dashboard()
-        self.app.notify(f"Sort: {self._dashboard_ui.sort_by} {self._dashboard_ui.sort_dir}")
-
-    def action_toggle_sort_dir(self) -> None:
-        """Toggle dashboard sort direction between ``asc`` and ``desc``."""
-        self._dashboard_ui = toggle_sort_dir(self._dashboard_ui)
-        self._refresh_dashboard()
-        self.app.notify(f"Sort: {self._dashboard_ui.sort_by} {self._dashboard_ui.sort_dir}")
-
     def action_kill_all_own(self) -> None:
         if not self.ctx.sessions:
             return
@@ -1008,19 +1254,6 @@ class MainScreen(Screen):
             after_confirm,
         )
 
-    # ── Digit-jump ───────────────────────────────────────────────────
-
-    def action_digit_jump(self, n: int) -> None:
-        """Jump to (and activate) the item hinted by digit ``n``.
-
-        Guard (ported verbatim from ``DigitJumpGuardTests``): on an
-        empty-superuser state, digit ACTION_COUNT+1 lands on Settings /
-        Kill-ALL, which must NOT auto-activate — it's a "move cursor
-        only" row, reachable by arrow-down + Enter. Same rule applies
-        in the textual flavour via :func:`_digit_hinted_indices`.
-        """
-        self._run_intent(digit_jump_intent(self.ctx, n))
-
     def _activate_index(self, idx: int) -> None:
         """Resolve index into a concrete item and fire its activation."""
         self._run_intent(activate_main_index(self.ctx, idx))
@@ -1028,11 +1261,10 @@ class MainScreen(Screen):
     def _focus_index(self, idx: int) -> None:
         """Move focus to the widget backing ``idx`` on the current screen."""
         own_start, _other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
-        # Local-rows segment in the dashboard. Own + other-user are
-        # both mounted in ``#sessions-dashboard`` (commit 11), so the
-        # visual segment ends at ``settings_idx`` (when sudo) or
-        # ``own_start + len(ctx.sessions)`` (no sudo — there's no
-        # other-user segment at all).
+        # Own + other-user share the dashboard, so the local segment
+        # ends at ``settings_idx`` (when sudo) or
+        # ``own_start + len(ctx.sessions)`` (no sudo — no other-user
+        # segment at all).
         local_end = settings_idx if has_super else own_start + len(self.ctx.sessions)
         try:
             if idx < own_start:
@@ -1042,8 +1274,9 @@ class MainScreen(Screen):
             if idx < local_end:
                 # Single dashboard widget for own + other-user rows.
                 # The visual cursor row offset is ``idx - own_start``;
-                # this is best-effort focus (the dashboard sorts by
-                # ``ui.sort_by`` so the visual order may not match
+                # this is best-effort focus (the dashboard applies the
+                # hard sort contract and a substring filter, so the
+                # visual order may not match
                 # ``ctx.sessions + ctx.other_sessions``). Out-of-range
                 # cursor moves are silently no-op.
                 t = self.query_one("#sessions-dashboard", SessionDashboardTable)
@@ -1135,7 +1368,7 @@ class MainScreen(Screen):
         index that tuple instead of the widget's row keys to avoid a
         round-trip through the private DataTable index. Matches own
         rows only — ``row.user`` either equals the current user or
-        is empty (legacy adapter fall-through).
+        is empty.
         """
         try:
             table = self.query_one("#sessions-dashboard", SessionDashboardTable)
@@ -1155,9 +1388,9 @@ class MainScreen(Screen):
     def _focus_dashboard_other(self, user: str, session_name: str) -> bool:
         """Restore focus on the dashboard row matching ``user/session_name``.
 
-        Mirrors :meth:`_focus_dashboard_own` for other-user rows folded
-        into the dashboard in commit 11. ``user`` must be non-empty —
-        an own-user focus key never serialises through this path.
+        Mirrors :meth:`_focus_dashboard_own` for other-user rows.
+        ``user`` must be non-empty — an own-user focus key never
+        serialises through this path.
         """
         if not (user and session_name):
             return False
@@ -1192,7 +1425,7 @@ class MainScreen(Screen):
     # ── Convenience ──────────────────────────────────────────────────
 
     def segments(self) -> tuple[int, int, int, int, bool]:
-        """Expose segment indices for tests / digit-jump math."""
+        """Expose segment indices for tests and intent-routing math."""
         return _segments(self.ctx)
 
     def action_count(self) -> int:

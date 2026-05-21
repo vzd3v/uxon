@@ -1,12 +1,10 @@
 """Dashboard column registry: ColumnSpec + REGISTRY + formatters.
 
 Each column ships its own ``format`` (row → cell value) and
-``sort_key`` (row → comparable). Formatters are pure functions that
-preserve the visual semantics of the legacy local / remote tables:
-bold-green for attached, red/yellow CPU thresholds at >50 / >10,
-yellow user marker, deterministic per-host colour glyph on the NAME
-column so per-row attribution survives sort even with the HOST
-column hidden.
+``sort_key`` (row → comparable). Formatters are pure functions:
+red/yellow CPU thresholds at >50 / >10, deterministic per-host
+colour glyph on the NAME column so per-row attribution survives
+sort even with the HOST column hidden.
 
 These callables are invoked many times per tick by the reconciler;
 they MUST stay closure-free over mutable state.
@@ -14,15 +12,17 @@ they MUST stay closure-free over mutable state.
 
 from __future__ import annotations
 
-import hashlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from rich.text import Text
 
 from .row import SessionRow
+
+if TYPE_CHECKING:
+    from uxon.remote_hosts import RemoteHost
 
 
 @dataclass(frozen=True)
@@ -44,46 +44,45 @@ class ColumnSpec:
     show_when: Literal["always", "multi_host", "cross_user"] = "always"
 
 
-# Stable palette of Rich style specs the host glyph cycles through.
-# Order is deterministic. The palette is intentionally small (3
-# entries) so a typical multi-host operator sees a clean zebra rather
-# than a spread of unfamiliar colours; collisions past 3 hosts are
-# disambiguated by the HOST column itself. Red and yellow are
-# deliberately excluded — those are reserved for danger / warning
-# semantics elsewhere in the TUI (CPU thresholds, error toasts) and
-# must not appear as a benign per-host marker.
-_HOST_PALETTE: tuple[str, ...] = (
-    "cyan",
-    "blue",
-    "magenta",
-)
+def assign_block_colors(
+    remote_hosts: tuple[RemoteHost, ...],
+    *,
+    local_color: str,
+    palette: tuple[str, ...],
+) -> dict[str | None, str]:
+    """Map ``host_name`` (None == locals) → Rich style spec.
 
-# Local rows render with this style on the NAME glyph and HOST cell.
-# Distinct from the remote palette so operators can tell at a glance
-# which sessions live on the local host.
-_LOCAL_STYLE = "green"
-
-
-def host_colour(host_name: str) -> str:
-    """Return a deterministic Rich style spec for ``host_name``.
-
-    Stable across calls and across processes — uses md5 of the host
-    name modulo the palette size. With a 3-entry palette collisions
-    are common past 3 hosts; the HOST column carries the resolving
-    label.
+    Operator pins (``RemoteHost.color``) win unconditionally — no
+    palette validation, no adjacency check against pinned colours.
+    Auto-cycle (remotes with ``color is None``) walks ``palette``
+    with an adjacency-skip against the previous block's colour
+    (whatever its source). Empty ``palette`` falls through to a
+    single ``"dim"`` style.
     """
-    digest = hashlib.md5(host_name.encode("utf-8")).hexdigest()
-    return _HOST_PALETTE[int(digest, 16) % len(_HOST_PALETTE)]
+    out: dict[str | None, str] = {None: local_color}
+    prev = local_color
+    cycle_idx = 0
+    fallback_palette = palette or ("dim",)
+    for host in remote_hosts:
+        if host.color is not None:
+            color = host.color
+        else:
+            color = fallback_palette[cycle_idx % len(fallback_palette)]
+            cycle_idx += 1
+            if color == prev and len(fallback_palette) > 1:
+                color = fallback_palette[cycle_idx % len(fallback_palette)]
+                cycle_idx += 1
+        out[host.name] = color
+        prev = color
+    return out
 
 
 def format_cpu(row: SessionRow) -> Text:
-    """Format CPU% with the existing >50/>10 colour thresholds.
+    """Format CPU% with the >50/>10 colour thresholds.
 
-    The legacy idle-CPU rendering emitted ``"0.0"`` for an idle
-    session — only a missing input string blanked the cell. The unified
-    pipeline has already collapsed the missing/zero distinction at the
-    adapter boundary (``from_tui_session``), so we always render the
-    numeric value; an idle row shows as ``"0.0"`` to match legacy.
+    The missing/zero distinction is collapsed at the adapter boundary
+    (``from_tui_session``), so this always renders the numeric value;
+    an idle row shows as ``"0.0"``.
     """
     raw = f"{row.cpu_pct:.1f}" if row.cpu_pct < 100 else f"{row.cpu_pct:.0f}"
     if row.cpu_pct > 50:
@@ -130,34 +129,54 @@ def format_relative_time(epoch: float | None, now: float | None = None) -> str:
 
 
 def _format_host(row: SessionRow) -> Text:
-    if row.host is None:
-        return Text("local", style=_LOCAL_STYLE)
-    return Text(row.host, style=host_colour(row.host))
+    return Text(row.host or "local")
 
 
 def _format_user(row: SessionRow) -> Text:
     # Render plain: in cross_user mode the column header itself flags
-    # multi-user state; per-row colour would also paint the operator's
-    # own user yellow which diverges from the legacy intent (yellow
-    # was a non-self marker on the legacy split table; in the unified
-    # table the column header itself is the multi-user signal).
+    # multi-user state, so per-row colour would be redundant.
     return Text(row.user or "-")
 
 
-def _format_name(row: SessionRow) -> Text:
-    """Render the NAME cell with a left-edge host-coloured glyph.
+def _strip_agent_suffix(short: str, agent: str) -> str:
+    """Drop the ``@<agent>`` token from a prefix-stripped session name.
 
-    The glyph survives sort even when the HOST column is hidden, so
-    operators retain per-row host attribution in single-list view.
+    Session names follow ``<prefix><stem>@<agent>[-N]`` (see
+    :func:`uxon.cli.parse_session_name`). ``row.short`` is the
+    name with the prefix removed — i.e. ``<stem>@<agent>[-N]``.
+    The dashboard renders the agent in its own AGENT column, so
+    showing ``@<agent>`` in NAME is redundant. We strip the last
+    occurrence of ``@<agent>`` and preserve the trailing ``-N``
+    disambiguator (so ``proj@claude-2`` becomes ``proj-2``, not
+    ``proj`` — otherwise two siblings would collide visually).
+
+    ``rpartition`` over ``find``: a stem like ``foo@claude_helper``
+    happens to contain the agent name as a substring; partitioning
+    from the right matches the actual suffix.
     """
-    glyph_style = host_colour(row.host) if row.host is not None else _LOCAL_STYLE
-    text = Text("● ", style=glyph_style)
-    display = row.short or row.name or "-"
-    if row.attached:
-        text.append(display, style="bold green")
-        text.append(" ●", style="green")
-    else:
-        text.append(display)
+    if not agent:
+        return short
+    needle = f"@{agent}"
+    if needle not in short:
+        return short
+    base, _, tail = short.rpartition(needle)
+    return base + tail
+
+
+def _format_name(row: SessionRow) -> Text:
+    """Emit ``●``/``○`` attach glyph + display name.
+
+    Display name strips the ``@<agent>`` suffix from ``row.short``
+    (the AGENT column carries that already) but keeps the ``-N``
+    disambiguator so siblings remain distinguishable. Block hue and
+    zebra dim are layered by the widget at render time; this
+    formatter stays pure data so the reconciler can diff cells
+    without knowing positional metadata.
+    """
+    glyph = "● " if row.attached else "○ "
+    text = Text(glyph)
+    base = row.short or row.name or "-"
+    text.append(_strip_agent_suffix(base, row.agent))
     return text
 
 
@@ -206,7 +225,11 @@ def _sort_user(row: SessionRow) -> str:
 
 
 def _sort_name(row: SessionRow) -> str:
-    return row.short or row.name
+    # Sort by the same display label the operator sees in NAME, not
+    # by ``<stem>@<agent>``. Otherwise two same-stem siblings on
+    # different agents interleave with unrelated rows whose stem
+    # happens to alphabetise between them.
+    return _strip_agent_suffix(row.short or row.name, row.agent)
 
 
 def _sort_agent(row: SessionRow) -> str:
@@ -270,8 +293,20 @@ REGISTRY: tuple[ColumnSpec, ...] = (
     ColumnSpec(id="ram", label="RAM", format=format_ram, sort_key=_sort_ram, align="right"),
     ColumnSpec(id="new", label="NEW", format=_format_new, sort_key=_sort_new, align="right"),
     ColumnSpec(id="last", label="LAST", format=_format_last, sort_key=_sort_last, align="right"),
-    ColumnSpec(id="cmd", label="CMD", format=_format_cmd, sort_key=_sort_cmd),
-    ColumnSpec(id="path", label="PATH", format=_format_path, sort_key=_sort_path),
+    ColumnSpec(
+        id="cmd",
+        label="CMD",
+        format=_format_cmd,
+        sort_key=_sort_cmd,
+        default_visible=False,
+    ),
+    ColumnSpec(
+        id="path",
+        label="PATH",
+        format=_format_path,
+        sort_key=_sort_path,
+        default_visible=False,
+    ),
     ColumnSpec(
         id="pid",
         label="PID",

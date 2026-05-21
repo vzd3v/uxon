@@ -13,11 +13,12 @@ import unittest
 
 from rich.text import Text
 
-from uxon.tui.dashboard.columns import REGISTRY
+from uxon.tui.dashboard.columns import REGISTRY, ColumnSpec
 from uxon.tui.dashboard.reconcile import (
     CellUpdate,
     RowAdd,
     RowRemove,
+    _row_key,
     diff,
 )
 from uxon.tui.dashboard.row import SessionRow
@@ -64,7 +65,7 @@ _COLUMNS = _cols("name", "agent", "cpu", "ram", "cmd", "path")
 class IdenticalModelsTests(unittest.TestCase):
     def test_identical_models_yield_zero_ops(self) -> None:
         t = (_row(name="uxon-a@claude"), _row(name="uxon-b@claude"))
-        self.assertEqual(diff(t, t, _COLUMNS), ())
+        self.assertEqual(diff(t, t, _COLUMNS).ops, ())
 
     def test_diff_is_pure(self) -> None:
         a = (_row(name="uxon-a@claude"),)
@@ -76,7 +77,7 @@ class CellUpdateTests(unittest.TestCase):
     def test_cell_only_change_yields_one_cell_update(self) -> None:
         old = (_row(name="uxon-a@claude", cpu_pct=5.0),)
         new = (_row(name="uxon-a@claude", cpu_pct=99.0),)
-        ops = diff(old, new, _COLUMNS)
+        ops = diff(old, new, _COLUMNS).ops
         self.assertEqual(len(ops), 1)
         op = ops[0]
         self.assertIsInstance(op, CellUpdate)
@@ -88,7 +89,7 @@ class CellUpdateTests(unittest.TestCase):
         # Multi-column row; only path changes.
         old = (_row(name="uxon-a@claude", path="/srv/old"),)
         new = (_row(name="uxon-a@claude", path="/srv/new"),)
-        ops = diff(old, new, _COLUMNS)
+        ops = diff(old, new, _COLUMNS).ops
         # Exactly one op, for the "path" column.
         self.assertEqual(len(ops), 1)
         assert isinstance(ops[0], CellUpdate)
@@ -100,7 +101,7 @@ class CellUpdateTests(unittest.TestCase):
         # see spurious updates.
         a = _row(name="uxon-a@claude", cpu_pct=12.5, attached=True)
         b = _row(name="uxon-a@claude", cpu_pct=12.5, attached=True)
-        self.assertEqual(diff((a,), (b,), _COLUMNS), ())
+        self.assertEqual(diff((a,), (b,), _COLUMNS).ops, ())
         # Sanity: Text equality holds for identical formatter output.
         self.assertEqual(Text("12.5", style="yellow"), Text("12.5", style="yellow"))
 
@@ -110,7 +111,7 @@ class AddRemoveTests(unittest.TestCase):
         a = _row(name="uxon-a@claude")
         b = _row(name="uxon-b@claude")
         c = _row(name="uxon-c@claude")
-        ops = diff((a, b), (a, b, c), _COLUMNS)
+        ops = diff((a, b), (a, b, c), _COLUMNS).ops
         self.assertEqual(len(ops), 1)
         op = ops[0]
         self.assertIsInstance(op, RowAdd)
@@ -122,7 +123,7 @@ class AddRemoveTests(unittest.TestCase):
         a = _row(name="uxon-a@claude")
         b = _row(name="uxon-b@claude")
         c = _row(name="uxon-c@claude")
-        ops = diff((b, c), (a, b, c), _COLUMNS)
+        ops = diff((b, c), (a, b, c), _COLUMNS).ops
         self.assertEqual(len(ops), 1)
         op = ops[0]
         self.assertIsInstance(op, RowAdd)
@@ -134,7 +135,7 @@ class AddRemoveTests(unittest.TestCase):
         a = _row(name="uxon-a@claude")
         b = _row(name="uxon-b@claude")
         c = _row(name="uxon-c@claude")
-        ops = diff((a, b, c), (a, c), _COLUMNS)
+        ops = diff((a, b, c), (a, c), _COLUMNS).ops
         self.assertEqual(len(ops), 1)
         op = ops[0]
         self.assertIsInstance(op, RowRemove)
@@ -176,7 +177,7 @@ class TimeDependentColumnsTests(unittest.TestCase):
             )
             for r in rows
         )
-        ops = diff(rows, rows, time_cols)
+        ops = diff(rows, rows, time_cols).ops
         self.assertEqual(ops, ())
 
 
@@ -184,7 +185,7 @@ class ReorderTests(unittest.TestCase):
     def test_swap_two_rows(self) -> None:
         a = _row(name="uxon-a@claude")
         b = _row(name="uxon-b@claude")
-        ops = diff((a, b), (b, a), _COLUMNS)
+        ops = diff((a, b), (b, a), _COLUMNS).ops
         # Both rows' surviving-positions changed → both moved.
         # Algorithm walks NEW in order: b first, then a.
         # Removes-first pass emits nothing (no removed keys).
@@ -203,6 +204,40 @@ class ReorderTests(unittest.TestCase):
         assert isinstance(op3, RowAdd)
         self.assertEqual(op3.row_key, "local/alice/uxon-a@claude")
         self.assertIsNone(op3.before_key)
+
+
+def test_reverse_permutation_lands_in_new_order():
+    """`[A,B,C,D] → [D,C,B,A]` must end visually as `[D,C,B,A]`."""
+    cols = (
+        ColumnSpec(id="name", label="NAME", format=lambda r: r.name, sort_key=lambda r: r.name),
+    )
+    old = tuple(_row(name=n) for n in ("a", "b", "c", "d"))
+    new = tuple(_row(name=n) for n in ("d", "c", "b", "a"))
+    plan = diff(old, new, cols)
+    # Apply against an in-memory ordered list mimicking the widget contract:
+    # removes first, then adds in REVERSE new-index order, each inserted in
+    # front of its ``before_key`` (or appended when ``before_key is None``).
+    # Reverse-order insertion is the contract that fixes the historic bug:
+    # every ``before_key`` is either ``None`` or already present.
+    visual: list[str] = [_row_key(r).split("/")[-1] for r in old]
+
+    def _name(key: str) -> str:
+        return key.split("/")[-1]
+
+    for op in plan.ops:
+        if isinstance(op, RowRemove):
+            visual.remove(_name(op.row_key))
+    adds_in_reverse = sorted(
+        (op for op in plan.ops if isinstance(op, RowAdd)),
+        key=lambda op: -plan.new_keys.index(op.row_key),
+    )
+    for op in adds_in_reverse:
+        if op.before_key is None:
+            visual.append(_name(op.row_key))
+        else:
+            anchor_name = _name(op.before_key)
+            visual.insert(visual.index(anchor_name), _name(op.row_key))
+    assert visual == ["d", "c", "b", "a"]
 
 
 if __name__ == "__main__":

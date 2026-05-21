@@ -7,7 +7,7 @@ on — CI machines vary too much for a useful wall-clock gate here.
 
 Pinned contracts:
 
-* No-op apply (``diff(model, model, columns) == ()``) emits **zero**
+* No-op apply (``diff(model, model, columns).ops == ()``) emits **zero**
   ``tui-table`` log lines. The widget's silence-on-no-op contract is
   the early-warning signal that an "every tick repaints everything"
   regression has slipped in.
@@ -152,8 +152,8 @@ class DiffPerfShapeTests(unittest.TestCase):
 
         model = _build_model()
         cols = _active_columns()
-        ops = diff(model, model, cols)
-        self.assertEqual(len(ops), 0)
+        plan = diff(model, model, cols)
+        self.assertEqual(len(plan.ops), 0)
 
     def test_single_cpu_change_emits_one_cell_update(self) -> None:
         from uxon.tui.dashboard.reconcile import CellUpdate, diff
@@ -165,7 +165,7 @@ class DiffPerfShapeTests(unittest.TestCase):
         target_idx = 17
         new = old[:target_idx] + (replace(old[target_idx], cpu_pct=99.0),) + old[target_idx + 1 :]
         cols = _active_columns()
-        ops = diff(old, new, cols)
+        ops = diff(old, new, cols).ops
         self.assertEqual(len(ops), 1)
         self.assertIsInstance(ops[0], CellUpdate)
         self.assertEqual(ops[0].col_id, "cpu")  # type: ignore[union-attr]

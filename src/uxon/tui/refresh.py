@@ -61,9 +61,7 @@ class SourceSpec:
             ``None``. ``None`` and ``cadence_seconds_attr`` both
             ``None`` means "no periodic timer".
         kick_on_mount: Whether the source should be kicked once at
-            mount time, before the first periodic tick. Defaults to
-            True (matches the legacy ``kick_refresh`` initial-load
-            behaviour).
+            mount time, before the first periodic tick.
     """
 
     name: str

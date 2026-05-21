@@ -1,7 +1,6 @@
 """Per-target sudo capability probe.
 
-Replaces the legacy single-boolean ``detect_passwordless_sudo()`` gate
-with a *capability set*: which subset of ``session_users`` the caller
+Returns a *capability set*: which subset of ``session_users`` the caller
 can actually reach via ``sudo -niu <U> -- true``, plus a separate flag
 for whether the caller has root NOPASSWD (used for settings-write
 gating, where there's no per-user target).
@@ -13,9 +12,8 @@ Design constraints (see
   picked up by restarting ``uxon``. There is no daemon, no SIGHUP, no
   per-refresh re-probe.
 - **Non-interactive.** Every probe uses ``sudo -n`` (no password
-  prompt, no keyboard interaction). A 0.5s per-probe timeout matches
-  the legacy ``detect_passwordless_sudo`` budget and bounds startup
-  delay.
+  prompt, no keyboard interaction). A 0.5s per-probe timeout bounds
+  startup delay.
 - **Parallel.** Up to 8 probes run concurrently via
   ``ThreadPoolExecutor``. With the 0.5s per-probe ceiling the
   worst-case total wall time for N candidates is
@@ -49,10 +47,8 @@ __all__ = ["SudoCapability", "probe_sudo_capability"]
 
 
 PROBE_TIMEOUT_SEC = 0.5
-"""Per-probe timeout budget. Matches the legacy
-``detect_passwordless_sudo`` timeout. A slow PAM module that takes
-longer than this is treated as "not reachable" — startup must not
-block."""
+"""Per-probe timeout budget. A slow PAM module that takes longer
+than this is treated as "not reachable" — startup must not block."""
 
 MAX_WORKERS = 8
 """Upper bound on concurrent probes. Sudo doesn't share inter-process

@@ -16,6 +16,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, ListItem, ListView, Static
 
+from ..keymap import bindings_with_aliases
 from ..state import pick_index
 
 
@@ -40,7 +41,7 @@ class GitProfileScreen(ModalScreen["str | None"]):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "cancel", "Cancel", show=True),
         Binding("enter", "pick", "Select", show=True),
         Binding("0", "pick_digit(0)", "0-9 pick", show=True),
@@ -53,7 +54,7 @@ class GitProfileScreen(ModalScreen["str | None"]):
         Binding("7", "pick_digit(7)", "", show=False),
         Binding("8", "pick_digit(8)", "", show=False),
         Binding("9", "pick_digit(9)", "", show=False),
-    ]
+    )
 
     def __init__(
         self,

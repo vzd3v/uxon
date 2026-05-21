@@ -20,6 +20,7 @@ import time
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+from textual import events as _events
 from textual.app import App
 from textual.binding import Binding
 from textual.message import Message
@@ -73,17 +74,16 @@ class _AgentAvailabilityUpdated(Message):
 class _HostReportUpdated(Message):
     """Posted by ``_probe_host_worker`` once a fresh :class:`HostReport` lands.
 
-    Stage 8 commit 5b: carries the locally-built availability and
-    detected dicts. The worker no longer mutates ``ctx.<field>`` from
-    the thread; the on-loop handler folds the payload into the slot
-    store via :func:`slot_state.apply`. Pre-5b semantics (no payload,
-    in-place worker mutation) are gone — the message must always
-    carry the dicts (or ``error`` when the probe failed).
-
-    On failure ``error`` is non-empty and the dicts may be empty; the
-    handler skips the slot apply but still triggers the
+    Carries the locally-built availability dict; the on-loop handler
+    folds the payload into the slot store via :func:`slot_state.apply`.
+    On failure ``error`` is non-empty and the dict may be ``None``;
+    the handler skips the slot apply but still triggers the
     availability-dispatch path so the UI re-renders with whatever
     state currently holds.
+
+    ``availability`` defaulting to ``None`` is the "skip the slot
+    apply" signal used by tests that mutate the slot directly and
+    post a bare message to wake the handler.
     """
 
     bubble = False
@@ -91,21 +91,11 @@ class _HostReportUpdated(Message):
     def __init__(
         self,
         availability: dict | None = None,
-        detected: dict | None = None,
         error: str = "",
         elapsed_ms: int = 0,
     ) -> None:
         super().__init__()
-        # ``None`` (the default) marks a legacy bare-post pattern
-        # used by tests that mutated ``ctx.agent_availability`` /
-        # ``ctx.detected_agents`` directly and then posted to wake
-        # the handler. The on-loop handler treats this case as
-        # "skip the slot apply" (the slot already reflects the
-        # mutation through the shim's read-through path) and falls
-        # through to ``_dispatch_availability_change`` so the UI
-        # still re-renders.
         self.availability = availability
-        self.detected = detected
         self.error = error
         self.elapsed_ms = elapsed_ms
 
@@ -123,15 +113,11 @@ class _LinkHealthUpdated(Message):
 class _CwdWritableUpdated(Message):
     """Posted by the cwd-write probe worker when the result lands.
 
-    Stage 8 commit 6: carries ``cwd_at_start`` — the cwd value
-    captured at probe launch time. The on-loop handler drops
-    results whose ``cwd_at_start`` does not match the current
-    ``state.main.cwd`` (or, pre-commit-7, ``ctx.cwd``); this
-    prevents an in-flight probe started against ``cwd_old`` from
-    being attributed to ``cwd_new`` after a directory change.
-
-    SlotResult-shaped fields stay inside the handler; the message
-    envelope only carries the validated payload + the gate token.
+    Carries ``cwd_at_start`` — the cwd value captured at probe
+    launch time. The on-loop handler drops results whose
+    ``cwd_at_start`` does not match the current ``state.main.cwd``,
+    so an in-flight probe started against ``cwd_old`` is not
+    attributed to ``cwd_new`` after a directory change.
     """
 
     bubble = False
@@ -145,15 +131,10 @@ class _CwdWritableUpdated(Message):
 class _MainCtxLoaded(Message):
     """Posted when the ``main_ctx_rebuild`` source returns a fresh ctx.
 
-    Applied via :meth:`MainScreen.apply_loaded_ctx`. The skeleton ctx flips
-    to ``loading=True``; this message hands in the loaded ctx (loading=False)
-    and the screen patches itself in place or swaps for a fresh MainScreen
-    when the layout changed.
-
-    Driven from :class:`_RefreshSourceLanded` for the ``main_ctx_rebuild``
-    source, so the dispatch path matches every other registry source.
-    Kept as a separate message for backward compatibility with tests that
-    synthesise it directly.
+    Applied via :meth:`MainScreen.apply_loaded_ctx`. The screen patches
+    itself in place or swaps for a fresh MainScreen when the layout
+    changed. Dispatched from :class:`_RefreshSourceLanded` for the
+    ``main_ctx_rebuild`` source.
     """
 
     bubble = False
@@ -169,23 +150,18 @@ class _RefreshSourceLanded(Message):
 
     The handler dispatches on :attr:`name` to the per-source apply logic.
     Sources are fail-soft: ``error`` may be set and ``value`` may be
-    ``None`` — the handler is responsible for that case (typically: log
-    via ``UXON_DEBUG=refresh`` and otherwise leave state untouched, so
-    a transient source failure does not corrupt previously-good data).
+    ``None`` — the handler logs via ``UXON_DEBUG=refresh`` and otherwise
+    leaves state untouched, so a transient source failure does not
+    corrupt good data.
 
-    The ``instance_epoch`` field carries the spawning :class:`UxonApp`'s
-    monotonically-increasing epoch (set in ``__init__``). The dispatcher
-    drops events whose epoch does not match the current app's epoch —
-    this catches the rare race where a worker thread spawned by an
-    instance-N app posts its result after the outer ``run()`` loop has
-    already created instance-N+1 (e.g. after a TTY handoff).
-
-    The default ``-1`` is a sentinel meaning "unstamped" — the dispatcher
-    skips the epoch gate when it sees the sentinel. This keeps existing
-    tests that synthesise this message directly without specifying an
-    epoch working unchanged. Production stamping is done in
-    :meth:`UxonApp._source_worker`, which always passes the real
-    ``self._instance_epoch``.
+    ``instance_epoch`` carries the spawning :class:`UxonApp`'s
+    monotonically-increasing epoch. The dispatcher drops events whose
+    epoch does not match the current app's epoch, catching the race
+    where a worker thread spawned by instance-N posts its result after
+    the outer ``run()`` loop has already created instance-N+1 (e.g.
+    after a TTY handoff). The default ``-1`` is a sentinel meaning
+    "unstamped" — the dispatcher skips the epoch gate then, so tests
+    that synthesise this message directly without an epoch keep working.
     """
 
     bubble = False
@@ -233,17 +209,7 @@ class UxonApp(App):
     # MainScreen so its Footer displays them; delegating to screens
     # keeps the ``Footer`` widget single-source-of-truth (T18 drift
     # guard depends on this).
-    BINDINGS = [
-        Binding("1", "main_digit_jump(1)", "", show=False, priority=True),
-        Binding("2", "main_digit_jump(2)", "", show=False, priority=True),
-        Binding("3", "main_digit_jump(3)", "", show=False, priority=True),
-        Binding("4", "main_digit_jump(4)", "", show=False, priority=True),
-        Binding("5", "main_digit_jump(5)", "", show=False, priority=True),
-        Binding("6", "main_digit_jump(6)", "", show=False, priority=True),
-        Binding("7", "main_digit_jump(7)", "", show=False, priority=True),
-        Binding("8", "main_digit_jump(8)", "", show=False, priority=True),
-        Binding("9", "main_digit_jump(9)", "", show=False, priority=True),
-    ]
+    BINDINGS: ClassVar[list[Binding]] = []
 
     def __init__(
         self,
@@ -263,31 +229,17 @@ class UxonApp(App):
         # subsequent commits; for this commit ``cfg`` is duplicated
         # state populated alongside the live ctx.
         self.cfg: TuiConfig = TuiConfig.from_context(ctx)
-        # Stage 8 commit 3: introduce the async-side state container.
-        # Empty on construction — no slot is canonical yet (commits
-        # 4–6b flip canonicality field-by-field). ``ctx._state`` is
-        # linked here so ``ctx.refresh_tick`` already round-trips
-        # through ``state.refresh_tick``; the canonical owner of the
-        # counter still lives in the legacy
-        # ``MainScreen.apply_loaded_ctx`` increment until commit 6b.
         self.state: TuiState = TuiState()
-        # Stage 8 commit 5a: hoist the cli-built initial dicts into
-        # state slots so the slot is canonical from this point
-        # forward. The legacy ctx kwarg-stored dicts remain accessible
-        # via the shim's fallback path for unit tests that build a
-        # bare ctx without an App. ``dataclasses.replace`` produces a
-        # new (frozen) :class:`SlotState` carrying the same dict
-        # reference — worker-thread in-place mutations through
-        # ``ctx.agent_availability[aid] = …`` will land on this dict.
+        # Hoist the cli-built initial dicts into state slots so the
+        # slot is canonical from construction. ``dataclasses.replace``
+        # produces a new (frozen) :class:`SlotState` carrying the same
+        # dict reference — worker-thread in-place mutations through
+        # ``ctx.agent_availability[aid] = …`` land on this dict.
         from dataclasses import replace as _replace
 
         self.state.agent_availability = _replace(
             self.state.agent_availability,
             value=dict(ctx.agent_availability),
-        )
-        self.state.detected_agents = _replace(
-            self.state.detected_agents,
-            value=dict(ctx.detected_agents),
         )
         self.ctx._state = self.state
         self.pending_launch: LaunchRequest | None = None
@@ -315,10 +267,8 @@ class UxonApp(App):
         self._source_handles: dict[str, Worker | None] = {}
         self._host_probe_handle: Worker | None = None
         self._link_health_handle: Worker | None = None
-        # Stage 10a — ``UXON_DEBUG=startup`` channel: latch to fire
-        # ``first_data_landed`` exactly once per app instance. Subsequent
-        # ``main_ctx_rebuild`` results are steady-state and not
-        # interesting for time-to-first-paint diagnosis.
+        # Latch so ``UXON_DEBUG=startup`` fires ``first_data_landed``
+        # exactly once per app instance.
         self._first_data_landed_logged: bool = False
         # Source-landing dispatch registries (id → handler). Built
         # once per instance so unit tests can inspect them without
@@ -334,30 +284,98 @@ class UxonApp(App):
         # state recovers — see ``should_push_agents_unavailable`` in
         # ``state.py`` for the rationale.
         self._last_all_missing: bool | None = None
-        # Stage 8 commit 11: dirty-flag for the remote-rows coalescer.
-        # Multiple per-host slot writes within the same event-loop
-        # cycle flip the flag once; the drainer (scheduled via
-        # ``call_after_refresh``) calls ``MainScreen._refresh_dashboard``
-        # exactly once per refresh cycle so the dashboard's selector
-        # runs once for the whole multi-host fan-in.
-        self._remote_rows_dirty: bool = False
+        # True once the host probe has produced *any* result (success
+        # or error). Auto-mode uses this to gate the "no agents
+        # installed" modal — an empty availability dict before the
+        # probe lands is not "all missing", it is "not yet probed".
+        # An errored probe still flips the flag so the modal can
+        # surface the diagnostic instead of leaving the user staring
+        # at a silently-empty agent list.
+        self._host_probe_landed: bool = False
+        # Last probe error (e.g. sudo failure). Empty on success.
+        # Carried into :class:`AgentsUnavailableScreen` so the user
+        # sees *why* nothing was probed rather than a generic "no
+        # agents" message.
+        self._host_probe_error: str = ""
+        # Latest TuiContext from a successful ``main_ctx_rebuild`` landing.
+        # The render scheduler reads it when firing a "main_ctx" dirty
+        # batch into ``MainScreen.apply_loaded_ctx``. Stays ``None`` until
+        # the first non-error rebuild lands.
+        self._latest_ctx: TuiContext | None = None
+        # Single locus for render-cadence decisions. All paths that
+        # want a redraw call ``self._render.request(kind)``; the
+        # scheduler coalesces and dispatches via ``_render_dirty``.
+        from .render_scheduler import RenderScheduler
+
+        self._render = RenderScheduler(
+            self,
+            debounce_ms=self.cfg.tui_render_debounce_ms,
+            max_latency_ms=self.cfg.tui_render_max_latency_ms,
+            render=self._render_dirty,
+        )
+        # Recompose-safe transient UI state for ``MainScreen``. Lives
+        # here (not on the screen) because ``apply_loaded_ctx`` builds
+        # a fresh screen on layout-signature flips, and three pieces
+        # of state used to die with it: dashboard view/filter, host
+        # tab index, and the tab-focus-restore flag. See
+        # :class:`MainScreenUiState` for the rationale.
+        from .dashboard.ui_state import DashboardUiState, MainScreenUiState
+
+        self.main_ui = MainScreenUiState(
+            ui=DashboardUiState(view_mode=ctx.tui_table_default_view),
+        )
+        # Seed the cross-user accumulator from the initial ctx so the
+        # very first ``MainScreen.__init__`` mounts with the right
+        # column set when the launching ctx already carries multi-user
+        # data (the synchronous build path in ``cli._build_tui_context``
+        # populates ``other_sessions`` before the TUI runs at all).
+        # Remote landings feed the same set lazily in
+        # :meth:`_handle_remote_snapshot`; local rebuilds in
+        # :meth:`MainScreen.apply_loaded_ctx`.
+        for s in ctx.sessions:
+            if s.user:
+                self.main_ui.seen_users.add(s.user)
+        for s in ctx.other_sessions:
+            if s.user:
+                self.main_ui.seen_users.add(s.user)
+
+    def on_key(self, event: _events.Key) -> None:
+        """Diagnostic log for keys that fall through unhandled.
+
+        ``UXON_DEBUG=keys`` writes one record per key event that
+        bubbles all the way up to the App without being consumed by a
+        widget binding or ``event.stop()`` along the chain. Combined
+        with the ``keys`` log entries on widget-side actions
+        (ActionRow cycle/leave, SessionDashboardTable cursor up/down,
+        ``MainScreen._refresh_dashboard`` entry/elapsed) this gives a
+        timeline of "key arrived → who handled it (or didn't) → was a
+        refresh in flight". Off by default; the call site costs one
+        ``frozenset`` truthiness check when disabled.
+        """
+        focused = self.focused
+        focused_id = getattr(focused, "id", None) if focused is not None else None
+        focused_kind = type(focused).__name__ if focused is not None else None
+        screen = self.screen
+        active_workers = sum(1 for h in self._source_handles.values() if _worker_active(h))
+        _debug(
+            "keys",
+            at="app_unhandled",
+            key=getattr(event, "key", ""),
+            screen=type(screen).__name__ if screen is not None else None,
+            focused_id=focused_id,
+            focused_kind=focused_kind,
+            workers=active_workers,
+            ts=time.monotonic(),
+        )
 
     def on_mount(self) -> None:
-        # Stage 10a — ``UXON_DEBUG=startup`` channel: log mount entry
-        # with a monotonic timestamp so the operator can compute
-        # ``mount_started → first_paint`` (target ≤ 50 ms per spec)
-        # and ``mount_started → first_data_landed`` for end-to-end
-        # cold-start latency. ``time.monotonic()`` is the right clock
-        # for diffs; wall-clock would jitter under NTP corrections.
+        # ``time.monotonic()`` for diffs only — wall-clock jitters
+        # under NTP corrections.
         _debug("startup", at="mount_started", ts=time.monotonic())
-        # Push the main screen as the first and only base screen.
         self.push_screen(MainScreen(self.ctx))
-        # MainScreen sits on the stack immediately after push_screen, so a
-        # digit press received during mount is dispatched directly via
-        # ``action_main_digit_jump`` — no pending-flush gymnastics needed.
         if self.pending_status:
-            # T0a confirmed: a notify() raised on mount survives the app
-            # re-create cycle when the outer loop stashes the message.
+            # A notify() raised on mount survives the app re-create
+            # cycle when the outer loop stashes the message.
             self.notify(self.pending_status, severity="error", timeout=6)
         self.pending_status = ""
         # If the caller handed us a skeleton ctx, populate it
@@ -368,16 +386,13 @@ class UxonApp(App):
         if self.ctx.loading:
             self._kick_initial_sources()
         # Kick off background host probe (tmux + all known agents).
-        # Probe even with an empty ``enabled_agents`` so the
-        # detected-agents banner can surface CATALOG agents that the
-        # user has never enabled (e.g., fresh install with the default
-        # config). The per-tick gate inside ``_kick_host_probe``
-        # honours ``self.probe_agents`` (the test-mode kill switch).
+        # Probes every CATALOG agent regardless of cfg.enabled_agents
+        # so auto-mode (empty enabled list) sees what is installed for
+        # ``launch_user``.
         if self.probe_agents:
             self._kick_host_probe()
-        # Kick off cwd-write probe when the synchronous path didn't
-        # already resolve it (cross-user case: uxon left cwd_writable=None
-        # because the check would shell out via sudo).
+        # Cross-user case: the synchronous path leaves ``cwd_writable``
+        # as None because the check would shell out via sudo.
         if self.ctx.cwd_writable is None:
             cwd_at_start = self.ctx.cwd
             self.run_worker(
@@ -388,10 +403,8 @@ class UxonApp(App):
             )
         timers_enabled = not self.is_headless and "PYTEST_CURRENT_TEST" not in os.environ
         if timers_enabled:
-            # Per-source periodic timers, driven from the registry.
-            # Each source advances independently so a slow source can't
-            # stall the others — e.g. a future remote-host source over
-            # SSH won't block the local-sessions stream.
+            # Per-source periodic timers. Each source advances
+            # independently so a slow source can't stall the others.
             for spec in self.ctx.refresh_sources or ():
                 # Precedence: explicit ``spec.cadence_seconds`` first
                 # (per-source override, e.g. per-host
@@ -415,27 +428,13 @@ class UxonApp(App):
                 self.ctx.tui_ssh_refresh_interval_seconds,
                 self._kick_link_health_probe,
             )
-            # Re-run the host probe on each ctx-refresh tick so freshly
-            # installed tmux/agents surface without restarting uxon.
-            # Same cadence as the local-sessions source keeps the two
-            # streams in lockstep — banner state and agent_availability
-            # advance together. Gated only on ``self.probe_agents`` so
-            # the detection path keeps working when the user enables
-            # their first agent at runtime via Settings.
-            if self.probe_agents:
-                self.set_interval(
-                    self.ctx.tui_refresh_interval_seconds,
-                    self._kick_host_probe,
-                )
 
     def _kick_initial_sources(self) -> None:
         """Kick every refresh source whose ``kick_on_mount`` is True.
 
-        Called once from :meth:`on_mount` when the ctx is a skeleton.
         Distinct from :meth:`kick_refresh` (which fans out
-        unconditionally for the manual-refresh / steady-state path)
-        so a future "lazy" source can opt out of the startup wave
-        without affecting the user-visible ``r`` keybinding.
+        unconditionally) so a "lazy" source can opt out of the startup
+        wave without affecting the user-visible ``r`` keybinding.
         """
         for spec in self.ctx.refresh_sources or ():
             if spec.kick_on_mount:
@@ -444,13 +443,8 @@ class UxonApp(App):
     def kick_refresh(self) -> None:
         """Fan out: kick every registered refresh source.
 
-        Used by the ``r`` keybinding, the initial load after a skeleton
-        mount, and any other "manual refresh" path. Each source is
-        gated independently — a source whose worker is still in flight
-        is skipped without affecting siblings. Per-source periodic
-        timers (set up in :meth:`on_mount`) drive the steady-state
-        cadence; this method is the synchronous fan-out for explicit
-        refreshes.
+        Each source is gated independently — a source whose worker is
+        still in flight is skipped without affecting siblings.
         """
         sources = self.ctx.refresh_sources or ()
         if not sources:
@@ -483,8 +477,7 @@ class UxonApp(App):
         """Background thread: run a source's fetcher with fail-soft semantics.
 
         ``run_source`` never raises — exceptions are captured into the
-        result. We post the outcome as :class:`_RefreshSourceLanded`;
-        the handler dispatches on ``name``.
+        result.
         """
         from .refresh import run_source
 
@@ -497,11 +490,9 @@ class UxonApp(App):
             error=result.error or "",
             elapsed_ms=result.elapsed_ms,
         )
-        # Stage 10b — opt-in ``UXON_METRICS=1`` JSONL. ``from_cache`` is
-        # available on ``RemoteSnapshot`` (the remote-host path) but not
-        # on ``TuiContext`` (the local rebuild path), so we read it
-        # defensively. ``error or None`` normalises the empty-string
-        # convention used inside ``SourceResult``.
+        # ``from_cache`` is available on ``RemoteSnapshot`` (the
+        # remote-host path) but not on ``TuiContext`` (the local
+        # rebuild path), so we read it defensively.
         from_cache = bool(getattr(result.value, "from_cache", False))
         metrics_record(
             result.name,
@@ -521,11 +512,9 @@ class UxonApp(App):
 
     # ── Source landing dispatch ─────────────────────────────────────
     #
-    # Per stage 8 of the multi-host design spec, the result-landing
-    # dispatch is data-driven: a registry maps source-id → handler so
-    # adding a new asynchronous stream is a registry entry rather than
-    # an ``if/elif`` ladder edit. Two registries are inspected in this
-    # order:
+    # Result-landing dispatch is data-driven: two registries map
+    # source-id → handler so adding an asynchronous stream is a
+    # registry entry rather than an if/elif ladder. Inspected in order:
     #
     # 1. ``_EXACT_HANDLERS``: ``dict[str, handler]`` — exact name match
     #    (``"main_ctx_rebuild"`` etc.). Most sources land here.
@@ -533,34 +522,24 @@ class UxonApp(App):
     #    fallback for families like ``"remote:<host>"`` where the
     #    handler peels the prefix off and routes by suffix.
     #
-    # An unknown name falls through to a debug-log drop, exactly as
-    # the legacy ladder did. The handlers are bound methods on
-    # :class:`UxonApp` so they have access to ``self`` (state, screens,
-    # the message pump). The registry is built once per instance in
-    # :meth:`__init__` so it can be inspected by tests without going
-    # through the Pilot harness.
+    # An unknown name falls through to a debug-log drop. Handlers are
+    # bound methods on :class:`UxonApp`. The registry is built once
+    # per instance in :meth:`__init__` so tests can inspect it without
+    # going through the Pilot harness.
 
     def _handle_main_ctx_rebuild(self, event: _RefreshSourceLanded) -> None:
-        """Dispatch ``main_ctx_rebuild`` into the legacy :class:`_MainCtxLoaded`
-        message so :meth:`on__main_ctx_loaded` stays the single render
-        entry point. Many tests synthesise ``_MainCtxLoaded`` directly,
-        so the legacy message must keep its semantics.
+        """Apply a ``main_ctx_rebuild`` landing into canonical state.
 
-        Stage 8 commit 6b: ``state.refresh_tick`` is canonical. The
-        rebuild-source dispatcher is the *only* writer; previously
-        ``MainScreen.apply_loaded_ctx`` did
-        ``new_ctx.refresh_tick = self.ctx.refresh_tick + 1`` via the
-        shim, but that path is gone. Selectors that memoise on
-        ``state.refresh_tick`` will cache-miss every tick by design
-        (the counter advances always); the contract is that
-        selectors key on the specific subfield they consume, not on
-        whole-state identity.
+        Sole writer of ``state.refresh_tick`` and ``state.main``.
+        Requests a render via the scheduler; the scheduler decides
+        when ``apply_loaded_ctx`` actually fires.
         """
+        if event.error:
+            self.notify(f"Refresh failed: {event.error}", severity="error", timeout=6)
+            return
         ctx = event.value if isinstance(event.value, TuiContext) else None
-        # Stage 10a — ``UXON_DEBUG=startup``: latch fires once per app
-        # instance (per ``self._first_data_landed_logged`` reset in
-        # ``__init__``). Subsequent rebuilds are steady-state ticks,
-        # not interesting for cold-start latency diagnosis.
+        if ctx is None:
+            return
         if not self._first_data_landed_logged:
             self._first_data_landed_logged = True
             _debug(
@@ -569,34 +548,15 @@ class UxonApp(App):
                 source=event.name,
                 ts=time.monotonic(),
             )
-        # Advance the canonical tick on every rebuild landing. The
-        # increment happens before the screen sees the ctx so any
-        # selector or watcher that fires off ``apply_loaded_ctx``
-        # reads the post-increment value.
-        if event.error == "" and ctx is not None:
-            from .main_data import MainData
+        from .main_data import MainData
 
-            self.state.refresh_tick += 1
-            # Stage 8 commit 7: ``state.main`` is now canonical. The
-            # rebuild-source dispatcher is the single writer; we
-            # snapshot the rebuild-derived fields off the incoming
-            # ctx into a frozen :class:`MainData` and assign. The ctx
-            # stays in the message envelope for screens not yet
-            # ported (commit 8 flips MainScreen to read
-            # ``state.main`` directly).
-            self.state.main = MainData.from_context(ctx)
-            # Drive the ``loading`` reactive on the main screen if
-            # one is mounted. Plain reassignment — the reactive has
-            # no compute method (verified by introspection in
-            # tests), so ``__set__`` triggers ``_check_watchers``
-            # without raising. ``state.main is None`` is the
-            # structural loading sentinel; on first landing it
-            # flips to False and the ``#sessions-note`` reactively
-            # repaints.
-            screen = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
-            if screen is not None and hasattr(screen, "_id"):
-                screen.loading = self.state.main is None
-        self.post_message(_MainCtxLoaded(ctx, error=event.error))
+        self.state.refresh_tick += 1
+        self.state.main = MainData.from_context(ctx)
+        self._latest_ctx = ctx
+        screen = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
+        if screen is not None and hasattr(screen, "_id"):
+            screen.loading = self.state.main is None
+        self._render.request("main_ctx")
 
     def _handle_remote_snapshot(self, event: _RefreshSourceLanded) -> None:
         """Apply a remote-host snapshot via the slot store.
@@ -605,14 +565,8 @@ class UxonApp(App):
         :class:`RemoteSnapshot` (the collector is fail-soft); we wrap
         it in a :class:`SlotResult` and fold it into
         ``state.remote[host]`` via the pure :func:`slot_state.apply`.
-
-        Stage 8 commit 4: ``state.remote`` is now the canonical store
-        for per-host snapshots. The shim ``ctx.remote_snapshots``
-        property reads through ``state.remote`` so screens that have
-        not yet been ported keep working unchanged. The fetcher
-        already includes its own elapsed timing in
-        :attr:`_RefreshSourceLanded.elapsed_ms`; we surface it on the
-        slot's ring so the latency-p50 tooltip has data.
+        ``elapsed_ms`` from the fetcher is surfaced on the slot's
+        ring so the latency-p50 tooltip has data.
         """
         host_name = event.name[len("remote:") :]
         from uxon.remote_collector import RemoteSnapshot
@@ -643,59 +597,52 @@ class UxonApp(App):
         prev = self.state.remote.get(host_name) or SlotState[RemoteSnapshot]()
         self.state.remote[host_name] = apply_slot(prev, result)
 
-        # Stage 8 commit 11 / 12: mark the dashboard dirty so
-        # ``_drain_remote_rows`` runs ``_refresh_dashboard`` once per
-        # refresh cycle even when N peer slots land back-to-back.
-        # The dashboard's selector (``select_dashboard_model``) reads
-        # ``state.remote`` directly, so we no longer need a separate
-        # row-tuple reactive.
-        self._mark_remote_rows_dirty()
+        # Fold peer-emitted users into the cross-user latch accumulator.
+        # If this snapshot brings the very first foreign user, the latch
+        # flips False→True — request the ``main_ctx`` render kind so
+        # :meth:`MainScreen.apply_loaded_ctx` re-evaluates the layout
+        # signature (and mounts the USER column). Otherwise the
+        # ``remote`` fast path is enough — row-level diff against the
+        # updated slot, no recompose.
+        prev_latched = len(self.main_ui.seen_users) > 1
+        if snap is not None:
+            for rec in snap.sessions:
+                user = rec.get("user") if isinstance(rec, dict) else None
+                if user:
+                    self.main_ui.seen_users.add(str(user))
+        new_latched = len(self.main_ui.seen_users) > 1
+        if not prev_latched and new_latched:
+            self._render.request("main_ctx")
+        else:
+            self._render.request("remote")
 
-    # ── Remote-rows coalescer ────────────────────────────────────────
-    #
-    # Stage 8 commit 11 / 12. Multiple per-host slot writes within the
-    # same event-loop cycle would otherwise trigger N back-to-back
-    # dashboard refreshes. The coalescer collapses them: the dirty
-    # flag flips on the first write, ``call_after_refresh`` schedules
-    # a single drain at the end of the cycle, the drain calls the
-    # active :class:`MainScreen`'s ``_refresh_dashboard`` once. The
-    # dashboard's ``select_dashboard_model`` reads ``state.remote``
-    # directly and the reconciler only emits ops for rows that
-    # changed — so unchanged hosts produce zero structural mutations.
+    def _render_dirty(self, kinds: frozenset[str]) -> bool:
+        """Single render-dispatch entry. Called by :class:`RenderScheduler`.
 
-    def _mark_remote_rows_dirty(self) -> None:
-        if self._remote_rows_dirty:
-            return
-        self._remote_rows_dirty = True
-        # ``call_after_refresh`` runs the callback after the next
-        # render cycle — i.e. after every per-host slot write that
-        # happens in the current cycle has landed in ``state.remote``.
-        # If the App is mid-mount and ``call_after_refresh`` is not
-        # yet wired, fall back to ``call_later`` which still defers
-        # to the event loop.
-        try:
-            self.call_after_refresh(self._drain_remote_rows)
-        except Exception:  # pragma: no cover — defensive
-            self.call_later(self._drain_remote_rows)
+        Returns True when a render actually happened. Returns False
+        when ``MainScreen`` is not on top (e.g. a modal is up); the
+        scheduler preserves the dirty state and re-fires on the next
+        :meth:`RenderScheduler.request`.
 
-    def _drain_remote_rows(self) -> None:
-        """Refresh the unified dashboard once per coalesced cycle.
-
-        Per-host slot writes within one event-loop cycle flip
-        ``_remote_rows_dirty``; this drain runs at most once per
-        cycle and re-pulls the full dashboard model. The model
-        selector's identity-stable contract means an unchanged-host
-        slot does not produce new ops (the diff sees identical rows
-        and emits no patches), preserving the per-host repaint
-        optimisation structurally rather than via a separate
-        row-tuple comparator.
+        ``main_ctx`` rebuilds run the full :meth:`apply_loaded_ctx`
+        path so structural fields (server status, banners, layout
+        signature) re-evaluate. A ``remote``-only batch is a hot-path
+        update of dashboard rows; :meth:`_refresh_dashboard` pulls
+        from ``state.remote`` directly and is enough.
         """
-        if not self._remote_rows_dirty:
-            return
-        self._remote_rows_dirty = False
         screen = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
-        if screen is not None:
+        if screen is None:
+            return False
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if not isinstance(top, MainScreen):
+            return False
+        if "main_ctx" in kinds and self._latest_ctx is not None:
+            screen.apply_loaded_ctx(self._latest_ctx)
+            return True
+        if "remote" in kinds:
             screen._refresh_dashboard()
+            return True
+        return False
 
     def _build_source_dispatch(
         self,
@@ -787,13 +734,13 @@ class UxonApp(App):
     def _kick_host_probe(self) -> None:
         """Schedule the host probe iff one isn't already in flight.
 
-        Wired into ``on_mount`` (initial), the periodic refresh interval
-        (so freshly-installed binaries surface without restart) and
-        ``MainScreen.action_refresh`` (so the manual ``r`` keybinding
-        does the same). Honours ``self.probe_agents`` so tests that
-        opt out of probing (Pilot tests with ``probe_agents=False``,
-        the pty integration suite that stubs ``probes.probe_host``)
-        do not start a real subprocess from the manual-refresh path.
+        Wired into ``on_mount`` (initial) and ``MainScreen.action_refresh``
+        (manual ``r`` keybinding). The probe is one-shot on mount; the
+        user picks up freshly-installed binaries via ``r``. Honours
+        ``self.probe_agents`` so tests that opt out of probing (Pilot
+        tests with ``probe_agents=False``, the pty integration suite
+        that stubs ``probes.probe_host``) do not start a real subprocess
+        from the manual-refresh path.
         """
         if not self.probe_agents:
             return
@@ -806,36 +753,25 @@ class UxonApp(App):
     def _probe_host_worker(self) -> None:
         """Background thread: probe tmux + all known agent binaries.
 
-        Stage 8 commit 5b — race-free. The worker builds two local
-        dicts (availability + detected) and posts them in a single
-        :class:`_HostReportUpdated` message; the on-loop handler
-        folds the payload into ``state.agent_availability`` /
-        ``state.detected_agents`` via :func:`slot_state.apply`. No
-        ``self.ctx.<field>`` is touched from the thread — the
-        previous in-place mutation pattern was a latent data race
-        between the worker and the event loop's selectors / screens.
+        Race-free: the worker builds a local availability dict and
+        posts it in a single :class:`_HostReportUpdated`; the on-loop
+        handler folds the payload into ``state.agent_availability``
+        via :func:`slot_state.apply`. No ``self.ctx.<field>`` access
+        from the thread.
 
-        Uses ``probes.probe_host`` rather than the older per-agent
-        ``probe_agents`` driver so one ``sh -lc`` round-trip covers
-        every binary; detected-but-not-enabled agents surface in
-        ``state.detected_agents.value`` for the suggestion banner.
+        Uses ``probes.probe_host`` so one ``sh -lc`` round-trip covers
+        every CATALOG agent.
         """
         import time as _time
 
         from uxon import agents as uxon_agents
         from uxon import probes as uxon_probes
 
-        # Build a minimal cfg-shaped object with what probe_host needs.
-        # Both fields are read off the frozen :class:`TuiConfig`
-        # snapshot — no mutable ctx access from the worker thread.
-        class _Cfg:
-            enabled_agents = self.cfg.enabled_agents
-
         target_user = self.cfg.launch_user or uxon_probes._current_user()
 
         t0 = _time.monotonic()
         try:
-            report = uxon_probes.probe_host(_Cfg(), target_user)
+            report = uxon_probes.probe_host(target_user)
         except Exception as exc:  # pragma: no cover — defensive
             self.post_message(
                 _HostReportUpdated(
@@ -845,23 +781,37 @@ class UxonApp(App):
             )
             return
 
+        # Strict-whitelist mode (``enabled_agents`` non-empty): surface
+        # exactly the enabled ids, marking absent binaries as "missing"
+        # so the unavailable-modal can fire. Auto-mode (empty config):
+        # surface only what is actually installed; un-installed
+        # CATALOG ids stay out of the availability map entirely.
+        configured = self.cfg.enabled_agents
         availability: dict = {}
-        for aid, status in report.enabled.items():
-            if status.path is not None:
-                availability[aid] = uxon_agents.AgentAvailability(
-                    status="ok",
-                    path=status.path,
-                )
-            else:
-                availability[aid] = uxon_agents.AgentAvailability(
-                    status="missing",
-                    error=f"{status.name} not found on PATH",
-                )
-        detected = dict(report.detected)
+        if configured:
+            for aid in configured:
+                status = report.agents.get(aid)
+                if status is not None and status.path is not None:
+                    availability[aid] = uxon_agents.AgentAvailability(
+                        status="ok",
+                        path=status.path,
+                    )
+                else:
+                    binary = uxon_agents.CATALOG[aid].binary if aid in uxon_agents.CATALOG else aid
+                    availability[aid] = uxon_agents.AgentAvailability(
+                        status="missing",
+                        error=f"{binary} not found on PATH",
+                    )
+        else:
+            for aid, status in report.agents.items():
+                if status.path is not None:
+                    availability[aid] = uxon_agents.AgentAvailability(
+                        status="ok",
+                        path=status.path,
+                    )
         self.post_message(
             _HostReportUpdated(
                 availability=availability,
-                detected=detected,
                 elapsed_ms=int((_time.monotonic() - t0) * 1000),
             )
         )
@@ -869,11 +819,9 @@ class UxonApp(App):
     def _probe_cwd_writable_worker(self, cwd_at_start: str = "") -> None:
         """Background thread: probe write access and post the result.
 
-        Stage 8 commit 6: ``cwd_at_start`` is captured at the kick
-        site (``on_mount`` / ``MainScreen``-driven re-probes) and
-        threaded through the message envelope so the on-loop
-        handler can gate against an in-flight probe whose result
-        no longer applies to the current cwd.
+        ``cwd_at_start`` threads through the message envelope so the
+        on-loop handler can gate against an in-flight probe whose
+        result no longer applies to the current cwd.
         """
         try:
             writable = bool(self.cfg.on_probe_cwd_writable())
@@ -886,13 +834,9 @@ class UxonApp(App):
     def on__cwd_writable_updated(self, event: _CwdWritableUpdated) -> None:
         """Apply a cwd-write probe result to ``state.cwd_writable``.
 
-        Stage 8 commit 6: drops results whose ``cwd_at_start`` no
-        longer matches the live ``ctx.cwd``. Without this gate, an
-        in-flight probe started against ``cwd_old`` could land
-        after the user changed directory and surface as the answer
-        for ``cwd_new`` — confusing and wrong. The mismatch case
-        is logged via ``UXON_DEBUG=refresh`` and silently dropped
-        so the next probe starts fresh.
+        Drops results whose ``cwd_at_start`` no longer matches the
+        live ``ctx.cwd`` so a probe started against ``cwd_old`` is
+        not surfaced as the answer for ``cwd_new``.
         """
         from .slot_state import SlotResult
         from .slot_state import apply as apply_slot
@@ -928,12 +872,10 @@ class UxonApp(App):
     def _probe_link_health_worker(self) -> None:
         """Background thread: probe SSH-path health and post the result.
 
-        Stage 8 commit 6 followup: reads ``on_probe_link_health`` off
-        the frozen :class:`TuiConfig` (no mutable ctx access from the
-        thread). ``apply_loaded_ctx`` may replace ``self.app.ctx``
-        concurrently on the event loop, so reading ``self.ctx`` from
-        the worker is a data race; the cfg snapshot is immutable for
-        the App's lifetime.
+        Reads ``on_probe_link_health`` off the frozen :class:`TuiConfig`
+        (no mutable ctx access from the thread) — ``apply_loaded_ctx``
+        may replace ``self.app.ctx`` concurrently on the event loop,
+        so reading ``self.ctx`` from the worker is a data race.
         """
         from uxon import tui as uxon_tui
 
@@ -977,24 +919,26 @@ class UxonApp(App):
             # call_later schedules the coroutine on the event loop and
             # does not go through the message-pump / bubbling path.
             self.call_later(top._rebuild_agent_list)
-        # Refresh the detected-agents banner on the main screen if we
-        # have one — does nothing when the screen has not mounted yet.
-        main = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
-        if main is not None:
-            self.call_later(main._refresh_detected_banner)
 
-        # Stage 8 commit 5d: read availability through the canonical
-        # store directly. The shim ``ctx.agent_availability`` resolves
-        # to the same value (state.<slot>.value) but going through it
-        # forces an extra getattr layer; in the dispatch hot path
-        # (every probe tick) the direct read is cheaper and pre-stages
-        # the shim deletion in commit 10.
         availability = self.state.agent_availability.value or {}
-        enabled = self.cfg.enabled_agents
-        current_all_missing = compute_all_missing(
-            enabled_agents=enabled,
-            availability=availability,
-        )
+        configured = self.cfg.enabled_agents
+        if configured:
+            current_all_missing = compute_all_missing(
+                enabled_agents=configured,
+                availability=availability,
+            )
+            modal_arg: tuple[str, ...] = tuple(configured)
+        else:
+            # Auto-mode: "all missing" iff the probe landed and found
+            # zero installed agents.
+            current_all_missing = self._host_probe_landed and not availability
+            modal_arg = ()
+        # An errored probe is independently fatal — neither mode can
+        # know what is installed, so surface the diagnostic via the
+        # same modal rather than leaving the user with a silent empty
+        # list. Overrides the per-mode predicates above.
+        if self._host_probe_error:
+            current_all_missing = True
         modal_on_stack = any(isinstance(s, AgentsUnavailableScreen) for s in self.screen_stack)
         push = should_push_agents_unavailable(
             last_all_missing=self._last_all_missing,
@@ -1003,30 +947,23 @@ class UxonApp(App):
             pending_launch=self.pending_launch is not None,
         )
         if push:
-            self.push_screen(AgentsUnavailableScreen(tuple(enabled)))
-        # Update the transition tracker only after we have observed at
-        # least one resolved availability set; ``compute_all_missing``
-        # returns False both for "all ok" and for "still pending" — we
-        # don't want a single pending tick to clear ``_last_all_missing``
-        # back to False and re-arm a push when the next tick lands.
+            self.push_screen(AgentsUnavailableScreen(modal_arg, error=self._host_probe_error))
         if self._availability_resolved():
             self._last_all_missing = current_all_missing
 
     def _availability_resolved(self) -> bool:
-        """True iff every enabled agent has a non-pending availability entry.
+        """True iff the availability snapshot is settled.
 
-        Stage 8 commit 5d: reads ``self.state.agent_availability.value``
-        directly rather than going through the shim — same data, one
-        less layer of indirection on a path that runs on every probe
-        tick.
+        Strict mode: every enabled agent has a non-pending entry.
+        Auto-mode: the host probe has landed at least once.
         """
-        enabled = self.cfg.enabled_agents
-        if not enabled:
-            return False
+        configured = self.cfg.enabled_agents
+        if not configured:
+            return self._host_probe_landed
         availability = self.state.agent_availability.value or {}
         return all(
             aid in availability and getattr(availability[aid], "status", "pending") != "pending"
-            for aid in enabled
+            for aid in configured
         )
 
     def on__agent_availability_updated(self, event: _AgentAvailabilityUpdated) -> None:
@@ -1034,68 +971,42 @@ class UxonApp(App):
         self._dispatch_availability_change()
 
     def on__host_report_updated(self, event: _HostReportUpdated) -> None:
-        """Handler for the new probe_host worker.
+        """Handler for the probe_host worker.
 
-        Stage 8 commit 5b: folds the worker's locally-built dicts
-        into ``state.agent_availability`` / ``state.detected_agents``
-        via :func:`slot_state.apply`. The dispatcher is the *only*
-        on-loop site that mutates these slots, so any later observer
-        (selectors, screens, the dispatch path below) sees a
-        consistent fresh dict on each tick. The shim
-        ``ctx.agent_availability`` returns ``state.<slot>.value``,
-        i.e. the freshly-allocated dict — by-reference snapshots
-        captured at modal-construction time go stale, which is
-        why ``LaunchOptionsScreen`` is ported off snapshotting in
-        commit 5c.
+        Folds the worker's availability dict into
+        ``state.agent_availability`` via :func:`slot_state.apply`.
+        The dispatcher is the *only* on-loop site that mutates this
+        slot, so observers see a consistent fresh dict on each tick.
+        ``ctx.agent_availability`` returns ``state.<slot>.value`` —
+        the freshly-allocated dict — so by-reference snapshots
+        captured at modal-construction time would go stale.
         """
         from .slot_state import SlotResult
         from .slot_state import apply as apply_slot
 
-        # Apply the slot updates transactionally — either both slots
-        # fold in or neither does. The two fields are coupled (same
-        # probe produces both) and must not desync silently.
-        # ``availability is None and detected is None`` is the legacy
-        # bare-post pattern: tests mutate ``ctx.agent_availability``
-        # directly and post to wake the handler. An asymmetric
-        # payload (one None, the other not) is a programming error;
-        # log and drop without partial mutation rather than silently
-        # advancing one slot.
-        avail_present = event.availability is not None
-        detect_present = event.detected is not None
-        if not event.error and avail_present and detect_present:
-            attempted_at = time.time()
+        # ``availability is None`` is the bare-post pattern used by
+        # tests that mutate the slot directly and post a bare message
+        # to wake the handler — no slot apply, no flag flip.
+        if event.availability is not None:
             avail_result: SlotResult[dict] = SlotResult(
                 value=event.availability,
                 error=None,
                 elapsed_ms=event.elapsed_ms,
-                attempted_at=attempted_at,
+                attempted_at=time.time(),
             )
             self.state.agent_availability = apply_slot(self.state.agent_availability, avail_result)
-            detect_result: SlotResult[dict] = SlotResult(
-                value=event.detected,
-                error=None,
-                elapsed_ms=event.elapsed_ms,
-                attempted_at=attempted_at,
-            )
-            self.state.detected_agents = apply_slot(self.state.detected_agents, detect_result)
-        elif avail_present != detect_present:
-            _debug(
-                "refresh",
-                at="host_report_partial",
-                action="drop",
-                avail_present=avail_present,
-                detect_present=detect_present,
-            )
+        # Any non-bare result lands the probe — success *and* error.
+        # Errors leave ``availability`` empty (the worker only posts a
+        # dict on the success path) but still flip the gate so the
+        # auto-mode unavailable-modal surfaces the diagnostic instead
+        # of silently waiting forever.
+        if event.availability is not None or event.error:
+            self._host_probe_landed = True
+            self._host_probe_error = event.error
         self._dispatch_availability_change()
 
     def on__link_health_updated(self, event: _LinkHealthUpdated) -> None:
-        """Apply a link-health probe result to ``state.link_health``.
-
-        Stage 8 commit 6: ``link_health`` is now a slot. The handler
-        runs on the event loop (the worker only posts the message),
-        so no thread-race concerns — the migration is a data-shape
-        rename so the carry-list can disappear.
-        """
+        """Apply a link-health probe result to ``state.link_health``."""
         from .slot_state import SlotResult
         from .slot_state import apply as apply_slot
 
@@ -1109,11 +1020,6 @@ class UxonApp(App):
         top = self.screen_stack[-1] if self.screen_stack else None
         if isinstance(top, MainScreen):
             self.call_later(top._update_status_line)
-
-    def action_main_digit_jump(self, n: int) -> None:
-        top = self.screen_stack[-1] if self.screen_stack else None
-        if isinstance(top, MainScreen):
-            top.action_digit_jump(n)
 
     # ── Worker drain on teardown ────────────────────────────────────
 
@@ -1197,6 +1103,7 @@ class UxonApp(App):
         workers from this hook is exactly the "before App.run()
         returns" point the spec calls for.
         """
+        self._render.shutdown()
         self._drain_workers()
 
     def pop_until_main(self) -> None:
