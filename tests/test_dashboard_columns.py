@@ -343,7 +343,11 @@ class RelativeColumnFormatterTests(unittest.TestCase):
         self.assertEqual(_by_id("new").format(_row(created_epoch=None)), "-")
 
     def test_last_none_dash(self) -> None:
-        self.assertEqual(_by_id("last").format(_row(last_attached_epoch=None)), "-")
+        # LAST returns a Rich ``Text`` so the cell can be tinted by staleness;
+        # check the displayed string, not the wrapper type.
+        cell = _by_id("last").format(_row(last_attached_epoch=None))
+        self.assertEqual(cell.plain, "-")
+        self.assertEqual(cell.style, "")
 
 
 class SortKeyTests(unittest.TestCase):

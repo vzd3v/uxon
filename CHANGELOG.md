@@ -6,6 +6,11 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Dashboard `LAST` column tints sessions by activity age: yellow after 24 h without I/O, red after 3 d. Thresholds are hard-coded for now.
+
 ## [3.4.0] — 2026-05-13
 
 ### Added

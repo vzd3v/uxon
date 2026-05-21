@@ -202,8 +202,24 @@ def _format_new(row: SessionRow) -> str:
     return format_relative_time(row.created_epoch)
 
 
-def _format_last(row: SessionRow) -> str:
-    return format_relative_time(row.last_attached_epoch)
+_LAST_IDLE_SECONDS = 24 * 3600
+_LAST_STALE_SECONDS = 3 * 86_400
+
+
+def _format_last(row: SessionRow) -> Text:
+    # ``last_attached_epoch`` is tmux ``#{session_activity}`` — it ticks on
+    # I/O, so attached-but-quiet sessions also age into idle/stale.
+    epoch = row.last_attached_epoch
+    now = time.time()
+    label = format_relative_time(epoch, now=now)
+    if epoch is None:
+        return Text(label)
+    delta = max(0.0, now - epoch)
+    if delta >= _LAST_STALE_SECONDS:
+        return Text(label, style="red")
+    if delta >= _LAST_IDLE_SECONDS:
+        return Text(label, style="yellow")
+    return Text(label)
 
 
 # WINS placeholder: the wire schema carries ``windows`` but
