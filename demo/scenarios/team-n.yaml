@@ -1,0 +1,174 @@
+# team-n — the headline demo.
+#
+# Marcus (lead) opens uxon on his own dev box (``dev-marcus``, local).
+# He has SSH + sudo to his teammates' personal dev boxes and sees
+# their agent sessions over the wire. ``dev-common`` is the deliberate
+# *exception* in the article's model — the small shared host for
+# people who don't get their own box — and shows up with just two
+# sessions to make that point. ``gpu-box`` covers the ML case.
+#
+# Each engineer has 1-2 sessions; one of them sits in the stale tier
+# to keep the "abandoned work piles up" story visible. No host carries
+# more than two rows: the value of the dashboard is breadth across
+# people and machines, not depth on one box.
+
+schema_version: 1
+
+defaults:
+  agent: claude
+  windows: 1
+  cpu_pct: 0.0
+  rss_mib: 220
+
+# Local = where Marcus is sitting (his own dev box). Renders as
+# ``host=local`` in the TUI.
+local:
+  - user: marcus-agent
+    slot: billing-api
+    agent: claude
+    attached: true
+    windows: 4
+    cpu_pct: 28.4
+    rss_mib: 880
+    path: /home/marcus-agent/code/billing-api
+    cmd: claude
+    age_min: 55
+
+  - user: marcus-agent
+    slot: ledger-cli
+    agent: codex
+    attached: false
+    attached_min_ago: 35             # fresh
+    windows: 1
+    cpu_pct: 1.8
+    rss_mib: 286
+    path: /home/marcus-agent/code/ledger
+    cmd: codex
+    age_min: 140
+
+hosts:
+  # ── Wes's personal dev box.
+  - name: dev-wes
+    color: green
+    host_stats:
+      cpu_pct: 22.5
+      mem_used_kib: 9_400_000
+      mem_total_kib: 16_000_000
+      loadavg_1m: 1.8
+      uptime_s: 92_400
+      kernel: "6.8.0-90-generic"
+    sessions:
+      - user: wes-agent
+        slot: crm-billing
+        agent: claude
+        attached: true
+        windows: 3
+        cpu_pct: 18.2
+        rss_mib: 612
+        path: /home/wes-agent/work/crm-billing
+        cmd: claude
+        age_min: 38
+
+      - user: wes-agent
+        slot: crm-ui
+        agent: codex
+        attached: false
+        attached_min_ago: 70          # fresh-ish
+        windows: 1
+        cpu_pct: 0.4
+        rss_mib: 198
+        path: /home/wes-agent/work/crm-ui
+        cmd: codex
+        age_min: 220
+
+  # ── Nadia's personal dev box — one active session.
+  - name: dev-nadia
+    color: cyan
+    host_stats:
+      cpu_pct: 14.8
+      mem_used_kib: 6_200_000
+      mem_total_kib: 16_000_000
+      loadavg_1m: 1.1
+      uptime_s: 184_000
+      kernel: "6.8.0-90-generic"
+    sessions:
+      - user: nadia-agent
+        slot: etl-upg
+        agent: claude
+        attached: true
+        windows: 2
+        cpu_pct: 9.8
+        rss_mib: 432
+        path: /home/nadia-agent/work/etl-upg
+        cmd: claude
+        age_min: 80
+
+  # ── GPU box — ML.
+  - name: gpu-box
+    color: magenta
+    host_stats:
+      cpu_pct: 78.5
+      mem_used_kib: 64_000_000
+      mem_total_kib: 96_000_000
+      loadavg_1m: 8.2
+      uptime_s: 432_000             # 5d
+      kernel: "6.8.0-87-generic"
+    sessions:
+      - user: maya-agent
+        slot: train-llama
+        agent: claude
+        attached: true
+        windows: 5
+        cpu_pct: 71.2
+        rss_mib: 3_400
+        path: /home/maya-agent/exp/llama
+        cmd: claude
+        age_min: 410
+
+      - user: maya-agent
+        slot: scratchpad-old
+        agent: cursor
+        attached: false
+        attached_min_ago: 14400        # 10d → red (abandoned ML scratch)
+        windows: 1
+        cpu_pct: 0.0
+        rss_mib: 162
+        path: /home/maya-agent/scratch
+        cmd: cursor-agent
+        age_min: 20_160
+
+  # ── Shared dev host — the exception in the article's model.
+  # Two engineers without their own box, paired with ``-agent`` users.
+  # Pinned last so it doesn't dominate the dashboard ordering.
+  - name: dev-common
+    color: yellow
+    host_stats:
+      cpu_pct: 18.2
+      mem_used_kib: 14_000_000
+      mem_total_kib: 32_000_000
+      loadavg_1m: 2.4
+      uptime_s: 604_800            # 7d
+      kernel: "6.8.0-87-generic"
+    sessions:
+      - user: liam-agent
+        slot: alert-runbook
+        agent: claude
+        attached: true
+        windows: 2
+        cpu_pct: 6.4
+        rss_mib: 388
+        path: /srv/work/alert-runbook
+        cmd: claude
+        age_min: 45
+
+      - user: ethan-agent
+        slot: data-pipeline
+        agent: codex
+        attached: false
+        attached_min_ago: 1700        # ~28h → yellow (idle)
+        windows: 1
+        cpu_pct: 0.9
+        rss_mib: 260
+        path: /srv/work/data-pipeline
+        cmd: codex
+        age_min: 2000

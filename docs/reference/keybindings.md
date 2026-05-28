@@ -47,6 +47,20 @@ list. Cursor and selection bindings work without leaving the input.
 | `Enter` | Confirm |
 | `Esc` | Cancel |
 
+## "Existing session" modal
+
+Pushed by every launch action (`New session in current folder`,
+`Create new project`, `Open existing project`) when a compatible
+session for the target directory already exists. Lets the operator
+attach to an existing session or knowingly start a parallel one.
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Navigate the existing-session list |
+| `a` / `Enter` | Attach to the highlighted session |
+| `n` | Start a new (parallel) session |
+| `Esc` | Cancel the launch |
+
 ## ⚙ Settings screen (superuser block only)
 
 | Key | Action |

@@ -733,6 +733,18 @@ def load_config(cwd: str) -> Config:
     except uxon_remote_hosts.RemoteHostError as exc:
         fail(str(exc))
 
+    # Demo-mode short-circuit: when UXON_DEMO_HOSTS=<dir> is set, replace
+    # the configured peer list with synthetic hosts derived from the
+    # envelope files in that directory. The collector hook in
+    # ``remote_collector.fetch_remote_snapshot`` then reads each envelope
+    # from disk instead of running ssh. Operator config is ignored in
+    # this mode by design — the scenario is the only source of truth.
+    from uxon import _demo as _uxon_demo  # noqa: PLC0415
+
+    _demo_dir = _uxon_demo.demo_hosts_dir()
+    if _demo_dir is not None:
+        remote_hosts = _uxon_demo.synthesize_remote_hosts(_demo_dir)
+
     audit_tbl = merged.get("audit", DEFAULT_CONFIG["audit"])
     if not isinstance(audit_tbl, dict):
         fail("'audit' must be a TOML table")
@@ -1498,6 +1510,19 @@ def collect_sessions_for_user(
     *,
     legacy_prefixes: tuple[str, ...] = (),
 ) -> list[SessionInfo]:
+    # Demo-mode short-circuit: when ``UXON_DEMO_HOSTS`` is set, bypass
+    # tmux entirely and read the synthetic-local envelope. Returning
+    # ``[]`` for an absent envelope mirrors production's "empty tmux
+    # socket" path, so screenshots on a multi-tenant box don't leak the
+    # caller's real sessions. The legacy_prefixes argument is irrelevant
+    # in demo mode — scenario envelopes already carry fully-qualified
+    # session names.
+    from uxon import _demo as _uxon_demo  # noqa: PLC0415
+
+    _demo_dir = _uxon_demo.demo_hosts_dir()
+    if _demo_dir is not None:
+        return _uxon_demo.load_demo_local_sessions(_demo_dir, user)
+
     # Listing runs without a TTY (CLI ``list``, TUI background poll,
     # remote aggregator). Use the non-interactive sudo prefix so a
     # missing NOPASSWD grant returns non-zero immediately rather than
@@ -4408,15 +4433,26 @@ def _plan_tui_existing_session_or_launch(
     name: str,
     args: ParsedArgs,
 ):
-    """Resolve to either an attach request (compatible session exists) or
-    a fresh tmux launch request. Shared tail of both TUI project flows.
+    """Allocate + launch a fresh session under ``project_dir``.
+
+    Shared tail of both TUI project flows. The TUI is the sole owner of
+    the attach-vs-launch decision now: it probes via
+    :func:`probe_tui_compatible_sessions` after the operator picks
+    agent+mode, surfaces the choice in a modal, and routes "attach" to
+    :func:`on_attach` directly. By the time this planner runs we already
+    know the operator wants a new (parallel) session — the only thing
+    left to do is allocate the next available index and emit the launch
+    request. :func:`compatible_indexed_sessions` is still called for its
+    path-safety side effect (it ``fail()``-s if a same-named session
+    points outside ``project_dir``).
     """
     session_stem = session_stem_for_path(project_dir)
     compatibility_root = project_dir
     _agent = resolve_agent_id(cfg, launch_user, args.agent or None, report=args.host_report)
     args.agent = _agent
     sessions = collect_sessions([launch_user], cfg)
-    existing = compatible_indexed_sessions(
+    # Path-safety side effect — raises via fail() on a path mismatch.
+    compatible_indexed_sessions(
         session_stem,
         _agent,
         compatibility_root,
@@ -4424,21 +4460,40 @@ def _plan_tui_existing_session_or_launch(
         prefix=cfg.session_prefix,
         legacy_prefixes=cfg.legacy_session_prefixes,
     )
-    if existing:
-        attach_target = choose_attach_session(
-            existing,
-            session_stem,
-            _agent,
-            prefix=cfg.session_prefix,
-            legacy_prefixes=cfg.legacy_session_prefixes,
-        )
-        return _build_tmux_attach_request(attach_target, cfg, launch_user)
-
     repeat_guardrail_for_legacy_socket(cfg, launch_user, session_stem, compatibility_root)
     session = allocate_session_name(
         session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
     )
     return _build_tmux_launch_request(project_dir, session, args, cfg, None, launch_user)
+
+
+def probe_tui_compatible_sessions(
+    cfg: Config,
+    launch_user: str,
+    target_dir: str,
+    agent_id: str,
+) -> tuple[SessionInfo, ...]:
+    """Return launch_user's sessions compatible with ``target_dir`` + ``agent_id``.
+
+    Pure side-effect-free read of the live tmux session list (modulo the
+    path-safety ``fail()`` inherited from :func:`compatible_indexed_sessions`,
+    which is the same invariant the planner enforces — surfacing here too
+    keeps the TUI honest). Returns an empty tuple when no compatible
+    session exists. Used by the TUI to decide whether to push the
+    SessionChoiceScreen modal before a launch action commits.
+    """
+    target_canonical = canonical(target_dir)
+    session_stem = session_stem_for_path(target_canonical)
+    sessions = collect_sessions([launch_user], cfg)
+    matches = compatible_indexed_sessions(
+        session_stem,
+        agent_id,
+        target_canonical,
+        sessions,
+        prefix=cfg.session_prefix,
+        legacy_prefixes=cfg.legacy_session_prefixes,
+    )
+    return tuple(matches)
 
 
 def _build_on_remote_attach_callback(cfg: Config):
@@ -4538,25 +4593,52 @@ def _build_tui_context(
         other: list[SessionInfo] = []
         skipped_users: tuple[str, ...] = ()
     else:
-        # One-shot probe: the candidate set is ``session_users \ {self}``.
-        # Self is filtered before probing because ``sudo -niu <self>``
-        # trivially succeeds and would inflate ``reachable_users``
-        # with a meaningless entry.
-        candidates = [u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user]
-        if sudo_caps_override is not None:
-            sudo_caps = sudo_caps_override
-        else:
-            sudo_caps = probe_sudo_capability(candidates)
-        own = collect_sessions([launch_user], cfg)
+        from uxon import _demo as _uxon_demo_ctx  # noqa: PLC0415
 
-        # Other-user sessions are scoped to the *reachable* subset.
-        # Unreachable candidates are surfaced separately so the TUI
-        # can show the "(2/4 users reachable)" hint.
-        if sudo_caps.reachable_users:
-            other = collect_sessions(sorted(sudo_caps.reachable_users), cfg)
-        else:
+        _demo_dir = _uxon_demo_ctx.demo_hosts_dir()
+        if _demo_dir is not None:
+            # Single demo seam for local sessions: pull the agent-user
+            # scope and per-user records straight from _local.json.
+            # Bypasses sudo probe + tmux_socket_path (the production
+            # collectors reject synthetic users that don't exist as
+            # OS accounts) and keeps every demo-only branch inside this
+            # one block.
+            scope_users = _uxon_demo_ctx.load_demo_local_scope_users(_demo_dir)
+            own = _uxon_demo_ctx.load_demo_local_sessions(_demo_dir, launch_user)
             other = []
-        skipped_users = tuple(sorted(u for u in candidates if u not in sudo_caps.reachable_users))
+            for _u in scope_users:
+                if _u == launch_user:
+                    continue
+                other.extend(_uxon_demo_ctx.load_demo_local_sessions(_demo_dir, _u))
+            sudo_caps = SudoCapability(
+                reachable_users=frozenset(u for u in scope_users if u != launch_user),
+                can_root=False,
+            )
+            skipped_users = ()
+        else:
+            # One-shot probe: the candidate set is ``session_users \ {self}``.
+            # Self is filtered before probing because ``sudo -niu <self>``
+            # trivially succeeds and would inflate ``reachable_users``
+            # with a meaningless entry.
+            candidates = [
+                u for u in resolve_all_session_users(cfg, launch_user) if u != launch_user
+            ]
+            if sudo_caps_override is not None:
+                sudo_caps = sudo_caps_override
+            else:
+                sudo_caps = probe_sudo_capability(candidates)
+            own = collect_sessions([launch_user], cfg)
+
+            # Other-user sessions are scoped to the *reachable* subset.
+            # Unreachable candidates are surfaced separately so the TUI
+            # can show the "(2/4 users reachable)" hint.
+            if sudo_caps.reachable_users:
+                other = collect_sessions(sorted(sudo_caps.reachable_users), cfg)
+            else:
+                other = []
+            skipped_users = tuple(
+                sorted(u for u in candidates if u not in sudo_caps.reachable_users)
+            )
         # Spec line 223: ``list.peek`` fires when the TUI actually
         # enumerates cross-user sessions (gated by ``enable_all_users_list``
         # and ``reachable_users`` being non-empty).  CLI ``uxon list
@@ -4875,56 +4957,52 @@ def _build_tui_context(
 
     def on_launch_new(name: str, agent_id: str, mode_id: str, git_profile: str):
         req = _plan_tui_create_new_agent(cfg, launch_user, name, agent_id, mode_id, git_profile)
-        # ``_plan_tui_existing_session_or_launch`` (the tail this routes
-        # through) returns either an attach request (label starts with
-        # ``attach`` / ``switch-client``) or a launch request — discriminate
-        # on the label to pick the right event.  Recompute the absolute
-        # project path the same way ``_resolve_tui_project_dir`` does, but
-        # without its ``mkdir -p`` side effect.
+        # The TUI planner no longer auto-attaches — every launch request
+        # routed here is a fresh ``session.new``. The attach path is
+        # owned by ``on_attach`` (which emits its own ``session.attach``
+        # event when the operator picks "attach" in SessionChoiceScreen).
         project = canonical(os.path.join(cfg.new_project_root, name))
         from uxon import audit as _audit
 
-        if req.label.startswith(("attach", "switch-client")):
-            _audit.audit(
-                "session.attach",
-                session=_session_name_from_launch_label(req.label),
-                target_user=launch_user,
-            )
-        else:
-            _audit.audit(
-                "session.new",
-                agent=agent_id,
-                project=project,
-                branch="",
-                session=_session_name_from_launch_label(req.label),
-                dry_run=False,
-            )
+        _audit.audit(
+            "session.new",
+            agent=agent_id,
+            project=project,
+            branch="",
+            session=_session_name_from_launch_label(req.label),
+            dry_run=False,
+        )
         return req
 
     def on_launch_existing(name: str, agent_id: str, mode_id: str):
         req = _plan_tui_open_existing_agent(cfg, launch_user, name, agent_id, mode_id)
-        # Same attach-vs-launch discrimination as ``on_launch_new`` —
-        # `open existing` may attach (existing session) or launch (no
-        # session yet for that project + agent).
+        # Same as ``on_launch_new``: TUI owns attach decisions; this path
+        # always emits ``session.new``.
         project = canonical(os.path.join(cfg.new_project_root, name))
         from uxon import audit as _audit
 
-        if req.label.startswith(("attach", "switch-client")):
-            _audit.audit(
-                "session.attach",
-                session=_session_name_from_launch_label(req.label),
-                target_user=launch_user,
-            )
-        else:
-            _audit.audit(
-                "session.new",
-                agent=agent_id,
-                project=project,
-                branch="",
-                session=_session_name_from_launch_label(req.label),
-                dry_run=False,
-            )
+        _audit.audit(
+            "session.new",
+            agent=agent_id,
+            project=project,
+            branch="",
+            session=_session_name_from_launch_label(req.label),
+            dry_run=False,
+        )
         return req
+
+    def on_probe_existing_sessions(target_dir: str, agent_id: str) -> tuple[tuple[str, bool], ...]:
+        """TUI probe: return (name, attached) pairs for launch_user's
+        compatible sessions under ``target_dir`` + ``agent_id``.
+
+        Called by the TUI between LaunchOptionsScreen (agent + mode pick)
+        and the actual ``on_launch_*`` commit. An empty tuple means the
+        TUI proceeds straight to launch; otherwise it pushes the
+        SessionChoiceScreen modal to let the operator pick attach vs
+        new-alongside.
+        """
+        matches = probe_tui_compatible_sessions(cfg, launch_user, target_dir, agent_id)
+        return tuple((s.name, s.attached == "1") for s in matches)
 
     git_profile_options = [
         (
@@ -4966,6 +5044,7 @@ def _build_tui_context(
     on_launch_cwd = _wrap_tui_callback(on_launch_cwd, _CbErr)
     on_launch_new = _wrap_tui_callback(on_launch_new, _CbErr)
     on_launch_existing = _wrap_tui_callback(on_launch_existing, _CbErr)
+    on_probe_existing_sessions = _wrap_tui_callback(on_probe_existing_sessions, _CbErr)
     get_settings_entries = _wrap_tui_callback(get_settings_entries, _CbErr)
     on_setting_save = _wrap_tui_callback(on_setting_save, _CbErr)
     on_setting_remove = _wrap_tui_callback(on_setting_remove, _CbErr)
@@ -5181,6 +5260,7 @@ def _build_tui_context(
         on_launch_cwd=on_launch_cwd,
         on_launch_new=on_launch_new,
         on_launch_existing=on_launch_existing,
+        on_probe_existing_sessions=on_probe_existing_sessions,
         get_settings_entries=get_settings_entries,
         on_setting_save=on_setting_save,
         on_setting_remove=on_setting_remove,

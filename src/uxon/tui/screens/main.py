@@ -22,6 +22,7 @@ reference to the current :class:`TuiContext` and refreshes it on ``r``.
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -69,6 +70,7 @@ from .existing import ExistingProjectScreen
 from .git_profile import GitProfileScreen
 from .launch_options import LaunchOptionsScreen
 from .new_project import NewProjectScreen
+from .session_choice import SessionChoiceScreen
 
 
 class MainScreen(Screen):
@@ -661,6 +663,52 @@ class MainScreen(Screen):
             return
         self.app.request_launch(req)  # type: ignore[attr-defined]
 
+    def _maybe_show_session_choice(
+        self,
+        *,
+        target_dir: str,
+        target_label: str,
+        agent_id: str,
+        on_new,
+    ) -> None:
+        """Probe for compatible existing sessions; if any, prompt the operator.
+
+        ``target_dir`` is the absolute target path (cwd or
+        ``<new_project_root>/<name>``); the CLI side canonicalises it
+        before lookup. ``on_new`` is invoked when the operator chooses
+        "new alongside" (or when the probe returns no matches) — it's
+        the closure that actually commits the launch by calling the
+        corresponding ``on_launch_*`` callback. The attach branch routes
+        through the existing ``_attach_session`` so audit + LaunchRequest
+        construction stay in one place.
+        """
+        try:
+            existing = self.ctx.on_probe_existing_sessions(target_dir, agent_id)
+        except CallbackError as exc:
+            # A probe failure shouldn't silently swallow the launch.
+            # Surface the message and abort — the operator can retry.
+            self.app.notify(f"Session probe failed: {exc}", severity="error", timeout=6)
+            return
+        if not existing:
+            on_new()
+            return
+
+        launch_user = self.ctx.launch_user or self.ctx.current_user
+
+        def after_choice(result):
+            if result is None:
+                return
+            action, name = result
+            if action == "attach" and name:
+                self._attach_session(launch_user, name)
+            elif action == "new":
+                on_new()
+
+        self.app.push_screen(
+            SessionChoiceScreen(target_label=target_label, existing=existing),
+            after_choice,
+        )
+
     # ── Activation handlers (modals stubbed — T14 replaces stubs) ────
 
     def _launch_cwd(self) -> None:
@@ -691,16 +739,24 @@ class MainScreen(Screen):
             )
             return
 
-        def after_opts(result: tuple[str, str] | None) -> None:
-            if result is None:
-                return
-            agent_id, mode_id = result
+        def commit_new(agent_id: str, mode_id: str) -> None:
             try:
                 req = self.ctx.on_launch_cwd(agent_id, mode_id)
             except CallbackError as exc:
                 self.app.notify(str(exc), severity="error", timeout=6)
                 return
             self.app.request_launch(req)  # type: ignore[attr-defined]
+
+        def after_opts(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            agent_id, mode_id = result
+            self._maybe_show_session_choice(
+                target_dir=self.ctx.cwd,
+                target_label=self.ctx.cwd_short or self.ctx.cwd,
+                agent_id=agent_id,
+                on_new=lambda: commit_new(agent_id, mode_id),
+            )
 
         self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts)
 
@@ -710,12 +766,21 @@ class MainScreen(Screen):
                 if result is None:
                     return
                 agent_id, mode_id = result
-                try:
-                    req = self.ctx.on_launch_new(name, agent_id, mode_id, git_profile)
-                except CallbackError as exc:
-                    self.app.notify(str(exc), severity="error", timeout=6)
-                    return
-                self.app.request_launch(req)  # type: ignore[attr-defined]
+
+                def commit_new() -> None:
+                    try:
+                        req = self.ctx.on_launch_new(name, agent_id, mode_id, git_profile)
+                    except CallbackError as exc:
+                        self.app.notify(str(exc), severity="error", timeout=6)
+                        return
+                    self.app.request_launch(req)  # type: ignore[attr-defined]
+
+                self._maybe_show_session_choice(
+                    target_dir=os.path.join(self.ctx.new_project_root, name),
+                    target_label=name,
+                    agent_id=agent_id,
+                    on_new=commit_new,
+                )
 
             return _on_opts
 
@@ -760,12 +825,21 @@ class MainScreen(Screen):
                 if result is None:
                     return
                 agent_id, mode_id = result
-                try:
-                    req = self.ctx.on_launch_existing(name, agent_id, mode_id)
-                except CallbackError as exc:
-                    self.app.notify(str(exc), severity="error", timeout=6)
-                    return
-                self.app.request_launch(req)  # type: ignore[attr-defined]
+
+                def commit_new() -> None:
+                    try:
+                        req = self.ctx.on_launch_existing(name, agent_id, mode_id)
+                    except CallbackError as exc:
+                        self.app.notify(str(exc), severity="error", timeout=6)
+                        return
+                    self.app.request_launch(req)  # type: ignore[attr-defined]
+
+                self._maybe_show_session_choice(
+                    target_dir=os.path.join(self.ctx.new_project_root, name),
+                    target_label=name,
+                    agent_id=agent_id,
+                    on_new=commit_new,
+                )
 
             self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts)
 

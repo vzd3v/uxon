@@ -92,6 +92,7 @@ class TuiConfig:
     on_launch_cwd: Callable[[str, str], LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
+    on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]]
     get_settings_entries: Callable[[], list]
     on_setting_save: Callable[[str, Any], None]
     on_setting_remove: Callable[[str], None]
@@ -142,6 +143,7 @@ class TuiConfig:
             on_launch_cwd=ctx.on_launch_cwd,
             on_launch_new=ctx.on_launch_new,
             on_launch_existing=ctx.on_launch_existing,
+            on_probe_existing_sessions=ctx.on_probe_existing_sessions,
             get_settings_entries=ctx.get_settings_entries,
             on_setting_save=ctx.on_setting_save,
             on_setting_remove=ctx.on_setting_remove,

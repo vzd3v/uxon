@@ -8,8 +8,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- "Session already exists" modal on all three launch actions ("New session in current folder", "Create new project", "Open existing project"). When a compatible session for the target directory + agent already exists, uxon now asks whether to **attach** to the existing session or **start a new one alongside** — `a` / Enter attaches, `n` opens a parallel session, `Esc` cancels. Replaces the previous silent auto-attach that ignored the operator's selected permission mode.
+
 ### Changed
 - Dashboard `LAST` column tints sessions by activity age: yellow after 24 h without I/O, red after 3 d. Thresholds are hard-coded for now.
+- Launching "Create new project" or "Open existing project" no longer silently attaches when a compatible session already exists; the new SessionChoiceScreen makes the choice explicit (see above). The TUI is now the sole owner of the attach-vs-new decision — the planner always allocates a fresh session, so the operator's chosen permission mode is always honoured.
 
 ## [3.4.0] — 2026-05-13
 

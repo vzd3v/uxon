@@ -788,6 +788,29 @@ def fetch_remote_snapshot(
     """
     fetched_at = time.time()
 
+    # Demo-mode short-circuit: when UXON_DEMO_HOSTS is set, every
+    # ``fetch_remote_snapshot`` call resolves from a pre-rendered
+    # envelope on disk instead of spawning ssh. The synthetic host's
+    # ``ssh_alias`` carries the demo sentinel; if we ever see that
+    # sentinel without the env var set (or vice versa) something has
+    # gone sideways and we surface it as an error rather than letting
+    # ``ssh demo:foo`` go out on the wire.
+    from uxon import _demo as _uxon_demo  # noqa: PLC0415
+
+    _demo_dir = _uxon_demo.demo_hosts_dir()
+    _is_demo_alias = host.ssh_alias.startswith(_uxon_demo.DEMO_SSH_ALIAS_PREFIX)
+    if _demo_dir is not None and _is_demo_alias:
+        return _uxon_demo.load_demo_snapshot(host.name, _demo_dir, fetched_at)
+    if _is_demo_alias:
+        return RemoteSnapshot(
+            host_name=host.name,
+            fetched_at_epoch=fetched_at,
+            from_cache=False,
+            error=f"demo alias {host.ssh_alias!r} but {_uxon_demo.DEMO_ENV_VAR} is unset",
+            sessions=[],
+            cached_at_epoch=None,
+        )
+
     # Per-host override precedence: ``host.connect_timeout`` /
     # ``host.total_timeout`` (if set) win over the keyword-supplied
     # fleet-global defaults. Sub-second durations are ceil-rounded to

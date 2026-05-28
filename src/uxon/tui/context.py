@@ -258,6 +258,17 @@ class TuiContext:
     on_launch_existing: Callable[[str, str, str], LaunchRequest] = lambda name, agent_id, mode_id: (
         LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
+    # Probe callback: returns (session_name, attached) pairs for the
+    # launch_user's sessions compatible with (target_dir, agent_id). The
+    # TUI calls this after the operator picks agent+mode in
+    # ``LaunchOptionsScreen`` and before committing to ``on_launch_*``;
+    # a non-empty result triggers ``SessionChoiceScreen`` so the operator
+    # can attach to an existing session or knowingly start a parallel one.
+    # ``target_dir`` is an absolute, canonicalised path (either ``ctx.cwd``
+    # or ``<new_project_root>/<name>``).
+    on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]] = (
+        lambda target_dir, agent_id: ()
+    )
 
     # Git remote on new project — display only. The TUI never edits these.
     git_create_enabled: bool = False

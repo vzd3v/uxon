@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# uxon-demo — screenshot demo runner.
+#
+# Renders a YAML scenario from demo/scenarios/ into a directory of wire
+# envelopes that uxon's collector reads instead of running ssh. See
+# demo/README.md for what each scenario shows and how to take screenshots.
+
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCENARIOS="$DIR/scenarios"
+# Per-user build dir under XDG cache: the repo is often shared
+# between OS users on a multi-tenant dev box, so a build/ inside
+# the repo collides on ownership. The cache dir is per-$HOME and
+# always writable by the running user.
+BUILD="${XDG_CACHE_HOME:-$HOME/.cache}/uxon-demo/build"
+
+usage() {
+  cat <<EOF
+uxon-demo — render YAML scenarios and launch the TUI against them.
+
+Usage:
+  $(basename "$0") list                    List available scenarios.
+  $(basename "$0") render <scenario>       Render YAML → build/<host>.json envelopes.
+  $(basename "$0") run    <scenario>       Render and launch uxon with UXON_DEMO_HOSTS pointed at build/.
+  $(basename "$0") env    <scenario>       Render and print the export line for shell use.
+  $(basename "$0") clean                   Remove build/.
+
+Examples:
+  $(basename "$0") run team-n              # the headline demo: cross-team, multi-host.
+  $(basename "$0") run solo-1              # single dev on a single host.
+
+The TUI's local section reflects whatever real tmux sessions the
+current user owns. For clean screenshots run on a host with no
+uxon-prefixed sessions (or 'tmux kill-server' first).
+EOF
+}
+
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+  list)
+    if [[ ! -d "$SCENARIOS" ]]; then
+      echo "no scenarios directory: $SCENARIOS" >&2; exit 1
+    fi
+    for f in "$SCENARIOS"/*.yaml; do
+      [[ -e "$f" ]] || continue
+      basename "$f" .yaml
+    done
+    ;;
+
+  render|run|env)
+    name="${1:-}"
+    if [[ -z "$name" ]]; then
+      echo "scenario name required" >&2
+      usage; exit 2
+    fi
+    src="$SCENARIOS/$name.yaml"
+    if [[ ! -f "$src" ]]; then
+      echo "no such scenario: $src" >&2
+      echo "available:" >&2
+      for f in "$SCENARIOS"/*.yaml; do
+        [[ -e "$f" ]] || continue
+        echo "  $(basename "$f" .yaml)" >&2
+      done
+      exit 2
+    fi
+    rm -rf "$BUILD"
+    mkdir -p "$BUILD"
+    uv run --quiet --script "$DIR/render.py" "$src" "$BUILD"
+
+    case "$cmd" in
+      render)
+        echo "Rendered $name to $BUILD"
+        echo
+        echo "Launch with:"
+        echo "  UXON_DEMO_HOSTS=$BUILD uxon"
+        ;;
+      env)
+        printf 'export UXON_DEMO_HOSTS=%q\n' "$BUILD"
+        ;;
+      run)
+        export UXON_DEMO_HOSTS="$BUILD"
+        # Prefer the in-repo source tree (via `uv run`) over a
+        # system-installed `uxon`: the demo hook only exists in the
+        # local source until a release ships. Falls back to the
+        # `$PATH` binary when `uv` is unavailable.
+        if command -v uv >/dev/null 2>&1 && [[ -f "$DIR/../pyproject.toml" ]]; then
+          cd "$DIR/.." && exec uv run --quiet uxon
+        else
+          exec uxon
+        fi
+        ;;
+    esac
+    ;;
+
+  clean)
+    rm -rf "$BUILD"
+    echo "removed $BUILD"
+    ;;
+
+  ""|-h|--help|help)
+    usage
+    ;;
+
+  *)
+    echo "unknown command: $cmd" >&2
+    usage
+    exit 2
+    ;;
+esac
