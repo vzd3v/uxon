@@ -2378,7 +2378,7 @@ class CliWorktreeRoutingTests(unittest.TestCase):
         )
         captured = {}
 
-        def fake_plan(cfg_, user, repo, branch, agent, mode, *, dry_run=False):
+        def fake_plan(cfg_, user, repo, branch, agent, mode, *, agent_args=None, dry_run=False):
             captured.update(repo=repo, branch=branch, agent=agent, dry_run=dry_run)
             return cli._tui_launch_request_cls()(cmd=("true",), label="launch x")
 
