@@ -120,6 +120,29 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertIs(cfg.get_git_remote_profile_rows, ctx.get_git_remote_profile_rows)
 
 
+class WorktreeCallbacksRoundTripTests(unittest.TestCase):
+    def test_from_context_snapshots_worktree_callbacks(self) -> None:
+        sentinel_probe = lambda cwd: []  # noqa: E731
+        sentinel_create = lambda repo, branch, agent, mode: LaunchRequest(  # noqa: E731
+            cmd=("/bin/true",), label="create"
+        )
+        sentinel_launch = lambda repo, branch, path, agent, mode: LaunchRequest(  # noqa: E731
+            cmd=("/bin/true",), label="launch-existing"
+        )
+        sentinel_probe_sess = lambda path, repo, branch, agent: ()  # noqa: E731
+        ctx = _mk_ctx(
+            on_probe_worktrees=sentinel_probe,
+            on_create_worktree=sentinel_create,
+            on_launch_existing_worktree=sentinel_launch,
+            on_probe_existing_worktree_sessions=sentinel_probe_sess,
+        )
+        cfg = TuiConfig.from_context(ctx)
+        self.assertIs(cfg.on_probe_worktrees, sentinel_probe)
+        self.assertIs(cfg.on_create_worktree, sentinel_create)
+        self.assertIs(cfg.on_launch_existing_worktree, sentinel_launch)
+        self.assertIs(cfg.on_probe_existing_worktree_sessions, sentinel_probe_sess)
+
+
 class OnRemoteAttachPropagatedTests(unittest.TestCase):
     def test_on_remote_attach_propagated(self) -> None:
         attach_calls: list[tuple[str, str, str]] = []

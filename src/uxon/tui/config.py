@@ -93,6 +93,12 @@ class TuiConfig:
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
     on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]]
+    on_probe_worktrees: Callable[[str], list]
+    on_create_worktree: Callable[[str, str, str, str], LaunchRequest]
+    on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest]
+    on_probe_existing_worktree_sessions: Callable[
+        [str, str, str, str], tuple[tuple[str, bool], ...]
+    ]
     get_settings_entries: Callable[[], list]
     on_setting_save: Callable[[str, Any], None]
     on_setting_remove: Callable[[str], None]
@@ -144,6 +150,10 @@ class TuiConfig:
             on_launch_new=ctx.on_launch_new,
             on_launch_existing=ctx.on_launch_existing,
             on_probe_existing_sessions=ctx.on_probe_existing_sessions,
+            on_probe_worktrees=ctx.on_probe_worktrees,
+            on_create_worktree=ctx.on_create_worktree,
+            on_launch_existing_worktree=ctx.on_launch_existing_worktree,
+            on_probe_existing_worktree_sessions=ctx.on_probe_existing_worktree_sessions,
             get_settings_entries=ctx.get_settings_entries,
             on_setting_save=ctx.on_setting_save,
             on_setting_remove=ctx.on_setting_remove,

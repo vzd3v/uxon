@@ -270,6 +270,34 @@ class TuiContext:
         lambda target_dir, agent_id: ()
     )
 
+    # ── Worktree callbacks (3.5.0) ───────────────────────────────────
+    # Worktree probe: returns the workspaces (folders only — no session
+    # data) for ``cwd``'s repo, parsed from ``git worktree list``. Empty
+    # list for a non-git target → no WORKSPACE column. Runs ONCE in a
+    # worker when the launch screen opens, under the non-interactive sudo
+    # prefix so a missing NOPASSWD grant fails fast (§4.2).
+    on_probe_worktrees: Callable[[str], list] = lambda cwd: []
+    # Worktree create → plan_worktree_launch. Builds + launches a
+    # uxon-managed worktree for ``branch`` under the repo at ``repo_root``.
+    on_create_worktree: Callable[[str, str, str, str], LaunchRequest] = (
+        lambda repo_root, branch, agent_id, mode_id: LaunchRequest(
+            cmd=("true",), label="noop-create-worktree"
+        )
+    )
+    # Launch into an EXISTING worktree (or the primary tree treated as a
+    # worktree target) with the repo-qualified stem (§2.5) — never
+    # re-creates the worktree.
+    on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest] = (
+        lambda repo_root, branch, worktree_path, agent_id, mode_id: LaunchRequest(
+            cmd=("true",), label="noop-launch-existing-worktree"
+        )
+    )
+    # Worktree-aware attach-vs-new probe (§2.5, §3): derives the
+    # repo-qualified stem and uses the worktree path as compatibility root.
+    on_probe_existing_worktree_sessions: Callable[
+        [str, str, str, str], tuple[tuple[str, bool], ...]
+    ] = lambda worktree_path, repo_root, branch, agent_id: ()
+
     # Git remote on new project — display only. The TUI never edits these.
     git_create_enabled: bool = False
     default_git_remote_profile: str = ""
