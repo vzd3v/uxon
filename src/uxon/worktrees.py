@@ -61,4 +61,61 @@ class Workspace:
 
 
 def parse_worktree_porcelain(text: str, *, repo_root: str) -> list[Workspace]:
-    raise NotImplementedError  # implemented in Task 2
+    """Parse ``git worktree list --porcelain`` into :class:`Workspace` rows.
+
+    Records are separated by blank lines. Each starts with ``worktree
+    <path>``; the working tree's ref is ``branch refs/heads/<name>`` (a
+    real branch), ``detached`` (no branch — labelled by short SHA), or
+    ``bare`` (no working tree — dropped). The primary working tree is the
+    one whose path equals ``repo_root`` (it is also conventionally first;
+    we detect by path so a future reorder can't fool us).
+    """
+    repo_root = repo_root.rstrip("/")
+    rows: list[Workspace] = []
+    path = ""
+    head = ""
+    branch = ""
+    is_bare = False
+    is_detached = False
+
+    def flush() -> None:
+        nonlocal path, head, branch, is_bare, is_detached
+        if path and not is_bare:
+            if branch:
+                label = branch
+            else:  # detached HEAD — short SHA stands in for the branch.
+                label = head[:7]
+                branch = head[:7]
+            rows.append(
+                Workspace(
+                    label=label,
+                    branch=branch,
+                    path=path,
+                    is_primary=(path.rstrip("/") == repo_root),
+                )
+            )
+        path = ""
+        head = ""
+        branch = ""
+        is_bare = False
+        is_detached = False
+
+    for raw in text.splitlines():
+        line = raw.rstrip("\n")
+        if not line.strip():
+            flush()
+            continue
+        if line.startswith("worktree "):
+            flush()
+            path = line[len("worktree ") :].strip()
+        elif line.startswith("HEAD "):
+            head = line[len("HEAD ") :].strip()
+        elif line.startswith("branch "):
+            ref = line[len("branch ") :].strip()
+            branch = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+        elif line.strip() == "detached":
+            is_detached = True
+        elif line.strip() == "bare":
+            is_bare = True
+    flush()
+    return rows
