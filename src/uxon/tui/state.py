@@ -313,6 +313,24 @@ def launch_commit_decision(
     return LaunchCommitDecision("commit", mode_id)
 
 
+def next_launch_panel(current: str, direction: int, order: tuple[str, ...]) -> str:
+    """Cycle the active launch-options panel across only the VISIBLE columns.
+
+    ``order`` is the visible-column sequence (a subset of
+    ``("agent", "mode", "workspace")`` — AGENT is dropped under a single
+    agent, WORKSPACE is absent for a non-git target). ``direction`` is
+    +1 (right) or -1 (left); the cycle wraps. An unknown ``current``
+    (e.g. the previously-active column is now hidden) snaps to the first
+    visible column.
+    """
+    if not order:
+        return current
+    if current not in order:
+        return order[0]
+    idx = order.index(current)
+    return order[(idx + direction) % len(order)]
+
+
 def pick_index(rows: list[tuple[str, str]] | tuple[tuple[str, str], ...], index: int) -> str | None:
     if 0 <= index < len(rows):
         return rows[index][0]

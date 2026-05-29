@@ -448,6 +448,54 @@ class LaunchOptionsStateTests(unittest.TestCase):
         )
 
 
+class LaunchPanelCycleTests(unittest.TestCase):
+    def test_cycle_right_skips_hidden_agent(self) -> None:
+        from uxon.tui.state import next_launch_panel
+
+        # AGENT hidden (single agent), WORKSPACE present.
+        order = ("mode", "workspace")
+        self.assertEqual(next_launch_panel("mode", +1, order), "workspace")
+        self.assertEqual(next_launch_panel("workspace", +1, order), "mode")
+
+    def test_cycle_left_wraps(self) -> None:
+        from uxon.tui.state import next_launch_panel
+
+        order = ("agent", "mode", "workspace")
+        self.assertEqual(next_launch_panel("agent", -1, order), "workspace")
+        self.assertEqual(next_launch_panel("mode", -1, order), "agent")
+
+    def test_no_workspace_column(self) -> None:
+        from uxon.tui.state import next_launch_panel
+
+        order = ("agent", "mode")
+        self.assertEqual(next_launch_panel("agent", +1, order), "mode")
+        self.assertEqual(next_launch_panel("mode", +1, order), "agent")
+
+    def test_unknown_current_returns_first(self) -> None:
+        from uxon.tui.state import next_launch_panel
+
+        self.assertEqual(next_launch_panel("agent", +1, ("mode", "workspace")), "mode")
+
+
+class WorktreeBranchValidTests(unittest.TestCase):
+    def test_accepts_slashes_and_simple_names(self) -> None:
+        from uxon.tui.screens.worktree_branch import worktree_branch_valid
+
+        self.assertTrue(worktree_branch_valid("feature/auth"))
+        self.assertTrue(worktree_branch_valid("bugfix-1"))
+        self.assertTrue(worktree_branch_valid("a/b/c"))
+
+    def test_rejects_empty_dash_space_and_dots(self) -> None:
+        from uxon.tui.screens.worktree_branch import worktree_branch_valid
+
+        self.assertFalse(worktree_branch_valid(""))
+        self.assertFalse(worktree_branch_valid("   "))
+        self.assertFalse(worktree_branch_valid("-x"))
+        self.assertFalse(worktree_branch_valid("a b"))
+        self.assertFalse(worktree_branch_valid(".."))
+        self.assertFalse(worktree_branch_valid("."))
+
+
 class PickIndexStateTests(unittest.TestCase):
     def test_pick_index_returns_name_for_valid_index(self) -> None:
         self.assertEqual(pick_index([("alpha", "1s"), ("beta", "2s")], 1), "beta")
