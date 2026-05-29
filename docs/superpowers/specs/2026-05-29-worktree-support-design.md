@@ -1,11 +1,11 @@
 # Worktree support (3.5.0) — design
 
-Native, first-class git-worktree support in `uxon`: create worktrees,
-attach to existing ones, and remove them — **uniformly across all agents**
+Native, first-class git-worktree support in `uxon`: create worktrees and
+attach to existing ones — **uniformly across all agents**
 (`claude`, `codex`), managed by uxon itself rather than delegating to any
 agent's native worktree flag. Surfaced by extending the launch flow with a
 workspace column; the existing `SessionChoice` modal stays as the
-attach-vs-new guard.
+attach-vs-new guard. Worktree **removal** is deferred to a follow-up (§7).
 
 Status: approved design, pre-plan.
 
@@ -65,19 +65,21 @@ consistency:
 | Subagent worktree isolation, `EnterWorktree` | claude-internal, independent of launch method | unaffected |
 | Trust dialog | a plain `claude -c` prompts interactively | improved (no first-run error) |
 | `#PR` worktrees, auto-generated name | deferred (§7) | minor, niche |
-| Exit-time auto-cleanup (clean → remove, dirty → prompt) | replaced by uxon's explicit guarded remove (§2.5) | the only real trade |
+| Exit-time auto-cleanup (clean → remove, dirty → prompt) | not replicated this release; removal deferred (§7) | the only real trade |
 
 The only behaviour not cheaply replicable is claude's exit-time
 auto-cleanup — and it applies only to `-w`-created worktrees, is
 known-incomplete in practice (anthropics/claude-code #26725, #31488),
-is absent for codex anyway, and is superseded by uxon's explicit remove.
+and is absent for codex anyway. uxon ships no removal gesture this
+release: worktrees are created and attached to; removal is deferred (§7)
+and done manually via `git worktree remove` meanwhile.
 
 Decisive benefit: **uniformity makes session↔worktree identity
 consistent.** Every session launches with `-c <worktree_path>`, so a
 session's tmux cwd *is* its worktree path. (Delegating to native `-w`
 would have launched with `-c repo_root`, leaving sessions distinguishable
 only by name-stem and breaking the attach guard.) The exact naming and
-matching scheme is specified in §2.6 — it must be **repo-qualified and
+matching scheme is specified in §2.5 — it must be **repo-qualified and
 identical at create and probe**, or the attach guard misses / hard-fails
 across repos.
 
@@ -109,6 +111,16 @@ automatic than claude**, which only advises the user to add
 written **before** the first `git worktree add` (so the in-tree worktree
 never shows as untracked) and the append is **idempotent** (the `.uxon/`
 line is added at most once).
+
+The append is also **concurrency-safe**: the multi-user model means two
+`launch_user`s may create worktrees in the same repo at once, so the
+read-modify-write of `info/exclude` is serialised (an `flock` on the file,
+or a temp-file-then-rename) and tolerates a pre-existing `.uxon/` line —
+it never double-appends or clobbers a concurrent writer. (`git worktree
+add` already takes git's own lock; the hand-written exclude append does
+not, hence this guard.) The exclude write is **skipped entirely when
+`worktree_root` is set** — an out-of-repo worktree is not in the checkout,
+so there is nothing to exclude.
 
 This location is decided by uxon's multi-user model. `git worktree add`
 writes both to the new worktree directory **and** to the main repo's
@@ -144,35 +156,23 @@ uxon copies gitignored files matching a `.worktreeinclude` file
 files that match a pattern **and** are gitignored are copied (never
 tracked files), matching claude's semantics.
 
-### 2.5 Removal — guarded
+**Mechanism — delegate to git, never hand-roll `.gitignore`.** uxon does
+not reimplement `.gitignore` semantics (`**`, anchoring, negation,
+directory matches) and does not pull in a pattern-matching library. The
+copy set is the **intersection of two git queries**, both run as
+`launch_user`:
 
-uxon provides an explicit, guarded remove gesture.
+- set A — files git reports as ignored-and-untracked:
+  `git ls-files -o -i --exclude-standard`;
+- set B — untracked files matching the `.worktreeinclude` patterns:
+  `git ls-files -o -i --exclude-from=<.worktreeinclude>`.
 
-**Where it lives.** Remove is a *management* action, not a launch action,
-so it does **not** live on the launch screen's WORKSPACE column (which is
-"where to launch" and carries no session data). It lives on the **main
-dashboard**: a worktree-backed session row gets a remove-worktree binding
-(distinct from `kill` — kill ends the session, remove deletes the
-worktree). For worktrees that have **no** session, removal is offered from
-a small **worktree-management modal** reachable from the dashboard
-(lists the repo's worktrees via `git worktree list`, with a remove
-binding per row). The launch screen stays purely about launching.
+Copy `A ∩ B` (gitignored **and** worktreeinclude-matching; tracked files
+are excluded by construction since both queries are `--others`). Git is the
+single authority for both "is gitignored" and "matches a pattern", so the
+copy set can never drift from git's own judgement.
 
-Mechanics:
-
-- Confirmation → `git worktree remove` (as `launch_user`).
-- **Refuse** if the worktree has uncommitted changes, untracked files, or
-  unpushed commits, unless force-confirmed. Branch deletion (`git branch
-  -d/-D`) is a separate, optional step.
-- **Refuse while a live tmux session** points at the worktree — the remove
-  path runs its own session check (it does not rely on the launch screen),
-  covering both uxon worktrees and any claude subagent worktree listed.
-- **Never auto-delete.**
-- The remove binding is **destructive**, so per the project rule it has
-  `show=True` + a description and is covered by the `BINDINGS` drift guard
-  (`tests/test_uxon_tui_bindings.py`).
-
-### 2.6 Session naming & matching for worktrees (identity)
+### 2.5 Session naming & matching for worktrees (identity)
 
 Attach-vs-new correctness depends on the session name being derivable
 **identically at create time and at probe time**. The plain launch path
@@ -195,6 +195,23 @@ Therefore worktree sessions use the existing **repo-qualified**
   as `compatibility_root`. Generalise the existing probe to accept an
   explicit stem (or add a worktree variant) rather than always deriving it
   from the basename.
+
+**Critical: the probe and the launch planner both derive the stem — they
+must derive the *same* one.** `session_stem_for_path` (basename-only) is
+used at **three** sites today: `_plan_tui_run_agent`,
+`_plan_tui_existing_session_or_launch`, and `probe_tui_compatible_sessions`.
+Generalising only the probe is **not enough** — the planner that calls
+`allocate_session_name` must also pass the worktree-aware stem for a
+worktree target. If the planner uses the basename stem while the probe uses
+the repo-qualified one, the created session is named `uxon-<branch>@…` but
+the next probe looks for `uxon-<repo>-<branch>@…`: it never matches (silent
+duplicate session), and the cross-repo allocate still hard-`fail()`s. The
+CLI path (`do_run` / `new`) already branches on `branch` and uses
+`session_stem_for_worktree` before `allocate_session_name`; the **TUI
+planners do not** and must be made worktree-aware (detect a worktree target
+and switch stems, or route worktree targets through a worktree-aware
+variant). `allocate_session_name` already takes `stem` as a parameter, so
+no signature change is needed there — only the call sites choose the stem.
 
 The primary working tree keeps the ordinary path-based stem
 (`session_stem_for_path(repo_root)`) — it is the existing non-worktree
@@ -232,6 +249,11 @@ Esc cancels:
   the primary working tree + one row per existing worktree (from
   `git worktree list`) + a `+ New worktree…` row.
 
+Left/right navigation cycles only the **visible** columns: `_active_panel`
+becomes a three-value state (`agent` / `mode` / `workspace`) and the
+focus-cycle skips any hidden column, so with AGENT hidden (single agent)
+←/→ moves between PERMISSION and WORKSPACE.
+
 ### WORKSPACE rows
 
 - The **first row is the primary working tree**, labelled by its **actual
@@ -246,7 +268,10 @@ Esc cancels:
 
 - **Existing workspace (primary or a worktree)** + Enter → a normal launch
   into that folder: `target_dir = <that path>`, `-c <path>`, no worktree
-  creation. This reuses the standard launch planner.
+  creation. The **primary** tree reuses the standard path-based planner
+  unchanged; a **worktree** target reuses the same planner **but with the
+  worktree-aware stem** (§2.5) — it must not run the basename-stem planner
+  verbatim, or the session is misnamed and the probe stops matching (§2.5).
 - **`+ New worktree…`** + Enter → branch-name input → `plan_worktree_launch`
   creates the worktree → launches into it.
 
@@ -254,7 +279,7 @@ In both cases the attach-vs-new guard is preserved: at commit time uxon
 probes for a compatible session in that **folder + agent**; if one exists,
 `SessionChoiceScreen` appears (`a` attach / `n` new / Esc). The probe uses
 the **worktree-aware stem** for worktree targets and the plain path-based
-probe for the primary tree (§2.6) — this is the detail that makes the
+probe for the primary tree (§2.5) — this is the detail that makes the
 guard reliable; "same tmux cwd" alone is not sufficient because matching
 is by name-stem.
 
@@ -272,6 +297,11 @@ launch with `-c <path>`.
 - Single agent → AGENT column hidden.
 - Non-git target → no WORKSPACE column; flow exactly as today
   (launch-options → `SessionChoice` guard if a session exists).
+- Git repo with no extra worktrees → WORKSPACE still shows (primary
+  `(primary)` + `+ New worktree…`). Deliberate, for discoverability, and
+  free in practice: the primary row is the default highlight, so Enter
+  commits the common "just launch in the primary" case without ever
+  entering the column.
 
 ---
 
@@ -298,10 +328,18 @@ function — it is the standard launch path with `target_dir =
 `plan_worktree_launch`. The existing "`-w` only for claude" guard and the
 native `-w` passthrough are removed.
 
+The standard planner must, however, select the **worktree-aware stem** for
+a worktree target (§2.5): either generalise `_plan_tui_run_agent` /
+`_plan_tui_existing_session_or_launch` to detect a worktree and switch
+stems, or route worktree targets through a worktree-aware variant. Reusing
+the basename-stem planner verbatim for a worktree reintroduces the §2.5
+collision. (The CLI path already does this; only the TUI planners need the
+change.)
+
 ### 4.2 Workspace probe
 
 ```
-on_probe_worktrees(repo_root) -> list[Workspace]
+on_probe_worktrees(cwd) -> list[Workspace]
 ```
 
 `Workspace = (label, branch, path, is_primary)`, parsed from
@@ -313,8 +351,17 @@ synchronously in `on_mount`) so it never blocks the event loop, and via
 interactive `sudo` prompt, so a missing NOPASSWD grant must fail fast
 rather than hang.
 
+**The `cwd → repo_root` resolution is part of this probe and must also be
+non-interactive.** The probe takes `cwd` (not a pre-resolved `repo_root`)
+precisely so the whole chain — resolve the repo root, then list worktrees —
+runs once, off the event loop, under the non-interactive prefix. It must
+**not** reuse `git_repo_root_as_user`, which uses the *interactive*
+`command_prefix_for_user` and would hang the fullscreen TUI on a hidden
+`sudo` prompt; use a non-interactive repo-root resolver
+(`nonint_command_prefix_for_user`) instead.
+
 The attach-vs-new session probe (at commit time) uses the **worktree-aware
-stem** for worktree targets per §2.6 — i.e. `probe_tui_compatible_sessions`
+stem** for worktree targets per §2.5 — i.e. `probe_tui_compatible_sessions`
 is generalised to accept an explicit stem (or a worktree variant is added),
 not the basename-only stem. The primary tree uses the existing plain probe
 unchanged.
@@ -324,22 +371,31 @@ unchanged.
 The new callbacks must be threaded through the existing TUI context
 plumbing, not just referenced:
 
-- add `on_probe_worktrees`, `on_create_worktree` (→ `plan_worktree_launch`),
-  and `on_remove_worktree` to the `TuiContext` dataclass in
+- add `on_probe_worktrees` and `on_create_worktree`
+  (→ `plan_worktree_launch`) to the `TuiContext` dataclass in
   `src/uxon/tui/context.py`;
 - construct + `_wrap_tui_callback`-wrap them in `cli.py`'s
   `_build_tui_context`, alongside `on_probe_existing_sessions`;
 - the create/launch result flows through the existing
-  `app.request_launch(LaunchRequest)` path; remove returns a status the
-  dashboard surfaces as a toast (no relaunch).
+  `app.request_launch(LaunchRequest)` path.
+
+Note `_wrap_tui_callback` uses a **process-global** `redirect_stderr`,
+while `on_probe_worktrees` runs in a worker thread (§4.2) — the same
+combination the existing `on_probe_link_health` probe already uses. Reuse
+that established pattern; if its global-stderr-across-threads behaviour is
+ever tightened, the worktree probe should follow suit rather than invent a
+second convention.
 
 ### 4.3 Multi-user
 
-All git operations (`rev-parse`, `worktree list/add/remove`, status
+All git operations (`rev-parse`, `worktree list/add`, status
 checks, `info/exclude` write) run under
 `command_prefix_for_user(launch_user)` (interactive, launch-time) or
-`nonint_command_prefix_for_user` (background/probe), consistent with
-`git_repo_root_as_user`.
+`nonint_command_prefix_for_user` (background/probe), mirroring the
+prefix split that `git_repo_root_as_user` uses. Note `git_repo_root_as_user`
+itself is interactive-only; the probe path needs the non-interactive
+repo-root resolver called for in §4.2 (a small new helper, or a `nonint`
+parameter on the existing one), not a reuse of it as-is.
 
 ### 4.4 Pure helpers (testable, no Textual)
 
@@ -347,7 +403,6 @@ checks, `info/exclude` write) run under
 - branch/name → slug.
 - `git worktree list --porcelain` parsing: workspaces with branch +
   is_primary (first entry / path == repo root); handle `detached`, `bare`.
-- remove eligibility (clean vs dirty/untracked/unpushed).
 
 ### 4.5 Config keys (5-step process in conventions.md)
 
@@ -371,14 +426,14 @@ Each: extend `DEFAULT_CONFIG` / `Config` / `load_config`; validation;
 
 ### 4.6 Audit
 
-Worktree create/remove change state and must be audited, consistent with
+Worktree creation changes state and must be audited, consistent with
 `session.new` / `session.attach` / `session.kill` (via `src/uxon/audit.py`):
 
 - **`worktree.create`** — emitted from the create path (CLI `-w` and TUI
   new-worktree), with `agent`, `project` (repo_root), `branch`, `path`,
   `base` (`local`/`remote`), and the launched `session`.
-- **`worktree.remove`** — emitted from the remove gesture, with `project`,
-  `branch`, `path`, and whether the branch was deleted / force was used.
+
+(A `worktree.remove` event is part of the deferred removal work — §7.)
 
 The session that a worktree launch starts still emits its own
 `session.new` (unchanged) — `worktree.create` is the additional
@@ -407,7 +462,7 @@ and the rationale is not lost:
 - **`docs/reference/configuration.md`** — `worktree_root`,
   `worktree_base`.
 - **User-facing how-to/explanation** (Diátaxis: a how-to for create/
-  attach/remove + a short explanation note) stating plainly that uxon
+  attach + a short explanation note) stating plainly that uxon
   creates and owns worktrees itself (not claude's `-w`), where they live
   (`.uxon/worktrees/`, excluded automatically via `.git/info/exclude` —
   unlike claude, which only advises a manual `.gitignore` edit), and why
@@ -425,6 +480,12 @@ and the rationale is not lost:
 
 ## 7. Out of scope (this release)
 
+- **Worktree removal** — a guarded remove/cleanup gesture (refuse on
+  dirty / unpushed work or a live session, optional branch deletion,
+  audited as `worktree.remove`). Deferred to a follow-up and tracked as a
+  feature request; the UX surface is left open. Meanwhile worktrees are
+  removed manually via `git worktree remove`. This release only creates
+  and attaches.
 - `#PR` worktrees and empty-name auto-generation (replicable later via
   `git fetch pull/<n>/head` and a name generator).
 - Remote (peer) worktree creation — local-repo gesture only.
@@ -447,29 +508,47 @@ and the rationale is not lost:
   root. Normalise to the main working tree via
   `git rev-parse --git-common-dir` so new worktrees always anchor to the
   primary repo, not a nested one.
+- **Branch already checked out elsewhere:** a branch live in another
+  worktree is already a WORKSPACE row, but if it is typed into
+  `+ New worktree…`, `git worktree add <path> <branch>` fails ("already
+  checked out at …"). uxon catches this and points the operator at the
+  existing worktree row rather than surfacing the raw git error.
+- **Detached-HEAD worktree:** a worktree with no branch (porcelain
+  `detached`) is labelled by its short SHA in the WORKSPACE column, and its
+  session stem substitutes that short SHA for the branch
+  (`session_stem_for_worktree(repo_root, <short-sha>)`) so identity stays
+  repo-qualified. This only ever applies to **externally-created** worktrees
+  (manual or claude subagent): uxon always creates with `-b`, so a
+  uxon-made worktree always has a branch. Caveat for the external case — if
+  HEAD advances in the detached worktree the short SHA changes, so a later
+  launch derives a different stem and the probe won't match the prior
+  session (a silent duplicate, not a hard fail, since the tmux cwd is
+  unchanged). Acceptable best-effort for this rare case.
 
 (The native-`-w` trust-dialog edge from earlier drafts no longer applies —
 there is no native path. The session↔worktree identity mismatch is **not**
 gone; it is handled by the repo-qualified naming + worktree-aware probe in
-§2.6, which must be implemented exactly as specified.)
+§2.5, which must be implemented exactly as specified.)
 
 ---
 
 ## 9. Testing
 
-- Pure unit tests for every helper in §4.4 (path computation, slug,
-  porcelain parsing incl. primary/detached/bare, remove eligibility,
-  collision detection).
-- **Identity test (§2.6):** worktree session created with
-  `session_stem_for_worktree` is found by the worktree-aware probe (same
-  stem); and two repos with a same-named worktree do **not** collide /
-  hard-fail (`compatible_indexed_sessions` "session conflict" path stays
-  quiet). This is the regression guard for the §2.6 correctness fix.
-- **Remove guard:** refuses on dirty/untracked/unpushed and while a live
-  session points at the worktree; succeeds on a clean, session-less
-  worktree.
-- **Audit:** `worktree.create` / `worktree.remove` emitted with the
-  documented fields (assert via the audit test harness).
+- Pure unit tests for every helper in §4.4 (path computation, slug
+  incl. distinct branches that slugify to the same directory — the
+  pre-condition for the §8 path collision, porcelain parsing incl.
+  primary/detached/bare). The collision *handling* itself (the
+  `git worktree add` failure path) is a runtime path, covered by the CLI
+  dry-run / error tests below, not a pure helper.
+- **Identity test (§2.5):** the worktree launch **planner** names the
+  session with `session_stem_for_worktree` (assert the *allocated session
+  name*, not only that the probe matches — both planner and probe must
+  derive the same stem); the worktree-aware probe then finds that session;
+  and two repos with a same-named worktree do **not** collide / hard-fail
+  (`compatible_indexed_sessions` "session conflict" path stays quiet). This
+  is the regression guard for the §2.5 correctness fix.
+- **Audit:** `worktree.create` emitted with the documented fields (assert
+  via the audit test harness).
 - `load_config` + settings round-trip tests for `worktree_root` and
   `worktree_base` (incl. validation: only `local`/`remote`).
 - CLI dry-run tests for `-w` (uxon `git worktree add` path; gating
@@ -479,7 +558,5 @@ gone; it is handled by the repo-qualified naming + worktree-aware probe in
   `+ New worktree…`; Enter on an existing workspace commits and (when a
   session exists) the `SessionChoice` guard appears; `+ New worktree…`
   opens the input.
-- **`BINDINGS` drift guard** (`tests/test_uxon_tui_bindings.py`) covers the
-  new destructive remove binding (`show=True` + description).
 - Keep branchy assertions in pure tests; reserve `Pilot` for wiring /
   focus / async behaviour, per the TUI test policy.
