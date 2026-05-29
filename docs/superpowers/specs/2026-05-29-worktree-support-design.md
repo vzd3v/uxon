@@ -102,7 +102,12 @@ excluded from git via **`.git/info/exclude`** (written by uxon as
 `launch_user`), not by editing the tracked `.gitignore` — `info/exclude`
 is local, never committed, and uxon already has `.git/` write access (a
 precondition of `git worktree add`). This keeps worktrees out of the
-main checkout's `git status` without touching a tracked file.
+main checkout's `git status` without touching a tracked file — **more
+automatic than claude**, which only advises the user to add
+`.claude/worktrees/` to `.gitignore` by hand. The exclude entry is
+written **before** the first `git worktree add` (so the in-tree worktree
+never shows as untracked) and the append is **idempotent** (the `.uxon/`
+line is added at most once).
 
 This location is decided by uxon's multi-user model. `git worktree add`
 writes both to the new worktree directory **and** to the main repo's
@@ -212,9 +217,10 @@ its folder path (§2.1), this matching is reliable for every workspace.
 
 The input is a branch name (required this release — no empty / no `#PR`,
 see §7). If the branch exists, `git worktree add <path> <branch>`
-(checkout); otherwise `git worktree add <path> -b <branch>` off the
-configured base ref (default `origin/HEAD`, fallback local `HEAD`). Then
-`.worktreeinclude` copying, then launch with `-c <path>`.
+(checkout); otherwise `git worktree add <path> -b <branch>` off the base
+selected by `worktree_base` (§4.5; default `local` → local `origin/HEAD`,
+fallback local `HEAD`; no fetch). Then `.worktreeinclude` copying, then
+launch with `-c <path>`.
 
 ### Degradation
 
@@ -254,11 +260,14 @@ on_probe_worktrees(repo_root) -> list[Workspace]
 ```
 
 `Workspace = (label, branch, path, is_primary)`, parsed from
-`git worktree list --porcelain` (as `launch_user`). **Folders only — no
-session data.** Non-git target → empty list (no WORKSPACE column). Runs
-once when the launch screen opens, not per-keystroke. The attach-vs-new
-session probe stays the existing `probe_tui_compatible_sessions(folder,
-agent)` at commit time.
+`git worktree list --porcelain`. **Folders only — no session data.**
+Non-git target → empty list (no WORKSPACE column). Runs **once** when the
+launch screen opens (not per-keystroke), in a **worker** (not
+synchronously in `on_mount`) so it never blocks the event loop, and via
+**`nonint_command_prefix_for_user`** — the fullscreen TUI cannot show an
+interactive `sudo` prompt, so a missing NOPASSWD grant must fail fast
+rather than hang. The attach-vs-new session probe stays the existing
+`probe_tui_compatible_sessions(folder, agent)` at commit time.
 
 ### 4.3 Multi-user
 
@@ -279,8 +288,18 @@ checks, `info/exclude` write) run under
 ### 4.5 Config keys (5-step process in conventions.md)
 
 - `worktree_root: str = ""` (empty → default `.uxon/worktrees` layout).
-- `worktree_base_ref: str = "fresh"` (`fresh` = branch off `origin/HEAD`;
-  `head` = local `HEAD`). Mirrors claude's `worktree.baseRef`.
+- `worktree_base: str = "local"` — where a new branch is based:
+  - **`local`** (default): branch off the **local** `origin/HEAD` if it
+    exists, else local `HEAD`. **No `git fetch`, no network.**
+  - **`remote`**: `git fetch` origin first, then branch off the freshly
+    fetched `origin/HEAD` (claude-like). Needs network + credentials.
+
+  **This default deviates from `claude -w`**, which fetches by default for
+  a tree matching the latest remote. uxon defaults to `local` because in
+  the multi-user/`sudo` launch context an implicit per-create `git fetch`
+  against a possibly-private remote can hang, prompt for credentials, or
+  fail — `local` is deterministic and network-free. The deviation must be
+  stated in the docs (§6).
 
 Each: extend `DEFAULT_CONFIG` / `Config` / `load_config`; validation;
 `SettingSpec` in `settings.py`; doc entry in
@@ -311,8 +330,13 @@ and the rationale is not lost:
 - **User-facing how-to/explanation** (Diátaxis: a how-to for create/
   attach/remove + a short explanation note) stating plainly that uxon
   creates and owns worktrees itself (not claude's `-w`), where they live
-  (`.uxon/worktrees/`, excluded via `.git/info/exclude`), and why
+  (`.uxon/worktrees/`, excluded automatically via `.git/info/exclude` —
+  unlike claude, which only advises a manual `.gitignore` edit), and why
   (uniform across agents, consistent session matching, multi-user gating).
+  **Must call out the two deliberate deviations from `claude -w`:**
+  (1) uxon manages worktrees itself (no native `-w`); (2) `worktree_base`
+  defaults to `local` (no fetch), whereas `claude -w` fetches by default —
+  set `worktree_base = remote` for claude-like freshness.
   Read `docs/agents/maintaining-docs.md` before editing user-facing docs.
 - **AGENTS.md / code-map** — note that worktree creation is owned by the
   launch builder / `plan_worktree_launch`, consistent with the existing
@@ -357,7 +381,7 @@ every session's cwd is its worktree path.)
   porcelain parsing incl. primary/detached/bare, remove eligibility,
   collision detection).
 - `load_config` + settings round-trip tests for `worktree_root` and
-  `worktree_base_ref`.
+  `worktree_base` (incl. validation: only `local`/`remote`).
 - CLI dry-run tests for `-w` (uxon `git worktree add` path; gating
   failure → clear error).
 - One `Pilot` smoke test for the extended launch screen: agent change
