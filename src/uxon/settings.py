@@ -73,6 +73,17 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec("new_project_root", "string", "Base directory for 'uxon new <name>'."),
     SettingSpec(
+        "worktree_root",
+        "string",
+        "Base dir for uxon-managed worktrees. Empty = <repo>/.uxon/worktrees.",
+    ),
+    SettingSpec(
+        "worktree_base",
+        "enum",
+        "Base ref for a new worktree branch: 'local' (no fetch) or 'remote' (git fetch first).",
+        choices=("local", "remote"),
+    ),
+    SettingSpec(
         "repeat_noninteractive_mode",
         "enum",
         "Non-TTY fallback when a compatible session already exists.",

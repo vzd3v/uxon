@@ -319,5 +319,26 @@ class NestedAgentKeysTests(unittest.TestCase):
         self.assertIsNone(by_key["agents.enabled"].value)
 
 
+class WorktreeSettingsSpecTests(unittest.TestCase):
+    def test_worktree_specs_present(self) -> None:
+        from uxon.settings import SETTINGS_SPECS
+
+        by_key = {s.key: s for s in SETTINGS_SPECS}
+        self.assertIn("worktree_root", by_key)
+        self.assertEqual(by_key["worktree_root"].kind, "string")
+        self.assertIn("worktree_base", by_key)
+        self.assertEqual(by_key["worktree_base"].kind, "enum")
+        self.assertEqual(by_key["worktree_base"].choices, ("local", "remote"))
+
+    def test_worktree_base_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            cs.persist_repo_config_updates(path, {"worktree_base": "remote"})
+            cs.persist_repo_config_updates(path, {"worktree_root": "/data/wt"})
+            text = path.read_text()
+        self.assertIn('worktree_base = "remote"', text)
+        self.assertIn('worktree_root = "/data/wt"', text)
+
+
 if __name__ == "__main__":
     unittest.main()
