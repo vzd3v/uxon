@@ -3454,6 +3454,12 @@ def _build_tmux_launch_request(
     is unset it falls back to ``cfg.default_agent`` as a last-ditch
     policy hook for callers that legitimately skip resolution
     (dry-run tests, etc.).
+
+    ``branch`` is informational only (still printed by the dry-run path
+    in :func:`launch_in_tmux`): uxon launches a worktree by creating it
+    with ``git worktree add`` and pointing tmux at the worktree directory
+    via ``-c <worktree_path>`` — it never delegates to the agent's native
+    ``-w`` flag, so this parameter does not affect ``final_cmd`` (§2.1).
     """
     from uxon import agents as uxon_agents
 
@@ -3467,16 +3473,12 @@ def _build_tmux_launch_request(
     mode_obj = uxon_agents.permission_mode_for(spec, args.permission_mode)
     if mode_obj is None:
         fail(f"{agent_id} has no '{args.permission_mode}' permission mode")
-    if branch and agent_id != "claude":
-        fail(f"-w/--worktree is only supported for claude (got agent={agent_id})")
     final_cmd = (
         [spec.binary]
         + list(cfg.agent_default_args.get(agent_id, ()))
         + list(args.agent_args)
         + list(mode_obj.flags)
     )
-    if branch:
-        final_cmd += ["-w", branch]
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
     ensure_socket_parent = tuple(

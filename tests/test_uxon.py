@@ -1354,14 +1354,38 @@ class UxonTests(unittest.TestCase):
             req = uxon._build_tmux_launch_request("/tmp/x", "uxon-x@codex", args, cfg, None, "u-vz")
         self.assertIn("--full-auto", req.cmd)
 
-    def test_launch_builder_worktree_rejected_for_non_claude(self) -> None:
-        cfg = self.make_config(enabled_agents=("codex",), default_agent="codex")
-        args = uxon.ParsedArgs(action="run", agent="codex")
+    def test_launch_builder_branch_does_not_add_native_w_flag(self) -> None:
+        # uxon launches worktrees via ``-c <worktree_path>``, never the
+        # agent's native ``-w`` flag (§2.1) — branch is informational only.
+        cfg = self.make_config()
+        args = uxon.ParsedArgs(action="run", agent="claude", permission_mode="normal")
         with self._stub_socket_path():
-            with self.assertRaises(SystemExit):
-                uxon._build_tmux_launch_request(
-                    "/tmp/x", "uxon-x@codex", args, cfg, branch="b", launch_user="u-vz"
-                )
+            req = uxon._build_tmux_launch_request(
+                "/srv/repos/myapp/.uxon/worktrees/feat",
+                "uxon-myapp-feat@claude",
+                args,
+                cfg,
+                "feat",
+                "u-vz",
+            )
+        joined = " ".join(req.cmd)
+        self.assertNotIn(" -w ", f" {joined} ")
+        self.assertNotIn("-w feat", joined)
+
+    def test_launch_builder_branch_allowed_for_non_claude_agent(self) -> None:
+        # The old "-w is only supported for claude" guard is gone.
+        cfg = self.make_config(enabled_agents=("codex",), default_agent="codex")
+        args = uxon.ParsedArgs(action="run", agent="codex", permission_mode="normal")
+        with self._stub_socket_path():
+            req = uxon._build_tmux_launch_request(
+                "/srv/repos/myapp/.uxon/worktrees/feat",
+                "uxon-myapp-feat@codex",
+                args,
+                cfg,
+                "feat",
+                "u-vz",
+            )
+        self.assertTrue(req.cmd)
 
     def test_auto_with_cursor_default_fails_at_launch(self) -> None:
         # Full-stack check: parser accepts --auto without knowing the resolved agent;
