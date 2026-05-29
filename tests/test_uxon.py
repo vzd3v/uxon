@@ -2452,5 +2452,79 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
             self.assertEqual(os.listdir(dest), [])
 
 
+class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
+    def test_probe_worktrees_returns_workspaces(self) -> None:
+        import uxon.cli as cli
+
+        porcelain = (
+            "worktree /srv/work/myapp\nHEAD 1111111111111111111111111111111111111111\n"
+            "branch refs/heads/main\n\n"
+            "worktree /srv/work/myapp/.uxon/worktrees/feature-auth\n"
+            "HEAD 2222222222222222222222222222222222222222\n"
+            "branch refs/heads/feature/auth\n"
+        )
+
+        def fake_run(cmd, **kw):
+            class CP:
+                returncode = 0
+                stdout = porcelain
+                stderr = ""
+
+            return CP()
+
+        cfg = cli.load_config("/tmp")
+        with (
+            mock.patch.object(cli, "git_repo_root_nonint_as_user", return_value="/srv/work/myapp"),
+            mock.patch.object(cli, "git_common_dir_root_as_user", return_value="/srv/work/myapp"),
+            mock.patch.object(cli.subprocess, "run", fake_run),
+            mock.patch.object(cli, "process_user", return_value="devagent"),
+        ):
+            ctx = cli._build_tui_context(cfg, "devagent", "/srv/work/myapp", skeleton=True)
+            rows = ctx.on_probe_worktrees("/srv/work/myapp")
+        self.assertTrue(rows[0].is_primary)
+        self.assertEqual(rows[1].branch, "feature/auth")
+
+    def test_probe_worktrees_non_git_returns_empty(self) -> None:
+        import uxon.cli as cli
+
+        cfg = cli.load_config("/tmp")
+        with (
+            mock.patch.object(cli, "git_repo_root_nonint_as_user", return_value=None),
+            mock.patch.object(cli, "process_user", return_value="devagent"),
+        ):
+            ctx = cli._build_tui_context(cfg, "devagent", "/tmp/plain", skeleton=True)
+            self.assertEqual(ctx.on_probe_worktrees("/tmp/plain"), [])
+
+
+class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
+    def test_callback_uses_worktree_stem(self) -> None:
+        import uxon.cli as cli
+
+        repo = "/srv/work/myapp"
+        wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
+        sess = cli.SessionInfo(
+            user="devagent",
+            name="uxon-myapp-feature-auth@claude",
+            attached="1",
+            windows="1",
+            created="",
+            last_attached="",
+            pane_pids=(),
+            active_pid=None,
+            active_cmd="claude",
+            active_path=wt,
+        )
+        cfg = cli.load_config("/tmp")
+        with (
+            mock.patch.object(cli, "collect_sessions", return_value=[sess]),
+            mock.patch.object(cli, "git_repo_root_nonint_as_user", return_value=repo),
+            mock.patch.object(cli, "git_common_dir_root_as_user", return_value=repo),
+            mock.patch.object(cli, "process_user", return_value="devagent"),
+        ):
+            ctx = cli._build_tui_context(cfg, "devagent", repo, skeleton=True)
+            out = ctx.on_probe_existing_worktree_sessions(wt, repo, "feature/auth", "claude")
+        self.assertEqual(out, (("uxon-myapp-feature-auth@claude", True),))
+
+
 if __name__ == "__main__":
     unittest.main()

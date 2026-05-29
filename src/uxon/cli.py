@@ -5503,6 +5503,76 @@ def _build_tui_context(
         matches = probe_tui_compatible_sessions(cfg, launch_user, target_dir, agent_id)
         return tuple((s.name, s.attached == "1") for s in matches)
 
+    def on_probe_worktrees(cwd_arg: str) -> list:
+        """Workspaces for ``cwd_arg``'s repo (folders only). Non-git → [].
+
+        Resolves ``cwd`` → primary repo root with the NON-interactive
+        resolvers (Task 5) so the fullscreen TUI never blocks on a hidden
+        ``sudo`` prompt, then lists worktrees under the same
+        ``nonint_command_prefix_for_user`` and parses with Task 2.
+        """
+        from uxon.worktrees import parse_worktree_porcelain
+
+        repo_root = git_repo_root_nonint_as_user(cwd_arg, launch_user)
+        if not repo_root:
+            return []
+        primary = git_common_dir_root_as_user(cwd_arg, launch_user)
+        if primary:
+            repo_root = primary
+        cp = subprocess.run(
+            nonint_command_prefix_for_user(launch_user)
+            + ["git", "-C", repo_root, "worktree", "list", "--porcelain"],
+            text=True,
+            capture_output=True,
+        )
+        if cp.returncode != 0:
+            return []
+        return parse_worktree_porcelain(cp.stdout or "", repo_root=repo_root)
+
+    def on_create_worktree(repo_root: str, branch: str, agent_id: str, mode_id: str):
+        # plan_worktree_launch emits its own worktree.create + session.new
+        # audit events. The TUI has no agent passthrough args (agent_args
+        # defaults to None).
+        return plan_worktree_launch(cfg, launch_user, repo_root, branch, agent_id, mode_id)
+
+    def on_launch_existing_worktree(
+        repo_root: str, branch: str, worktree_path: str, agent_id: str, mode_id: str
+    ):
+        # Launch into an EXISTING worktree with the worktree-aware stem
+        # (§2.5) — never re-creates the worktree.
+        req = _plan_tui_run_agent(
+            cfg,
+            launch_user,
+            worktree_path,
+            agent_id,
+            mode_id,
+            worktree=(repo_root, branch),
+        )
+        from uxon import audit as _audit
+
+        _audit.audit(
+            "session.new",
+            agent=agent_id,
+            project=worktree_path,
+            branch=branch,
+            session=_session_name_from_launch_label(req.label),
+            dry_run=False,
+        )
+        return req
+
+    def on_probe_existing_worktree_sessions(
+        worktree_path: str, repo_root: str, branch: str, agent_id: str
+    ) -> tuple[tuple[str, bool], ...]:
+        matches = probe_tui_compatible_sessions(
+            cfg,
+            launch_user,
+            worktree_path,
+            agent_id,
+            stem=session_stem_for_worktree(repo_root, branch),
+            compatibility_root=worktree_path,
+        )
+        return tuple((s.name, s.attached == "1") for s in matches)
+
     git_profile_options = [
         (
             p.name,
@@ -5544,6 +5614,12 @@ def _build_tui_context(
     on_launch_new = _wrap_tui_callback(on_launch_new, _CbErr)
     on_launch_existing = _wrap_tui_callback(on_launch_existing, _CbErr)
     on_probe_existing_sessions = _wrap_tui_callback(on_probe_existing_sessions, _CbErr)
+    on_probe_worktrees = _wrap_tui_callback(on_probe_worktrees, _CbErr)
+    on_create_worktree = _wrap_tui_callback(on_create_worktree, _CbErr)
+    on_launch_existing_worktree = _wrap_tui_callback(on_launch_existing_worktree, _CbErr)
+    on_probe_existing_worktree_sessions = _wrap_tui_callback(
+        on_probe_existing_worktree_sessions, _CbErr
+    )
     get_settings_entries = _wrap_tui_callback(get_settings_entries, _CbErr)
     on_setting_save = _wrap_tui_callback(on_setting_save, _CbErr)
     on_setting_remove = _wrap_tui_callback(on_setting_remove, _CbErr)
@@ -5760,6 +5836,10 @@ def _build_tui_context(
         on_launch_new=on_launch_new,
         on_launch_existing=on_launch_existing,
         on_probe_existing_sessions=on_probe_existing_sessions,
+        on_probe_worktrees=on_probe_worktrees,
+        on_create_worktree=on_create_worktree,
+        on_launch_existing_worktree=on_launch_existing_worktree,
+        on_probe_existing_worktree_sessions=on_probe_existing_worktree_sessions,
         get_settings_entries=get_settings_entries,
         on_setting_save=on_setting_save,
         on_setting_remove=on_setting_remove,
