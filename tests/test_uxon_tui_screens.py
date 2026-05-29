@@ -709,6 +709,109 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
+    """Async wiring for the launch-cwd flow: the worker probes workspaces
+    once on open, threads them + repo_root into LaunchOptionsScreen, and the
+    workspace-choice dispatch routes to the right callback (§3, §4.2)."""
+
+    def _ctx(self, **overrides):
+        from uxon.tui.context import LaunchRequest
+        from uxon.worktrees import Workspace
+
+        probed = [
+            Workspace(label="main", branch="main", path="/srv/work", is_primary=True),
+            Workspace(
+                label="feature/auth",
+                branch="feature/auth",
+                path="/srv/work/.uxon/worktrees/feature-auth",
+                is_primary=False,
+            ),
+        ]
+        base = dict(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            cwd="/srv/work",
+            cwd_short="work",
+            cwd_writable=True,
+            on_probe_worktrees=lambda cwd: probed,
+            on_launch_existing_worktree=lambda *a: LaunchRequest(cmd=("/bin/true",), label="wt"),
+            on_create_worktree=lambda *a: LaunchRequest(cmd=("/bin/true",), label="new-wt"),
+            # No compatible sessions by default → no SessionChoice guard.
+            on_probe_existing_worktree_sessions=lambda *a: (),
+            on_probe_existing_sessions=lambda *a: (),
+        )
+        base.update(overrides)
+        return _mk_ctx(**base)
+
+    async def test_probe_threads_workspaces_into_launch_screen(self) -> None:
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        app = UxonApp(self._ctx(), probe_agents=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # activate action-cwd (default focus)
+            await pilot.pause()
+            await pilot.pause()  # let the probe worker land + push the screen
+            top = app.screen_stack[-1]
+            self.assertIsInstance(top, LaunchOptionsScreen)
+            self.assertTrue(top._workspaces)
+            self.assertTrue(top._workspaces[0].is_primary)
+            self.assertEqual(top._repo_root, "/srv/work")
+
+    async def test_new_worktree_row_opens_branch_input(self) -> None:
+        from textual.widgets import ListView
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.worktree_branch import WorktreeBranchScreen
+
+        app = UxonApp(self._ctx(), probe_agents=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen_stack[-1]
+            # Move to WORKSPACE column, select the "+ New worktree…" row.
+            await pilot.press("right")
+            await pilot.pause()
+            wl = screen.query_one("#workspace-list", ListView)
+            wl.index = len(screen._workspaces)  # the trailing "+ New worktree…"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen_stack[-1], WorktreeBranchScreen)
+
+    async def test_worktree_session_guard_appears(self) -> None:
+        from textual.widgets import ListView
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.session_choice import SessionChoiceScreen
+
+        # A compatible session exists in the worktree → guard must appear.
+        ctx = self._ctx(
+            on_probe_existing_worktree_sessions=lambda *a: (
+                ("uxon-work-feature-auth@claude", True),
+            )
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen_stack[-1]
+            await pilot.press("right")  # to WORKSPACE
+            await pilot.pause()
+            wl = screen.query_one("#workspace-list", ListView)
+            wl.index = 1  # the feature/auth worktree row
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen_stack[-1], SessionChoiceScreen)
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_project_smoke_batch(self) -> None:
         from textual.widgets import Input

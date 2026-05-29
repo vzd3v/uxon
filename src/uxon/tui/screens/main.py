@@ -71,6 +71,7 @@ from .git_profile import GitProfileScreen
 from .launch_options import LaunchOptionsScreen
 from .new_project import NewProjectScreen
 from .session_choice import SessionChoiceScreen
+from .worktree_branch import WorktreeBranchScreen
 
 
 class MainScreen(Screen):
@@ -150,6 +151,10 @@ class MainScreen(Screen):
         self.ctx = ctx
         self.loading = bool(ctx.loading)
         self._restore_focus_key = ""
+        # Primary repo root resolved by the launch-flow workspace probe
+        # (§4.2). Threaded into LaunchOptionsScreen + the workspace-choice
+        # dispatch so neither re-resolves the repo root on the event loop.
+        self._workspace_repo_root = ""
         # Dashboard rows are an in-flight repaint cache, not UI state —
         # they're rebuilt from ``state`` on every tick, so dying with
         # the screen on recompose is harmless. Filter/view/tab state
@@ -670,6 +675,7 @@ class MainScreen(Screen):
         target_label: str,
         agent_id: str,
         on_new,
+        probe=None,
     ) -> None:
         """Probe for compatible existing sessions; if any, prompt the operator.
 
@@ -681,9 +687,20 @@ class MainScreen(Screen):
         corresponding ``on_launch_*`` callback. The attach branch routes
         through the existing ``_attach_session`` so audit + LaunchRequest
         construction stay in one place.
+
+        ``probe`` defaults to the plain path-based
+        ``on_probe_existing_sessions`` (primary / non-git target). A
+        worktree target passes a zero-arg closure over the worktree-aware
+        probe (``on_probe_existing_worktree_sessions``) so the guard uses
+        the repo-qualified stem (§2.5) — "same tmux cwd" alone would not
+        match because the name-stem differs.
         """
         try:
-            existing = self.ctx.on_probe_existing_sessions(target_dir, agent_id)
+            existing = (
+                probe()
+                if probe is not None
+                else self.ctx.on_probe_existing_sessions(target_dir, agent_id)
+            )
         except CallbackError as exc:
             # A probe failure shouldn't silently swallow the launch.
             # Surface the message and abort — the operator can retry.
@@ -747,8 +764,74 @@ class MainScreen(Screen):
                 return
             self.app.request_launch(req)  # type: ignore[attr-defined]
 
-        def after_opts(result: tuple[str, str] | None) -> None:
+        def commit_existing_worktree(
+            agent_id: str, mode_id: str, repo_root: str, path: str, branch: str
+        ) -> None:
+            try:
+                req = self.ctx.on_launch_existing_worktree(
+                    repo_root, branch, path, agent_id, mode_id
+                )
+            except CallbackError as exc:
+                self.app.notify(str(exc), severity="error", timeout=6)
+                return
+            self.app.request_launch(req)  # type: ignore[attr-defined]
+
+        def commit_new_worktree(agent_id: str, mode_id: str, repo_root: str, branch: str) -> None:
+            try:
+                req = self.ctx.on_create_worktree(repo_root, branch, agent_id, mode_id)
+            except CallbackError as exc:
+                self.app.notify(str(exc), severity="error", timeout=6)
+                return
+            self.app.request_launch(req)  # type: ignore[attr-defined]
+
+        def dispatch_workspace(agent_id: str, mode_id: str, choice) -> None:
+            kind = choice[0]
+            if kind == "primary":
+                # Primary tree keeps the plain path-based planner + probe
+                # (§3) — launch into the repo root exactly as the
+                # non-worktree path does.
+                self._maybe_show_session_choice(
+                    target_dir=self.ctx.cwd,
+                    target_label=self.ctx.cwd_short or self.ctx.cwd,
+                    agent_id=agent_id,
+                    on_new=lambda: commit_new(agent_id, mode_id),
+                )
+                return
+            if kind == "worktree":
+                _, path, branch = choice
+                repo_root = self._workspace_repo_root or self.ctx.cwd
+                # Worktree target: the attach guard uses the worktree-aware
+                # probe (repo-qualified stem, §2.5), not the path-based one.
+                self._maybe_show_session_choice(
+                    target_dir=path,
+                    target_label=branch,
+                    agent_id=agent_id,
+                    on_new=lambda: commit_existing_worktree(
+                        agent_id, mode_id, repo_root, path, branch
+                    ),
+                    probe=lambda: self.ctx.on_probe_existing_worktree_sessions(
+                        path, repo_root, branch, agent_id
+                    ),
+                )
+                return
+            # ("new", None) → prompt for a branch name, then create + launch.
+            repo_root = self._workspace_repo_root or self.ctx.cwd
+
+            def after_branch(branch: str | None) -> None:
+                if not branch:
+                    return
+                commit_new_worktree(agent_id, mode_id, repo_root, branch)
+
+            self.app.push_screen(WorktreeBranchScreen(), after_branch)
+
+        def after_opts(result) -> None:
             if result is None:
+                return
+            # B2: a 3-tuple only arrives when the WORKSPACE column was
+            # shown (git target); a 2-tuple is the non-git path, unchanged.
+            if len(result) == 3:
+                agent_id, mode_id, choice = result
+                dispatch_workspace(agent_id, mode_id, choice)
                 return
             agent_id, mode_id = result
             self._maybe_show_session_choice(
@@ -758,14 +841,33 @@ class MainScreen(Screen):
                 on_new=lambda: commit_new(agent_id, mode_id),
             )
 
-        self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts)
+        def push_with_workspaces(workspaces) -> None:
+            # The primary working tree carries its own path == repo_root;
+            # thread it into the screen + the dispatch closures so neither
+            # has to re-resolve the repo root on the event loop (§4.2).
+            self._workspace_repo_root = next(
+                (w.path for w in workspaces if getattr(w, "is_primary", False)),
+                self.ctx.cwd,
+            )
+            self.app.push_screen(  # type: ignore[attr-defined]
+                LaunchOptionsScreen(
+                    self.ctx, workspaces=workspaces, repo_root=self._workspace_repo_root
+                ),
+                after_opts,
+            )
+
+        self.app.probe_workspaces_then(self.ctx.cwd, push_with_workspaces)  # type: ignore[attr-defined]
 
     def _launch_new(self) -> None:
         def after_opts(name: str, git_profile: str):
-            def _on_opts(result: tuple[str, str] | None) -> None:
+            # Built WITHOUT ``workspaces`` → only ever a 2-tuple at runtime
+            # (B2). The annotation covers the screen's widened result type
+            # so pyright accepts the callback; ``result[:2]`` is robust if a
+            # 3-tuple ever reaches here.
+            def _on_opts(result: tuple[str, str] | tuple[str, str, object] | None) -> None:
                 if result is None:
                     return
-                agent_id, mode_id = result
+                agent_id, mode_id = result[0], result[1]
 
                 def commit_new() -> None:
                     try:
@@ -821,10 +923,12 @@ class MainScreen(Screen):
             if not name:
                 return
 
-            def after_opts(result: tuple[str, str] | None) -> None:
+            # Built WITHOUT ``workspaces`` → only ever a 2-tuple at runtime
+            # (B2); annotation matches the screen's widened result type.
+            def after_opts(result: tuple[str, str] | tuple[str, str, object] | None) -> None:
                 if result is None:
                     return
-                agent_id, mode_id = result
+                agent_id, mode_id = result[0], result[1]
 
                 def commit_new() -> None:
                     try:

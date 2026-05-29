@@ -128,6 +128,25 @@ class _CwdWritableUpdated(Message):
         self.cwd_at_start = cwd_at_start
 
 
+class _WorktreesProbed(Message):
+    """Posted by the one-shot worktree probe worker (launch-screen open).
+
+    Carries the probed ``workspaces`` list plus the ``on_done`` callback
+    the launch flow handed in. The on-loop handler invokes ``on_done`` so
+    it can push :class:`LaunchOptionsScreen` safely off the worker thread
+    (§4.2 — the git probe runs in the thread; the screen push runs on the
+    loop). The callable travels on the message because it is an in-process
+    closure on the screen, not serialised state.
+    """
+
+    bubble = False
+
+    def __init__(self, workspaces: list, on_done: Any) -> None:
+        super().__init__()
+        self.workspaces = workspaces
+        self.on_done = on_done
+
+
 class _MainCtxLoaded(Message):
     """Posted when the ``main_ctx_rebuild`` source returns a fresh ctx.
 
@@ -890,6 +909,32 @@ class UxonApp(App):
         if status is None:
             status = uxon_tui.LinkHealthStatus()
         self.post_message(_LinkHealthUpdated(status))
+
+    def probe_workspaces_then(self, cwd: str, on_done: Any) -> None:
+        """Run ``on_probe_worktrees(cwd)`` in a worker; call ``on_done(list)``.
+
+        Off-event-loop git probe (under the non-interactive sudo prefix on
+        the CLI side, §4.2). Runs ONCE per launch-flow open, before the
+        launch screen is pushed. The worker reads ``on_probe_worktrees``
+        off the frozen :class:`TuiConfig` (no mutable-ctx access from the
+        thread, same rule as :meth:`_probe_link_health_worker`), then posts
+        a :class:`_WorktreesProbed`; ``on_done`` runs on the message loop so
+        it can push :class:`LaunchOptionsScreen` safely.
+        """
+
+        def _worker() -> None:
+            try:
+                probe = self.cfg.on_probe_worktrees
+                workspaces = list(probe(cwd)) if callable(probe) else []
+            except Exception:  # pragma: no cover — defensive; degrade to no column
+                workspaces = []
+            self.post_message(_WorktreesProbed(workspaces, on_done))
+
+        self.run_worker(_worker, thread=True, exclusive=False, group="worktree_probe")
+
+    def on__worktrees_probed(self, event: _WorktreesProbed) -> None:
+        """Invoke the launch-flow callback with the probed workspaces."""
+        event.on_done(event.workspaces)
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 
