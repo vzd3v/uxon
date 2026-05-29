@@ -1231,6 +1231,53 @@ def git_repo_root_as_user(cwd: str, target_user: str) -> str | None:
     return canonical(out)
 
 
+def git_repo_root_nonint_as_user(cwd: str, target_user: str) -> str | None:
+    """Non-interactive variant of :func:`git_repo_root_as_user`.
+
+    Uses :func:`nonint_command_prefix_for_user` (``sudo -n``) so a missing
+    NOPASSWD grant fails fast instead of blocking on a hidden password
+    prompt — required for the fullscreen TUI's worktree probe (§4.2).
+    """
+    cp = subprocess.run(
+        nonint_command_prefix_for_user(target_user)
+        + ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+    )
+    if cp.returncode != 0:
+        return None
+    out = (cp.stdout or "").strip()
+    if not out:
+        return None
+    return canonical(out)
+
+
+def git_common_dir_root_as_user(cwd: str, target_user: str) -> str | None:
+    """Resolve the *primary* working tree of the repo containing ``cwd``.
+
+    Uses ``git rev-parse --git-common-dir``: on a linked worktree this
+    returns the primary repo's ``.git`` (whereas ``--show-toplevel``
+    returns the *linked* worktree root). The primary root is that dir's
+    parent. This anchors new worktrees to the primary repo even when
+    launched from inside another worktree (§8 worktree-from-worktree).
+    Non-interactive prefix, same rationale as the resolver above.
+    """
+    cp = subprocess.run(
+        nonint_command_prefix_for_user(target_user)
+        + ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
+        text=True,
+        capture_output=True,
+    )
+    if cp.returncode != 0:
+        return None
+    common = (cp.stdout or "").strip()
+    if not common:
+        return None
+    common_abs = common if os.path.isabs(common) else os.path.join(cwd, common)
+    # ``<root>/.git`` → ``<root>``.
+    return canonical(os.path.dirname(common_abs))
+
+
 def session_stem_for_path(target_dir: str) -> str:
     return slugify(os.path.basename(target_dir))
 

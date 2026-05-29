@@ -1396,6 +1396,75 @@ def _mk_session(
     )
 
 
+class NonintGitResolverTests(unittest.TestCase):
+    def test_repo_root_nonint_uses_nonint_prefix(self) -> None:
+        import uxon.cli as cli
+
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+
+            class CP:
+                returncode = 0
+                stdout = "/srv/work/myapp\n"
+                stderr = ""
+
+            return CP()
+
+        with (
+            mock.patch.object(cli.subprocess, "run", fake_run),
+            mock.patch.object(cli, "process_user", return_value="caller"),
+        ):
+            root = cli.git_repo_root_nonint_as_user("/srv/work/myapp/sub", "devagent")
+        self.assertEqual(root, cli.canonical("/srv/work/myapp"))
+        # The resolver uses the non-interactive (``sudo -n``) prefix — assert
+        # it is the leading prefix of the issued argv. (cli.py composes the
+        # non-interactive flags as ``-niu``, so the prefix is checked as a
+        # whole rather than for a standalone ``-n`` token.)
+        prefix = cli.nonint_command_prefix_for_user("devagent")
+        self.assertEqual(seen["cmd"][: len(prefix)], prefix)
+
+    def test_repo_root_nonint_none_on_failure(self) -> None:
+        import uxon.cli as cli
+
+        def fake_run(cmd, **kw):
+            class CP:
+                returncode = 128
+                stdout = ""
+                stderr = "not a git repo"
+
+            return CP()
+
+        with (
+            mock.patch.object(cli.subprocess, "run", fake_run),
+            mock.patch.object(cli, "process_user", return_value="caller"),
+        ):
+            self.assertIsNone(cli.git_repo_root_nonint_as_user("/tmp/x", "devagent"))
+
+    def test_common_dir_normalises_to_primary_root(self) -> None:
+        import uxon.cli as cli
+
+        # git rev-parse --git-common-dir on a linked worktree returns the
+        # primary repo's .git; the primary root is its parent.
+        def fake_run(cmd, **kw):
+            class CP:
+                returncode = 0
+                stdout = "/srv/work/myapp/.git\n"
+                stderr = ""
+
+            return CP()
+
+        with (
+            mock.patch.object(cli.subprocess, "run", fake_run),
+            mock.patch.object(cli, "process_user", return_value="caller"),
+        ):
+            root = cli.git_common_dir_root_as_user(
+                "/srv/work/myapp/.uxon/worktrees/feat", "devagent"
+            )
+        self.assertEqual(root, cli.canonical("/srv/work/myapp"))
+
+
 class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
     """Regression: empty ``allowed_roots`` must mean "any writable" everywhere.
 
