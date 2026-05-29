@@ -412,5 +412,49 @@ class AuditSendTests(_BaseAuditTests):
         self.assertEqual(evt["session"], "sX")
 
 
+class WorktreeCreateAuditTests(_BaseAuditTests):
+    """§4.6 / §9 audit: ``worktree.create`` field coverage at the wire boundary.
+
+    The planner-level dual-event assertion (both ``worktree.create`` and
+    ``session.new`` emitted, with their field values) lives in
+    ``PlanWorktreeLaunchTests`` against the audit-recorder seam. This test is
+    the complementary, focused field-coverage check at the *serialization*
+    boundary: every documented ``worktree.create`` field survives the real
+    CEE syslog wire path (``_send_raw``) — the contract uxon promises to a
+    log collector.
+    """
+
+    def test_worktree_create_fields_serialized(self) -> None:
+        recorded: list[bytes] = []
+        with (
+            patch.object(au, "_detect_sink", return_value="syslog"),
+            patch.object(au, "_open_sink_socket", return_value=object()),
+            patch.object(au, "_send_raw", side_effect=recorded.append),
+            patch.dict("os.environ", {"USER": "tester"}, clear=False),
+        ):
+            au.configure(enabled=True, syslog_facility="user", subcmd="run")
+            au.audit(
+                "worktree.create",
+                agent="claude",
+                project="/srv/work/myapp",
+                branch="feature/auth",
+                path="/srv/work/myapp/.uxon/worktrees/feature-auth",
+                base="local",
+                session="uxon-myapp-feature-auth@claude",
+            )
+
+        self.assertEqual(len(recorded), 1)
+        text = recorded[0].decode("utf-8")
+        idx = text.index("@cee: ") + len("@cee: ")
+        fields: dict[str, Any] = json.loads(text[idx:])
+        self.assertEqual(fields["event"], "worktree.create")
+        self.assertEqual(fields["agent"], "claude")
+        self.assertEqual(fields["project"], "/srv/work/myapp")
+        self.assertEqual(fields["branch"], "feature/auth")
+        self.assertEqual(fields["path"], "/srv/work/myapp/.uxon/worktrees/feature-auth")
+        self.assertEqual(fields["base"], "local")
+        self.assertEqual(fields["session"], "uxon-myapp-feature-auth@claude")
+
+
 if __name__ == "__main__":
     unittest.main()
