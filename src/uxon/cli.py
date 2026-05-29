@@ -3873,21 +3873,80 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 "new -w requires a git repository (checked as launch user "
                 f"{launch_user}) in {project_dir}"
             )
+        # Normalise worktree-from-worktree to the primary repo (§8).
+        primary = git_common_dir_root_as_user(project_dir, launch_user)
+        if primary:
+            repo_root = primary
         ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        target_dir = repo_root
+        _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
+        args.agent = _agent
+        # uxon-managed worktree sessions live AT the worktree path (§2.5),
+        # so both the stem and the compatibility root are derived from the
+        # worktree, not the repo root.
         session_stem = session_stem_for_worktree(repo_root, branch)
-        compatibility_root = repo_root
+        compatibility_root = compute_worktree_path(
+            repo_root=repo_root, branch=branch, worktree_root=cfg.worktree_root
+        )
         target_desc = f"{repo_root} (worktree {branch})"
-    else:
-        target_dir = project_dir
+        sessions = collect_sessions([launch_user], cfg)
+        existing = compatible_indexed_sessions(
+            session_stem,
+            _agent,
+            compatibility_root,
+            sessions,
+            prefix=cfg.session_prefix,
+            legacy_prefixes=cfg.legacy_session_prefixes,
+        )
+        if existing:
+            attach_target = choose_attach_session(
+                existing,
+                session_stem,
+                _agent,
+                prefix=cfg.session_prefix,
+                legacy_prefixes=cfg.legacy_session_prefixes,
+            )
+            decision = resolve_repeat_decision(
+                args.repeat_mode, cfg, target_desc, attach_target, existing
+            )
+            if decision == "attach":
+                from uxon import audit as _audit
+
+                _audit.audit(
+                    "session.attach",
+                    session=attach_target.name,
+                    target_user=launch_user,
+                )
+                return attach_session(attach_target, cfg, launch_user, args.dry_run)
+        # No existing session, or decision == "new": create + launch via the
+        # single worktree planner (gates the path, runs git worktree add,
+        # copies includes, emits worktree.create + session.new, Task 11).
+        req = plan_worktree_launch(
+            cfg,
+            launch_user,
+            repo_root,
+            branch,
+            _agent,
+            args.permission_mode,
+            dry_run=args.dry_run,
+        )
         if args.dry_run:
-            mkdir_cmd = command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir]
-            print(f"mkdir= {shlex.join(mkdir_cmd)}")
-        else:
-            run_cmd(command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
-        session_stem = session_stem_for_path(target_dir)
-        compatibility_root = target_dir
-        target_desc = target_dir
+            print(f"launch_user={shlex.quote(launch_user)}")
+            print(f"exec {shlex.join(req.cmd)}")
+            return 0
+        for pre in req.prelaunch:
+            run_cmd(list(pre))
+        os.execvp(req.cmd[0], list(req.cmd))
+        return 0
+
+    target_dir = project_dir
+    if args.dry_run:
+        mkdir_cmd = command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir]
+        print(f"mkdir= {shlex.join(mkdir_cmd)}")
+    else:
+        run_cmd(command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
+    session_stem = session_stem_for_path(target_dir)
+    compatibility_root = target_dir
+    target_desc = target_dir
     if args.git_remote:
         _do_create_git_remote(args, cfg, launch_user, project_dir, name, branch)
 
@@ -4070,17 +4129,41 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     ensure_launch_target_allowed(cfg, launch_user, cwd)
     branch = args.worktree_branch
     if branch:
-        repo_root = git_repo_root_as_user(cwd, launch_user)
+        repo_root = git_repo_root_nonint_as_user(cwd, launch_user)
         if not repo_root:
             fail(f"run -w must be run inside a git repository readable by {launch_user}")
+        # Normalise to the PRIMARY working tree so a worktree-from-worktree
+        # anchors to the main repo, not a nested one (§8).
+        primary = git_common_dir_root_as_user(cwd, launch_user)
+        if primary:
+            repo_root = primary
         ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        target_dir = repo_root
-        session_stem = session_stem_for_worktree(repo_root, branch)
-        compatibility_root = repo_root
-    else:
-        target_dir = cwd
-        session_stem = session_stem_for_path(target_dir)
-        compatibility_root = target_dir
+        _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
+        args.agent = _agent
+        # plan_worktree_launch gates the worktree path, runs git worktree
+        # add, copies includes, emits worktree.create + session.new, and
+        # returns the launch request. In dry-run it prints the git plan and
+        # does no side effects (Task 11).
+        req = plan_worktree_launch(
+            cfg,
+            launch_user,
+            repo_root,
+            branch,
+            _agent,
+            args.permission_mode,
+            dry_run=args.dry_run,
+        )
+        if args.dry_run:
+            print(f"launch_user={shlex.quote(launch_user)}")
+            print(f"exec {shlex.join(req.cmd)}")
+            return 0
+        for pre in req.prelaunch:
+            run_cmd(list(pre))
+        os.execvp(req.cmd[0], list(req.cmd))
+        return 0
+    target_dir = cwd
+    session_stem = session_stem_for_path(target_dir)
+    compatibility_root = target_dir
     _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
     # Pin the resolved id back to ``args.agent`` so the downstream
     # ``_build_tmux_launch_request`` does not re-derive it from

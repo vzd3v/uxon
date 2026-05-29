@@ -793,60 +793,62 @@ class UxonTests(unittest.TestCase):
         self.assertIn("--new-session", eprint.call_args[0][0])
 
     def test_do_new_existing_worktree_session_defaults_to_attach_in_tty(self) -> None:
+        # uxon-managed worktree sessions live at the worktree path (§2.5),
+        # so the compatible session's active_path is the worktree dir, not
+        # the repo root. The attach-vs-new decision itself is unchanged.
         cfg = self.make_config()
         args = uxon.ParsedArgs(
             action="new", target_id="demo", worktree_branch="feature-x", agent_args=[]
         )
-        existing = [self.make_session("uxon-demo-feature-x@claude", "/srv/repos/demo")]
+        wt = "/srv/repos/demo/.uxon/worktrees/feature-x"
+        existing = [self.make_session("uxon-demo-feature-x@claude", wt)]
 
-        with mock.patch.object(uxon.os.path, "isdir", return_value=True):
-            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
-                with mock.patch.object(
-                    uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"
-                ):
-                    with mock.patch.object(uxon, "collect_sessions", return_value=existing):
-                        with mock.patch.object(uxon, "is_interactive_tty", return_value=True):
-                            with mock.patch("builtins.input", return_value=""):
-                                with mock.patch.object(
-                                    uxon, "attach_session", return_value=0
-                                ) as attach:
-                                    with mock.patch.object(
-                                        uxon, "launch_in_tmux", return_value=0
-                                    ) as launch:
-                                        result = uxon.do_new(args, cfg, "u-vz")
+        with (
+            mock.patch.object(uxon.os.path, "isdir", return_value=True),
+            mock.patch.object(uxon, "probe_cwd_writable", return_value=True),
+            mock.patch.object(uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"),
+            mock.patch.object(uxon, "git_common_dir_root_as_user", return_value="/srv/repos/demo"),
+            mock.patch.object(uxon, "collect_sessions", return_value=existing),
+            mock.patch.object(uxon, "is_interactive_tty", return_value=True),
+            mock.patch("builtins.input", return_value=""),
+            mock.patch.object(uxon, "attach_session", return_value=0) as attach,
+            mock.patch.object(uxon, "plan_worktree_launch") as plan,
+        ):
+            result = uxon.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
         attach.assert_called_once()
-        launch.assert_not_called()
+        plan.assert_not_called()  # attach decision → no worktree creation
 
     def test_do_new_existing_worktree_session_uses_configured_noninteractive_new(self) -> None:
+        # Same §2.5 worktree-path compatibility root; with the noninteractive
+        # mode forced to "new", the planner is invoked (creation now lives
+        # inside plan_worktree_launch, not the old allocate + launch_in_tmux).
         cfg = self.make_config()
         cfg.repeat_noninteractive_mode = "new"
         args = uxon.ParsedArgs(
             action="new", target_id="demo", worktree_branch="feature-x", agent_args=[]
         )
-        existing = [self.make_session("uxon-demo-feature-x@claude", "/srv/repos/demo")]
+        wt = "/srv/repos/demo/.uxon/worktrees/feature-x"
+        existing = [self.make_session("uxon-demo-feature-x@claude", wt)]
+        fake_req = uxon._tui_launch_request_cls()(cmd=("true",), label="launch x")
 
-        with mock.patch.object(uxon.os.path, "isdir", return_value=True):
-            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
-                with mock.patch.object(
-                    uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"
-                ):
-                    with mock.patch.object(uxon, "collect_sessions", return_value=existing):
-                        with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
-                            with mock.patch.object(
-                                uxon,
-                                "allocate_session_name",
-                                return_value="uxon-demo-feature-x-2",
-                            ) as allocate:
-                                with mock.patch.object(
-                                    uxon, "launch_in_tmux", return_value=0
-                                ) as launch:
-                                    result = uxon.do_new(args, cfg, "u-vz")
+        with (
+            mock.patch.object(uxon.os.path, "isdir", return_value=True),
+            mock.patch.object(uxon, "probe_cwd_writable", return_value=True),
+            mock.patch.object(uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"),
+            mock.patch.object(uxon, "git_common_dir_root_as_user", return_value="/srv/repos/demo"),
+            mock.patch.object(uxon, "collect_sessions", return_value=existing),
+            mock.patch.object(uxon, "is_interactive_tty", return_value=False),
+            mock.patch.object(uxon, "plan_worktree_launch", return_value=fake_req) as plan,
+            mock.patch.object(uxon, "run_cmd"),
+            mock.patch.object(uxon.os, "execvp", return_value=None) as execvp,
+        ):
+            result = uxon.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
-        allocate.assert_called_once()
-        launch.assert_called_once()
+        plan.assert_called_once()
+        execvp.assert_called_once()
 
     def test_do_new_legacy_socket_guardrail_fails(self) -> None:
         cfg = self.make_config()
@@ -2319,6 +2321,40 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         # No mutating commands ran, no exclude write/copy, no audit events.
         self.assertEqual(calls, [])
         self.assertEqual(events, [])
+
+
+class CliWorktreeRoutingTests(unittest.TestCase):
+    def test_do_run_w_routes_through_plan_worktree_launch(self) -> None:
+        import uxon.cli as cli
+
+        cfg = cli.load_config("/tmp")
+        args = cli.ParsedArgs(
+            action="run",
+            agent="claude",
+            permission_mode="default",
+            worktree_branch="feature/auth",
+            dry_run=True,
+        )
+        captured = {}
+
+        def fake_plan(cfg_, user, repo, branch, agent, mode, *, dry_run=False):
+            captured.update(repo=repo, branch=branch, agent=agent, dry_run=dry_run)
+            return cli._tui_launch_request_cls()(cmd=("true",), label="launch x")
+
+        with (
+            mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
+            mock.patch.object(cli.os, "getcwd", return_value="/srv/work/myapp/sub"),
+            mock.patch.object(cli, "git_repo_root_nonint_as_user", return_value="/srv/work/myapp"),
+            mock.patch.object(cli, "git_common_dir_root_as_user", return_value="/srv/work/myapp"),
+            mock.patch.object(cli, "resolve_agent_id", return_value="claude"),
+            mock.patch.object(cli, "plan_worktree_launch", fake_plan),
+        ):
+            # dry_run=True → no execvp; do_run returns 0 after printing.
+            rc = cli.do_run(args, cfg, "devagent")
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured["repo"], "/srv/work/myapp")
+        self.assertEqual(captured["branch"], "feature/auth")
+        self.assertTrue(captured["dry_run"])  # dry_run threaded through
 
 
 def _init_repo(path: str) -> None:
