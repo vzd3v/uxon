@@ -1974,5 +1974,86 @@ class ProbeWorktreeStemTests(unittest.TestCase):
         self.assertEqual([s.name for s in out], ["uxon-plain@claude"])
 
 
+class WorktreeIdentityRegressionTests(unittest.TestCase):
+    """Regression guard for §2.5: planner and probe derive the SAME
+    repo-qualified stem; cross-repo same-named worktrees never collide.
+    """
+
+    def _session(self, name: str, path: str):
+        import uxon.cli as cli
+
+        return cli.SessionInfo(
+            user="devagent",
+            name=name,
+            attached="0",
+            windows="1",
+            created="",
+            last_attached="",
+            pane_pids=(),
+            active_pid=None,
+            active_cmd="claude",
+            active_path=path,
+        )
+
+    def test_planner_allocates_repo_qualified_name_probe_then_matches(self) -> None:
+        import uxon.cli as cli
+
+        repo = "/srv/work/myapp"
+        wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
+        branch = "feature/auth"
+        cfg = cli.load_config("/tmp")
+
+        # (a) planner names the session with the worktree stem.
+        with (
+            mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
+            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch.object(
+                cli,
+                "_build_tmux_launch_request",
+                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                    cmd=("true",), label=f"launch {s}"
+                ),
+            ),
+        ):
+            req = cli._plan_tui_run_agent(
+                cfg, "devagent", wt, "claude", "default", worktree=(repo, branch)
+            )
+        self.assertEqual(req.label, "launch uxon-myapp-feature-auth@claude")
+
+        # (b) the worktree-aware probe finds exactly that session.
+        live = [self._session("uxon-myapp-feature-auth@claude", wt)]
+        with mock.patch.object(cli, "collect_sessions", return_value=live):
+            found = cli.probe_tui_compatible_sessions(
+                cfg,
+                "devagent",
+                wt,
+                "claude",
+                stem=cli.session_stem_for_worktree(repo, branch),
+                compatibility_root=wt,
+            )
+        self.assertEqual([s.name for s in found], ["uxon-myapp-feature-auth@claude"])
+
+    def test_two_repos_same_branch_do_not_collide(self) -> None:
+        import uxon.cli as cli
+
+        repo_b = "/srv/work/beta"
+        wt_a = "/srv/work/alpha/.uxon/worktrees/feature"
+        wt_b = "/srv/work/beta/.uxon/worktrees/feature"
+        cfg = cli.load_config("/tmp")
+        # alpha's worktree session is live; probing beta's worktree must
+        # NOT match it and must NOT hard-fail (distinct repo-qualified stems).
+        live = [self._session("uxon-alpha-feature@claude", wt_a)]
+        with mock.patch.object(cli, "collect_sessions", return_value=live):
+            found = cli.probe_tui_compatible_sessions(
+                cfg,
+                "devagent",
+                wt_b,
+                "claude",
+                stem=cli.session_stem_for_worktree(repo_b, "feature"),
+                compatibility_root=wt_b,
+            )
+        self.assertEqual(found, ())  # no match, no SystemExit
+
+
 if __name__ == "__main__":
     unittest.main()
