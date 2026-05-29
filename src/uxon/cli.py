@@ -146,6 +146,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "new_project_root": str(Path.home() / "projects"),
     "repeat_noninteractive_mode": "fail",
+    # Worktree layout + base ref (3.5.0). Empty worktree_root → default
+    # <repo>/.uxon/worktrees/<slug>. worktree_base picks where a new
+    # branch is based: "local" (default, no fetch) off local origin/HEAD
+    # else local HEAD; "remote" fetches origin first (claude-like).
+    "worktree_root": "",
+    "worktree_base": "local",
     "tmux_socket_template": "/tmp/uxon-{user}.sock",
     "tui_refresh_interval_seconds": 2.0,
     "tui_ssh_refresh_interval_seconds": 10.0,
@@ -264,6 +270,8 @@ class Config:
     tui_search_fields: tuple[str, ...] = ("name", "user")
     tui_color_palette: tuple[str, ...] = ("cyan", "blue")
     local_host_color: str = "green"
+    worktree_root: str = ""
+    worktree_base: str = "local"
 
 
 @dataclass
@@ -498,6 +506,13 @@ def validate_repeat_mode(value: str, source: str) -> str:
     return mode
 
 
+def validate_worktree_base(value: str, source: str) -> str:
+    mode = value.strip().lower()
+    if mode not in {"local", "remote"}:
+        fail(f"invalid {source}: {value!r} (expected 'local' or 'remote')")
+    return mode
+
+
 def load_config(cwd: str) -> Config:
     from uxon import git_profiles as uxon_git_profiles
 
@@ -688,6 +703,12 @@ def load_config(cwd: str) -> Config:
     if not local_host_color:
         fail("local_host.color must be non-empty")
 
+    worktree_root = str(merged.get("worktree_root", DEFAULT_CONFIG["worktree_root"]))
+    worktree_base = validate_worktree_base(
+        str(merged.get("worktree_base", DEFAULT_CONFIG["worktree_base"])),
+        "worktree_base",
+    )
+
     ssh_multiplex = str(merged.get("ssh_multiplex", DEFAULT_CONFIG["ssh_multiplex"]))
     if ssh_multiplex not in ("auto", "off"):
         fail(f"ssh_multiplex must be 'auto' or 'off', got {ssh_multiplex!r}")
@@ -790,6 +811,8 @@ def load_config(cwd: str) -> Config:
         tui_search_fields=tui_search_fields,
         tui_color_palette=tui_color_palette,
         local_host_color=local_host_color,
+        worktree_root=worktree_root,
+        worktree_base=worktree_base,
     )
 
 

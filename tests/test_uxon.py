@@ -345,6 +345,25 @@ class UxonTests(unittest.TestCase):
                     tmpdir,
                 )
 
+    def test_load_config_worktree_keys_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("", tmpdir)
+        self.assertEqual(cfg.worktree_root, "")
+        self.assertEqual(cfg.worktree_base, "local")
+
+    def test_load_config_reads_worktree_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                'worktree_root = "/data/wt"\nworktree_base = "remote"\n', tmpdir
+            )
+        self.assertEqual(cfg.worktree_root, "/data/wt")
+        self.assertEqual(cfg.worktree_base, "remote")
+
+    def test_load_config_rejects_invalid_worktree_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg('worktree_base = "origin"\n', tmpdir)
+
     def test_load_config_tui_table_default_sort_by_ignored_with_debug_log(self) -> None:
         # ``tui.table.default_sort_by`` was removed in 3.4 — sort is
         # now a hard contract. Any value carried over from older
