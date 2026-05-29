@@ -4560,6 +4560,9 @@ def probe_tui_compatible_sessions(
     launch_user: str,
     target_dir: str,
     agent_id: str,
+    *,
+    stem: str | None = None,
+    compatibility_root: str | None = None,
 ) -> tuple[SessionInfo, ...]:
     """Return launch_user's sessions compatible with ``target_dir`` + ``agent_id``.
 
@@ -4569,14 +4572,23 @@ def probe_tui_compatible_sessions(
     keeps the TUI honest). Returns an empty tuple when no compatible
     session exists. Used by the TUI to decide whether to push the
     SessionChoiceScreen modal before a launch action commits.
+
+    ``stem`` and ``compatibility_root`` default to the basename-derived
+    stem and the target dir (the unchanged primary/non-worktree path). For
+    a worktree target the caller passes the repo-qualified
+    :func:`session_stem_for_worktree` and the worktree path so the probe
+    derives the *same* stem the planner used (§2.5) — generalising here
+    rather than always deriving from the basename is the fix that keeps
+    the attach guard reliable across repos.
     """
     target_canonical = canonical(target_dir)
-    session_stem = session_stem_for_path(target_canonical)
+    session_stem = stem if stem is not None else session_stem_for_path(target_canonical)
+    root = canonical(compatibility_root) if compatibility_root is not None else target_canonical
     sessions = collect_sessions([launch_user], cfg)
     matches = compatible_indexed_sessions(
         session_stem,
         agent_id,
-        target_canonical,
+        root,
         sessions,
         prefix=cfg.session_prefix,
         legacy_prefixes=cfg.legacy_session_prefixes,

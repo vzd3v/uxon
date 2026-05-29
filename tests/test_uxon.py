@@ -1929,5 +1929,50 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
         self.assertEqual(captured["stem"], "plain")
 
 
+class ProbeWorktreeStemTests(unittest.TestCase):
+    def _session(self, name: str, path: str):
+        import uxon.cli as cli
+
+        return cli.SessionInfo(
+            user="devagent",
+            name=name,
+            attached="0",
+            windows="1",
+            created="",
+            last_attached="",
+            pane_pids=(),
+            active_pid=None,
+            active_cmd="claude",
+            active_path=path,
+        )
+
+    def test_explicit_stem_matches_worktree_session(self) -> None:
+        import uxon.cli as cli
+
+        wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
+        sess = [self._session("uxon-myapp-feature-auth@claude", wt)]
+        cfg = cli.load_config("/tmp")
+        with mock.patch.object(cli, "collect_sessions", return_value=sess):
+            out = cli.probe_tui_compatible_sessions(
+                cfg,
+                "devagent",
+                wt,
+                "claude",
+                stem="myapp-feature-auth",
+                compatibility_root=wt,
+            )
+        self.assertEqual([s.name for s in out], ["uxon-myapp-feature-auth@claude"])
+
+    def test_default_stem_unchanged_for_plain_target(self) -> None:
+        import uxon.cli as cli
+
+        target = "/srv/work/plain"
+        sess = [self._session("uxon-plain@claude", target)]
+        cfg = cli.load_config("/tmp")
+        with mock.patch.object(cli, "collect_sessions", return_value=sess):
+            out = cli.probe_tui_compatible_sessions(cfg, "devagent", target, "claude")
+        self.assertEqual([s.name for s in out], ["uxon-plain@claude"])
+
+
 if __name__ == "__main__":
     unittest.main()
