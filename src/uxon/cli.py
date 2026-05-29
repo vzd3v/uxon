@@ -1278,6 +1278,87 @@ def git_common_dir_root_as_user(cwd: str, target_user: str) -> str | None:
     return canonical(os.path.dirname(common_abs))
 
 
+_UXON_EXCLUDE_LINE = ".uxon/"
+
+
+def write_uxon_exclude_entry(repo_root: str, launch_user: str) -> None:
+    """Idempotently append ``.uxon/`` to ``.git/info/exclude`` as launch_user.
+
+    Local-only (never committed) and concurrency-safe: read-modify-write
+    via a temp file + atomic rename so two simultaneous ``launch_user``
+    creates can't double-append or clobber each other (§2.3). Skipped by
+    the caller when ``worktree_root`` is set (out-of-repo worktree).
+    """
+    prefix = command_prefix_for_user(launch_user)
+    exclude_path = os.path.join(repo_root, ".git", "info", "exclude")
+    # Read current contents (tolerate absent file).
+    cp = subprocess.run(
+        prefix + ["sh", "-c", f"cat {shlex.quote(exclude_path)} 2>/dev/null || true"],
+        text=True,
+        capture_output=True,
+    )
+    current = cp.stdout or ""
+    if any(line.strip() == _UXON_EXCLUDE_LINE for line in current.splitlines()):
+        return  # already present — idempotent
+    new_contents = current
+    if new_contents and not new_contents.endswith("\n"):
+        new_contents += "\n"
+    new_contents += _UXON_EXCLUDE_LINE + "\n"
+    # Atomic temp-file-then-rename under the info/ dir (same filesystem),
+    # serialising the read-modify-write against concurrent writers.
+    info_dir = os.path.join(repo_root, ".git", "info")
+    script = (
+        f"mkdir -p {shlex.quote(info_dir)} && "
+        f"tmp=$(mktemp {shlex.quote(info_dir)}/exclude.XXXXXX) && "
+        f'cat > "$tmp" && mv -f "$tmp" {shlex.quote(exclude_path)}'
+    )
+    # run_cmd() does not forward stdin, so feed the new contents directly
+    # via subprocess.run (same capture/text conventions as run_cmd) and
+    # fail() with the captured stderr on a non-zero exit.
+    cp = subprocess.run(
+        prefix + ["sh", "-c", script],
+        text=True,
+        input=new_contents,
+        capture_output=True,
+    )
+    if cp.returncode != 0:
+        fail((cp.stderr or "").strip() or "failed to write .git/info/exclude")
+
+
+def copy_worktreeinclude_matches(repo_root: str, dest: str, launch_user: str) -> None:
+    """Copy gitignored files matching ``.worktreeinclude`` into ``dest``.
+
+    Copy set = ``A ∩ B`` where A = ``git ls-files -o -i --exclude-standard``
+    (gitignored + untracked) and B = ``git ls-files -o -i
+    --exclude-from=<.worktreeinclude>`` (untracked matching the include
+    patterns). Both queries are ``--others`` so tracked files are excluded
+    by construction; git is the sole authority for ignore + match (§2.4).
+    No-op when ``.worktreeinclude`` is absent.
+    """
+    prefix = command_prefix_for_user(launch_user)
+    include_file = os.path.join(repo_root, ".worktreeinclude")
+    if not os.path.exists(include_file):
+        return
+
+    def _ls(extra: list[str]) -> set[str]:
+        cp = subprocess.run(
+            prefix + ["git", "-C", repo_root, "ls-files", "-o", "-i"] + extra,
+            text=True,
+            capture_output=True,
+        )
+        if cp.returncode != 0:
+            return set()
+        return {ln for ln in (cp.stdout or "").splitlines() if ln.strip()}
+
+    set_a = _ls(["--exclude-standard"])
+    set_b = _ls([f"--exclude-from={include_file}"])
+    for rel in sorted(set_a & set_b):
+        src = os.path.join(repo_root, rel)
+        dst = os.path.join(dest, rel)
+        run_cmd(prefix + ["mkdir", "-p", os.path.dirname(dst)], check=True)
+        run_cmd(prefix + ["cp", "-p", src, dst], check=True)
+
+
 def session_stem_for_path(target_dir: str) -> str:
     return slugify(os.path.basename(target_dir))
 

@@ -1,5 +1,6 @@
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -2077,6 +2078,60 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
                 compatibility_root=wt_b,
             )
         self.assertEqual(found, ())  # no match, no SystemExit
+
+
+def _init_repo(path: str) -> None:
+    subprocess.run(["git", "init", "-q", path], check=True)
+    subprocess.run(["git", "-C", path, "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", path, "config", "user.name", "t"], check=True)
+
+
+class ExcludeWriterTests(unittest.TestCase):
+    def test_appends_uxon_line_once_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            _init_repo(d)
+            uxon.write_uxon_exclude_entry(d, "devagent")
+            uxon.write_uxon_exclude_entry(d, "devagent")  # idempotent
+            with open(os.path.join(d, ".git", "info", "exclude")) as fh:
+                text = fh.read()
+        self.assertEqual(text.count(".uxon/"), 1)
+
+
+class WorktreeIncludeCopyTests(unittest.TestCase):
+    def test_copies_only_gitignored_and_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            _init_repo(d)
+            # tracked file (must NOT copy), gitignored+matching (.env, copy),
+            # gitignored+not-matching (debug.log, skip).
+            with open(os.path.join(d, "tracked.txt"), "w") as fh:
+                fh.write("x")
+            with open(os.path.join(d, ".gitignore"), "w") as fh:
+                fh.write(".env\n*.log\n")
+            with open(os.path.join(d, ".worktreeinclude"), "w") as fh:
+                fh.write(".env\n")
+            with open(os.path.join(d, ".env"), "w") as fh:
+                fh.write("SECRET=1")
+            with open(os.path.join(d, "debug.log"), "w") as fh:
+                fh.write("noise")
+            subprocess.run(
+                ["git", "-C", d, "add", "tracked.txt", ".gitignore", ".worktreeinclude"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", d, "commit", "-qm", "init"], check=True)
+            dest = os.path.join(d, ".uxon", "worktrees", "feat")
+            os.makedirs(dest)
+            uxon.copy_worktreeinclude_matches(d, dest, "devagent")
+            self.assertTrue(os.path.exists(os.path.join(dest, ".env")))
+            self.assertFalse(os.path.exists(os.path.join(dest, "debug.log")))
+            self.assertFalse(os.path.exists(os.path.join(dest, "tracked.txt")))
+
+    def test_no_worktreeinclude_is_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            _init_repo(d)
+            dest = os.path.join(d, "dest")
+            os.makedirs(dest)
+            uxon.copy_worktreeinclude_matches(d, dest, "devagent")  # no raise
+            self.assertEqual(os.listdir(dest), [])
 
 
 if __name__ == "__main__":
