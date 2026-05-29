@@ -579,6 +579,136 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
+    """Pilot tests for the third WORKSPACE column (§3) + dismiss arity (B2)."""
+
+    def _make_avail(self, status: str):
+        from uxon.agents import AgentAvailability
+
+        return AgentAvailability(status=status)
+
+    def _workspaces(self):
+        from uxon.worktrees import Workspace
+
+        return [
+            Workspace(label="main", branch="main", path="/srv/work/myapp", is_primary=True),
+            Workspace(
+                label="feature/auth",
+                branch="feature/auth",
+                path="/srv/work/myapp/.uxon/worktrees/feature-auth",
+                is_primary=False,
+            ),
+        ]
+
+    async def test_workspace_column_and_dismiss_arity_batch(self) -> None:
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        # Single agent → AGENT column hidden; WORKSPACE present.
+        def with_ws():
+            return LaunchOptionsScreen(
+                _mk_ctx(
+                    enabled_agents=("claude",),
+                    default_agent="claude",
+                    agent_availability={"claude": self._make_avail("ok")},
+                ),
+                workspaces=self._workspaces(),
+                repo_root="/srv/work/myapp",
+            )
+
+        def without_ws():
+            return LaunchOptionsScreen(
+                _mk_ctx(
+                    enabled_agents=("claude",),
+                    default_agent="claude",
+                    agent_availability={"claude": self._make_avail("ok")},
+                )
+            )
+
+        async def assert_rows_then_commit_primary(app, pilot):
+            screen = app.screen
+            # AGENT column hidden under a single agent.
+            self.assertNotIn("agent", screen._panel_order)
+            self.assertEqual(screen._panel_order, ("mode", "workspace"))
+            labels = [
+                str(i.query_one("Static").content) for i in screen.query("#workspace-list ListItem")
+            ]
+            self.assertTrue(any("main" in s and "(primary)" in s for s in labels), labels)
+            self.assertTrue(any("feature/auth" in s for s in labels), labels)
+            self.assertTrue(any("New worktree" in s for s in labels), labels)
+            # Default highlight is the primary row; Enter commits it.
+            await pilot.press("enter")
+
+        async def commit_no_ws(app, pilot):
+            await pilot.press("enter")
+
+        scenarios = [
+            ScreenScenario(
+                "with-workspaces-3-tuple",
+                with_ws,
+                assert_rows_then_commit_primary,
+                ("claude", "normal", ("primary", "/srv/work/myapp")),
+            ),
+            ScreenScenario(
+                "without-workspaces-2-tuple",
+                without_ws,
+                commit_no_ws,
+                ("claude", "normal"),
+            ),
+        ]
+        results = await run_screen_scenarios(scenarios)
+        self.assertEqual(results, [s.expected for s in scenarios])
+
+    async def test_select_worktree_row_yields_worktree_choice(self) -> None:
+        from textual.app import App
+        from textual.widgets import ListView
+
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("ok")},
+        )
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+
+                self.push_screen(
+                    LaunchOptionsScreen(ctx, workspaces=self._ws, repo_root="/srv/work/myapp"),
+                    done,
+                )
+
+        Host._ws = self._workspaces()
+        app = Host()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            # Move to the WORKSPACE panel (mode → workspace) and highlight
+            # the second row (the feature/auth worktree).
+            await pilot.press("right")
+            await pilot.pause()
+            self.assertEqual(screen._active_panel, "workspace")
+            wl = screen.query_one("#workspace-list", ListView)
+            wl.index = 1
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        self.assertEqual(
+            app.result,
+            (
+                "claude",
+                "normal",
+                ("worktree", "/srv/work/myapp/.uxon/worktrees/feature-auth", "feature/auth"),
+            ),
+        )
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_project_smoke_batch(self) -> None:
         from textual.widgets import Input
