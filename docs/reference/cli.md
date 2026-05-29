@@ -44,7 +44,7 @@ Start an agent in the **current working directory**.
 | `--agent claude\|codex\|cursor` | Pick the agent. Default: `agents.default` from config. |
 | `--auto` | Agent's "auto" permission mode. `claude` → `--permission-mode auto`. `codex` → `--full-auto`. **Not supported by `cursor`** (error). |
 | `--dsp` | Agent's "yolo" permission mode. Short for `--dangerously-skip-permissions` (both forms accepted). `claude` → `--dangerously-skip-permissions`. `codex` → `--dangerously-bypass-approvals-and-sandbox`. `cursor` → `--yolo`. Legacy aliases: `--dap`, `-dap`, `-dsp`. |
-| `-w <branch>` | Run inside an existing git worktree branch at `cwd`. **claude only** — error for other agents. |
+| `-w <branch>` | Run in a git worktree for `<branch>` at `cwd`'s repo. uxon creates the worktree if absent and launches any agent there. See [Worktrees](#worktrees--w-branch). |
 | `--dry-run` | Print the `tmux` command instead of executing. |
 
 `--auto` and `--dsp` are mutually exclusive.
@@ -65,7 +65,8 @@ starts the agent there.
 
 With `-w <branch>`: uses the git repo inside
 `<new_project_root>/<name>` (the directory must already exist and
-be a git repo — `uxon` never creates worktrees for you).
+be a git repo) and launches in a worktree for `<branch>`. See
+[Worktrees](#worktrees--w-branch).
 
 | Flag | Effect |
 |------|--------|
@@ -268,14 +269,22 @@ socket.
 
 ## Worktrees (`-w <branch>`)
 
-- `uxon run -w <branch>` — uses the git repo at `cwd`.
-- `uxon new <name> -w <branch>` — uses the repo inside
-  `<new_project_root>/<name>`. Directory must already exist and be
-  a git repo. `uxon` never creates worktrees for you.
+- `uxon run -w <branch>` — repo at `cwd`. `uxon new <name> -w <branch>`
+  — repo inside `<new_project_root>/<name>` (must already exist and be a
+  git repo).
+- uxon creates and owns the worktree itself for **any** agent — it does
+  not call the agent's native `-w`. The worktree lives under
+  `<repo>/.uxon/worktrees/<branch-slug>/` (excluded via `.git/info/exclude`),
+  or under [`worktree_root`](configuration.md#top-level-keys) when set.
+- If a worktree for `<branch>` already exists, uxon attaches to it; the
+  repeat guard (attach vs new) still applies. New branches are based per
+  [`worktree_base`](configuration.md#top-level-keys).
 - The session name includes both repo and branch slugs, so multiple
   branches of the same repo coexist cleanly.
-- **Currently `claude`-only.** Using `-w` with `codex` or `cursor`
-  is an error.
+- Forwarded agent flags apply (e.g. `uxon run -w feat --agent codex --dsp`).
+
+See the how-to: [Work in a git worktree](../guides/customise/worktrees.md)
+and [why uxon manages worktrees](../explain/worktrees.md).
 
 ## Session naming
 

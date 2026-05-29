@@ -10,8 +10,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - "Session already exists" modal on all three launch actions ("New session in current folder", "Create new project", "Open existing project"). When a compatible session for the target directory + agent already exists, uxon now asks whether to **attach** to the existing session or **start a new one alongside** — `a` / Enter attaches, `n` opens a parallel session, `Esc` cancels. Replaces the previous silent auto-attach that ignored the operator's selected permission mode.
+- Native, uxon-managed git worktrees for every agent. The launch-options screen has a new WORKSPACE column (primary tree + existing worktrees + "+ New worktree…"); pick a workspace or create one and uxon launches the agent there. New config keys `worktree_root` and `worktree_base`.
 
 ### Changed
+- `uxon -w/--worktree <branch>` no longer delegates to `claude`'s native `-w` and is no longer claude-only. uxon now creates and owns the worktree itself under `<repo>/.uxon/worktrees/<branch-slug>/` (excluded automatically via `.git/info/exclude`) and launches any agent there, forwarding agent passthrough flags. If a worktree already exists, `uxon new -w` keeps its attach-vs-new guard (prompt in a TTY, `repeat_noninteractive_mode` otherwise). Set `worktree_base = "remote"` for the previous claude-like behaviour of basing new branches on a freshly fetched `origin/HEAD` (the default `local` does no network fetch).
 - Dashboard `LAST` column tints sessions by activity age: yellow after 24 h without I/O, red after 3 d. Thresholds are hard-coded for now.
 - Launching "Create new project" or "Open existing project" no longer silently attaches when a compatible session already exists; the new SessionChoiceScreen makes the choice explicit (see above). The TUI is now the sole owner of the attach-vs-new decision — the planner always allocates a fresh session, so the operator's chosen permission mode is always honoured.
 
