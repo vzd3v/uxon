@@ -2062,6 +2062,7 @@ def plan_worktree_launch(
     agent_id: str,
     mode_id: str,
     *,
+    agent_args: list[str] | None = None,
     dry_run: bool = False,
 ):
     """Create a uxon-managed worktree and return a launch request for it.
@@ -2143,7 +2144,12 @@ def plan_worktree_launch(
     session = allocate_session_name(
         session_stem, agent_id, worktree_path, sessions, prefix=cfg.session_prefix
     )
-    run_args = ParsedArgs(action="run", agent=agent_id, permission_mode=mode_id)
+    run_args = ParsedArgs(
+        action="run",
+        agent=agent_id,
+        permission_mode=mode_id,
+        agent_args=list(agent_args or []),
+    )
     req = _build_tmux_launch_request(worktree_path, session, run_args, cfg, None, launch_user)
 
     if dry_run:
@@ -3927,6 +3933,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             branch,
             _agent,
             args.permission_mode,
+            agent_args=args.agent_args,
             dry_run=args.dry_run,
         )
         if args.dry_run:
@@ -4151,6 +4158,7 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             branch,
             _agent,
             args.permission_mode,
+            agent_args=args.agent_args,
             dry_run=args.dry_run,
         )
         if args.dry_run:

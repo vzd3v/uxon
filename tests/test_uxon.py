@@ -2221,6 +2221,47 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         self.assertTrue(add)
         self.assertNotIn("-b", add[0])
 
+    def test_agent_args_forwarded_to_launch_request(self) -> None:
+        # CLI parity: `uxon -w branch -- --extra-flag` must not silently drop
+        # the agent passthrough args on the worktree create path.
+        import uxon.cli as cli
+
+        cfg = cli.load_config("/tmp")
+        captured: dict[str, object] = {}
+
+        def fake_build(td, s, run_args, *a, **k):
+            captured["agent_args"] = list(run_args.agent_args)
+            return cli._tui_launch_request_cls()(cmd=("true",), label=f"launch {s}")
+
+        def fake_run_cmd(cmd, check=True, **kw):
+            class CP:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return CP()
+
+        with (
+            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch.object(cli, "run_cmd", fake_run_cmd),
+            mock.patch.object(cli, "write_uxon_exclude_entry", lambda *a, **k: None),
+            mock.patch.object(cli, "copy_worktreeinclude_matches", lambda *a, **k: None),
+            mock.patch.object(cli, "_branch_exists_as_user", return_value=True),
+            mock.patch.object(cli, "_build_tmux_launch_request", fake_build),
+            mock.patch("uxon.audit.audit", lambda *a, **k: None),
+        ):
+            cli.plan_worktree_launch(
+                cfg,
+                "devagent",
+                "/srv/work/myapp",
+                "existing",
+                "claude",
+                "default",
+                agent_args=["--extra-flag", "value"],
+            )
+        self.assertEqual(captured["agent_args"], ["--extra-flag", "value"])
+
     def test_worktree_add_failure_surfaces_clear_error(self) -> None:
         import uxon.cli as cli
 
