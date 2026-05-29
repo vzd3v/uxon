@@ -60,7 +60,7 @@ consistency:
 | Native `-w` behaviour | uxon replication | Outcome |
 |---|---|---|
 | Create worktree + branch | `git worktree add` (our layout) | equal |
-| baseRef `fresh`/`head` (branch off `origin/HEAD` vs local `HEAD`) | `git fetch` + `worktree add … origin/HEAD` (config, default `fresh`) | replicated |
+| baseRef `fresh`/`head` (branch off `origin/HEAD` vs local `HEAD`) | `worktree_base` config, default `local` (no fetch) — deliberate deviation, see §4.5 | replicated (network-free by default) |
 | `.worktreeinclude` copying | implemented by uxon (§2.4) | equal |
 | Subagent worktree isolation, `EnterWorktree` | claude-internal, independent of launch method | unaffected |
 | Trust dialog | a plain `claude -c` prompts interactively | improved (no first-run error) |
@@ -326,7 +326,7 @@ and the rationale is not lost:
   agent-agnostic, new `.uxon/worktrees/` layout; claude's native `-w` is
   no longer used).
 - **`docs/reference/configuration.md`** — `worktree_root`,
-  `worktree_base_ref`.
+  `worktree_base`.
 - **User-facing how-to/explanation** (Diátaxis: a how-to for create/
   attach/remove + a short explanation note) stating plainly that uxon
   creates and owns worktrees itself (not claude's `-w`), where they live
