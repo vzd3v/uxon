@@ -2080,6 +2080,247 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         self.assertEqual(found, ())  # no match, no SystemExit
 
 
+class PlanWorktreeLaunchTests(unittest.TestCase):
+    def test_new_branch_local_base_adds_worktree_and_names_session(self) -> None:
+        import uxon.cli as cli
+
+        cfg = cli.load_config("/tmp")
+        repo = "/srv/work/myapp"
+        calls: list[list[str]] = []
+
+        def fake_run_cmd(cmd, check=True, **kw):
+            calls.append(cmd)
+
+            class CP:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return CP()
+
+        events: list[tuple[str, dict]] = []
+
+        def fake_audit(event, **fields):
+            events.append((event, fields))
+
+        with (
+            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch.object(cli, "run_cmd", fake_run_cmd),
+            mock.patch.object(cli, "write_uxon_exclude_entry", lambda *a, **k: None),
+            mock.patch.object(cli, "copy_worktreeinclude_matches", lambda *a, **k: None),
+            mock.patch.object(cli, "_local_base_ref_as_user", return_value="origin/HEAD"),
+            mock.patch.object(cli, "_branch_exists_as_user", return_value=False),
+            mock.patch.object(
+                cli,
+                "_build_tmux_launch_request",
+                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                    cmd=("true",), label=f"launch {s}"
+                ),
+            ),
+            mock.patch("uxon.audit.audit", fake_audit),
+        ):
+            req = cli.plan_worktree_launch(
+                cfg, "devagent", repo, "feature/auth", "claude", "default"
+            )
+        # session named with the worktree stem
+        self.assertEqual(req.label, "launch uxon-myapp-feature-auth@claude")
+        # a `git worktree add ... -b feature/auth` was issued
+        add = [c for c in calls if "worktree" in c and "add" in c]
+        self.assertTrue(add)
+        self.assertIn("-b", add[0])
+        # BOTH worktree.create AND session.new emitted (§4.6, B3).
+        names = [e for e, _ in events]
+        self.assertIn("worktree.create", names)
+        self.assertIn("session.new", names)
+        wc = dict(events[names.index("worktree.create")][1])
+        self.assertEqual(wc.get("branch"), "feature/auth")
+        self.assertEqual(wc.get("project"), repo)
+        self.assertEqual(wc.get("base"), "local")
+        self.assertEqual(wc.get("agent"), "claude")
+        self.assertEqual(wc.get("session"), "uxon-myapp-feature-auth@claude")
+        self.assertTrue(wc.get("path", "").endswith("/.uxon/worktrees/feature-auth"))
+        sn = dict(events[names.index("session.new")][1])
+        self.assertEqual(sn.get("session"), "uxon-myapp-feature-auth@claude")
+        self.assertEqual(sn.get("branch"), "feature/auth")
+        self.assertEqual(sn.get("project"), wc.get("path"))
+
+    def test_worktree_root_outside_allowed_roots_rejected(self) -> None:
+        # B1 / §2.3 / §9 "gating failure → clear error": a worktree_root
+        # pointing outside allowed_roots must fail with an actionable error
+        # BEFORE any git work runs.
+        import uxon.cli as cli
+
+        cfg = cli.load_config("/tmp")
+        cfg.worktree_root = "/not/allowed"
+        cfg.allowed_roots = ["/srv/work"]
+        called: list[list[str]] = []
+
+        def fake_run_cmd(cmd, check=True, **kw):
+            called.append(cmd)
+
+            class CP:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return CP()
+
+        with (
+            mock.patch.object(cli, "probe_cwd_writable", return_value=True),
+            mock.patch.object(cli, "run_cmd", fake_run_cmd),
+        ):
+            with self.assertRaises(SystemExit) as cm:
+                cli.plan_worktree_launch(
+                    cfg, "devagent", "/srv/work/myapp", "feature/auth", "claude", "default"
+                )
+        msg = getattr(cm.exception, "uxon_msg", "")
+        self.assertIn("allowed_roots", msg)
+        self.assertIn("worktree_root", msg)  # error suggests the override key
+        # No git worktree add was attempted before the gate failed.
+        self.assertFalse([c for c in called if "worktree" in c and "add" in c])
+
+    def test_existing_branch_checks_out_without_b(self) -> None:
+        import uxon.cli as cli
+
+        cfg = cli.load_config("/tmp")
+        calls: list[list[str]] = []
+
+        def fake_run_cmd(cmd, check=True, **kw):
+            calls.append(cmd)
+
+            class CP:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return CP()
+
+        with (
+            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch.object(cli, "run_cmd", fake_run_cmd),
+            mock.patch.object(cli, "write_uxon_exclude_entry", lambda *a, **k: None),
+            mock.patch.object(cli, "copy_worktreeinclude_matches", lambda *a, **k: None),
+            mock.patch.object(cli, "_branch_exists_as_user", return_value=True),
+            mock.patch.object(
+                cli,
+                "_build_tmux_launch_request",
+                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                    cmd=("true",), label=f"launch {s}"
+                ),
+            ),
+            mock.patch("uxon.audit.audit", lambda *a, **k: None),
+        ):
+            cli.plan_worktree_launch(
+                cfg, "devagent", "/srv/work/myapp", "existing", "claude", "default"
+            )
+        add = [c for c in calls if "worktree" in c and "add" in c]
+        self.assertTrue(add)
+        self.assertNotIn("-b", add[0])
+
+    def test_worktree_add_failure_surfaces_clear_error(self) -> None:
+        import uxon.cli as cli
+
+        cfg = cli.load_config("/tmp")
+
+        # The planner runs the add with check=False and inspects the
+        # result itself (run_cmd's own failure path calls fail() with the
+        # raw git stderr; the planner wants a friendlier message). Simulate
+        # git refusing because the branch is already checked out.
+        def fake_run_cmd(cmd, check=True, **kw):
+            class CP:
+                stdout = ""
+                stderr = ""
+                returncode = 0
+
+            if "worktree" in cmd and "add" in cmd:
+                CP.returncode = 128
+                CP.stderr = "fatal: 'feature/auth' is already checked out at '...'"
+            return CP()
+
+        with (
+            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch.object(cli, "run_cmd", fake_run_cmd),
+            mock.patch.object(cli, "write_uxon_exclude_entry", lambda *a, **k: None),
+            mock.patch.object(cli, "_branch_exists_as_user", return_value=False),
+            mock.patch.object(cli, "_local_base_ref_as_user", return_value="HEAD"),
+            mock.patch.object(
+                cli,
+                "_build_tmux_launch_request",
+                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                    cmd=("true",), label=f"launch {s}"
+                ),
+            ),
+        ):
+            with self.assertRaises(SystemExit) as cm:
+                cli.plan_worktree_launch(
+                    cfg, "devagent", "/srv/work/myapp", "feature/auth", "claude", "default"
+                )
+        # Friendly message, not the raw git fatal. fail() stashes the
+        # human-readable text on the SystemExit as ``uxon_msg``.
+        self.assertIn("already checked out", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_dry_run_is_side_effect_free(self) -> None:
+        # dry_run must not mkdir / fetch / write exclude / add worktree /
+        # emit audit — only resolve + print the plan.
+        import uxon.cli as cli
+
+        cfg = cli.load_config("/tmp")
+        calls: list[list[str]] = []
+        events: list[str] = []
+
+        def fake_run_cmd(cmd, check=True, **kw):
+            calls.append(cmd)
+
+            class CP:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return CP()
+
+        with (
+            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch.object(cli, "run_cmd", fake_run_cmd),
+            mock.patch.object(cli, "_branch_exists_as_user", return_value=False),
+            mock.patch.object(cli, "_local_base_ref_as_user", return_value="HEAD"),
+            mock.patch.object(
+                cli,
+                "write_uxon_exclude_entry",
+                lambda *a, **k: calls.append(["WROTE_EXCLUDE"]),
+            ),
+            mock.patch.object(
+                cli,
+                "copy_worktreeinclude_matches",
+                lambda *a, **k: calls.append(["COPIED"]),
+            ),
+            mock.patch.object(
+                cli,
+                "_build_tmux_launch_request",
+                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                    cmd=("true",), label=f"launch {s}"
+                ),
+            ),
+            mock.patch("uxon.audit.audit", lambda event, **k: events.append(event)),
+        ):
+            req = cli.plan_worktree_launch(
+                cfg,
+                "devagent",
+                "/srv/work/myapp",
+                "feature/auth",
+                "claude",
+                "default",
+                dry_run=True,
+            )
+        self.assertEqual(req.label, "launch uxon-myapp-feature-auth@claude")
+        # No mutating commands ran, no exclude write/copy, no audit events.
+        self.assertEqual(calls, [])
+        self.assertEqual(events, [])
+
+
 def _init_repo(path: str) -> None:
     subprocess.run(["git", "init", "-q", path], check=True)
     subprocess.run(["git", "-C", path, "config", "user.email", "t@t"], check=True)
