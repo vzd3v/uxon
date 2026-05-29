@@ -1874,5 +1874,60 @@ class DoInteractiveTextualMissingTests(unittest.TestCase):
                 uxon_pkg.tui = saved_uxon_tui_attr  # type: ignore[attr-defined]
 
 
+class TuiPlannerWorktreeStemTests(unittest.TestCase):
+    def test_run_agent_uses_worktree_stem_when_branch_given(self) -> None:
+        import uxon.cli as cli
+
+        captured = {}
+
+        def fake_alloc(stem, agent, root, sessions, *, prefix):
+            captured["stem"] = stem
+            return f"{prefix}{stem}@{agent}"
+
+        cfg = cli.load_config("/tmp")
+        with (
+            mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
+            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch.object(cli, "allocate_session_name", fake_alloc),
+            mock.patch.object(
+                cli,
+                "_build_tmux_launch_request",
+                lambda *a, **k: cli._tui_launch_request_cls()(cmd=("true",), label="x"),
+            ),
+        ):
+            cli._plan_tui_run_agent(
+                cfg,
+                "devagent",
+                "/srv/work/myapp/.uxon/worktrees/feature-auth",
+                "claude",
+                "default",
+                worktree=("/srv/work/myapp", "feature/auth"),
+            )
+        self.assertEqual(captured["stem"], "myapp-feature-auth")
+
+    def test_run_agent_uses_path_stem_without_worktree(self) -> None:
+        import uxon.cli as cli
+
+        captured = {}
+
+        def fake_alloc(stem, agent, root, sessions, *, prefix):
+            captured["stem"] = stem
+            return f"{prefix}{stem}@{agent}"
+
+        cfg = cli.load_config("/tmp")
+        with (
+            mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
+            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch.object(cli, "allocate_session_name", fake_alloc),
+            mock.patch.object(
+                cli,
+                "_build_tmux_launch_request",
+                lambda *a, **k: cli._tui_launch_request_cls()(cmd=("true",), label="x"),
+            ),
+        ):
+            cli._plan_tui_run_agent(cfg, "devagent", "/srv/work/plain", "claude", "default")
+        self.assertEqual(captured["stem"], "plain")
+
+
 if __name__ == "__main__":
     unittest.main()

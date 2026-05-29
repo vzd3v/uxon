@@ -4403,7 +4403,14 @@ def _load_settings_sources(cwd: str) -> tuple[dict, dict, Path | None]:
     return repo_data, proj_data, proj_cfg
 
 
-def _plan_tui_run_agent(cfg: Config, launch_user: str, cwd: str, agent_id: str, mode_id: str):
+def _plan_tui_run_agent(
+    cfg: Config,
+    launch_user: str,
+    cwd: str,
+    agent_id: str,
+    mode_id: str,
+    worktree: tuple[str, str] | None = None,
+):
     """Build a LaunchRequest for the TUI "New session in current folder" action.
 
     Mirrors :func:`do_run` minus the terminal handoff: gates via
@@ -4411,10 +4418,21 @@ def _plan_tui_run_agent(cfg: Config, launch_user: str, cwd: str, agent_id: str, 
     whitelist when configured), allocates a session name, returns a
     LaunchRequest. The agent and permission mode are picked by the TUI
     callback before this is called — no probe needed here.
+
+    When ``worktree`` is ``(repo_root, branch)`` the session stem is the
+    repo-qualified :func:`session_stem_for_worktree` (§2.5) — identical to
+    the stem the worktree-aware probe derives — instead of the
+    basename-only :func:`session_stem_for_path`. ``cwd`` is the worktree
+    path in that case; for a plain (primary / non-git) target ``worktree``
+    is ``None`` and the basename stem is used unchanged.
     """
     ensure_launch_target_allowed(cfg, launch_user, cwd)
     target_dir = cwd
-    session_stem = session_stem_for_path(target_dir)
+    if worktree is not None:
+        repo_root, branch = worktree
+        session_stem = session_stem_for_worktree(repo_root, branch)
+    else:
+        session_stem = session_stem_for_path(target_dir)
     sessions = collect_sessions([launch_user], cfg)
     session = allocate_session_name(
         session_stem, agent_id, target_dir, sessions, prefix=cfg.session_prefix
