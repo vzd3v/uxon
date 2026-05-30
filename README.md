@@ -145,8 +145,8 @@ enabled = ["claude", "codex"]
 default = "claude"
 ```
 
-`-w <branch>` (worktree) is currently claude-only. `--auto` is
-unavailable for cursor.
+`-w <branch>` (worktree) works with any agent; uxon manages the worktree
+itself. `--auto` is unavailable for cursor.
 
 `uxon doctor` probes each enabled agent and prints its path,
 version, and status. The TUI auto-detects newly-installed

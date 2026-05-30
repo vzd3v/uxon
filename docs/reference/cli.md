@@ -44,7 +44,7 @@ Start an agent in the **current working directory**.
 | `--agent claude\|codex\|cursor` | Pick the agent. Default: `agents.default` from config. |
 | `--auto` | Agent's "auto" permission mode. `claude` → `--permission-mode auto`. `codex` → `--full-auto`. **Not supported by `cursor`** (error). |
 | `--dsp` | Agent's "yolo" permission mode. Short for `--dangerously-skip-permissions` (both forms accepted). `claude` → `--dangerously-skip-permissions`. `codex` → `--dangerously-bypass-approvals-and-sandbox`. `cursor` → `--yolo`. Legacy aliases: `--dap`, `-dap`, `-dsp`. |
-| `-w <branch>` | Run in a git worktree for `<branch>` at `cwd`'s repo. uxon creates the worktree if absent and launches any agent there. See [Worktrees](#worktrees--w-branch). |
+| `-w <branch>` | Create a git worktree for `<branch>` in `cwd`'s repo and launch any agent there. Fails if the worktree already exists. See [Worktrees](#worktrees--w-branch). |
 | `--dry-run` | Print the `tmux` command instead of executing. |
 
 `--auto` and `--dsp` are mutually exclusive.
@@ -71,7 +71,7 @@ be a git repo) and launches in a worktree for `<branch>`. See
 | Flag | Effect |
 |------|--------|
 | `--attach-existing` / `--new-session` | Bypass the repeat prompt (see [Repeat behaviour](#repeat-behaviour)). |
-| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses `default_git_remote_profile`. Incompatible with `-w`. Without this flag, no git is touched (CLI is non-interactive). |
+| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses `default_git_remote_profile`. Cannot be combined with `-w` (rejected). Without this flag, no git is touched (CLI is non-interactive). |
 | `--git-visibility private\|public` | Override the profile's visibility default for this one call. |
 | `--no-git` | Explicit "don't touch git" (same as omitting `--git-remote`). |
 
@@ -276,8 +276,10 @@ socket.
   not call the agent's native `-w`. The worktree lives under
   `<repo>/.uxon/worktrees/<branch-slug>/` (excluded via `.git/info/exclude`),
   or under [`worktree_root`](configuration.md#top-level-keys) when set.
-- If a worktree for `<branch>` already exists, uxon attaches to it; the
-  repeat guard (attach vs new) still applies. New branches are based per
+- `run -w` always creates the worktree and fails if it already exists
+  (path taken, or the branch is checked out elsewhere). `new -w`
+  additionally applies the repeat guard (attach vs new) when a matching
+  **session** already exists. New branches are based per
   [`worktree_base`](configuration.md#top-level-keys).
 - The session name includes both repo and branch slugs, so multiple
   branches of the same repo coexist cleanly.

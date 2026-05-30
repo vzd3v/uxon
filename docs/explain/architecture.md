@@ -237,7 +237,7 @@ These are enforced by tests and CI:
 
 ```
 uxon-<stem>@<agent>           plain sessions
-uxon-<repo>-<branch>@<agent>  worktree sessions (claude only)
+uxon-<repo>-<branch>@<agent>  worktree sessions
 ```
 
 Parallels append `-2`, `-3`, … *after* the agent suffix:
