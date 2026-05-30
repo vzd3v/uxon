@@ -26,6 +26,8 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.worker import Worker, WorkerState
 
+from uxon import __version__
+
 from .config import TuiConfig
 from .context import CallbackError, LaunchRequest, TuiContext
 from .events import debug as _debug
@@ -238,6 +240,10 @@ class UxonApp(App):
         probe_agents: bool = True,
     ) -> None:
         super().__init__()
+        # Terminal/window title — "uxon <version>" rather than Textual's
+        # default class-name ("UxonApp"). Version read live from the
+        # single source of truth so it never drifts.
+        self.title = f"uxon {__version__}"
         self.ctx = ctx
         # Snapshot the immutable side of ``ctx`` once at construction.
         # ``cfg`` is shared across rebuild ticks — ``on_refresh()``

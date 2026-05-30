@@ -11,7 +11,7 @@ agents (Claude Code, Codex, Cursor CLI) on one or more Linux
 servers. Team visibility via OS accounts, cross-host visibility
 via SSH, supervision via sudoers.
 
-<!-- screenshot goes here -->
+![uxon dashboard — a lead sees the whole team's agent sessions across hosts](docs/images/uxon-full-team-n.png)
 
 ## When to use uxon
 
