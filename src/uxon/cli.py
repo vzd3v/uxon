@@ -1366,10 +1366,12 @@ def session_stem_for_path(target_dir: str) -> str:
 
 
 def session_stem_for_worktree(repo_root: str, branch: str) -> str:
+    # Always repo-qualified, even when the branch slug equals the repo slug
+    # (§2.5). Collapsing to the bare repo slug would make a worktree on a
+    # branch named like its repo share the primary tree's stem
+    # (``session_stem_for_path``) and hard-fail on "session conflict".
     repo_slug = slugify(os.path.basename(repo_root))
     workspace_slug = slugify(branch)
-    if workspace_slug == repo_slug:
-        return repo_slug
     return f"{repo_slug}-{workspace_slug}"
 
 

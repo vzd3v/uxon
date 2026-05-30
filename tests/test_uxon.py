@@ -2081,6 +2081,19 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
             )
         self.assertEqual(found, ())  # no match, no SystemExit
 
+    def test_branch_named_like_repo_stays_repo_qualified(self) -> None:
+        # §2.5: the worktree stem must never collapse to the bare repo slug,
+        # or a worktree on a branch named like its repo would collide with
+        # the primary tree's stem (session_stem_for_path) and hard-fail.
+        import uxon.cli as cli
+
+        repo = "/srv/work/myapp"
+        self.assertEqual(cli.session_stem_for_worktree(repo, "myapp"), "myapp-myapp")
+        self.assertNotEqual(
+            cli.session_stem_for_worktree(repo, "myapp"),
+            cli.session_stem_for_path(repo),
+        )
+
 
 class PlanWorktreeLaunchTests(unittest.TestCase):
     def test_new_branch_local_base_adds_worktree_and_names_session(self) -> None:
