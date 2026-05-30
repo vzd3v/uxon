@@ -143,9 +143,8 @@ removes the per-day TUI event-log file.
   environment to preserve the previous location. (Audit events
   go to journald / syslog regardless — `UXON_LOG_DIR` only ever
   scoped the developer channels.)
-- **Internal agent material untracked.** `AGENTS.md`,
-  `CLAUDE.md`, `.claude/`, `docs/plans/`, `docs/superpowers/`,
-  `docs/prototypes/` are no longer tracked. Operators do not
+- **Internal agent material untracked.** Internal agent-only
+  working files are no longer tracked in git. Operators do not
   need to do anything.
 
 ## Multi-agent config schema (1.3)

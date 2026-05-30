@@ -16,6 +16,9 @@ config/*
 AGENTS.md
 CLAUDE.md
 docs/agents/
+docs/superpowers/
+docs/plans/
+docs/prototypes/
 experiments/
 
 # Misc

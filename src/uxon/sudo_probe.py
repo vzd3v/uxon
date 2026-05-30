@@ -5,8 +5,7 @@ can actually reach via ``sudo -niu <U> -- true``, plus a separate flag
 for whether the caller has root NOPASSWD (used for settings-write
 gating, where there's no per-user target).
 
-Design constraints (see
-``docs/agents/superpowers/specs/2026-05-03-per-target-sudo-design.md``):
+Design constraints:
 
 - **One-shot.** Probing happens once at startup. New sudo grants are
   picked up by restarting ``uxon``. There is no daemon, no SIGHUP, no

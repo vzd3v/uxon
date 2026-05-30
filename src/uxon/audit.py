@@ -4,9 +4,6 @@ Single public entrypoint :func:`audit` emits a structured event to the
 platform log (journald native protocol on systemd hosts, ``/dev/log`` syslog
 fallback otherwise) — never raises, never blocks.
 
-Design and rationale:
-``docs/superpowers/specs/2026-05-05-audit-log-design.md``.
-
 The module is intentionally stdlib-only: ``socket`` for the wire layer,
 ``json`` for the syslog body, ``threading.Lock`` to serialize first-call
 lazy init. Steady-state ``audit()`` calls hold no lock.

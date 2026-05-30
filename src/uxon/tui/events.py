@@ -71,8 +71,7 @@ def _log_dir() -> str:
 # Internal-only diagnostic channel. Off in production; instrumentation
 # call sites stay in place and cost a single ``frozenset`` truthiness
 # check when disabled. Goes to ``tui-debug-{user}-{date}.log`` next to
-# the user-facing event log. Full design and conventions:
-# ``docs/agents/debug-logging.md``.
+# the user-facing event log.
 
 
 def _parse_debug_topics() -> frozenset[str]:
@@ -99,8 +98,7 @@ def debug(topic: str, **fields: Any) -> None:
     (honours ``UXON_LOG_DIR`` like the event log).
 
     Topic is required; arbitrary keyword fields merge into the JSON
-    record. See ``docs/agents/debug-logging.md`` for conventions and
-    the topic registry.
+    record.
     """
     if not _DEBUG_TOPICS:
         return

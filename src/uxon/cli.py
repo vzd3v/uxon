@@ -565,8 +565,7 @@ def load_config(cwd: str) -> Config:
         fail(
             "config key 'default_claude_args' was replaced by "
             "'[agents.claude] default_args = [...]'. "
-            "Update config/config.toml (see docs/superpowers/specs/"
-            "2026-04-21-multi-agent-support-design.md)."
+            "Update config/config.toml accordingly."
         )
 
     agents_tbl = merged.get("agents", {})
@@ -1857,8 +1856,8 @@ def _resolve_or_audit_not_found(
     """Resolve a session and, on no-match failure, emit the ``not_found``
     audit outcome before re-raising.
 
-    Spec (``docs/superpowers/specs/2026-05-05-audit-log-design.md``)
-    enumerates ``outcome ∈ {"ok", "denied", "error", "not_found"}`` for
+    The audit contract enumerates
+    ``outcome ∈ {"ok", "denied", "error", "not_found"}`` for
     ``session.attach``, ``session.kill``, and their peer-inbound
     replacements ``attach.remote.in`` / ``kill.remote.in``. Without
     this wrapper the ``not_found`` outcome would never appear, because
