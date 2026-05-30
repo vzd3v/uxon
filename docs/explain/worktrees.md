@@ -1,8 +1,9 @@
 # Why uxon manages worktrees itself
 
 uxon creates and owns every worktree (`git worktree add`, then
-launches the agent with `-c <worktree_path>`), rather than
-delegating to an agent's native worktree flag. Three reasons:
+launches the agent in it — the tmux session's working directory *is*
+the worktree path), rather than delegating to an agent's native
+worktree flag. Three reasons:
 
 - **Uniform across agents.** The same gesture works for `claude`,
   `codex`, and `cursor`, even though only `claude` has a native
