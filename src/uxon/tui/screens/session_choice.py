@@ -73,8 +73,10 @@ class SessionChoiceScreen(CardModal[SessionChoiceResult]):
     # screen activation: when this modal is pushed from another modal's
     # dismiss callback, the popped screen's deferred focus-restoration
     # fires afterwards and steals focus to a background widget, leaving
-    # the modal keyboard-dead. Every modal in this package follows this
-    # rule; this docstring is the canonical "why".
+    # the modal keyboard-dead. Every card modal in this package follows
+    # this rule (LaunchOptionsScreen is the exception — its focus is
+    # dynamic across panels, driven imperatively). This docstring is the
+    # canonical "why".
     AUTO_FOCUS = "#session-list"
 
     def __init__(

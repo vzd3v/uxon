@@ -351,7 +351,10 @@ class _ValueInputModal(_EditModalBase):
     desc_suffix: ClassVar[str] = ""
 
     def _initial_text(self) -> str:
-        return str(self.entry.value or "")
+        # ``or ""`` would render a falsy-but-real value (notably ``0`` /
+        # ``0.0`` for a number setting) as a blank field; guard on None.
+        v = self.entry.value
+        return "" if v is None else str(v)
 
     def _parse(self, raw: str) -> Any:
         raise NotImplementedError

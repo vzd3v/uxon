@@ -1151,6 +1151,26 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(modal.query_one(Input).value, "p, q")
 
+    async def test_number_prefills_falsy_zero(self):
+        # A current value of 0 must render as "0", not a blank field —
+        # ``str(value or "")`` would wrongly blank it.
+        from textual.app import App
+        from textual.widgets import Input
+
+        from uxon.tui.screens.settings import NumberInputModal
+
+        _saved, cbs = self._cbs()
+        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
+
+        class Host(App):
+            def on_mount(self):
+                self.push_screen(modal)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            self.assertEqual(modal.query_one(Input).value, "0")
+
     async def test_table_parses_kv_via_save_mapping(self):
         from uxon.tui.screens.settings import TableMappingModal
 
