@@ -41,6 +41,7 @@ from ..context import (
 )
 from ..dashboard.buckets import (
     compute_block_starts,
+    select_fleet_summary,
     select_host_buckets,
     select_host_status_block,
 )
@@ -61,6 +62,7 @@ from ..state import (
 )
 from ..widgets import ActionRow
 from ..widgets.action_row import ACTION_GROUP_CONTAINER_ID
+from ..widgets.fleet_status_bar import FleetStatusBar
 from ..widgets.host_status_bar import HostStatusBar
 from ..widgets.host_tab_strip import HostTabActivated, HostTabStrip
 from ..widgets.search_bar import FilterChanged, SearchBar
@@ -129,6 +131,7 @@ class MainScreen(Screen):
         Binding("d", "kill", "Kill", show=True),
         Binding("D", "kill_all_own", "Kill-ALL (mine)", show=True),
         Binding("v", "toggle_view", "View", show=True),
+        Binding("h", "toggle_hosts", "Hosts", show=True),
         Binding("s", "focus_search", "Search", show=True),
         Binding("/", "focus_search", "", show=False),
         # Arrow navigation across focusable widgets. DataTable consumes
@@ -239,6 +242,14 @@ class MainScreen(Screen):
     def _tab_focus_pending_restore(self, value: bool) -> None:
         self.app.main_ui.pending_tab_focus_restore = value  # type: ignore[attr-defined]
 
+    @property
+    def _hosts_expanded(self) -> bool:
+        return self.app.main_ui.hosts_expanded  # type: ignore[attr-defined]
+
+    @_hosts_expanded.setter
+    def _hosts_expanded(self, value: bool) -> None:
+        self.app.main_ui.hosts_expanded = value  # type: ignore[attr-defined]
+
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="main-body"):
@@ -295,16 +306,22 @@ class MainScreen(Screen):
                 # the layout doesn't flicker an empty-note at first paint.
                 note_classes = "empty-note -hidden"
             yield Static(note, id="sessions-note", classes=note_classes)
-            # Tab strip + status bars are always mounted regardless of the
-            # initial view mode; ``_refresh_dashboard`` toggles ``display``
-            # so the widget tree stays stable across ``v`` flips. Mounting
-            # only when ``view_mode == "by_host"`` would silently break
-            # ``v`` for operators who configure ``default_view = "flat"``
-            # (the toggle would have no widgets to show).
+            # Tab strip + compact status bar are always mounted regardless
+            # of the initial view mode; ``_refresh_dashboard`` toggles
+            # ``display`` so the widget tree stays stable across ``v`` flips.
+            # Mounting only when ``view_mode == "by_host"`` would silently
+            # break ``v`` for operators who configure ``default_view =
+            # "flat"`` (the toggle would have no widgets to show). The
+            # compact bar shows the active host's detail under its tab in
+            # by_host; the fleet bar below the table carries the
+            # collapsed/expanded fleet summary in both views.
             yield HostTabStrip([], id="host-tabs")
             yield HostStatusBar(mode="compact", id="host-status-compact")
-            yield HostStatusBar(mode="expanded", id="host-status-expanded")
             yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
+            # Fleet status: below the table, before the superuser block, so
+            # arrowing down off the table lands on it first. Collapsed by
+            # default; ``h`` (or a click on the bar) expands it.
+            yield FleetStatusBar(id="fleet-status")
             if bool(self.ctx.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
                 yield ActionRow(
@@ -543,35 +560,39 @@ class MainScreen(Screen):
         self._dashboard_rows = rows
         widget.pin_cursor_to(prev_cursor_key)
         self._refresh_dashboard_note(all_rows)
-        # Feed the HostStatusBar(s). Status lines aggregate over the
-        # unfiltered, full row tuple so the bar reflects fleet totals
-        # even when a search filter narrows the table.
+        # Status lines aggregate over the unfiltered, full row tuple so the
+        # bars reflect fleet totals even when a search filter narrows the
+        # table.
         host_stats_local = state.main.host_stats if state.main is not None else None
         status_lines = select_host_status_block(all_rows, state, host_stats_local, cfg_view)
+        # Compact per-tab line: by_host only, shows the active host's detail
+        # under its tab.
         try:
             compact_bar = self.query_one("#host-status-compact", HostStatusBar)
         except Exception:
             compact_bar = None
-        try:
-            expanded_bar = self.query_one("#host-status-expanded", HostStatusBar)
-        except Exception:
-            expanded_bar = None
-        if in_by_host and active_bucket is not None and status_lines:
-            line = next(
-                (sl for sl in status_lines if sl.host_name == active_bucket.host_name),
-                status_lines[0],
-            )
-            if compact_bar is not None:
+        if compact_bar is not None:
+            if in_by_host and active_bucket is not None and status_lines:
+                line = next(
+                    (sl for sl in status_lines if sl.host_name == active_bucket.host_name),
+                    status_lines[0],
+                )
                 compact_bar.display = True
                 compact_bar.update_lines((line,))
-            if expanded_bar is not None:
-                expanded_bar.display = False
-        else:
-            if compact_bar is not None:
+            else:
                 compact_bar.display = False
-            if expanded_bar is not None:
-                expanded_bar.display = True
-                expanded_bar.update_lines(status_lines)
+        # Fleet bar below the table: present in both views. Collapsed =
+        # counts + quiet alerts; expanded (``h``) = one line per host.
+        try:
+            fleet_bar = self.query_one("#fleet-status", FleetStatusBar)
+        except Exception:
+            fleet_bar = None
+        if fleet_bar is not None:
+            fleet_bar.update_fleet(
+                select_fleet_summary(status_lines),
+                status_lines,
+                expanded=self._hosts_expanded,
+            )
         _debug(
             "keys",
             at="refresh_dashboard_exit",
@@ -1066,6 +1087,15 @@ class MainScreen(Screen):
         except Exception:
             return
         tab.focus()
+
+    def action_toggle_hosts(self) -> None:
+        self._hosts_expanded = not self._hosts_expanded
+        self._refresh_dashboard()
+
+    def on_fleet_status_bar_toggled(self, event: FleetStatusBar.Toggled) -> None:
+        # A click on the bar routes through the same shared state as the
+        # ``h`` binding so the two can never diverge.
+        self.action_toggle_hosts()
 
     def action_focus_search(self) -> None:
         # Remember which widget summoned the bar so Esc can return

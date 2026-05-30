@@ -119,9 +119,11 @@ Sub-modules under `src/uxon/tui/`:
 - `widgets/` — `ActionRow`, `DetectedAgentsBanner`,
   `SessionDashboardTable` (the unified session table),
   `HostTabStrip` (per-host tabs above the table in `by_host`
-  view), `HostStatusBar` (per-host CPU/RAM/load line, compact
-  under the active tab and expanded above the flat list),
-  `SearchBar` (summoned filter input), and
+  view), `HostStatusBar` (compact per-host CPU/RAM line under the
+  active tab in `by_host`), `FleetStatusBar` (collapsible fleet
+  summary below the table in both views — counts + alerts collapsed,
+  per-host detail when expanded with `h`), `SearchBar` (summoned
+  filter input), and
   `FocusReleasingDataTable` (internal base). Everything else is
   stock `textual`.
 - `dashboard/` — pure layers behind `SessionDashboardTable`

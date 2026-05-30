@@ -73,9 +73,57 @@ class HostStatusLine:
     cpu_pct_sum: float
     mem_used_kib: int
     mem_total_kib: int
-    loadavg_1m: float | None
+    loadavg_1m: float | None  # computed, intentionally unrendered (FleetStatusBar redesign)
     uptime_s: int | None
     state: str  # "" | "(cached)" | "pending…" | "unreachable"
+
+
+# Memory-pressure alert threshold: used/total at or above this fraction.
+_MEM_PRESSURE = 0.90
+
+
+@dataclass(frozen=True, slots=True)
+class FleetSummary:
+    """Fleet-level rollup for the collapsed FleetStatusBar.
+
+    Only honest aggregates: counts (orientation / scale) and alerts.
+    No cpu/mem sums across heterogeneous boxes — that would be garbage.
+    """
+
+    host_count: int
+    session_count: int
+    alerts: tuple[str, ...]  # bare tokens, e.g. "gpu-box mem 92%", "dev-nadia unreachable"
+
+
+def select_fleet_summary(lines: tuple[HostStatusLine, ...]) -> FleetSummary:
+    """Roll per-host status lines into counts + alert tokens.
+
+    Alert rules (deliberately quiet — see the design doc):
+
+    * memory pressure: a host with ``mem_total > 0`` and
+      ``mem_used / mem_total >= 0.90``. Hosts with no mem data are
+      excluded — never alert on missing data.
+    * reachability: only ``unreachable``. ``pending…`` and ``(cached)``
+      are transient/benign and must NOT flip the bar to a warning state
+      (the whole fleet is ``pending…`` on cold start).
+    """
+    alerts: list[str] = []
+    for line in lines:
+        if line.state == "unreachable":
+            # Unreachable subsumes mem pressure for the same host: the
+            # mem figure is stale (last snapshot before the host dropped)
+            # and one host must not emit two tokens — that would exhaust
+            # the collapsed-line cap and hide every other degraded host.
+            alerts.append(f"{line.label} unreachable")
+            continue
+        if line.mem_total_kib > 0 and line.mem_used_kib / line.mem_total_kib >= _MEM_PRESSURE:
+            pct = round(line.mem_used_kib / line.mem_total_kib * 100)
+            alerts.append(f"{line.label} mem {pct}%")
+    return FleetSummary(
+        host_count=len(lines),
+        session_count=sum(line.session_count for line in lines),
+        alerts=tuple(alerts),
+    )
 
 
 def select_host_buckets(

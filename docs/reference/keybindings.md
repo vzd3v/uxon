@@ -14,6 +14,7 @@ the visible subset.
 | `d` | Kill highlighted session (with confirmation) |
 | `D` (Shift+d) | Kill all *own* sessions (`kill-all` to confirm) |
 | `v` | Toggle dashboard view (`flat` ↔ `by_host`) |
+| `h` | Toggle the fleet status bar (collapsed counts+alerts ↔ per-host detail) |
 | `s` (or `/`) | Focus the search bar from anywhere |
 | `r` | Refresh |
 | `q` | Quit |
@@ -24,7 +25,7 @@ Sort is a fixed contract (locals → cfg-order remotes →
 within-block by recency); there are no sort bindings.
 
 JCUKEN twins: every dashboard key has a Russian-layout twin
-(`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`) so the
+(`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`, `h`/`р`) so the
 keymap survives a Cyrillic layout without `xkb` tweaks.
 
 ## "Open existing project" screen
