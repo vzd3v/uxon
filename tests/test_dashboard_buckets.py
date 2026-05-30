@@ -3,8 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from uxon.tui.dashboard.buckets import (
+    FleetSummary,
     HostStatusLine,
     compute_block_starts,
+    select_fleet_summary,
     select_host_buckets,
     select_host_status_block,
 )
@@ -12,6 +14,21 @@ from uxon.tui.dashboard.buckets import (
 
 def _row(host, name, attached=False, cpu=0.0, user="me"):
     return SimpleNamespace(host=host, name=name, attached=attached, cpu_pct=cpu, user=user)
+
+
+def _line(label, *, sessions=0, mem_used=0, mem_total=0, state="", host_name="h"):
+    return HostStatusLine(
+        host_name=host_name,
+        label=label,
+        session_count=sessions,
+        attached_count=0,
+        cpu_pct_sum=0.0,
+        mem_used_kib=mem_used,
+        mem_total_kib=mem_total,
+        loadavg_1m=None,
+        uptime_s=None,
+        state=state,
+    )
 
 
 # ── compute_block_starts ─────────────────────────────────────────────
@@ -124,10 +141,62 @@ def test_host_status_bar_renders_a_line():
         state="",
     )
     rendered = _render(line)
-    # Compact contract (commit b8d69d4): sessions fold into "N/M sess",
-    # CPU is a bare percent, mem is "U/TG", load is two decimals.
+    # Compact contract: sessions fold into "N/M sess", CPU is a bare
+    # percent, mem is "U/TG". `la` (load average) is no longer rendered
+    # (FleetStatusBar redesign, 2026-05-30) — kept in the dataclass,
+    # dropped from the line.
     assert "local" in rendered
     assert "3/1 sess" in rendered
     assert "cpu 42%" in rendered
     assert "mem 7.6/15G" in rendered
-    assert "la 0.42" in rendered
+    assert "la" not in rendered
+
+
+# ── select_fleet_summary ─────────────────────────────────────────────
+
+
+def test_fleet_summary_counts_hosts_and_sessions():
+    lines = (
+        _line("local", sessions=2, host_name=None),
+        _line("dev-wes", sessions=3),
+        _line("gpu-box", sessions=0),
+    )
+    summary = select_fleet_summary(lines)
+    assert isinstance(summary, FleetSummary)
+    assert summary.host_count == 3
+    assert summary.session_count == 5
+    assert summary.alerts == ()
+
+
+def test_fleet_summary_mem_pressure_alert_at_90pct():
+    # 9.0/10.0 == 90% → alert; 8.9/10.0 → no alert.
+    lines = (
+        _line("hot", mem_used=9_000, mem_total=10_000),
+        _line("cool", mem_used=8_900, mem_total=10_000),
+    )
+    summary = select_fleet_summary(lines)
+    assert summary.alerts == ("hot mem 90%",)
+
+
+def test_fleet_summary_missing_mem_never_alerts():
+    # mem_total == 0 (cold start / old peer with no host_stats): excluded.
+    lines = (_line("nodata", mem_used=0, mem_total=0),)
+    assert select_fleet_summary(lines).alerts == ()
+
+
+def test_fleet_summary_unreachable_alerts_but_pending_and_cached_do_not():
+    lines = (
+        _line("down", state="unreachable"),
+        _line("warming", state="pending…"),
+        _line("stale", state="(cached)"),
+    )
+    assert select_fleet_summary(lines).alerts == ("down unreachable",)
+
+
+def test_fleet_summary_cold_start_all_pending_is_quiet():
+    lines = (
+        _line("local", host_name=None),
+        _line("a", state="pending…"),
+        _line("b", state="pending…"),
+    )
+    assert select_fleet_summary(lines).alerts == ()
