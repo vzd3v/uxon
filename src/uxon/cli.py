@@ -2724,6 +2724,8 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
     while i < len(argv):
         token = argv[i]
         if token in ("-w", "--worktree"):
+            if parsed.git_remote:
+                fail("cannot combine -w with --git-remote")
             i += 1
             if i >= len(argv):
                 fail(f"{token} requires a branch value")
@@ -2764,6 +2766,8 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
                 fail(f"{token} is only supported with 'new' / '-n'")
             if parsed.no_git:
                 fail("cannot combine --git-remote with --no-git")
+            if parsed.worktree_branch:
+                fail("cannot combine --git-remote with -w")
             i += 1
             if i >= len(argv):
                 fail(f"{token} requires a profile name (or 'default')")
