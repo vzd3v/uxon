@@ -13,11 +13,13 @@ Boundary-aware navigation and visual defaults come from
 """
 
 from .action_row import ActionRow
+from .fleet_status_bar import FleetStatusBar
 from .search_bar import FilterChanged, SearchBar
 from .session_dashboard_table import SessionDashboardTable
 
 __all__ = [
     "ActionRow",
+    "FleetStatusBar",
     "FilterChanged",
     "SearchBar",
     "SessionDashboardTable",
