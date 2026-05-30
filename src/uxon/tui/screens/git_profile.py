@@ -12,29 +12,19 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.screen import ModalScreen
 from textual.widgets import Label, ListItem, ListView, Static
 
 from ..keymap import bindings_with_aliases
 from ..state import pick_index
+from .modal_base import CardModal
 
 
-class GitProfileScreen(ModalScreen["str | None"]):
+class GitProfileScreen(CardModal["str | None"]):
+    # Card chrome + Esc→cancel come from CardModal; only width is custom.
     DEFAULT_CSS = """
-    GitProfileScreen {
-        align: center middle;
-    }
-    GitProfileScreen > Vertical {
+    GitProfileScreen .modal-card {
         width: 90;
         max-height: 30;
-        padding: 1 2;
-        border: round $accent;
-        background: $surface;
-    }
-    GitProfileScreen .title {
-        text-style: bold;
-        margin-bottom: 1;
     }
     GitProfileScreen ListView {
         height: auto;
@@ -42,7 +32,6 @@ class GitProfileScreen(ModalScreen["str | None"]):
     """
 
     BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
-        Binding("escape", "cancel", "Cancel", show=True),
         Binding("enter", "pick", "Select", show=True),
         Binding("0", "pick_digit(0)", "0-9 pick", show=True),
         Binding("1", "pick_digit(1)", "", show=False),
@@ -56,6 +45,9 @@ class GitProfileScreen(ModalScreen["str | None"]):
         Binding("9", "pick_digit(9)", "", show=False),
     )
 
+    # Framework-managed initial focus (rationale: SessionChoiceScreen).
+    AUTO_FOCUS = "#git-profile-list"
+
     def __init__(
         self,
         options: list[tuple[str, str]],
@@ -68,7 +60,7 @@ class GitProfileScreen(ModalScreen["str | None"]):
         self.default_profile = default_profile
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        with self.card():
             yield Static("Create git remote?", classes="title")
             items: list[ListItem] = []
             self._default_index = 0
@@ -80,12 +72,8 @@ class GitProfileScreen(ModalScreen["str | None"]):
             yield ListView(*items, id="git-profile-list")
 
     def on_mount(self) -> None:
-        lv = self.query_one(ListView)
-        lv.index = self._default_index
-        lv.focus()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+        # Default-highlight; focus is handled by AUTO_FOCUS.
+        self.query_one(ListView).index = self._default_index
 
     def action_pick(self) -> None:
         lv = self.query_one(ListView)

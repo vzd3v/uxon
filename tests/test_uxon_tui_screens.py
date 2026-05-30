@@ -1042,6 +1042,126 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
+    """Behaviour of the single-Input edit modals (string/number/array/table).
+
+    These pin the parse/initial-text/commit contract per kind so the
+    template-method base (``_ValueInputModal``) can be refactored without
+    silent regressions. Inputs are addressed via ``query_one(Input)``
+    (one Input per modal) rather than by id, so the assertions survive
+    the id being unified.
+    """
+
+    def _entry(self, key, kind, value, choices=None):
+        from uxon.settings import SettingEntry, SettingSpec
+
+        spec = SettingSpec(key, kind, "desc", choices=choices)
+        return SettingEntry(spec=spec, value=value, source="default", editable=True)
+
+    def _cbs(self):
+        from uxon.tui.screens.settings import SettingsCallbacks
+
+        saved: list = []
+        return saved, SettingsCallbacks(
+            get_entries=lambda: [],
+            save_setting=lambda k, v: saved.append((k, v)),
+            remove_setting=lambda k: None,
+            save_mapping=lambda k, v: saved.append((k, v)),
+        )
+
+    async def _drive(self, modal, text):
+        """Push ``modal``, type ``text`` into its Input, press Enter.
+
+        Returns ``(result, still_open)`` where ``result`` is the dismiss
+        value (or ``_UNSET`` if never dismissed) and ``still_open`` says
+        whether the modal is still on the screen stack.
+        """
+        from textual.app import App
+        from textual.widgets import Input
+
+        _UNSET = object()
+        captured = {"r": _UNSET}
+
+        class Host(App):
+            def on_mount(self):
+                self.push_screen(modal, lambda r: captured.__setitem__("r", r))
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            modal.query_one(Input).value = text
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            still_open = app.screen is modal
+        return captured["r"], still_open
+
+    async def test_string_saves_raw(self):
+        from uxon.tui.screens.settings import StringInputModal
+
+        saved, cbs = self._cbs()
+        modal = StringInputModal(self._entry("k", "string", ""), cbs)
+        result, _ = await self._drive(modal, "  hello world  ")
+        # String kind does not strip — the raw value is persisted verbatim.
+        self.assertEqual(saved, [("k", "  hello world  ")])
+        self.assertTrue(result)
+
+    async def test_number_saves_float(self):
+        from uxon.tui.screens.settings import NumberInputModal
+
+        saved, cbs = self._cbs()
+        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
+        result, _ = await self._drive(modal, "42")
+        self.assertEqual(saved, [("k", 42.0)])
+        self.assertTrue(result)
+
+    async def test_number_rejects_non_number_and_stays_open(self):
+        from uxon.tui.screens.settings import NumberInputModal
+
+        saved, cbs = self._cbs()
+        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
+        result, still_open = await self._drive(modal, "abc")
+        self.assertEqual(saved, [])
+        self.assertTrue(still_open)
+
+    async def test_array_parses_csv(self):
+        from uxon.tui.screens.settings import ArrayCsvModal
+
+        saved, cbs = self._cbs()
+        modal = ArrayCsvModal(self._entry("k", "array", []), cbs)
+        await self._drive(modal, "a, b ,c,")
+        # Comma-split, each part stripped, empties dropped.
+        self.assertEqual(saved, [("k", ["a", "b", "c"])])
+
+    async def test_array_initial_text_renders_current(self):
+        from textual.app import App
+        from textual.widgets import Input
+
+        from uxon.tui.screens.settings import ArrayCsvModal
+
+        saved, cbs = self._cbs()
+        modal = ArrayCsvModal(self._entry("k", "array", ["p", "q"]), cbs)
+
+        class Host(App):
+            def on_mount(self):
+                self.push_screen(modal)
+
+        app = Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            self.assertEqual(modal.query_one(Input).value, "p, q")
+
+    async def test_table_parses_kv_via_save_mapping(self):
+        from uxon.tui.screens.settings import TableMappingModal
+
+        saved, cbs = self._cbs()
+        modal = TableMappingModal(self._entry("k", "table", {}), cbs)
+        await self._drive(modal, "x=1, y=2 , bad, =skip")
+        # ``key=value`` pairs only; malformed/keyless parts dropped.
+        self.assertEqual(saved, [("k", {"x": "1", "y": "2"})])
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class GitRemotesScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_populates_and_esc_dismisses(self):
         from textual.app import App

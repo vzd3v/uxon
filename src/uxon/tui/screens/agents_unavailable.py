@@ -16,23 +16,21 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from ..keymap import bindings_with_aliases
+from .modal_base import CardModal
 
 
-class AgentsUnavailableScreen(ModalScreen[None]):
+class AgentsUnavailableScreen(CardModal[None]):
+    # Card chrome comes from CardModal; this informational modal recolours
+    # the card border and title to ``$error`` and adds body spacing.
     DEFAULT_CSS = """
-    AgentsUnavailableScreen { align: center middle; }
-    AgentsUnavailableScreen > Vertical {
-        width: 80; height: auto; padding: 1 2;
-        border: round $error; background: $surface;
+    AgentsUnavailableScreen .modal-card {
+        width: 80;
+        border: round $error;
     }
-    AgentsUnavailableScreen .title {
-        text-style: bold; color: $error; margin-bottom: 1;
-    }
+    AgentsUnavailableScreen .title { color: $error; }
     AgentsUnavailableScreen #agents-unavailable-body { margin-bottom: 1; }
     AgentsUnavailableScreen .footer-hint { color: $text-muted; }
     """
@@ -91,7 +89,7 @@ class AgentsUnavailableScreen(ModalScreen[None]):
                 "Install one of the below, dismiss this message, then press 'r'."
             )
             footer = "Pin a strict subset via [agents] enabled in config.toml"
-        with Vertical():
+        with self.card():
             yield Static(title, classes="title")
             yield Static(intro)
             yield Static(self.body_text, id="agents-unavailable-body")

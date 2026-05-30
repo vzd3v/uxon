@@ -142,6 +142,74 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(results, [("new", None)])
 
+    async def test_keyboard_works_when_pushed_from_dismiss_callback(self) -> None:
+        """Regression: keyboard-dead modal when opened from another modal.
+
+        The real launch flow pushes SessionChoiceScreen from inside
+        LaunchOptionsScreen's dismiss callback. A synchronous ``focus()``
+        in ``on_mount`` raced the popped screen's deferred focus-restore,
+        which stole focus to a background widget and left the modal
+        keyboard-dead. Declarative ``AUTO_FOCUS`` is applied at the
+        framework's compose/resume moment instead, so focus lands on the
+        list and the ``n``/``a`` bindings fire. Mirrors the production
+        stacking (base screen -> first modal -> dismiss -> this modal).
+        """
+        from textual.app import App
+        from textual.screen import ModalScreen, Screen
+        from textual.widgets import Button, ListView
+
+        from uxon.tui.screens.session_choice import SessionChoiceScreen
+
+        # AUTO_FOCUS is the contract that prevents the race.
+        self.assertEqual(SessionChoiceScreen.AUTO_FOCUS, "#session-list")
+
+        results: list[object] = []
+
+        class _FirstModal(ModalScreen):
+            def compose(self):
+                yield Button("opt", id="opt")
+
+            def on_mount(self) -> None:
+                self.query_one("#opt", Button).focus()
+
+            def on_key(self, event) -> None:
+                if event.key == "enter":
+                    self.dismiss("picked")
+
+        class _Base(Screen):
+            def compose(self):
+                yield Button("base", id="base")
+
+            def on_mount(self) -> None:
+                self.query_one("#base", Button).focus()
+
+        class _Host(App):
+            def on_mount(self) -> None:
+                self.push_screen(_Base())
+
+                def after_first(_):
+                    self.push_screen(
+                        SessionChoiceScreen(
+                            target_label="myproj",
+                            existing=(("uxon-myproj@claude", False),),
+                        ),
+                        lambda r: results.append(r),
+                    )
+
+                self.push_screen(_FirstModal(), after_first)
+
+        app = _Host()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # dismiss first modal -> pushes ours
+            await pilot.pause()
+            self.assertIsInstance(app.screen, SessionChoiceScreen)
+            self.assertIsInstance(app.focused, ListView)
+            await pilot.press("n")  # keyboard must drive the modal
+            await pilot.pause()
+
+        self.assertEqual(results, [("new", None)])
+
     async def test_escape_cancels(self) -> None:
         from textual.app import App
 

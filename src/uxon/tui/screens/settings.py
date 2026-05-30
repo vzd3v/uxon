@@ -12,8 +12,8 @@ from typing import Any, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen, Screen
+from textual.containers import Horizontal
+from textual.screen import Screen
 from textual.widgets import (
     Button,
     DataTable,
@@ -28,6 +28,7 @@ from textual.widgets import (
 
 from ..context import CallbackError
 from ..keymap import bindings_with_aliases
+from .modal_base import ButtonCardModal
 
 GIT_REMOTES_VIEW_LABEL = "Git remote profiles (view)"
 
@@ -75,6 +76,9 @@ class SettingsScreen(Screen):
         Binding("enter", "edit", "Edit", show=True),
     )
 
+    # Framework-managed initial focus (rationale: SessionChoiceScreen).
+    AUTO_FOCUS = "#settings-table"
+
     def __init__(self, cbs: Any) -> None:
         super().__init__()
         self.cbs = cbs
@@ -95,7 +99,6 @@ class SettingsScreen(Screen):
         t = self.query_one("#settings-table", DataTable)
         t.add_columns("KEY", "VALUE", "SOURCE")
         self._reload()
-        t.focus()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Delegate ``Enter`` on the table to :meth:`action_edit`."""
@@ -171,7 +174,7 @@ class SettingsScreen(Screen):
             if changed:
                 self._reload()
 
-        modal: ModalScreen | None = None
+        modal: _EditModalBase | None = None
         if kind == "bool":
             modal = BoolToggleModal(entry, self.cbs)
         elif kind == "enum":
@@ -244,49 +247,27 @@ def _source_text(source: str) -> str:
 # ── Per-kind edit modals ─────────────────────────────────────────────
 
 
-class _EditModalBase(ModalScreen[bool]):
+class _EditModalBase(ButtonCardModal[bool]):
+    """Shared base for the per-kind settings edit modals.
+
+    Inherits the centred-card chrome and ↑/↓/←/→ focus cycling from
+    :class:`ButtonCardModal`; ``Esc`` dismisses with ``False`` (no
+    change). Only the card width differs from the package default.
+    """
+
     DEFAULT_CSS = """
-    _EditModalBase, BoolToggleModal, EnumCycleModal,
-    StringInputModal, NumberInputModal, ArrayCsvModal, TableMappingModal {
-        align: center middle;
-    }
-    _EditModalBase > Vertical, BoolToggleModal > Vertical,
-    EnumCycleModal > Vertical, StringInputModal > Vertical,
-    NumberInputModal > Vertical, ArrayCsvModal > Vertical, TableMappingModal > Vertical {
+    _EditModalBase .modal-card {
         width: 80;
         max-height: 30;
-        padding: 1 2;
-        border: round $accent;
-        background: $surface;
-    }
-    .title {
-        text-style: bold;
-        margin-bottom: 1;
-    }
-    .desc {
-        color: $text-muted;
-        margin-bottom: 1;
-    }
-    .buttons {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
-        Binding("escape", "cancel", "Cancel", show=True),
-        Binding("up", "app.focus_previous", "", show=False),
-        Binding("down", "app.focus_next", "", show=False),
-    )
+    CANCEL_RESULT = False
 
     def __init__(self, entry: Any, cbs: Any) -> None:
         super().__init__()
         self.entry = entry
         self.cbs = cbs
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
 
     def _try_save(self, new_value: Any) -> None:
         try:
@@ -302,8 +283,10 @@ class _EditModalBase(ModalScreen[bool]):
 
 
 class BoolToggleModal(_EditModalBase):
+    AUTO_FOCUS = "#true"
+
     def compose(self) -> ComposeResult:
-        with Vertical():
+        with self.card():
             yield Static(self._title(), classes="title")
             yield Static(self.entry.spec.description, classes="desc")
             with Horizontal(classes="buttons"):
@@ -315,10 +298,12 @@ class BoolToggleModal(_EditModalBase):
 
 
 class EnumCycleModal(_EditModalBase):
+    AUTO_FOCUS = "#enum-list"
+
     def compose(self) -> ComposeResult:
         choices = self.entry.spec.choices or ()
         current = self.entry.value
-        with Vertical():
+        with self.card():
             yield Static(self._title(), classes="title")
             yield Static(self.entry.spec.description, classes="desc")
             items = []
@@ -332,9 +317,8 @@ class EnumCycleModal(_EditModalBase):
             yield lv
 
     def on_mount(self) -> None:
-        lv = self.query_one(ListView)
-        lv.index = self._lv_default
-        lv.focus()
+        # Default-highlight; focus is handled by AUTO_FOCUS.
+        self.query_one(ListView).index = self._lv_default
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         choices = self.entry.spec.choices or ()
@@ -343,125 +327,114 @@ class EnumCycleModal(_EditModalBase):
             self._try_save(choices[idx])
 
 
-class StringInputModal(_EditModalBase):
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(self.entry.spec.description, classes="desc")
-            yield Input(value=str(self.entry.value or ""), id="string-input")
-            with Horizontal(classes="buttons"):
-                yield Button("Save", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
+class _ValueInputModal(_EditModalBase):
+    """Single-line text Input edited into a parsed value.
 
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
+    Template method: the layout (title, description, Input, Save/Cancel)
+    and submit wiring live here; subclasses supply only the per-kind
+    behaviour —
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save":
-            self._try_save(self.query_one(Input).value)
-        elif event.button.id == "cancel":
-            self.dismiss(False)
+      - :meth:`_initial_text` — how the current value prefills the field
+        (default: ``str(value)``);
+      - :meth:`_parse` — raw string → value to persist; raise
+        ``ValueError`` to reject with a notification and stay open;
+      - :meth:`_commit` — how the parsed value persists (default:
+        ``save_setting`` via :meth:`_EditModalBase._try_save`).
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._try_save(event.value)
+    The Input id is unified (``value-input``) since there is exactly one
+    per modal — ``AUTO_FOCUS`` therefore lives here, not per subclass.
+    """
 
+    AUTO_FOCUS = "#value-input"
 
-class NumberInputModal(_EditModalBase):
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(self.entry.spec.description, classes="desc")
-            yield Input(value=str(self.entry.value or ""), id="number-input")
-            with Horizontal(classes="buttons"):
-                yield Button("Save", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
+    # Appended to the description line (e.g. an input-format hint).
+    desc_suffix: ClassVar[str] = ""
 
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
+    def _initial_text(self) -> str:
+        return str(self.entry.value or "")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save":
-            self._save_value(self.query_one(Input).value)
-        elif event.button.id == "cancel":
-            self.dismiss(False)
+    def _parse(self, raw: str) -> Any:
+        raise NotImplementedError
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._save_value(event.value)
-
-    def _save_value(self, raw: str) -> None:
-        try:
-            value = float(raw)
-        except ValueError:
-            self.app.notify("Expected a number.", severity="error", timeout=4)
-            return
+    def _commit(self, value: Any) -> None:
         self._try_save(value)
 
-
-class ArrayCsvModal(_EditModalBase):
     def compose(self) -> ComposeResult:
-        current = ", ".join(self.entry.value or [])
-        with Vertical():
+        with self.card():
             yield Static(self._title(), classes="title")
             yield Static(
-                f"{self.entry.spec.description}  (comma-separated)",
+                f"{self.entry.spec.description}{self.desc_suffix}",
                 classes="desc",
             )
-            yield Input(value=current, id="array-input")
+            yield Input(value=self._initial_text(), id="value-input")
             with Horizontal(classes="buttons"):
                 yield Button("Save", variant="primary", id="save")
                 yield Button("Cancel", id="cancel")
 
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def _parse(self, s: str) -> list[str]:
-        return [p.strip() for p in s.split(",") if p.strip()]
+    def _submit(self, raw: str) -> None:
+        try:
+            value = self._parse(raw)
+        except ValueError as exc:
+            self.app.notify(str(exc) or "Invalid value.", severity="error", timeout=4)
+            return
+        self._commit(value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save":
-            self._try_save(self._parse(self.query_one(Input).value))
+            self._submit(self.query_one(Input).value)
         elif event.button.id == "cancel":
             self.dismiss(False)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._try_save(self._parse(event.value))
+        self._submit(event.value)
 
 
-class TableMappingModal(_EditModalBase):
+class StringInputModal(_ValueInputModal):
+    def _parse(self, raw: str) -> str:
+        # Verbatim — strings are saved unstripped (whitespace may matter).
+        return raw
+
+
+class NumberInputModal(_ValueInputModal):
+    def _parse(self, raw: str) -> float:
+        try:
+            return float(raw)
+        except ValueError:
+            raise ValueError("Expected a number.") from None
+
+
+class ArrayCsvModal(_ValueInputModal):
+    desc_suffix = "  (comma-separated)"
+
+    def _initial_text(self) -> str:
+        return ", ".join(self.entry.value or [])
+
+    def _parse(self, raw: str) -> list[str]:
+        return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+class TableMappingModal(_ValueInputModal):
     """Edit a ``table`` setting as ``key=value,key=value`` CSV."""
 
-    def compose(self) -> ComposeResult:
-        current = ", ".join(f"{k}={v}" for k, v in sorted((self.entry.value or {}).items()))
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(
-                f"{self.entry.spec.description}  (key=value, comma-separated)",
-                classes="desc",
-            )
-            yield Input(value=current, id="table-input")
-            with Horizontal(classes="buttons"):
-                yield Button("Save", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
+    desc_suffix = "  (key=value, comma-separated)"
 
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
+    def _initial_text(self) -> str:
+        return ", ".join(f"{k}={v}" for k, v in sorted((self.entry.value or {}).items()))
 
-    def _parse(self, s: str) -> dict[str, str]:
+    def _parse(self, raw: str) -> dict[str, str]:
         result: dict[str, str] = {}
-        for part in s.split(","):
+        for part in raw.split(","):
             part = part.strip()
-            if not part:
-                continue
-            if "=" not in part:
+            if not part or "=" not in part:
                 continue
             k, _, v = part.partition("=")
             k = k.strip()
-            v = v.strip()
             if k:
-                result[k] = v
+                result[k] = v.strip()
         return result
 
-    def _try_save_mapping(self, mapping: dict[str, str]) -> None:
+    def _commit(self, mapping: dict[str, str]) -> None:
+        # ``table`` settings persist through the dedicated mapping sink.
         try:
             self.cbs.save_mapping(self.entry.spec.key, mapping)
         except Exception as exc:
@@ -469,12 +442,3 @@ class TableMappingModal(_EditModalBase):
             self.dismiss(False)
             return
         self.dismiss(True)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save":
-            self._try_save_mapping(self._parse(self.query_one(Input).value))
-        elif event.button.id == "cancel":
-            self.dismiss(False)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._try_save_mapping(self._parse(event.value))

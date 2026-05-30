@@ -7,17 +7,13 @@ Dismiss values:
 
 from __future__ import annotations
 
-from typing import ClassVar
-
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
+from textual.containers import Horizontal
 from textual.validation import ValidationResult, Validator
 from textual.widgets import Button, Input, Static
 
-from ..keymap import bindings_with_aliases
 from ..state import project_name_error, project_name_valid
+from .modal_base import ButtonCardModal
 
 
 def _validate_project_name(value: str) -> bool:
@@ -31,48 +27,25 @@ class _ProjectNameValidator(Validator):
         return self.failure(project_name_error(value))
 
 
-class NewProjectScreen(ModalScreen["str | None"]):
+class NewProjectScreen(ButtonCardModal["str | None"]):
+    # Card chrome, Esc→cancel and arrow focus cycling come from
+    # ButtonCardModal; only the width and the error line are custom.
     DEFAULT_CSS = """
-    NewProjectScreen {
-        align: center middle;
-    }
-    NewProjectScreen > Vertical {
+    NewProjectScreen .modal-card {
         width: 70;
-        height: auto;
-        padding: 1 2;
-        border: round $accent;
-        background: $surface;
-    }
-    NewProjectScreen .title {
-        text-style: bold;
-        margin-bottom: 1;
     }
     NewProjectScreen .error {
         color: $error;
         height: 1;
     }
-    NewProjectScreen .buttons {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    NewProjectScreen Button {
-        margin: 0 1;
-    }
     """
-
-    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
-        Binding("escape", "cancel", "Cancel", show=True),
-        Binding("up", "app.focus_previous", "", show=False),
-        Binding("down", "app.focus_next", "", show=False),
-    )
 
     def __init__(self, project_root: str) -> None:
         super().__init__()
         self.project_root = project_root
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        with self.card():
             yield Static("Create new project", classes="title")
             yield Static(f"Directory: {self.project_root}/")
             yield Input(
@@ -85,9 +58,6 @@ class NewProjectScreen(ModalScreen["str | None"]):
             with Horizontal(classes="buttons"):
                 yield Button("Submit", variant="primary", id="submit")
                 yield Button("Cancel", id="cancel")
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         label = self.query_one("#error-label", Static)

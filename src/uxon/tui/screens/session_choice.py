@@ -19,11 +19,11 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
+from textual.containers import Horizontal
 from textual.widgets import Button, Label, ListItem, ListView, Static
 
 from ..keymap import bindings_with_aliases
+from .modal_base import CardModal
 
 
 def _row_label(name: str, attached: bool) -> str:
@@ -35,7 +35,7 @@ def _row_label(name: str, attached: bool) -> str:
 SessionChoiceResult = tuple[str, str | None] | None
 
 
-class SessionChoiceScreen(ModalScreen[SessionChoiceResult]):
+class SessionChoiceScreen(CardModal[SessionChoiceResult]):
     """Modal asking attach-vs-new when compatible sessions already exist.
 
     The list shows every compatible session (one row each); the operator
@@ -46,25 +46,12 @@ class SessionChoiceScreen(ModalScreen[SessionChoiceResult]):
     / ``n`` keyboard shortcuts for users who prefer pointing.
     """
 
+    # Card chrome (centred card, title, Esc→cancel) comes from CardModal;
+    # only the width and the ListView sizing are screen-specific.
     DEFAULT_CSS = """
-    SessionChoiceScreen {
-        align: center middle;
-    }
-    SessionChoiceScreen > Vertical {
+    SessionChoiceScreen .modal-card {
         width: 72;
-        height: auto;
         max-height: 80%;
-        padding: 1 2;
-        border: round $accent;
-        background: $surface;
-    }
-    SessionChoiceScreen .title {
-        text-style: bold;
-        margin-bottom: 1;
-    }
-    SessionChoiceScreen .target {
-        color: $text-muted;
-        margin-bottom: 1;
     }
     SessionChoiceScreen ListView {
         height: auto;
@@ -72,21 +59,23 @@ class SessionChoiceScreen(ModalScreen[SessionChoiceResult]):
         max-height: 12;
         margin-bottom: 1;
     }
-    SessionChoiceScreen .buttons {
-        height: auto;
-        align: center middle;
-    }
-    SessionChoiceScreen Button {
-        margin: 0 1;
-    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
-        Binding("escape", "cancel", "Cancel", show=True),
         Binding("a", "attach", "Attach", show=True, priority=True),
         Binding("enter", "attach", "Attach", show=False, priority=True),
         Binding("n", "new_alongside", "New", show=True, priority=True),
     )
+
+    # Initial focus via Textual's declarative AUTO_FOCUS — the framework
+    # applies it at the right lifecycle moment (screen compose + resume),
+    # NOT synchronously in ``on_mount``. A synchronous ``focus()`` races
+    # screen activation: when this modal is pushed from another modal's
+    # dismiss callback, the popped screen's deferred focus-restoration
+    # fires afterwards and steals focus to a background widget, leaving
+    # the modal keyboard-dead. Every modal in this package follows this
+    # rule; this docstring is the canonical "why".
+    AUTO_FOCUS = "#session-list"
 
     def __init__(
         self,
@@ -100,14 +89,14 @@ class SessionChoiceScreen(ModalScreen[SessionChoiceResult]):
         self.existing = tuple(existing)
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        with self.card():
             count = len(self.existing)
             noun = "session" if count == 1 else "sessions"
             yield Static(
                 f"Existing {noun} for this project ({count})",
                 classes="title",
             )
-            yield Static(self.target_label, classes="target")
+            yield Static(self.target_label, classes="desc")
             items = [
                 ListItem(Label(_row_label(name, attached)), id=f"sess-{idx}")
                 for idx, (name, attached) in enumerate(self.existing)
@@ -119,10 +108,9 @@ class SessionChoiceScreen(ModalScreen[SessionChoiceResult]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        lv = self.query_one("#session-list", ListView)
+        # Default-highlight the first row; focus is handled by AUTO_FOCUS.
         if self.existing:
-            lv.index = 0
-        lv.focus()
+            self.query_one("#session-list", ListView).index = 0
 
     def _highlighted_name(self) -> str | None:
         if not self.existing:
@@ -143,9 +131,6 @@ class SessionChoiceScreen(ModalScreen[SessionChoiceResult]):
 
     def action_new_alongside(self) -> None:
         self.dismiss(("new", None))
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         # Mouse click on a row → attach to that row. (Enter is captured
