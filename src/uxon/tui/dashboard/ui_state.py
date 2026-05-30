@@ -49,6 +49,10 @@ class MainScreenUiState:
     ui: DashboardUiState = field(default_factory=DashboardUiState)
     active_tab_index: int = 0
     pending_tab_focus_restore: bool = False
+    # FleetStatusBar collapsed/expanded toggle. Recompose-safe here (not
+    # a MainScreen instance attr) so the ``h`` choice survives the
+    # ``apply_loaded_ctx`` → ``switch_screen`` rebuild on layout flips.
+    hosts_expanded: bool = False
     seen_users: set[str] = field(default_factory=set)
 
 

@@ -385,5 +385,66 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class FleetStatusBarToggleTests(unittest.IsolatedAsyncioTestCase):
+    """`h` toggles the FleetStatusBar; state lives on the App-owned
+    ``main_ui`` so it survives the ``apply_loaded_ctx`` recompose, and the
+    bar is not a focus-chain stop (↑ from the buttons still reaches the
+    session list — pinned by :class:`UpFromButtonsLandsOnLastRowTests`).
+    """
+
+    async def test_h_toggles_collapsed_expanded(self) -> None:
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets.fleet_status_bar import FleetStatusBar
+
+        ctx = _mk_ctx(sessions=[_session("a"), _session("b")])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app.kick_refresh()
+            await pilot.pause()
+            screen = app.screen
+            bar = screen.query_one("#fleet-status", FleetStatusBar)
+            # Default collapsed.
+            self.assertFalse(app.main_ui.hosts_expanded)
+            self.assertTrue(screen.query_one("#fleet-collapsed").display)
+            self.assertFalse(screen.query_one("#fleet-expanded").display)
+            # Not focusable — keeps it out of the focus chain.
+            self.assertFalse(bar.can_focus)
+            # h expands.
+            await pilot.press("h")
+            await pilot.pause()
+            self.assertTrue(app.main_ui.hosts_expanded)
+            self.assertTrue(screen.query_one("#fleet-expanded").display)
+            self.assertFalse(screen.query_one("#fleet-collapsed").display)
+            # h again collapses.
+            await pilot.press("h")
+            await pilot.pause()
+            self.assertFalse(app.main_ui.hosts_expanded)
+            self.assertTrue(screen.query_one("#fleet-collapsed").display)
+
+    async def test_expanded_state_survives_recompose(self) -> None:
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.main import MainScreen
+
+        ctx = _mk_ctx(sessions=[_session("a")])
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app.kick_refresh()
+            await pilot.pause()
+            await pilot.press("h")
+            await pilot.pause()
+            self.assertTrue(app.main_ui.hosts_expanded)
+            # A layout-signature flip rebuilds MainScreen via switch_screen.
+            # The toggle lives on the App-owned main_ui, so the fresh screen
+            # must still render expanded.
+            app.screen.apply_loaded_ctx(_mk_ctx(sessions=[_session("a"), _session("b")]))
+            await pilot.pause()
+            self.assertIsInstance(app.screen, MainScreen)
+            self.assertTrue(app.main_ui.hosts_expanded)
+            self.assertTrue(app.screen.query_one("#fleet-expanded").display)
+
+
 if __name__ == "__main__":
     unittest.main()

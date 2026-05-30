@@ -13,16 +13,17 @@ Two states, default collapsed:
 State (collapsed vs expanded) is owned by the screen
 (``app.main_ui.hosts_expanded``) so it survives the ``apply_loaded_ctx``
 recompose; the widget is told which state to render via
-:meth:`update_fleet`. ``Enter`` / ``Space`` on the focused bar posts
-:class:`FleetStatusBar.Toggled` for the screen to flip that shared state.
+:meth:`update_fleet`. Toggling is via the screen's ``h`` binding or a
+click on the bar (which posts :class:`FleetStatusBar.Toggled`). The bar
+is deliberately **not focusable**: keeping it out of the focus chain
+preserves "↑ from the top action buttons wraps to the session list"
+(the table, not a status bar, is the star) and keeps server data out of
+the way — the whole point of the redesign.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
-
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widget import Widget
@@ -55,21 +56,11 @@ def format_collapsed(summary: FleetSummary, *, max_alerts: int = _MAX_ALERTS) ->
 class FleetStatusBar(Widget):
     """Collapsible fleet status bar mounted below the session table."""
 
-    can_focus = True
-
-    BINDINGS: ClassVar[list[Binding]] = [
-        Binding("enter", "toggle", "Hosts", show=False),
-        Binding("space", "toggle", "Hosts", show=False),
-    ]
-
     DEFAULT_CSS = """
     FleetStatusBar {
         height: auto;
         padding: 0 1;
         color: $text-muted;
-    }
-    FleetStatusBar:focus {
-        background: $boost;
     }
     FleetStatusBar #fleet-collapsed {
         height: 1;
@@ -109,7 +100,9 @@ class FleetStatusBar(Widget):
             yield Static("h · hosts", id="fleet-affordance")
         yield Vertical(id="fleet-expanded")
 
-    def action_toggle(self) -> None:
+    def on_click(self) -> None:
+        # Clicking the bar (incl. the "h · hosts" affordance) toggles it.
+        # Keyboard toggling is the screen's ``h`` binding.
         self.post_message(self.Toggled())
 
     def update_fleet(
