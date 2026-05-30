@@ -86,7 +86,7 @@ class FleetStatusBar(Widget):
     """
 
     class Toggled(Message):
-        """Posted when the operator toggles the bar via Enter/Space."""
+        """Posted when the operator clicks the bar to toggle it."""
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)

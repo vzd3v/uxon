@@ -320,7 +320,7 @@ class MainScreen(Screen):
             yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
             # Fleet status: below the table, before the superuser block, so
             # arrowing down off the table lands on it first. Collapsed by
-            # default; ``h`` (or Enter/Space when focused) expands it.
+            # default; ``h`` (or a click on the bar) expands it.
             yield FleetStatusBar(id="fleet-status")
             if bool(self.ctx.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
@@ -1093,8 +1093,8 @@ class MainScreen(Screen):
         self._refresh_dashboard()
 
     def on_fleet_status_bar_toggled(self, event: FleetStatusBar.Toggled) -> None:
-        # Enter/Space on the focused bar routes through the same shared
-        # state as the ``h`` binding so the two can never diverge.
+        # A click on the bar routes through the same shared state as the
+        # ``h`` binding so the two can never diverge.
         self.action_toggle_hosts()
 
     def action_focus_search(self) -> None:

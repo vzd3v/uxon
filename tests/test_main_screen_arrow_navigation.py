@@ -427,21 +427,26 @@ class FleetStatusBarToggleTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.main import MainScreen
 
-        ctx = _mk_ctx(sessions=[_session("a")])
+        # Start with NO own sessions so the first layout-signature bit is
+        # False; adding one below flips it True → a real switch_screen
+        # recompose (an in-place patch would not exercise the regression).
+        ctx = _mk_ctx(sessions=[])
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             app.kick_refresh()
             await pilot.pause()
+            first_screen = app.screen
             await pilot.press("h")
             await pilot.pause()
             self.assertTrue(app.main_ui.hosts_expanded)
-            # A layout-signature flip rebuilds MainScreen via switch_screen.
-            # The toggle lives on the App-owned main_ui, so the fresh screen
-            # must still render expanded.
-            app.screen.apply_loaded_ctx(_mk_ctx(sessions=[_session("a"), _session("b")]))
+            # has_own_sessions False→True flips the signature → MainScreen is
+            # rebuilt via switch_screen. The toggle lives on the App-owned
+            # main_ui, so the fresh screen must still render expanded.
+            app.screen.apply_loaded_ctx(_mk_ctx(sessions=[_session("a")]))
             await pilot.pause()
             self.assertIsInstance(app.screen, MainScreen)
+            self.assertIsNot(app.screen, first_screen, msg="expected a switch_screen recompose")
             self.assertTrue(app.main_ui.hosts_expanded)
             self.assertTrue(app.screen.query_one("#fleet-expanded").display)
 

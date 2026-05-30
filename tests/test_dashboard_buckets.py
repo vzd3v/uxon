@@ -193,6 +193,13 @@ def test_fleet_summary_unreachable_alerts_but_pending_and_cached_do_not():
     assert select_fleet_summary(lines).alerts == ("down unreachable",)
 
 
+def test_fleet_summary_unreachable_subsumes_stale_mem_for_same_host():
+    # A box that went unreachable while its last snapshot showed high mem
+    # must emit ONE token (unreachable), not two — else one host fills the cap.
+    lines = (_line("gpu", mem_used=9_500, mem_total=10_000, state="unreachable"),)
+    assert select_fleet_summary(lines).alerts == ("gpu unreachable",)
+
+
 def test_fleet_summary_cold_start_all_pending_is_quiet():
     lines = (
         _line("local", host_name=None),

@@ -109,11 +109,16 @@ def select_fleet_summary(lines: tuple[HostStatusLine, ...]) -> FleetSummary:
     """
     alerts: list[str] = []
     for line in lines:
+        if line.state == "unreachable":
+            # Unreachable subsumes mem pressure for the same host: the
+            # mem figure is stale (last snapshot before the host dropped)
+            # and one host must not emit two tokens — that would exhaust
+            # the collapsed-line cap and hide every other degraded host.
+            alerts.append(f"{line.label} unreachable")
+            continue
         if line.mem_total_kib > 0 and line.mem_used_kib / line.mem_total_kib >= _MEM_PRESSURE:
             pct = round(line.mem_used_kib / line.mem_total_kib * 100)
             alerts.append(f"{line.label} mem {pct}%")
-        if line.state == "unreachable":
-            alerts.append(f"{line.label} unreachable")
     return FleetSummary(
         host_count=len(lines),
         session_count=sum(line.session_count for line in lines),
