@@ -115,11 +115,12 @@ def resolve_agent_id(
 
 
 # Recommended uxon-managed tmux options (3.5.0). This is the SINGLE source of
-# the on-by-default option set: it seeds ``DEFAULT_CONFIG["tmux"]`` (the runtime
-# default — applied to every launched session unless the operator overrides the
-# ``[tmux]`` table or sets ``manage_options = false``) AND scaffolds
-# ``config/config.example.toml`` plus the configuration docs. Split across the
-# three tmux scopes:
+# the recommended option set: it seeds ``DEFAULT_CONFIG["tmux"]`` (scaffolded
+# but DORMANT — ``manage_options`` is off by default, so nothing is applied
+# until the operator opts in by setting ``manage_options = true``) AND scaffolds
+# ``config/config.example.toml`` plus the configuration docs. Shipping the set
+# as ready-to-use tables means flipping the single toggle yields sane tmux
+# behaviour with no further config. Split across the three tmux scopes:
 #   options               -> set -g   (global session options)
 #   server_options        -> set -s   (server options)
 #   append_server_options -> set -as  (append to a server option's list)
@@ -207,15 +208,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # (no env-var override).  ``syslog_facility`` is consulted only on the
     # ``/dev/log`` fallback path; journald native carries its own metadata.
     "audit": {"enabled": True, "syslog_facility": "user"},
-    # uxon-managed tmux options (3.5.0). ON BY DEFAULT: the three tables map
+    # uxon-managed tmux options (3.5.0). OFF BY DEFAULT: the three tables map
     # 1:1 to tmux scopes (``-g`` / ``-s`` / ``-as``) and are rendered into the
-    # launch invocation by :func:`_tmux_set_chain`. Seeded from
-    # ``RECOMMENDED_TMUX_OPTIONS`` so a fresh install gets sane tmux behaviour
-    # out of the box; the operator overrides the ``[tmux]`` table or sets
-    # ``manage_options = false`` to opt out. ``dict(...)`` copies keep the
-    # shared constant immutable from per-load mutation.
+    # launch invocation by :func:`_tmux_set_chain` — but only once the operator
+    # opts in with ``manage_options = true``. Seeded from
+    # ``RECOMMENDED_TMUX_OPTIONS`` so opting in is a one-line toggle that yields
+    # sane tmux behaviour; override the ``[tmux]`` tables to customise.
+    # ``dict(...)`` copies keep the shared constant immutable from per-load
+    # mutation.
     "tmux": {
-        "manage_options": True,
+        "manage_options": False,
         "options": dict(RECOMMENDED_TMUX_OPTIONS["options"]),
         "server_options": dict(RECOMMENDED_TMUX_OPTIONS["server_options"]),
         "append_server_options": dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"]),
@@ -303,12 +305,12 @@ class Config:
     local_host_color: str = "green"
     worktree_root: str = ""
     worktree_base: str = "local"
-    # uxon-managed tmux options (3.5.0). ON BY DEFAULT, seeded from
+    # uxon-managed tmux options (3.5.0). OFF BY DEFAULT, seeded from
     # ``RECOMMENDED_TMUX_OPTIONS`` to match ``DEFAULT_CONFIG`` — the three dicts
     # hold raw ``key -> value`` pairs per tmux scope (``-g`` / ``-s`` / ``-as``).
     # Values are bool/int/str and rendered verbatim by :func:`_tmux_set_chain`
-    # (no name/value validation — D4). ``manage_options = False`` opts out.
-    tmux_manage_options: bool = True
+    # (no name/value validation — D4), but only once ``manage_options = true``.
+    tmux_manage_options: bool = False
     tmux_options: dict = field(default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["options"]))
     tmux_server_options: dict = field(
         default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["server_options"])
@@ -818,17 +820,18 @@ def load_config(cwd: str) -> Config:
     tmux_tbl = merged.get("tmux", DEFAULT_CONFIG["tmux"])
     if not isinstance(tmux_tbl, dict):
         fail("'tmux' must be a TOML table")
-    # On by default (matches DEFAULT_CONFIG). ``merged`` is seeded from
-    # DEFAULT_CONFIG, so a fresh install carries the recommended set; an
-    # operator [tmux] table replaces it wholesale (shallow merge_config).
-    tmux_manage_options = bool(tmux_tbl.get("manage_options", True))
+    # Off by default (matches DEFAULT_CONFIG): nothing is applied until the
+    # operator sets ``manage_options = true``. ``merged`` is seeded from
+    # DEFAULT_CONFIG, so the recommended scope tables are present-but-dormant —
+    # flipping the toggle on yields the recommended set with no further config.
+    tmux_manage_options = bool(tmux_tbl.get("manage_options", False))
     tmux_scope_tables: dict[str, dict] = {}
     for _scope in ("options", "server_options", "append_server_options"):
         # Per-scope fallback to the recommended default (mirrors how [audit]
         # reads each leaf with its own default). merge_config is a shallow
         # top-level merge, so an operator [tmux] table that omits a scope —
         # e.g. the TUI toggle writing only manage_options — would otherwise
-        # wipe that scope; falling back keeps the on-by-default set intact and
+        # wipe that scope; falling back keeps the recommended set intact and
         # makes overrides per-scope rather than whole-[tmux]-wholesale.
         _sub = tmux_tbl.get(_scope, DEFAULT_CONFIG["tmux"][_scope])
         if not isinstance(_sub, dict):

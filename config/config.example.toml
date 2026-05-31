@@ -194,13 +194,14 @@ default_args = []
 # ─── uxon-managed tmux options ────────────────────────────────────
 # docs/reference/configuration.md ([tmux] managed options)
 #
-# ON BY DEFAULT. uxon layers the recommended set below (mouse support,
-# OSC-52 passthrough, extended keys, terminal-features for agent TUIs)
-# on top of whatever the launch user's own tmux config (/etc/tmux.conf,
-# ~/.tmux.conf, XDG) provides, at launch, without editing anyone's
-# files. You do NOT need to write any of this — these are uxon's
-# built-in defaults; the block below is shown only so you can see and
-# override them. Set ``manage_options = false`` to opt out entirely.
+# OFF BY DEFAULT. When enabled, uxon layers the recommended set below
+# (mouse support, OSC-52 passthrough, extended keys, terminal-features
+# for agent TUIs) on top of whatever the launch user's own tmux config
+# (/etc/tmux.conf, ~/.tmux.conf, XDG) provides, at launch, without
+# editing anyone's files. The recommended tables ship built-in, so the
+# block below is shown only so you can see what gets applied — to turn
+# it on you only need ``manage_options = true`` (the scope tables are
+# optional; uncomment them only to customise).
 #
 # The three tables map 1:1 to tmux scopes and are emitted in this fixed
 # order: global (``set -g``) → server (``set -s``) → append-server
@@ -208,10 +209,10 @@ default_args = []
 # are passed to tmux VERBATIM (no validation): a bad option aborts the
 # launch (fail-fast) — uxon never starts a session whose options failed.
 #
-# To customise, uncomment ``[tmux]`` and edit. Override is per-scope:
-# writing e.g. [tmux.options] replaces only that scope (re-list every
-# global option you want); scopes you omit keep their recommended
-# defaults. Set ``manage_options = false`` to disable all of them.
+# To enable, uncomment ``[tmux]`` with ``manage_options = true``. Override
+# is per-scope: writing e.g. [tmux.options] replaces only that scope
+# (re-list every global option you want); scopes you omit keep their
+# recommended defaults.
 #
 # [tmux]
 # manage_options = true

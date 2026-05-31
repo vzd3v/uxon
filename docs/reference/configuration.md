@@ -226,27 +226,27 @@ For the multi-host operating model see
 
 ## `[tmux]` managed options (3.5.0)
 
-**On by default.** uxon layers a recommended set of `set` options (see below)
-on top of whatever the launch user's own tmux config (`/etc/tmux.conf`,
-`~/.tmux.conf`, XDG) provides, at session launch, without editing anyone's
-files and without guessing config paths. You do not need to configure
-anything — these are uxon's built-in defaults. Set `manage_options = false`
-under `[tmux]` to opt out, or write your own `[tmux.*]` tables to override.
+**Off by default.** When enabled, uxon layers a recommended set of `set`
+options (see below) on top of whatever the launch user's own tmux config
+(`/etc/tmux.conf`, `~/.tmux.conf`, XDG) provides, at session launch, without
+editing anyone's files and without guessing config paths. The recommended
+tables ship built-in, so enabling is a one-line toggle — set
+`manage_options = true` under `[tmux]`; you only write your own `[tmux.*]`
+tables if you want to customise the set.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `tmux.manage_options` | bool | `true` | Master switch. When `true` (the default, or absent) uxon emits the configured `set` commands. Set `false` to emit none — launch argv is then byte-identical to pre-3.5.0. |
-| `[tmux.options]` | table | recommended (`mouse`, `allow-passthrough`) | Rendered as `set -g <key> <value>` (global session options). |
-| `[tmux.server_options]` | table | recommended (`extended-keys`) | Rendered as `set -s <key> <value>` (server options). |
-| `[tmux.append_server_options]` | table | recommended (`terminal-features`) | Rendered as `set -as <key> <value>` (append to a server option's list). |
+| `tmux.manage_options` | bool | `false` | Master switch. Default (or absent) emits none — launch argv is byte-identical to pre-3.5.0. Set `true` to emit the configured `set` commands. |
+| `[tmux.options]` | table | recommended (`mouse`, `allow-passthrough`) | Rendered as `set -g <key> <value>` (global session options). Applied only when `manage_options = true`. |
+| `[tmux.server_options]` | table | recommended (`extended-keys`) | Rendered as `set -s <key> <value>` (server options). Applied only when `manage_options = true`. |
+| `[tmux.append_server_options]` | table | recommended (`terminal-features`) | Rendered as `set -as <key> <value>` (append to a server option's list). Applied only when `manage_options = true`. |
 
-**Overriding.** Override is **per scope**: writing a `[tmux.options]` table
-replaces *that* scope's defaults (re-list every global option you want to
-keep) while scopes you omit — `[tmux.server_options]`,
-`[tmux.append_server_options]` — keep their recommended defaults. Likewise,
-toggling `manage_options` alone (e.g. from the settings screen) leaves the
-recommended tables intact. To drop the managed options entirely, set
-`manage_options = false`.
+**Enabling and overriding.** Setting `manage_options = true` alone (e.g. from
+the settings screen) applies the recommended set — the scope tables ship
+built-in and stay intact. To customise, override is **per scope**: writing a
+`[tmux.options]` table replaces *that* scope's defaults (re-list every global
+option you want to keep) while scopes you omit — `[tmux.server_options]`,
+`[tmux.append_server_options]` — keep their recommended defaults.
 
 Values are bool / int / str and passed to tmux **verbatim** — uxon does not
 validate option names or values (tmux is the authority on what is valid).
@@ -284,8 +284,9 @@ session whose requested options failed to apply; the operator sees tmux's
 error and fixes their config. The recommended set below is verified to apply
 cleanly, so only a user's own bad option trips this path.
 
-**The default (recommended) set** — applied automatically; also shown for
-reference in [`config/config.example.toml`](../../config/config.example.toml):
+**The recommended set** — shipped built-in and applied as soon as
+`manage_options = true`; also shown for reference in
+[`config/config.example.toml`](../../config/config.example.toml):
 
 ```toml
 [tmux]

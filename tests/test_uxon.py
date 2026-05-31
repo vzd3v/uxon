@@ -1543,17 +1543,18 @@ class UxonTests(unittest.TestCase):
         self.assertIn("set -g mouse on", out)
         self.assertIn("set -as terminal-features", out)
 
-    def test_load_config_tmux_defaults_recommended(self) -> None:
-        # On by default: a config with no [tmux] section inherits the
-        # recommended set from DEFAULT_CONFIG (manage_options true).
+    def test_load_config_tmux_defaults_off_but_scaffolded(self) -> None:
+        # Off by default: a config with no [tmux] section emits nothing, but
+        # the recommended scope tables ship scaffolded in DEFAULT_CONFIG so
+        # flipping manage_options on (see the toggle test) yields the set.
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("", tmpdir)
-        self.assertTrue(cfg.tmux_manage_options)
+        self.assertFalse(cfg.tmux_manage_options)
         self.assertEqual(cfg.tmux_options, {"mouse": "on", "allow-passthrough": "on"})
         self.assertEqual(cfg.tmux_server_options, {"extended-keys": "on"})
         self.assertEqual(cfg.tmux_append_server_options, {"terminal-features": "xterm*:extkeys"})
-        # the default load renders exactly the documented D3 chain
-        self.assertEqual(uxon._tmux_set_chain(cfg), self._RECO_EXPECTED_CHAIN)
+        # dormant: the recommended tables are present but emit nothing while off
+        self.assertEqual(uxon._tmux_set_chain(cfg), [])
 
     def test_load_config_tmux_manage_options_false_disables(self) -> None:
         # Operator opt-out: manage_options=false yields an empty chain even

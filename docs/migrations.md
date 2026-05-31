@@ -6,35 +6,37 @@ log see [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## 3.5.0
 
-### uxon-managed tmux options (on by default)
+### uxon-managed tmux options (opt-in)
 
-- **uxon now sets a few tmux options on the sessions it
-  launches.** A recommended set — `mouse on` and
-  `allow-passthrough on` (`set -g`), `extended-keys on`
-  (`set -s`), and `terminal-features xterm*:extkeys` (`set -as`) —
-  is applied when uxon brings up a launch user's tmux server,
-  layered on top of that user's own tmux config, without editing
-  any file. Most operators want this, but note `mouse on` changes
-  terminal text-selection behaviour (use Shift-select for native
+- **uxon can set a few tmux options on the sessions it
+  launches** — but this is **off by default**, so an upgrade to
+  3.5.0 changes nothing until you opt in. A recommended set —
+  `mouse on` and `allow-passthrough on` (`set -g`),
+  `extended-keys on` (`set -s`), and
+  `terminal-features xterm*:extkeys` (`set -as`) — ships built-in;
+  when enabled it is applied when uxon brings up a launch user's
+  tmux server, layered on top of that user's own tmux config,
+  without editing any file. Note `mouse on` changes terminal
+  text-selection behaviour (use Shift-select for native
   copy/paste in many terminals).
-- **Opt out or override.** Set `tmux.manage_options = false` in
-  `config.toml` to apply nothing (launch argv is then identical
-  to pre-3.5.0). To change the set, write your own
-  `[tmux.options]` / `[tmux.server_options]` /
+- **Enable or override.** Set `tmux.manage_options = true` in
+  `config.toml` (also editable from the superuser settings
+  screen) to apply the recommended set — the scope tables ship
+  built-in, so the toggle alone is enough. To customise, write
+  your own `[tmux.options]` / `[tmux.server_options]` /
   `[tmux.append_server_options]` tables — override is **per
-  scope**, so omitted scopes keep their recommended defaults, and
-  toggling `manage_options` alone never wipes them. The toggle is
-  also editable from the superuser settings screen. Edits to the
-  `-g`/`-s` scopes (e.g. `mouse`) take effect on the next launch
-  or re-attach; edits to `[tmux.append_server_options]` take
-  effect after a `tmux kill-server` (the server's options are set
-  once at its birth). See
+  scope**, so omitted scopes keep their recommended defaults.
+  Once enabled, edits to the `-g`/`-s` scopes (e.g. `mouse`) take
+  effect on the next launch or re-attach; edits to
+  `[tmux.append_server_options]` take effect after a
+  `tmux kill-server` (the server's options are set once at its
+  birth). See
   [`reference/configuration.md`](reference/configuration.md)
   (`[tmux]` managed options).
-- **Fail-fast.** A rejected option aborts the launch (no session
-  is created) rather than starting a degraded session — the
-  shipped defaults are verified to apply cleanly, so only an
-  operator's own bad option trips this.
+- **Fail-fast.** When enabled, a rejected option aborts the
+  launch (no session is created) rather than starting a degraded
+  session — the shipped defaults are verified to apply cleanly,
+  so only an operator's own bad option trips this.
 
 ## 3.4.0
 

@@ -153,8 +153,9 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "tmux.manage_options",
         "bool",
-        "Apply uxon-managed tmux options to launched sessions. Edit the option "
-        "lists in config.toml under [tmux.options]/[tmux.server_options]/"
+        "Apply uxon-managed tmux options to launched sessions (off by default). "
+        "Turn on to apply the recommended set; edit the option lists in "
+        "config.toml under [tmux.options]/[tmux.server_options]/"
         "[tmux.append_server_options].",
     ),
 )
