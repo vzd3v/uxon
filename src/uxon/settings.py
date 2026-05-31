@@ -150,6 +150,13 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "ControlPersist for the multiplexed SSH master, integer seconds. "
         "Must be > 0; disable multiplexing via ssh_multiplex=off.",
     ),
+    SettingSpec(
+        "tmux.manage_options",
+        "bool",
+        "Apply uxon-managed tmux options to launched sessions. Edit the option "
+        "lists in config.toml under [tmux.options]/[tmux.server_options]/"
+        "[tmux.append_server_options].",
+    ),
 )
 
 TABLE_KEYS: tuple[str, ...] = tuple(spec.key for spec in SETTINGS_SPECS if spec.kind == "table")

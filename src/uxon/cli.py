@@ -114,6 +114,22 @@ def resolve_agent_id(
     raise AssertionError("unreachable")  # fail() never returns
 
 
+# Recommended uxon-managed tmux options (3.5.0). This is the SINGLE source of
+# the on-by-default option set: it seeds ``DEFAULT_CONFIG["tmux"]`` (the runtime
+# default — applied to every launched session unless the operator overrides the
+# ``[tmux]`` table or sets ``manage_options = false``) AND scaffolds
+# ``config/config.example.toml`` plus the configuration docs. Split across the
+# three tmux scopes:
+#   options               -> set -g   (global session options)
+#   server_options        -> set -s   (server options)
+#   append_server_options -> set -as  (append to a server option's list)
+RECOMMENDED_TMUX_OPTIONS: dict[str, dict[str, object]] = {
+    "options": {"mouse": "on", "allow-passthrough": "on"},
+    "server_options": {"extended-keys": "on"},
+    "append_server_options": {"terminal-features": "xterm*:extkeys"},
+}
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "runtime_user": "",
     "default_launch_mode": "caller",
@@ -191,6 +207,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # (no env-var override).  ``syslog_facility`` is consulted only on the
     # ``/dev/log`` fallback path; journald native carries its own metadata.
     "audit": {"enabled": True, "syslog_facility": "user"},
+    # uxon-managed tmux options (3.5.0). ON BY DEFAULT: the three tables map
+    # 1:1 to tmux scopes (``-g`` / ``-s`` / ``-as``) and are rendered into the
+    # launch invocation by :func:`_tmux_set_chain`. Seeded from
+    # ``RECOMMENDED_TMUX_OPTIONS`` so a fresh install gets sane tmux behaviour
+    # out of the box; the operator overrides the ``[tmux]`` table or sets
+    # ``manage_options = false`` to opt out. ``dict(...)`` copies keep the
+    # shared constant immutable from per-load mutation.
+    "tmux": {
+        "manage_options": True,
+        "options": dict(RECOMMENDED_TMUX_OPTIONS["options"]),
+        "server_options": dict(RECOMMENDED_TMUX_OPTIONS["server_options"]),
+        "append_server_options": dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"]),
+    },
 }
 
 
@@ -274,6 +303,19 @@ class Config:
     local_host_color: str = "green"
     worktree_root: str = ""
     worktree_base: str = "local"
+    # uxon-managed tmux options (3.5.0). ON BY DEFAULT, seeded from
+    # ``RECOMMENDED_TMUX_OPTIONS`` to match ``DEFAULT_CONFIG`` — the three dicts
+    # hold raw ``key -> value`` pairs per tmux scope (``-g`` / ``-s`` / ``-as``).
+    # Values are bool/int/str and rendered verbatim by :func:`_tmux_set_chain`
+    # (no name/value validation — D4). ``manage_options = False`` opts out.
+    tmux_manage_options: bool = True
+    tmux_options: dict = field(default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["options"]))
+    tmux_server_options: dict = field(
+        default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["server_options"])
+    )
+    tmux_append_server_options: dict = field(
+        default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"])
+    )
 
 
 @dataclass
@@ -773,6 +815,31 @@ def load_config(cwd: str) -> Config:
     audit_enabled = bool(audit_tbl.get("enabled", True))
     audit_syslog_facility = str(audit_tbl.get("syslog_facility", "user"))
 
+    tmux_tbl = merged.get("tmux", DEFAULT_CONFIG["tmux"])
+    if not isinstance(tmux_tbl, dict):
+        fail("'tmux' must be a TOML table")
+    # On by default (matches DEFAULT_CONFIG). ``merged`` is seeded from
+    # DEFAULT_CONFIG, so a fresh install carries the recommended set; an
+    # operator [tmux] table replaces it wholesale (shallow merge_config).
+    tmux_manage_options = bool(tmux_tbl.get("manage_options", True))
+    tmux_scope_tables: dict[str, dict] = {}
+    for _scope in ("options", "server_options", "append_server_options"):
+        # Per-scope fallback to the recommended default (mirrors how [audit]
+        # reads each leaf with its own default). merge_config is a shallow
+        # top-level merge, so an operator [tmux] table that omits a scope —
+        # e.g. the TUI toggle writing only manage_options — would otherwise
+        # wipe that scope; falling back keeps the on-by-default set intact and
+        # makes overrides per-scope rather than whole-[tmux]-wholesale.
+        _sub = tmux_tbl.get(_scope, DEFAULT_CONFIG["tmux"][_scope])
+        if not isinstance(_sub, dict):
+            fail(f"'tmux.{_scope}' must be a TOML table")
+        for _k, _v in _sub.items():
+            # bool before int: bool is an int subclass (mirrors the audit /
+            # ssh_control_persist guards elsewhere in this loader).
+            if not isinstance(_v, (bool, int, str)):
+                fail(f"'tmux.{_scope}.{_k}' must be a scalar (bool/int/str)")
+        tmux_scope_tables[_scope] = dict(_sub)
+
     if default_git_remote_profile and not uxon_git_profiles.find_profile(
         git_remote_profiles, default_git_remote_profile
     ):
@@ -814,6 +881,10 @@ def load_config(cwd: str) -> Config:
         local_host_color=local_host_color,
         worktree_root=worktree_root,
         worktree_base=worktree_base,
+        tmux_manage_options=tmux_manage_options,
+        tmux_options=tmux_scope_tables["options"],
+        tmux_server_options=tmux_scope_tables["server_options"],
+        tmux_append_server_options=tmux_scope_tables["append_server_options"],
     )
 
 
@@ -2151,7 +2222,9 @@ def plan_worktree_launch(
         permission_mode=mode_id,
         agent_args=list(agent_args or []),
     )
-    req = _build_tmux_launch_request(worktree_path, session, run_args, cfg, None, launch_user)
+    req = _build_tmux_launch_request(
+        worktree_path, session, run_args, cfg, None, launch_user, server_running=bool(sessions)
+    )
 
     if dry_run:
         # No side effects: print the git plan, skip add/copy/exclude/audit.
@@ -3262,11 +3335,17 @@ def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: st
     """
     LaunchRequest = _tui_launch_request_cls()
     base = configured_tmux_base(cfg, launch_user)
+    # Attaching means the server is already alive, so re-assert the
+    # overwrite scopes (``-g``/``-s``) — this is how a config.toml edit to
+    # e.g. ``mouse`` takes effect when the operator re-enters an existing
+    # session, without a kill-server. ``-as`` is skipped (server_running) so
+    # the append list does not grow. ``[]`` when managed options are off.
+    set_chain = _tmux_set_chain(cfg, server_running=True)
     mode = tmux_nesting_mode(tmux_socket_path(cfg, launch_user))
     if mode == "switch":
-        full = tuple(base + ["switch-client", "-t", target.name])
+        full = tuple(base + set_chain + ["switch-client", "-t", target.name])
         return LaunchRequest(cmd=full, prelaunch=(), label=f"switch-client {target.name}")
-    full = tuple(base + ["attach-session", "-t", target.name])
+    full = tuple(base + set_chain + ["attach-session", "-t", target.name])
     return LaunchRequest(cmd=full, prelaunch=(), label=f"attach {target.name}")
 
 
@@ -3750,6 +3829,53 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     return 0
 
 
+def _tmux_opt_value(value: object) -> str:
+    """Render a tmux option value as a single argv token (D4/AC8a).
+
+    ``bool`` is checked before ``int`` because ``bool`` is an ``int`` subclass;
+    booleans become tmux's ``on``/``off`` rather than ``1``/``0``. Everything
+    else (validated to int/str at load time) is rendered with ``str``.
+    """
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return str(value)
+
+
+def _tmux_set_chain(cfg: Config, *, server_running: bool = False) -> list[str]:
+    """Flat argv token list applying the configured tmux options.
+
+    Returns ``[]`` when ``manage_options`` is off or all three tables are
+    empty — so the launch argv is byte-identical to pre-3.5.0 (AC1/AC-empty).
+    Otherwise emits one ``set <scope> <key> <value> ;`` command per option,
+    in the fixed inter-table order global -> server -> append-server, TOML
+    declaration order within each table (``tomllib`` preserves insertion
+    order). The separator is a bare ``;`` argv token — there is no shell
+    (D2/D5).
+
+    ``server_running`` gates the **append-server** scope (D9): the tmux
+    server is per launch-user and these options are server-scoped, so they
+    only need applying once, at server birth. ``-g``/``-s`` *overwrite*, so
+    re-asserting them on every launch/attach is idempotent and lets a
+    ``config.toml`` edit take effect on the next launch without a
+    ``tmux kill-server``. ``-as`` *appends* (non-idempotent) — re-emitting it
+    on a live server would grow the target list unbounded — so it is emitted
+    ONLY when this launch births the server (``server_running`` is False).
+    """
+    if not cfg.tmux_manage_options:
+        return []
+    scopes: list[tuple[str, dict]] = [
+        ("-g", cfg.tmux_options),
+        ("-s", cfg.tmux_server_options),
+    ]
+    if not server_running:
+        scopes.append(("-as", cfg.tmux_append_server_options))
+    chain: list[str] = []
+    for flag, table in scopes:
+        for key, value in table.items():
+            chain += ["set", flag, str(key), _tmux_opt_value(value), ";"]
+    return chain
+
+
 def _build_tmux_launch_request(
     target_dir: str,
     session: str,
@@ -3757,12 +3883,29 @@ def _build_tmux_launch_request(
     cfg: Config,
     branch: str | None,
     launch_user: str,
+    *,
+    server_running: bool = False,
 ):
     """Assemble the agent + tmux argv plus the socket-parent mkdir.
 
     This is the single place where the agent command line is built
     (see AGENTS.md "hard rules"). Both the CLI execvp path
     (:func:`launch_in_tmux`) and the TUI fork-and-wait path reuse it.
+
+    ``server_running`` (derived by callers from the already-collected
+    per-user session list — a non-empty list means the user's tmux server
+    is live) gates the ``-as`` scope of the managed-options chain: see
+    :func:`_tmux_set_chain`. Defaults to False (treat as a server birth →
+    full chain); every real launch path passes the actual value.
+
+    NB: ``bool(sessions)`` is a liveness *proxy* — it reuses the data the
+    launch/dashboard path already collected (no extra probe). It
+    under-reports (False on a live server) only if the dedicated per-user
+    socket carries sessions that don't match uxon's name prefix, which
+    AGENTS.md disallows (that socket is uxon-exclusive). In that off-policy
+    state the ``-as`` append scope would re-emit and its list would grow;
+    a precise fix would cost a dedicated ``list-sessions`` liveness call per
+    launch, deliberately not added.
 
     The agent is expected to be resolved before this is called —
     install-gating is owned by :func:`resolve_agent_id` (run from
@@ -3802,21 +3945,31 @@ def _build_tmux_launch_request(
         command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent]
     )
     base = configured_tmux_base(cfg, launch_user)
+    # uxon-managed tmux options (3.5.0). The chain must ride the SAME
+    # invocation as its ``new-session`` (fail-fast ordering, D5) — never a
+    # standalone prelaunch entry, which would birth a session-less server that
+    # exits before the next subprocess. ``[]`` when disabled/empty (AC1). The
+    # ``-as`` scope rides only the birthing launch (server_running False); a
+    # live server already carries it (D9, see _tmux_set_chain).
+    set_chain = _tmux_set_chain(cfg, server_running=server_running)
     mode = tmux_nesting_mode(socket_path)
     if mode == "switch":
         # Already inside tmux on the target socket — classic
         # ``new-session -As`` would try to attach and tmux refuses to
         # nest. Instead create the session detached (idempotent via
         # ``-dA``; claude is ignored when the session already exists)
-        # and then switch the current client over to it.
-        create = tuple(base + ["new-session", "-dA", "-s", session, "-c", target_dir] + final_cmd)
+        # and then switch the current client over to it. The set chain
+        # rides the detached-create entry, before its ``new-session`` (AC3).
+        create = tuple(
+            base + set_chain + ["new-session", "-dA", "-s", session, "-c", target_dir] + final_cmd
+        )
         switch = tuple(base + ["switch-client", "-t", session])
         return LaunchRequest(
             cmd=switch,
             prelaunch=(ensure_socket_parent, create),
             label=f"switch-client {session} (nested)",
         )
-    full = tuple(base + ["new-session", "-As", session, "-c", target_dir] + final_cmd)
+    full = tuple(base + set_chain + ["new-session", "-As", session, "-c", target_dir] + final_cmd)
     return LaunchRequest(cmd=full, prelaunch=(ensure_socket_parent,), label=f"launch {session}")
 
 
@@ -3827,8 +3980,12 @@ def launch_in_tmux(
     cfg: Config,
     branch: str | None,
     launch_user: str,
+    *,
+    server_running: bool = False,
 ) -> int:
-    req = _build_tmux_launch_request(target_dir, session, args, cfg, branch, launch_user)
+    req = _build_tmux_launch_request(
+        target_dir, session, args, cfg, branch, launch_user, server_running=server_running
+    )
     if args.dry_run:
         print(f"launch_user={shlex.quote(launch_user)}")
         print(f"dir={shlex.quote(target_dir)}")
@@ -3853,9 +4010,13 @@ def launch_in_tmux_blocking(
     cfg: Config,
     branch: str | None,
     launch_user: str,
+    *,
+    server_running: bool = False,
 ) -> int:
     """Fork-and-wait variant of :func:`launch_in_tmux` for the TUI path."""
-    req = _build_tmux_launch_request(target_dir, session, args, cfg, branch, launch_user)
+    req = _build_tmux_launch_request(
+        target_dir, session, args, cfg, branch, launch_user, server_running=server_running
+    )
     for pre in req.prelaunch:
         rc = subprocess.call(list(pre))
         if rc != 0:
@@ -4024,7 +4185,9 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         dry_run=args.dry_run,
     )
     try:
-        return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+        return launch_in_tmux(
+            target_dir, session, args, cfg, branch, launch_user, server_running=bool(sessions)
+        )
     except Exception as exc:
         _audit.audit(
             "session.new",
@@ -4197,7 +4360,9 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         dry_run=args.dry_run,
     )
     try:
-        return launch_in_tmux(target_dir, session, args, cfg, branch, launch_user)
+        return launch_in_tmux(
+            target_dir, session, args, cfg, branch, launch_user, server_running=bool(sessions)
+        )
     except Exception as exc:
         _audit.audit(
             "session.new",
@@ -4842,7 +5007,9 @@ def _plan_tui_run_agent(
         session_stem, agent_id, target_dir, sessions, prefix=cfg.session_prefix
     )
     args = ParsedArgs(action="run", agent=agent_id, permission_mode=mode_id)
-    return _build_tmux_launch_request(target_dir, session, args, cfg, None, launch_user)
+    return _build_tmux_launch_request(
+        target_dir, session, args, cfg, None, launch_user, server_running=bool(sessions)
+    )
 
 
 def _plan_tui_create_new_agent(
@@ -4956,7 +5123,9 @@ def _plan_tui_existing_session_or_launch(
     session = allocate_session_name(
         session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
     )
-    return _build_tmux_launch_request(project_dir, session, args, cfg, None, launch_user)
+    return _build_tmux_launch_request(
+        project_dir, session, args, cfg, None, launch_user, server_running=bool(sessions)
+    )
 
 
 def probe_tui_compatible_sessions(

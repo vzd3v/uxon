@@ -340,5 +340,25 @@ class WorktreeSettingsSpecTests(unittest.TestCase):
         self.assertIn('worktree_root = "/data/wt"', text)
 
 
+class TmuxManageOptionsSpecTests(unittest.TestCase):
+    def test_manage_options_present(self) -> None:
+        from uxon.settings import SETTINGS_SPECS
+
+        by_key = {s.key: s for s in SETTINGS_SPECS}
+        self.assertIn("tmux.manage_options", by_key)
+        spec = by_key["tmux.manage_options"]
+        self.assertEqual(spec.kind, "bool")
+        # AC8a/D7: description points the operator at config.toml for the lists.
+        self.assertIn("config.toml", spec.description)
+
+    def test_manage_options_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            cs.persist_repo_config_updates(path, {"tmux.manage_options": True})
+            text = path.read_text()
+            parsed = tomllib.loads(text)
+        self.assertTrue(parsed["tmux"]["manage_options"])
+
+
 if __name__ == "__main__":
     unittest.main()

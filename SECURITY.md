@@ -128,6 +128,15 @@ boundaries are:
   wrapper over `tmux` + `sudo` + `ssh`. It does not configure
   cgroups, AppArmor, seccomp, kernel namespaces, or per-UID
   network policies.
+- **tmux configuration.** uxon applies a small set of tmux `set`
+  options (mouse, OSC-52 passthrough, extended keys,
+  terminal-features) to the sessions it launches, layered on top of
+  each launch user's own tmux config — on by default, disabled with
+  `tmux.manage_options = false`. The option values come only from
+  the resolved `config.toml` (the shipped defaults or the operator's
+  override), and a rejected option fails the launch rather than
+  starting a degraded session. uxon never edits the user's
+  `~/.tmux.conf` or any file.
 - **Centralised RBAC, SSO, or audit infrastructure.** uxon is the
   runtime layer beneath these — it emits structured audit events
   to the host's platform log channel (journald native or `/dev/log`

@@ -67,6 +67,14 @@ class UxonTests(unittest.TestCase):
             git_create_enabled=False,
             default_git_remote_profile="",
             git_remote_profiles=[],
+            # Minimal baseline: tmux managed options OFF/empty so launch-argv
+            # tests stay focused on the core invocation. The tmux tests opt in
+            # explicitly; the on-by-default production value lives in
+            # DEFAULT_CONFIG / the Config field defaults.
+            tmux_manage_options=False,
+            tmux_options={},
+            tmux_server_options={},
+            tmux_append_server_options={},
         )
         defaults.update(overrides)
         return uxon.Config(**defaults)
@@ -138,6 +146,10 @@ class UxonTests(unittest.TestCase):
             git_create_enabled=kw.get("git_create_enabled", False),
             default_git_remote_profile=kw.get("default_git_remote_profile", ""),
             git_remote_profiles=kw.get("git_remote_profiles", []),
+            tmux_manage_options=kw.get("tmux_manage_options", False),
+            tmux_options=kw.get("tmux_options", {}),
+            tmux_server_options=kw.get("tmux_server_options", {}),
+            tmux_append_server_options=kw.get("tmux_append_server_options", {}),
         )
 
     def test_resolve_launch_user_fixed_mode_uses_runtime_user(self) -> None:
@@ -1316,6 +1328,294 @@ class UxonTests(unittest.TestCase):
         self.assertIn("sonnet", create_pre)
         self.assertIn("nested", req.label)
 
+    # ── tmux managed options (3.5.0) ─────────────────────────────────
+
+    _RECO_EXPECTED_CHAIN = [
+        "set",
+        "-g",
+        "mouse",
+        "on",
+        ";",
+        "set",
+        "-g",
+        "allow-passthrough",
+        "on",
+        ";",
+        "set",
+        "-s",
+        "extended-keys",
+        "on",
+        ";",
+        "set",
+        "-as",
+        "terminal-features",
+        "xterm*:extkeys",
+        ";",
+    ]
+
+    # The chain when the server is ALREADY live (D9): -g/-s are re-asserted
+    # (idempotent), the -as append scope is dropped to avoid list growth.
+    _RECO_LIVE_CHAIN = [
+        "set",
+        "-g",
+        "mouse",
+        "on",
+        ";",
+        "set",
+        "-g",
+        "allow-passthrough",
+        "on",
+        ";",
+        "set",
+        "-s",
+        "extended-keys",
+        "on",
+        ";",
+    ]
+
+    def _reco_cfg(self):
+        reco = uxon.RECOMMENDED_TMUX_OPTIONS
+        return self.make_config(
+            tmux_manage_options=True,
+            tmux_options=dict(reco["options"]),
+            tmux_server_options=dict(reco["server_options"]),
+            tmux_append_server_options=dict(reco["append_server_options"]),
+        )
+
+    def test_tmux_opt_value_renders_scalars(self) -> None:
+        self.assertEqual(uxon._tmux_opt_value(True), "on")
+        self.assertEqual(uxon._tmux_opt_value(False), "off")
+        self.assertEqual(uxon._tmux_opt_value(5), "5")
+        self.assertEqual(uxon._tmux_opt_value("xterm*:extkeys"), "xterm*:extkeys")
+
+    def test_tmux_set_chain_empty_when_disabled(self) -> None:
+        cfg = self.make_config(
+            tmux_options={"mouse": "on"},  # populated but toggle off
+        )
+        self.assertEqual(uxon._tmux_set_chain(cfg), [])
+
+    def test_tmux_set_chain_empty_when_enabled_but_no_options(self) -> None:
+        cfg = self.make_config(tmux_manage_options=True)
+        self.assertEqual(uxon._tmux_set_chain(cfg), [])
+
+    def test_tmux_set_chain_order_and_scopes(self) -> None:
+        # global -> server -> append-server; declaration order within a table;
+        # bool -> on/off; one bare ';' per set command (AC2/AC4/D2).
+        cfg = self.make_config(
+            tmux_manage_options=True,
+            tmux_options={"mouse": True, "allow-passthrough": "on"},
+            tmux_server_options={"extended-keys": "on"},
+            tmux_append_server_options={"terminal-features": "xterm*:extkeys"},
+        )
+        self.assertEqual(uxon._tmux_set_chain(cfg), self._RECO_EXPECTED_CHAIN)
+
+    def test_recommended_constant_renders_d3_set(self) -> None:
+        # AC5: the shipped recommended set maps to the four documented
+        # options with the correct scopes/order.
+        self.assertEqual(uxon._tmux_set_chain(self._reco_cfg()), self._RECO_EXPECTED_CHAIN)
+
+    def test_tmux_set_chain_live_server_drops_append_scope(self) -> None:
+        # D9: on a live server, -g/-s are re-asserted but -as is dropped
+        # (append is non-idempotent → would grow the list).
+        cfg = self._reco_cfg()
+        self.assertEqual(uxon._tmux_set_chain(cfg, server_running=True), self._RECO_LIVE_CHAIN)
+        # birth still emits the full chain including -as
+        self.assertEqual(uxon._tmux_set_chain(cfg, server_running=False), self._RECO_EXPECTED_CHAIN)
+
+    def test_build_launch_request_live_server_omits_append(self) -> None:
+        # A launch into an already-running server re-asserts -g/-s, no -as.
+        cfg = self._reco_cfg()
+        args = uxon.ParsedArgs(action="run", permission_mode="yolo")
+        with self._stub_socket_path():
+            req = uxon._build_tmux_launch_request(
+                "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz", server_running=True
+            )
+        cmd = list(req.cmd)
+        self.assertIn("set", cmd)
+        self.assertNotIn("-as", cmd)  # append scope dropped on a live server
+        idx = cmd.index("set")
+        self.assertEqual(cmd[idx : idx + len(self._RECO_LIVE_CHAIN)], self._RECO_LIVE_CHAIN)
+        self.assertLess(max(i for i, t in enumerate(cmd) if t == "set"), cmd.index("new-session"))
+
+    def test_build_attach_request_reasserts_g_s_scopes(self) -> None:
+        # Attaching to an existing session re-asserts -g/-s (server is live),
+        # never -as; works for both the classic and nested branches.
+        cfg = self._reco_cfg()
+        target = self.make_session("uxon-demo", "/srv/repos/demo")
+        with self._stub_socket_path():
+            req = uxon._build_tmux_attach_request(target, cfg, "u-vz")
+        cmd = list(req.cmd)
+        self.assertIn("attach-session", cmd)
+        self.assertNotIn("-as", cmd)
+        idx = cmd.index("set")
+        self.assertEqual(cmd[idx : idx + len(self._RECO_LIVE_CHAIN)], self._RECO_LIVE_CHAIN)
+        self.assertLess(
+            max(i for i, t in enumerate(cmd) if t == "set"), cmd.index("attach-session")
+        )
+
+    def test_build_attach_request_no_chain_when_disabled(self) -> None:
+        # managed options off → attach argv byte-identical to pre-3.5.0.
+        target = self.make_session("uxon-demo", "/srv/repos/demo")
+        with self._stub_socket_path():
+            req = uxon._build_tmux_attach_request(target, self.make_config(), "u-vz")
+        self.assertNotIn("set", req.cmd)
+
+    def test_build_launch_request_injects_set_chain_non_nested(self) -> None:
+        # AC1/AC2: set chain rides req.cmd before new-session; prelaunch len 1.
+        cfg = self._reco_cfg()
+        args = uxon.ParsedArgs(action="run", permission_mode="yolo")
+        with self._stub_socket_path():
+            req = uxon._build_tmux_launch_request(
+                "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz"
+            )
+        cmd = list(req.cmd)
+        self.assertIn("set", cmd)
+        # every set token precedes new-session (AC2-fail/D5 ordering)
+        self.assertLess(
+            max(i for i, t in enumerate(cmd) if t == "set"),
+            cmd.index("new-session"),
+        )
+        # the full chain is present as a contiguous block
+        idx = cmd.index("set")
+        self.assertEqual(cmd[idx : idx + len(self._RECO_EXPECTED_CHAIN)], self._RECO_EXPECTED_CHAIN)
+        self.assertEqual(len(req.prelaunch), 1)
+
+    def test_build_launch_request_injects_set_chain_nested(self) -> None:
+        # AC3: set chain rides the create prelaunch entry before new-session;
+        # switch-client cmd carries NO set tokens; prelaunch len stays 2.
+        cfg = self._reco_cfg()
+        args = uxon.ParsedArgs(action="run", permission_mode="yolo")
+        stubs = _StubsChain(
+            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-test.sock"),
+            mock.patch.object(uxon, "tmux_host_socket", return_value="/tmp/uxon-test.sock"),
+        )
+        with stubs:
+            req = uxon._build_tmux_launch_request(
+                "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz"
+            )
+        self.assertIn("switch-client", req.cmd)
+        self.assertNotIn("set", req.cmd)  # set never rides the switch
+        self.assertEqual(len(req.prelaunch), 2)
+        _mkdir_pre, create_pre = req.prelaunch
+        create = list(create_pre)
+        self.assertIn("set", create)
+        self.assertLess(
+            max(i for i, t in enumerate(create) if t == "set"),
+            create.index("new-session"),
+        )
+        idx = create.index("set")
+        self.assertEqual(
+            create[idx : idx + len(self._RECO_EXPECTED_CHAIN)], self._RECO_EXPECTED_CHAIN
+        )
+
+    def test_build_launch_request_byte_identical_when_enabled_but_empty(self) -> None:
+        # AC-empty/D1: manage_options=true with no options is byte-identical to off.
+        args = uxon.ParsedArgs(action="run", permission_mode="yolo")
+        with self._stub_socket_path():
+            off = uxon._build_tmux_launch_request(
+                "/srv/repos/demo", "uxon-demo@claude", args, self.make_config(), None, "u-vz"
+            )
+            on_empty = uxon._build_tmux_launch_request(
+                "/srv/repos/demo",
+                "uxon-demo@claude",
+                args,
+                self.make_config(tmux_manage_options=True),
+                None,
+                "u-vz",
+            )
+        self.assertEqual(off.cmd, on_empty.cmd)
+        self.assertEqual(off.prelaunch, on_empty.prelaunch)
+
+    def test_dry_run_prints_set_chain(self) -> None:
+        # AC7: --dry-run surfaces the set chain (rides the printed exec line).
+        cfg = self._reco_cfg()
+        args = uxon.ParsedArgs(action="run", permission_mode="yolo", dry_run=True)
+        buf = io.StringIO()
+        with self._stub_socket_path():
+            with mock.patch.object(uxon.os, "execvp") as execvp:
+                with __import__("contextlib").redirect_stdout(buf):
+                    rc = uxon.launch_in_tmux(
+                        "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz"
+                    )
+        self.assertEqual(rc, 0)
+        execvp.assert_not_called()
+        out = buf.getvalue()
+        self.assertIn("set -g mouse on", out)
+        self.assertIn("set -as terminal-features", out)
+
+    def test_load_config_tmux_defaults_recommended(self) -> None:
+        # On by default: a config with no [tmux] section inherits the
+        # recommended set from DEFAULT_CONFIG (manage_options true).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("", tmpdir)
+        self.assertTrue(cfg.tmux_manage_options)
+        self.assertEqual(cfg.tmux_options, {"mouse": "on", "allow-passthrough": "on"})
+        self.assertEqual(cfg.tmux_server_options, {"extended-keys": "on"})
+        self.assertEqual(cfg.tmux_append_server_options, {"terminal-features": "xterm*:extkeys"})
+        # the default load renders exactly the documented D3 chain
+        self.assertEqual(uxon._tmux_set_chain(cfg), self._RECO_EXPECTED_CHAIN)
+
+    def test_load_config_tmux_manage_options_false_disables(self) -> None:
+        # Operator opt-out: manage_options=false yields an empty chain even
+        # though the (replaced) tables would otherwise be the default.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("[tmux]\nmanage_options = false\n", tmpdir)
+        self.assertFalse(cfg.tmux_manage_options)
+        self.assertEqual(uxon._tmux_set_chain(cfg), [])
+
+    def test_load_config_tmux_tables_parse(self) -> None:
+        toml = textwrap.dedent(
+            """
+            [tmux]
+            manage_options = true
+
+            [tmux.options]
+            mouse = "on"
+
+            [tmux.server_options]
+            extended-keys = "on"
+
+            [tmux.append_server_options]
+            terminal-features = "xterm*:extkeys"
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(toml, tmpdir)
+        self.assertTrue(cfg.tmux_manage_options)
+        self.assertEqual(cfg.tmux_options, {"mouse": "on"})
+        self.assertEqual(cfg.tmux_server_options, {"extended-keys": "on"})
+        self.assertEqual(cfg.tmux_append_server_options, {"terminal-features": "xterm*:extkeys"})
+
+    def test_load_config_tmux_toggle_only_keeps_recommended(self) -> None:
+        # Footgun guard: a [tmux] table that sets ONLY manage_options (e.g. the
+        # TUI toggle) must NOT wipe the recommended scope tables — each scope
+        # falls back to its DEFAULT_CONFIG default despite the shallow merge.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg("[tmux]\nmanage_options = true\n", tmpdir)
+        self.assertTrue(cfg.tmux_manage_options)
+        self.assertEqual(uxon._tmux_set_chain(cfg), self._RECO_EXPECTED_CHAIN)
+
+    def test_load_config_tmux_per_scope_override(self) -> None:
+        # Overriding one scope replaces only that scope; omitted scopes keep
+        # their recommended defaults.
+        toml = '[tmux.options]\nmouse = "off"\n'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(toml, tmpdir)
+        self.assertEqual(cfg.tmux_options, {"mouse": "off"})  # allow-passthrough dropped
+        self.assertEqual(cfg.tmux_server_options, {"extended-keys": "on"})  # kept
+        self.assertEqual(cfg.tmux_append_server_options, {"terminal-features": "xterm*:extkeys"})
+
+    def test_load_config_tmux_options_not_a_table_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg('[tmux]\noptions = "nope"\n', tmpdir)
+
+    def test_load_config_tmux_non_scalar_leaf_fails(self) -> None:
+        toml = "[tmux.options]\nmouse = [1, 2]\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(toml, tmpdir)
+
     # ── Task 5: --agent / --auto / permission_mode ───────────────────
 
     def test_parse_dsp_and_auto_mutually_exclusive(self) -> None:
@@ -1523,6 +1823,14 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
             git_create_enabled=False,
             default_git_remote_profile="",
             git_remote_profiles=[],
+            # Minimal baseline: tmux managed options OFF/empty so launch-argv
+            # tests stay focused on the core invocation. The tmux tests opt in
+            # explicitly; the on-by-default production value lives in
+            # DEFAULT_CONFIG / the Config field defaults.
+            tmux_manage_options=False,
+            tmux_options={},
+            tmux_server_options={},
+            tmux_append_server_options={},
         )
         defaults.update(overrides)
         return uxon.Config(**defaults)

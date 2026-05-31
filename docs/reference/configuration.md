@@ -223,3 +223,88 @@ that infra shouldn't hard-code across hosts. Hand-edit them in
 
 For the multi-host operating model see
 [`explain/multi-host-philosophy.md`](../explain/multi-host-philosophy.md).
+
+## `[tmux]` managed options (3.5.0)
+
+**On by default.** uxon layers a recommended set of `set` options (see below)
+on top of whatever the launch user's own tmux config (`/etc/tmux.conf`,
+`~/.tmux.conf`, XDG) provides, at session launch, without editing anyone's
+files and without guessing config paths. You do not need to configure
+anything — these are uxon's built-in defaults. Set `manage_options = false`
+under `[tmux]` to opt out, or write your own `[tmux.*]` tables to override.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `tmux.manage_options` | bool | `true` | Master switch. When `true` (the default, or absent) uxon emits the configured `set` commands. Set `false` to emit none — launch argv is then byte-identical to pre-3.5.0. |
+| `[tmux.options]` | table | recommended (`mouse`, `allow-passthrough`) | Rendered as `set -g <key> <value>` (global session options). |
+| `[tmux.server_options]` | table | recommended (`extended-keys`) | Rendered as `set -s <key> <value>` (server options). |
+| `[tmux.append_server_options]` | table | recommended (`terminal-features`) | Rendered as `set -as <key> <value>` (append to a server option's list). |
+
+**Overriding.** Override is **per scope**: writing a `[tmux.options]` table
+replaces *that* scope's defaults (re-list every global option you want to
+keep) while scopes you omit — `[tmux.server_options]`,
+`[tmux.append_server_options]` — keep their recommended defaults. Likewise,
+toggling `manage_options` alone (e.g. from the settings screen) leaves the
+recommended tables intact. To drop the managed options entirely, set
+`manage_options = false`.
+
+Values are bool / int / str and passed to tmux **verbatim** — uxon does not
+validate option names or values (tmux is the authority on what is valid).
+Booleans render as tmux's `on` / `off`.
+
+**Emission order.** The chain is emitted in a fixed inter-table order —
+global (`-g`) → server (`-s`) → append-server (`-as`) — and within each table
+in declaration order (TOML insertion order is preserved). It is prepended to
+the session-creating tmux invocation, before `new-session` (or before
+`attach-session` / `switch-client` on the attach path), in a single command
+(separated by bare `;` tokens).
+
+**When it runs (server birth vs. live server).** The tmux server is **per
+launch-user** and born once; these options are server-scoped, so they only
+need applying when the server is born. uxon already knows whether a user's
+server is live (a non-empty session list ⇒ alive), so:
+
+- **Server birth** (the launch creates the user's first session): the **full**
+  chain — `-g` + `-s` + `-as` — rides the `new-session` invocation.
+- **Server already live** (any later launch or attach): uxon re-asserts only
+  the **overwrite** scopes `-g` and `-s`. They are idempotent, so re-asserting
+  is harmless and lets a `config.toml` edit to e.g. `mouse` take effect on the
+  next launch/attach **without** a `tmux kill-server`. The **`-as`** scope is
+  **not** re-emitted on a live server — `set -as` *appends* (tmux has no
+  idempotent-append), so re-emitting it would grow the target list (e.g.
+  duplicate `terminal-features` entries) without bound. `-as` is therefore
+  applied once, at birth; editing an `[tmux.append_server_options]` value
+  takes effect after a `tmux kill-server` (these are static terminal-capability
+  declarations, not values one tunes at runtime).
+
+**Fail-fast.** Because the `set` chain runs in the same invocation as
+`new-session` and tmux aborts a `;`-sequence at the first failing command, a
+bad option **aborts the launch — no session is created**. uxon never starts a
+session whose requested options failed to apply; the operator sees tmux's
+error and fixes their config. The recommended set below is verified to apply
+cleanly, so only a user's own bad option trips this path.
+
+**The default (recommended) set** — applied automatically; also shown for
+reference in [`config/config.example.toml`](../../config/config.example.toml):
+
+```toml
+[tmux]
+manage_options = true
+
+[tmux.options]            # set -g
+mouse = "on"
+allow-passthrough = "on"
+
+[tmux.server_options]     # set -s
+extended-keys = "on"
+
+[tmux.append_server_options]   # set -as
+terminal-features = "xterm*:extkeys"
+```
+
+**Scope notes.** Structural validation is enforced at load time: a `[tmux]`
+or `[tmux.*]` value that is not a table, or a non-scalar option leaf, fails
+loud with a clear message. Options apply only on the host where the session is
+**born** (each peer runs its own uxon with its own `config.toml`); the
+aggregator never pushes options to peers. uxon never touches the operator's
+laptop terminal or any outer tmux it cannot reach.
