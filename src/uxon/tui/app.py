@@ -27,9 +27,10 @@ from textual.message import Message
 from textual.worker import Worker, WorkerState
 
 from uxon import __version__
+from uxon.domain.launch_request import LaunchRequest
 
 from .config import TuiConfig
-from .context import CallbackError, LaunchRequest, TuiContext
+from .context import CallbackError, TuiContext
 from .events import debug as _debug
 from .events import metrics_record
 from .hints import TEXTUAL_MISSING_HINT
@@ -907,18 +908,18 @@ class UxonApp(App):
         may replace ``self.app.ctx`` concurrently on the event loop,
         so reading ``self.ctx`` from the worker is a data race.
         """
-        from uxon import tui as uxon_tui
+        from uxon.domain.status import LinkHealthStatus
 
         try:
             probe = self.cfg.on_probe_link_health
             status = probe() if callable(probe) else None
         except Exception as exc:  # pragma: no cover — defensive
-            status = uxon_tui.LinkHealthStatus(
+            status = LinkHealthStatus(
                 state="error",
                 summary=str(exc).strip() or exc.__class__.__name__,
             )
         if status is None:
-            status = uxon_tui.LinkHealthStatus()
+            status = LinkHealthStatus()
         self.post_message(_LinkHealthUpdated(status))
 
     def probe_workspaces_then(
@@ -1249,7 +1250,7 @@ def run(ctx: TuiContext) -> int:
             cmd=list(req.cmd)[:2],
         )
         sys.stdout.flush()
-        from uxon.tui.context import session_name_from_launch_label
+        from uxon.domain.launch_request import session_name_from_launch_label
 
         _session = session_name_from_launch_label(req.label)
         _t0 = time.monotonic()

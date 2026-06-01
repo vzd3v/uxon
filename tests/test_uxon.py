@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest import mock
 
 import uxon.cli as uxon
+from uxon.domain import config as domain_config
+from uxon.domain import session as domain_session
 
 UXON_PATH = Path(uxon.__file__).resolve()
 
@@ -913,14 +915,14 @@ class UxonTests(unittest.TestCase):
         output = io.StringIO()
         ok_avail = uxon_agents.AgentAvailability(status="ok", version="1.2.3")
 
-        from uxon import probes as uxon_probes
+        from uxon.domain.host_report import BinaryStatus, HostReport
 
-        host_report = uxon_probes.HostReport(
-            tmux=uxon_probes.BinaryStatus("tmux", "/usr/bin/tmux", "apt"),
+        host_report = HostReport(
+            tmux=BinaryStatus("tmux", "/usr/bin/tmux", "apt"),
             agents={
-                "claude": uxon_probes.BinaryStatus("claude", "/usr/local/bin/claude", "npm"),
-                "codex": uxon_probes.BinaryStatus("codex", None, ""),
-                "cursor": uxon_probes.BinaryStatus("cursor-agent", None, ""),
+                "claude": BinaryStatus("claude", "/usr/local/bin/claude", "npm"),
+                "codex": BinaryStatus("codex", None, ""),
+                "cursor": BinaryStatus("cursor-agent", None, ""),
             },
             launch_user="u-vz",
         )
@@ -961,16 +963,16 @@ class UxonTests(unittest.TestCase):
         self.assertIn("ok (1.2.3)", rendered)
 
     def test_doctor_reports_missing_agent(self) -> None:
-        from uxon import probes as uxon_probes
+        from uxon.domain.host_report import BinaryStatus, HostReport
 
         cfg = self.make_config()
         output = io.StringIO()
-        host_report = uxon_probes.HostReport(
-            tmux=uxon_probes.BinaryStatus("tmux", "/usr/bin/tmux", "apt"),
+        host_report = HostReport(
+            tmux=BinaryStatus("tmux", "/usr/bin/tmux", "apt"),
             agents={
-                "claude": uxon_probes.BinaryStatus("claude", None, "npm install ..."),
-                "codex": uxon_probes.BinaryStatus("codex", None, ""),
-                "cursor": uxon_probes.BinaryStatus("cursor-agent", None, ""),
+                "claude": BinaryStatus("claude", None, "npm install ..."),
+                "codex": BinaryStatus("codex", None, ""),
+                "cursor": BinaryStatus("cursor-agent", None, ""),
             },
             launch_user="u-vz",
         )
@@ -1162,12 +1164,14 @@ class UxonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
                 # Writable but outside the whitelist → fail.
-                with mock.patch.object(uxon, "is_under", return_value=False):
+                # ``is_under_allowed_roots`` (and its ``is_under`` call) now live
+                # in ``uxon.domain.authz`` — patch the consuming module's binding.
+                with mock.patch("uxon.domain.authz.is_under", return_value=False):
                     self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
                     with self.assertRaises(SystemExit):
                         uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
                 # Writable and inside the whitelist → pass.
-                with mock.patch.object(uxon, "is_under", return_value=True):
+                with mock.patch("uxon.domain.authz.is_under", return_value=True):
                     self.assertTrue(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
                     uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
 
@@ -1374,7 +1378,7 @@ class UxonTests(unittest.TestCase):
     ]
 
     def _reco_cfg(self):
-        reco = uxon.RECOMMENDED_TMUX_OPTIONS
+        reco = domain_config.RECOMMENDED_TMUX_OPTIONS
         return self.make_config(
             tmux_manage_options=True,
             tmux_options=dict(reco["options"]),
@@ -1927,10 +1931,14 @@ class SessionNamingTests(unittest.TestCase):
     """Tests for the new uxon-<stem>@<agent> session naming scheme."""
 
     def test_parse_session_name_new(self) -> None:
-        self.assertEqual(uxon.parse_session_name("uxon-foo@codex"), ("foo", "codex", 1, False))
-        self.assertEqual(uxon.parse_session_name("uxon-foo@codex-3"), ("foo", "codex", 3, False))
         self.assertEqual(
-            uxon.parse_session_name("uxon-my-repo-branch@claude"),
+            domain_session.parse_session_name("uxon-foo@codex"), ("foo", "codex", 1, False)
+        )
+        self.assertEqual(
+            domain_session.parse_session_name("uxon-foo@codex-3"), ("foo", "codex", 3, False)
+        )
+        self.assertEqual(
+            domain_session.parse_session_name("uxon-my-repo-branch@claude"),
             ("my-repo-branch", "claude", 1, False),
         )
 
@@ -1938,36 +1946,42 @@ class SessionNamingTests(unittest.TestCase):
         # ``ccw-`` sessions still parse when listed in ``legacy_prefixes`` and
         # are flagged ``legacy=True`` (default prefix is ``uxon-``).
         self.assertEqual(
-            uxon.parse_session_name("ccw-foo@codex", legacy_prefixes=("ccw-",)),
+            domain_session.parse_session_name("ccw-foo@codex", legacy_prefixes=("ccw-",)),
             ("foo", "codex", 1, True),
         )
         # When ``uxon-`` is the configured current prefix, the same-prefixed
         # name is not legacy.
         self.assertEqual(
-            uxon.parse_session_name("uxon-foo@codex", prefix="uxon-"),
+            domain_session.parse_session_name("uxon-foo@codex", prefix="uxon-"),
             ("foo", "codex", 1, False),
         )
         # Without legacy_prefixes, a ccw- name does not match (default prefix
         # is uxon-).
-        self.assertIsNone(uxon.parse_session_name("ccw-foo@codex"))
+        self.assertIsNone(domain_session.parse_session_name("ccw-foo@codex"))
         # And with a non-matching explicit prefix, uxon- is also unrecognised.
-        self.assertIsNone(uxon.parse_session_name("uxon-foo@codex", prefix="ccw-"))
+        self.assertIsNone(domain_session.parse_session_name("uxon-foo@codex", prefix="ccw-"))
 
     def test_parse_session_name_rejects_garbage(self) -> None:
-        self.assertIsNone(uxon.parse_session_name("random-x"))
-        self.assertIsNone(uxon.parse_session_name("uxon-foo"))  # missing @agent
-        self.assertIsNone(uxon.parse_session_name("cc-foo"))  # ancient format no longer recognised
+        self.assertIsNone(domain_session.parse_session_name("random-x"))
+        self.assertIsNone(domain_session.parse_session_name("uxon-foo"))  # missing @agent
+        self.assertIsNone(
+            domain_session.parse_session_name("cc-foo")
+        )  # ancient format no longer recognised
 
     def test_candidate_session_name(self) -> None:
-        self.assertEqual(uxon.candidate_session_name("foo", 1, "cursor"), "uxon-foo@cursor")
-        self.assertEqual(uxon.candidate_session_name("foo", 2, "cursor"), "uxon-foo@cursor-2")
+        self.assertEqual(
+            domain_session.candidate_session_name("foo", 1, "cursor"), "uxon-foo@cursor"
+        )
+        self.assertEqual(
+            domain_session.candidate_session_name("foo", 2, "cursor"), "uxon-foo@cursor-2"
+        )
 
     def test_compatible_indexed_sessions_agent_specific(self) -> None:
         # Two sessions same stem different agents are NOT siblings.
         compat_root = "/srv/repos/foo"
         s_claude = _mk_session("uxon-foo@claude", compat_root, agent="claude")
         s_codex = _mk_session("uxon-foo@codex", compat_root, agent="codex")
-        matches = uxon.compatible_indexed_sessions(
+        matches = domain_session.compatible_indexed_sessions(
             "foo", "claude", compat_root, [s_claude, s_codex]
         )
         self.assertEqual([m.name for m in matches], ["uxon-foo@claude"])

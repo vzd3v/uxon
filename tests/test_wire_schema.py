@@ -16,7 +16,7 @@ import json
 import unittest
 
 from uxon.cli import SessionInfo
-from uxon.wire_schema import (
+from uxon.domain.wire_schema import (
     WIRE_SCHEMA_VERSION,
     SessionRecord,
     build_session_records,

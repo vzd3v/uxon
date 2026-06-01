@@ -30,7 +30,8 @@ from typing import TYPE_CHECKING, Any
 from .slot_state import SlotState
 
 if TYPE_CHECKING:
-    from .context import LinkHealthStatus
+    from uxon.domain.status import LinkHealthStatus
+
     from .main_data import MainData
 
 

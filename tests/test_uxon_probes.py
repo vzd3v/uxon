@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 from uxon import probes
+from uxon.domain.host_report import BinaryStatus, HostReport
 
 
 class ResolvPathsLocalTests(unittest.TestCase):
@@ -130,12 +131,12 @@ class BinaryStatusTests(unittest.TestCase):
     """Tests for BinaryStatus dataclass."""
 
     def test_binary_status_frozen(self) -> None:
-        bs = probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint="apt install")
+        bs = BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint="apt install")
         with self.assertRaises(AttributeError):
             bs.path = "/new/path"  # type: ignore
 
     def test_binary_status_creation(self) -> None:
-        bs = probes.BinaryStatus(
+        bs = BinaryStatus(
             name="claude", path=None, install_hint="npm i -g @anthropic-ai/claude-code"
         )
         self.assertEqual(bs.name, "claude")
@@ -147,12 +148,12 @@ class HostReportTests(unittest.TestCase):
     """Tests for HostReport dataclass."""
 
     def test_host_report_creation(self) -> None:
-        report = probes.HostReport(
-            tmux=probes.BinaryStatus("tmux", "/usr/bin/tmux", "apt install"),
+        report = HostReport(
+            tmux=BinaryStatus("tmux", "/usr/bin/tmux", "apt install"),
             agents={
-                "claude": probes.BinaryStatus("claude", "/home/u/.npm/claude", "npm i"),
-                "codex": probes.BinaryStatus("codex", "/home/u/.npm/codex", "npm i"),
-                "cursor": probes.BinaryStatus("cursor-agent", None, ""),
+                "claude": BinaryStatus("claude", "/home/u/.npm/claude", "npm i"),
+                "codex": BinaryStatus("codex", "/home/u/.npm/codex", "npm i"),
+                "cursor": BinaryStatus("cursor-agent", None, ""),
             },
             launch_user="devuser",
         )
@@ -204,17 +205,17 @@ class ProbeHostTests(unittest.TestCase):
 
     def test_install_hints_present(self) -> None:
         """Verify that install hints are set for all binaries."""
-        bs_tmux = probes.BinaryStatus("tmux", None, probes._INSTALL_HINTS["tmux"])
+        bs_tmux = BinaryStatus("tmux", None, probes._INSTALL_HINTS["tmux"])
         self.assertIn("apt", bs_tmux.install_hint)
         self.assertIn("dnf", bs_tmux.install_hint)
 
-        bs_claude = probes.BinaryStatus("claude", None, probes._INSTALL_HINTS["claude"])
+        bs_claude = BinaryStatus("claude", None, probes._INSTALL_HINTS["claude"])
         self.assertIn("npm", bs_claude.install_hint)
         self.assertIn("claude-code", bs_claude.install_hint)
 
-        bs_codex = probes.BinaryStatus("codex", None, probes._INSTALL_HINTS["codex"])
+        bs_codex = BinaryStatus("codex", None, probes._INSTALL_HINTS["codex"])
         self.assertIn("npm", bs_codex.install_hint)
         self.assertIn("codex", bs_codex.install_hint)
 
-        bs_cursor = probes.BinaryStatus("cursor-agent", None, probes._INSTALL_HINTS["cursor-agent"])
+        bs_cursor = BinaryStatus("cursor-agent", None, probes._INSTALL_HINTS["cursor-agent"])
         self.assertIn("curl", bs_cursor.install_hint)

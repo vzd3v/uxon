@@ -48,8 +48,8 @@ from typing import Any
 import msgspec
 import platformdirs
 
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION, RemoteSessionPayload
 from uxon.remote_hosts import RemoteHost
-from uxon.wire_schema import WIRE_SCHEMA_VERSION, RemoteSessionPayload
 
 # Reasonable defaults: a peer that doesn't answer in 5 s is treated as
 # down. ssh's TCP-level ConnectTimeout caps the connect phase only;

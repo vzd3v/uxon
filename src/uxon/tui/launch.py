@@ -13,7 +13,7 @@ import sys
 import time as _time
 from typing import Any
 
-from .context import LaunchRequest
+from uxon.domain.launch_request import LaunchRequest
 
 #: Threshold below which an rc=0 launch is treated as a silent fast-exit.
 FAST_EXIT_THRESHOLD_SEC = 1.0

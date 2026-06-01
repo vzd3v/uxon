@@ -45,17 +45,17 @@ class DoctorParallelProbeTests(unittest.TestCase):
         )
 
     def _stub_probe_host(self, *, present: tuple[str, ...] = ("claude", "codex", "cursor")):
-        from uxon import probes
+        from uxon.domain.host_report import BinaryStatus, HostReport
 
         agents = {}
         for aid in ("claude", "codex", "cursor"):
-            agents[aid] = probes.BinaryStatus(
+            agents[aid] = BinaryStatus(
                 name=aid,
                 path=f"/fake/{aid}" if aid in present else None,
                 install_hint="",
             )
-        return probes.HostReport(
-            tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
+        return HostReport(
+            tmux=BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
             agents=agents,
             launch_user=_USER,
         )
@@ -206,14 +206,14 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         )
 
     def _stub_probe_host(self):
-        from uxon import probes
+        from uxon.domain.host_report import BinaryStatus, HostReport
 
-        return probes.HostReport(
-            tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
+        return HostReport(
+            tmux=BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
             agents={
-                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
-                "codex": probes.BinaryStatus(name="codex", path=None, install_hint=""),
-                "cursor": probes.BinaryStatus(name="cursor-agent", path=None, install_hint=""),
+                "claude": BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
+                "codex": BinaryStatus(name="codex", path=None, install_hint=""),
+                "cursor": BinaryStatus(name="cursor-agent", path=None, install_hint=""),
             },
             launch_user=_USER,
         )
@@ -407,14 +407,14 @@ class DoctorAuditLineTests(unittest.TestCase):
         )
 
     def _stub_probe_host(self):
-        from uxon import probes
+        from uxon.domain.host_report import BinaryStatus, HostReport
 
-        return probes.HostReport(
-            tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
+        return HostReport(
+            tmux=BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
             agents={
-                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
-                "codex": probes.BinaryStatus(name="codex", path=None, install_hint=""),
-                "cursor": probes.BinaryStatus(name="cursor-agent", path=None, install_hint=""),
+                "claude": BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
+                "codex": BinaryStatus(name="codex", path=None, install_hint=""),
+                "cursor": BinaryStatus(name="cursor-agent", path=None, install_hint=""),
             },
             launch_user=_USER,
         )

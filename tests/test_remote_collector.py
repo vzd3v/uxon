@@ -23,6 +23,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest import mock
 
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
 from uxon.remote_collector import (
     DEFAULT_CONNECT_TIMEOUT_SEC,
     DEFAULT_TOTAL_TIMEOUT_SEC,
@@ -38,7 +39,6 @@ from uxon.remote_collector import (
     write_cached_snapshot,
 )
 from uxon.remote_hosts import RemoteHost
-from uxon.wire_schema import WIRE_SCHEMA_VERSION
 
 
 def _host(**overrides: object) -> RemoteHost:

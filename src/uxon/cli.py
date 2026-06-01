@@ -12,16 +12,43 @@ import subprocess
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from uxon.domain.args import SUBCOMMANDS, USAGE, ParsedArgs
+from uxon.domain.authz import canonical, is_under, is_under_allowed_roots
+from uxon.domain.config import (
+    DEFAULT_CONFIG,
+    Config,
+    merge_config,
+    validate_repeat_mode,
+    validate_worktree_base,
+)
+from uxon.domain.constants import VALID_AGENT_IDS
+from uxon.domain.format import (
+    _compact_duration,
+    _format_bytes,
+    _pct,
+    compact_time,
+    fmt_epoch,
+    format_cpu_pct,
+    format_rss_kib,
+)
+from uxon.domain.host_report import HostReport
+from uxon.domain.session import (
+    SessionInfo,
+    allocate_session_name,
+    choose_attach_session,
+    compatible_indexed_sessions,
+    parse_session_name,
+    session_stem_for_path,
+    session_stem_for_worktree,
+)
+from uxon.domain.version import format_version as _format_version_str
 from uxon.errors import eprint, fail
 from uxon.worktrees import compute_worktree_path
 
 if TYPE_CHECKING:
-    from uxon import probes
     from uxon.sudo_probe import SudoCapability
 
 try:
@@ -34,16 +61,9 @@ except ModuleNotFoundError:  # pragma: no cover
 # `_to_tui_session`, `_build_tui_context`). Module-load of `uxon.cli` no longer
 # pulls `uxon.tui.context` (~90 ms saved on `uxon version` / `uxon list`).
 if TYPE_CHECKING:
-    from uxon.tui.context import (
-        LinkHealthStatus,
-        ServerStatus,
-        TuiContext,
-        TuiSession,
-    )
-
-# Known agent ids. Kept in sync with uxon_agents.CATALOG (verified by tests);
-# declared here as a literal so CLI parsing doesn't need the lazy lib import.
-VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
+    from uxon.domain.session import TuiSession
+    from uxon.domain.status import LinkHealthStatus, ServerStatus
+    from uxon.tui.context import TuiContext
 
 
 def resolve_agent_id(
@@ -51,7 +71,7 @@ def resolve_agent_id(
     launch_user: str,
     requested: str | None,
     *,
-    report: probes.HostReport | None = None,
+    report: HostReport | None = None,
 ) -> str:
     """Pick an agent to launch and verify the binary is on PATH.
 
@@ -115,262 +135,6 @@ def resolve_agent_id(
     raise AssertionError("unreachable")  # fail() never returns
 
 
-# Recommended uxon-managed tmux options (3.5.0). This is the SINGLE source of
-# the recommended option set: it seeds ``DEFAULT_CONFIG["tmux"]`` (scaffolded
-# but DORMANT — ``manage_options`` is off by default, so nothing is applied
-# until the operator opts in by setting ``manage_options = true``) AND scaffolds
-# ``config/config.example.toml`` plus the configuration docs. Shipping the set
-# as ready-to-use tables means flipping the single toggle yields sane tmux
-# behaviour with no further config. Split across the three tmux scopes:
-#   options               -> set -g   (global session options)
-#   server_options        -> set -s   (server options)
-#   append_server_options -> set -as  (append to a server option's list)
-RECOMMENDED_TMUX_OPTIONS: dict[str, dict[str, object]] = {
-    "options": {"mouse": "on", "allow-passthrough": "on"},
-    "server_options": {"extended-keys": "on"},
-    "append_server_options": {"terminal-features": "xterm*:extkeys"},
-}
-
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "runtime_user": "",
-    "default_launch_mode": "caller",
-    "enable_all_users_list": False,
-    "launch_user_by_caller": {},
-    "session_users": [],
-    # Empty by default = "trust the OS write-access check" — `uxon run`
-    # / `uxon new -w` launch wherever the launch user can write
-    # (matching the TUI's "new session in current folder" gate). Set
-    # this to a non-empty list to switch to strict-whitelist mode:
-    # `uxon run` / `uxon new -w` then refuse anything outside the
-    # listed paths, including $HOME. `uxon new` (creating a new
-    # project directory) always uses strict-whitelist semantics and
-    # requires a non-empty allowed_roots.
-    "allowed_roots": [],
-    "session_prefix": "uxon-",
-    # Empty by default. Operators upgrading from a host that ran a
-    # different ``session_prefix`` add the previous value here to keep
-    # already-running sessions reachable; new installs leave it empty.
-    "legacy_session_prefixes": [],
-    # ``enabled`` is empty by default — auto-mode: uxon picks up
-    # whichever agents are actually installed for the launch user.
-    # Set it to a non-empty list (e.g. ``["claude", "codex"]``) to
-    # switch to strict-whitelist mode. ``default`` may also be empty;
-    # consumers fall back to the first available agent at launch time.
-    "agents": {
-        "enabled": [],
-        "default": "",
-        "claude": {"default_args": []},
-        "codex": {"default_args": []},
-        "cursor": {"default_args": []},
-    },
-    "new_project_root": str(Path.home() / "projects"),
-    "repeat_noninteractive_mode": "fail",
-    # Worktree layout + base ref (3.5.0). Empty worktree_root → default
-    # <repo>/.uxon/worktrees/<slug>. worktree_base picks where a new
-    # branch is based: "local" (default, no fetch) off local origin/HEAD
-    # else local HEAD; "remote" fetches origin first (claude-like).
-    "worktree_root": "",
-    "worktree_base": "local",
-    "tmux_socket_template": "/tmp/uxon-{user}.sock",
-    "tui_refresh_interval_seconds": 2.0,
-    "tui_ssh_refresh_interval_seconds": 10.0,
-    # Dashboard column layout. ``columns`` is a list of column ids (see
-    # :data:`uxon.tui.dashboard.KNOWN_COLUMN_IDS`); empty / absent means
-    # "use the registry defaults". Sort is a hard contract owned by the
-    # selector (locals → cfg-order remotes → recency), not configurable.
-    "tui": {
-        "table": {
-            "columns": [],
-            "default_view": "flat",
-        },
-        "search": {"fields": ["name", "user"]},
-        "color_palette": ["cyan", "blue"],
-    },
-    "local_host": {"color": "green"},
-    # Stage 5: ssh transport hardening.
-    # ``ssh_multiplex = "auto"`` adds ControlMaster/Path/Persist to the
-    # default fetch template (warm tick: 5-20 ms vs cold 200-500 ms).
-    # ``"off"`` strips them — for environments that prohibit the socket.
-    "ssh_multiplex": "auto",
-    # ControlPersist (seconds) for the SSH master connection. Must be a
-    # positive integer; disable multiplexing via ``ssh_multiplex = "off"``
-    # rather than zeroing this out.
-    "ssh_control_persist_seconds": 300,
-    # ``fetch_concurrency`` caps concurrent SSH fetch workers fleet-wide
-    # so a 50-host post-outage stampede doesn't exhaust the FD ulimit.
-    # Stage 5 step 7 wires the semaphore.
-    "fetch_concurrency": 16,
-    "git_create_enabled": False,
-    "default_git_remote_profile": "",
-    "git_remote_profiles": [],
-    "remote_hosts": [],
-    # Application-level audit channel.  ``enabled`` is the only kill-switch
-    # (no env-var override).  ``syslog_facility`` is consulted only on the
-    # ``/dev/log`` fallback path; journald native carries its own metadata.
-    "audit": {"enabled": True, "syslog_facility": "user"},
-    # uxon-managed tmux options (3.5.0). OFF BY DEFAULT: the three tables map
-    # 1:1 to tmux scopes (``-g`` / ``-s`` / ``-as``) and are rendered into the
-    # launch invocation by :func:`_tmux_set_chain` — but only once the operator
-    # opts in with ``manage_options = true``. Seeded from
-    # ``RECOMMENDED_TMUX_OPTIONS`` so opting in is a one-line toggle that yields
-    # sane tmux behaviour; override the ``[tmux]`` tables to customise.
-    # ``dict(...)`` copies keep the shared constant immutable from per-load
-    # mutation.
-    "tmux": {
-        "manage_options": False,
-        "options": dict(RECOMMENDED_TMUX_OPTIONS["options"]),
-        "server_options": dict(RECOMMENDED_TMUX_OPTIONS["server_options"]),
-        "append_server_options": dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"]),
-    },
-}
-
-
-USAGE = """Usage:
-  uxon                              (interactive session picker if TTY, else this help)
-  uxon [run] [-w <branch>] [--dry-run] [--dsp] [claude-flags...]
-  uxon new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp]
-                 [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
-                 [claude-flags...]
-  uxon doctor
-  uxon list [--all-users]
-  uxon version
-  uxon attach <id>
-  uxon kill <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]
-  uxon kill-all [--force] [--dry-run]
-  uxon --killall [--force] [--dry-run]
-  uxon -l [--all-users]
-  uxon -a <id>
-  uxon -k <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]
-  uxon -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp]
-                [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
-                [claude-flags...]
-
-Notes:
-  - Without '-w', 'new' creates <new_project_root>/<name> (default ~/projects) and runs there.
-  - With '-w <branch>', 'new' uses repo inside <new_project_root>/<name> (no cwd fallback).
-  - With '-w <branch>' on 'run', uses the git repo at cwd.
-  - Repeating 'new' for the same plain project or worktree asks whether to attach or start a new parallel session.
-  - Use '--attach-existing' or '--new-session' to bypass that prompt explicitly.
-  - Non-interactive repeat handling can be pinned via UXON_REPEAT_NONINTERACTIVE_POLICY or config.
-  - Unknown flags in run/new are passed to 'claude'.
-  - --dsp is short for --dangerously-skip-permissions (legacy synonyms: --dap, -dap, -dsp).
-  - ID accepts: session name (with/without configured session_prefix), unique prefix, or active pane PID.
-  - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
-  - Session IDs are human-readable: <prefix><stem>@<agent>, <prefix><stem>@<agent>-2 (default prefix is 'uxon-').
-  - uxon uses a dedicated tmux socket per launch user by default.
-  - '--git-remote <profile>' creates a remote repo before launching claude,
-    using the named profile from config.toml. 'default' picks
-    default_git_remote_profile. Without the flag, no git is touched.
-"""
-
-
-@dataclass
-class Config:
-    runtime_user: str
-    default_launch_mode: str
-    enable_all_users_list: bool
-    launch_user_by_caller: dict[str, str]
-    session_users: list[str]
-    allowed_roots: list[str]
-    session_prefix: str
-    legacy_session_prefixes: tuple[str, ...]
-    enabled_agents: tuple[str, ...]
-    default_agent: str
-    agent_default_args: dict[str, tuple[str, ...]]
-    new_project_root: str
-    repeat_noninteractive_mode: str
-    tmux_socket_template: str
-    tui_refresh_interval_seconds: float
-    git_create_enabled: bool
-    default_git_remote_profile: str
-    git_remote_profiles: list  # list[GitRemoteProfile] — parsed once in load_config
-    tui_ssh_refresh_interval_seconds: float = 10.0
-    remote_hosts: list = field(
-        default_factory=list
-    )  # list[RemoteHost] — parsed once in load_config
-    ssh_multiplex: str = "auto"  # "auto" | "off"
-    ssh_control_persist_seconds: int = 300
-    fetch_concurrency: int = 16
-    audit_enabled: bool = True
-    audit_syslog_facility: str = "user"
-    # ``None`` is the load-time signal "use REGISTRY defaults". An empty
-    # tuple would mean "operator explicitly cleared the column list" —
-    # that's not a state we want to expose distinctly, so absent / ``[]``
-    # in TOML both collapse to ``None`` here. ``build_active_columns``
-    # consumes this contract directly.
-    tui_table_columns: tuple[str, ...] | None = None
-    tui_table_default_view: Literal["by_host", "flat"] = "flat"
-    tui_search_fields: tuple[str, ...] = ("name", "user")
-    tui_color_palette: tuple[str, ...] = ("cyan", "blue")
-    local_host_color: str = "green"
-    worktree_root: str = ""
-    worktree_base: str = "local"
-    # uxon-managed tmux options (3.5.0). OFF BY DEFAULT, seeded from
-    # ``RECOMMENDED_TMUX_OPTIONS`` to match ``DEFAULT_CONFIG`` — the three dicts
-    # hold raw ``key -> value`` pairs per tmux scope (``-g`` / ``-s`` / ``-as``).
-    # Values are bool/int/str and rendered verbatim by :func:`_tmux_set_chain`
-    # (no name/value validation — D4), but only once ``manage_options = true``.
-    tmux_manage_options: bool = False
-    tmux_options: dict = field(default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["options"]))
-    tmux_server_options: dict = field(
-        default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["server_options"])
-    )
-    tmux_append_server_options: dict = field(
-        default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"])
-    )
-
-
-@dataclass
-class SessionInfo:
-    user: str
-    name: str
-    attached: str
-    windows: str
-    created: str
-    last_attached: str
-    pane_pids: tuple[int, ...]
-    active_pid: int | None
-    active_cmd: str
-    active_path: str
-    cpu_pct: float = 0.0
-    rss_kib: int = 0
-    agent: str = "claude"  # "claude" | "codex" | "cursor" | "unknown"
-    legacy: bool = False  # True iff name uses a non-current (legacy) prefix
-
-
-@dataclass
-class ParsedArgs:
-    action: str
-    target_id: str | None = None
-    worktree_branch: str | None = None
-    repeat_mode: str | None = None
-    dry_run: bool = False
-    force: bool = False
-    all_users: bool = False
-    agent: str | None = None  # None = use cfg.default_agent
-    permission_mode: str = "normal"  # "normal" | "auto" | "yolo"
-    agent_args: list[str] = field(default_factory=list)
-    git_remote: str | None = None  # profile name, or "default", or None
-    no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)
-    git_visibility: str | None = None  # "private" | "public" | None (use profile default)
-    json_output: bool = False  # --json: emit machine-readable wire-schema envelope on stdout
-    host: str | None = None  # --host <name>: route 'list' / 'kill' to one configured remote peer
-    all_hosts: bool = False  # --all-hosts: aggregate local + every configured remote peer
-    user: str | None = None  # --user <name>: target a different launch user (kill)
-    # Internal peer-protocol flag — propagated by callers to peers so a
-    # cross-host operation appears in both audit trails with the same UUID.
-    # Stripped from argv by :func:`uxon.audit.extract_correlation_id` before
-    # the per-parser walk sees it; never surfaces in ``--help``.
-    audit_correlation_id: str | None = None
-    # Populated by ``main()``'s preflight when it probes the host for
-    # tmux. Downstream ``resolve_agent_id`` reuses it to install-gate
-    # the picked agent without a second probe. ``None`` everywhere
-    # else (interactive/version paths, TUI-side ParsedArgs
-    # construction in ``_plan_tui_*_agent``).
-    host_report: probes.HostReport | None = None
-
-
 def _sanitize_callback_stderr(raw: str) -> str:
     """Strip boilerplate (``uxon:`` prefix, trailing blank lines) from
     captured stderr so it reads cleanly on a TUI status line.
@@ -431,13 +195,6 @@ def _wrap_tui_callback(fn: Any, callback_error_cls: type[Exception]) -> Any:
     return wrapper
 
 
-def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    out = dict(base)
-    for key, value in override.items():
-        out[key] = value
-    return out
-
-
 def load_toml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -466,20 +223,6 @@ def normalize_user_list(values: list[str]) -> list[str]:
         seen.add(user)
         users.append(user)
     return users
-
-
-def canonical(path: str) -> str:
-    return str(Path(path).expanduser().resolve(strict=False))
-
-
-def is_under(path: str, base: str) -> bool:
-    path_p = Path(path)
-    base_p = Path(base)
-    try:
-        path_p.relative_to(base_p)
-        return True
-    except ValueError:
-        return False
 
 
 def find_project_config(cwd: str, allowed_roots: list[str]) -> Path | None:
@@ -529,20 +272,6 @@ def resolve_config_layers(cwd: str) -> tuple[dict[str, Any], list[Path]]:
         sources.append(proj_cfg)
         merged = merge_config(merged, load_toml(proj_cfg))
     return merged, sources
-
-
-def validate_repeat_mode(value: str, source: str) -> str:
-    mode = value.strip().lower()
-    if mode not in {"fail", "attach", "new"}:
-        fail(f"invalid {source}: {value!r} (expected 'fail', 'attach', or 'new')")
-    return mode
-
-
-def validate_worktree_base(value: str, source: str) -> str:
-    mode = value.strip().lower()
-    if mode not in {"local", "remote"}:
-        fail(f"invalid {source}: {value!r} (expected 'local' or 'remote')")
-    return mode
 
 
 def load_config(cwd: str) -> Config:
@@ -877,11 +606,6 @@ def load_config(cwd: str) -> Config:
     )
 
 
-def slugify(name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
-    return slug or "workspace"
-
-
 def process_user() -> str:
     return pwd.getpwuid(os.getuid()).pw_name
 
@@ -1068,83 +792,8 @@ def tmux_nesting_mode(target_socket: str) -> str:
     raise AssertionError("unreachable")
 
 
-def fmt_epoch(ts: str) -> str:
-    if not ts:
-        return ""
-    try:
-        return datetime.fromtimestamp(int(ts), tz=UTC).isoformat()
-    except (TypeError, ValueError, OSError):
-        return ""
-
-
-def compact_time(iso_ts: str) -> str:
-    if not iso_ts:
-        return "-"
-    try:
-        dt = datetime.fromisoformat(iso_ts)
-    except ValueError:
-        return "-"
-    now = datetime.now(tz=dt.tzinfo) if dt.tzinfo else datetime.now()
-    if dt.date() == now.date():
-        return dt.strftime("%H:%M")
-    return dt.strftime("%m-%d")
-
-
-def format_rss_kib(rss_kib: int) -> str:
-    if rss_kib <= 0:
-        return "-"
-    if rss_kib < 1024:
-        return f"{rss_kib}K"
-    mib = rss_kib / 1024
-    if mib < 1024:
-        return f"{mib:.0f}M"
-    gib = mib / 1024
-    return f"{gib:.1f}G"
-
-
-def format_cpu_pct(cpu_pct: float) -> str:
-    if cpu_pct <= 0:
-        return "-"
-    if cpu_pct >= 100:
-        return f"{cpu_pct:.0f}"
-    return f"{cpu_pct:.1f}"
-
-
-def _format_bytes(num_bytes: int) -> str:
-    if num_bytes <= 0:
-        return "-"
-    value = float(num_bytes)
-    for suffix in ("B", "K", "M", "G", "T"):
-        if value < 1024 or suffix == "T":
-            if suffix == "B":
-                return f"{int(value)}B"
-            if value >= 10:
-                return f"{value:.0f}{suffix}"
-            return f"{value:.1f}{suffix}"
-        value /= 1024
-    return f"{value:.0f}T"
-
-
-def _pct(used: int, total: int) -> str:
-    if total <= 0:
-        return "-"
-    return f"{(used / total) * 100:.0f}%"
-
-
-def _compact_duration(seconds: float) -> str:
-    total = max(0, int(seconds))
-    days, rem = divmod(total, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes = rem // 60
-    if days:
-        return f"{days}d {hours}h"
-    if hours:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m"
-
-
 def _read_server_status(disk_path: str) -> ServerStatus:
-    from uxon.tui.context import ServerStatus  # noqa: PLC0415
+    from uxon.domain.status import ServerStatus  # noqa: PLC0415
 
     load = ""
     cpu = ""
@@ -1195,7 +844,7 @@ def _read_server_status(disk_path: str) -> ServerStatus:
 
 
 def _read_ssh_link_health_status() -> LinkHealthStatus | None:
-    from uxon.tui.context import LinkHealthStatus  # noqa: PLC0415
+    from uxon.domain.status import LinkHealthStatus  # noqa: PLC0415
 
     ssh_connection = os.environ.get("SSH_CONNECTION", "").strip()
     if not ssh_connection:
@@ -1420,123 +1069,6 @@ def copy_worktreeinclude_matches(repo_root: str, dest: str, launch_user: str) ->
         run_cmd(prefix + ["cp", "-p", src, dst], check=True)
 
 
-def session_stem_for_path(target_dir: str) -> str:
-    return slugify(os.path.basename(target_dir))
-
-
-def session_stem_for_worktree(repo_root: str, branch: str) -> str:
-    # Always repo-qualified, even when the branch slug equals the repo slug
-    # (§2.5). Collapsing to the bare repo slug would make a worktree on a
-    # branch named like its repo share the primary tree's stem
-    # (``session_stem_for_path``) and hard-fail on "session conflict".
-    repo_slug = slugify(os.path.basename(repo_root))
-    workspace_slug = slugify(branch)
-    return f"{repo_slug}-{workspace_slug}"
-
-
-def _modern_re(prefix: str) -> re.Pattern[str]:
-    return re.compile(
-        rf"^{re.escape(prefix)}(?P<stem>.+?)@(?P<agent>[a-z][a-z0-9_]*)(?:-(?P<index>\d+))?$"
-    )
-
-
-def parse_session_name(
-    name: str,
-    *,
-    prefix: str = "uxon-",
-    legacy_prefixes: tuple[str, ...] = (),
-) -> tuple[str, str, int, bool] | None:
-    """Return (stem, agent, index, legacy) or None if the name is not ours.
-
-    Recognises the current ``prefix`` plus any ``legacy_prefixes`` in the
-    ``<prefix><stem>@<agent>[-N]`` shape. ``legacy=True`` is returned for
-    names matched via a non-current prefix.
-    """
-    for p in (prefix, *legacy_prefixes):
-        m = _modern_re(p).match(name)
-        if m:
-            idx = int(m.group("index")) if m.group("index") else 1
-            return m.group("stem"), m.group("agent"), idx, p != prefix
-    return None
-
-
-def candidate_session_name(stem: str, index: int, agent: str, *, prefix: str = "uxon-") -> str:
-    base = f"{prefix}{stem}@{agent}"
-    if index <= 1:
-        return base
-    return f"{base}-{index}"
-
-
-def parse_plain_session_index(
-    name: str,
-    stem: str,
-    agent: str,
-    *,
-    prefix: str = "uxon-",
-    legacy_prefixes: tuple[str, ...] = (),
-) -> int | None:
-    parsed = parse_session_name(name, prefix=prefix, legacy_prefixes=legacy_prefixes)
-    if parsed is None:
-        return None
-    p_stem, p_agent, p_index, _legacy = parsed
-    if p_stem != stem or p_agent != agent:
-        return None
-    return p_index
-
-
-def compatible_indexed_sessions(
-    stem: str,
-    agent: str,
-    compatibility_root: str,
-    sessions: list[SessionInfo],
-    *,
-    prefix: str = "uxon-",
-    legacy_prefixes: tuple[str, ...] = (),
-) -> list[SessionInfo]:
-    matches: list[SessionInfo] = []
-    for session in sessions:
-        idx = parse_plain_session_index(
-            session.name, stem, agent, prefix=prefix, legacy_prefixes=legacy_prefixes
-        )
-        if idx is None:
-            continue
-        if not session_path_compatible(session.active_path, compatibility_root):
-            fail(
-                "session conflict: "
-                f"{session.name} already points to {session.active_path or '<unknown>'}, "
-                f"not under {compatibility_root}"
-            )
-        matches.append(session)
-    return matches
-
-
-def choose_attach_session(
-    existing: list[SessionInfo],
-    stem: str,
-    agent: str,
-    *,
-    prefix: str = "uxon-",
-    legacy_prefixes: tuple[str, ...] = (),
-) -> SessionInfo:
-    if not existing:
-        raise ValueError("expected at least one existing session")
-    base_name = candidate_session_name(stem, 1, agent, prefix=prefix)
-    attached = [s for s in existing if s.attached == "1"]
-    for bucket in (attached, existing):
-        for session in bucket:
-            if session.name == base_name:
-                return session
-    return min(
-        existing,
-        key=lambda session: (
-            parse_plain_session_index(
-                session.name, stem, agent, prefix=prefix, legacy_prefixes=legacy_prefixes
-            )
-            or 9999
-        ),
-    )
-
-
 def is_interactive_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -1559,47 +1091,6 @@ def prompt_repeat_action(
         fail("cancelled", 130)
     fail("expected Enter/attach, new, or q; rerun with --attach-existing or --new-session")
     raise AssertionError("unreachable")
-
-
-def allocate_session_name(
-    stem: str,
-    agent: str,
-    compatibility_root: str,
-    sessions: list[SessionInfo],
-    *,
-    prefix: str = "uxon-",
-) -> str:
-    exact_base = candidate_session_name(stem, 1, agent, prefix=prefix)
-    exact_base_hits = [s for s in sessions if s.name == exact_base]
-    if exact_base_hits and not session_path_compatible(
-        exact_base_hits[0].active_path, compatibility_root
-    ):
-        fail(
-            "session conflict: "
-            f"{exact_base} already points to {exact_base_hits[0].active_path or '<unknown>'}, "
-            f"not under {compatibility_root}"
-        )
-
-    index = 1
-    while True:
-        candidate = candidate_session_name(stem, index, agent, prefix=prefix)
-        existing = [s for s in sessions if s.name == candidate]
-        if not existing:
-            return candidate
-        if not session_path_compatible(existing[0].active_path, compatibility_root):
-            fail(
-                "session conflict: "
-                f"{candidate} already points to {existing[0].active_path or '<unknown>'}, "
-                f"not under {compatibility_root}"
-            )
-        index += 1
-
-
-def session_path_compatible(active_path: str, repo_root: str) -> bool:
-    if not active_path:
-        return True
-    active = canonical(active_path)
-    return is_under(active, repo_root)
 
 
 def get_env_repeat_noninteractive_mode() -> str | None:
@@ -1952,23 +1443,6 @@ def _resolve_or_audit_not_found(
             fields.update(extra)
         _audit.audit(audit_event, outcome="not_found", **fields)
         raise
-
-
-def is_under_allowed_roots(cfg: Config, path: str) -> bool:
-    """Single source of truth for the ``allowed_roots`` whitelist policy.
-
-    Empty ``cfg.allowed_roots`` → no whitelist; any path passes (the
-    caller is expected to have its own write/existence gate). Non-empty
-    → strict whitelist: ``path`` must sit under one of the listed roots.
-
-    Consumed by every site that gates on ``allowed_roots`` so the
-    "empty list = any writable directory" semantics introduced in 3.1.0
-    behave uniformly across the launch flow, the new-project flow, the
-    project-config discovery walk, and the doctor diagnostics.
-    """
-    if not cfg.allowed_roots:
-        return True
-    return any(is_under(path, base) for base in cfg.allowed_roots)
 
 
 def is_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> bool:
@@ -2353,7 +1827,7 @@ def _list_data(
     performed an ``--all-users`` probe pass the (possibly empty)
     list to surface it in the envelope.
     """
-    from uxon.wire_schema import build_session_records
+    from uxon.domain.wire_schema import build_session_records
 
     body: dict[str, Any] = {
         "all_users": all_users,
@@ -2381,7 +1855,7 @@ def _emit_json_with_host(
     Lines stream — used by ``--all-hosts --json`` so a consumer
     can split on ``\\n`` and parse each record independently.
     """
-    from uxon.wire_schema import make_envelope
+    from uxon.domain.wire_schema import make_envelope
 
     env = make_envelope(
         kind,  # type: ignore[arg-type]
@@ -2614,7 +2088,7 @@ def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> Non
     pretty-printed form so a human-piped ``uxon list --json`` is
     readable.
     """
-    from uxon.wire_schema import make_envelope
+    from uxon.domain.wire_schema import make_envelope
 
     # Additive optional ``host_stats`` block for ``list`` envelopes —
     # producer must never abort the list output if /proc is partially
@@ -2734,9 +2208,6 @@ def print_list(
     print("attach: uxon attach <id|pid>")
     print("kill:   uxon kill <id|pid> [--dry-run]")
     return 0
-
-
-SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version", "doctor"}
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
@@ -3292,22 +2763,22 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
 
 def _tui_launch_request_cls() -> type:
-    """Lazy-load ``LaunchRequest`` from ``uxon.tui.context`` (pure data;
-    no textual import). Kept as a function so the module-top import surface
-    of cli.py stays small."""
-    from uxon.tui.context import LaunchRequest
+    """Lazy-load ``LaunchRequest`` from ``uxon.domain.launch_request`` (pure
+    data; no textual import). Kept as a function so the module-top import
+    surface of cli.py stays small."""
+    from uxon.domain.launch_request import LaunchRequest
 
     return LaunchRequest
 
 
 def _session_name_from_launch_label(label: str) -> str:
-    """Thin re-export so cli.py call sites keep their local symbol.
+    """Thin wrapper so cli.py call sites keep their local symbol.
 
-    Helper lives next to LaunchRequest (``uxon.tui.context``) so the TUI
-    run-loop can reuse it for ``session.ended`` without a circular dep
-    on cli.py.
+    Helper lives next to LaunchRequest (``uxon.domain.launch_request``) so
+    the TUI run-loop can reuse it for ``session.ended`` without a circular
+    dep on cli.py.
     """
-    from uxon.tui.context import session_name_from_launch_label
+    from uxon.domain.launch_request import session_name_from_launch_label
 
     return session_name_from_launch_label(label)
 
@@ -4429,12 +3900,17 @@ def repo_is_dirty() -> bool:
 
 
 def format_version() -> str:
+    """Compose the impure version readers with the pure string builder.
+
+    The display-string construction is owned by
+    :func:`uxon.domain.version.format_version`; this composition root
+    gathers ``version`` / ``commit`` / ``dirty`` from the (still-impure)
+    git/FS readers. Phase 2 relocates the readers to ``infra``.
+    """
     version = read_repo_version()
     commit = read_git_commit_short()
-    if commit:
-        suffix = f"{commit}-dirty" if repo_is_dirty() else commit
-        return f"uxon {version} ({suffix})"
-    return f"uxon {version}"
+    dirty = repo_is_dirty() if commit else False
+    return _format_version_str(version, commit, dirty)
 
 
 def command_path_for_user(command: str, target_user: str) -> str | None:
@@ -4527,7 +4003,7 @@ def do_doctor(
 ) -> int:
     from uxon import agents as uxon_agents
     from uxon import probes as uxon_probes
-    from uxon.wire_schema import build_session_records
+    from uxon.domain.wire_schema import build_session_records
 
     _, config_sources = resolve_config_layers(cwd)
     socket_path = tmux_socket_path(cfg, launch_user)
@@ -4913,7 +4389,7 @@ def _list_existing_projects(root: str) -> list[tuple[str, str]]:
 def _to_tui_session(
     s: SessionInfo, prefix: str, legacy_prefixes: tuple[str, ...] = ()
 ) -> TuiSession:
-    from uxon.tui.context import TuiSession  # noqa: PLC0415
+    from uxon.domain.session import TuiSession  # noqa: PLC0415
 
     short = s.name[len(prefix) :] if s.name.startswith(prefix) else s.name
     for lp in legacy_prefixes:
@@ -5165,12 +4641,13 @@ def _build_on_remote_attach_callback(cfg: Config):
     with a synthetic Config without spinning up the full
     _build_tui_context closure.
     """
+    from uxon.domain.launch_request import LaunchRequest
     from uxon.remote_collector import (
         DEFAULT_CONNECT_TIMEOUT_SEC,
         build_peer_ssh_argv,
     )
     from uxon.remote_hosts import find_host
-    from uxon.tui.context import CallbackError, LaunchRequest
+    from uxon.tui.context import CallbackError
 
     def on_remote_attach(host_name: str, user: str, name: str) -> LaunchRequest:
         import uuid as _uuid
@@ -5239,10 +4716,10 @@ def _build_tui_context(
     ``skeleton=False``, the function probes once.
     """
     from uxon import settings as uxon_settings
+    from uxon.domain.status import ServerStatus
     from uxon.sudo_probe import SudoCapability, probe_sudo_capability
     from uxon.tui.context import (  # noqa: PLC0415
         CallbackError,
-        ServerStatus,
         TuiContext,
     )
 

@@ -38,9 +38,9 @@ from typing import Any
 
 import msgspec
 
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
 from uxon.remote_collector import RemoteSnapshot
 from uxon.remote_hosts import RemoteHost
-from uxon.wire_schema import WIRE_SCHEMA_VERSION
 
 DEMO_ENV_VAR = "UXON_DEMO_HOSTS"
 """Env var that activates demo mode. Value is a directory of envelopes."""

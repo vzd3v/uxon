@@ -26,9 +26,9 @@ from typing import Any
 from unittest import mock
 
 from uxon import _demo as uxon_demo
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
 from uxon.remote_collector import fetch_remote_snapshot
 from uxon.remote_hosts import RemoteHost
-from uxon.wire_schema import WIRE_SCHEMA_VERSION
 
 
 def _envelope(sessions: list[dict[str, Any]], *, demo_color: str | None = None) -> dict[str, Any]:

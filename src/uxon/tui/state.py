@@ -12,12 +12,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from uxon.domain.session import TuiSession
+from uxon.domain.status import LinkHealthStatus, ServerStatus
+
 from .context import (
     CallbackError,
-    LinkHealthStatus,
-    ServerStatus,
     TuiContext,
-    TuiSession,
     _segments,
     _total_items,
 )

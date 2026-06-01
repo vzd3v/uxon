@@ -21,10 +21,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from uxon.domain.launch_request import LaunchRequest
     from uxon.remote_hosts import RemoteHost
     from uxon.tui.refresh import SourceSpec
 
-    from .context import LaunchRequest, TuiContext
+    from .context import TuiContext
 
 
 @dataclass(frozen=True)

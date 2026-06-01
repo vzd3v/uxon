@@ -31,13 +31,13 @@ class SlugParityTests(unittest.TestCase):
     """C5: the worktree-path slug and the session-stem slug MUST match.
 
     ``compute_worktree_path`` uses ``worktrees._slugify``; the session stem
-    uses ``cli.slugify`` (via ``session_stem_for_worktree``). If they ever
-    diverge, the created session name and the probe-derived name disagree
-    and identity breaks silently. Lock them together here.
+    uses ``domain.session.slugify`` (via ``session_stem_for_worktree``). If
+    they ever diverge, the created session name and the probe-derived name
+    disagree and identity breaks silently. Lock them together here.
     """
 
     def test_slugify_matches_cli_slugify(self) -> None:
-        import uxon.cli as cli
+        from uxon.domain.session import slugify
         from uxon.worktrees import _slugify
 
         for branch in [
@@ -49,7 +49,7 @@ class SlugParityTests(unittest.TestCase):
             "déjà-vu",
             "a/b/c",
         ]:
-            self.assertEqual(_slugify(branch), cli.slugify(branch), f"slug mismatch for {branch!r}")
+            self.assertEqual(_slugify(branch), slugify(branch), f"slug mismatch for {branch!r}")
 
 
 class ParsePorcelainTests(unittest.TestCase):

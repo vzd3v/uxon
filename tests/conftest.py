@@ -14,18 +14,18 @@ from unittest import mock
 import pytest
 
 from uxon import audit as _audit
-from uxon import probes as _probes
+from uxon.domain.host_report import BinaryStatus, HostReport
 
 # Fully-installed CATALOG, used as the autouse ``probe_host`` stub. Tests
 # that exercise the install-gate path explicitly mock ``probe_host`` in
 # their own scope (the inner ``with mock.patch`` shadows this fixture for
 # the duration of that block).
-_STUB_HOST_REPORT = _probes.HostReport(
-    tmux=_probes.BinaryStatus("tmux", "/usr/bin/tmux", ""),
+_STUB_HOST_REPORT = HostReport(
+    tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
     agents={
-        "claude": _probes.BinaryStatus("claude", "/usr/local/bin/claude", ""),
-        "codex": _probes.BinaryStatus("codex", "/usr/local/bin/codex", ""),
-        "cursor": _probes.BinaryStatus("cursor-agent", "/usr/local/bin/cursor-agent", ""),
+        "claude": BinaryStatus("claude", "/usr/local/bin/claude", ""),
+        "codex": BinaryStatus("codex", "/usr/local/bin/codex", ""),
+        "cursor": BinaryStatus("cursor-agent", "/usr/local/bin/cursor-agent", ""),
     },
     launch_user="",
 )

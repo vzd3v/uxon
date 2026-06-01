@@ -16,12 +16,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .context import ServerStatus, SudoCapability
+from uxon.domain.status import ServerStatus
+
+from .context import SudoCapability
 
 if TYPE_CHECKING:
+    from uxon.domain.session import TuiSession
     from uxon.probes import HostStatsResult
 
-    from .context import TuiContext, TuiSession
+    from .context import TuiContext
 
 
 @dataclass(frozen=True, slots=True)
