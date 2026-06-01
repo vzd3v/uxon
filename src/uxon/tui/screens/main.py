@@ -909,9 +909,7 @@ class MainScreen(Screen):
             target_dir,
             on_probed_workspaces,
             probe_launchable=(
-                None
-                if launchable is True
-                else lambda: self.ctx.on_probe_dir_launchable(target_dir)
+                None if launchable is True else lambda: self.ctx.on_probe_dir_launchable(target_dir)
             ),
         )
 
