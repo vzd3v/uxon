@@ -219,7 +219,7 @@ class KillAllJsonTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="kill-all", json_output=True)
         with (
             mock.patch.object(uxon, "collect_sessions", return_value=[_make_session()]),
-            mock.patch.object(uxon, "eprint") as eprint,
+            mock.patch("uxon.errors.eprint") as eprint,
             self.assertRaises(SystemExit),
         ):
             uxon.do_kill_all(args, cfg, "u-vz")
@@ -292,7 +292,7 @@ class HostDispatchTests(unittest.TestCase):
 
         cfg = self._cfg_with_hosts(["a", "b"])
         args = uxon.ParsedArgs(action="list", host="missing")
-        with mock.patch.object(uxon, "eprint") as eprint:
+        with mock.patch("uxon.errors.eprint") as eprint:
             with self.assertRaises(SystemExit):
                 _do_list_host(args, cfg)
         # Error message lists the configured hosts so the operator can
@@ -307,7 +307,7 @@ class HostDispatchTests(unittest.TestCase):
         cfg = _make_config()
         cfg.remote_hosts = []
         args = uxon.ParsedArgs(action="list", host="any")
-        with mock.patch.object(uxon, "eprint") as eprint:
+        with mock.patch("uxon.errors.eprint") as eprint:
             with self.assertRaises(SystemExit):
                 _do_list_host(args, cfg)
         self.assertIn("no [[remote_hosts]]", eprint.call_args[0][0])

@@ -15,8 +15,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Literal
 
+from uxon.errors import eprint, fail
 from uxon.worktrees import compute_worktree_path
 
 if TYPE_CHECKING:
@@ -368,21 +369,6 @@ class ParsedArgs:
     # else (interactive/version paths, TUI-side ParsedArgs
     # construction in ``_plan_tui_*_agent``).
     host_report: probes.HostReport | None = None
-
-
-def eprint(msg: str) -> None:
-    print(msg, file=sys.stderr)
-
-
-def fail(msg: str, code: int = 2) -> NoReturn:
-    eprint(f"uxon: {msg}")
-    # Stash the human-readable message on the exception object so a
-    # ``try/except SystemExit`` upstream (e.g. main()'s ``config.error``
-    # audit emit) can recover it. Without this, ``str(ex)`` on a
-    # ``SystemExit(int_code)`` yields just ``"1"`` / ``"2"``.
-    err = SystemExit(code)
-    err.uxon_msg = msg  # type: ignore[attr-defined]
-    raise err
 
 
 def _sanitize_callback_stderr(raw: str) -> str:

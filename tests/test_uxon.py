@@ -794,7 +794,7 @@ class UxonTests(unittest.TestCase):
             with mock.patch.object(uxon, "run_cmd") as run_cmd:
                 with mock.patch.object(uxon, "collect_sessions", return_value=existing):
                     with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
-                        with mock.patch.object(uxon, "eprint") as eprint:
+                        with mock.patch("uxon.errors.eprint") as eprint:
                             with self.assertRaises(SystemExit) as ctx:
                                 uxon.do_new(args, cfg, "u-vz")
 
@@ -874,7 +874,7 @@ class UxonTests(unittest.TestCase):
                         with mock.patch.object(
                             uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"
                         ):
-                            with mock.patch.object(uxon, "eprint") as eprint:
+                            with mock.patch("uxon.errors.eprint") as eprint:
                                 with self.assertRaises(SystemExit) as ctx:
                                     uxon.do_new(args, cfg, "u-vz")
 
@@ -999,7 +999,7 @@ class UxonTests(unittest.TestCase):
 
         with mock.patch.object(uxon, "collect_sessions", return_value=sessions):
             with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
-                with mock.patch.object(uxon, "eprint") as eprint:
+                with mock.patch("uxon.errors.eprint") as eprint:
                     with self.assertRaises(SystemExit) as ctx:
                         uxon.do_kill_all(args, cfg, "u-vz")
 
