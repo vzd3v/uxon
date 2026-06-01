@@ -1,6 +1,7 @@
-"""Structured JSONL event log for the uxon TUI.
+"""Structured JSONL observability log for uxon.
 
-Every user-visible transition in the TUI writes one JSON line to
+Infra-level concern (stdlib + structlog only, no textual); the TUI is
+its primary consumer. Every user-visible transition in the TUI writes one JSON line to
 ``${XDG_STATE_HOME:-~/.local/state}/uxon/tui-{launch_user}-YYYYMMDD.log``
 (override with ``UXON_LOG_DIR``). Format is newline-delimited JSON;
 each line is self-describing. Log writes are best-effort — a failure

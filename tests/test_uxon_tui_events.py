@@ -1,4 +1,4 @@
-"""Tests for the debug-logging channel in ``uxon.tui.events``.
+"""Tests for the debug-logging channel in ``uxon.infra.events``.
 
 The user-facing ``_log_event`` is exercised end-to-end by the TUI
 integration suite; this module covers ``debug()`` — the off-by-default
@@ -12,7 +12,7 @@ import os
 import unittest
 from unittest import mock
 
-from uxon.tui import events
+from uxon.infra import events
 
 
 class DebugChannelTests(unittest.TestCase):
@@ -31,7 +31,7 @@ class DebugChannelTests(unittest.TestCase):
     def test_writes_when_topic_enabled(self) -> None:
         with mock.patch.dict(os.environ, {"USER": "tester"}, clear=False):
             events._DEBUG_TOPICS = frozenset({"refresh"})
-            with mock.patch("uxon.tui.events._log_dir") as log_dir:
+            with mock.patch("uxon.infra.events._log_dir") as log_dir:
                 with self._tmp_log_dir(log_dir) as tmp:
                     events.debug("refresh", at="worker", elapsed_ms=42)
                     line = self._read_only_line(tmp)
@@ -44,7 +44,7 @@ class DebugChannelTests(unittest.TestCase):
     def test_topic_filter_drops_other_topics(self) -> None:
         with mock.patch.dict(os.environ, {"USER": "tester"}, clear=False):
             events._DEBUG_TOPICS = frozenset({"refresh"})
-            with mock.patch("uxon.tui.events._log_dir") as log_dir:
+            with mock.patch("uxon.infra.events._log_dir") as log_dir:
                 with self._tmp_log_dir(log_dir) as tmp:
                     events.debug("probe", at="x")
                     self.assertEqual(os.listdir(tmp), [])
@@ -52,7 +52,7 @@ class DebugChannelTests(unittest.TestCase):
     def test_wildcard_topic_writes_everything(self) -> None:
         with mock.patch.dict(os.environ, {"USER": "tester"}, clear=False):
             events._DEBUG_TOPICS = frozenset({"*"})
-            with mock.patch("uxon.tui.events._log_dir") as log_dir:
+            with mock.patch("uxon.infra.events._log_dir") as log_dir:
                 with self._tmp_log_dir(log_dir) as tmp:
                     events.debug("anything", value=1)
                     line = self._read_only_line(tmp)
@@ -61,7 +61,7 @@ class DebugChannelTests(unittest.TestCase):
     def test_logging_failures_are_swallowed(self) -> None:
         events._DEBUG_TOPICS = frozenset({"*"})
         # Force makedirs to succeed but open() to fail — call must not raise.
-        with mock.patch("uxon.tui.events._log_dir", return_value="/no/such/path/exists"):
+        with mock.patch("uxon.infra.events._log_dir", return_value="/no/such/path/exists"):
             events.debug("refresh", x=1)  # silent on PermissionError / FileNotFoundError
 
     # ── helpers ──

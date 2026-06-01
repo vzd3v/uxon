@@ -389,7 +389,7 @@ class UxonTests(unittest.TestCase):
         # now a hard contract. Any value carried over from older
         # configs is silently ignored; the loader emits one
         # ``UXON_DEBUG=tui`` line so operators can spot the fossil.
-        from uxon.tui import events as _events
+        from uxon.infra import events as _events
 
         seen: list[tuple[str, dict]] = []
 

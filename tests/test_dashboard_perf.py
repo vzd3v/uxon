@@ -90,7 +90,7 @@ class _DebugLogCapture:
         self._prev_topics: frozenset[str] | None = None
 
     def __enter__(self) -> _DebugLogCapture:
-        from uxon.tui import events as ev
+        from uxon.infra import events as ev
 
         self._tmp = tempfile.TemporaryDirectory()
         self._prev_log_dir = os.environ.get("UXON_LOG_DIR")
@@ -100,7 +100,7 @@ class _DebugLogCapture:
         return self
 
     def __exit__(self, *exc) -> None:
-        from uxon.tui import events as ev
+        from uxon.infra import events as ev
 
         if self._prev_topics is not None:
             ev._DEBUG_TOPICS = self._prev_topics  # type: ignore[assignment]
@@ -218,7 +218,7 @@ class WidgetApplyPerfTests(unittest.IsolatedAsyncioTestCase):
 
         from textual.app import App, ComposeResult
 
-        from uxon.tui import events as ev
+        from uxon.infra import events as ev
         from uxon.tui.dashboard.reconcile import diff
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 

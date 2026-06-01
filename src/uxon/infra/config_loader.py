@@ -9,7 +9,6 @@ git-profile / remote-host / demo adapters.
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import Any, Literal
 
@@ -23,7 +22,7 @@ from uxon.domain.config import (
 )
 from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.errors import fail
-from uxon.infra import version_probe
+from uxon.infra import events, version_probe
 
 try:
     import tomllib
@@ -252,17 +251,9 @@ def load_config(cwd: str) -> Config:
     # hard contract — locals → cfg-order remotes → recency). Any value
     # carried over from older configs is silently ignored; emit one
     # ``UXON_DEBUG=tui`` line so operators can spot the fossil.
-    #
-    # The debug emitter currently lives in ``uxon.tui.events`` (a generic
-    # JSON-line logger that incidentally sits under ``tui/``). The infra
-    # layer must not import ``uxon.tui`` statically — resolve it lazily
-    # via ``importlib`` so this telemetry keeps working without creating
-    # an infra→tui edge. (Relocating ``debug`` to a neutral home is a
-    # later-phase concern.)
     if "default_sort_by" in tui_table_tbl:
         try:
-            _events_debug = importlib.import_module("uxon.tui.events").debug
-            _events_debug(
+            events.debug(
                 "tui",
                 reason="ignored_default_sort_by",
                 id=str(tui_table_tbl.get("default_sort_by", "")),

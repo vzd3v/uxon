@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Static
 
-from ..events import debug as _debug
+from uxon.infra.events import debug as _debug
 
 # Container ID that signals a row-of-buttons group. ActionRows whose
 # parent carries this id get cyclic ←/→ navigation and a single-step

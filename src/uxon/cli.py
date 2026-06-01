@@ -843,7 +843,7 @@ def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> Non
                 "kernel": hs.kernel,
             }
         except Exception as exc:  # pragma: no cover — defensive
-            from uxon.tui.events import debug
+            from uxon.infra.events import debug
 
             debug("probes", err=type(exc).__name__, msg=str(exc))
     env = make_envelope(

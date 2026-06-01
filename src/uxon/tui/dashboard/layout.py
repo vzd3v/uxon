@@ -19,7 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..events import debug
+from uxon.infra.events import debug
+
 from .columns import REGISTRY, ColumnSpec
 
 

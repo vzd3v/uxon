@@ -28,11 +28,11 @@ from textual.worker import Worker, WorkerState
 
 from uxon import __version__
 from uxon.domain.launch_request import LaunchRequest
+from uxon.infra.events import debug as _debug
+from uxon.infra.events import metrics_record
 
 from .config import TuiConfig
 from .context import CallbackError, TuiContext
-from .events import debug as _debug
-from .events import metrics_record
 from .hints import TEXTUAL_MISSING_HINT
 from .launch import _run_launch_request, pause_on_launch_failure
 from .screens.agents_unavailable import AgentsUnavailableScreen

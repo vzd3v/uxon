@@ -33,6 +33,8 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
+from uxon.infra.events import debug as _debug
+
 from ..context import (
     ACTION_COUNT,
     CallbackError,
@@ -51,7 +53,6 @@ from ..dashboard.reconcile import diff
 from ..dashboard.row import SessionRow
 from ..dashboard.seen_users import collect_user_set, cross_user_latched
 from ..dashboard.ui_state import DashboardUiState, MainScreenUiState, set_filter, set_view_mode
-from ..events import debug as _debug
 from ..keymap import bindings_with_aliases
 from ..state import (
     MainIntent,

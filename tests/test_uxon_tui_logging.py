@@ -39,14 +39,14 @@ class StartupChannelTests(unittest.TestCase):
         # The ``startup`` channel rides the same ``_debug`` helper used
         # everywhere else; we only need to verify the topic filter
         # passes the new topic name through.
-        from uxon.tui.events import _parse_debug_topics, debug
+        from uxon.infra.events import _parse_debug_topics, debug
 
         with tempfile.TemporaryDirectory() as td:
             with self._enable(td):
                 # Re-resolve the topic set: events.py snapshots
                 # UXON_DEBUG at import. We patch the module-level set
                 # for the duration of the test.
-                from uxon.tui import events as ev
+                from uxon.infra import events as ev
 
                 with mock.patch.object(ev, "_DEBUG_TOPICS", _parse_debug_topics()):
                     debug("startup", at="mount_started", ts=1.5)
@@ -121,7 +121,7 @@ class MetricsJsonlTests(unittest.TestCase):
         return mock.patch.dict(os.environ, {"UXON_LOG_DIR": td, "UXON_METRICS": "1"})
 
     def test_disabled_by_default(self) -> None:
-        from uxon.tui.events import metrics_record
+        from uxon.infra.events import metrics_record
 
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.dict(os.environ, {"UXON_LOG_DIR": td}, clear=False):
@@ -130,7 +130,7 @@ class MetricsJsonlTests(unittest.TestCase):
             self.assertEqual(list(pathlib.Path(td).iterdir()), [])
 
     def test_writes_one_jsonl_line(self) -> None:
-        from uxon.tui.events import metrics_record
+        from uxon.infra.events import metrics_record
 
         with tempfile.TemporaryDirectory() as td:
             with self._enable(td):
@@ -153,7 +153,7 @@ class MetricsJsonlTests(unittest.TestCase):
             self.assertEqual(rec["attempted_at"], 1700000000.0)
 
     def test_swallows_errors(self) -> None:
-        from uxon.tui.events import metrics_record
+        from uxon.infra.events import metrics_record
 
         with mock.patch.dict(
             os.environ,
@@ -165,7 +165,7 @@ class MetricsJsonlTests(unittest.TestCase):
                 self.fail(f"metrics_record raised: {exc!r}")
 
     def test_rotation_at_threshold(self) -> None:
-        from uxon.tui import events as ev
+        from uxon.infra import events as ev
 
         with tempfile.TemporaryDirectory() as td:
             with self._enable(td), mock.patch.object(ev, "_METRICS_ROTATE_BYTES", 256):

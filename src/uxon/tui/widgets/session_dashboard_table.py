@@ -59,8 +59,9 @@ from textual.message import Message
 from textual.widgets._data_table import DataTable as _PrivateDataTable
 from textual.widgets._data_table import RowKey
 
+from uxon.infra.events import debug
+
 from ..dashboard.reconcile import CellUpdate, RowAdd, RowRemove
-from ..events import debug
 from .focus_releasing_data_table import FocusReleasingDataTable
 
 if TYPE_CHECKING:
