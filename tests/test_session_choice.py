@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 
 from helpers import make_config
 
-from uxon.cli import SessionInfo
+from uxon.domain.session import SessionInfo
 from uxon.infra import sessions_probe
 
 

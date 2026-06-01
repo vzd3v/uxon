@@ -334,8 +334,6 @@ class CollectSessionsDemoHookTests(unittest.TestCase):
     def test_demo_env_set_does_not_spawn_subprocess(self) -> None:
         """Demo mode must never invoke tmux — otherwise the operator's
         real socket leaks into the demo's local section."""
-        from uxon import cli as uxon_cli
-
         with TemporaryDirectory() as tmp:
             d = Path(tmp)
             payload = _envelope(
@@ -363,7 +361,7 @@ class CollectSessionsDemoHookTests(unittest.TestCase):
 
             with (
                 mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: str(d)}, clear=False),
-                mock.patch.object(uxon_cli.subprocess, "run", side_effect=boom),
+                mock.patch.object(sessions_probe.subprocess, "run", side_effect=boom),
             ):
                 got = sessions_probe.collect_sessions_for_user("alice", "uxon-", None)
         self.assertEqual([s.name for s in got], ["uxon-x@claude"])
@@ -373,8 +371,6 @@ class CollectSessionsDemoHookTests(unittest.TestCase):
 
         Mock ``subprocess.run`` to short-circuit the actual probe so the
         test stays hermetic (no real tmux binary required)."""
-        from uxon import cli as uxon_cli
-
         calls: list[list[str]] = []
 
         class FakeProbe:
@@ -390,7 +386,7 @@ class CollectSessionsDemoHookTests(unittest.TestCase):
             import os
 
             os.environ.pop(uxon_demo.DEMO_ENV_VAR, None)
-            with mock.patch.object(uxon_cli.subprocess, "run", side_effect=fake_run):
+            with mock.patch.object(sessions_probe.subprocess, "run", side_effect=fake_run):
                 got = sessions_probe.collect_sessions_for_user("alice", "uxon-", None)
         self.assertEqual(got, [])
         self.assertTrue(calls, "expected tmux probe to be attempted when demo env is unset")

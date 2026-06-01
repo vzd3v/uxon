@@ -13,6 +13,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from uxon.domain.version import format_version as _format_version_str
+
 
 def repo_root() -> Path:
     """Best-effort path to the repo root for in-tree dev runs.
@@ -74,6 +76,20 @@ def repo_is_dirty() -> bool:
     if cp.returncode != 0:
         return False
     return bool((cp.stdout or "").strip())
+
+
+def format_version() -> str:
+    """Compose the impure version readers with the pure string builder.
+
+    The display-string construction is owned by
+    :func:`uxon.domain.version.format_version`; this gathers ``version`` /
+    ``commit`` / ``dirty`` from the impure git/FS readers above. Callers
+    in ``cli`` / ``app`` delegate here instead of re-composing.
+    """
+    version = read_repo_version()
+    commit = read_git_commit_short()
+    dirty = repo_is_dirty() if commit else False
+    return _format_version_str(version, commit, dirty)
 
 
 def _version_data() -> dict[str, Any]:

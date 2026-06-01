@@ -15,6 +15,7 @@ from unittest import mock
 from helpers import make_config as _make_config
 
 import uxon.app.attach as attach_app
+import uxon.tui.bridge as tui_bridge
 from uxon import cli as uxon
 from uxon.infra.remote_hosts import RemoteHost
 
@@ -266,7 +267,7 @@ class OnRemoteAttachCallbackTests(unittest.TestCase):
                 )
             ]
         )
-        callback = uxon._build_on_remote_attach_callback(cfg)
+        callback = tui_bridge._build_on_remote_attach_callback(cfg)
         req = callback("box-b", "alice", "demo@claude")
         argv = list(req.cmd)
         self.assertEqual(argv[0], "ssh")

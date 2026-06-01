@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from uxon.cli import SessionInfo
+from uxon.domain.session import SessionInfo
 from uxon.domain.wire_schema import (
     WIRE_SCHEMA_VERSION,
     SessionRecord,

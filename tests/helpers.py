@@ -10,6 +10,7 @@ matching the existing ``harness`` package convention.
 from __future__ import annotations
 
 import uxon.cli as uxon
+from uxon.domain.session import SessionInfo
 
 
 def make_config(**overrides: object) -> uxon.Config:
@@ -37,8 +38,8 @@ def make_config(**overrides: object) -> uxon.Config:
     return uxon.Config(**base)  # type: ignore[arg-type]
 
 
-def make_session(name: str = "uxon-demo@claude", *, user: str = "u-vz") -> uxon.SessionInfo:
-    return uxon.SessionInfo(
+def make_session(name: str = "uxon-demo@claude", *, user: str = "u-vz") -> SessionInfo:
+    return SessionInfo(
         user=user,
         name=name,
         attached="0",

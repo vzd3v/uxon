@@ -24,22 +24,7 @@ import uxon.app.repeat as repeat_app
 from uxon.domain.config import Config
 from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.domain.session import SessionInfo
-from uxon.domain.version import format_version as _format_version_str
 from uxon.infra import config_loader, identity, sessions_probe, tmux, version_probe
-
-
-def _format_version() -> str:
-    """Compose the impure version readers with the pure string builder.
-
-    The display-string construction is owned by
-    :func:`uxon.domain.version.format_version`; this gathers ``version`` /
-    ``commit`` / ``dirty`` from the impure git/FS readers in
-    :mod:`uxon.infra.version_probe`.
-    """
-    version = version_probe.read_repo_version()
-    commit = version_probe.read_git_commit_short()
-    dirty = version_probe.repo_is_dirty() if commit else False
-    return _format_version_str(version, commit, dirty)
 
 
 def command_path_for_user(command: str, target_user: str) -> str | None:
@@ -251,7 +236,7 @@ def do_doctor(
         return 0
 
     print("uxon doctor")
-    print(f"version={_format_version()}")
+    print(f"version={version_probe.format_version()}")
     print(f"cwd={cwd}")
     print(f"caller_user={caller_user}")
     print(f"launch_user={launch_user}")

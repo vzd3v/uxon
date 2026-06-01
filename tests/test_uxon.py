@@ -17,6 +17,7 @@ import uxon.app.new as new_app
 import uxon.app.repeat as repeat_app
 import uxon.app.run as run_app
 import uxon.cli as uxon
+import uxon.tui.bridge as tui_bridge
 from uxon.domain import authz as domain_authz
 from uxon.domain import config as domain_config
 from uxon.domain import session as domain_session
@@ -97,8 +98,8 @@ class UxonTests(unittest.TestCase):
         path: str,
         *,
         attached: str = "0",
-    ) -> uxon.SessionInfo:
-        return uxon.SessionInfo(
+    ) -> domain_session.SessionInfo:
+        return domain_session.SessionInfo(
             user="u-vz",
             name=name,
             attached=attached,
@@ -518,7 +519,7 @@ class UxonTests(unittest.TestCase):
                 + "\n",
                 tmpdir,
             )
-            ctx = uxon._build_tui_context(cfg, "devagent", tmpdir, skeleton=True)
+            ctx = tui_bridge.build_tui_context(cfg, "devagent", tmpdir, skeleton=True)
         self.assertTrue(ctx.loading)
         names = [s.name for s in ctx.refresh_sources]
         self.assertIn("main_ctx_rebuild", names)
@@ -977,9 +978,8 @@ class UxonTests(unittest.TestCase):
                                 with mock.patch.object(
                                     doctor_app, "user_can_write_dir", return_value=True
                                 ):
-                                    with mock.patch.object(
-                                        doctor_app,
-                                        "_format_version",
+                                    with mock.patch(
+                                        "uxon.infra.version_probe.format_version",
                                         return_value="uxon 0.4.0 (abc1234)",
                                     ):
                                         with mock.patch("sys.stdout", output):
@@ -1020,8 +1020,9 @@ class UxonTests(unittest.TestCase):
                             with mock.patch.object(
                                 doctor_app, "user_can_write_dir", return_value=True
                             ):
-                                with mock.patch.object(
-                                    doctor_app, "_format_version", return_value="uxon 0.4.0"
+                                with mock.patch(
+                                    "uxon.infra.version_probe.format_version",
+                                    return_value="uxon 0.4.0",
                                 ):
                                     with mock.patch("sys.stdout", output):
                                         rc = doctor_app.do_doctor(
@@ -1105,8 +1106,8 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         args = uxon.ParsedArgs(action="run", agent_args=[])
         with self._stub_socket_path():
-            with mock.patch.object(uxon.subprocess, "call", side_effect=[0, 0]) as call:
-                with mock.patch.object(uxon.os, "execvp") as execvp:
+            with mock.patch("subprocess.call", side_effect=[0, 0]) as call:
+                with mock.patch.object(tmux.os, "execvp") as execvp:
                     rc = tmux.launch_in_tmux_blocking(
                         "/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz"
                     )
@@ -1122,7 +1123,7 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         args = uxon.ParsedArgs(action="run", agent_args=[])
         with self._stub_socket_path():
-            with mock.patch.object(uxon.subprocess, "call", side_effect=[7]) as call:
+            with mock.patch("subprocess.call", side_effect=[7]) as call:
                 rc = tmux.launch_in_tmux_blocking(
                     "/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz"
                 )
@@ -1235,12 +1236,12 @@ class UxonTests(unittest.TestCase):
             "uxon: got: /tmp\n"
         )
         expected = "directory must be under one of:\n  - /srv/repos\n  - /home/u-ed\ngot: /tmp"
-        self.assertEqual(uxon._sanitize_callback_stderr(raw), expected)
+        self.assertEqual(tui_bridge._sanitize_callback_stderr(raw), expected)
 
     def test_sanitize_callback_stderr_passes_through_non_uxon_lines(self) -> None:
         raw = "random warning\nuxon: the real error\n\n"
         self.assertEqual(
-            uxon._sanitize_callback_stderr(raw),
+            tui_bridge._sanitize_callback_stderr(raw),
             "random warning\nthe real error",
         )
 
@@ -1253,7 +1254,7 @@ class UxonTests(unittest.TestCase):
             (root / "beta").mkdir()
             (root / ".hidden").mkdir()  # dot-prefixed must be skipped
             (root / "not_a_dir.txt").write_text("x")
-            entries = uxon._list_existing_projects(str(root))
+            entries = tui_bridge._list_existing_projects(str(root))
         names = [n for n, _ in entries]
         self.assertEqual(names, ["alpha", "beta"])
         for _, mtime in entries:
@@ -1261,7 +1262,7 @@ class UxonTests(unittest.TestCase):
             self.assertRegex(mtime, r"^\d\d[:-]\d\d$")
 
     def test_list_existing_projects_missing_root_returns_empty(self) -> None:
-        self.assertEqual(uxon._list_existing_projects("/nonexistent/path/for/uxon/test"), [])
+        self.assertEqual(tui_bridge._list_existing_projects("/nonexistent/path/for/uxon/test"), [])
 
     def test_wrap_tui_callback_passes_return_value(self) -> None:
         class _Err(Exception):
@@ -1269,7 +1270,7 @@ class UxonTests(unittest.TestCase):
 
             # pragma: no cover — marker only
 
-        wrapped = uxon._wrap_tui_callback(lambda x, y: x + y, _Err)
+        wrapped = tui_bridge._wrap_tui_callback(lambda x, y: x + y, _Err)
         self.assertEqual(wrapped(2, 3), 5)
 
     def test_wrap_tui_callback_captures_fail_message(self) -> None:
@@ -1279,7 +1280,7 @@ class UxonTests(unittest.TestCase):
         def inner() -> None:
             uxon.fail("directory must be under one of:\nccw:   - /srv/repos")
 
-        wrapped = uxon._wrap_tui_callback(inner, _Err)
+        wrapped = tui_bridge._wrap_tui_callback(inner, _Err)
         with self.assertRaises(_Err) as cm:
             wrapped()
         # Leading "uxon: " prefix must be stripped; list indent normalised.
@@ -1294,7 +1295,7 @@ class UxonTests(unittest.TestCase):
         def inner() -> None:
             raise SystemExit(7)
 
-        wrapped = uxon._wrap_tui_callback(inner, _Err)
+        wrapped = tui_bridge._wrap_tui_callback(inner, _Err)
         with self.assertRaises(_Err) as cm:
             wrapped()
         self.assertIn("7", str(cm.exception))
@@ -1750,8 +1751,8 @@ class UxonTests(unittest.TestCase):
 
 def _mk_session(
     name: str, path: str = "/srv/repos/x", agent: str = "claude", legacy: bool = False
-) -> uxon.SessionInfo:
-    return uxon.SessionInfo(
+) -> domain_session.SessionInfo:
+    return domain_session.SessionInfo(
         user="u",
         name=name,
         attached="0",
@@ -1784,7 +1785,7 @@ class NonintGitResolverTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(cli.subprocess, "run", fake_run),
+            mock.patch.object(git.subprocess, "run", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
             root = git.git_repo_root_nonint_as_user("/srv/work/myapp/sub", "devagent")
@@ -1797,8 +1798,6 @@ class NonintGitResolverTests(unittest.TestCase):
         self.assertEqual(seen["cmd"][: len(prefix)], prefix)
 
     def test_repo_root_nonint_none_on_failure(self) -> None:
-        import uxon.cli as cli
-
         def fake_run(cmd, **kw):
             class CP:
                 returncode = 128
@@ -1808,7 +1807,7 @@ class NonintGitResolverTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(cli.subprocess, "run", fake_run),
+            mock.patch.object(git.subprocess, "run", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
             self.assertIsNone(git.git_repo_root_nonint_as_user("/tmp/x", "devagent"))
@@ -1827,7 +1826,7 @@ class NonintGitResolverTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(cli.subprocess, "run", fake_run),
+            mock.patch.object(git.subprocess, "run", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
             root = git.git_common_dir_root_as_user(
@@ -2265,8 +2264,6 @@ class DoInteractiveTextualMissingTests(unittest.TestCase):
 
 class TuiPlannerWorktreeStemTests(unittest.TestCase):
     def test_run_agent_uses_worktree_stem_when_branch_given(self) -> None:
-        import uxon.cli as cli
-
         captured = {}
 
         def fake_alloc(stem, agent, root, sessions, *, prefix):
@@ -2277,13 +2274,13 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
         with (
             mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
-            mock.patch.object(cli, "allocate_session_name", fake_alloc),
+            mock.patch.object(tui_bridge, "allocate_session_name", fake_alloc),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
                 lambda *a, **k: attach_app._tui_launch_request_cls()(cmd=("true",), label="x"),
             ),
         ):
-            cli._plan_tui_run_agent(
+            tui_bridge._plan_tui_run_agent(
                 cfg,
                 "devagent",
                 "/srv/work/myapp/.uxon/worktrees/feature-auth",
@@ -2294,8 +2291,6 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
         self.assertEqual(captured["stem"], "myapp-feature-auth")
 
     def test_run_agent_uses_path_stem_without_worktree(self) -> None:
-        import uxon.cli as cli
-
         captured = {}
 
         def fake_alloc(stem, agent, root, sessions, *, prefix):
@@ -2306,21 +2301,19 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
         with (
             mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
-            mock.patch.object(cli, "allocate_session_name", fake_alloc),
+            mock.patch.object(tui_bridge, "allocate_session_name", fake_alloc),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
                 lambda *a, **k: attach_app._tui_launch_request_cls()(cmd=("true",), label="x"),
             ),
         ):
-            cli._plan_tui_run_agent(cfg, "devagent", "/srv/work/plain", "claude", "default")
+            tui_bridge._plan_tui_run_agent(cfg, "devagent", "/srv/work/plain", "claude", "default")
         self.assertEqual(captured["stem"], "plain")
 
 
 class ProbeWorktreeStemTests(unittest.TestCase):
     def _session(self, name: str, path: str):
-        import uxon.cli as cli
-
-        return cli.SessionInfo(
+        return domain_session.SessionInfo(
             user="devagent",
             name=name,
             attached="0",
@@ -2365,9 +2358,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
     """
 
     def _session(self, name: str, path: str):
-        import uxon.cli as cli
-
-        return cli.SessionInfo(
+        return domain_session.SessionInfo(
             user="devagent",
             name=name,
             attached="0",
@@ -2381,8 +2372,6 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         )
 
     def test_planner_allocates_repo_qualified_name_probe_then_matches(self) -> None:
-        import uxon.cli as cli
-
         repo = "/srv/work/myapp"
         wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
         branch = "feature/auth"
@@ -2399,7 +2388,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
                 ),
             ),
         ):
-            req = cli._plan_tui_run_agent(
+            req = tui_bridge._plan_tui_run_agent(
                 cfg, "devagent", wt, "claude", "default", worktree=(repo, branch)
             )
         self.assertEqual(req.label, "launch uxon-myapp-feature-auth@claude")
@@ -2412,14 +2401,12 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
                 "devagent",
                 wt,
                 "claude",
-                stem=cli.session_stem_for_worktree(repo, branch),
+                stem=domain_session.session_stem_for_worktree(repo, branch),
                 compatibility_root=wt,
             )
         self.assertEqual([s.name for s in found], ["uxon-myapp-feature-auth@claude"])
 
     def test_two_repos_same_branch_do_not_collide(self) -> None:
-        import uxon.cli as cli
-
         repo_b = "/srv/work/beta"
         wt_a = "/srv/work/alpha/.uxon/worktrees/feature"
         wt_b = "/srv/work/beta/.uxon/worktrees/feature"
@@ -2433,7 +2420,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
                 "devagent",
                 wt_b,
                 "claude",
-                stem=cli.session_stem_for_worktree(repo_b, "feature"),
+                stem=domain_session.session_stem_for_worktree(repo_b, "feature"),
                 compatibility_root=wt_b,
             )
         self.assertEqual(found, ())  # no match, no SystemExit
@@ -2442,13 +2429,11 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         # §2.5: the worktree stem must never collapse to the bare repo slug,
         # or a worktree on a branch named like its repo would collide with
         # the primary tree's stem (session_stem_for_path) and hard-fail.
-        import uxon.cli as cli
-
         repo = "/srv/work/myapp"
-        self.assertEqual(cli.session_stem_for_worktree(repo, "myapp"), "myapp-myapp")
+        self.assertEqual(domain_session.session_stem_for_worktree(repo, "myapp"), "myapp-myapp")
         self.assertNotEqual(
-            cli.session_stem_for_worktree(repo, "myapp"),
-            cli.session_stem_for_path(repo),
+            domain_session.session_stem_for_worktree(repo, "myapp"),
+            domain_session.session_stem_for_path(repo),
         )
 
 
@@ -2815,8 +2800,6 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
 
 class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
     def test_probe_worktrees_returns_workspaces(self) -> None:
-        import uxon.cli as cli
-
         porcelain = (
             "worktree /srv/work/myapp\nHEAD 1111111111111111111111111111111111111111\n"
             "branch refs/heads/main\n\n"
@@ -2841,33 +2824,29 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
             mock.patch(
                 "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/work/myapp"
             ),
-            mock.patch.object(cli.subprocess, "run", fake_run),
+            mock.patch.object(tui_bridge.subprocess, "run", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
         ):
-            ctx = cli._build_tui_context(cfg, "devagent", "/srv/work/myapp", skeleton=True)
+            ctx = tui_bridge.build_tui_context(cfg, "devagent", "/srv/work/myapp", skeleton=True)
             rows = ctx.on_probe_worktrees("/srv/work/myapp")
         self.assertTrue(rows[0].is_primary)
         self.assertEqual(rows[1].branch, "feature/auth")
 
     def test_probe_worktrees_non_git_returns_empty(self) -> None:
-        import uxon.cli as cli
-
         cfg = config_loader.load_config("/tmp")
         with (
             mock.patch("uxon.infra.git.git_repo_root_nonint_as_user", return_value=None),
             mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
         ):
-            ctx = cli._build_tui_context(cfg, "devagent", "/tmp/plain", skeleton=True)
+            ctx = tui_bridge.build_tui_context(cfg, "devagent", "/tmp/plain", skeleton=True)
             self.assertEqual(ctx.on_probe_worktrees("/tmp/plain"), [])
 
 
 class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
     def test_callback_uses_worktree_stem(self) -> None:
-        import uxon.cli as cli
-
         repo = "/srv/work/myapp"
         wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
-        sess = cli.SessionInfo(
+        sess = domain_session.SessionInfo(
             user="devagent",
             name="uxon-myapp-feature-auth@claude",
             attached="1",
@@ -2886,7 +2865,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
             mock.patch("uxon.infra.git.git_common_dir_root_as_user", return_value=repo),
             mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
         ):
-            ctx = cli._build_tui_context(cfg, "devagent", repo, skeleton=True)
+            ctx = tui_bridge.build_tui_context(cfg, "devagent", repo, skeleton=True)
             out = ctx.on_probe_existing_worktree_sessions(wt, repo, "feature/auth", "claude")
         self.assertEqual(out, (("uxon-myapp-feature-auth@claude", True),))
 

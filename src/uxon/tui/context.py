@@ -67,7 +67,7 @@ class TuiContext:
     tui_render_debounce_ms: int = 300
     tui_render_max_latency_ms: int = 1000
     # Multi-host transport knobs. Forwarded into per-host fetch
-    # closures by ``cli._build_tui_context`` and snapshotted into
+    # closures by ``tui.bridge.build_tui_context`` and snapshotted into
     # :class:`uxon.tui.config.TuiConfig` at App-construction time.
     # Defaults mirror :data:`uxon.cli.DEFAULT_CONFIG` so test fixtures
     # that build a bare ``TuiContext`` keep working unchanged.

@@ -268,11 +268,11 @@ def load_demo_local_sessions(dir_path: Path, user: str) -> list[Any]:
     production "empty tmux socket" path, so a screenshot run on a
     pristine demo dir mirrors a fresh box.
 
-    Imports :class:`uxon.cli.SessionInfo` lazily because ``uxon.cli``
-    imports this module on demand from its own demo short-circuits;
-    a load-time import here would close the cycle.
+    Imports :class:`uxon.domain.session.SessionInfo` lazily to keep this
+    module importable from ``uxon.cli``'s demo short-circuits without a
+    load-time cycle.
     """
-    from uxon.cli import SessionInfo  # noqa: PLC0415
+    from uxon.domain.session import SessionInfo  # noqa: PLC0415
 
     env_path = dir_path / LOCAL_ENVELOPE_NAME
     try:

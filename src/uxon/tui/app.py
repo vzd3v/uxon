@@ -358,7 +358,7 @@ class UxonApp(App):
         # Seed the cross-user accumulator from the initial ctx so the
         # very first ``MainScreen.__init__`` mounts with the right
         # column set when the launching ctx already carries multi-user
-        # data (the synchronous build path in ``cli._build_tui_context``
+        # data (the synchronous build path in ``tui.bridge.build_tui_context``
         # populates ``other_sessions`` before the TUI runs at all).
         # Remote landings feed the same set lazily in
         # :meth:`_handle_remote_snapshot`; local rebuilds in
