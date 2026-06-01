@@ -7,18 +7,19 @@ import os
 import shlex
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import uxon.app.agent_select as agent_select
 import uxon.app.attach as attach_app
+import uxon.app.doctor as doctor_app
 import uxon.app.kill as kill_app
 import uxon.app.launch as launch_app
 import uxon.app.listing as listing_app
-import uxon.app.repeat as repeat_app
+import uxon.app.new as new_app
+import uxon.app.run as run_app
 from uxon.domain.args import SUBCOMMANDS, USAGE, ParsedArgs
-from uxon.domain.authz import canonical, is_under_allowed_roots
+from uxon.domain.authz import canonical
 from uxon.domain.config import (
     DEFAULT_CONFIG,
     Config,
@@ -33,7 +34,6 @@ from uxon.domain.format import (
 from uxon.domain.session import (
     SessionInfo,
     allocate_session_name,
-    choose_attach_session,
     compatible_indexed_sessions,
     parse_session_name,
     session_stem_for_path,
@@ -50,7 +50,6 @@ from uxon.infra import (
     tmux,
     version_probe,
 )
-from uxon.infra.worktrees import compute_worktree_path
 
 if TYPE_CHECKING:
     from uxon.domain.sudo import SudoCapability
@@ -127,37 +126,6 @@ def _wrap_tui_callback(fn: Any, callback_error_cls: type[Exception]) -> Any:
 
     wrapper.__name__ = getattr(fn, "__name__", "wrapped_callback")
     return wrapper
-
-
-def is_new_project_target_allowed(cfg: Config, launch_user: str, project_dir: str) -> bool:
-    """Return True if ``project_dir`` may be created by ``uxon new``.
-
-    Variant of :func:`is_launch_target_allowed` for the create-new
-    flow: the target itself does not exist yet, so we check the
-    parent's write access (typically ``cfg.new_project_root``) plus
-    the same whitelist policy. With empty ``cfg.allowed_roots`` the
-    whitelist is bypassed and a writable parent suffices.
-    """
-    parent = os.path.dirname(project_dir) or "/"
-    if not identity.probe_cwd_writable(launch_user, parent):
-        return False
-    return is_under_allowed_roots(cfg, project_dir)
-
-
-def ensure_new_project_target_allowed(cfg: Config, launch_user: str, project_dir: str) -> None:
-    """Raise variant of :func:`is_new_project_target_allowed`.
-
-    Splits the failure reasons so the user sees whether the parent is
-    unwritable or whether the path is outside ``allowed_roots``.
-    """
-    parent = os.path.dirname(project_dir) or "/"
-    if not identity.probe_cwd_writable(launch_user, parent):
-        fail(f"no write access to {parent} for {launch_user}")
-    if not is_under_allowed_roots(cfg, project_dir):
-        eprint("uxon: new project directory must be under one of:")
-        for base in cfg.allowed_roots:
-            eprint(f"uxon:   - {base}")
-        fail(f"got: {project_dir}")
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
@@ -490,365 +458,6 @@ def parse_args(argv: list[str]) -> ParsedArgs:
     return parse_run_like(argv, "run")
 
 
-def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
-    name = args.target_id
-    if not name:
-        fail("new requires a name")
-    if "/" in name or name in (".", ".."):
-        fail(f"invalid name: {name}")
-    project_dir = canonical(os.path.join(cfg.new_project_root, name))
-    ensure_new_project_target_allowed(cfg, launch_user, project_dir)
-    branch = args.worktree_branch
-    if branch:
-        if not os.path.isdir(project_dir):
-            fail(
-                "new -w requires an existing project directory: "
-                f"{project_dir} (create it first with 'uxon -n {name}')"
-            )
-        repo_root = git.git_repo_root_as_user(project_dir, launch_user)
-        if not repo_root:
-            fail(
-                "new -w requires a git repository (checked as launch user "
-                f"{launch_user}) in {project_dir}"
-            )
-        # Normalise worktree-from-worktree to the primary repo (§8).
-        primary = git.git_common_dir_root_as_user(project_dir, launch_user)
-        if primary:
-            repo_root = primary
-        launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        _agent = agent_select.resolve_agent_id(
-            cfg, launch_user, args.agent, report=args.host_report
-        )
-        args.agent = _agent
-        # uxon-managed worktree sessions live AT the worktree path (§2.5),
-        # so both the stem and the compatibility root are derived from the
-        # worktree, not the repo root.
-        session_stem = session_stem_for_worktree(repo_root, branch)
-        compatibility_root = compute_worktree_path(
-            repo_root=repo_root, branch=branch, worktree_root=cfg.worktree_root
-        )
-        target_desc = f"{repo_root} (worktree {branch})"
-        sessions = sessions_probe.collect_sessions([launch_user], cfg)
-        existing = compatible_indexed_sessions(
-            session_stem,
-            _agent,
-            compatibility_root,
-            sessions,
-            prefix=cfg.session_prefix,
-            legacy_prefixes=cfg.legacy_session_prefixes,
-        )
-        if existing:
-            attach_target = choose_attach_session(
-                existing,
-                session_stem,
-                _agent,
-                prefix=cfg.session_prefix,
-                legacy_prefixes=cfg.legacy_session_prefixes,
-            )
-            decision = repeat_app.resolve_repeat_decision(
-                args.repeat_mode, cfg, target_desc, attach_target, existing
-            )
-            if decision == "attach":
-                from uxon.infra import audit as _audit
-
-                _audit.audit(
-                    "session.attach",
-                    session=attach_target.name,
-                    target_user=launch_user,
-                )
-                return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
-        # No existing session, or decision == "new": create + launch via the
-        # single worktree planner (gates the path, runs git worktree add,
-        # copies includes, emits worktree.create + session.new, Task 11).
-        req = launch_app.plan_worktree_launch(
-            cfg,
-            launch_user,
-            repo_root,
-            branch,
-            _agent,
-            args.permission_mode,
-            agent_args=args.agent_args,
-            dry_run=args.dry_run,
-        )
-        if args.dry_run:
-            print(f"launch_user={shlex.quote(launch_user)}")
-            print(f"exec {shlex.join(req.cmd)}")
-            return 0
-        for pre in req.prelaunch:
-            process.run_cmd(list(pre))
-        os.execvp(req.cmd[0], list(req.cmd))
-        return 0
-
-    target_dir = project_dir
-    if args.dry_run:
-        mkdir_cmd = identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir]
-        print(f"mkdir= {shlex.join(mkdir_cmd)}")
-    else:
-        process.run_cmd(identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
-    session_stem = session_stem_for_path(target_dir)
-    compatibility_root = target_dir
-    target_desc = target_dir
-    if args.git_remote:
-        _do_create_git_remote(args, cfg, launch_user, project_dir, name, branch)
-
-    _agent = agent_select.resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
-    # See ``do_run``: pin resolved id back to args so the downstream
-    # assembler does not re-derive it from cfg.default_agent.
-    args.agent = _agent
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    existing = compatible_indexed_sessions(
-        session_stem,
-        _agent,
-        compatibility_root,
-        sessions,
-        prefix=cfg.session_prefix,
-        legacy_prefixes=cfg.legacy_session_prefixes,
-    )
-    if existing:
-        attach_target = choose_attach_session(
-            existing,
-            session_stem,
-            _agent,
-            prefix=cfg.session_prefix,
-            legacy_prefixes=cfg.legacy_session_prefixes,
-        )
-        decision = repeat_app.resolve_repeat_decision(
-            args.repeat_mode, cfg, target_desc, attach_target, existing
-        )
-        if decision == "attach":
-            # Same physical operation as ``do_attach`` for an existing
-            # session — emit the same event before ``attach_session``'s
-            # execvp (Bug 7 — audit fires before the image is replaced).
-            from uxon.infra import audit as _audit
-
-            _audit.audit(
-                "session.attach",
-                session=attach_target.name,
-                target_user=launch_user,
-            )
-            try:
-                return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
-            except Exception as exc:
-                _audit.audit(
-                    "session.attach",
-                    outcome="error",
-                    session=attach_target.name,
-                    target_user=launch_user,
-                    error=str(exc)[:256],
-                )
-                raise
-    else:
-        sessions_probe.repeat_guardrail_for_legacy_socket(
-            cfg, launch_user, session_stem, compatibility_root
-        )
-    session = allocate_session_name(
-        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
-    )
-    from uxon.infra import audit as _audit
-
-    _audit.audit(
-        "session.new",
-        agent=_agent,
-        project=target_dir,
-        branch=branch or "",
-        session=session,
-        dry_run=args.dry_run,
-    )
-    try:
-        return tmux.launch_in_tmux(
-            target_dir, session, args, cfg, branch, launch_user, server_running=bool(sessions)
-        )
-    except Exception as exc:
-        _audit.audit(
-            "session.new",
-            outcome="error",
-            agent=_agent,
-            project=target_dir,
-            branch=branch or "",
-            session=session,
-            dry_run=args.dry_run,
-            error=str(exc)[:256],
-        )
-        raise
-
-
-def _do_create_git_remote(
-    args: ParsedArgs,
-    cfg: Config,
-    launch_user: str,
-    project_dir: str,
-    repo_name: str,
-    branch: str | None,
-) -> None:
-    """Resolve the selected profile and drive the creation orchestrator.
-
-    Fails (via :func:`fail`) on invalid combinations — the CLI is
-    strictly non-interactive, so mismatches are surfaced as errors
-    rather than prompts.
-    """
-    # Callers gate on ``if args.git_remote:`` before dispatching here.
-    assert args.git_remote is not None, "_do_create_git_remote called without --git-remote"
-    git_remote_selector = args.git_remote
-    if branch:
-        fail("--git-remote is not supported together with -w <branch>")
-    if not cfg.git_create_enabled:
-        fail(
-            "git_create_enabled=false in config; either flip it on in "
-            "config/config.toml or drop --git-remote"
-        )
-    if not cfg.git_remote_profiles:
-        fail(
-            "no git_remote_profiles configured; add at least one "
-            "[[git_remote_profiles]] entry to config/config.toml"
-        )
-
-    from uxon.gitremote import create as uxon_git_create
-    from uxon.gitremote import profiles as uxon_git_profiles
-
-    try:
-        profile = uxon_git_profiles.resolve_profile_selector(
-            cfg.git_remote_profiles,
-            git_remote_selector,
-            cfg.default_git_remote_profile,
-        )
-    except uxon_git_profiles.ProfileError as exc:
-        fail(str(exc))
-
-    if args.git_visibility:
-        profile = uxon_git_profiles.GitRemoteProfile(
-            name=profile.name,
-            host=profile.host,
-            owner=profile.owner,
-            auth=profile.auth,
-            creds_user=profile.creds_user,
-            token_file=profile.token_file,
-            visibility=args.git_visibility,
-        )
-
-    current_user = identity.process_user()
-    from uxon.infra import audit as _audit
-
-    _git_ok = False
-    try:
-        result = uxon_git_create.create_project_remote(
-            profile,
-            repo_name,
-            project_dir,
-            launch_user=launch_user,
-            current_user=current_user,
-            dry_run=args.dry_run,
-        )
-        _git_ok = True
-    except uxon_git_create.CreationError as exc:
-        # Audit before ``fail()`` re-raises ``SystemExit`` — the operator
-        # cares more about the failure than the success.
-        _audit.audit(
-            "git.remote.create",
-            outcome="error",
-            profile=profile.name,
-            repo=repo_name,
-            creds_user=profile.creds_user or launch_user,
-            rc=1,
-        )
-        fail(f"git remote creation failed at stage {exc.stage!r}: {exc}")
-    if _git_ok:
-        _audit.audit(
-            "git.remote.create",
-            outcome="ok",
-            profile=profile.name,
-            repo=repo_name,
-            creds_user=profile.creds_user or launch_user,
-            rc=0,
-        )
-
-    if args.dry_run:
-        for cmd in result.commands:
-            print(f"git-remote dry-run: {cmd}")
-        print(f"git-remote ssh_url={result.ssh_url}")
-    else:
-        print(f"git remote created: {result.ssh_url}")
-
-
-def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
-    cwd = canonical(os.getcwd())
-    launch_app.ensure_launch_target_allowed(cfg, launch_user, cwd)
-    branch = args.worktree_branch
-    if branch:
-        repo_root = git.git_repo_root_nonint_as_user(cwd, launch_user)
-        if not repo_root:
-            fail(f"run -w must be run inside a git repository readable by {launch_user}")
-        # Normalise to the PRIMARY working tree so a worktree-from-worktree
-        # anchors to the main repo, not a nested one (§8).
-        primary = git.git_common_dir_root_as_user(cwd, launch_user)
-        if primary:
-            repo_root = primary
-        launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        _agent = agent_select.resolve_agent_id(
-            cfg, launch_user, args.agent, report=args.host_report
-        )
-        args.agent = _agent
-        # plan_worktree_launch gates the worktree path, runs git worktree
-        # add, copies includes, emits worktree.create + session.new, and
-        # returns the launch request. In dry-run it prints the git plan and
-        # does no side effects (Task 11).
-        req = launch_app.plan_worktree_launch(
-            cfg,
-            launch_user,
-            repo_root,
-            branch,
-            _agent,
-            args.permission_mode,
-            agent_args=args.agent_args,
-            dry_run=args.dry_run,
-        )
-        if args.dry_run:
-            print(f"launch_user={shlex.quote(launch_user)}")
-            print(f"exec {shlex.join(req.cmd)}")
-            return 0
-        for pre in req.prelaunch:
-            process.run_cmd(list(pre))
-        os.execvp(req.cmd[0], list(req.cmd))
-        return 0
-    target_dir = cwd
-    session_stem = session_stem_for_path(target_dir)
-    compatibility_root = target_dir
-    _agent = agent_select.resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
-    # Pin the resolved id back to ``args.agent`` so the downstream
-    # ``tmux._build_tmux_launch_request`` does not re-derive it from
-    # ``cfg.default_agent`` (which can disagree with auto-mode pick).
-    args.agent = _agent
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    session = allocate_session_name(
-        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
-    )
-    from uxon.infra import audit as _audit
-
-    _audit.audit(
-        "session.new",
-        agent=_agent,
-        project=target_dir,
-        branch=branch or "",
-        session=session,
-        dry_run=args.dry_run,
-    )
-    try:
-        return tmux.launch_in_tmux(
-            target_dir, session, args, cfg, branch, launch_user, server_running=bool(sessions)
-        )
-    except Exception as exc:
-        _audit.audit(
-            "session.new",
-            outcome="error",
-            agent=_agent,
-            project=target_dir,
-            branch=branch or "",
-            session=session,
-            dry_run=args.dry_run,
-            error=str(exc)[:256],
-        )
-        raise
-
-
 def format_version() -> str:
     """Compose the impure version readers with the pure string builder.
 
@@ -861,453 +470,6 @@ def format_version() -> str:
     commit = version_probe.read_git_commit_short()
     dirty = version_probe.repo_is_dirty() if commit else False
     return _format_version_str(version, commit, dirty)
-
-
-def command_path_for_user(command: str, target_user: str) -> str | None:
-    cp = subprocess.run(
-        identity.command_prefix_for_user(target_user)
-        + ["sh", "-lc", f"command -v {shlex.quote(command)}"],
-        text=True,
-        capture_output=True,
-    )
-    if cp.returncode != 0:
-        return None
-    resolved = (cp.stdout or "").strip().splitlines()
-    if not resolved:
-        return None
-    return resolved[0]
-
-
-def user_can_write_dir(path: str, target_user: str) -> bool:
-    cp = subprocess.run(
-        identity.command_prefix_for_user(target_user)
-        + [
-            "python3",
-            "-c",
-            "import os, sys; raise SystemExit(0 if os.access(sys.argv[1], os.W_OK | os.X_OK) else 1)",
-            path,
-        ],
-        text=True,
-        capture_output=True,
-    )
-    return cp.returncode == 0
-
-
-def doctor_issues(
-    cfg: Config,
-    caller_user: str,
-    launch_user: str,
-    tmux_path: str | None,
-    agent_paths: dict[str, str | None],
-    socket_path: str,
-    current_sessions: list[SessionInfo],
-    legacy_sessions: list[SessionInfo],
-) -> list[str]:
-    issues: list[str] = []
-    if cfg.default_launch_mode == "fixed" and not cfg.runtime_user:
-        issues.append("default_launch_mode is 'fixed' but runtime_user is empty")
-    if not is_under_allowed_roots(cfg, cfg.new_project_root):
-        issues.append(f"new_project_root {cfg.new_project_root} is outside allowed_roots")
-    socket_parent = str(Path(socket_path).parent)
-    if not os.path.isdir(socket_parent):
-        issues.append(f"tmux socket parent does not exist yet: {socket_parent}")
-    elif not user_can_write_dir(socket_parent, launch_user):
-        issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
-    if tmux_path is None:
-        issues.append(f"'tmux' is not resolvable for {launch_user}")
-    # Strict-whitelist: every enabled agent must resolve. Auto-mode:
-    # missing agents are not issues — they're just outside what the
-    # user can launch, and the doctor's per-agent table already shows
-    # the full installed/missing landscape.
-    if cfg.enabled_agents:
-        for aid in cfg.enabled_agents:
-            if agent_paths.get(aid) is None:
-                issues.append(f"'{aid}' agent binary is not resolvable for {launch_user}")
-    elif all(path is None for path in agent_paths.values()):
-        issues.append(
-            f"no agent binary is resolvable for {launch_user} (auto-mode); "
-            f"install one of {VALID_AGENT_IDS}"
-        )
-    if legacy_sessions and not current_sessions:
-        issues.append(
-            "legacy default-socket uxon sessions exist while the dedicated uxon socket has none"
-        )
-    if (
-        caller_user != launch_user
-        and launch_user not in cfg.session_users
-        and not cfg.enable_all_users_list
-    ):
-        issues.append(
-            f"launch user {launch_user} is not present in session_users; list --all-users may omit it"
-        )
-    return issues
-
-
-def do_doctor(
-    cfg: Config,
-    caller_user: str,
-    launch_user: str,
-    cwd: str,
-    *,
-    json_output: bool = False,
-    probe_remote: bool = False,
-) -> int:
-    from uxon.domain.wire_schema import build_session_records
-    from uxon.infra import agents as uxon_agents
-    from uxon.infra import probes as uxon_probes
-
-    _, config_sources = config_loader.resolve_config_layers(cwd)
-    socket_path = tmux.tmux_socket_path(cfg, launch_user)
-    # Single-round-trip probe for tmux + every catalogued agent.
-    report = uxon_probes.probe_host(launch_user)
-    tmux_path = report.tmux.path
-    # Doctor shows every CATALOG agent regardless of strict/auto mode —
-    # the operator wants to see the full landscape ("is X installed?")
-    # not just the configured whitelist.
-    doctor_agent_ids: tuple[str, ...] = tuple(uxon_agents.CATALOG)
-    agent_paths: dict[str, str | None] = {
-        aid: report.agents[aid].path for aid in doctor_agent_ids if aid in report.agents
-    }
-    # Per-present-binary version detail. Probes run in parallel with a
-    # 2 s per-probe deadline — slow agents (e.g. cold ``cursor-agent``)
-    # surface as TIMEOUT instead of inflating doctor's wall time. The
-    # host probe above already established presence; ``--version`` is
-    # informational.
-    import concurrent.futures  # noqa: PLC0415
-
-    def _probe(aid: str) -> tuple[str, uxon_agents.AgentAvailability]:
-        if not agent_paths.get(aid):
-            return aid, uxon_agents.AgentAvailability(status="missing", error="not on PATH")
-        return aid, uxon_agents._probe_one(
-            uxon_agents.CATALOG[aid].binary,
-            launch_user,
-            timeout_override=2.0,
-        )
-
-    availability: dict[str, uxon_agents.AgentAvailability] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        for aid, result in pool.map(_probe, doctor_agent_ids):
-            availability[aid] = result
-    current_sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    legacy_sessions = sessions_probe.collect_sessions_for_user(
-        launch_user,
-        cfg.session_prefix,
-        socket_path=None,
-        legacy_prefixes=cfg.legacy_session_prefixes,
-    )
-    config_paths = [str(path) for path in config_sources]
-    env_repeat_mode = repeat_app.get_env_repeat_noninteractive_mode()
-    issues = doctor_issues(
-        cfg,
-        caller_user,
-        launch_user,
-        tmux_path,
-        agent_paths,
-        socket_path,
-        current_sessions,
-        legacy_sessions,
-    )
-
-    if json_output:
-        agents_block: dict[str, dict[str, Any]] = {}
-        for aid in doctor_agent_ids:
-            avail = availability.get(aid)
-            agents_block[aid] = {
-                "path": agent_paths.get(aid),
-                "status": (avail.status if avail else "missing"),
-                "version": (avail.version if avail else None),
-                "error": (avail.error if avail else None),
-            }
-        socket_parent = str(Path(socket_path).parent)
-        data: dict[str, Any] = {
-            "cwd": cwd,
-            "caller_user": caller_user,
-            "launch_user": launch_user,
-            "config_paths": config_paths,
-            "allowed_roots": list(cfg.allowed_roots),
-            "new_project_root": cfg.new_project_root,
-            "repeat_noninteractive_mode": cfg.repeat_noninteractive_mode,
-            "repeat_noninteractive_env": env_repeat_mode or None,
-            "tmux": {
-                "path": tmux_path,
-                "socket": socket_path,
-                "socket_parent": socket_parent,
-                "socket_parent_exists": Path(socket_parent).is_dir(),
-                "socket_parent_writable": user_can_write_dir(socket_parent, launch_user),
-            },
-            "agents": agents_block,
-            "current_socket_sessions": build_session_records(
-                current_sessions, session_prefix=cfg.session_prefix
-            ),
-            "legacy_default_socket_sessions": build_session_records(
-                legacy_sessions, session_prefix=cfg.session_prefix
-            ),
-            "git_create_enabled": cfg.git_create_enabled,
-            "default_git_remote_profile": cfg.default_git_remote_profile or None,
-            "git_remote_profiles": _doctor_git_profile_rows(cfg, launch_user)
-            if cfg.git_remote_profiles
-            else [],
-            "issues": list(issues),
-        }
-        if probe_remote:
-            # Forward-compat addition: ``data.remote_hosts`` only
-            # appears under ``--remote``. Default doctor JSON output
-            # is unchanged so existing operator scripts that read the
-            # envelope keep working.
-            data["remote_hosts"] = _doctor_remote_rows(cfg)
-        # Audit-channel report (Bug 2).  Operators run ``uxon doctor``
-        # to validate the deploy; we surface the resolved sink so
-        # "audit isn't reaching journald" is one command away.  Force
-        # sink detection by reading ``audit.sink`` after a synthetic
-        # touch (so the doctor invocation itself initialises the channel
-        # if the operator has not invoked ``cli.start`` first).
-        from uxon.infra import audit as _audit
-
-        if not _audit._initialized and _audit.enabled:
-            _audit._lazy_init()
-        data["audit"] = {"enabled": _audit.enabled, "sink": _audit.sink or "none"}
-        listing_app._emit_json("doctor", data)
-        return 0
-
-    print("uxon doctor")
-    print(f"version={format_version()}")
-    print(f"cwd={cwd}")
-    print(f"caller_user={caller_user}")
-    print(f"launch_user={launch_user}")
-    print(f"config_paths={', '.join(config_paths) if config_paths else '-'}")
-    print(f"allowed_roots={', '.join(cfg.allowed_roots) if cfg.allowed_roots else '-'}")
-    print(f"new_project_root={cfg.new_project_root}")
-    print(f"repeat_noninteractive_mode={cfg.repeat_noninteractive_mode}")
-    print(f"repeat_noninteractive_env={env_repeat_mode or '-'}")
-    print(f"tmux_path={tmux_path or '-'}")
-    print(f"tmux_socket={socket_path}")
-    print(f"tmux_socket_parent={Path(socket_path).parent}")
-    print(f"tmux_socket_parent_exists={'yes' if Path(socket_path).parent.is_dir() else 'no'}")
-    print(
-        f"tmux_socket_parent_writable={'yes' if user_can_write_dir(str(Path(socket_path).parent), launch_user) else 'no'}"
-    )
-    # Per-agent status block.
-    for aid in doctor_agent_ids:
-        spec = uxon_agents.CATALOG[aid]
-        path = agent_paths.get(aid) or "-"
-        avail = availability.get(aid)
-        if avail and avail.status == "ok":
-            print(f"{aid}:  {path}  ok ({avail.version or '?'})")
-        elif avail and avail.status == "timeout":
-            print(f"{aid}:  {path}  TIMEOUT (>2.0s)")
-        else:
-            print(f"{aid}:  -  MISSING  ({spec.install_hint})")
-    print(f"current_socket_sessions={len(current_sessions)}")
-    if current_sessions:
-        print(
-            "current_socket_session_names="
-            + ", ".join(session.name for session in current_sessions)
-        )
-    print(f"legacy_default_socket_sessions={len(legacy_sessions)}")
-    if legacy_sessions:
-        print(
-            "legacy_default_socket_session_names="
-            + ", ".join(session.name for session in legacy_sessions)
-        )
-    print(f"git_create_enabled={'yes' if cfg.git_create_enabled else 'no'}")
-    print(f"default_git_remote_profile={cfg.default_git_remote_profile or '-'}")
-    if cfg.git_remote_profiles:
-        print(f"git_remote_profiles={len(cfg.git_remote_profiles)}:")
-        for row in _doctor_git_profile_rows(cfg, launch_user):
-            print(f"- {row}")
-    else:
-        print("git_remote_profiles=0")
-    # Audit-channel report (Bug 2) — operator-visible verification of
-    # the platform-log path.  Force sink detection if it hasn't run yet
-    # (``cli.start`` already triggered it for non-doctor invocations,
-    # but a stand-alone ``uxon doctor`` may be the first audit-aware
-    # call in this process).
-    from uxon.infra import audit as _audit
-
-    if not _audit._initialized and _audit.enabled:
-        _audit._lazy_init()
-    _sink_label = {"journal": "journald-native", "syslog": "syslog", "none": "no-sink"}.get(
-        _audit.sink, "no-sink"
-    )
-    print(f"audit:    {'enabled' if _audit.enabled else 'disabled'}, sink={_sink_label}")
-    if issues:
-        print("issues:")
-        for issue in issues:
-            print(f"- {issue}")
-    else:
-        print("issues: none")
-    # Remote-host probes: only when the operator explicitly opts in via
-    # ``--remote``. Default ``uxon doctor`` stays local-only per the
-    # AGENTS.md contract; the rule has been amended to add "except
-    # under --remote" in the same change.
-    if probe_remote:
-        if not cfg.remote_hosts:
-            print("remote_hosts: no remote hosts configured")
-        else:
-            rows = _doctor_remote_rows(cfg)
-            print(f"remote_hosts={len(rows)}:")
-            for row in rows:
-                if row["ok"]:
-                    print(
-                        f"- {row['name']}  ok  latency={row['latency_ms']}ms  "
-                        f"sessions={row['sessions']}"
-                    )
-                else:
-                    err = (row["error"] or "").splitlines()[0] if row["error"] else "error"
-                    print(f"- {row['name']}  err  latency={row['latency_ms']}ms  {err}")
-    return 0
-
-
-def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:
-    """Probe each ``[[remote_hosts]]`` peer once for ``uxon doctor --remote``.
-
-    **Deliberate AGENTS.md walk-back**: the project rule "uxon doctor
-    does not probe ``[[remote_hosts]]``" stays in force for default
-    ``uxon doctor``. This helper runs only when the operator passes
-    ``--remote`` — the explicit gesture for fleet health diagnosis.
-    The default invocation still has zero SSH I/O.
-
-    Each peer gets one ``ssh ... uxon list --json`` round-trip with the
-    fleet-global SSH multiplex setting; per-host overrides on
-    ``host.connect_timeout`` / ``host.total_timeout`` are honoured by
-    ``fetch_remote_snapshot``. Errors are surfaced (no fail-soft cache
-    fallback masking — the operator wants the truth).
-
-    Returns one dict per peer: ``name``, ``ok`` (bool),
-    ``latency_ms`` (int), ``error`` (str | None), ``from_cache`` (bool),
-    ``sessions`` (int).
-    """
-    from uxon.infra.remote_collector import fetch_remote_snapshot
-
-    rows: list[dict[str, Any]] = []
-    for host in cfg.remote_hosts:
-        t0 = time.monotonic()
-        snap = fetch_remote_snapshot(
-            host,
-            ssh_multiplex=cfg.ssh_multiplex,
-            ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
-        )
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        rows.append(
-            {
-                "name": host.name,
-                "ok": snap.error is None,
-                "latency_ms": latency_ms,
-                "error": snap.error,
-                "from_cache": bool(snap.from_cache),
-                "sessions": len(snap.sessions),
-            }
-        )
-    return rows
-
-
-def _doctor_git_profile_rows(cfg: Config, launch_user: str) -> list[str]:
-    """One status line per profile for ``uxon doctor``. Probes are
-    read-only (no repo creation). ``[ok]`` / ``[warn:<reason>]``.
-    """
-    rows: list[str] = []
-    current_user = identity.process_user()
-    for p in cfg.git_remote_profiles:
-        creds_user = p.creds_user or launch_user
-        status = _probe_git_profile(p, creds_user, current_user)
-        token_bit = f" token_file={p.token_file}" if p.auth == "token" else ""
-        rows.append(
-            f"{p.name}  host={p.host}  owner={p.owner}  auth={p.auth}  "
-            f"creds_user={creds_user}{token_bit}  status={status}"
-        )
-    return rows
-
-
-def _probe_git_profile(profile, creds_user: str, current_user: str) -> str:
-    """Non-destructive probe for ``uxon doctor``. Doesn't touch GitHub."""
-    # sudo reachability under creds_user
-    if creds_user and creds_user != current_user:
-        probe = subprocess.run(
-            ["sudo", "-n", "-u", creds_user, "--", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=0.5,
-        )
-        if probe.returncode != 0:
-            return f"warn:passwordless sudo to {creds_user} unavailable"
-
-    prefix = (
-        ["sudo", "-n", "-u", creds_user, "--"] if creds_user and creds_user != current_user else []
-    )
-    if profile.auth == "gh":
-        which = subprocess.run(
-            prefix + ["sh", "-c", "command -v gh"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if which.returncode != 0 or not which.stdout.strip():
-            return f"warn:gh not found under {creds_user}"
-        status = subprocess.run(
-            prefix + ["gh", "auth", "status", "--hostname", profile.host],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if status.returncode != 0:
-            return f"warn:gh not logged in to {profile.host}"
-        return "ok"
-    if profile.auth == "token":
-        res = subprocess.run(
-            prefix + ["test", "-r", profile.token_file],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        )
-        if res.returncode != 0:
-            return f"warn:token_file unreadable under {creds_user}"
-        return "ok"
-    return "warn:unknown auth"
-
-
-def detect_root_nopasswd() -> bool:
-    """Fast non-interactive check for *root* NOPASSWD.
-
-    Returns True if:
-      - the process is already root (euid==0), or
-      - `sudo -n true` succeeds within a short timeout (NOPASSWD or cached credential).
-
-    We probe with `sudo -n true` rather than `sudo -n -v`: `-v` validates the
-    user's credential cache and, in non-interactive mode, fails with "a
-    password is required" when the cache is empty — even for users who have
-    `NOPASSWD: ALL` in sudoers. Running a trivial command under `-n` honors
-    NOPASSWD correctly.
-
-    Timeout is intentionally tight (0.5s) so the TUI never blocks on startup.
-    False on timeout / OSError / non-zero exit.
-
-    Used for the Settings-screen writability gate (``sudo tee`` of a
-    root-owned config file). The "see other users' sessions" gate is
-    now per-target — see :func:`uxon.infra.sudo_probe.probe_sudo_capability`.
-    """
-    if os.geteuid() == 0:
-        return True
-    try:
-        cp = subprocess.run(
-            ["sudo", "-n", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=0.5,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return cp.returncode == 0
-
-
-# Backwards-compatible alias for any out-of-tree caller. The renamed
-# :func:`detect_root_nopasswd` is the canonical name; the old name is
-# preserved so a stale import doesn't crash ``uxon``. New code must
-# use the canonical name (or :func:`uxon.infra.sudo_probe.probe_sudo_capability`
-# for the per-target gate).
-detect_passwordless_sudo = detect_root_nopasswd
 
 
 def _list_existing_projects(root: str) -> list[tuple[str, str]]:
@@ -1456,7 +618,7 @@ def _plan_tui_create_new_agent(
         repeat_mode="attach",
     )
     if args.git_remote:
-        _do_create_git_remote(args, cfg, launch_user, project_dir, name, None)
+        new_app._do_create_git_remote(args, cfg, launch_user, project_dir, name, None)
     return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
 
 
@@ -1496,7 +658,7 @@ def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
     project_dir = canonical(os.path.join(cfg.new_project_root, name))
-    ensure_new_project_target_allowed(cfg, launch_user, project_dir)
+    new_app.ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     process.run_cmd(identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", project_dir])
     return project_dir
 
@@ -2526,7 +1688,7 @@ def main(argv: list[str] | None = None) -> int:
         remote_hosts_count=len(cfg.remote_hosts),
     )
     if args.action == "doctor":
-        return do_doctor(
+        return doctor_app.do_doctor(
             cfg,
             caller_user,
             launch_user,
@@ -2535,7 +1697,7 @@ def main(argv: list[str] | None = None) -> int:
             probe_remote=args.all_hosts,
         )
     if args.action == "run":
-        return do_run(args, cfg, launch_user)
+        return run_app.do_run(args, cfg, launch_user)
     if args.action == "list":
         if args.host is not None:
             return listing_app._do_list_host(args, cfg)
@@ -2631,7 +1793,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "kill-all":
         return kill_app.do_kill_all(args, cfg, launch_user)
     if args.action == "new":
-        return do_new(args, cfg, launch_user)
+        return new_app.do_new(args, cfg, launch_user)
     fail(f"unsupported action: {args.action}")
     return 2
 
