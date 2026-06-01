@@ -20,7 +20,7 @@ When the env var is set, three data sources are intercepted:
 - :func:`load_demo_local_sessions` reads the optional
   ``_local.json`` envelope and yields :class:`uxon.cli.SessionInfo`
   records for the requested user, bypassing tmux entirely. Called
-  from :func:`uxon.cli.collect_sessions_for_user` before any
+  from :func:`uxon.infra.sessions_probe.collect_sessions_for_user` before any
   subprocess invocation. Absent file ⇒ empty list, which is the
   desired default on a multi-tenant box: screenshots show only the
   demo's pre-rendered peers.

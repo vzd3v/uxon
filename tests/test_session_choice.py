@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 from helpers import make_config
 
 from uxon.cli import SessionInfo
+from uxon.infra import sessions_probe
 
 
 def _textual_available() -> bool:
@@ -34,7 +35,7 @@ def _textual_available() -> bool:
 
 class ProbeHelperTests(unittest.TestCase):
     def test_compatible_sessions_filtered_by_stem_and_agent(self) -> None:
-        from uxon.cli import probe_tui_compatible_sessions
+        from uxon.infra.sessions_probe import probe_tui_compatible_sessions
 
         target_dir = "/srv/repos/myproj"
         sessions = [
@@ -83,14 +84,12 @@ class ProbeHelperTests(unittest.TestCase):
         def fake_collect(users, c):
             return sessions
 
-        import uxon.cli as cli_mod
-
-        original = cli_mod.collect_sessions
-        cli_mod.collect_sessions = fake_collect
+        original = sessions_probe.collect_sessions
+        sessions_probe.collect_sessions = fake_collect
         try:
             matches = probe_tui_compatible_sessions(cfg, "dev", target_dir, "claude")
         finally:
-            cli_mod.collect_sessions = original
+            sessions_probe.collect_sessions = original
 
         names = [s.name for s in matches]
         self.assertEqual(names, ["uxon-myproj@claude"])

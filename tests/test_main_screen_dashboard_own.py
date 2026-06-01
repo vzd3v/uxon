@@ -359,8 +359,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         The legacy ``#sessions-other`` widget is no longer mounted —
         verify the dashboard carries both own and other-user rows.
         """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
         ctx = _mk_ctx(
@@ -383,8 +383,9 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sudo_attach_via_dashboard(self) -> None:
         """Enter on an other-user dashboard row dispatches ``ctx.on_attach`` with the row's user."""
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import LaunchRequest, SudoCapability
+        from uxon.tui.context import LaunchRequest
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
         attach_calls: list[tuple[str, str]] = []
@@ -429,8 +430,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         — so the operator visually confirms they're killing alice's
         session, not their own.
         """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
         from uxon.tui.screens.confirm import ConfirmYesNo
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
@@ -486,8 +487,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_user_column_present_when_cross_user_true(self) -> None:
         """Construction with ``other_sessions`` non-empty includes the USER column."""
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
 
         ctx = _mk_ctx(
             sessions=[_own_session()],
@@ -513,8 +514,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recompose_when_cross_user_flips_true(self) -> None:
         """A refresh that lands an other-user row triggers recompose → USER column appears."""
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
         from uxon.tui.screens.main import MainScreen
 
         ctx = _mk_ctx(
@@ -551,8 +552,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         (own:<name>), not by index — index 0 in the new model could
         be the alice.bar row depending on sort order.
         """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
         from uxon.tui.screens.main import MainScreen
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
@@ -607,8 +608,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         the column on every transient remote-snapshot dropout or
         filter narrowing was the very bug this design fixes.
         """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
 
         ctx = _mk_ctx(
             sessions=[_own_session()],

@@ -65,7 +65,7 @@ except ImportError:  # pragma: no cover
 _CHILD_SCRIPT = r"""
 import sys, os
 from uxon import tui as uxon_tui
-from uxon.tui.context import SudoCapability
+from uxon.domain.sudo import SudoCapability
 
 ctx = uxon_tui.TuiContext(
     sessions=[],

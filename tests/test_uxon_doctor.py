@@ -84,9 +84,9 @@ class DoctorParallelProbeTests(unittest.TestCase):
         with (
             patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host()),
             patch.object(uxon_agents, "_probe_one", side_effect=fake_probe_one),
-            patch.object(cli, "collect_sessions", return_value=[]),
-            patch.object(cli, "collect_sessions_for_user", return_value=[]),
-            patch.object(cli, "resolve_config_layers", return_value=({}, [])),
+            patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]),
+            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, [])),
             redirect_stdout(io.StringIO()),
         ):
             cli.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
@@ -111,9 +111,9 @@ class DoctorParallelProbeTests(unittest.TestCase):
         with (
             patch("uxon.infra.probes.probe_host", return_value=report),
             patch.object(uxon_agents, "_probe_one", side_effect=fake_probe_one),
-            patch.object(cli, "collect_sessions", return_value=[]),
-            patch.object(cli, "collect_sessions_for_user", return_value=[]),
-            patch.object(cli, "resolve_config_layers", return_value=({}, [])),
+            patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]),
+            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, [])),
             redirect_stdout(io.StringIO()) as captured,
         ):
             cli.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
@@ -221,7 +221,6 @@ class DoctorRemoteFlagTests(unittest.TestCase):
     def _patches(self):
         from contextlib import ExitStack
 
-        from uxon import cli
         from uxon.infra import agents as uxon_agents
 
         stack = ExitStack()
@@ -235,9 +234,13 @@ class DoctorRemoteFlagTests(unittest.TestCase):
                 return_value=uxon_agents.AgentAvailability(status="ok", version="x"),
             )
         )
-        stack.enter_context(patch.object(cli, "collect_sessions", return_value=[]))
-        stack.enter_context(patch.object(cli, "collect_sessions_for_user", return_value=[]))
-        stack.enter_context(patch.object(cli, "resolve_config_layers", return_value=({}, [])))
+        stack.enter_context(patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]))
+        stack.enter_context(
+            patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[])
+        )
+        stack.enter_context(
+            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, []))
+        )
         return stack
 
     def test_no_flag_no_ssh_attempt(self) -> None:
@@ -426,7 +429,6 @@ class DoctorAuditLineTests(unittest.TestCase):
     def _patches(self):
         from contextlib import ExitStack
 
-        from uxon import cli
         from uxon.infra import agents as uxon_agents
 
         stack = ExitStack()
@@ -440,9 +442,13 @@ class DoctorAuditLineTests(unittest.TestCase):
                 return_value=uxon_agents.AgentAvailability(status="ok", version="x"),
             )
         )
-        stack.enter_context(patch.object(cli, "collect_sessions", return_value=[]))
-        stack.enter_context(patch.object(cli, "collect_sessions_for_user", return_value=[]))
-        stack.enter_context(patch.object(cli, "resolve_config_layers", return_value=({}, [])))
+        stack.enter_context(patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]))
+        stack.enter_context(
+            patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[])
+        )
+        stack.enter_context(
+            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, []))
+        )
         return stack
 
     def test_human_readable_has_audit_line(self) -> None:

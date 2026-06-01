@@ -585,7 +585,8 @@ class StateSelectorTests(unittest.TestCase):
         """The latch lives on ``ui.seen_users``, not on ctx — so a
         ctx carrying ``other_sessions`` but a fresh ui must report
         position 2 = False. This pins that the old proxy is gone."""
-        from uxon.tui.context import SudoCapability, TuiContext, TuiSession
+        from uxon.domain.sudo import SudoCapability
+        from uxon.tui.context import TuiContext, TuiSession
         from uxon.tui.dashboard.ui_state import MainScreenUiState
         from uxon.tui.state import select_layout_signature
 

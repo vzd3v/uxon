@@ -83,8 +83,8 @@ class AttachCrossUserTests(unittest.TestCase):
         cfg = self._cfg()
         args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="u-vz", dry_run=True)
         with (
-            mock.patch.object(uxon, "collect_sessions") as cs,
-            mock.patch.object(uxon, "resolve_session") as rs,
+            mock.patch("uxon.infra.sessions_probe.collect_sessions") as cs,
+            mock.patch("uxon.infra.sessions_probe.resolve_session") as rs,
             mock.patch.object(uxon, "attach_session", return_value=0) as att,
         ):
             cs.return_value = []
@@ -97,7 +97,7 @@ class AttachCrossUserTests(unittest.TestCase):
     def test_cross_user_unreachable_emits_stable_tag(self) -> None:
         cfg = self._cfg()
         args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
-        from uxon.infra.sudo_probe import SudoCapability
+        from uxon.domain.sudo import SudoCapability
 
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         buf = io.StringIO()
@@ -122,7 +122,7 @@ class AttachCrossUserTests(unittest.TestCase):
         # pre-fix bug where the peer-inbound branch unconditionally
         # emitted ``outcome=ok`` at the top of ``do_attach`` and
         # suppressed every downstream failure-path emit.
-        from uxon.infra.sudo_probe import SudoCapability
+        from uxon.domain.sudo import SudoCapability
 
         cfg = self._cfg()
         args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
@@ -157,16 +157,16 @@ class AttachCrossUserTests(unittest.TestCase):
     def test_cross_user_reachable_dry_run_shows_sudo_prefix(self) -> None:
         cfg = self._cfg()
         args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice", dry_run=True)
-        from uxon.infra.sudo_probe import SudoCapability
+        from uxon.domain.sudo import SudoCapability
 
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         buf = io.StringIO()
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
-            mock.patch.object(uxon, "collect_sessions", return_value=[]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
-            mock.patch.object(uxon, "process_user", return_value="u-vz"),
-            mock.patch.object(uxon, "resolve_session") as rs,
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
+            mock.patch("uxon.infra.identity.process_user", return_value="u-vz"),
+            mock.patch("uxon.infra.sessions_probe.resolve_session") as rs,
         ):
             rs.return_value = mock.Mock(name="demo@claude")
             rs.return_value.name = "demo@claude"

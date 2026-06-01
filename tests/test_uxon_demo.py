@@ -27,6 +27,7 @@ from unittest import mock
 
 from uxon import _demo as uxon_demo
 from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
+from uxon.infra import sessions_probe
 from uxon.infra.remote_collector import fetch_remote_snapshot
 from uxon.infra.remote_hosts import RemoteHost
 
@@ -364,7 +365,7 @@ class CollectSessionsDemoHookTests(unittest.TestCase):
                 mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: str(d)}, clear=False),
                 mock.patch.object(uxon_cli.subprocess, "run", side_effect=boom),
             ):
-                got = uxon_cli.collect_sessions_for_user("alice", "uxon-", None)
+                got = sessions_probe.collect_sessions_for_user("alice", "uxon-", None)
         self.assertEqual([s.name for s in got], ["uxon-x@claude"])
 
     def test_demo_env_unset_falls_through_to_tmux(self) -> None:
@@ -390,7 +391,7 @@ class CollectSessionsDemoHookTests(unittest.TestCase):
 
             os.environ.pop(uxon_demo.DEMO_ENV_VAR, None)
             with mock.patch.object(uxon_cli.subprocess, "run", side_effect=fake_run):
-                got = uxon_cli.collect_sessions_for_user("alice", "uxon-", None)
+                got = sessions_probe.collect_sessions_for_user("alice", "uxon-", None)
         self.assertEqual(got, [])
         self.assertTrue(calls, "expected tmux probe to be attempted when demo env is unset")
 

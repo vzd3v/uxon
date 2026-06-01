@@ -32,6 +32,7 @@ from helpers import make_config as _make_config
 from helpers import make_session as _make_session
 
 import uxon.cli as uxon
+from uxon.infra import version_probe
 
 
 class JsonFlagParsingTests(unittest.TestCase):
@@ -74,13 +75,13 @@ class JsonFlagParsingTests(unittest.TestCase):
 class VersionJsonTests(unittest.TestCase):
     def test_emits_versioned_envelope(self) -> None:
         with (
-            mock.patch.object(uxon, "read_repo_version", return_value="9.9.9"),
-            mock.patch.object(uxon, "read_git_commit_short", return_value="deadbee"),
-            mock.patch.object(uxon, "repo_is_dirty", return_value=False),
+            mock.patch("uxon.infra.version_probe.read_repo_version", return_value="9.9.9"),
+            mock.patch("uxon.infra.version_probe.read_git_commit_short", return_value="deadbee"),
+            mock.patch("uxon.infra.version_probe.repo_is_dirty", return_value=False),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                uxon._emit_json("version", uxon._version_data())
+                uxon._emit_json("version", version_probe._version_data())
         env = json.loads(buf.getvalue())
         self.assertEqual(env["schema_version"], "1")
         self.assertEqual(env["uxon_version"], "9.9.9")
@@ -100,10 +101,10 @@ class VersionJsonTests(unittest.TestCase):
         # treat a missing checkout as "no dirty signal" rather than
         # parsing a placeholder string.
         with (
-            mock.patch.object(uxon, "read_repo_version", return_value="0.0.1"),
-            mock.patch.object(uxon, "read_git_commit_short", return_value=None),
+            mock.patch("uxon.infra.version_probe.read_repo_version", return_value="0.0.1"),
+            mock.patch("uxon.infra.version_probe.read_git_commit_short", return_value=None),
         ):
-            data = uxon._version_data()
+            data = version_probe._version_data()
         self.assertIsNone(data["commit"])
         self.assertFalse(data["commit_dirty"])
 
@@ -140,8 +141,8 @@ class KillJsonTests(unittest.TestCase):
             action="kill", target_id="demo@claude", dry_run=True, json_output=True
         )
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -160,10 +161,10 @@ class KillJsonTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="kill", target_id="demo@claude", json_output=True)
         completed = mock.Mock(returncode=0, stdout="", stderr="")
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
-            mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
-            mock.patch.object(uxon, "run_cmd", return_value=completed),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", return_value=completed),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -179,8 +180,8 @@ class KillAllJsonTests(unittest.TestCase):
         cfg = _make_config()
         args = uxon.ParsedArgs(action="kill-all", force=True, json_output=True)
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -196,9 +197,9 @@ class KillAllJsonTests(unittest.TestCase):
         s2 = _make_session("uxon-b@claude")
         args = uxon.ParsedArgs(action="kill-all", dry_run=True, json_output=True)
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[s1, s2]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
-            mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[s1, s2]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -218,7 +219,9 @@ class KillAllJsonTests(unittest.TestCase):
         cfg = _make_config()
         args = uxon.ParsedArgs(action="kill-all", json_output=True)
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[_make_session()]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_sessions", return_value=[_make_session()]
+            ),
             mock.patch("uxon.errors.eprint") as eprint,
             self.assertRaises(SystemExit),
         ):
@@ -231,10 +234,10 @@ class KillAllJsonTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="kill-all", force=True, json_output=True)
         cp_fail = mock.Mock(returncode=1, stdout="", stderr="boom")
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[s1]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
-            mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
-            mock.patch.object(uxon, "run_cmd", return_value=cp_fail),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[s1]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", return_value=cp_fail),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -418,7 +421,7 @@ class AllHostsJsonLinesTests(unittest.TestCase):
             )
 
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch(
                 "uxon.infra.remote_collector.fetch_remote_snapshot", side_effect=_fake_fetch
             ),

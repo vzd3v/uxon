@@ -15,33 +15,12 @@ from typing import TYPE_CHECKING, Any, Literal
 from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
+from uxon.domain.sudo import SudoCapability
 
 if TYPE_CHECKING:
     from uxon.infra.probes import HostStatsResult
 
     from .tui_state import TuiState
-
-
-@dataclass(frozen=True)
-class SudoCapability:
-    """Per-target sudo snapshot consumed by the TUI.
-
-    ``reachable_users`` is the subset of ``session_users`` the caller
-    can sudo into via ``sudo -niu <U>`` (probed once at startup).
-    ``can_root`` is the root-NOPASSWD flag used to gate the
-    Settings-screen write fallback (``sudo tee`` of root-owned
-    config). The set is frozen so consumers can hash / store it
-    safely.
-
-    This class lives in ``tui.context`` (rather than alongside the
-    probe machinery in ``uxon.infra.sudo_probe``) so the TUI module is
-    importable without pulling in ``subprocess``. ``uxon.infra.sudo_probe``
-    re-exports the same name so call sites can import it from the
-    natural place; both names resolve to this single class.
-    """
-
-    reachable_users: frozenset[str] = frozenset()
-    can_root: bool = False
 
 
 # ── Errors ───────────────────────────────────────────────────────────

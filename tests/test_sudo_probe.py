@@ -15,10 +15,10 @@ import time
 import unittest
 from unittest import mock
 
+from uxon.domain.sudo import SudoCapability
 from uxon.infra.sudo_probe import (
     MAX_WORKERS,
     PROBE_TIMEOUT_SEC,
-    SudoCapability,
     probe_sudo_capability,
 )
 

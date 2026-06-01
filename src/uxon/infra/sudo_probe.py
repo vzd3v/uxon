@@ -36,11 +36,7 @@ import subprocess
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
-# The dataclass itself lives in ``uxon.tui.context`` so the TUI module
-# is importable without pulling in ``subprocess``. We re-export the
-# same name here so call sites can import :class:`SudoCapability`
-# from the natural place (next to the probe machinery).
-from uxon.tui.context import SudoCapability
+from uxon.domain.sudo import SudoCapability
 
 __all__ = ["SudoCapability", "probe_sudo_capability"]
 

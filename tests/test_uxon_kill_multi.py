@@ -28,9 +28,9 @@ from helpers import make_config as _make_config
 from helpers import make_session as _make_session
 
 import uxon.cli as uxon
+from uxon.domain.sudo import SudoCapability
 from uxon.infra import audit as uxon_audit
 from uxon.infra.remote_hosts import RemoteHost
-from uxon.tui.context import SudoCapability
 
 
 class ParseKillFlagsTests(unittest.TestCase):
@@ -88,9 +88,9 @@ class KillUserLocalTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="u-vz")
         completed = mock.Mock(returncode=0, stdout="", stderr="")
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
-            mock.patch.object(uxon, "run_cmd", return_value=completed),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", return_value=completed),
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability") as probe,
         ):
             buf = io.StringIO()
@@ -106,12 +106,12 @@ class KillUserLocalTests(unittest.TestCase):
         completed = mock.Mock(returncode=0, stdout="", stderr="")
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps) as probe,
-            mock.patch.object(uxon, "run_cmd", return_value=completed) as run,
+            mock.patch("uxon.infra.process.run_cmd", return_value=completed) as run,
         ):
-            with mock.patch.object(uxon, "process_user", return_value="u-vz"):
+            with mock.patch("uxon.infra.identity.process_user", return_value="u-vz"):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     rc = uxon.do_kill(args, cfg, "u-vz")
@@ -130,8 +130,8 @@ class KillUserLocalTests(unittest.TestCase):
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
-            mock.patch.object(uxon, "run_cmd") as run,
-            mock.patch.object(uxon, "collect_sessions") as collect,
+            mock.patch("uxon.infra.process.run_cmd") as run,
+            mock.patch("uxon.infra.sessions_probe.collect_sessions") as collect,
         ):
             err = io.StringIO()
             with redirect_stderr(err):
@@ -153,8 +153,8 @@ class KillUserLocalTests(unittest.TestCase):
         )
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
         ):
             buf = io.StringIO()
@@ -183,8 +183,8 @@ class KillUserLocalTests(unittest.TestCase):
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
-            mock.patch.object(uxon, "run_cmd") as run,
-            mock.patch.object(uxon, "collect_sessions") as collect,
+            mock.patch("uxon.infra.process.run_cmd") as run,
+            mock.patch("uxon.infra.sessions_probe.collect_sessions") as collect,
         ):
             err = io.StringIO()
             with redirect_stderr(err):
@@ -202,7 +202,7 @@ class KillUserLocalTests(unittest.TestCase):
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
-            mock.patch.object(uxon, "is_interactive_tty", return_value=False),
+            mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False),
         ):
             with self.assertRaises(SystemExit):
                 uxon.do_kill(args, cfg, "u-vz")
@@ -247,9 +247,9 @@ class KillUserLocalTests(unittest.TestCase):
             recorded.append((event, {"outcome": outcome, **fields}))
 
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
-            mock.patch.object(uxon, "run_cmd", side_effect=boom),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", side_effect=boom),
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
         ):
             with self.assertRaises(subprocess.CalledProcessError):
@@ -489,7 +489,7 @@ class KillHostRemoteTests(unittest.TestCase):
         args = uxon.ParsedArgs(
             action="kill", target_id="demo@claude", host="box-b", json_output=True
         )
-        with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
+        with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
             with self.assertRaises(SystemExit):
                 uxon.do_kill(args, cfg, "u-vz")
 

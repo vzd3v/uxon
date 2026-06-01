@@ -64,7 +64,7 @@ def _ctx(**overrides) -> uxon_tui.TuiContext:
     fine-grained control pass ``sudo_caps=...`` directly and skip
     ``has_sudo``.
     """
-    from uxon.tui.context import SudoCapability
+    from uxon.domain.sudo import SudoCapability
 
     has_sudo = overrides.pop("has_sudo", None)
     base = dict(

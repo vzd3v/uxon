@@ -17,8 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from uxon.domain.status import ServerStatus
-
-from .context import SudoCapability
+from uxon.domain.sudo import SudoCapability
 
 if TYPE_CHECKING:
     from uxon.domain.session import TuiSession

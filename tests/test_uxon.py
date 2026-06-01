@@ -11,6 +11,7 @@ from unittest import mock
 import uxon.cli as uxon
 from uxon.domain import config as domain_config
 from uxon.domain import session as domain_session
+from uxon.infra import config_loader, git, identity, sessions_probe, tmux, version_probe
 
 UXON_PATH = Path(uxon.__file__).resolve()
 
@@ -45,7 +46,7 @@ class UxonTests(unittest.TestCase):
         # rejected wrap their own ``mock.patch.object(uxon,
         # "probe_cwd_writable", return_value=False)`` block — the
         # inner ``with`` overrides this default for its scope.
-        patcher = mock.patch.object(uxon, "probe_cwd_writable", return_value=True)
+        patcher = mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -102,9 +103,9 @@ class UxonTests(unittest.TestCase):
         )
 
     def test_resolve_caller_user_prefers_current_non_root_user(self) -> None:
-        with mock.patch.object(uxon, "process_user", return_value="u-vz"):
+        with mock.patch("uxon.infra.identity.process_user", return_value="u-vz"):
             with mock.patch.dict(uxon.os.environ, {"SUDO_USER": "remdepl"}, clear=False):
-                self.assertEqual(uxon.resolve_caller_user(), "u-vz")
+                self.assertEqual(identity.resolve_caller_user(), "u-vz")
 
     def test_parse_args_supports_version_flags(self) -> None:
         parsed_long = uxon.parse_args(["--version"])
@@ -158,7 +159,7 @@ class UxonTests(unittest.TestCase):
         cfg = self._make_config_explicit(
             runtime_user="devagent", default_launch_mode="fixed", session_users=["devagent"]
         )
-        self.assertEqual(uxon.resolve_launch_user(cfg, "remdepl"), "devagent")
+        self.assertEqual(identity.resolve_launch_user(cfg, "remdepl"), "devagent")
 
     def test_resolve_launch_user_caller_mode_uses_caller(self) -> None:
         cfg = self._make_config_explicit(
@@ -166,7 +167,7 @@ class UxonTests(unittest.TestCase):
             default_launch_mode="caller",
             session_users=["devagent", "remdepl"],
         )
-        self.assertEqual(uxon.resolve_launch_user(cfg, "remdepl"), "remdepl")
+        self.assertEqual(identity.resolve_launch_user(cfg, "remdepl"), "remdepl")
 
     def test_resolve_launch_user_mapping_overrides_default(self) -> None:
         cfg = self._make_config_explicit(
@@ -176,7 +177,7 @@ class UxonTests(unittest.TestCase):
             launch_user_by_caller={"remdepl": "devagent"},
             session_users=["devagent", "remdepl"],
         )
-        self.assertEqual(uxon.resolve_launch_user(cfg, "remdepl"), "devagent")
+        self.assertEqual(identity.resolve_launch_user(cfg, "remdepl"), "devagent")
 
     def test_resolve_all_session_users_keeps_current_user_present(self) -> None:
         cfg = self._make_config_explicit(
@@ -185,7 +186,9 @@ class UxonTests(unittest.TestCase):
             enable_all_users_list=True,
             session_users=["devagent"],
         )
-        self.assertEqual(uxon.resolve_all_session_users(cfg, "remdepl"), ["devagent", "remdepl"])
+        self.assertEqual(
+            identity.resolve_all_session_users(cfg, "remdepl"), ["devagent", "remdepl"]
+        )
 
     def test_parse_args_supports_all_users_listing(self) -> None:
         parsed = uxon.parse_args(["list", "--all-users"])
@@ -216,14 +219,16 @@ class UxonTests(unittest.TestCase):
         def fake_load_toml(path: Path) -> dict[str, object]:
             if path == tmp_path / "config" / "config.toml":
                 with repo_cfg.open("rb") as fh:
-                    return uxon.tomllib.load(fh)
+                    return config_loader.tomllib.load(fh)
             return {}
 
-        with mock.patch.object(uxon, "repo_root", return_value=tmp_path):
-            with mock.patch.object(uxon, "find_project_config", return_value=None):
-                with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
-                    with mock.patch.object(uxon, "load_toml", side_effect=fake_load_toml):
-                        return uxon.load_config(str(cwd))
+        with mock.patch.object(version_probe, "repo_root", return_value=tmp_path):
+            with mock.patch("uxon.infra.config_loader.find_project_config", return_value=None):
+                with mock.patch("uxon.infra.config_loader.canonical", side_effect=lambda v: str(v)):
+                    with mock.patch(
+                        "uxon.infra.config_loader.load_toml", side_effect=fake_load_toml
+                    ):
+                        return config_loader.load_config(str(cwd))
 
     def test_load_config_reads_new_multi_user_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -653,9 +658,9 @@ class UxonTests(unittest.TestCase):
         from uxon import git_create as uxon_git_create
 
         with mock.patch.object(uxon_git_create, "create_project_remote", side_effect=fake_create):
-            with mock.patch.object(uxon, "collect_sessions", return_value=[]):
-                with mock.patch.object(uxon, "launch_in_tmux", return_value=0):
-                    with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
+            with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
+                with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0):
+                    with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
                         uxon.do_new(args, cfg, "devagent")
 
         self.assertEqual(len(calls), 1)
@@ -674,7 +679,7 @@ class UxonTests(unittest.TestCase):
             dry_run=True,
             agent_args=[],
         )
-        with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
+        with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
             with self.assertRaisesRegex(SystemExit, "2"):
                 uxon.do_new(args, cfg, "devagent")
 
@@ -707,7 +712,7 @@ class UxonTests(unittest.TestCase):
         )
         with mock.patch.object(uxon, "os", wraps=uxon.os) as m_os:
             m_os.path.isdir.return_value = True
-            with mock.patch.object(uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"):
+            with mock.patch("uxon.infra.git.git_repo_root_as_user", return_value="/srv/repos/demo"):
                 with self.assertRaises(SystemExit):
                     uxon.do_new(args, cfg, "devagent")
 
@@ -720,15 +725,19 @@ class UxonTests(unittest.TestCase):
             uxon.parse_subcommand(["run", "--git-visibility", "private"])
 
     def test_format_version_reads_version_file_and_commit(self) -> None:
-        with mock.patch.object(uxon, "read_repo_version", return_value="0.2.0"):
-            with mock.patch.object(uxon, "read_git_commit_short", return_value="abc1234"):
-                with mock.patch.object(uxon, "repo_is_dirty", return_value=False):
+        with mock.patch("uxon.infra.version_probe.read_repo_version", return_value="0.2.0"):
+            with mock.patch(
+                "uxon.infra.version_probe.read_git_commit_short", return_value="abc1234"
+            ):
+                with mock.patch("uxon.infra.version_probe.repo_is_dirty", return_value=False):
                     self.assertEqual(uxon.format_version(), "uxon 0.2.0 (abc1234)")
 
     def test_format_version_marks_dirty_checkout(self) -> None:
-        with mock.patch.object(uxon, "read_repo_version", return_value="0.2.0"):
-            with mock.patch.object(uxon, "read_git_commit_short", return_value="abc1234"):
-                with mock.patch.object(uxon, "repo_is_dirty", return_value=True):
+        with mock.patch("uxon.infra.version_probe.read_repo_version", return_value="0.2.0"):
+            with mock.patch(
+                "uxon.infra.version_probe.read_git_commit_short", return_value="abc1234"
+            ):
+                with mock.patch("uxon.infra.version_probe.repo_is_dirty", return_value=True):
                     self.assertEqual(uxon.format_version(), "uxon 0.2.0 (abc1234-dirty)")
 
     def test_do_new_allows_call_from_outside_allowed_roots(self) -> None:
@@ -737,9 +746,9 @@ class UxonTests(unittest.TestCase):
 
         with mock.patch.object(uxon.os, "getcwd", return_value="/home/u-vz"):
             with mock.patch.object(uxon, "canonical", side_effect=lambda value: str(value)):
-                with mock.patch.object(uxon, "collect_sessions", return_value=[]):
+                with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
                     with mock.patch.object(uxon, "allocate_session_name", return_value="uxon-demo"):
-                        with mock.patch.object(uxon, "launch_in_tmux", return_value=0) as launch:
+                        with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0) as launch:
                             result = uxon.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
@@ -751,15 +760,17 @@ class UxonTests(unittest.TestCase):
         existing = [self.make_session("uxon-demo@claude", "/srv/repos/demo")]
 
         with mock.patch.object(uxon, "canonical", side_effect=lambda value: str(value)):
-            with mock.patch.object(uxon, "run_cmd") as run_cmd:
-                with mock.patch.object(uxon, "collect_sessions", return_value=existing):
-                    with mock.patch.object(uxon, "is_interactive_tty", return_value=True):
+            with mock.patch("uxon.infra.process.run_cmd") as run_cmd:
+                with mock.patch(
+                    "uxon.infra.sessions_probe.collect_sessions", return_value=existing
+                ):
+                    with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=True):
                         with mock.patch("builtins.input", return_value=""):
                             with mock.patch.object(
                                 uxon, "attach_session", return_value=0
                             ) as attach:
-                                with mock.patch.object(
-                                    uxon, "launch_in_tmux", return_value=0
+                                with mock.patch(
+                                    "uxon.infra.tmux.launch_in_tmux", return_value=0
                                 ) as launch:
                                     result = uxon.do_new(args, cfg, "u-vz")
 
@@ -774,12 +785,14 @@ class UxonTests(unittest.TestCase):
         existing = [self.make_session("uxon-demo@claude", "/srv/repos/demo")]
 
         with mock.patch.object(uxon, "canonical", side_effect=lambda value: str(value)):
-            with mock.patch.object(uxon, "run_cmd") as run_cmd:
-                with mock.patch.object(uxon, "collect_sessions", return_value=existing):
+            with mock.patch("uxon.infra.process.run_cmd") as run_cmd:
+                with mock.patch(
+                    "uxon.infra.sessions_probe.collect_sessions", return_value=existing
+                ):
                     with mock.patch.object(
                         uxon, "allocate_session_name", return_value="uxon-demo-2"
                     ) as allocate:
-                        with mock.patch.object(uxon, "launch_in_tmux", return_value=0) as launch:
+                        with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0) as launch:
                             result = uxon.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
@@ -793,9 +806,11 @@ class UxonTests(unittest.TestCase):
         existing = [self.make_session("uxon-demo@claude", "/srv/repos/demo")]
 
         with mock.patch.object(uxon, "canonical", side_effect=lambda value: str(value)):
-            with mock.patch.object(uxon, "run_cmd") as run_cmd:
-                with mock.patch.object(uxon, "collect_sessions", return_value=existing):
-                    with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
+            with mock.patch("uxon.infra.process.run_cmd") as run_cmd:
+                with mock.patch(
+                    "uxon.infra.sessions_probe.collect_sessions", return_value=existing
+                ):
+                    with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
                         with mock.patch("uxon.errors.eprint") as eprint:
                             with self.assertRaises(SystemExit) as ctx:
                                 uxon.do_new(args, cfg, "u-vz")
@@ -819,11 +834,13 @@ class UxonTests(unittest.TestCase):
 
         with (
             mock.patch.object(uxon.os.path, "isdir", return_value=True),
-            mock.patch.object(uxon, "probe_cwd_writable", return_value=True),
-            mock.patch.object(uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"),
-            mock.patch.object(uxon, "git_common_dir_root_as_user", return_value="/srv/repos/demo"),
-            mock.patch.object(uxon, "collect_sessions", return_value=existing),
-            mock.patch.object(uxon, "is_interactive_tty", return_value=True),
+            mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
+            mock.patch("uxon.infra.git.git_repo_root_as_user", return_value="/srv/repos/demo"),
+            mock.patch(
+                "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/repos/demo"
+            ),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=existing),
+            mock.patch("uxon.infra.identity.is_interactive_tty", return_value=True),
             mock.patch("builtins.input", return_value=""),
             mock.patch.object(uxon, "attach_session", return_value=0) as attach,
             mock.patch.object(uxon, "plan_worktree_launch") as plan,
@@ -849,13 +866,15 @@ class UxonTests(unittest.TestCase):
 
         with (
             mock.patch.object(uxon.os.path, "isdir", return_value=True),
-            mock.patch.object(uxon, "probe_cwd_writable", return_value=True),
-            mock.patch.object(uxon, "git_repo_root_as_user", return_value="/srv/repos/demo"),
-            mock.patch.object(uxon, "git_common_dir_root_as_user", return_value="/srv/repos/demo"),
-            mock.patch.object(uxon, "collect_sessions", return_value=existing),
-            mock.patch.object(uxon, "is_interactive_tty", return_value=False),
+            mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
+            mock.patch("uxon.infra.git.git_repo_root_as_user", return_value="/srv/repos/demo"),
+            mock.patch(
+                "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/repos/demo"
+            ),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=existing),
+            mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False),
             mock.patch.object(uxon, "plan_worktree_launch", return_value=fake_req) as plan,
-            mock.patch.object(uxon, "run_cmd"),
+            mock.patch("uxon.infra.process.run_cmd"),
             mock.patch.object(uxon.os, "execvp", return_value=None) as execvp,
         ):
             result = uxon.do_new(args, cfg, "u-vz")
@@ -870,11 +889,13 @@ class UxonTests(unittest.TestCase):
         legacy = [self.make_session("uxon-demo@claude", "/srv/repos/demo")]
 
         with mock.patch.object(uxon, "canonical", side_effect=lambda value: str(value)):
-            with mock.patch.object(uxon, "run_cmd"):
-                with mock.patch.object(uxon, "collect_sessions", return_value=[]):
-                    with mock.patch.object(uxon, "collect_sessions_for_user", return_value=legacy):
-                        with mock.patch.object(
-                            uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"
+            with mock.patch("uxon.infra.process.run_cmd"):
+                with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
+                    with mock.patch(
+                        "uxon.infra.sessions_probe.collect_sessions_for_user", return_value=legacy
+                    ):
+                        with mock.patch(
+                            "uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"
                         ):
                             with mock.patch("uxon.errors.eprint") as eprint:
                                 with self.assertRaises(SystemExit) as ctx:
@@ -888,7 +909,7 @@ class UxonTests(unittest.TestCase):
         cfg.repeat_noninteractive_mode = "fail"
         session = self.make_session("uxon-demo", "/srv/repos/demo")
 
-        with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
+        with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
             with mock.patch.dict(
                 uxon.os.environ, {"UXON_REPEAT_NONINTERACTIVE_POLICY": "attach"}, clear=False
             ):
@@ -902,9 +923,9 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         cfg.tmux_socket_template = "/tmp/uxon-{user}-{uid}.sock"
 
-        with mock.patch.object(uxon.pwd, "getpwnam") as getpwnam:
+        with mock.patch.object(tmux.pwd, "getpwnam") as getpwnam:
             getpwnam.return_value = mock.Mock(pw_uid=1001)
-            path = uxon.tmux_socket_path(cfg, "u-vz")
+            path = tmux.tmux_socket_path(cfg, "u-vz")
 
         self.assertEqual(path, "/tmp/uxon-u-vz-1001.sock")
 
@@ -927,21 +948,20 @@ class UxonTests(unittest.TestCase):
             launch_user="u-vz",
         )
 
-        with mock.patch.object(
-            uxon,
-            "resolve_config_layers",
+        with mock.patch(
+            "uxon.infra.config_loader.resolve_config_layers",
             return_value=({}, [Path("/srv/apps/uxon/config/config.toml")]),
         ):
-            with mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
+            with mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
                 with mock.patch("uxon.infra.probes.probe_host", return_value=host_report):
                     with mock.patch.object(uxon_agents, "_probe_one", return_value=ok_avail):
-                        with mock.patch.object(
-                            uxon,
-                            "collect_sessions",
+                        with mock.patch(
+                            "uxon.infra.sessions_probe.collect_sessions",
                             return_value=[self.make_session("uxon-demo@claude", "/srv/repos/demo")],
                         ):
-                            with mock.patch.object(
-                                uxon, "collect_sessions_for_user", return_value=[]
+                            with mock.patch(
+                                "uxon.infra.sessions_probe.collect_sessions_for_user",
+                                return_value=[],
                             ):
                                 with mock.patch.object(
                                     uxon, "user_can_write_dir", return_value=True
@@ -977,11 +997,13 @@ class UxonTests(unittest.TestCase):
             launch_user="u-vz",
         )
 
-        with mock.patch.object(uxon, "resolve_config_layers", return_value=({}, [])):
-            with mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
+        with mock.patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, [])):
+            with mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
                 with mock.patch("uxon.infra.probes.probe_host", return_value=host_report):
-                    with mock.patch.object(uxon, "collect_sessions", return_value=[]):
-                        with mock.patch.object(uxon, "collect_sessions_for_user", return_value=[]):
+                    with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
+                        with mock.patch(
+                            "uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]
+                        ):
                             with mock.patch.object(uxon, "user_can_write_dir", return_value=True):
                                 with mock.patch.object(
                                     uxon, "format_version", return_value="uxon 0.4.0"
@@ -999,8 +1021,8 @@ class UxonTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="kill-all", force=False)
         sessions = [self.make_session("uxon-demo", "/srv/repos/demo")]
 
-        with mock.patch.object(uxon, "collect_sessions", return_value=sessions):
-            with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
+        with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=sessions):
+            with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
                 with mock.patch("uxon.errors.eprint") as eprint:
                     with self.assertRaises(SystemExit) as ctx:
                         uxon.do_kill_all(args, cfg, "u-vz")
@@ -1013,15 +1035,15 @@ class UxonTests(unittest.TestCase):
         # build_request helpers stay on the execvp / attach-session /
         # new-session path.
         return _StubsChain(
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-test.sock"),
-            mock.patch.object(uxon, "tmux_host_socket", return_value=None),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-test.sock"),
+            mock.patch("uxon.infra.tmux.tmux_host_socket", return_value=None),
         )
 
     def test_build_tmux_attach_request_produces_expected_argv(self) -> None:
         cfg = self.make_config()
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         with self._stub_socket_path():
-            req = uxon._build_tmux_attach_request(target, cfg, "u-vz")
+            req = tmux._build_tmux_attach_request(target, cfg, "u-vz")
         self.assertIn("attach-session", req.cmd)
         self.assertIn("uxon-demo", req.cmd)
         self.assertEqual(req.prelaunch, ())
@@ -1033,7 +1055,7 @@ class UxonTests(unittest.TestCase):
         )
         args = uxon.ParsedArgs(action="run", permission_mode="yolo", agent_args=["--foo"])
         with self._stub_socket_path():
-            req = uxon._build_tmux_launch_request(
+            req = tmux._build_tmux_launch_request(
                 "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz"
             )
         self.assertIn("new-session", req.cmd)
@@ -1068,7 +1090,7 @@ class UxonTests(unittest.TestCase):
         with self._stub_socket_path():
             with mock.patch.object(uxon.subprocess, "call", side_effect=[0, 0]) as call:
                 with mock.patch.object(uxon.os, "execvp") as execvp:
-                    rc = uxon.launch_in_tmux_blocking(
+                    rc = tmux.launch_in_tmux_blocking(
                         "/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz"
                     )
         self.assertEqual(rc, 0)
@@ -1084,7 +1106,7 @@ class UxonTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="run", agent_args=[])
         with self._stub_socket_path():
             with mock.patch.object(uxon.subprocess, "call", side_effect=[7]) as call:
-                rc = uxon.launch_in_tmux_blocking(
+                rc = tmux.launch_in_tmux_blocking(
                     "/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz"
                 )
         self.assertEqual(rc, 7)
@@ -1105,9 +1127,9 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         args = uxon.ParsedArgs(action="run", agent_args=[])
         with self._stub_socket_path():
-            with mock.patch.object(uxon, "run_cmd") as run_cmd:
+            with mock.patch("uxon.infra.process.run_cmd") as run_cmd:
                 with mock.patch.object(uxon.os, "execvp") as execvp:
-                    uxon.launch_in_tmux("/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz")
+                    tmux.launch_in_tmux("/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz")
         run_cmd.assert_called_once()
         execvp.assert_called_once()
 
@@ -1124,7 +1146,7 @@ class UxonTests(unittest.TestCase):
                 return False
 
             with mock.patch.object(Path, "exists", fake_exists):
-                self.assertIsNone(uxon.find_project_config(str(target), allowed))
+                self.assertIsNone(config_loader.find_project_config(str(target), allowed))
 
     # ── is_launch_target_allowed / ensure_launch_target_allowed ──────
     # Mirrors the TUI's "new session in current folder" gate so the CLI
@@ -1145,7 +1167,7 @@ class UxonTests(unittest.TestCase):
     def test_launch_target_rejects_unwritable_directory(self) -> None:
         cfg = self.make_config(allowed_roots=[])
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(uxon, "probe_cwd_writable", return_value=False):
+            with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=False):
                 self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
                 with self.assertRaises(SystemExit):
                     uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
@@ -1153,7 +1175,7 @@ class UxonTests(unittest.TestCase):
     def test_launch_target_writable_passes_when_allowed_roots_empty(self) -> None:
         cfg = self.make_config(allowed_roots=[])
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+            with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
                 self.assertTrue(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
                 # ensure_… is the raise-on-failure variant; passing case
                 # must not raise.
@@ -1162,7 +1184,7 @@ class UxonTests(unittest.TestCase):
     def test_launch_target_strict_whitelist_when_allowed_roots_set(self) -> None:
         cfg = self.make_config(allowed_roots=["/srv/repos"])
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+            with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
                 # Writable but outside the whitelist → fail.
                 # ``is_under_allowed_roots`` (and its ``is_under`` call) now live
                 # in ``uxon.domain.authz`` — patch the consuming module's binding.
@@ -1181,7 +1203,7 @@ class UxonTests(unittest.TestCase):
         # outside the whitelist must NOT pass when allowed_roots is set.
         cfg = self.make_config(allowed_roots=["/srv/repos"])
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+            with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
                 self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
                 with self.assertRaises(SystemExit):
                     uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
@@ -1264,26 +1286,26 @@ class UxonTests(unittest.TestCase):
 
     def test_tmux_host_socket_returns_none_without_env(self) -> None:
         with mock.patch.dict(uxon.os.environ, {}, clear=True):
-            self.assertIsNone(uxon.tmux_host_socket())
+            self.assertIsNone(tmux.tmux_host_socket())
 
     def test_tmux_host_socket_parses_socket_from_tmux_env(self) -> None:
         env = {"TMUX": "/tmp/uxon-u-vz.sock,12345,0"}
         with mock.patch.dict(uxon.os.environ, env, clear=True):
-            self.assertEqual(uxon.tmux_host_socket(), "/tmp/uxon-u-vz.sock")
+            self.assertEqual(tmux.tmux_host_socket(), "/tmp/uxon-u-vz.sock")
 
     def test_tmux_nesting_mode_execvp_when_not_in_tmux(self) -> None:
-        with mock.patch.object(uxon, "tmux_host_socket", return_value=None):
-            self.assertEqual(uxon.tmux_nesting_mode("/tmp/uxon-u-vz.sock"), "execvp")
+        with mock.patch("uxon.infra.tmux.tmux_host_socket", return_value=None):
+            self.assertEqual(tmux.tmux_nesting_mode("/tmp/uxon-u-vz.sock"), "execvp")
 
     def test_tmux_nesting_mode_switch_when_same_socket(self) -> None:
-        with mock.patch.object(uxon, "tmux_host_socket", return_value="/tmp/uxon-u-vz.sock"):
-            self.assertEqual(uxon.tmux_nesting_mode("/tmp/uxon-u-vz.sock"), "switch")
+        with mock.patch("uxon.infra.tmux.tmux_host_socket", return_value="/tmp/uxon-u-vz.sock"):
+            self.assertEqual(tmux.tmux_nesting_mode("/tmp/uxon-u-vz.sock"), "switch")
 
     def test_tmux_nesting_mode_fails_when_foreign_socket(self) -> None:
-        with mock.patch.object(uxon, "tmux_host_socket", return_value="/tmp/tmux-1000/default"):
+        with mock.patch("uxon.infra.tmux.tmux_host_socket", return_value="/tmp/tmux-1000/default"):
             with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
                 with self.assertRaises(SystemExit) as ctx:
-                    uxon.tmux_nesting_mode("/tmp/uxon-u-vz.sock")
+                    tmux.tmux_nesting_mode("/tmp/uxon-u-vz.sock")
         self.assertNotEqual(ctx.exception.code, 0)
         self.assertIn("different socket", stderr.getvalue())
 
@@ -1291,11 +1313,11 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         stubs = _StubsChain(
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-test.sock"),
-            mock.patch.object(uxon, "tmux_host_socket", return_value="/tmp/uxon-test.sock"),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-test.sock"),
+            mock.patch("uxon.infra.tmux.tmux_host_socket", return_value="/tmp/uxon-test.sock"),
         )
         with stubs:
-            req = uxon._build_tmux_attach_request(target, cfg, "u-vz")
+            req = tmux._build_tmux_attach_request(target, cfg, "u-vz")
         self.assertIn("switch-client", req.cmd)
         self.assertNotIn("attach-session", req.cmd)
         self.assertIn("uxon-demo", req.cmd)
@@ -1308,11 +1330,11 @@ class UxonTests(unittest.TestCase):
         )
         args = uxon.ParsedArgs(action="run", permission_mode="yolo", agent_args=["--foo"])
         stubs = _StubsChain(
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-test.sock"),
-            mock.patch.object(uxon, "tmux_host_socket", return_value="/tmp/uxon-test.sock"),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-test.sock"),
+            mock.patch("uxon.infra.tmux.tmux_host_socket", return_value="/tmp/uxon-test.sock"),
         )
         with stubs:
-            req = uxon._build_tmux_launch_request(
+            req = tmux._build_tmux_launch_request(
                 "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz"
             )
         # Main cmd is the switch; creation happens in prelaunch.
@@ -1387,20 +1409,20 @@ class UxonTests(unittest.TestCase):
         )
 
     def test_tmux_opt_value_renders_scalars(self) -> None:
-        self.assertEqual(uxon._tmux_opt_value(True), "on")
-        self.assertEqual(uxon._tmux_opt_value(False), "off")
-        self.assertEqual(uxon._tmux_opt_value(5), "5")
-        self.assertEqual(uxon._tmux_opt_value("xterm*:extkeys"), "xterm*:extkeys")
+        self.assertEqual(tmux._tmux_opt_value(True), "on")
+        self.assertEqual(tmux._tmux_opt_value(False), "off")
+        self.assertEqual(tmux._tmux_opt_value(5), "5")
+        self.assertEqual(tmux._tmux_opt_value("xterm*:extkeys"), "xterm*:extkeys")
 
     def test_tmux_set_chain_empty_when_disabled(self) -> None:
         cfg = self.make_config(
             tmux_options={"mouse": "on"},  # populated but toggle off
         )
-        self.assertEqual(uxon._tmux_set_chain(cfg), [])
+        self.assertEqual(tmux._tmux_set_chain(cfg), [])
 
     def test_tmux_set_chain_empty_when_enabled_but_no_options(self) -> None:
         cfg = self.make_config(tmux_manage_options=True)
-        self.assertEqual(uxon._tmux_set_chain(cfg), [])
+        self.assertEqual(tmux._tmux_set_chain(cfg), [])
 
     def test_tmux_set_chain_order_and_scopes(self) -> None:
         # global -> server -> append-server; declaration order within a table;
@@ -1411,27 +1433,27 @@ class UxonTests(unittest.TestCase):
             tmux_server_options={"extended-keys": "on"},
             tmux_append_server_options={"terminal-features": "xterm*:extkeys"},
         )
-        self.assertEqual(uxon._tmux_set_chain(cfg), self._RECO_EXPECTED_CHAIN)
+        self.assertEqual(tmux._tmux_set_chain(cfg), self._RECO_EXPECTED_CHAIN)
 
     def test_recommended_constant_renders_d3_set(self) -> None:
         # AC5: the shipped recommended set maps to the four documented
         # options with the correct scopes/order.
-        self.assertEqual(uxon._tmux_set_chain(self._reco_cfg()), self._RECO_EXPECTED_CHAIN)
+        self.assertEqual(tmux._tmux_set_chain(self._reco_cfg()), self._RECO_EXPECTED_CHAIN)
 
     def test_tmux_set_chain_live_server_drops_append_scope(self) -> None:
         # D9: on a live server, -g/-s are re-asserted but -as is dropped
         # (append is non-idempotent → would grow the list).
         cfg = self._reco_cfg()
-        self.assertEqual(uxon._tmux_set_chain(cfg, server_running=True), self._RECO_LIVE_CHAIN)
+        self.assertEqual(tmux._tmux_set_chain(cfg, server_running=True), self._RECO_LIVE_CHAIN)
         # birth still emits the full chain including -as
-        self.assertEqual(uxon._tmux_set_chain(cfg, server_running=False), self._RECO_EXPECTED_CHAIN)
+        self.assertEqual(tmux._tmux_set_chain(cfg, server_running=False), self._RECO_EXPECTED_CHAIN)
 
     def test_build_launch_request_live_server_omits_append(self) -> None:
         # A launch into an already-running server re-asserts -g/-s, no -as.
         cfg = self._reco_cfg()
         args = uxon.ParsedArgs(action="run", permission_mode="yolo")
         with self._stub_socket_path():
-            req = uxon._build_tmux_launch_request(
+            req = tmux._build_tmux_launch_request(
                 "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz", server_running=True
             )
         cmd = list(req.cmd)
@@ -1447,7 +1469,7 @@ class UxonTests(unittest.TestCase):
         cfg = self._reco_cfg()
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         with self._stub_socket_path():
-            req = uxon._build_tmux_attach_request(target, cfg, "u-vz")
+            req = tmux._build_tmux_attach_request(target, cfg, "u-vz")
         cmd = list(req.cmd)
         self.assertIn("attach-session", cmd)
         self.assertNotIn("-as", cmd)
@@ -1461,7 +1483,7 @@ class UxonTests(unittest.TestCase):
         # managed options off → attach argv byte-identical to pre-3.5.0.
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         with self._stub_socket_path():
-            req = uxon._build_tmux_attach_request(target, self.make_config(), "u-vz")
+            req = tmux._build_tmux_attach_request(target, self.make_config(), "u-vz")
         self.assertNotIn("set", req.cmd)
 
     def test_build_launch_request_injects_set_chain_non_nested(self) -> None:
@@ -1469,7 +1491,7 @@ class UxonTests(unittest.TestCase):
         cfg = self._reco_cfg()
         args = uxon.ParsedArgs(action="run", permission_mode="yolo")
         with self._stub_socket_path():
-            req = uxon._build_tmux_launch_request(
+            req = tmux._build_tmux_launch_request(
                 "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz"
             )
         cmd = list(req.cmd)
@@ -1490,11 +1512,11 @@ class UxonTests(unittest.TestCase):
         cfg = self._reco_cfg()
         args = uxon.ParsedArgs(action="run", permission_mode="yolo")
         stubs = _StubsChain(
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-test.sock"),
-            mock.patch.object(uxon, "tmux_host_socket", return_value="/tmp/uxon-test.sock"),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-test.sock"),
+            mock.patch("uxon.infra.tmux.tmux_host_socket", return_value="/tmp/uxon-test.sock"),
         )
         with stubs:
-            req = uxon._build_tmux_launch_request(
+            req = tmux._build_tmux_launch_request(
                 "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz"
             )
         self.assertIn("switch-client", req.cmd)
@@ -1516,10 +1538,10 @@ class UxonTests(unittest.TestCase):
         # AC-empty/D1: manage_options=true with no options is byte-identical to off.
         args = uxon.ParsedArgs(action="run", permission_mode="yolo")
         with self._stub_socket_path():
-            off = uxon._build_tmux_launch_request(
+            off = tmux._build_tmux_launch_request(
                 "/srv/repos/demo", "uxon-demo@claude", args, self.make_config(), None, "u-vz"
             )
-            on_empty = uxon._build_tmux_launch_request(
+            on_empty = tmux._build_tmux_launch_request(
                 "/srv/repos/demo",
                 "uxon-demo@claude",
                 args,
@@ -1538,7 +1560,7 @@ class UxonTests(unittest.TestCase):
         with self._stub_socket_path():
             with mock.patch.object(uxon.os, "execvp") as execvp:
                 with __import__("contextlib").redirect_stdout(buf):
-                    rc = uxon.launch_in_tmux(
+                    rc = tmux.launch_in_tmux(
                         "/srv/repos/demo", "uxon-demo@claude", args, cfg, None, "u-vz"
                     )
         self.assertEqual(rc, 0)
@@ -1558,7 +1580,7 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(cfg.tmux_server_options, {"extended-keys": "on"})
         self.assertEqual(cfg.tmux_append_server_options, {"terminal-features": "xterm*:extkeys"})
         # dormant: the recommended tables are present but emit nothing while off
-        self.assertEqual(uxon._tmux_set_chain(cfg), [])
+        self.assertEqual(tmux._tmux_set_chain(cfg), [])
 
     def test_load_config_tmux_manage_options_false_disables(self) -> None:
         # Operator opt-out: manage_options=false yields an empty chain even
@@ -1566,7 +1588,7 @@ class UxonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("[tmux]\nmanage_options = false\n", tmpdir)
         self.assertFalse(cfg.tmux_manage_options)
-        self.assertEqual(uxon._tmux_set_chain(cfg), [])
+        self.assertEqual(tmux._tmux_set_chain(cfg), [])
 
     def test_load_config_tmux_tables_parse(self) -> None:
         toml = textwrap.dedent(
@@ -1598,7 +1620,7 @@ class UxonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("[tmux]\nmanage_options = true\n", tmpdir)
         self.assertTrue(cfg.tmux_manage_options)
-        self.assertEqual(uxon._tmux_set_chain(cfg), self._RECO_EXPECTED_CHAIN)
+        self.assertEqual(tmux._tmux_set_chain(cfg), self._RECO_EXPECTED_CHAIN)
 
     def test_load_config_tmux_per_scope_override(self) -> None:
         # Overriding one scope replaces only that scope; omitted scopes keep
@@ -1642,7 +1664,7 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
         args = uxon.ParsedArgs(action="run", permission_mode="yolo")
         with self._stub_socket_path():
-            req = uxon._build_tmux_launch_request(
+            req = tmux._build_tmux_launch_request(
                 "/tmp/x", "uxon-x@cursor", args, cfg, None, "u-vz"
             )
         self.assertIn("cursor-agent", req.cmd)
@@ -1653,13 +1675,13 @@ class UxonTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="run", permission_mode="auto", agent="cursor")
         with self._stub_socket_path():
             with self.assertRaises(SystemExit):
-                uxon._build_tmux_launch_request("/tmp/x", "uxon-x@cursor", args, cfg, None, "u-vz")
+                tmux._build_tmux_launch_request("/tmp/x", "uxon-x@cursor", args, cfg, None, "u-vz")
 
     def test_launch_builder_codex_full_auto(self) -> None:
         cfg = self.make_config(enabled_agents=("codex",), default_agent="codex")
         args = uxon.ParsedArgs(action="run", permission_mode="auto", agent="codex")
         with self._stub_socket_path():
-            req = uxon._build_tmux_launch_request("/tmp/x", "uxon-x@codex", args, cfg, None, "u-vz")
+            req = tmux._build_tmux_launch_request("/tmp/x", "uxon-x@codex", args, cfg, None, "u-vz")
         self.assertIn("--full-auto", req.cmd)
 
     def test_launch_builder_branch_does_not_add_native_w_flag(self) -> None:
@@ -1668,7 +1690,7 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         args = uxon.ParsedArgs(action="run", agent="claude", permission_mode="normal")
         with self._stub_socket_path():
-            req = uxon._build_tmux_launch_request(
+            req = tmux._build_tmux_launch_request(
                 "/srv/repos/myapp/.uxon/worktrees/feat",
                 "uxon-myapp-feat@claude",
                 args,
@@ -1685,7 +1707,7 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config(enabled_agents=("codex",), default_agent="codex")
         args = uxon.ParsedArgs(action="run", agent="codex", permission_mode="normal")
         with self._stub_socket_path():
-            req = uxon._build_tmux_launch_request(
+            req = tmux._build_tmux_launch_request(
                 "/srv/repos/myapp/.uxon/worktrees/feat",
                 "uxon-myapp-feat@codex",
                 args,
@@ -1704,7 +1726,7 @@ class UxonTests(unittest.TestCase):
         self.assertIsNone(parsed.agent)  # not explicitly set
         with self._stub_socket_path():
             with self.assertRaises(SystemExit):
-                uxon._build_tmux_launch_request(
+                tmux._build_tmux_launch_request(
                     "/tmp/x", "uxon-x@cursor", parsed, cfg, None, "u-vz"
                 )
 
@@ -1746,15 +1768,15 @@ class NonintGitResolverTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli.subprocess, "run", fake_run),
-            mock.patch.object(cli, "process_user", return_value="caller"),
+            mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
-            root = cli.git_repo_root_nonint_as_user("/srv/work/myapp/sub", "devagent")
+            root = git.git_repo_root_nonint_as_user("/srv/work/myapp/sub", "devagent")
         self.assertEqual(root, cli.canonical("/srv/work/myapp"))
         # The resolver uses the non-interactive (``sudo -n``) prefix — assert
         # it is the leading prefix of the issued argv. (cli.py composes the
         # non-interactive flags as ``-niu``, so the prefix is checked as a
         # whole rather than for a standalone ``-n`` token.)
-        prefix = cli.nonint_command_prefix_for_user("devagent")
+        prefix = identity.nonint_command_prefix_for_user("devagent")
         self.assertEqual(seen["cmd"][: len(prefix)], prefix)
 
     def test_repo_root_nonint_none_on_failure(self) -> None:
@@ -1770,9 +1792,9 @@ class NonintGitResolverTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli.subprocess, "run", fake_run),
-            mock.patch.object(cli, "process_user", return_value="caller"),
+            mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
-            self.assertIsNone(cli.git_repo_root_nonint_as_user("/tmp/x", "devagent"))
+            self.assertIsNone(git.git_repo_root_nonint_as_user("/tmp/x", "devagent"))
 
     def test_common_dir_normalises_to_primary_root(self) -> None:
         import uxon.cli as cli
@@ -1789,9 +1811,9 @@ class NonintGitResolverTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli.subprocess, "run", fake_run),
-            mock.patch.object(cli, "process_user", return_value="caller"),
+            mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
-            root = cli.git_common_dir_root_as_user(
+            root = git.git_common_dir_root_as_user(
                 "/srv/work/myapp/.uxon/worktrees/feat", "devagent"
             )
         self.assertEqual(root, cli.canonical("/srv/work/myapp"))
@@ -1857,14 +1879,14 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         cfg = self._cfg(allowed_roots=[])
         args = uxon.ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
 
-        with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+        with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
             with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
                 with mock.patch.object(uxon.os, "getcwd", return_value="/home/u-vz"):
-                    with mock.patch.object(uxon, "collect_sessions", return_value=[]):
+                    with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
                         with mock.patch.object(
                             uxon, "allocate_session_name", return_value="uxon-demo"
                         ):
-                            with mock.patch.object(uxon, "launch_in_tmux", return_value=0):
+                            with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0):
                                 rc = uxon.do_new(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
 
@@ -1875,7 +1897,7 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         cfg = self._cfg(allowed_roots=[])
         args = uxon.ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
 
-        with mock.patch.object(uxon, "probe_cwd_writable", return_value=False):
+        with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=False):
             with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
                 with mock.patch.object(uxon, "eprint"):
                     with self.assertRaises(SystemExit) as exc:
@@ -1886,7 +1908,7 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         cfg = self._cfg(allowed_roots=["/srv/work"], new_project_root="/home/u-vz")
         args = uxon.ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
 
-        with mock.patch.object(uxon, "probe_cwd_writable", return_value=True):
+        with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
             with mock.patch.object(uxon, "canonical", side_effect=lambda v: str(v)):
                 with mock.patch.object(uxon, "eprint"):
                     with self.assertRaises(SystemExit) as exc:
@@ -1911,7 +1933,7 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
             (Path(tmp_real) / ".uxon.toml").write_text("# stub\n")
             sub = Path(tmp_real) / "sub"
             sub.mkdir()
-            found = uxon.find_project_config(str(sub), allowed_roots=[])
+            found = config_loader.find_project_config(str(sub), allowed_roots=[])
             self.assertIsNotNone(found)
             self.assertEqual(str(found), str(Path(tmp_real) / ".uxon.toml"))
 
@@ -1923,7 +1945,7 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
             (Path(tmp_real) / ".uxon.toml").write_text("# stub\n")
             sub = Path(tmp_real) / "sub"
             sub.mkdir()
-            found = uxon.find_project_config(str(sub), allowed_roots=["/some/other/root"])
+            found = config_loader.find_project_config(str(sub), allowed_roots=["/some/other/root"])
             self.assertIsNone(found)
 
 
@@ -1989,28 +2011,28 @@ class SessionNamingTests(unittest.TestCase):
     def test_resolve_full_new(self) -> None:
         sessions = [_mk_session("uxon-foo@claude"), _mk_session("uxon-foo@codex", agent="codex")]
         self.assertEqual(
-            uxon.resolve_session("uxon-foo@codex", sessions, "uxon-").name,
+            sessions_probe.resolve_session("uxon-foo@codex", sessions, "uxon-").name,
             "uxon-foo@codex",
         )
 
     def test_resolve_suffixed_without_prefix(self) -> None:
         sessions = [_mk_session("uxon-foo@codex", agent="codex")]
         self.assertEqual(
-            uxon.resolve_session("foo@codex", sessions, "uxon-").name,
+            sessions_probe.resolve_session("foo@codex", sessions, "uxon-").name,
             "uxon-foo@codex",
         )
 
     def test_resolve_stem_unique(self) -> None:
         sessions = [_mk_session("uxon-foo@codex", agent="codex")]
         self.assertEqual(
-            uxon.resolve_session("foo", sessions, "uxon-").name,
+            sessions_probe.resolve_session("foo", sessions, "uxon-").name,
             "uxon-foo@codex",
         )
 
     def test_resolve_stem_ambiguous(self) -> None:
         sessions = [_mk_session("uxon-foo@claude"), _mk_session("uxon-foo@codex", agent="codex")]
         with self.assertRaises(SystemExit):
-            uxon.resolve_session("foo", sessions, "uxon-")
+            sessions_probe.resolve_session("foo", sessions, "uxon-")
 
 
 class CliPreflightTests(unittest.TestCase):
@@ -2113,7 +2135,7 @@ class CliPreflightTests(unittest.TestCase):
             probe.return_value = mock_report
 
             with mock.patch("uxon.cli.print_list", return_value=0):
-                with mock.patch("uxon.cli.collect_sessions", return_value=[]):
+                with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
                     rc = uxon.main(["list"])
                 # Should not have failed; list doesn't require agents.
                 self.assertEqual(rc, 0)
@@ -2165,7 +2187,7 @@ class CliPreflightTests(unittest.TestCase):
             probe.return_value = mock_report
             with (
                 mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
-                mock.patch.object(cli, "load_config", return_value=cfg),
+                mock.patch("uxon.infra.config_loader.load_config", return_value=cfg),
                 mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
                 mock.patch("sys.stderr", new_callable=io.StringIO),
             ):
@@ -2202,7 +2224,7 @@ class DoInteractiveTextualMissingTests(unittest.TestCase):
             delattr(uxon_pkg, "tui")
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                cfg = uxon.load_config(tmp)
+                cfg = config_loader.load_config(tmp)
                 buf_err = io.StringIO()
                 buf_out = io.StringIO()
                 with (
@@ -2234,14 +2256,13 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
             captured["stem"] = stem
             return f"{prefix}{stem}@{agent}"
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         with (
             mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
-            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch.object(cli, "allocate_session_name", fake_alloc),
-            mock.patch.object(
-                cli,
-                "_build_tmux_launch_request",
+            mock.patch(
+                "uxon.infra.tmux._build_tmux_launch_request",
                 lambda *a, **k: cli._tui_launch_request_cls()(cmd=("true",), label="x"),
             ),
         ):
@@ -2264,14 +2285,13 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
             captured["stem"] = stem
             return f"{prefix}{stem}@{agent}"
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         with (
             mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
-            mock.patch.object(cli, "collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch.object(cli, "allocate_session_name", fake_alloc),
-            mock.patch.object(
-                cli,
-                "_build_tmux_launch_request",
+            mock.patch(
+                "uxon.infra.tmux._build_tmux_launch_request",
                 lambda *a, **k: cli._tui_launch_request_cls()(cmd=("true",), label="x"),
             ),
         ):
@@ -2297,13 +2317,12 @@ class ProbeWorktreeStemTests(unittest.TestCase):
         )
 
     def test_explicit_stem_matches_worktree_session(self) -> None:
-        import uxon.cli as cli
 
         wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
         sess = [self._session("uxon-myapp-feature-auth@claude", wt)]
-        cfg = cli.load_config("/tmp")
-        with mock.patch.object(cli, "collect_sessions", return_value=sess):
-            out = cli.probe_tui_compatible_sessions(
+        cfg = config_loader.load_config("/tmp")
+        with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=sess):
+            out = sessions_probe.probe_tui_compatible_sessions(
                 cfg,
                 "devagent",
                 wt,
@@ -2314,13 +2333,12 @@ class ProbeWorktreeStemTests(unittest.TestCase):
         self.assertEqual([s.name for s in out], ["uxon-myapp-feature-auth@claude"])
 
     def test_default_stem_unchanged_for_plain_target(self) -> None:
-        import uxon.cli as cli
 
         target = "/srv/work/plain"
         sess = [self._session("uxon-plain@claude", target)]
-        cfg = cli.load_config("/tmp")
-        with mock.patch.object(cli, "collect_sessions", return_value=sess):
-            out = cli.probe_tui_compatible_sessions(cfg, "devagent", target, "claude")
+        cfg = config_loader.load_config("/tmp")
+        with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=sess):
+            out = sessions_probe.probe_tui_compatible_sessions(cfg, "devagent", target, "claude")
         self.assertEqual([s.name for s in out], ["uxon-plain@claude"])
 
 
@@ -2351,15 +2369,14 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         repo = "/srv/work/myapp"
         wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
         branch = "feature/auth"
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
 
         # (a) planner names the session with the worktree stem.
         with (
             mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
-            mock.patch.object(cli, "collect_sessions", return_value=[]),
-            mock.patch.object(
-                cli,
-                "_build_tmux_launch_request",
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.tmux._build_tmux_launch_request",
                 lambda td, s, *a, **k: cli._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
@@ -2372,8 +2389,8 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
 
         # (b) the worktree-aware probe finds exactly that session.
         live = [self._session("uxon-myapp-feature-auth@claude", wt)]
-        with mock.patch.object(cli, "collect_sessions", return_value=live):
-            found = cli.probe_tui_compatible_sessions(
+        with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=live):
+            found = sessions_probe.probe_tui_compatible_sessions(
                 cfg,
                 "devagent",
                 wt,
@@ -2389,12 +2406,12 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         repo_b = "/srv/work/beta"
         wt_a = "/srv/work/alpha/.uxon/worktrees/feature"
         wt_b = "/srv/work/beta/.uxon/worktrees/feature"
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         # alpha's worktree session is live; probing beta's worktree must
         # NOT match it and must NOT hard-fail (distinct repo-qualified stems).
         live = [self._session("uxon-alpha-feature@claude", wt_a)]
-        with mock.patch.object(cli, "collect_sessions", return_value=live):
-            found = cli.probe_tui_compatible_sessions(
+        with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=live):
+            found = sessions_probe.probe_tui_compatible_sessions(
                 cfg,
                 "devagent",
                 wt_b,
@@ -2422,7 +2439,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
     def test_new_branch_local_base_adds_worktree_and_names_session(self) -> None:
         import uxon.cli as cli
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         repo = "/srv/work/myapp"
         calls: list[list[str]] = []
 
@@ -2443,15 +2460,14 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
-            mock.patch.object(cli, "collect_sessions", return_value=[]),
-            mock.patch.object(cli, "run_cmd", fake_run_cmd),
-            mock.patch.object(cli, "write_uxon_exclude_entry", lambda *a, **k: None),
-            mock.patch.object(cli, "copy_worktreeinclude_matches", lambda *a, **k: None),
-            mock.patch.object(cli, "_local_base_ref_as_user", return_value="origin/HEAD"),
-            mock.patch.object(cli, "_branch_exists_as_user", return_value=False),
-            mock.patch.object(
-                cli,
-                "_build_tmux_launch_request",
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
+            mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
+            mock.patch("uxon.infra.git.copy_worktreeinclude_matches", lambda *a, **k: None),
+            mock.patch("uxon.infra.git._local_base_ref_as_user", return_value="origin/HEAD"),
+            mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
+            mock.patch(
+                "uxon.infra.tmux._build_tmux_launch_request",
                 lambda td, s, *a, **k: cli._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
@@ -2489,7 +2505,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         # BEFORE any git work runs.
         import uxon.cli as cli
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         cfg.worktree_root = "/not/allowed"
         cfg.allowed_roots = ["/srv/work"]
         called: list[list[str]] = []
@@ -2505,8 +2521,8 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(cli, "probe_cwd_writable", return_value=True),
-            mock.patch.object(cli, "run_cmd", fake_run_cmd),
+            mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
+            mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
         ):
             with self.assertRaises(SystemExit) as cm:
                 cli.plan_worktree_launch(
@@ -2521,7 +2537,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
     def test_existing_branch_checks_out_without_b(self) -> None:
         import uxon.cli as cli
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         calls: list[list[str]] = []
 
         def fake_run_cmd(cmd, check=True, **kw):
@@ -2536,14 +2552,13 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
-            mock.patch.object(cli, "collect_sessions", return_value=[]),
-            mock.patch.object(cli, "run_cmd", fake_run_cmd),
-            mock.patch.object(cli, "write_uxon_exclude_entry", lambda *a, **k: None),
-            mock.patch.object(cli, "copy_worktreeinclude_matches", lambda *a, **k: None),
-            mock.patch.object(cli, "_branch_exists_as_user", return_value=True),
-            mock.patch.object(
-                cli,
-                "_build_tmux_launch_request",
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
+            mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
+            mock.patch("uxon.infra.git.copy_worktreeinclude_matches", lambda *a, **k: None),
+            mock.patch("uxon.infra.git._branch_exists_as_user", return_value=True),
+            mock.patch(
+                "uxon.infra.tmux._build_tmux_launch_request",
                 lambda td, s, *a, **k: cli._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
@@ -2562,7 +2577,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         # the agent passthrough args on the worktree create path.
         import uxon.cli as cli
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         captured: dict[str, object] = {}
 
         def fake_build(td, s, run_args, *a, **k):
@@ -2579,12 +2594,12 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
-            mock.patch.object(cli, "collect_sessions", return_value=[]),
-            mock.patch.object(cli, "run_cmd", fake_run_cmd),
-            mock.patch.object(cli, "write_uxon_exclude_entry", lambda *a, **k: None),
-            mock.patch.object(cli, "copy_worktreeinclude_matches", lambda *a, **k: None),
-            mock.patch.object(cli, "_branch_exists_as_user", return_value=True),
-            mock.patch.object(cli, "_build_tmux_launch_request", fake_build),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
+            mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
+            mock.patch("uxon.infra.git.copy_worktreeinclude_matches", lambda *a, **k: None),
+            mock.patch("uxon.infra.git._branch_exists_as_user", return_value=True),
+            mock.patch("uxon.infra.tmux._build_tmux_launch_request", fake_build),
             mock.patch("uxon.infra.audit.audit", lambda *a, **k: None),
         ):
             cli.plan_worktree_launch(
@@ -2601,7 +2616,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
     def test_worktree_add_failure_surfaces_clear_error(self) -> None:
         import uxon.cli as cli
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
 
         # The planner runs the add with check=False and inspects the
         # result itself (run_cmd's own failure path calls fail() with the
@@ -2620,14 +2635,13 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
-            mock.patch.object(cli, "collect_sessions", return_value=[]),
-            mock.patch.object(cli, "run_cmd", fake_run_cmd),
-            mock.patch.object(cli, "write_uxon_exclude_entry", lambda *a, **k: None),
-            mock.patch.object(cli, "_branch_exists_as_user", return_value=False),
-            mock.patch.object(cli, "_local_base_ref_as_user", return_value="HEAD"),
-            mock.patch.object(
-                cli,
-                "_build_tmux_launch_request",
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
+            mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
+            mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
+            mock.patch("uxon.infra.git._local_base_ref_as_user", return_value="HEAD"),
+            mock.patch(
+                "uxon.infra.tmux._build_tmux_launch_request",
                 lambda td, s, *a, **k: cli._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
@@ -2646,7 +2660,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         # emit audit — only resolve + print the plan.
         import uxon.cli as cli
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         calls: list[list[str]] = []
         events: list[str] = []
 
@@ -2662,23 +2676,20 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
-            mock.patch.object(cli, "collect_sessions", return_value=[]),
-            mock.patch.object(cli, "run_cmd", fake_run_cmd),
-            mock.patch.object(cli, "_branch_exists_as_user", return_value=False),
-            mock.patch.object(cli, "_local_base_ref_as_user", return_value="HEAD"),
-            mock.patch.object(
-                cli,
-                "write_uxon_exclude_entry",
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
+            mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
+            mock.patch("uxon.infra.git._local_base_ref_as_user", return_value="HEAD"),
+            mock.patch(
+                "uxon.infra.git.write_uxon_exclude_entry",
                 lambda *a, **k: calls.append(["WROTE_EXCLUDE"]),
             ),
-            mock.patch.object(
-                cli,
-                "copy_worktreeinclude_matches",
+            mock.patch(
+                "uxon.infra.git.copy_worktreeinclude_matches",
                 lambda *a, **k: calls.append(["COPIED"]),
             ),
-            mock.patch.object(
-                cli,
-                "_build_tmux_launch_request",
+            mock.patch(
+                "uxon.infra.tmux._build_tmux_launch_request",
                 lambda td, s, *a, **k: cli._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
@@ -2704,7 +2715,7 @@ class CliWorktreeRoutingTests(unittest.TestCase):
     def test_do_run_w_routes_through_plan_worktree_launch(self) -> None:
         import uxon.cli as cli
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         args = cli.ParsedArgs(
             action="run",
             agent="claude",
@@ -2721,8 +2732,12 @@ class CliWorktreeRoutingTests(unittest.TestCase):
         with (
             mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch.object(cli.os, "getcwd", return_value="/srv/work/myapp/sub"),
-            mock.patch.object(cli, "git_repo_root_nonint_as_user", return_value="/srv/work/myapp"),
-            mock.patch.object(cli, "git_common_dir_root_as_user", return_value="/srv/work/myapp"),
+            mock.patch(
+                "uxon.infra.git.git_repo_root_nonint_as_user", return_value="/srv/work/myapp"
+            ),
+            mock.patch(
+                "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/work/myapp"
+            ),
             mock.patch.object(cli, "resolve_agent_id", return_value="claude"),
             mock.patch.object(cli, "plan_worktree_launch", fake_plan),
         ):
@@ -2744,8 +2759,8 @@ class ExcludeWriterTests(unittest.TestCase):
     def test_appends_uxon_line_once_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             _init_repo(d)
-            uxon.write_uxon_exclude_entry(d, "devagent")
-            uxon.write_uxon_exclude_entry(d, "devagent")  # idempotent
+            git.write_uxon_exclude_entry(d, "devagent")
+            git.write_uxon_exclude_entry(d, "devagent")  # idempotent
             with open(os.path.join(d, ".git", "info", "exclude")) as fh:
                 text = fh.read()
         self.assertEqual(text.count(".uxon/"), 1)
@@ -2774,7 +2789,7 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
             subprocess.run(["git", "-C", d, "commit", "-qm", "init"], check=True)
             dest = os.path.join(d, ".uxon", "worktrees", "feat")
             os.makedirs(dest)
-            uxon.copy_worktreeinclude_matches(d, dest, "devagent")
+            git.copy_worktreeinclude_matches(d, dest, "devagent")
             self.assertTrue(os.path.exists(os.path.join(dest, ".env")))
             self.assertFalse(os.path.exists(os.path.join(dest, "debug.log")))
             self.assertFalse(os.path.exists(os.path.join(dest, "tracked.txt")))
@@ -2784,7 +2799,7 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
             _init_repo(d)
             dest = os.path.join(d, "dest")
             os.makedirs(dest)
-            uxon.copy_worktreeinclude_matches(d, dest, "devagent")  # no raise
+            git.copy_worktreeinclude_matches(d, dest, "devagent")  # no raise
             self.assertEqual(os.listdir(dest), [])
 
 
@@ -2808,12 +2823,16 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
 
             return CP()
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         with (
-            mock.patch.object(cli, "git_repo_root_nonint_as_user", return_value="/srv/work/myapp"),
-            mock.patch.object(cli, "git_common_dir_root_as_user", return_value="/srv/work/myapp"),
+            mock.patch(
+                "uxon.infra.git.git_repo_root_nonint_as_user", return_value="/srv/work/myapp"
+            ),
+            mock.patch(
+                "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/work/myapp"
+            ),
             mock.patch.object(cli.subprocess, "run", fake_run),
-            mock.patch.object(cli, "process_user", return_value="devagent"),
+            mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
         ):
             ctx = cli._build_tui_context(cfg, "devagent", "/srv/work/myapp", skeleton=True)
             rows = ctx.on_probe_worktrees("/srv/work/myapp")
@@ -2823,10 +2842,10 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
     def test_probe_worktrees_non_git_returns_empty(self) -> None:
         import uxon.cli as cli
 
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         with (
-            mock.patch.object(cli, "git_repo_root_nonint_as_user", return_value=None),
-            mock.patch.object(cli, "process_user", return_value="devagent"),
+            mock.patch("uxon.infra.git.git_repo_root_nonint_as_user", return_value=None),
+            mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
         ):
             ctx = cli._build_tui_context(cfg, "devagent", "/tmp/plain", skeleton=True)
             self.assertEqual(ctx.on_probe_worktrees("/tmp/plain"), [])
@@ -2850,12 +2869,12 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
             active_cmd="claude",
             active_path=wt,
         )
-        cfg = cli.load_config("/tmp")
+        cfg = config_loader.load_config("/tmp")
         with (
-            mock.patch.object(cli, "collect_sessions", return_value=[sess]),
-            mock.patch.object(cli, "git_repo_root_nonint_as_user", return_value=repo),
-            mock.patch.object(cli, "git_common_dir_root_as_user", return_value=repo),
-            mock.patch.object(cli, "process_user", return_value="devagent"),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[sess]),
+            mock.patch("uxon.infra.git.git_repo_root_nonint_as_user", return_value=repo),
+            mock.patch("uxon.infra.git.git_common_dir_root_as_user", return_value=repo),
+            mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
         ):
             ctx = cli._build_tui_context(cfg, "devagent", repo, skeleton=True)
             out = ctx.on_probe_existing_worktree_sessions(wt, repo, "feature/auth", "claude")
