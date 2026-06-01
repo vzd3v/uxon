@@ -20,8 +20,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from uxon.git_backend_gh import BackendError, default_run, sudo_prefix
-from uxon.git_profiles import GitRemoteProfile
+from uxon.gitremote.backend_gh import BackendError, default_run, sudo_prefix
+from uxon.gitremote.profiles import GitRemoteProfile
 
 # ── Token file I/O (under creds_user) ────────────────────────────────
 

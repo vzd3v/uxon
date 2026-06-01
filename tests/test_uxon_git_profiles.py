@@ -1,6 +1,6 @@
 import unittest
 
-from uxon import git_profiles as gp
+from uxon.gitremote import profiles as gp
 
 
 def _gh(**overrides):

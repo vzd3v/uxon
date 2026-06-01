@@ -618,7 +618,7 @@ class UxonTests(unittest.TestCase):
             "creds_user": "remdepl",
             "visibility": "private",
         }
-        from uxon import git_profiles as uxon_git_profiles
+        from uxon.gitremote import profiles as uxon_git_profiles
 
         cfg = self.make_config(
             allowed_roots=["/srv/repos"],
@@ -647,7 +647,7 @@ class UxonTests(unittest.TestCase):
                     "current_user": kwargs.get("current_user"),
                 }
             )
-            from uxon import git_create as uxon_git_create
+            from uxon.gitremote import create as uxon_git_create
 
             return uxon_git_create.CreationResult(
                 profile_name=profile_arg.name,
@@ -655,7 +655,7 @@ class UxonTests(unittest.TestCase):
                 commands=["would run: git init"],
             )
 
-        from uxon import git_create as uxon_git_create
+        from uxon.gitremote import create as uxon_git_create
 
         with mock.patch.object(uxon_git_create, "create_project_remote", side_effect=fake_create):
             with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
@@ -684,7 +684,7 @@ class UxonTests(unittest.TestCase):
                 uxon.do_new(args, cfg, "devagent")
 
     def test_do_new_git_remote_with_worktree_fails(self) -> None:
-        from uxon import git_profiles as uxon_git_profiles
+        from uxon.gitremote import profiles as uxon_git_profiles
 
         cfg = self.make_config(
             git_create_enabled=True,

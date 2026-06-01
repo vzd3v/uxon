@@ -110,7 +110,7 @@ def resolve_config_layers(cwd: str) -> tuple[dict[str, Any], list[Path]]:
 
 
 def load_config(cwd: str) -> Config:
-    from uxon import git_profiles as uxon_git_profiles
+    from uxon.gitremote import profiles as uxon_git_profiles
 
     merged, _ = resolve_config_layers(cwd)
     # Load raw repo data (before merge with defaults) so the removed

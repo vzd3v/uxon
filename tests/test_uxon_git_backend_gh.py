@@ -1,7 +1,7 @@
 import unittest
 
-from uxon import git_backend_gh as gh
-from uxon import git_profiles as gp
+from uxon.gitremote import backend_gh as gh
+from uxon.gitremote import profiles as gp
 
 
 def _profile(**over):
