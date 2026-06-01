@@ -14,6 +14,7 @@ from unittest import mock
 
 from helpers import make_config as _make_config
 
+import uxon.app.attach as attach_app
 from uxon import cli as uxon
 from uxon.infra.remote_hosts import RemoteHost
 
@@ -85,11 +86,11 @@ class AttachCrossUserTests(unittest.TestCase):
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions") as cs,
             mock.patch("uxon.infra.sessions_probe.resolve_session") as rs,
-            mock.patch.object(uxon, "attach_session", return_value=0) as att,
+            mock.patch.object(attach_app, "attach_session", return_value=0) as att,
         ):
             cs.return_value = []
             rs.return_value = mock.Mock(name="demo@claude")
-            rc = uxon.do_attach(args, cfg, "u-vz")
+            rc = attach_app.do_attach(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         # No probe needed when target == launch_user
         att.assert_called_once()
@@ -106,7 +107,7 @@ class AttachCrossUserTests(unittest.TestCase):
             redirect_stdout(buf),
         ):
             with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-                rc = uxon.do_attach(args, cfg, "u-vz")
+                rc = attach_app.do_attach(args, cfg, "u-vz")
         # Stable error tag — aggregator's UI surfaces it via
         # pause_on_launch_failure.
         self.assertEqual(rc, 1)
@@ -140,7 +141,7 @@ class AttachCrossUserTests(unittest.TestCase):
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
             mock.patch("sys.stderr", new_callable=io.StringIO),
         ):
-            rc = uxon.do_attach(args, cfg, "u-vz")
+            rc = attach_app.do_attach(args, cfg, "u-vz")
 
         self.assertEqual(rc, 1)
         # Exactly one attach.remote.in emit, with outcome=denied.  No
@@ -171,7 +172,7 @@ class AttachCrossUserTests(unittest.TestCase):
             rs.return_value = mock.Mock(name="demo@claude")
             rs.return_value.name = "demo@claude"
             with redirect_stdout(buf):
-                rc = uxon.do_attach(args, cfg, "u-vz")
+                rc = attach_app.do_attach(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         out = buf.getvalue()
         self.assertIn("sudo", out)
@@ -206,7 +207,7 @@ class AttachHostRemoteTests(unittest.TestCase):
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = uxon.do_attach(args, cfg, "u-vz")
+            rc = attach_app.do_attach(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         out = buf.getvalue()
         self.assertIn("ssh", out)
@@ -230,7 +231,7 @@ class AttachHostRemoteTests(unittest.TestCase):
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
-            uxon.do_attach(args, cfg, "u-vz")
+            attach_app.do_attach(args, cfg, "u-vz")
         out = buf.getvalue()
         self.assertIn("-J", out)
         self.assertIn("bastion", out)
@@ -248,7 +249,7 @@ class AttachHostRemoteTests(unittest.TestCase):
             user="alice",
         )
         with self.assertRaises(SystemExit):
-            uxon.do_attach(args, cfg, "u-vz")
+            attach_app.do_attach(args, cfg, "u-vz")
 
 
 class OnRemoteAttachCallbackTests(unittest.TestCase):

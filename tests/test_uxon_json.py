@@ -31,6 +31,8 @@ from unittest import mock
 from helpers import make_config as _make_config
 from helpers import make_session as _make_session
 
+import uxon.app.kill as kill_app
+import uxon.app.listing as listing_app
 import uxon.cli as uxon
 from uxon.infra import version_probe
 
@@ -81,7 +83,7 @@ class VersionJsonTests(unittest.TestCase):
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                uxon._emit_json("version", version_probe._version_data())
+                listing_app._emit_json("version", version_probe._version_data())
         env = json.loads(buf.getvalue())
         self.assertEqual(env["schema_version"], "1")
         self.assertEqual(env["uxon_version"], "9.9.9")
@@ -113,7 +115,7 @@ class ListJsonTests(unittest.TestCase):
     def test_envelope_kind_and_session_records(self) -> None:
         cfg = _make_config()
         sessions = [_make_session("uxon-alpha@claude"), _make_session("uxon-beta@claude")]
-        data = uxon._list_data(cfg, sessions, ["u-vz"], all_users=False)
+        data = listing_app._list_data(cfg, sessions, ["u-vz"], all_users=False)
         self.assertEqual(data["all_users"], False)
         self.assertEqual(data["scope_users"], ["u-vz"])
         self.assertEqual(data["session_prefix"], "uxon-")
@@ -123,12 +125,12 @@ class ListJsonTests(unittest.TestCase):
 
     def test_empty_sessions_emits_empty_list(self) -> None:
         cfg = _make_config()
-        data = uxon._list_data(cfg, [], ["u-vz"], all_users=False)
+        data = listing_app._list_data(cfg, [], ["u-vz"], all_users=False)
         self.assertEqual(data["sessions"], [])
 
     def test_all_users_flag_propagates(self) -> None:
         cfg = _make_config()
-        data = uxon._list_data(cfg, [], ["alice", "bob"], all_users=True)
+        data = listing_app._list_data(cfg, [], ["alice", "bob"], all_users=True)
         self.assertTrue(data["all_users"])
         self.assertEqual(data["scope_users"], ["alice", "bob"])
 
@@ -146,7 +148,7 @@ class KillJsonTests(unittest.TestCase):
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["kind"], "kill")
@@ -168,7 +170,7 @@ class KillJsonTests(unittest.TestCase):
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["data"]["action"], "killed")
@@ -185,7 +187,7 @@ class KillAllJsonTests(unittest.TestCase):
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill_all(args, cfg, "u-vz")
+                rc = kill_app.do_kill_all(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["kind"], "kill-all")
@@ -203,7 +205,7 @@ class KillAllJsonTests(unittest.TestCase):
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill_all(args, cfg, "u-vz")
+                rc = kill_app.do_kill_all(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         actions = [(r["name"], r["action"]) for r in env["data"]["sessions"]]
@@ -225,7 +227,7 @@ class KillAllJsonTests(unittest.TestCase):
             mock.patch("uxon.errors.eprint") as eprint,
             self.assertRaises(SystemExit),
         ):
-            uxon.do_kill_all(args, cfg, "u-vz")
+            kill_app.do_kill_all(args, cfg, "u-vz")
         self.assertIn("--json requires", eprint.call_args[0][0])
 
     def test_failed_kill_records_failed_action(self) -> None:
@@ -241,7 +243,7 @@ class KillAllJsonTests(unittest.TestCase):
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill_all(args, cfg, "u-vz")
+                rc = kill_app.do_kill_all(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["data"]["sessions"][0]["action"], "failed")
@@ -291,7 +293,7 @@ class HostDispatchTests(unittest.TestCase):
         return cfg
 
     def test_unknown_host_fails_with_listing(self) -> None:
-        from uxon.cli import _do_list_host
+        from uxon.app.listing import _do_list_host
 
         cfg = self._cfg_with_hosts(["a", "b"])
         args = uxon.ParsedArgs(action="list", host="missing")
@@ -305,7 +307,7 @@ class HostDispatchTests(unittest.TestCase):
         self.assertIn("a, b", msg)
 
     def test_no_remote_hosts_configured_fails(self) -> None:
-        from uxon.cli import _do_list_host
+        from uxon.app.listing import _do_list_host
 
         cfg = _make_config()
         cfg.remote_hosts = []
@@ -316,7 +318,7 @@ class HostDispatchTests(unittest.TestCase):
         self.assertIn("no [[remote_hosts]]", eprint.call_args[0][0])
 
     def test_host_json_envelope_carries_host_field(self) -> None:
-        from uxon.cli import _do_list_host
+        from uxon.app.listing import _do_list_host
         from uxon.infra.remote_collector import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
@@ -342,7 +344,7 @@ class HostDispatchTests(unittest.TestCase):
         self.assertEqual(env["data"]["sessions"], snap.sessions)
 
     def test_host_failure_with_no_cache_returns_nonzero(self) -> None:
-        from uxon.cli import _do_list_host
+        from uxon.app.listing import _do_list_host
         from uxon.infra.remote_collector import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
@@ -371,7 +373,7 @@ class HostDispatchTests(unittest.TestCase):
         # the collector returns from_cache=True with the cached
         # sessions. We treat that as a soft success — still exit 0
         # so a watchdog doesn't page on every brief outage.
-        from uxon.cli import _do_list_host
+        from uxon.app.listing import _do_list_host
         from uxon.infra.remote_collector import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
@@ -399,7 +401,7 @@ class AllHostsJsonLinesTests(unittest.TestCase):
     split on ``\\n`` and parse each record independently."""
 
     def test_each_envelope_is_one_line(self) -> None:
-        from uxon.cli import _do_list_all_hosts
+        from uxon.app.listing import _do_list_all_hosts
         from uxon.infra.remote_collector import RemoteSnapshot
         from uxon.infra.remote_hosts import RemoteHost
 
@@ -458,7 +460,9 @@ class WireRoundTripTests(unittest.TestCase):
         sessions = [_make_session("uxon-foo@claude"), _make_session("uxon-bar@claude")]
         buf = io.StringIO()
         with redirect_stdout(buf):
-            uxon._emit_json("list", uxon._list_data(cfg, sessions, ["u-vz"], all_users=False))
+            listing_app._emit_json(
+                "list", listing_app._list_data(cfg, sessions, ["u-vz"], all_users=False)
+            )
         parsed, _scope_skipped, _host_stats, err = _parse_envelope(buf.getvalue())
         self.assertIsNone(err)
         assert parsed is not None
@@ -475,9 +479,9 @@ class WireRoundTripTests(unittest.TestCase):
         cfg = _make_config()
         buf = io.StringIO()
         with redirect_stdout(buf):
-            uxon._emit_json(
+            listing_app._emit_json(
                 "list",
-                uxon._list_data(cfg, [_make_session()], ["u-vz"], all_users=False),
+                listing_app._list_data(cfg, [_make_session()], ["u-vz"], all_users=False),
                 compact=True,
             )
         parsed, _scope_skipped, _host_stats, err = _parse_envelope(buf.getvalue())

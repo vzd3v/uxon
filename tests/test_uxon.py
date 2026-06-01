@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest import mock
 
 import uxon.app.agent_select as agent_select
+import uxon.app.attach as attach_app
+import uxon.app.kill as kill_app
 import uxon.app.launch as launch_app
 import uxon.app.repeat as repeat_app
 import uxon.cli as uxon
@@ -770,7 +772,7 @@ class UxonTests(unittest.TestCase):
                     with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=True):
                         with mock.patch("builtins.input", return_value=""):
                             with mock.patch.object(
-                                uxon, "attach_session", return_value=0
+                                attach_app, "attach_session", return_value=0
                             ) as attach:
                                 with mock.patch(
                                     "uxon.infra.tmux.launch_in_tmux", return_value=0
@@ -845,7 +847,7 @@ class UxonTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=existing),
             mock.patch("uxon.infra.identity.is_interactive_tty", return_value=True),
             mock.patch("builtins.input", return_value=""),
-            mock.patch.object(uxon, "attach_session", return_value=0) as attach,
+            mock.patch.object(attach_app, "attach_session", return_value=0) as attach,
             mock.patch.object(launch_app, "plan_worktree_launch") as plan,
         ):
             result = uxon.do_new(args, cfg, "u-vz")
@@ -865,7 +867,7 @@ class UxonTests(unittest.TestCase):
         )
         wt = "/srv/repos/demo/.uxon/worktrees/feature-x"
         existing = [self.make_session("uxon-demo-feature-x@claude", wt)]
-        fake_req = uxon._tui_launch_request_cls()(cmd=("true",), label="launch x")
+        fake_req = attach_app._tui_launch_request_cls()(cmd=("true",), label="launch x")
 
         with (
             mock.patch.object(uxon.os.path, "isdir", return_value=True),
@@ -1028,7 +1030,7 @@ class UxonTests(unittest.TestCase):
             with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
                 with mock.patch("uxon.errors.eprint") as eprint:
                     with self.assertRaises(SystemExit) as ctx:
-                        uxon.do_kill_all(args, cfg, "u-vz")
+                        kill_app.do_kill_all(args, cfg, "u-vz")
 
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("--force", eprint.call_args[0][0])
@@ -1080,9 +1082,9 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         with self._stub_socket_path():
-            with mock.patch.object(uxon.subprocess, "call", return_value=0) as call:
-                with mock.patch.object(uxon.os, "execvp") as execvp:
-                    rc = uxon.attach_session_blocking(target, cfg, "u-vz")
+            with mock.patch.object(attach_app.subprocess, "call", return_value=0) as call:
+                with mock.patch.object(attach_app.os, "execvp") as execvp:
+                    rc = attach_app.attach_session_blocking(target, cfg, "u-vz")
         self.assertEqual(rc, 0)
         call.assert_called_once()
         execvp.assert_not_called()
@@ -1119,8 +1121,8 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         with self._stub_socket_path():
-            with mock.patch.object(uxon.os, "execvp") as execvp:
-                uxon.attach_session(target, cfg, "u-vz")
+            with mock.patch.object(attach_app.os, "execvp") as execvp:
+                attach_app.attach_session(target, cfg, "u-vz")
         execvp.assert_called_once()
         argv = execvp.call_args[0][1]
         self.assertIn("attach-session", argv)
@@ -2137,7 +2139,7 @@ class CliPreflightTests(unittest.TestCase):
             mock_report.agents = {"claude": mock.MagicMock(path=None)}
             probe.return_value = mock_report
 
-            with mock.patch("uxon.cli.print_list", return_value=0):
+            with mock.patch("uxon.app.listing.print_list", return_value=0):
                 with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
                     rc = uxon.main(["list"])
                 # Should not have failed; list doesn't require agents.
@@ -2266,7 +2268,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
             mock.patch.object(cli, "allocate_session_name", fake_alloc),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
-                lambda *a, **k: cli._tui_launch_request_cls()(cmd=("true",), label="x"),
+                lambda *a, **k: attach_app._tui_launch_request_cls()(cmd=("true",), label="x"),
             ),
         ):
             cli._plan_tui_run_agent(
@@ -2295,7 +2297,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
             mock.patch.object(cli, "allocate_session_name", fake_alloc),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
-                lambda *a, **k: cli._tui_launch_request_cls()(cmd=("true",), label="x"),
+                lambda *a, **k: attach_app._tui_launch_request_cls()(cmd=("true",), label="x"),
             ),
         ):
             cli._plan_tui_run_agent(cfg, "devagent", "/srv/work/plain", "claude", "default")
@@ -2380,7 +2382,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
-                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                lambda td, s, *a, **k: attach_app._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
             ),
@@ -2440,7 +2442,6 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
 
 class PlanWorktreeLaunchTests(unittest.TestCase):
     def test_new_branch_local_base_adds_worktree_and_names_session(self) -> None:
-        import uxon.cli as cli
 
         cfg = config_loader.load_config("/tmp")
         repo = "/srv/work/myapp"
@@ -2471,7 +2472,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
-                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                lambda td, s, *a, **k: attach_app._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
             ),
@@ -2536,7 +2537,6 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         self.assertFalse([c for c in called if "worktree" in c and "add" in c])
 
     def test_existing_branch_checks_out_without_b(self) -> None:
-        import uxon.cli as cli
 
         cfg = config_loader.load_config("/tmp")
         calls: list[list[str]] = []
@@ -2560,7 +2560,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             mock.patch("uxon.infra.git._branch_exists_as_user", return_value=True),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
-                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                lambda td, s, *a, **k: attach_app._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
             ),
@@ -2576,14 +2576,13 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
     def test_agent_args_forwarded_to_launch_request(self) -> None:
         # CLI parity: `uxon -w branch -- --extra-flag` must not silently drop
         # the agent passthrough args on the worktree create path.
-        import uxon.cli as cli
 
         cfg = config_loader.load_config("/tmp")
         captured: dict[str, object] = {}
 
         def fake_build(td, s, run_args, *a, **k):
             captured["agent_args"] = list(run_args.agent_args)
-            return cli._tui_launch_request_cls()(cmd=("true",), label=f"launch {s}")
+            return attach_app._tui_launch_request_cls()(cmd=("true",), label=f"launch {s}")
 
         def fake_run_cmd(cmd, check=True, **kw):
             class CP:
@@ -2615,7 +2614,6 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         self.assertEqual(captured["agent_args"], ["--extra-flag", "value"])
 
     def test_worktree_add_failure_surfaces_clear_error(self) -> None:
-        import uxon.cli as cli
 
         cfg = config_loader.load_config("/tmp")
 
@@ -2643,7 +2641,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             mock.patch("uxon.infra.git._local_base_ref_as_user", return_value="HEAD"),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
-                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                lambda td, s, *a, **k: attach_app._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
             ),
@@ -2659,7 +2657,6 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
     def test_dry_run_is_side_effect_free(self) -> None:
         # dry_run must not mkdir / fetch / write exclude / add worktree /
         # emit audit — only resolve + print the plan.
-        import uxon.cli as cli
 
         cfg = config_loader.load_config("/tmp")
         calls: list[list[str]] = []
@@ -2691,7 +2688,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             ),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
-                lambda td, s, *a, **k: cli._tui_launch_request_cls()(
+                lambda td, s, *a, **k: attach_app._tui_launch_request_cls()(
                     cmd=("true",), label=f"launch {s}"
                 ),
             ),
@@ -2728,7 +2725,7 @@ class CliWorktreeRoutingTests(unittest.TestCase):
 
         def fake_plan(cfg_, user, repo, branch, agent, mode, *, agent_args=None, dry_run=False):
             captured.update(repo=repo, branch=branch, agent=agent, dry_run=dry_run)
-            return cli._tui_launch_request_cls()(cmd=("true",), label="launch x")
+            return attach_app._tui_launch_request_cls()(cmd=("true",), label="launch x")
 
         with (
             mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),

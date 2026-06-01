@@ -3,18 +3,19 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import uxon.app.agent_select as agent_select
+import uxon.app.attach as attach_app
+import uxon.app.kill as kill_app
 import uxon.app.launch as launch_app
+import uxon.app.listing as listing_app
 import uxon.app.repeat as repeat_app
 from uxon.domain.args import SUBCOMMANDS, USAGE, ParsedArgs
 from uxon.domain.authz import canonical, is_under_allowed_roots
@@ -157,453 +158,6 @@ def ensure_new_project_target_allowed(cfg: Config, launch_user: str, project_dir
         for base in cfg.allowed_roots:
             eprint(f"uxon:   - {base}")
         fail(f"got: {project_dir}")
-
-
-def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], list[str]]:
-    """Probe per-target sudo and split ``session_users`` into reachable / skipped.
-
-    Returns ``(scope_users, scope_skipped)``:
-
-    - ``scope_users`` = ``launch_user`` plus every user from
-      ``identity.resolve_all_session_users(cfg, launch_user)`` that the caller
-      can reach via ``sudo -niu <U>``. The list is deterministically
-      ordered (stable, sorted by user where it matters).
-    - ``scope_skipped`` = the rest of ``session_users`` (excluding
-      self) — users in config that the caller cannot reach. Surfaced
-      separately so ``--json`` callers and human stderr both see what
-      was filtered.
-
-    The launch user itself is always in ``scope_users`` and never in
-    ``scope_skipped``: there's no sudo step for "see my own
-    sessions".
-    """
-    from uxon.infra.sudo_probe import probe_sudo_capability
-
-    all_users = identity.resolve_all_session_users(cfg, launch_user)
-    candidates = [u for u in all_users if u != launch_user]
-    caps = probe_sudo_capability(candidates)
-    reachable = [u for u in candidates if u in caps.reachable_users]
-    skipped = [u for u in candidates if u not in caps.reachable_users]
-    scope_users = config_loader.normalize_user_list([launch_user, *reachable])
-    return scope_users, skipped
-
-
-def _emit_scope_skipped_hint(scope_skipped: list[str] | None) -> None:
-    """Print a single-line stderr hint when ``--all-users`` filtered users.
-
-    Format mirrors the spec:
-    ``# 2 users skipped (no sudo): carol_agent, dave_agent``.
-    No-op when the skipped list is empty / None — stdout stays
-    parseable and human output stays uncluttered.
-    """
-    if not scope_skipped:
-        return
-    eprint(f"# {len(scope_skipped)} users skipped (no sudo): {', '.join(scope_skipped)}")
-
-
-def _list_data(
-    cfg: Config,
-    sessions: list[SessionInfo],
-    scope_users: list[str],
-    *,
-    all_users: bool,
-    scope_skipped: list[str] | None = None,
-) -> dict[str, Any]:
-    """Build the ``data`` body for ``uxon list --json``.
-
-    Wraps :func:`build_session_records` and exposes the inputs a
-    remote consumer needs to label the snapshot: which OS users were
-    scoped, whether ``--all-users`` was on, and the session prefix
-    that ``short_id`` was stripped against.
-
-    ``scope_skipped`` (optional) is the per-target-sudo "users in
-    ``session_users`` we probed but couldn't reach" list. It is
-    omitted from the envelope when ``None`` so single-user listings
-    stay byte-identical to their previous shape; callers that
-    performed an ``--all-users`` probe pass the (possibly empty)
-    list to surface it in the envelope.
-    """
-    from uxon.domain.wire_schema import build_session_records
-
-    body: dict[str, Any] = {
-        "all_users": all_users,
-        "scope_users": list(scope_users),
-        "session_prefix": cfg.session_prefix,
-        "sessions": build_session_records(sessions, session_prefix=cfg.session_prefix),
-    }
-    if scope_skipped is not None:
-        body["scope_skipped"] = list(scope_skipped)
-    return body
-
-
-def _emit_json_with_host(
-    kind: str, data: dict[str, Any], *, host: str, compact: bool = False
-) -> None:
-    """Emit a JSON envelope with the optional ``host`` field set.
-
-    Used by ``list --host <name>``: the local CLI is not running on
-    the peer, so the envelope is *attributed* to the named host
-    rather than implying a local origin. The field follows the
-    optional shape documented in :class:`uxon.wire_schema.Envelope`.
-
-    ``compact=True`` emits the envelope on a single line (no
-    indentation) so a sequence of calls produces a valid JSON
-    Lines stream — used by ``--all-hosts --json`` so a consumer
-    can split on ``\\n`` and parse each record independently.
-    """
-    from uxon.domain.wire_schema import make_envelope
-
-    env = make_envelope(
-        kind,  # type: ignore[arg-type]
-        data,
-        uxon_version=version_probe.read_repo_version(),
-        host=host,
-    )
-    if compact:
-        print(json.dumps(env, sort_keys=False))
-    else:
-        print(json.dumps(env, indent=2, sort_keys=False))
-
-
-def _list_data_from_records(
-    sessions: list[Any],
-    scope_users: list[str],
-    *,
-    session_prefix: str,
-    all_users: bool,
-    scope_skipped: list[str] | None = None,
-) -> dict[str, Any]:
-    """Build the ``list`` envelope ``data`` from already-prepared
-    wire-schema records (i.e. data fetched from a peer rather than
-    collected locally).
-
-    Used by the ``--host`` path so the local CLI's JSON output for a
-    remote-host listing has the same shape as a local one — the
-    only delta is the envelope-level ``host`` field set by the
-    caller.
-
-    ``scope_skipped`` (optional) propagates the per-target-sudo
-    skipped-users list through; omitted when ``None`` to keep the
-    envelope shape stable for callers that don't pass it.
-    """
-    body: dict[str, Any] = {
-        "all_users": all_users,
-        "scope_users": list(scope_users),
-        "session_prefix": session_prefix,
-        "sessions": list(sessions),
-    }
-    if scope_skipped is not None:
-        body["scope_skipped"] = list(scope_skipped)
-    return body
-
-
-def _print_remote_table(
-    cfg: Config,
-    host_name: str,
-    sessions: Sequence[dict[str, Any]] | Sequence[Any],
-    *,
-    cached: bool,
-) -> None:
-    """Render a remote host's ``list --json`` payload as a human
-    table.
-
-    The wire-schema dicts carry the same fields :func:`print_list`
-    needs, so we synthesise enough of a ``SessionInfo`` to reuse the
-    existing renderer. Only ``user``, ``name``, ``attached``,
-    ``windows``, ``created``, ``last_attached``, ``active_pid``,
-    ``active_cmd``, ``active_path``, ``cpu_pct``, ``rss_kib``,
-    ``agent``, ``legacy`` are read; ``pane_pids`` is informational
-    on local rows and not rendered, so we leave it empty.
-    """
-    synth = []
-    for r in sessions:
-        synth.append(
-            SessionInfo(
-                user=str(r.get("user", "")),
-                name=str(r.get("name", "")),
-                attached="1" if r.get("attached") else "0",
-                windows=str(r.get("windows", "")),
-                created=str(r.get("created", "")),
-                last_attached=str(r.get("last_attached", "")),
-                pane_pids=(),
-                active_pid=r.get("active_pid"),
-                active_cmd=str(r.get("active_cmd", "")),
-                active_path=str(r.get("active_path", "")),
-                cpu_pct=float(r.get("cpu_pct", 0.0) or 0.0),
-                rss_kib=int(r.get("rss_kib", 0) or 0),
-                agent=str(r.get("agent", "claude")),
-                legacy=bool(r.get("legacy", False)),
-            )
-        )
-    cache_marker = "  (CACHED — peer unreachable)" if cached else ""
-    print(f"── remote: {host_name}{cache_marker} ──")
-    users_in_payload = sorted({s.user for s in synth}) or ["?"]
-    show_user = len(users_in_payload) > 1
-    print_list(cfg, synth, users_in_payload, show_user=show_user)
-
-
-def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
-    """Handle ``uxon list --host <name>``.
-
-    Looks up the configured peer, runs the SSH-driven collector,
-    and prints either the JSON envelope (with the ``host`` field
-    set) or a human table. When the live fetch fails but the disk
-    cache is populated, the result is rendered with a "(CACHED)"
-    marker; no fallback exits with a non-zero code so the caller
-    knows to investigate.
-    """
-    from uxon.infra.remote_collector import fetch_remote_snapshot
-    from uxon.infra.remote_hosts import find_host
-
-    if not cfg.remote_hosts:
-        fail("no [[remote_hosts]] configured; --host requires at least one peer")
-    target = find_host(cfg.remote_hosts, args.host or "")
-    if target is None:
-        names = ", ".join(h.name for h in cfg.remote_hosts) or "<none>"
-        fail(f"unknown --host {args.host!r}; configured: {names}")
-    snap = fetch_remote_snapshot(
-        target,
-        ssh_multiplex=cfg.ssh_multiplex,
-        ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
-    )
-    if args.json_output:
-        _emit_json_with_host(
-            "list",
-            _list_data_from_records(
-                snap.sessions,
-                # The peer's payload carried scope_users on its own
-                # envelope; we lost that during collector parsing
-                # because the wire schema there only kept ``sessions``.
-                # Surface what we can derive.
-                scope_users=sorted({s.get("user", "") for s in snap.sessions if s.get("user")}),
-                session_prefix=cfg.session_prefix,
-                all_users=False,
-            ),
-            host=target.name,
-        )
-        if snap.error and not snap.from_cache:
-            eprint(f"uxon: --host {target.name}: {snap.error}")
-            return 1
-        return 0
-    _print_remote_table(cfg, target.name, snap.sessions, cached=snap.from_cache)
-    if snap.error and not snap.from_cache:
-        eprint(f"uxon: --host {target.name}: {snap.error}")
-        return 1
-    return 0
-
-
-def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
-    """Handle ``uxon list --all-hosts``.
-
-    Prints the local listing first, then one block per configured
-    peer. With ``--json`` emits a JSON Lines stream — one envelope
-    per source (local + each peer) — so a consumer can split by
-    newline and parse each independently. Exits non-zero iff any
-    peer failed AND its cache was empty; partial results are still
-    rendered.
-    """
-    from uxon.infra.remote_collector import fetch_remote_snapshot
-
-    rc = 0
-    scope_skipped: list[str] | None
-    if args.all_users:
-        if not cfg.enable_all_users_list:
-            fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
-        scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
-    else:
-        scope_users = [launch_user]
-        scope_skipped = None
-    local_sessions = sessions_probe.collect_sessions(scope_users, cfg)
-
-    if args.json_output:
-        # JSON Lines: one envelope per line. A consumer splits on
-        # ``\n`` and parses each line independently.
-        _emit_json(
-            "list",
-            _list_data(
-                cfg,
-                local_sessions,
-                scope_users,
-                all_users=args.all_users,
-                scope_skipped=scope_skipped,
-            ),
-            compact=True,
-        )
-        for host in cfg.remote_hosts:
-            snap = fetch_remote_snapshot(
-                host,
-                ssh_multiplex=cfg.ssh_multiplex,
-                ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
-            )
-            _emit_json_with_host(
-                "list",
-                _list_data_from_records(
-                    snap.sessions,
-                    scope_users=sorted({s.get("user", "") for s in snap.sessions if s.get("user")}),
-                    session_prefix=cfg.session_prefix,
-                    all_users=False,
-                ),
-                host=host.name,
-                compact=True,
-            )
-            if snap.error and not snap.from_cache:
-                eprint(f"uxon: --host {host.name}: {snap.error}")
-                rc = 1
-        return rc
-
-    # Human-readable: local block first, then peers.
-    print_list(cfg, local_sessions, scope_users, show_user=args.all_users)
-    if scope_skipped:
-        _emit_scope_skipped_hint(scope_skipped)
-    for host in cfg.remote_hosts:
-        snap = fetch_remote_snapshot(
-            host,
-            ssh_multiplex=cfg.ssh_multiplex,
-            ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
-        )
-        print()
-        _print_remote_table(cfg, host.name, snap.sessions, cached=snap.from_cache)
-        if snap.error and not snap.from_cache:
-            eprint(f"uxon: --host {host.name}: {snap.error}")
-            rc = 1
-    return rc
-
-
-def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> None:
-    """Print one wire-schema envelope to stdout as JSON.
-
-    Centralises envelope construction so every ``--json`` exit path
-    uses the same shape (``schema_version``, ``uxon_version``,
-    ``kind``, ``data``). ``kind`` is the action name; the runtime
-    accepts any string but only the documented set
-    (``list``/``doctor``/``version``/``kill``/``kill-all``) is part
-    of the contract.
-
-    ``compact=True`` emits a single-line record (used by the
-    ``--all-hosts --json`` JSON Lines stream). Default is the
-    pretty-printed form so a human-piped ``uxon list --json`` is
-    readable.
-    """
-    from uxon.domain.wire_schema import make_envelope
-
-    # Additive optional ``host_stats`` block for ``list`` envelopes —
-    # producer must never abort the list output if /proc is partially
-    # unavailable; absence is the documented forward-compatible signal.
-    host_stats: dict[str, Any] | None = None
-    if kind == "list":
-        try:
-            from uxon.infra.probes import read_host_stats
-
-            hs = read_host_stats()
-            host_stats = {
-                "cpu_pct": hs.cpu_pct,
-                "mem_used_kib": hs.mem_used_kib,
-                "mem_total_kib": hs.mem_total_kib,
-                "loadavg_1m": hs.loadavg_1m,
-                "uptime_s": hs.uptime_s,
-                "kernel": hs.kernel,
-            }
-        except Exception as exc:  # pragma: no cover — defensive
-            from uxon.infra.events import debug
-
-            debug("probes", err=type(exc).__name__, msg=str(exc))
-    env = make_envelope(
-        kind,  # type: ignore[arg-type]
-        data,
-        uxon_version=version_probe.read_repo_version(),
-        host_stats=host_stats,  # type: ignore[arg-type]
-    )
-    if compact:
-        print(json.dumps(env, sort_keys=False))
-    else:
-        print(json.dumps(env, indent=2, sort_keys=False))
-
-
-def print_list(
-    cfg: Config, sessions: list[SessionInfo], scope_users: list[str], show_user: bool = False
-) -> int:
-    if not sessions:
-        if show_user:
-            print(f"uxon: no {cfg.session_prefix}* sessions for users: {', '.join(scope_users)}")
-        else:
-            print(f"uxon: no {cfg.session_prefix}* sessions for {scope_users[0]}")
-        return 0
-
-    rows: list[dict[str, str]] = []
-    for s in sessions:
-        short = (
-            s.name[len(cfg.session_prefix) :] if s.name.startswith(cfg.session_prefix) else s.name
-        )
-        marker = "*" if s.attached == "1" else " "
-        pid_s = str(s.active_pid) if s.active_pid is not None else "-"
-        cpu_s = format_cpu_pct(s.cpu_pct)
-        ram_s = format_rss_kib(s.rss_kib)
-        start_s = compact_time(s.created)
-        last_s = compact_time(s.last_attached)
-        cmd_s = s.active_cmd or "-"
-        path_s = s.active_path or "-"
-        rows.append(
-            {
-                "user": s.user,
-                "id": f"{marker}{short}",
-                "pid": pid_s,
-                "cpu": cpu_s,
-                "ram": ram_s,
-                "new": start_s,
-                "last": last_s,
-                "cmd": cmd_s,
-                "path": path_s,
-            }
-        )
-
-    user_w = max(4, max(len(r["user"]) for r in rows)) if show_user else 0
-    id_w = max(2, max(len(r["id"]) for r in rows))
-    pid_w = max(3, max(len(r["pid"]) for r in rows))
-    cpu_w = max(3, max(len(r["cpu"]) for r in rows))
-    ram_w = max(3, max(len(r["ram"]) for r in rows))
-    cmd_w = max(3, max(len(r["cmd"]) for r in rows))
-    attached_count = sum(1 for s in sessions if s.attached == "1")
-    total_cpu_pct = sum(s.cpu_pct for s in sessions)
-    total_ram_kib = sum(s.rss_kib for s in sessions)
-    if show_user:
-        scope = f" users={','.join(scope_users)}"
-    else:
-        scope = f" user={scope_users[0]}"
-    print(
-        "uxon:"
-        f"{scope}"
-        f" sessions={len(rows)}"
-        f" attached={attached_count}"
-        f" cpu={format_cpu_pct(total_cpu_pct)}"
-        f" ram={format_rss_kib(total_ram_kib)}"
-    )
-    if show_user:
-        print(
-            f"{'USER':<{user_w}}  {'ID':<{id_w}}  {'PID':<{pid_w}}  {'CPU':>{cpu_w}}  "
-            f"{'RAM':>{ram_w}}  {'NEW':<5}  {'LAST':<5}  {'CMD':<{cmd_w}}  PATH"
-        )
-        for row in rows:
-            print(
-                f"{row['user']:<{user_w}}  {row['id']:<{id_w}}  {row['pid']:<{pid_w}}  "
-                f"{row['cpu']:>{cpu_w}}  {row['ram']:>{ram_w}}  {row['new']:<5}  "
-                f"{row['last']:<5}  {row['cmd']:<{cmd_w}}  {row['path']}"
-            )
-    else:
-        print(
-            f"{'ID':<{id_w}}  {'PID':<{pid_w}}  {'CPU':>{cpu_w}}  {'RAM':>{ram_w}}  {'NEW':<5}  {'LAST':<5}  {'CMD':<{cmd_w}}  PATH"
-        )
-        for row in rows:
-            print(
-                f"{row['id']:<{id_w}}  {row['pid']:<{pid_w}}  {row['cpu']:>{cpu_w}}  "
-                f"{row['ram']:>{ram_w}}  {row['new']:<5}  {row['last']:<5}  "
-                f"{row['cmd']:<{cmd_w}}  {row['path']}"
-            )
-
-    print()
-    print("(*) attached in tmux now")
-    print("attach: uxon attach <id|pid>")
-    print("kill:   uxon kill <id|pid> [--dry-run]")
-    return 0
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
@@ -936,729 +490,6 @@ def parse_args(argv: list[str]) -> ParsedArgs:
     return parse_run_like(argv, "run")
 
 
-def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
-    """Handle ``uxon attach <id> --host <alias> --user <u>``.
-
-    Looks up the configured peer, builds an interactive ssh argv via
-    :func:`build_peer_ssh_argv`, and execvp's it. Peer's own
-    ``uxon attach --user`` runs the per-target sudo probe, so the
-    local side does not need to know the peer's user table.
-
-    The wire command always passes ``--user`` (even when it equals
-    the ssh-login-user on the peer): peer is the sole authority on
-    'who can attach to what', and we route that decision through
-    its own gating. ``--user`` was made required at parse time
-    (:func:`_parse_attach_extras`).
-    """
-    from uxon.infra.remote_collector import (
-        DEFAULT_CONNECT_TIMEOUT_SEC,
-        build_peer_ssh_argv,
-    )
-    from uxon.infra.remote_hosts import find_host
-
-    peer = find_host(cfg.remote_hosts, args.host or "")
-    if peer is None:
-        names = ", ".join(h.name for h in cfg.remote_hosts) or "(none)"
-        fail(f"unknown --host {args.host!r}; configured: {names}")
-    assert args.user is not None  # parser-enforced
-    import uuid as _uuid
-
-    from uxon.infra import audit as _audit
-
-    corr_id = str(_uuid.uuid4())
-    _audit.set_correlation_id(corr_id)
-    # ``target_id`` MUST come first after the verb: peer-side
-    # ``parse_subcommand`` reads ``argv[1]`` as the target, with flags
-    # tail-parsed afterwards.  Putting flags first makes the peer parse
-    # the flag name as the target and reject the rest.
-    remote_cmd = (
-        f"{shlex.quote(peer.remote_uxon)} attach {shlex.quote(args.target_id or '')} "
-        f"--user {shlex.quote(args.user)} "
-        f"--audit-correlation-id {shlex.quote(corr_id)}"
-    )
-    ssh_argv = build_peer_ssh_argv(
-        peer,
-        remote_command=remote_cmd,
-        allocate_tty=True,
-        connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
-        # Interactive attach is a one-shot connection: the multiplex
-        # savings (200-500 ms vs 5-20 ms) are negligible against a
-        # human-paced session, while sharing the poller's
-        # ControlMaster means a wedged master can hang the user's
-        # terminal at ``unix_wait_for_peer``. Force a fresh connection.
-        ssh_multiplex="off",
-        ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
-    )
-    # Audit must fire *before* ``os.execvp`` (Bug 7) — once the process
-    # image is replaced the cached socket is gone.  ``audit()`` is a
-    # non-blocking ``socket.send``, so the kernel buffers the datagram
-    # and the data is handed off before we exec.
-    _audit.audit(
-        "attach.remote.out",
-        peer_name=peer.name,
-        ssh_alias=peer.ssh_alias,
-        target_user=args.user,
-        target_session=args.target_id,
-        correlation_id=corr_id,
-    )
-    if args.dry_run:
-        print(shlex.join(ssh_argv))
-        return 0
-    try:
-        os.execvp(ssh_argv[0], ssh_argv)
-    except Exception as exc:
-        _audit.audit(
-            "attach.remote.out",
-            outcome="error",
-            peer_name=peer.name,
-            ssh_alias=peer.ssh_alias,
-            target_user=args.user,
-            target_session=args.target_id,
-            correlation_id=corr_id,
-            error=str(exc)[:256],
-        )
-        raise
-    return 0  # unreachable
-
-
-def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
-    if not args.target_id:
-        fail("attach requires an identifier")
-
-    from uxon.infra import audit as _audit
-
-    # Remote dispatch: --host routes to a configured peer over SSH.
-    # Per-target sudo gating happens on the peer (peer's own
-    # 'uxon attach' runs the probe), so the local side does not need
-    # to know the peer's user table. Mirrors do_kill --host.
-    #
-    # Checked *before* the SSH_CONNECTION peer-inbound branch: a
-    # caller invoking ``ssh peer1 "uxon attach --host peer2 …"`` is the
-    # caller-side leg dispatching onward, not a peer-inbound terminus,
-    # and must not emit ``attach.remote.in``.
-    if args.host is not None:
-        return _do_attach_remote(args, cfg)
-
-    # Bug 6 — peer-inbound branch.  When invoked over SSH the only
-    # signal that this is the peer side of an ``attach.remote.out`` is
-    # ``SSH_CONNECTION`` in the env (sudo strips it on the next leg, so
-    # we have to capture it before the sudo execvp below).  Spec line
-    # 299: ``attach.remote.in`` *replaces* ``session.attach`` on the
-    # peer side — both names describe the same physical event from
-    # caller-vs-peer POV.
-    #
-    # The spec also requires (line 207-209) that state-changing events
-    # emit on **both** the success and failure paths.  We honour that
-    # for the peer side too: instead of a single ``outcome=ok`` emit at
-    # the top, every ``session.attach`` emission point below switches
-    # event name (``attach.remote.in``) and identifier-field name
-    # (``target_session`` instead of ``session``) when ``peer_inbound``.
-    # An auditor querying ``EVENT=attach.remote.in OUTCOME=denied``
-    # then actually finds the failure.
-    peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    _attach_event: str = "attach.remote.in" if peer_inbound else "session.attach"
-    _session_field: str = "target_session" if peer_inbound else "session"
-
-    target_user = args.user or launch_user
-    if target_user != launch_user:
-        from uxon.infra.sudo_probe import probe_sudo_capability
-
-        caps = probe_sudo_capability([target_user])
-        if target_user not in caps.reachable_users:
-            _audit.audit(
-                _attach_event,
-                outcome="denied",
-                **{_session_field: args.target_id or ""},
-                target_user=target_user,
-            )
-            eprint(
-                f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
-                "check /etc/sudoers.d for a NOPASSWD rule for this target)"
-            )
-            return 1
-        sessions = sessions_probe.collect_sessions([target_user], cfg)
-        target = sessions_probe._resolve_or_audit_not_found(
-            args.target_id,
-            sessions,
-            cfg,
-            audit_event=_attach_event,
-            target_user=target_user,
-            session_field=_session_field,
-        )
-        base = tmux.configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
-        full = ["sudo", "-niu", target_user, "--", *base]
-        if args.dry_run:
-            print(f"attach_user={shlex.quote(target_user)}")
-            print(f"socket={shlex.quote(tmux.tmux_socket_path(cfg, target_user))}")
-            print(f"session={shlex.quote(target.name)}")
-            print(f"exec {shlex.join(full)}")
-            return 0
-        # Audit before ``os.execvp`` (Bug 7) — once the image is
-        # replaced our cached socket is gone.
-        _audit.audit(
-            _attach_event,
-            **{_session_field: target.name},
-            target_user=target_user,
-        )
-        try:
-            os.execvp(full[0], full)
-        except Exception as exc:
-            _audit.audit(
-                _attach_event,
-                outcome="error",
-                **{_session_field: target.name},
-                target_user=target_user,
-                error=str(exc)[:256],
-            )
-            raise
-        return 0
-
-    # Same-user path.
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    if not sessions:
-        legacy = sessions_probe.collect_sessions_for_user(
-            launch_user,
-            cfg.session_prefix,
-            socket_path=None,
-            legacy_prefixes=cfg.legacy_session_prefixes,
-        )
-        if legacy:
-            fail(
-                f"no sessions found on dedicated socket {tmux.tmux_socket_path(cfg, launch_user)}, "
-                f"but legacy default-socket sessions still exist. Use 'uxon doctor' for details."
-            )
-    target = sessions_probe._resolve_or_audit_not_found(
-        args.target_id,
-        sessions,
-        cfg,
-        audit_event=_attach_event,
-        target_user=launch_user,
-        session_field=_session_field,
-    )
-    # Same-user audit fires once before ``attach_session``'s execvp.
-    # Emitting from ``do_attach`` (not ``attach_session``) keeps the
-    # call exactly once per CLI invocation; the helper is also used by
-    # the TUI's ``attach_session_blocking`` and we don't want to double
-    # up there.
-    _audit.audit(
-        _attach_event,
-        **{_session_field: target.name},
-        target_user=launch_user,
-    )
-    try:
-        return attach_session(target, cfg, launch_user, args.dry_run)
-    except Exception as exc:
-        _audit.audit(
-            _attach_event,
-            outcome="error",
-            **{_session_field: target.name},
-            target_user=launch_user,
-            error=str(exc)[:256],
-        )
-        raise
-
-
-def _tui_launch_request_cls() -> type:
-    """Lazy-load ``LaunchRequest`` from ``uxon.domain.launch_request`` (pure
-    data; no textual import). Kept as a function so the module-top import
-    surface of cli.py stays small."""
-    from uxon.domain.launch_request import LaunchRequest
-
-    return LaunchRequest
-
-
-def _session_name_from_launch_label(label: str) -> str:
-    """Thin wrapper so cli.py call sites keep their local symbol.
-
-    Helper lives next to LaunchRequest (``uxon.domain.launch_request``) so
-    the TUI run-loop can reuse it for ``session.ended`` without a circular
-    dep on cli.py.
-    """
-    from uxon.domain.launch_request import session_name_from_launch_label
-
-    return session_name_from_launch_label(label)
-
-
-def attach_session(
-    target: SessionInfo, cfg: Config, launch_user: str, dry_run: bool = False
-) -> int:
-    req = tmux._build_tmux_attach_request(target, cfg, launch_user)
-    if dry_run:
-        print(f"attach_user={shlex.quote(launch_user)}")
-        print(f"socket={shlex.quote(tmux.tmux_socket_path(cfg, launch_user))}")
-        print(f"session={shlex.quote(target.name)}")
-        print(f"exec {shlex.join(req.cmd)}")
-        return 0
-    os.execvp(req.cmd[0], list(req.cmd))
-    return 0
-
-
-def attach_session_blocking(target: SessionInfo, cfg: Config, launch_user: str) -> int:
-    """Fork-and-wait variant of :func:`attach_session` for the TUI path."""
-    req = tmux._build_tmux_attach_request(target, cfg, launch_user)
-    for pre in req.prelaunch:
-        rc = subprocess.call(list(pre))
-        if rc != 0:
-            return rc
-    return subprocess.call(list(req.cmd))
-
-
-def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
-    """Common confirmation gate for cross-user / cross-host kills.
-
-    ``--json`` is non-interactive — refuse unless ``--force`` or
-    ``--dry-run`` was passed (mirrors the ``kill-all`` precedent).
-    On a TTY without ``--force``, prompt for the literal phrase
-    ``kill``. Non-TTY without ``--force`` fails fast with a hint.
-    """
-    if args.force or args.dry_run:
-        return
-    if args.json_output:
-        fail("kill --json requires --force or --dry-run")
-    if not identity.is_interactive_tty():
-        fail(
-            "kill is destructive; rerun with --force, or omit --user/--host for the local self path"
-        )
-    response = input(f"{prompt} Type 'kill' to confirm: ")
-    if response.strip() != "kill":
-        fail("cancelled", 130)
-
-
-def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
-    """Handle ``uxon kill <id> --host <alias>`` (optionally with ``--user``).
-
-    Looks up the configured peer, optionally confirms with the user
-    locally, then dispatches the kill to the peer over SSH. The
-    peer's own ``uxon kill`` does the per-target sudo gating, so
-    the local side does not need to know the peer's user table —
-    this matches the design constraint that bulk destructive ops
-    stay local while per-session kill may cross hosts.
-
-    Confirmation shape mirrors :func:`do_kill` for the local case:
-    ``--json`` requires ``--force`` or ``--dry-run``; an interactive
-    TTY without ``--force`` prompts for the literal phrase ``kill``.
-
-    On the wire we always pass ``--force`` to the peer — local
-    confirmation is a UI gesture, not a wire concern; the peer
-    must not re-prompt.
-    """
-    from uxon.infra.remote_collector import (
-        DEFAULT_CONNECT_TIMEOUT_SEC,
-        DEFAULT_TOTAL_TIMEOUT_SEC,
-        _recover_wedged_master,
-        build_peer_ssh_argv,
-    )
-    from uxon.infra.remote_hosts import find_host
-
-    if not cfg.remote_hosts:
-        fail("no [[remote_hosts]] configured; --host requires at least one peer")
-    target_host = find_host(cfg.remote_hosts, args.host or "")
-    if target_host is None:
-        names = ", ".join(h.name for h in cfg.remote_hosts) or "<none>"
-        fail(f"unknown --host {args.host!r}; configured: {names}")
-
-    target_user_part = f" (user={args.user})" if args.user else ""
-    prompt = f"Kill {args.target_id}@{target_host.name}{target_user_part}?"
-    _confirm_kill_or_fail(prompt, args)
-
-    # ``target_id`` MUST come first after the verb: peer-side
-    # ``parse_subcommand`` reads ``argv[1]`` as the target, flags are
-    # tail-parsed afterwards.  Mirrors ``_do_attach_remote`` ordering.
-    remote_cmd_parts = [
-        shlex.quote(target_host.remote_uxon),
-        "kill",
-        shlex.quote(str(args.target_id)),
-        "--force",
-    ]
-    if args.user:
-        remote_cmd_parts.extend(["--user", shlex.quote(args.user)])
-    if args.json_output:
-        remote_cmd_parts.append("--json")
-    # Correlation-id append must precede the join.  ``_do_kill_remote``
-    # uses ``subprocess.run`` (not ``os.execvp``), so there is no Bug 7
-    # process-replacement concern here — the audit emit is correct
-    # anywhere before the run.
-    import uuid as _uuid
-
-    from uxon.infra import audit as _audit
-
-    corr_id = str(_uuid.uuid4())
-    _audit.set_correlation_id(corr_id)
-    remote_cmd_parts.extend(["--audit-correlation-id", shlex.quote(corr_id)])
-    remote_cmd = " ".join(remote_cmd_parts)
-    _audit.audit(
-        "kill.remote.out",
-        peer_name=target_host.name,
-        ssh_alias=target_host.ssh_alias,
-        target_user=args.user,
-        target_session=args.target_id,
-        force=args.force,
-        dry_run=args.dry_run,
-        correlation_id=corr_id,
-    )
-    ssh_argv = build_peer_ssh_argv(
-        target_host,
-        remote_command=remote_cmd,
-        allocate_tty=False,
-        connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
-        ssh_multiplex=cfg.ssh_multiplex,
-        ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
-    )
-
-    if args.dry_run:
-        if args.json_output:
-            _emit_json_with_host(
-                "kill",
-                {
-                    "target": args.target_id,
-                    "target_user": args.user,
-                    "action": "would-kill",
-                    "dry_run": True,
-                    "ssh_argv": ssh_argv,
-                },
-                host=target_host.name,
-            )
-        else:
-            print(f"dry-run: {shlex.join(ssh_argv)}")
-        return 0
-
-    def _emit_kill_remote_error(error: str, rc: int) -> None:
-        _audit.audit(
-            "kill.remote.out",
-            outcome="error",
-            peer_name=target_host.name,
-            ssh_alias=target_host.ssh_alias,
-            target_user=args.user,
-            target_session=args.target_id,
-            force=args.force,
-            dry_run=args.dry_run,
-            correlation_id=corr_id,
-            rc=rc,
-            error=error[:256],
-        )
-
-    try:
-        cp = subprocess.run(
-            ssh_argv,
-            capture_output=True,
-            text=True,
-            timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
-        )
-    except subprocess.TimeoutExpired:
-        # Same wedge-recovery as the polling path — without it a CLI
-        # ``uxon kill --host`` invoked when no TUI is running has no
-        # other consumer to drive recovery, and every retry will hang
-        # identically until the master is killed by hand. See
-        # ``fetch_remote_snapshot._run_one`` for the rationale.
-        if cfg.ssh_multiplex != "off":
-            _recover_wedged_master(target_host)
-        _emit_kill_remote_error("ssh timeout", 124)
-        eprint(f"uxon: --host {target_host.name}: ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s")
-        return 1
-    except FileNotFoundError:
-        _emit_kill_remote_error("ssh binary missing", 127)
-        eprint("uxon: ssh not installed on local host")
-        return 1
-
-    if cp.stdout:
-        sys.stdout.write(cp.stdout)
-    if cp.stderr:
-        sys.stderr.write(cp.stderr)
-    if cp.returncode != 0:
-        _emit_kill_remote_error("non-zero ssh rc", cp.returncode)
-        return 1
-    return 0
-
-
-def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
-    if not args.target_id:
-        fail("kill requires an identifier")
-
-    from uxon.infra import audit as _audit
-
-    # Remote dispatch: --host routes to a configured peer over SSH.
-    # Per-target sudo gating happens on the peer (its own ``uxon kill``
-    # runs the probe), so the local side does not need to know the
-    # peer's user table. Bulk kill stays strictly local.
-    #
-    # Checked *before* the SSH_CONNECTION peer-inbound branch: a chained
-    # ``ssh peer1 "uxon kill --host peer2 …"`` invocation is the
-    # caller-side dispatch leg, not a peer-inbound terminus.
-    if args.host is not None:
-        return _do_kill_remote(args, cfg)
-
-    # Bug 6 — peer-inbound branch.  Same shape as ``do_attach`` above.
-    # ``correlation_id`` is auto-injected by ``audit()`` from module
-    # state (the parser layer set it via ``set_correlation_id`` after
-    # popping ``--audit-correlation-id`` from argv).  Spec line 302:
-    # ``kill.remote.in`` *replaces* ``session.kill`` for the peer-side
-    # branch.  Spec line 207-209: state-changing events emit on **both**
-    # success and failure paths; we honour that on the peer side too by
-    # switching the event name at every emit point (rather than the old
-    # single ``outcome=ok`` emit at the top, which lost the failure
-    # signal for sudo-denied / not-found / process.run_cmd-error paths).  Per
-    # spec line 225, ``kill.remote.in`` shares the ``session`` key with
-    # ``session.kill`` — only the event name differs, no field rename.
-    peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    _kill_event: str = "kill.remote.in" if peer_inbound else "session.kill"
-
-    # Local cross-user kill: --user X where X != launch_user requires
-    # per-target NOPASSWD. Probe once for the single target (the same
-    # probe machinery the TUI uses on startup, but a single-target
-    # subset). Matches the TUI's per-target sudo gating.
-    target_user = args.user or launch_user
-    if target_user != launch_user:
-        from uxon.infra.sudo_probe import probe_sudo_capability
-
-        caps = probe_sudo_capability([target_user])
-        reachable = target_user in caps.reachable_users
-        if not reachable:
-            _audit.audit(
-                _kill_event,
-                outcome="denied",
-                session=args.target_id or "",
-                target_user=target_user,
-                force=args.force,
-                dry_run=args.dry_run,
-            )
-            # Stable error tag — mirrors the ``all-users-disabled``
-            # precedent. Callers (and the SSH peer-aggregator) parse
-            # this exact substring. Surface the verdict on dry-run too:
-            # without sudo we cannot resolve the session name, so the
-            # honest answer is "this would fail" rather than a faked
-            # would-kill envelope.
-            eprint(
-                f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
-                "check /etc/sudoers.d for a NOPASSWD rule for this target)"
-            )
-            return 1
-
-        prompt = f"Kill {args.target_id} (user={target_user})?"
-        _confirm_kill_or_fail(prompt, args)
-
-        sessions = sessions_probe.collect_sessions([target_user], cfg)
-        target = sessions_probe._resolve_or_audit_not_found(
-            args.target_id,
-            sessions,
-            cfg,
-            audit_event=_kill_event,
-            target_user=target_user,
-            extra={"force": args.force, "dry_run": args.dry_run},
-        )
-        # Non-interactive sudo: there's no TTY in the kill path even
-        # for the CLI; if NOPASSWD is missing we want a fast failure
-        # rather than a blocked password prompt.
-        full = tmux.configured_tmux_base(cfg, target_user, nonint=True) + [
-            "kill-session",
-            "-t",
-            target.name,
-        ]
-        if args.dry_run:
-            _audit.audit(
-                _kill_event,
-                session=target.name,
-                target_user=target_user,
-                force=args.force,
-                dry_run=True,
-            )
-            if args.json_output:
-                _emit_json(
-                    "kill",
-                    {
-                        "target": target.name,
-                        "user": launch_user,
-                        "target_user": target_user,
-                        "reachable": reachable,
-                        "socket": tmux.tmux_socket_path(cfg, target_user),
-                        "action": "would-kill",
-                        "dry_run": True,
-                    },
-                )
-            else:
-                print(f"dry-run: {shlex.join(full)}")
-            return 0
-        try:
-            process.run_cmd(full, check=True)
-        except subprocess.CalledProcessError as exc:
-            _audit.audit(
-                _kill_event,
-                outcome="error",
-                session=target.name,
-                target_user=target_user,
-                force=args.force,
-                dry_run=args.dry_run,
-                rc=exc.returncode,
-            )
-            raise
-        _audit.audit(
-            _kill_event,
-            session=target.name,
-            target_user=target_user,
-            force=args.force,
-            dry_run=args.dry_run,
-        )
-        if args.json_output:
-            _emit_json(
-                "kill",
-                {
-                    "target": target.name,
-                    "user": launch_user,
-                    "target_user": target_user,
-                    "reachable": True,
-                    "socket": tmux.tmux_socket_path(cfg, target_user),
-                    "action": "killed",
-                    "dry_run": False,
-                },
-            )
-        else:
-            print(f"killed: {target.name}")
-        return 0
-
-    # Self-only path: unchanged from the pre-3.4.0 behaviour.
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    target = sessions_probe._resolve_or_audit_not_found(
-        args.target_id,
-        sessions,
-        cfg,
-        audit_event=_kill_event,
-        target_user=launch_user,
-        extra={"force": args.force, "dry_run": args.dry_run},
-    )
-    full = tmux.configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
-    if args.dry_run:
-        _audit.audit(
-            _kill_event,
-            session=target.name,
-            target_user=launch_user,
-            force=args.force,
-            dry_run=True,
-        )
-        if args.json_output:
-            _emit_json(
-                "kill",
-                {
-                    "target": target.name,
-                    "user": launch_user,
-                    "socket": tmux.tmux_socket_path(cfg, launch_user),
-                    "action": "would-kill",
-                    "dry_run": True,
-                },
-            )
-        else:
-            print(f"dry-run: {shlex.join(full)}")
-        return 0
-    try:
-        process.run_cmd(full, check=True)
-    except subprocess.CalledProcessError as exc:
-        _audit.audit(
-            _kill_event,
-            outcome="error",
-            session=target.name,
-            target_user=launch_user,
-            force=args.force,
-            dry_run=args.dry_run,
-            rc=exc.returncode,
-        )
-        raise
-    _audit.audit(
-        _kill_event,
-        session=target.name,
-        target_user=launch_user,
-        force=args.force,
-        dry_run=args.dry_run,
-    )
-    if args.json_output:
-        _emit_json(
-            "kill",
-            {
-                "target": target.name,
-                "user": launch_user,
-                "socket": tmux.tmux_socket_path(cfg, launch_user),
-                "action": "killed",
-                "dry_run": False,
-            },
-        )
-    else:
-        print(f"killed: {target.name}")
-    return 0
-
-
-def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    if not sessions:
-        from uxon.infra import audit as _audit
-
-        _audit.audit(
-            "session.kill_all",
-            target_users=[launch_user],
-            killed_count=0,
-            dry_run=args.dry_run,
-        )
-        if args.json_output:
-            _emit_json(
-                "kill-all",
-                {
-                    "user": launch_user,
-                    "socket": tmux.tmux_socket_path(cfg, launch_user),
-                    "dry_run": args.dry_run,
-                    "sessions": [],
-                },
-            )
-        else:
-            print(f"uxon: no {cfg.session_prefix}* sessions for {launch_user}")
-        return 0
-    if not args.dry_run and not args.force:
-        if args.json_output:
-            # --json is a non-interactive surface; we never prompt with
-            # JSON enabled. Force the caller to be explicit.
-            fail("kill-all --json requires --force or --dry-run")
-        if not identity.is_interactive_tty():
-            fail(
-                "kill-all is destructive; rerun with --force, or use 'uxon list' / 'uxon doctor' first"
-            )
-        names = ", ".join(s.name for s in sessions)
-        response = input(
-            f"Kill all {len(sessions)} session(s) on {tmux.tmux_socket_path(cfg, launch_user)}: {names}\nType 'kill-all' to confirm: "
-        )
-        if response.strip() != "kill-all":
-            fail("cancelled", 130)
-    results: list[dict[str, Any]] = []
-    for s in sessions:
-        full = tmux.configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
-        if args.dry_run:
-            if not args.json_output:
-                print(f"dry-run: {shlex.join(full)}")
-            results.append({"name": s.name, "action": "would-kill"})
-            continue
-        cp = process.run_cmd(full, check=False)
-        ok = cp.returncode == 0
-        if not args.json_output:
-            print(f"killed: {s.name}" if ok else f"failed: {s.name}")
-        results.append({"name": s.name, "action": "killed" if ok else "failed"})
-    if args.json_output:
-        _emit_json(
-            "kill-all",
-            {
-                "user": launch_user,
-                "socket": tmux.tmux_socket_path(cfg, launch_user),
-                "dry_run": args.dry_run,
-                "sessions": results,
-            },
-        )
-    from uxon.infra import audit as _audit
-
-    killed = sum(1 for r in results if r["action"] == "killed")
-    attempted = sum(1 for r in results if r["action"] in ("killed", "failed"))
-    _audit.audit(
-        "session.kill_all",
-        outcome="ok" if killed == attempted else "error",
-        target_users=[launch_user],
-        killed_count=killed,
-        dry_run=args.dry_run,
-    )
-    return 0
-
-
 def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     name = args.target_id
     if not name:
@@ -1725,7 +556,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                     session=attach_target.name,
                     target_user=launch_user,
                 )
-                return attach_session(attach_target, cfg, launch_user, args.dry_run)
+                return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
         # No existing session, or decision == "new": create + launch via the
         # single worktree planner (gates the path, runs git worktree add,
         # copies includes, emits worktree.create + session.new, Task 11).
@@ -1796,7 +627,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 target_user=launch_user,
             )
             try:
-                return attach_session(attach_target, cfg, launch_user, args.dry_run)
+                return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
             except Exception as exc:
                 _audit.audit(
                     "session.attach",
@@ -2235,7 +1066,7 @@ def do_doctor(
         if not _audit._initialized and _audit.enabled:
             _audit._lazy_init()
         data["audit"] = {"enabled": _audit.enabled, "sink": _audit.sink or "none"}
-        _emit_json("doctor", data)
+        listing_app._emit_json("doctor", data)
         return 0
 
     print("uxon doctor")
@@ -3177,7 +2008,7 @@ def _build_tui_context(
             agent=agent_id,
             project=cwd,
             branch="",
-            session=_session_name_from_launch_label(req.label),
+            session=attach_app._session_name_from_launch_label(req.label),
             dry_run=False,
         )
         return req
@@ -3196,7 +2027,7 @@ def _build_tui_context(
             agent=agent_id,
             project=project,
             branch="",
-            session=_session_name_from_launch_label(req.label),
+            session=attach_app._session_name_from_launch_label(req.label),
             dry_run=False,
         )
         return req
@@ -3213,7 +2044,7 @@ def _build_tui_context(
             agent=agent_id,
             project=project,
             branch="",
-            session=_session_name_from_launch_label(req.label),
+            session=attach_app._session_name_from_launch_label(req.label),
             dry_run=False,
         )
         return req
@@ -3287,7 +2118,7 @@ def _build_tui_context(
             agent=agent_id,
             project=worktree_path,
             branch=branch,
-            session=_session_name_from_launch_label(req.label),
+            session=attach_app._session_name_from_launch_label(req.label),
             dry_run=False,
         )
         return req
@@ -3677,7 +2508,7 @@ def main(argv: list[str] | None = None) -> int:
         return do_interactive(cfg, launch_user)
     if args.action == "version":
         if args.json_output:
-            _emit_json("version", version_probe._version_data())
+            listing_app._emit_json("version", version_probe._version_data())
             return 0
         print(format_version())
         return 0
@@ -3707,9 +2538,9 @@ def main(argv: list[str] | None = None) -> int:
         return do_run(args, cfg, launch_user)
     if args.action == "list":
         if args.host is not None:
-            return _do_list_host(args, cfg)
+            return listing_app._do_list_host(args, cfg)
         if args.all_hosts:
-            return _do_list_all_hosts(args, cfg, launch_user)
+            return listing_app._do_list_all_hosts(args, cfg, launch_user)
         # Peer-inbound branch: a peer-collector invocation arrives with
         # ``SSH_CONNECTION`` set and neither ``--host`` nor ``--all-hosts``.
         # Fires *after* those early-returns so a caller-side
@@ -3745,7 +2576,7 @@ def main(argv: list[str] | None = None) -> int:
                         scope=list_scope,
                     )
                 fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
-            scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
+            scope_users, scope_skipped = listing_app._resolve_all_users_scope(cfg, launch_user)
             # ``list.peek`` / ``list.remote.in`` fires only after the
             # gate passes — placement ensures we never log a successful
             # peek for a denied invocation.
@@ -3762,9 +2593,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             sessions = sessions_probe.collect_sessions(scope_users, cfg)
             if args.json_output:
-                _emit_json(
+                listing_app._emit_json(
                     "list",
-                    _list_data(
+                    listing_app._list_data(
                         cfg,
                         sessions,
                         scope_users,
@@ -3773,8 +2604,8 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
                 return 0
-            rc = print_list(cfg, sessions, scope_users, show_user=True)
-            _emit_scope_skipped_hint(scope_skipped)
+            rc = listing_app.print_list(cfg, sessions, scope_users, show_user=True)
+            listing_app._emit_scope_skipped_hint(scope_skipped)
             return rc
         # Own-only branch: no gate, single success emit on the peer
         # side (the local-side ``list`` does not produce a ``list.peek``
@@ -3788,15 +2619,17 @@ def main(argv: list[str] | None = None) -> int:
         scope_users = [launch_user]
         sessions = sessions_probe.collect_sessions(scope_users, cfg)
         if args.json_output:
-            _emit_json("list", _list_data(cfg, sessions, scope_users, all_users=False))
+            listing_app._emit_json(
+                "list", listing_app._list_data(cfg, sessions, scope_users, all_users=False)
+            )
             return 0
-        return print_list(cfg, sessions, scope_users, show_user=False)
+        return listing_app.print_list(cfg, sessions, scope_users, show_user=False)
     if args.action == "attach":
-        return do_attach(args, cfg, launch_user)
+        return attach_app.do_attach(args, cfg, launch_user)
     if args.action == "kill":
-        return do_kill(args, cfg, launch_user)
+        return kill_app.do_kill(args, cfg, launch_user)
     if args.action == "kill-all":
-        return do_kill_all(args, cfg, launch_user)
+        return kill_app.do_kill_all(args, cfg, launch_user)
     if args.action == "new":
         return do_new(args, cfg, launch_user)
     fail(f"unsupported action: {args.action}")

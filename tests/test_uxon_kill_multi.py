@@ -27,6 +27,7 @@ from unittest import mock
 from helpers import make_config as _make_config
 from helpers import make_session as _make_session
 
+import uxon.app.kill as kill_app
 import uxon.cli as uxon
 from uxon.domain.sudo import SudoCapability
 from uxon.infra import audit as uxon_audit
@@ -95,7 +96,7 @@ class KillUserLocalTests(unittest.TestCase):
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         probe.assert_not_called()
 
@@ -114,7 +115,7 @@ class KillUserLocalTests(unittest.TestCase):
             with mock.patch("uxon.infra.identity.process_user", return_value="u-vz"):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
-                    rc = uxon.do_kill(args, cfg, "u-vz")
+                    rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         probe.assert_called_once_with(["alice"])
         # The argv contains the non-interactive sudo prefix and kill-session.
@@ -135,7 +136,7 @@ class KillUserLocalTests(unittest.TestCase):
         ):
             err = io.StringIO()
             with redirect_stderr(err):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         self.assertIn("uxon-error: not-reachable", err.getvalue())
         run.assert_not_called()
@@ -159,7 +160,7 @@ class KillUserLocalTests(unittest.TestCase):
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["kind"], "kill")
@@ -188,7 +189,7 @@ class KillUserLocalTests(unittest.TestCase):
         ):
             err = io.StringIO()
             with redirect_stderr(err):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         self.assertIn("uxon-error: not-reachable", err.getvalue())
         run.assert_not_called()
@@ -205,7 +206,7 @@ class KillUserLocalTests(unittest.TestCase):
             mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False),
         ):
             with self.assertRaises(SystemExit):
-                uxon.do_kill(args, cfg, "u-vz")
+                kill_app.do_kill(args, cfg, "u-vz")
 
     def test_peer_side_parses_remote_kill_argv_built_by_local(self) -> None:
         # Regression: ``_do_kill_remote`` and TUI ``on_remote_kill``
@@ -253,7 +254,7 @@ class KillUserLocalTests(unittest.TestCase):
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
         ):
             with self.assertRaises(subprocess.CalledProcessError):
-                uxon.do_kill(args, cfg, "u-vz")
+                kill_app.do_kill(args, cfg, "u-vz")
 
         kill_emits = [e for e in recorded if e[0] == "session.kill"]
         # Exactly one ``session.kill`` emit must fire on this path —
@@ -291,7 +292,7 @@ class KillPeerInboundTests(unittest.TestCase):
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
             mock.patch("sys.stderr", new_callable=io.StringIO),
         ):
-            rc = uxon.do_kill(args, cfg, "u-vz")
+            rc = kill_app.do_kill(args, cfg, "u-vz")
 
         self.assertEqual(rc, 1)
         # Exactly one kill.remote.in emit, denied; no parallel
@@ -329,10 +330,10 @@ class KillHostRemoteTests(unittest.TestCase):
             host="box-b",
             dry_run=True,
         )
-        with mock.patch.object(uxon.subprocess, "run") as srun:
+        with mock.patch.object(kill_app.subprocess, "run") as srun:
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         srun.assert_not_called()
         out = buf.getvalue()
@@ -353,7 +354,7 @@ class KillHostRemoteTests(unittest.TestCase):
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = uxon.do_kill(args, cfg, "u-vz")
+            rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         self.assertIn("--user", buf.getvalue())
         self.assertIn("alice", buf.getvalue())
@@ -362,10 +363,10 @@ class KillHostRemoteTests(unittest.TestCase):
         cfg = self._cfg_with_host()
         args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         cp = mock.Mock(returncode=0, stdout="killed: uxon-demo@claude\n", stderr="")
-        with mock.patch.object(uxon.subprocess, "run", return_value=cp) as srun:
+        with mock.patch.object(kill_app.subprocess, "run", return_value=cp) as srun:
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         srun.assert_called_once()
         argv = srun.call_args[0][0]
@@ -399,8 +400,8 @@ class KillHostRemoteTests(unittest.TestCase):
             force=True,
         )
         cp = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(uxon.subprocess, "run", return_value=cp) as srun:
-            uxon.do_kill(args, cfg, "u-vz")
+        with mock.patch.object(kill_app.subprocess, "run", return_value=cp) as srun:
+            kill_app.do_kill(args, cfg, "u-vz")
         argv = srun.call_args[0][0]
         remote_cmd = argv[-1]
         self.assertIn("--user", remote_cmd)
@@ -420,8 +421,8 @@ class KillHostRemoteTests(unittest.TestCase):
         )
         args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         cp = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(uxon.subprocess, "run", return_value=cp) as srun:
-            uxon.do_kill(args, cfg, "u-vz")
+        with mock.patch.object(kill_app.subprocess, "run", return_value=cp) as srun:
+            kill_app.do_kill(args, cfg, "u-vz")
         argv = srun.call_args[0][0]
         # Bug fix: kill-remote now honours command_template.
         self.assertIn("-J", argv)
@@ -433,7 +434,7 @@ class KillHostRemoteTests(unittest.TestCase):
         err = io.StringIO()
         with redirect_stderr(err):
             with self.assertRaises(SystemExit) as ctx:
-                uxon.do_kill(args, cfg, "u-vz")
+                kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("configured:", err.getvalue())
         self.assertIn("box-b", err.getvalue())
@@ -442,7 +443,7 @@ class KillHostRemoteTests(unittest.TestCase):
         cfg = _make_config()  # no remote_hosts
         args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         with self.assertRaises(SystemExit):
-            uxon.do_kill(args, cfg, "u-vz")
+            kill_app.do_kill(args, cfg, "u-vz")
 
     def test_host_peer_nonzero_rc_returns_1_and_forwards_stderr(self) -> None:
         cfg = self._cfg_with_host()
@@ -452,11 +453,11 @@ class KillHostRemoteTests(unittest.TestCase):
             stdout="",
             stderr="uxon-error: not-reachable (cannot sudo -niu alice; ...)\n",
         )
-        with mock.patch.object(uxon.subprocess, "run", return_value=cp):
+        with mock.patch.object(kill_app.subprocess, "run", return_value=cp):
             err = io.StringIO()
             out = io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         # Peer's stderr surfaced unwrapped — the error tag must be parseable.
         self.assertIn("uxon-error: not-reachable", err.getvalue())
@@ -466,9 +467,9 @@ class KillHostRemoteTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         with (
             mock.patch.object(
-                uxon.subprocess,
+                kill_app.subprocess,
                 "run",
-                side_effect=uxon.subprocess.TimeoutExpired(cmd=["ssh"], timeout=10),
+                side_effect=kill_app.subprocess.TimeoutExpired(cmd=["ssh"], timeout=10),
             ),
             # Recovery is best-effort and runs real ssh subprocesses by
             # default; pin it to a no-op here so the test stays
@@ -479,7 +480,7 @@ class KillHostRemoteTests(unittest.TestCase):
         ):
             err = io.StringIO()
             with redirect_stderr(err):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         self.assertIn("ssh timeout", err.getvalue())
         recover.assert_called_once()
@@ -491,7 +492,7 @@ class KillHostRemoteTests(unittest.TestCase):
         )
         with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
             with self.assertRaises(SystemExit):
-                uxon.do_kill(args, cfg, "u-vz")
+                kill_app.do_kill(args, cfg, "u-vz")
 
     def test_host_dry_run_json_envelope_has_host(self) -> None:
         cfg = self._cfg_with_host()
@@ -505,7 +506,7 @@ class KillHostRemoteTests(unittest.TestCase):
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = uxon.do_kill(args, cfg, "u-vz")
+            rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["kind"], "kill")
