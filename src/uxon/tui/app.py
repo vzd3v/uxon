@@ -133,18 +133,23 @@ class _CwdWritableUpdated(Message):
 class _WorktreesProbed(Message):
     """Posted by the one-shot worktree probe worker (launch-screen open).
 
-    Carries the probed ``workspaces`` list plus the ``on_done`` callback
-    the launch flow handed in. The on-loop handler invokes ``on_done`` so
-    it can push :class:`LaunchOptionsScreen` safely off the worker thread
-    (§4.2 — the git probe runs in the thread; the screen push runs on the
-    loop). The callable travels on the message because it is an in-process
-    closure on the screen, not serialised state.
+    Carries the resolved launchability flag + the probed ``workspaces``
+    list plus the ``on_done`` callback the launch flow handed in. The
+    on-loop handler invokes ``on_done(launchable, workspaces)`` so it can
+    gate / push :class:`LaunchOptionsScreen` safely off the worker thread
+    (§4.2 — both the launchability ``sudo`` probe and the git worktree
+    probe run in the thread; the screen push runs on the loop).
+    ``launchable`` is ``None`` when the caller pre-resolved it (cwd's
+    reactive slot) and asked for no probe. The callable travels on the
+    message because it is an in-process closure on the screen, not
+    serialised state.
     """
 
     bubble = False
 
-    def __init__(self, workspaces: list, on_done: Any) -> None:
+    def __init__(self, launchable: bool | None, workspaces: list, on_done: Any) -> None:
         super().__init__()
+        self.launchable = launchable
         self.workspaces = workspaces
         self.on_done = on_done
 
@@ -916,8 +921,10 @@ class UxonApp(App):
             status = uxon_tui.LinkHealthStatus()
         self.post_message(_LinkHealthUpdated(status))
 
-    def probe_workspaces_then(self, cwd: str, on_done: Any) -> None:
-        """Run ``on_probe_worktrees(cwd)`` in a worker; call ``on_done(list)``.
+    def probe_workspaces_then(
+        self, cwd: str, on_done: Any, *, probe_launchable: Any = None
+    ) -> None:
+        """Probe ``cwd`` off the event loop; call ``on_done(launchable, list)``.
 
         Off-event-loop git probe (under the non-interactive sudo prefix on
         the CLI side, §4.2). Runs ONCE per launch-flow open, before the
@@ -925,22 +932,38 @@ class UxonApp(App):
         off the frozen :class:`TuiConfig` (no mutable-ctx access from the
         thread, same rule as :meth:`_probe_link_health_worker`), then posts
         a :class:`_WorktreesProbed`; ``on_done`` runs on the message loop so
-        it can push :class:`LaunchOptionsScreen` safely.
+        it can gate / push :class:`LaunchOptionsScreen` safely.
+
+        ``probe_launchable`` (optional) is a launchability predicate run in
+        the SAME worker so its cross-user ``sudo`` call never blocks the
+        event loop — passed when the caller has no pre-resolved value (cwd
+        pre-resolves via its reactive slot and omits it → ``launchable`` is
+        ``None``). Any probe error degrades to "not launchable" (False),
+        mirroring :func:`probe_cwd_writable`'s yes/no contract. A False
+        result skips the worktree probe — the gate aborts anyway.
         """
 
         def _worker() -> None:
-            try:
-                probe = self.cfg.on_probe_worktrees
-                workspaces = list(probe(cwd)) if callable(probe) else []
-            except Exception:  # pragma: no cover — defensive; degrade to no column
-                workspaces = []
-            self.post_message(_WorktreesProbed(workspaces, on_done))
+            launchable: bool | None = None
+            if probe_launchable is not None:
+                try:
+                    launchable = bool(probe_launchable())
+                except Exception:  # pragma: no cover — defensive; any error = no
+                    launchable = False
+            workspaces: list = []
+            if launchable is not False:
+                try:
+                    probe = self.cfg.on_probe_worktrees
+                    workspaces = list(probe(cwd)) if callable(probe) else []
+                except Exception:  # pragma: no cover — defensive; degrade to no column
+                    workspaces = []
+            self.post_message(_WorktreesProbed(launchable, workspaces, on_done))
 
         self.run_worker(_worker, thread=True, exclusive=False, group="worktree_probe")
 
     def on__worktrees_probed(self, event: _WorktreesProbed) -> None:
-        """Invoke the launch-flow callback with the probed workspaces."""
-        event.on_done(event.workspaces)
+        """Invoke the launch-flow callback with launchability + workspaces."""
+        event.on_done(event.launchable, event.workspaces)
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 

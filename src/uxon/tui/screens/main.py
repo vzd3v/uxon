@@ -771,10 +771,12 @@ class MainScreen(Screen):
         The launchability gate is the same predicate for both entry points,
         which matters now that any of them can create a worktree on disk.
         ``launchable`` is a pre-resolved value (``cwd`` passes its reactive
-        slot; "open existing" passes ``None``); when ``None`` the gate probes
-        synchronously via ``on_probe_dir_launchable`` and calls
-        ``on_probed(value)`` so the caller can persist the result (cwd updates
-        its slot + dashboard row — a cwd-only concern kept out of here).
+        slot; "open existing" passes ``None``); when ``None`` the gate's
+        ``sudo`` probe runs in the SAME off-loop worker as the worktree probe
+        (never on the event loop, cross-user ``sudo -iu`` would otherwise
+        freeze the UI) and ``on_probed(value)`` lets the caller persist the
+        result (cwd updates its slot + dashboard row — a cwd-only concern
+        kept out of here).
 
         ``commit_primary(agent_id, mode_id)`` is the folder-specific launch
         (``on_launch_cwd`` vs ``on_launch_existing``) used for the primary tree
@@ -782,23 +784,6 @@ class MainScreen(Screen):
         probed ``repo_root`` + branch, so it lives here once rather than being
         duplicated per entry point.
         """
-        if launchable is None:
-            try:
-                launchable = bool(self.ctx.on_probe_dir_launchable(target_dir))
-            except CallbackError as exc:
-                self.app.notify(str(exc), severity="error", timeout=6)
-                return
-            if on_probed is not None:
-                on_probed(launchable)
-        if launchable is False:
-            user = self.ctx.launch_user or self.ctx.current_user or "launch user"
-            self.app.notify(
-                f"Cannot launch in {target_label} as {user} "
-                "(no write access, or outside allowed_roots)",
-                severity="warning",
-                timeout=6,
-            )
-            return
 
         def commit_existing_worktree(
             agent_id: str, mode_id: str, repo_root: str, path: str, branch: str
@@ -892,7 +877,43 @@ class MainScreen(Screen):
                 after_opts,
             )
 
-        self.app.probe_workspaces_then(target_dir, push_with_workspaces)  # type: ignore[attr-defined]
+        def deny() -> None:
+            user = self.ctx.launch_user or self.ctx.current_user or "launch user"
+            self.app.notify(
+                f"Cannot launch in {target_label} as {user} "
+                "(no write access, or outside allowed_roots)",
+                severity="warning",
+                timeout=6,
+            )
+
+        def on_probed_workspaces(resolved: bool | None, workspaces) -> None:
+            # On-loop callback (off the worker thread). ``resolved is None``
+            # ⟺ the caller pre-resolved launchability and no worker probe
+            # ran, so ``on_probed`` (cwd slot persist) fires only on a fresh
+            # probe — matching the original never-loaded-only refresh.
+            if resolved is not None and on_probed is not None:
+                on_probed(bool(resolved))
+            if resolved is False:
+                deny()
+                return
+            push_with_workspaces(workspaces)
+
+        # Pre-resolved False (cwd's populated slot) gates inline — no I/O, no
+        # fresh probe to persist. Otherwise the launchability ``sudo`` probe
+        # rides the same off-loop worker as the worktree probe; a pre-resolved
+        # True skips it (probe_launchable=None → resolved=None).
+        if launchable is False:
+            deny()
+            return
+        self.app.probe_workspaces_then(  # type: ignore[attr-defined]
+            target_dir,
+            on_probed_workspaces,
+            probe_launchable=(
+                None
+                if launchable is True
+                else lambda: self.ctx.on_probe_dir_launchable(target_dir)
+            ),
+        )
 
     def _launch_cwd(self) -> None:
         def commit_primary(agent_id: str, mode_id: str) -> None:
