@@ -247,6 +247,12 @@ class TuiContext:
     # thread on mount when ``cwd_writable`` is None; activation also
     # calls it synchronously as a fallback if the probe hasn't landed.
     on_probe_cwd_writable: Callable[[], bool] = lambda: True
+    # Same predicate as ``on_probe_cwd_writable`` but for an arbitrary target
+    # directory (``is_launch_target_allowed``): launch_user can write it and
+    # it sits under ``allowed_roots``. Used to gate the "Open existing
+    # project" launch synchronously at activation — that flow has no
+    # pre-probed reactive slot like ``cwd`` does.
+    on_probe_dir_launchable: Callable[[str], bool] = lambda target_dir: True
     on_launch_cwd: Callable[[str, str], LaunchRequest] = lambda agent_id, mode_id: LaunchRequest(
         cmd=("true",), label="noop-launch-cwd"
     )

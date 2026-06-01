@@ -5772,6 +5772,11 @@ def _build_tui_context(
     def on_probe_cwd_writable() -> bool:
         return is_launch_target_allowed(cfg, launch_user, cwd)
 
+    def on_probe_dir_launchable(target_dir: str) -> bool:
+        # Same predicate as on_probe_cwd_writable, parameterised by target —
+        # gates the "Open existing project" launch (no pre-probed slot).
+        return is_launch_target_allowed(cfg, launch_user, target_dir)
+
     # Wrap all callbacks so failures surface on the TUI status line instead of
     # killing uxon silently (blessed's fullscreen context hides stderr + tracebacks).
     _CbErr = CallbackError
@@ -5787,6 +5792,7 @@ def _build_tui_context(
     on_refresh = _wrap_tui_callback(on_refresh, _CbErr)
     on_probe_link_health = _wrap_tui_callback(on_probe_link_health, _CbErr)
     on_probe_cwd_writable = _wrap_tui_callback(on_probe_cwd_writable, _CbErr)
+    on_probe_dir_launchable = _wrap_tui_callback(on_probe_dir_launchable, _CbErr)
     on_launch_cwd = _wrap_tui_callback(on_launch_cwd, _CbErr)
     on_launch_new = _wrap_tui_callback(on_launch_new, _CbErr)
     on_launch_existing = _wrap_tui_callback(on_launch_existing, _CbErr)
@@ -6009,6 +6015,7 @@ def _build_tui_context(
         on_refresh=on_refresh,
         on_probe_link_health=on_probe_link_health,
         on_probe_cwd_writable=on_probe_cwd_writable,
+        on_probe_dir_launchable=on_probe_dir_launchable,
         on_launch_cwd=on_launch_cwd,
         on_launch_new=on_launch_new,
         on_launch_existing=on_launch_existing,

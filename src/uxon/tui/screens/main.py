@@ -749,41 +749,56 @@ class MainScreen(Screen):
 
     # ── Activation handlers (modals stubbed — T14 replaces stubs) ────
 
-    def _launch_cwd(self) -> None:
-        # Async probe may not have landed yet (cross-user / sudo path).
-        # Run the fallback probe synchronously so the user never gets
-        # to launch-time with an unknown answer. "loading" is
-        # structural: the slot's ``last_attempt_at is None`` means
-        # never-written; a legitimate ``value=None`` does not retrigger
-        # the fallback because ``last_attempt_at`` is set.
-        state = getattr(self.app, "state", None)
-        never_loaded = (
-            state is None or state.cwd_writable.last_attempt_at is None
-        ) and self.ctx.cwd_writable is None
-        if never_loaded:
+    def _begin_launch_in_folder(
+        self,
+        *,
+        target_dir: str,
+        target_label: str,
+        commit_primary,
+        launchable: bool | None = None,
+        on_probed=None,
+    ) -> None:
+        """Worktree-aware launch into an existing folder (cwd or named project).
+
+        Shared by ``_launch_cwd`` and ``_launch_existing``. Order: gate that
+        ``launch_user`` may launch in ``target_dir`` (write access + inside
+        ``allowed_roots``) → probe ``target_dir`` for git worktrees off the
+        event loop (§4.2) → push the launch-options screen. When the folder is
+        a git repo the screen shows the WORKSPACE column (primary tree +
+        existing worktrees + ``+ New worktree…``); a non-git folder degrades to
+        the plain agent/mode screen (§3 degradation).
+
+        The launchability gate is the same predicate for both entry points,
+        which matters now that any of them can create a worktree on disk.
+        ``launchable`` is a pre-resolved value (``cwd`` passes its reactive
+        slot; "open existing" passes ``None``); when ``None`` the gate probes
+        synchronously via ``on_probe_dir_launchable`` and calls
+        ``on_probed(value)`` so the caller can persist the result (cwd updates
+        its slot + dashboard row — a cwd-only concern kept out of here).
+
+        ``commit_primary(agent_id, mode_id)`` is the folder-specific launch
+        (``on_launch_cwd`` vs ``on_launch_existing``) used for the primary tree
+        and the non-git case; worktree create / attach is generic given the
+        probed ``repo_root`` + branch, so it lives here once rather than being
+        duplicated per entry point.
+        """
+        if launchable is None:
             try:
-                self.ctx.cwd_writable = bool(self.ctx.on_probe_cwd_writable())
+                launchable = bool(self.ctx.on_probe_dir_launchable(target_dir))
             except CallbackError as exc:
                 self.app.notify(str(exc), severity="error", timeout=6)
                 return
-            self._refresh_cwd_row()
-        if self.ctx.cwd_writable is False:
+            if on_probed is not None:
+                on_probed(launchable)
+        if launchable is False:
             user = self.ctx.launch_user or self.ctx.current_user or "launch user"
             self.app.notify(
-                f"Cannot launch in {self.ctx.cwd_short} as {user} "
+                f"Cannot launch in {target_label} as {user} "
                 "(no write access, or outside allowed_roots)",
                 severity="warning",
                 timeout=6,
             )
             return
-
-        def commit_new(agent_id: str, mode_id: str) -> None:
-            try:
-                req = self.ctx.on_launch_cwd(agent_id, mode_id)
-            except CallbackError as exc:
-                self.app.notify(str(exc), severity="error", timeout=6)
-                return
-            self.app.request_launch(req)  # type: ignore[attr-defined]
 
         def commit_existing_worktree(
             agent_id: str, mode_id: str, repo_root: str, path: str, branch: str
@@ -809,18 +824,18 @@ class MainScreen(Screen):
             kind = choice[0]
             if kind == "primary":
                 # Primary tree keeps the plain path-based planner + probe
-                # (§3) — launch into the repo root exactly as the
-                # non-worktree path does.
+                # (§3) — launch into the folder exactly as the non-worktree
+                # path does.
                 self._maybe_show_session_choice(
-                    target_dir=self.ctx.cwd,
-                    target_label=self.ctx.cwd_short or self.ctx.cwd,
+                    target_dir=target_dir,
+                    target_label=target_label,
                     agent_id=agent_id,
-                    on_new=lambda: commit_new(agent_id, mode_id),
+                    on_new=lambda: commit_primary(agent_id, mode_id),
                 )
                 return
             if kind == "worktree":
                 _, path, branch = choice
-                repo_root = self._workspace_repo_root or self.ctx.cwd
+                repo_root = self._workspace_repo_root or target_dir
                 # Worktree target: the attach guard uses the worktree-aware
                 # probe (repo-qualified stem, §2.5), not the path-based one.
                 self._maybe_show_session_choice(
@@ -836,7 +851,7 @@ class MainScreen(Screen):
                 )
                 return
             # ("new", None) → prompt for a branch name, then create + launch.
-            repo_root = self._workspace_repo_root or self.ctx.cwd
+            repo_root = self._workspace_repo_root or target_dir
 
             def after_branch(branch: str | None) -> None:
                 if not branch:
@@ -849,17 +864,17 @@ class MainScreen(Screen):
             if result is None:
                 return
             # B2: a 3-tuple only arrives when the WORKSPACE column was
-            # shown (git target); a 2-tuple is the non-git path, unchanged.
+            # shown (git target); a 2-tuple is the non-git path.
             if len(result) == 3:
                 agent_id, mode_id, choice = result
                 dispatch_workspace(agent_id, mode_id, choice)
                 return
             agent_id, mode_id = result
             self._maybe_show_session_choice(
-                target_dir=self.ctx.cwd,
-                target_label=self.ctx.cwd_short or self.ctx.cwd,
+                target_dir=target_dir,
+                target_label=target_label,
                 agent_id=agent_id,
-                on_new=lambda: commit_new(agent_id, mode_id),
+                on_new=lambda: commit_primary(agent_id, mode_id),
             )
 
         def push_with_workspaces(workspaces) -> None:
@@ -868,7 +883,7 @@ class MainScreen(Screen):
             # has to re-resolve the repo root on the event loop (§4.2).
             self._workspace_repo_root = next(
                 (w.path for w in workspaces if getattr(w, "is_primary", False)),
-                self.ctx.cwd,
+                target_dir,
             )
             self.app.push_screen(  # type: ignore[attr-defined]
                 LaunchOptionsScreen(
@@ -877,7 +892,34 @@ class MainScreen(Screen):
                 after_opts,
             )
 
-        self.app.probe_workspaces_then(self.ctx.cwd, push_with_workspaces)  # type: ignore[attr-defined]
+        self.app.probe_workspaces_then(target_dir, push_with_workspaces)  # type: ignore[attr-defined]
+
+    def _launch_cwd(self) -> None:
+        def commit_primary(agent_id: str, mode_id: str) -> None:
+            try:
+                req = self.ctx.on_launch_cwd(agent_id, mode_id)
+            except CallbackError as exc:
+                self.app.notify(str(exc), severity="error", timeout=6)
+                return
+            self.app.request_launch(req)  # type: ignore[attr-defined]
+
+        def on_probed(value: bool) -> None:
+            # The cross-user / sudo probe may not have landed yet; when the
+            # gate resolves it synchronously, persist into the reactive slot
+            # and re-render the cwd row so its enabled state stops lying. The
+            # slot getter prefers a later background-worker write, so this
+            # never masks a fresher value (a legitimate ``value=None`` does
+            # not retrigger — the slot is concrete after any probe attempt).
+            self.ctx.cwd_writable = value
+            self._refresh_cwd_row()
+
+        self._begin_launch_in_folder(
+            target_dir=self.ctx.cwd,
+            target_label=self.ctx.cwd_short or self.ctx.cwd,
+            commit_primary=commit_primary,
+            launchable=self.ctx.cwd_writable,
+            on_probed=on_probed,
+        )
 
     def _launch_new(self) -> None:
         def after_opts(name: str, git_profile: str):
@@ -944,29 +986,23 @@ class MainScreen(Screen):
             if not name:
                 return
 
-            # Built WITHOUT ``workspaces`` → only ever a 2-tuple at runtime
-            # (B2); annotation matches the screen's widened result type.
-            def after_opts(result: tuple[str, str] | tuple[str, str, object] | None) -> None:
-                if result is None:
+            target_dir = os.path.join(self.ctx.new_project_root, name)
+
+            def commit_primary(agent_id: str, mode_id: str) -> None:
+                try:
+                    req = self.ctx.on_launch_existing(name, agent_id, mode_id)
+                except CallbackError as exc:
+                    self.app.notify(str(exc), severity="error", timeout=6)
                     return
-                agent_id, mode_id = result[0], result[1]
+                self.app.request_launch(req)  # type: ignore[attr-defined]
 
-                def commit_new() -> None:
-                    try:
-                        req = self.ctx.on_launch_existing(name, agent_id, mode_id)
-                    except CallbackError as exc:
-                        self.app.notify(str(exc), severity="error", timeout=6)
-                        return
-                    self.app.request_launch(req)  # type: ignore[attr-defined]
-
-                self._maybe_show_session_choice(
-                    target_dir=os.path.join(self.ctx.new_project_root, name),
-                    target_label=name,
-                    agent_id=agent_id,
-                    on_new=commit_new,
-                )
-
-            self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts)
+            # Same worktree-aware flow as launch-cwd: a git project shows the
+            # WORKSPACE column, a non-git one degrades to agent/mode only (§3).
+            self._begin_launch_in_folder(
+                target_dir=target_dir,
+                target_label=name,
+                commit_primary=commit_primary,
+            )
 
         self.app.push_screen(
             ExistingProjectScreen(self.ctx.existing_projects, self.ctx.new_project_root),

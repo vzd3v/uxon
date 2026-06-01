@@ -9,7 +9,10 @@ worktree flag. For *why*, see
 ## From the TUI
 
 1. Start uxon in (or open) a git repository.
-2. Trigger a launch ("New session in current folder").
+2. Trigger a launch — either **New session in current folder** (when uxon
+   runs inside the repo) or **Open existing project** (for a git project
+   under `new_project_root`). Both show the workspace picker for a git
+   target; a non-git target skips it.
 3. In the launch dialog, move to the **WORKSPACE** column with `→`.
 4. Pick the primary tree, an existing worktree, or **+ New
    worktree…**. For a new worktree, type a branch name (`/` is

@@ -89,6 +89,7 @@ class TuiConfig:
     on_refresh: Callable[[], TuiContext]
     on_probe_link_health: Callable[[], Any]
     on_probe_cwd_writable: Callable[[], bool]
+    on_probe_dir_launchable: Callable[[str], bool]
     on_launch_cwd: Callable[[str, str], LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
@@ -146,6 +147,7 @@ class TuiConfig:
             on_refresh=ctx.on_refresh,
             on_probe_link_health=ctx.on_probe_link_health,
             on_probe_cwd_writable=ctx.on_probe_cwd_writable,
+            on_probe_dir_launchable=ctx.on_probe_dir_launchable,
             on_launch_cwd=ctx.on_launch_cwd,
             on_launch_new=ctx.on_launch_new,
             on_launch_existing=ctx.on_launch_existing,

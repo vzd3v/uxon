@@ -812,6 +812,82 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
+    """The "Open existing project" flow is worktree-aware too: a git project
+    threads the probed workspaces + repo_root into LaunchOptionsScreen via the
+    shared ``_begin_launch_in_folder`` helper (parity with launch-cwd)."""
+
+    def _ctx(self, **overrides):
+        from uxon.tui.context import LaunchRequest
+        from uxon.worktrees import Workspace
+
+        probed = [
+            Workspace(label="main", branch="main", path="/srv/work/proj", is_primary=True),
+            Workspace(
+                label="feature/auth",
+                branch="feature/auth",
+                path="/srv/work/proj/.uxon/worktrees/feature-auth",
+                is_primary=False,
+            ),
+        ]
+        base = dict(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            new_project_root="/srv/work",
+            existing_projects=[("proj", "2026-05-01")],
+            on_probe_worktrees=lambda cwd: probed,
+            on_launch_existing_worktree=lambda *a: LaunchRequest(cmd=("/bin/true",), label="wt"),
+            on_create_worktree=lambda *a: LaunchRequest(cmd=("/bin/true",), label="new-wt"),
+            on_probe_existing_worktree_sessions=lambda *a: (),
+            on_probe_existing_sessions=lambda *a: (),
+        )
+        base.update(overrides)
+        return _mk_ctx(**base)
+
+    async def test_existing_project_threads_workspaces(self) -> None:
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+        from uxon.tui.screens.main import MainScreen
+
+        app = UxonApp(self._ctx(), probe_agents=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # Drive the launch-existing intent directly (avoids fragile
+            # dashboard row navigation); the project picker then opens.
+            self.assertIsInstance(app.screen, MainScreen)
+            app.screen._launch_existing()
+            await pilot.pause()
+            await pilot.press("enter")  # pick the single "proj" row
+            await pilot.pause()
+            await pilot.pause()  # let the probe worker land + push the screen
+            top = app.screen_stack[-1]
+            self.assertIsInstance(top, LaunchOptionsScreen)
+            self.assertTrue(top._workspaces)
+            self.assertTrue(top._workspaces[0].is_primary)
+            self.assertEqual(top._repo_root, "/srv/work/proj")
+
+    async def test_unlaunchable_project_aborts_before_options(self) -> None:
+        # The launchability gate (write access + allowed_roots) runs for the
+        # existing-project flow too — an unlaunchable target toasts and never
+        # opens the launch-options screen (parity with launch-cwd).
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+        from uxon.tui.screens.main import MainScreen
+
+        app = UxonApp(self._ctx(on_probe_dir_launchable=lambda d: False), probe_agents=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen._launch_existing()
+            await pilot.pause()
+            await pilot.press("enter")  # pick "proj"
+            await pilot.pause()
+            await pilot.pause()
+            top = app.screen_stack[-1]
+            self.assertNotIsInstance(top, LaunchOptionsScreen)
+            self.assertIsInstance(top, MainScreen)
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class NewProjectScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_project_smoke_batch(self) -> None:
         from textual.widgets import Input
