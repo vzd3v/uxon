@@ -13,12 +13,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import uxon.app.agent_select as agent_select
+import uxon.app.launch as launch_app
+import uxon.app.repeat as repeat_app
 from uxon.domain.args import SUBCOMMANDS, USAGE, ParsedArgs
 from uxon.domain.authz import canonical, is_under_allowed_roots
 from uxon.domain.config import (
     DEFAULT_CONFIG,
     Config,
-    validate_repeat_mode,
 )
 from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.domain.format import (
@@ -27,7 +29,6 @@ from uxon.domain.format import (
     format_cpu_pct,
     format_rss_kib,
 )
-from uxon.domain.host_report import HostReport
 from uxon.domain.session import (
     SessionInfo,
     allocate_session_name,
@@ -65,75 +66,6 @@ except ModuleNotFoundError:  # pragma: no cover
 if TYPE_CHECKING:
     from uxon.domain.session import TuiSession
     from uxon.tui.context import TuiContext
-
-
-def resolve_agent_id(
-    cfg: Config,
-    launch_user: str,
-    requested: str | None,
-    *,
-    report: HostReport | None = None,
-) -> str:
-    """Pick an agent to launch and verify the binary is on PATH.
-
-    Policy precedence:
-
-    1. ``--agent <id>`` if given (must be valid + in whitelist).
-    2. ``cfg.default_agent`` if set.
-    3. ``cfg.enabled_agents[0]`` (strict mode).
-    4. Auto-mode (empty whitelist, no default): the first installed
-       ``CATALOG`` agent.
-
-    Whatever the policy picks, this function probes the host once
-    (or reuses ``report``) and verifies the binary is actually
-    installed for ``launch_user``. Missing binaries fail with a
-    uxon-level message rather than punting to a tmux ``execvp``
-    failure. ``report`` is the optional escape-hatch for callers
-    that already probed (TUI, doctor) — pass it to avoid the
-    double round-trip.
-    """
-    if requested and requested not in VALID_AGENT_IDS:
-        fail(f"--agent must be one of {VALID_AGENT_IDS}, got {requested!r}")
-    if requested and cfg.enabled_agents and requested not in cfg.enabled_agents:
-        fail(f"agent {requested!r} is not in agents.enabled={list(cfg.enabled_agents)}")
-
-    if requested:
-        candidate, source = requested, "--agent"
-    elif cfg.default_agent:
-        candidate, source = cfg.default_agent, "agents.default"
-    elif cfg.enabled_agents:
-        candidate, source = cfg.enabled_agents[0], "agents.enabled"
-    else:
-        candidate, source = None, "auto"
-
-    from uxon.infra import agents as uxon_agents
-    from uxon.infra import probes as uxon_probes
-
-    if report is None:
-        report = uxon_probes.probe_host(launch_user)
-
-    if candidate is not None:
-        status = report.agents.get(candidate)
-        if status is None or status.path is None:
-            hint = status.install_hint if status is not None else ""
-            fail(
-                f"agent {candidate!r} (from {source}) is not installed for "
-                f"{launch_user!r}." + (f"\n{hint}" if hint else ""),
-                1,
-            )
-        return candidate
-
-    for aid in uxon_agents.CATALOG:
-        status = report.agents.get(aid)
-        if status is not None and status.path is not None:
-            return aid
-    fail(
-        f"no agent binary found on PATH for {launch_user!r}. "
-        f"Install one of {VALID_AGENT_IDS} or set agents.enabled / "
-        "agents.default in the repo config.",
-        1,
-    )
-    raise AssertionError("unreachable")  # fail() never returns
 
 
 def _sanitize_callback_stderr(raw: str) -> str:
@@ -196,96 +128,6 @@ def _wrap_tui_callback(fn: Any, callback_error_cls: type[Exception]) -> Any:
     return wrapper
 
 
-def prompt_repeat_action(
-    target_desc: str, attach_target: SessionInfo, existing: list[SessionInfo]
-) -> str:
-    session_names = ", ".join(session.name for session in existing)
-    print(f"uxon: compatible sessions already exist for {target_desc}: {session_names}")
-    prompt = f"[Enter] attach {attach_target.name}, type 'new' for a parallel session, or 'q' to cancel: "
-    try:
-        response = input(prompt).strip().lower()
-    except EOFError:
-        fail("unable to read response from terminal; rerun with --attach-existing or --new-session")
-    if response in ("", "a", "attach"):
-        return "attach"
-    if response in ("n", "new"):
-        return "new"
-    if response in ("q", "quit", "cancel"):
-        fail("cancelled", 130)
-    fail("expected Enter/attach, new, or q; rerun with --attach-existing or --new-session")
-    raise AssertionError("unreachable")
-
-
-def get_env_repeat_noninteractive_mode() -> str | None:
-    value = os.environ.get("UXON_REPEAT_NONINTERACTIVE_POLICY", "").strip()
-    if not value:
-        return None
-    return validate_repeat_mode(value, "UXON_REPEAT_NONINTERACTIVE_POLICY")
-
-
-def resolve_repeat_decision(
-    explicit_mode: str | None,
-    cfg: Config,
-    target_desc: str,
-    attach_target: SessionInfo,
-    existing: list[SessionInfo],
-) -> str:
-    if explicit_mode is not None:
-        return explicit_mode
-    if identity.is_interactive_tty():
-        return prompt_repeat_action(target_desc, attach_target, existing)
-    env_mode = get_env_repeat_noninteractive_mode()
-    decision = env_mode or cfg.repeat_noninteractive_mode
-    if decision in {"attach", "new"}:
-        return decision
-    fail(
-        "compatible session already exists and no interactive TTY is available; rerun with "
-        "--attach-existing or --new-session, set UXON_REPEAT_NONINTERACTIVE_POLICY=attach|new, "
-        "or configure repeat_noninteractive_mode. Use 'uxon doctor' to inspect the active socket/config."
-    )
-    raise AssertionError("unreachable")
-
-
-def is_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> bool:
-    """Return True if ``target_dir`` is a valid place to launch an agent.
-
-    The launch user must be able to write to it. When
-    ``cfg.allowed_roots`` is non-empty, the directory must additionally
-    sit under one of the listed roots — strict whitelist with no
-    implicit allowance for anywhere else (``$HOME`` included). When
-    ``cfg.allowed_roots`` is empty, write access is enough.
-
-    Used by both the CLI (gating ``uxon run`` / ``uxon new -w``) and
-    the TUI (deciding whether the "new session in current folder" row
-    is enabled). :func:`ensure_launch_target_allowed` is the raise-on-
-    failure variant with user-facing error messages.
-    """
-    if not os.path.isdir(target_dir):
-        return False
-    if not identity.probe_cwd_writable(launch_user, target_dir):
-        return False
-    return is_under_allowed_roots(cfg, target_dir)
-
-
-def ensure_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> None:
-    """Raise (via :func:`fail`) if ``target_dir`` isn't a valid launch
-    directory under ``cfg``'s policy.
-
-    Same predicate as :func:`is_launch_target_allowed`; this variant
-    emits a specific user-facing error describing exactly what failed
-    (not a directory / not writable / outside ``allowed_roots``).
-    """
-    if not os.path.isdir(target_dir):
-        fail(f"not a directory: {target_dir}")
-    if not identity.probe_cwd_writable(launch_user, target_dir):
-        fail(f"no write access to {target_dir} for {launch_user}")
-    if not is_under_allowed_roots(cfg, target_dir):
-        eprint("uxon: directory must be under one of:")
-        for base in cfg.allowed_roots:
-            eprint(f"uxon:   - {base}")
-        fail(f"got: {target_dir}")
-
-
 def is_new_project_target_allowed(cfg: Config, launch_user: str, project_dir: str) -> bool:
     """Return True if ``project_dir`` may be created by ``uxon new``.
 
@@ -315,187 +157,6 @@ def ensure_new_project_target_allowed(cfg: Config, launch_user: str, project_dir
         for base in cfg.allowed_roots:
             eprint(f"uxon:   - {base}")
         fail(f"got: {project_dir}")
-
-
-def is_worktree_target_allowed(cfg: Config, launch_user: str, worktree_path: str) -> bool:
-    """Return True if ``worktree_path`` may be created by uxon.
-
-    Not-yet-exists predicate (the worktree dir does not exist yet — this
-    is why ``ensure_launch_target_allowed``/``is_launch_target_allowed``,
-    which hard-fail on a missing dir, cannot be used here). Mirrors
-    :func:`is_new_project_target_allowed`: the *parent* must be writable by
-    ``launch_user`` and the path must satisfy the ``allowed_roots``
-    whitelist when non-empty (§2.3). The parent is created later by the
-    caller; here we only check policy.
-    """
-    parent = os.path.dirname(worktree_path) or "/"
-    # The immediate parent may not exist yet (e.g. ``.uxon/worktrees`` on
-    # first use); walk up to the nearest existing ancestor for the
-    # write-access probe, which is what mkdir -p will actually need.
-    probe_dir = parent
-    while probe_dir and probe_dir != "/" and not os.path.isdir(probe_dir):
-        probe_dir = os.path.dirname(probe_dir)
-    if not identity.probe_cwd_writable(launch_user, probe_dir):
-        return False
-    return is_under_allowed_roots(cfg, worktree_path)
-
-
-def plan_worktree_launch(
-    cfg: Config,
-    launch_user: str,
-    repo_root: str,
-    branch_name: str,
-    agent_id: str,
-    mode_id: str,
-    *,
-    agent_args: list[str] | None = None,
-    dry_run: bool = False,
-):
-    """Create a uxon-managed worktree and return a launch request for it.
-
-    Single create-and-launch planner for both the CLI ``-w`` flag (on a
-    "new" decision — the CLI keeps its own attach-vs-new guard, Task 12)
-    and the TUI new-worktree path (§4.1). Gates the computed path via the
-    not-yet-exists predicate (§2.3); when ``worktree_base == "remote"``
-    fetches origin first, else stays local and network-free (§4.5). Adds
-    the worktree (``-b`` for a new branch, plain checkout for an existing
-    one), copies ``.worktreeinclude`` (§2.4), writes the
-    ``.git/info/exclude`` entry unless ``worktree_root`` moves the tree out
-    of the repo (§2.3), then launches with the worktree-aware stem (§2.5).
-    Emits **both** ``worktree.create`` and ``session.new`` for the launched
-    session (§4.6, B3).
-
-    ``dry_run=True`` (CLI ``-w --dry-run``) still gates the path and
-    resolves the base ref / branch existence, but prints the git commands
-    instead of running ``git worktree add`` / copy / exclude, and emits no
-    audit events — no side effects. The returned LaunchRequest is built
-    against the computed (not-yet-created) worktree path so the caller can
-    print the exec line.
-    """
-    from uxon.infra import audit as _audit
-
-    worktree_path = compute_worktree_path(
-        repo_root=repo_root, branch=branch_name, worktree_root=cfg.worktree_root
-    )
-    # Gate the computed path BEFORE any git work or mkdir (§2.3, B1). An
-    # out-of-roots worktree_root is the common failure — name the override
-    # key in the error so the operator knows how to fix it. Runs in dry-run
-    # too, so a misconfigured worktree_root is caught without side effects.
-    if not is_worktree_target_allowed(cfg, launch_user, worktree_path):
-        eprint("uxon: worktree directory must be under one of allowed_roots:")
-        for base_root in cfg.allowed_roots:
-            eprint(f"uxon:   - {base_root}")
-        fail(
-            f"got: {worktree_path} — set worktree_root to a path inside allowed_roots "
-            "(and writable by the launch user) to relocate worktrees"
-        )
-
-    prefix = identity.command_prefix_for_user(launch_user)
-    base = cfg.worktree_base
-    branch_exists = git._branch_exists_as_user(repo_root, branch_name, launch_user)
-    if branch_exists:
-        add_cmd = prefix + [
-            "git",
-            "-C",
-            repo_root,
-            "worktree",
-            "add",
-            worktree_path,
-            branch_name,
-        ]
-    else:
-        # For remote base the real ref is resolved AFTER the fetch (below);
-        # use a provisional "origin/HEAD" here so the dry-run print and the
-        # request shape are correct. No fetch / set-head side effect runs in
-        # this pre-guard block (those are post-dry-run-guard, non-dry-run).
-        if base == "remote":
-            base_ref = "origin/HEAD"
-        else:
-            base_ref = git._local_base_ref_as_user(repo_root, launch_user)
-        add_cmd = prefix + [
-            "git",
-            "-C",
-            repo_root,
-            "worktree",
-            "add",
-            worktree_path,
-            "-b",
-            branch_name,
-            base_ref,
-        ]
-
-    parent = os.path.dirname(worktree_path)
-    session_stem = session_stem_for_worktree(repo_root, branch_name)
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    session = allocate_session_name(
-        session_stem, agent_id, worktree_path, sessions, prefix=cfg.session_prefix
-    )
-    run_args = ParsedArgs(
-        action="run",
-        agent=agent_id,
-        permission_mode=mode_id,
-        agent_args=list(agent_args or []),
-    )
-    req = tmux._build_tmux_launch_request(
-        worktree_path, session, run_args, cfg, None, launch_user, server_running=bool(sessions)
-    )
-
-    if dry_run:
-        # No side effects: print the git plan, skip add/copy/exclude/audit.
-        print(f"worktree_path={shlex.quote(worktree_path)}")
-        if base == "remote":
-            print(f"fetch={shlex.join(prefix + ['git', '-C', repo_root, 'fetch', 'origin'])}")
-        print(f"worktree_add={shlex.join(add_cmd)}")
-        return req
-
-    process.run_cmd(prefix + ["mkdir", "-p", parent], check=True)
-    # ``.uxon/`` exclusion must precede the first add so the in-tree
-    # worktree never shows as untracked (§2.3); skipped for out-of-repo.
-    if not cfg.worktree_root:
-        git.write_uxon_exclude_entry(repo_root, launch_user)
-    if base == "remote":
-        process.run_cmd(prefix + ["git", "-C", repo_root, "fetch", "origin"], check=True)
-        if not branch_exists:
-            # Re-resolve the base ref post-fetch (set-head needs the fetch).
-            add_cmd[-1] = git._remote_base_ref_as_user(repo_root, launch_user)
-    # Run with check=False and inspect the result ourselves: process.run_cmd's own
-    # failure path would surface the raw ``fatal:`` git stderr; we want a
-    # friendlier, actionable message for the §8 edges.
-    cp = process.run_cmd(add_cmd, check=False)
-    if cp.returncode != 0:
-        stderr = (cp.stderr or cp.stdout or "").strip()
-        if "already checked out" in stderr:
-            fail(
-                f"branch {branch_name!r} is already checked out in another worktree — "
-                "use that workspace row instead of creating a new one"
-            )
-        fail(
-            f"worktree path already exists or git refused the add: {worktree_path} "
-            f"(pick another branch name). git said: {stderr or 'no detail'}"
-        )
-
-    git.copy_worktreeinclude_matches(repo_root, worktree_path, launch_user)
-
-    _audit.audit(
-        "worktree.create",
-        agent=agent_id,
-        project=repo_root,
-        branch=branch_name,
-        path=worktree_path,
-        base=base,
-        session=session,
-    )
-    # §4.6 / B3: the launched session still emits its own session.new —
-    # worktree.create is the ADDITIONAL lifecycle event, not a replacement.
-    _audit.audit(
-        "session.new",
-        agent=agent_id,
-        project=worktree_path,
-        branch=branch_name,
-        session=session,
-        dry_run=False,
-    )
-    return req
 
 
 def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], list[str]]:
@@ -2023,8 +1684,10 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         primary = git.git_common_dir_root_as_user(project_dir, launch_user)
         if primary:
             repo_root = primary
-        ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
+        launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
+        _agent = agent_select.resolve_agent_id(
+            cfg, launch_user, args.agent, report=args.host_report
+        )
         args.agent = _agent
         # uxon-managed worktree sessions live AT the worktree path (§2.5),
         # so both the stem and the compatibility root are derived from the
@@ -2051,7 +1714,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 prefix=cfg.session_prefix,
                 legacy_prefixes=cfg.legacy_session_prefixes,
             )
-            decision = resolve_repeat_decision(
+            decision = repeat_app.resolve_repeat_decision(
                 args.repeat_mode, cfg, target_desc, attach_target, existing
             )
             if decision == "attach":
@@ -2066,7 +1729,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         # No existing session, or decision == "new": create + launch via the
         # single worktree planner (gates the path, runs git worktree add,
         # copies includes, emits worktree.create + session.new, Task 11).
-        req = plan_worktree_launch(
+        req = launch_app.plan_worktree_launch(
             cfg,
             launch_user,
             repo_root,
@@ -2097,7 +1760,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if args.git_remote:
         _do_create_git_remote(args, cfg, launch_user, project_dir, name, branch)
 
-    _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
+    _agent = agent_select.resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
     # See ``do_run``: pin resolved id back to args so the downstream
     # assembler does not re-derive it from cfg.default_agent.
     args.agent = _agent
@@ -2118,7 +1781,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             prefix=cfg.session_prefix,
             legacy_prefixes=cfg.legacy_session_prefixes,
         )
-        decision = resolve_repeat_decision(
+        decision = repeat_app.resolve_repeat_decision(
             args.repeat_mode, cfg, target_desc, attach_target, existing
         )
         if decision == "attach":
@@ -2277,7 +1940,7 @@ def _do_create_git_remote(
 
 def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     cwd = canonical(os.getcwd())
-    ensure_launch_target_allowed(cfg, launch_user, cwd)
+    launch_app.ensure_launch_target_allowed(cfg, launch_user, cwd)
     branch = args.worktree_branch
     if branch:
         repo_root = git.git_repo_root_nonint_as_user(cwd, launch_user)
@@ -2288,14 +1951,16 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         primary = git.git_common_dir_root_as_user(cwd, launch_user)
         if primary:
             repo_root = primary
-        ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
+        launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
+        _agent = agent_select.resolve_agent_id(
+            cfg, launch_user, args.agent, report=args.host_report
+        )
         args.agent = _agent
         # plan_worktree_launch gates the worktree path, runs git worktree
         # add, copies includes, emits worktree.create + session.new, and
         # returns the launch request. In dry-run it prints the git plan and
         # does no side effects (Task 11).
-        req = plan_worktree_launch(
+        req = launch_app.plan_worktree_launch(
             cfg,
             launch_user,
             repo_root,
@@ -2316,7 +1981,7 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
     compatibility_root = target_dir
-    _agent = resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
+    _agent = agent_select.resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
     # Pin the resolved id back to ``args.agent`` so the downstream
     # ``tmux._build_tmux_launch_request`` does not re-derive it from
     # ``cfg.default_agent`` (which can disagree with auto-mode pick).
@@ -2500,7 +2165,7 @@ def do_doctor(
         legacy_prefixes=cfg.legacy_session_prefixes,
     )
     config_paths = [str(path) for path in config_sources]
-    env_repeat_mode = get_env_repeat_noninteractive_mode()
+    env_repeat_mode = repeat_app.get_env_repeat_noninteractive_mode()
     issues = doctor_issues(
         cfg,
         caller_user,
@@ -2915,7 +2580,7 @@ def _plan_tui_run_agent(
     path in that case; for a plain (primary / non-git) target ``worktree``
     is ``None`` and the basename stem is used unchanged.
     """
-    ensure_launch_target_allowed(cfg, launch_user, cwd)
+    launch_app.ensure_launch_target_allowed(cfg, launch_user, cwd)
     target_dir = cwd
     if worktree is not None:
         repo_root, branch = worktree
@@ -3027,7 +2692,9 @@ def _plan_tui_existing_session_or_launch(
     """
     session_stem = session_stem_for_path(project_dir)
     compatibility_root = project_dir
-    _agent = resolve_agent_id(cfg, launch_user, args.agent or None, report=args.host_report)
+    _agent = agent_select.resolve_agent_id(
+        cfg, launch_user, args.agent or None, report=args.host_report
+    )
     args.agent = _agent
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
     # Path-safety side effect — raises via fail() on a path mismatch.
@@ -3596,7 +3263,9 @@ def _build_tui_context(
         # plan_worktree_launch emits its own worktree.create + session.new
         # audit events. The TUI has no agent passthrough args (agent_args
         # defaults to None).
-        return plan_worktree_launch(cfg, launch_user, repo_root, branch, agent_id, mode_id)
+        return launch_app.plan_worktree_launch(
+            cfg, launch_user, repo_root, branch, agent_id, mode_id
+        )
 
     def on_launch_existing_worktree(
         repo_root: str, branch: str, worktree_path: str, agent_id: str, mode_id: str
@@ -3651,17 +3320,17 @@ def _build_tui_context(
     # ships the first frame fast and an app worker probes via sudo
     # without blocking the event loop.
     if identity.process_user() == launch_user:
-        cwd_writable: bool | None = is_launch_target_allowed(cfg, launch_user, cwd)
+        cwd_writable: bool | None = launch_app.is_launch_target_allowed(cfg, launch_user, cwd)
     else:
         cwd_writable = None
 
     def on_probe_cwd_writable() -> bool:
-        return is_launch_target_allowed(cfg, launch_user, cwd)
+        return launch_app.is_launch_target_allowed(cfg, launch_user, cwd)
 
     def on_probe_dir_launchable(target_dir: str) -> bool:
         # Same predicate as on_probe_cwd_writable, parameterised by target —
         # gates the "Open existing project" launch (no pre-probed slot).
-        return is_launch_target_allowed(cfg, launch_user, target_dir)
+        return launch_app.is_launch_target_allowed(cfg, launch_user, target_dir)
 
     # Wrap all callbacks so failures surface on the TUI status line instead of
     # killing uxon silently (blessed's fullscreen context hides stderr + tracebacks).

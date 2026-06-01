@@ -8,6 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import uxon.app.agent_select as agent_select
+import uxon.app.launch as launch_app
+import uxon.app.repeat as repeat_app
 import uxon.cli as uxon
 from uxon.domain import config as domain_config
 from uxon.domain import session as domain_session
@@ -843,7 +846,7 @@ class UxonTests(unittest.TestCase):
             mock.patch("uxon.infra.identity.is_interactive_tty", return_value=True),
             mock.patch("builtins.input", return_value=""),
             mock.patch.object(uxon, "attach_session", return_value=0) as attach,
-            mock.patch.object(uxon, "plan_worktree_launch") as plan,
+            mock.patch.object(launch_app, "plan_worktree_launch") as plan,
         ):
             result = uxon.do_new(args, cfg, "u-vz")
 
@@ -873,7 +876,7 @@ class UxonTests(unittest.TestCase):
             ),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=existing),
             mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False),
-            mock.patch.object(uxon, "plan_worktree_launch", return_value=fake_req) as plan,
+            mock.patch.object(launch_app, "plan_worktree_launch", return_value=fake_req) as plan,
             mock.patch("uxon.infra.process.run_cmd"),
             mock.patch.object(uxon.os, "execvp", return_value=None) as execvp,
         ):
@@ -913,7 +916,7 @@ class UxonTests(unittest.TestCase):
             with mock.patch.dict(
                 uxon.os.environ, {"UXON_REPEAT_NONINTERACTIVE_POLICY": "attach"}, clear=False
             ):
-                decision = uxon.resolve_repeat_decision(
+                decision = repeat_app.resolve_repeat_decision(
                     "none" if False else None, cfg, "/srv/repos/demo", session, [session]
                 )
 
@@ -1159,27 +1162,27 @@ class UxonTests(unittest.TestCase):
     def test_launch_target_rejects_nonexistent_directory(self) -> None:
         cfg = self.make_config(allowed_roots=[])
         self.assertFalse(
-            uxon.is_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here"),
+            launch_app.is_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here"),
         )
         with self.assertRaises(SystemExit):
-            uxon.ensure_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here")
+            launch_app.ensure_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here")
 
     def test_launch_target_rejects_unwritable_directory(self) -> None:
         cfg = self.make_config(allowed_roots=[])
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=False):
-                self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                self.assertFalse(launch_app.is_launch_target_allowed(cfg, "u-ed", tmp))
                 with self.assertRaises(SystemExit):
-                    uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
+                    launch_app.ensure_launch_target_allowed(cfg, "u-ed", tmp)
 
     def test_launch_target_writable_passes_when_allowed_roots_empty(self) -> None:
         cfg = self.make_config(allowed_roots=[])
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
-                self.assertTrue(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                self.assertTrue(launch_app.is_launch_target_allowed(cfg, "u-ed", tmp))
                 # ensure_… is the raise-on-failure variant; passing case
                 # must not raise.
-                uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
+                launch_app.ensure_launch_target_allowed(cfg, "u-ed", tmp)
 
     def test_launch_target_strict_whitelist_when_allowed_roots_set(self) -> None:
         cfg = self.make_config(allowed_roots=["/srv/repos"])
@@ -1189,13 +1192,13 @@ class UxonTests(unittest.TestCase):
                 # ``is_under_allowed_roots`` (and its ``is_under`` call) now live
                 # in ``uxon.domain.authz`` — patch the consuming module's binding.
                 with mock.patch("uxon.domain.authz.is_under", return_value=False):
-                    self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                    self.assertFalse(launch_app.is_launch_target_allowed(cfg, "u-ed", tmp))
                     with self.assertRaises(SystemExit):
-                        uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
+                        launch_app.ensure_launch_target_allowed(cfg, "u-ed", tmp)
                 # Writable and inside the whitelist → pass.
                 with mock.patch("uxon.domain.authz.is_under", return_value=True):
-                    self.assertTrue(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
-                    uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
+                    self.assertTrue(launch_app.is_launch_target_allowed(cfg, "u-ed", tmp))
+                    launch_app.ensure_launch_target_allowed(cfg, "u-ed", tmp)
 
     def test_launch_target_no_home_implicit_when_allowed_roots_set(self) -> None:
         # Regression guard for the old behaviour where the launch user's
@@ -1204,9 +1207,9 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config(allowed_roots=["/srv/repos"])
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
-                self.assertFalse(uxon.is_launch_target_allowed(cfg, "u-ed", tmp))
+                self.assertFalse(launch_app.is_launch_target_allowed(cfg, "u-ed", tmp))
                 with self.assertRaises(SystemExit):
-                    uxon.ensure_launch_target_allowed(cfg, "u-ed", tmp)
+                    launch_app.ensure_launch_target_allowed(cfg, "u-ed", tmp)
 
     # ── TUI callback error surfacing (0.10.3) ────────────────────────
 
@@ -2258,7 +2261,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
 
         cfg = config_loader.load_config("/tmp")
         with (
-            mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
+            mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch.object(cli, "allocate_session_name", fake_alloc),
             mock.patch(
@@ -2287,7 +2290,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
 
         cfg = config_loader.load_config("/tmp")
         with (
-            mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
+            mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch.object(cli, "allocate_session_name", fake_alloc),
             mock.patch(
@@ -2373,7 +2376,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
 
         # (a) planner names the session with the worktree stem.
         with (
-            mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
+            mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
@@ -2459,7 +2462,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             events.append((event, fields))
 
         with (
-            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
@@ -2474,7 +2477,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             ),
             mock.patch("uxon.infra.audit.audit", fake_audit),
         ):
-            req = cli.plan_worktree_launch(
+            req = launch_app.plan_worktree_launch(
                 cfg, "devagent", repo, "feature/auth", "claude", "default"
             )
         # session named with the worktree stem
@@ -2503,8 +2506,6 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         # B1 / §2.3 / §9 "gating failure → clear error": a worktree_root
         # pointing outside allowed_roots must fail with an actionable error
         # BEFORE any git work runs.
-        import uxon.cli as cli
-
         cfg = config_loader.load_config("/tmp")
         cfg.worktree_root = "/not/allowed"
         cfg.allowed_roots = ["/srv/work"]
@@ -2525,7 +2526,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
         ):
             with self.assertRaises(SystemExit) as cm:
-                cli.plan_worktree_launch(
+                launch_app.plan_worktree_launch(
                     cfg, "devagent", "/srv/work/myapp", "feature/auth", "claude", "default"
                 )
         msg = getattr(cm.exception, "uxon_msg", "")
@@ -2551,7 +2552,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
@@ -2565,7 +2566,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             ),
             mock.patch("uxon.infra.audit.audit", lambda *a, **k: None),
         ):
-            cli.plan_worktree_launch(
+            launch_app.plan_worktree_launch(
                 cfg, "devagent", "/srv/work/myapp", "existing", "claude", "default"
             )
         add = [c for c in calls if "worktree" in c and "add" in c]
@@ -2593,7 +2594,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
@@ -2602,7 +2603,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             mock.patch("uxon.infra.tmux._build_tmux_launch_request", fake_build),
             mock.patch("uxon.infra.audit.audit", lambda *a, **k: None),
         ):
-            cli.plan_worktree_launch(
+            launch_app.plan_worktree_launch(
                 cfg,
                 "devagent",
                 "/srv/work/myapp",
@@ -2634,7 +2635,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
@@ -2648,7 +2649,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             ),
         ):
             with self.assertRaises(SystemExit) as cm:
-                cli.plan_worktree_launch(
+                launch_app.plan_worktree_launch(
                     cfg, "devagent", "/srv/work/myapp", "feature/auth", "claude", "default"
                 )
         # Friendly message, not the raw git fatal. fail() stashes the
@@ -2675,7 +2676,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(cli, "is_worktree_target_allowed", return_value=True),
+            mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
@@ -2696,7 +2697,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             ),
             mock.patch("uxon.infra.audit.audit", lambda event, **k: events.append(event)),
         ):
-            req = cli.plan_worktree_launch(
+            req = launch_app.plan_worktree_launch(
                 cfg,
                 "devagent",
                 "/srv/work/myapp",
@@ -2730,7 +2731,7 @@ class CliWorktreeRoutingTests(unittest.TestCase):
             return cli._tui_launch_request_cls()(cmd=("true",), label="launch x")
 
         with (
-            mock.patch.object(cli, "ensure_launch_target_allowed", lambda *a, **k: None),
+            mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch.object(cli.os, "getcwd", return_value="/srv/work/myapp/sub"),
             mock.patch(
                 "uxon.infra.git.git_repo_root_nonint_as_user", return_value="/srv/work/myapp"
@@ -2738,8 +2739,8 @@ class CliWorktreeRoutingTests(unittest.TestCase):
             mock.patch(
                 "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/work/myapp"
             ),
-            mock.patch.object(cli, "resolve_agent_id", return_value="claude"),
-            mock.patch.object(cli, "plan_worktree_launch", fake_plan),
+            mock.patch.object(agent_select, "resolve_agent_id", return_value="claude"),
+            mock.patch.object(launch_app, "plan_worktree_launch", fake_plan),
         ):
             # dry_run=True → no execvp; do_run returns 0 after printing.
             rc = cli.do_run(args, cfg, "devagent")
