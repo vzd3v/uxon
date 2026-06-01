@@ -15,7 +15,7 @@ from unittest import mock
 from helpers import make_config as _make_config
 
 from uxon import cli as uxon
-from uxon.remote_hosts import RemoteHost
+from uxon.infra.remote_hosts import RemoteHost
 
 
 class AttachParserTests(unittest.TestCase):
@@ -97,12 +97,12 @@ class AttachCrossUserTests(unittest.TestCase):
     def test_cross_user_unreachable_emits_stable_tag(self) -> None:
         cfg = self._cfg()
         args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
-        from uxon.sudo_probe import SudoCapability
+        from uxon.infra.sudo_probe import SudoCapability
 
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         buf = io.StringIO()
         with (
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             redirect_stdout(buf),
         ):
             with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
@@ -122,7 +122,7 @@ class AttachCrossUserTests(unittest.TestCase):
         # pre-fix bug where the peer-inbound branch unconditionally
         # emitted ``outcome=ok`` at the top of ``do_attach`` and
         # suppressed every downstream failure-path emit.
-        from uxon.sudo_probe import SudoCapability
+        from uxon.infra.sudo_probe import SudoCapability
 
         cfg = self._cfg()
         args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
@@ -132,11 +132,11 @@ class AttachCrossUserTests(unittest.TestCase):
         def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
             recorded.append((event, {"outcome": outcome, **fields}))
 
-        from uxon import audit as uxon_audit
+        from uxon.infra import audit as uxon_audit
 
         with (
             mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
             mock.patch("sys.stderr", new_callable=io.StringIO),
         ):
@@ -157,12 +157,12 @@ class AttachCrossUserTests(unittest.TestCase):
     def test_cross_user_reachable_dry_run_shows_sudo_prefix(self) -> None:
         cfg = self._cfg()
         args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice", dry_run=True)
-        from uxon.sudo_probe import SudoCapability
+        from uxon.infra.sudo_probe import SudoCapability
 
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         buf = io.StringIO()
         with (
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch.object(uxon, "collect_sessions", return_value=[]),
             mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
             mock.patch.object(uxon, "process_user", return_value="u-vz"),

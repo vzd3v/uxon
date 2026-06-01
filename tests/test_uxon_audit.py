@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Tests for the audit channel (``uxon.audit``).
+"""Tests for the audit channel (``uxon.infra.audit``).
 
 Covers spec §Testability:
 - prefix construction (caller_uid from SUDO_UID, ssh_client omission)
@@ -24,7 +24,7 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from uxon import audit as au
+from uxon.infra import audit as au
 
 
 def _reset_audit_state() -> None:

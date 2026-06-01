@@ -1,10 +1,10 @@
-"""Pure unit tests for uxon.worktrees (no Textual, no subprocess)."""
+"""Pure unit tests for uxon.infra.worktrees (no Textual, no subprocess)."""
 
 from __future__ import annotations
 
 import unittest
 
-from uxon.worktrees import compute_worktree_path, parse_worktree_porcelain
+from uxon.infra.worktrees import compute_worktree_path, parse_worktree_porcelain
 
 
 class ComputeWorktreePathTests(unittest.TestCase):
@@ -25,31 +25,6 @@ class ComputeWorktreePathTests(unittest.TestCase):
         a = compute_worktree_path(repo_root="/r/app", branch="feature/auth", worktree_root="")
         b = compute_worktree_path(repo_root="/r/app", branch="feature-auth", worktree_root="")
         self.assertEqual(a, b)
-
-
-class SlugParityTests(unittest.TestCase):
-    """C5: the worktree-path slug and the session-stem slug MUST match.
-
-    ``compute_worktree_path`` uses ``worktrees._slugify``; the session stem
-    uses ``domain.session.slugify`` (via ``session_stem_for_worktree``). If
-    they ever diverge, the created session name and the probe-derived name
-    disagree and identity breaks silently. Lock them together here.
-    """
-
-    def test_slugify_matches_cli_slugify(self) -> None:
-        from uxon.domain.session import slugify
-        from uxon.worktrees import _slugify
-
-        for branch in [
-            "feature/auth",
-            "feature-auth",
-            "BugFix_123",
-            "weird//name!!",
-            "",
-            "déjà-vu",
-            "a/b/c",
-        ]:
-            self.assertEqual(_slugify(branch), slugify(branch), f"slug mismatch for {branch!r}")
 
 
 class ParsePorcelainTests(unittest.TestCase):

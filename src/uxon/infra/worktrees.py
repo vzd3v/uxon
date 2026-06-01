@@ -10,20 +10,9 @@ captured stdout into :func:`parse_worktree_porcelain`.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 
-
-def _slugify(name: str) -> str:
-    # Byte-identical to ``uxon.cli.slugify`` (cli.py:796-798). Duplicated —
-    # NOT imported — because ``uxon.cli`` imports THIS module, so importing
-    # ``slugify`` back from cli would create a circular import. CRITICAL:
-    # this rule and ``cli.slugify`` must stay identical, or the worktree
-    # PATH slug (here) and the session STEM slug (``session_stem_for_worktree``
-    # → ``cli.slugify``) diverge and session↔worktree identity (§2.5) breaks
-    # silently. The parity is locked by a test (Task 1 SlugParityTests).
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
-    return slug or "workspace"
+from uxon.domain.session import slugify
 
 
 def compute_worktree_path(*, repo_root: str, branch: str, worktree_root: str) -> str:
@@ -35,9 +24,9 @@ def compute_worktree_path(*, repo_root: str, branch: str, worktree_root: str) ->
     predicate — the dir does not exist yet) — this function never touches
     the filesystem.
     """
-    branch_slug = _slugify(branch)
+    branch_slug = slugify(branch)
     if worktree_root:
-        repo_slug = _slugify(os.path.basename(repo_root.rstrip("/")))
+        repo_slug = slugify(os.path.basename(repo_root.rstrip("/")))
         return os.path.join(worktree_root, repo_slug, branch_slug)
     return os.path.join(repo_root, ".uxon", "worktrees", branch_slug)
 

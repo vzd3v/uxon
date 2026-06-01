@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from uxon import settings as cs
+from uxon.infra import settings as cs
 
 DEFAULTS = {
     "runtime_user": "",
@@ -321,7 +321,7 @@ class NestedAgentKeysTests(unittest.TestCase):
 
 class WorktreeSettingsSpecTests(unittest.TestCase):
     def test_worktree_specs_present(self) -> None:
-        from uxon.settings import SETTINGS_SPECS
+        from uxon.infra.settings import SETTINGS_SPECS
 
         by_key = {s.key: s for s in SETTINGS_SPECS}
         self.assertIn("worktree_root", by_key)
@@ -342,7 +342,7 @@ class WorktreeSettingsSpecTests(unittest.TestCase):
 
 class TmuxManageOptionsSpecTests(unittest.TestCase):
     def test_manage_options_present(self) -> None:
-        from uxon.settings import SETTINGS_SPECS
+        from uxon.infra.settings import SETTINGS_SPECS
 
         by_key = {s.key: s for s in SETTINGS_SPECS}
         self.assertIn("tmux.manage_options", by_key)

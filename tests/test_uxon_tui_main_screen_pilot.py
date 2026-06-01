@@ -66,7 +66,7 @@ class EscNotQuitTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def test_smoke_search_filter_forces_flat_then_clear(self) -> None:
-        from uxon.remote_hosts import RemoteHost
+        from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
 
         ctx = _mk_ctx(

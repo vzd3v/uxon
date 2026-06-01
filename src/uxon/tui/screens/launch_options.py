@@ -177,7 +177,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         workspace_list.index = 0
 
     async def _rebuild_mode_list(self, agent_id: str) -> None:
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
 
         mode_list = self.query_one("#mode-list", ListView)
         # clear() and extend() are async — must be awaited, otherwise the

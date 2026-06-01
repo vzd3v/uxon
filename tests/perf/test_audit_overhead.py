@@ -22,7 +22,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from uxon import audit as au
+from uxon.infra import audit as au
 
 
 def _reset_audit_state() -> None:

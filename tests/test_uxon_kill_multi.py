@@ -28,8 +28,8 @@ from helpers import make_config as _make_config
 from helpers import make_session as _make_session
 
 import uxon.cli as uxon
-from uxon import audit as uxon_audit
-from uxon.remote_hosts import RemoteHost
+from uxon.infra import audit as uxon_audit
+from uxon.infra.remote_hosts import RemoteHost
 from uxon.tui.context import SudoCapability
 
 
@@ -91,7 +91,7 @@ class KillUserLocalTests(unittest.TestCase):
             mock.patch.object(uxon, "collect_sessions", return_value=[target]),
             mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
             mock.patch.object(uxon, "run_cmd", return_value=completed),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability") as probe,
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability") as probe,
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -108,7 +108,7 @@ class KillUserLocalTests(unittest.TestCase):
         with (
             mock.patch.object(uxon, "collect_sessions", return_value=[target]),
             mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps) as probe,
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps) as probe,
             mock.patch.object(uxon, "run_cmd", return_value=completed) as run,
         ):
             with mock.patch.object(uxon, "process_user", return_value="u-vz"):
@@ -129,7 +129,7 @@ class KillUserLocalTests(unittest.TestCase):
         args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         with (
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch.object(uxon, "run_cmd") as run,
             mock.patch.object(uxon, "collect_sessions") as collect,
         ):
@@ -155,7 +155,7 @@ class KillUserLocalTests(unittest.TestCase):
         with (
             mock.patch.object(uxon, "collect_sessions", return_value=[target]),
             mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -182,7 +182,7 @@ class KillUserLocalTests(unittest.TestCase):
         )
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         with (
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch.object(uxon, "run_cmd") as run,
             mock.patch.object(uxon, "collect_sessions") as collect,
         ):
@@ -201,7 +201,7 @@ class KillUserLocalTests(unittest.TestCase):
         )
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         with (
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch.object(uxon, "is_interactive_tty", return_value=False),
         ):
             with self.assertRaises(SystemExit):
@@ -287,7 +287,7 @@ class KillPeerInboundTests(unittest.TestCase):
 
         with (
             mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
             mock.patch("sys.stderr", new_callable=io.StringIO),
         ):
@@ -475,7 +475,7 @@ class KillHostRemoteTests(unittest.TestCase):
             # isolated from the local ssh setup, and assert that the
             # CLI kill path does invoke it on timeout (mirrors the
             # poller's wedge-recovery contract).
-            mock.patch("uxon.remote_collector._recover_wedged_master") as recover,
+            mock.patch("uxon.infra.remote_collector._recover_wedged_master") as recover,
         ):
             err = io.StringIO()
             with redirect_stderr(err):

@@ -17,7 +17,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from uxon.remote_collector import RemoteSnapshot
+from uxon.infra.remote_collector import RemoteSnapshot
 from uxon.tui.context import ServerStatus, SudoCapability, TuiSession
 from uxon.tui.dashboard.ui_state import MainScreenUiState
 from uxon.tui.main_data import MainData

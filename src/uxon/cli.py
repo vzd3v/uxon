@@ -46,10 +46,10 @@ from uxon.domain.session import (
 )
 from uxon.domain.version import format_version as _format_version_str
 from uxon.errors import eprint, fail
-from uxon.worktrees import compute_worktree_path
+from uxon.infra.worktrees import compute_worktree_path
 
 if TYPE_CHECKING:
-    from uxon.sudo_probe import SudoCapability
+    from uxon.infra.sudo_probe import SudoCapability
 
 try:
     import tomllib
@@ -105,8 +105,8 @@ def resolve_agent_id(
     else:
         candidate, source = None, "auto"
 
-    from uxon import agents as uxon_agents
-    from uxon import probes as uxon_probes
+    from uxon.infra import agents as uxon_agents
+    from uxon.infra import probes as uxon_probes
 
     if report is None:
         report = uxon_probes.probe_host(launch_user)
@@ -505,7 +505,7 @@ def load_config(cwd: str) -> Config:
     except uxon_git_profiles.ProfileError as exc:
         fail(str(exc))
 
-    from uxon import remote_hosts as uxon_remote_hosts
+    from uxon.infra import remote_hosts as uxon_remote_hosts
 
     try:
         remote_hosts = uxon_remote_hosts.load_remote_hosts(
@@ -1433,7 +1433,7 @@ def _resolve_or_audit_not_found(
     except SystemExit:
         if audit_event is None:
             raise
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         fields: dict[str, Any] = {
             session_field: identifier or "",
@@ -1621,7 +1621,7 @@ def plan_worktree_launch(
     against the computed (not-yet-created) worktree path so the caller can
     print the exec line.
     """
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     worktree_path = compute_worktree_path(
         repo_root=repo_root, branch=branch_name, worktree_root=cfg.worktree_root
@@ -1781,7 +1781,7 @@ def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], 
     ``scope_skipped``: there's no sudo step for "see my own
     sessions".
     """
-    from uxon.sudo_probe import probe_sudo_capability
+    from uxon.infra.sudo_probe import probe_sudo_capability
 
     all_users = resolve_all_session_users(cfg, launch_user)
     candidates = [u for u in all_users if u != launch_user]
@@ -1956,8 +1956,8 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     marker; no fallback exits with a non-zero code so the caller
     knows to investigate.
     """
-    from uxon.remote_collector import fetch_remote_snapshot
-    from uxon.remote_hosts import find_host
+    from uxon.infra.remote_collector import fetch_remote_snapshot
+    from uxon.infra.remote_hosts import find_host
 
     if not cfg.remote_hosts:
         fail("no [[remote_hosts]] configured; --host requires at least one peer")
@@ -2006,7 +2006,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     peer failed AND its cache was empty; partial results are still
     rendered.
     """
-    from uxon.remote_collector import fetch_remote_snapshot
+    from uxon.infra.remote_collector import fetch_remote_snapshot
 
     rc = 0
     scope_skipped: list[str] | None
@@ -2096,7 +2096,7 @@ def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> Non
     host_stats: dict[str, Any] | None = None
     if kind == "list":
         try:
-            from uxon.probes import read_host_stats
+            from uxon.infra.probes import read_host_stats
 
             hs = read_host_stats()
             host_stats = {
@@ -2211,7 +2211,7 @@ def print_list(
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
-    from uxon.audit import extract_correlation_id, set_correlation_id
+    from uxon.infra.audit import extract_correlation_id, set_correlation_id
 
     corr_id, argv = extract_correlation_id(argv)
     if corr_id:
@@ -2347,7 +2347,7 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
     Unknown flags fail loudly. Returns a fully populated
     :class:`ParsedArgs` with ``action="kill"``.
     """
-    from uxon.audit import extract_correlation_id, set_correlation_id
+    from uxon.infra.audit import extract_correlation_id, set_correlation_id
 
     corr_id, rest = extract_correlation_id(rest)
     if corr_id:
@@ -2402,7 +2402,7 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
     ``--user`` — implicit peer-login-user defaults invite
     "where did this attach actually go?" surprises.
     """
-    from uxon.audit import extract_correlation_id, set_correlation_id
+    from uxon.infra.audit import extract_correlation_id, set_correlation_id
 
     corr_id, rest = extract_correlation_id(rest)
     if corr_id:
@@ -2554,11 +2554,11 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     its own gating. ``--user`` was made required at parse time
     (:func:`_parse_attach_extras`).
     """
-    from uxon.remote_collector import (
+    from uxon.infra.remote_collector import (
         DEFAULT_CONNECT_TIMEOUT_SEC,
         build_peer_ssh_argv,
     )
-    from uxon.remote_hosts import find_host
+    from uxon.infra.remote_hosts import find_host
 
     peer = find_host(cfg.remote_hosts, args.host or "")
     if peer is None:
@@ -2567,7 +2567,7 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     assert args.user is not None  # parser-enforced
     import uuid as _uuid
 
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     corr_id = str(_uuid.uuid4())
     _audit.set_correlation_id(corr_id)
@@ -2629,7 +2629,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("attach requires an identifier")
 
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     # Remote dispatch: --host routes to a configured peer over SSH.
     # Per-target sudo gating happens on the peer (peer's own
@@ -2665,7 +2665,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
     target_user = args.user or launch_user
     if target_user != launch_user:
-        from uxon.sudo_probe import probe_sudo_capability
+        from uxon.infra.sudo_probe import probe_sudo_capability
 
         caps = probe_sudo_capability([target_user])
         if target_user not in caps.reachable_users:
@@ -2872,13 +2872,13 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     confirmation is a UI gesture, not a wire concern; the peer
     must not re-prompt.
     """
-    from uxon.remote_collector import (
+    from uxon.infra.remote_collector import (
         DEFAULT_CONNECT_TIMEOUT_SEC,
         DEFAULT_TOTAL_TIMEOUT_SEC,
         _recover_wedged_master,
         build_peer_ssh_argv,
     )
-    from uxon.remote_hosts import find_host
+    from uxon.infra.remote_hosts import find_host
 
     if not cfg.remote_hosts:
         fail("no [[remote_hosts]] configured; --host requires at least one peer")
@@ -2910,7 +2910,7 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     # anywhere before the run.
     import uuid as _uuid
 
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     corr_id = str(_uuid.uuid4())
     _audit.set_correlation_id(corr_id)
@@ -3004,7 +3004,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("kill requires an identifier")
 
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     # Remote dispatch: --host routes to a configured peer over SSH.
     # Per-target sudo gating happens on the peer (its own ``uxon kill``
@@ -3038,7 +3038,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # subset). Matches the TUI's per-target sudo gating.
     target_user = args.user or launch_user
     if target_user != launch_user:
-        from uxon.sudo_probe import probe_sudo_capability
+        from uxon.infra.sudo_probe import probe_sudo_capability
 
         caps = probe_sudo_capability([target_user])
         reachable = target_user in caps.reachable_users
@@ -3216,7 +3216,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     sessions = collect_sessions([launch_user], cfg)
     if not sessions:
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         _audit.audit(
             "session.kill_all",
@@ -3275,7 +3275,7 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 "sessions": results,
             },
         )
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     killed = sum(1 for r in results if r["action"] == "killed")
     attempted = sum(1 for r in results if r["action"] in ("killed", "failed"))
@@ -3381,7 +3381,7 @@ def _build_tmux_launch_request(
     via ``-c <worktree_path>`` — it never delegates to the agent's native
     ``-w`` flag, so this parameter does not affect ``final_cmd`` (§2.1).
     """
-    from uxon import agents as uxon_agents
+    from uxon.infra import agents as uxon_agents
 
     LaunchRequest = _tui_launch_request_cls()
     agent_id = args.agent or cfg.default_agent
@@ -3541,7 +3541,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 args.repeat_mode, cfg, target_desc, attach_target, existing
             )
             if decision == "attach":
-                from uxon import audit as _audit
+                from uxon.infra import audit as _audit
 
                 _audit.audit(
                     "session.attach",
@@ -3611,7 +3611,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             # Same physical operation as ``do_attach`` for an existing
             # session — emit the same event before ``attach_session``'s
             # execvp (Bug 7 — audit fires before the image is replaced).
-            from uxon import audit as _audit
+            from uxon.infra import audit as _audit
 
             _audit.audit(
                 "session.attach",
@@ -3634,7 +3634,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     session = allocate_session_name(
         session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
     )
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     _audit.audit(
         "session.new",
@@ -3716,7 +3716,7 @@ def _do_create_git_remote(
         )
 
     current_user = process_user()
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     _git_ok = False
     try:
@@ -3809,7 +3809,7 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     session = allocate_session_name(
         session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
     )
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     _audit.audit(
         "session.new",
@@ -4001,9 +4001,9 @@ def do_doctor(
     json_output: bool = False,
     probe_remote: bool = False,
 ) -> int:
-    from uxon import agents as uxon_agents
-    from uxon import probes as uxon_probes
     from uxon.domain.wire_schema import build_session_records
+    from uxon.infra import agents as uxon_agents
+    from uxon.infra import probes as uxon_probes
 
     _, config_sources = resolve_config_layers(cwd)
     socket_path = tmux_socket_path(cfg, launch_user)
@@ -4110,7 +4110,7 @@ def do_doctor(
         # sink detection by reading ``audit.sink`` after a synthetic
         # touch (so the doctor invocation itself initialises the channel
         # if the operator has not invoked ``cli.start`` first).
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         if not _audit._initialized and _audit.enabled:
             _audit._lazy_init()
@@ -4171,7 +4171,7 @@ def do_doctor(
     # (``cli.start`` already triggered it for non-doctor invocations,
     # but a stand-alone ``uxon doctor`` may be the first audit-aware
     # call in this process).
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     if not _audit._initialized and _audit.enabled:
         _audit._lazy_init()
@@ -4226,7 +4226,7 @@ def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:
     ``latency_ms`` (int), ``error`` (str | None), ``from_cache`` (bool),
     ``sessions`` (int).
     """
-    from uxon.remote_collector import fetch_remote_snapshot
+    from uxon.infra.remote_collector import fetch_remote_snapshot
 
     rows: list[dict[str, Any]] = []
     for host in cfg.remote_hosts:
@@ -4334,7 +4334,7 @@ def detect_root_nopasswd() -> bool:
 
     Used for the Settings-screen writability gate (``sudo tee`` of a
     root-owned config file). The "see other users' sessions" gate is
-    now per-target — see :func:`uxon.sudo_probe.probe_sudo_capability`.
+    now per-target — see :func:`uxon.infra.sudo_probe.probe_sudo_capability`.
     """
     if os.geteuid() == 0:
         return True
@@ -4354,7 +4354,7 @@ def detect_root_nopasswd() -> bool:
 # Backwards-compatible alias for any out-of-tree caller. The renamed
 # :func:`detect_root_nopasswd` is the canonical name; the old name is
 # preserved so a stale import doesn't crash ``uxon``. New code must
-# use the canonical name (or :func:`uxon.sudo_probe.probe_sudo_capability`
+# use the canonical name (or :func:`uxon.infra.sudo_probe.probe_sudo_capability`
 # for the per-target gate).
 detect_passwordless_sudo = detect_root_nopasswd
 
@@ -4642,17 +4642,17 @@ def _build_on_remote_attach_callback(cfg: Config):
     _build_tui_context closure.
     """
     from uxon.domain.launch_request import LaunchRequest
-    from uxon.remote_collector import (
+    from uxon.infra.remote_collector import (
         DEFAULT_CONNECT_TIMEOUT_SEC,
         build_peer_ssh_argv,
     )
-    from uxon.remote_hosts import find_host
+    from uxon.infra.remote_hosts import find_host
     from uxon.tui.context import CallbackError
 
     def on_remote_attach(host_name: str, user: str, name: str) -> LaunchRequest:
         import uuid as _uuid
 
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         peer = find_host(cfg.remote_hosts, host_name)
         if peer is None:
@@ -4715,9 +4715,9 @@ def _build_tui_context(
     up by restarting ``uxon``, not by polling. When ``None`` and
     ``skeleton=False``, the function probes once.
     """
-    from uxon import settings as uxon_settings
     from uxon.domain.status import ServerStatus
-    from uxon.sudo_probe import SudoCapability, probe_sudo_capability
+    from uxon.infra import settings as uxon_settings
+    from uxon.infra.sudo_probe import SudoCapability, probe_sudo_capability
     from uxon.tui.context import (  # noqa: PLC0415
         CallbackError,
         TuiContext,
@@ -4785,7 +4785,7 @@ def _build_tui_context(
         # the TUI refresh path is the second documented site and was
         # previously silent.
         if cfg.enable_all_users_list and sudo_caps.reachable_users:
-            from uxon import audit as _audit
+            from uxon.infra import audit as _audit
 
             _audit.audit(
                 "list.peek",
@@ -4811,7 +4811,7 @@ def _build_tui_context(
         # ``session.attach`` here so the operation is auditable.
         # ``do_attach``'s emit only covers the CLI-side ``uxon attach``
         # invocation; the TUI request bypasses that path entirely.
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         fresh = collect_sessions([user], cfg)
         target = _resolve_or_audit_not_found(
@@ -4828,7 +4828,7 @@ def _build_tui_context(
         # TUI 'k' on a local row runs ``tmux kill-session`` directly
         # via ``run_cmd`` — emit ``session.kill`` after success so the
         # operation is auditable (mirrors do_kill same-user pattern).
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         fresh = collect_sessions([user], cfg)
         target = _resolve_or_audit_not_found(
@@ -4866,7 +4866,7 @@ def _build_tui_context(
         # TUI 'D' / kill-all-mine. Mirrors ``on_kill_all_reachable``'s
         # audit shape (``target_users``, ``killed_count``, ``dry_run``)
         # for the single-user case.
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         fresh = collect_sessions([launch_user], cfg)
         killed_count = 0
@@ -4904,14 +4904,14 @@ def _build_tui_context(
         """
         import uuid as _uuid
 
-        from uxon import audit as _audit
-        from uxon.remote_collector import (
+        from uxon.infra import audit as _audit
+        from uxon.infra.remote_collector import (
             DEFAULT_CONNECT_TIMEOUT_SEC,
             DEFAULT_TOTAL_TIMEOUT_SEC,
             _recover_wedged_master,
             build_peer_ssh_argv,
         )
-        from uxon.remote_hosts import find_host
+        from uxon.infra.remote_hosts import find_host
 
         peer = find_host(cfg.remote_hosts, host_name)
         if peer is None:
@@ -5009,7 +5009,7 @@ def _build_tui_context(
         # bulk kill from the TUI.  Audit emit covers the whole sweep,
         # not per-session — matches the spec's `target_users` /
         # `killed_count` shape.
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         _audit.audit(
             "session.kill_all",
@@ -5082,7 +5082,7 @@ def _build_tui_context(
         req = _plan_tui_run_agent(cfg, launch_user, cwd, agent_id, mode_id)
         # ``_plan_tui_run_agent`` only ever yields a launch (never an
         # attach), so this path is unconditional ``session.new``.
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         _audit.audit(
             "session.new",
@@ -5101,7 +5101,7 @@ def _build_tui_context(
         # owned by ``on_attach`` (which emits its own ``session.attach``
         # event when the operator picks "attach" in SessionChoiceScreen).
         project = canonical(os.path.join(cfg.new_project_root, name))
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         _audit.audit(
             "session.new",
@@ -5118,7 +5118,7 @@ def _build_tui_context(
         # Same as ``on_launch_new``: TUI owns attach decisions; this path
         # always emits ``session.new``.
         project = canonical(os.path.join(cfg.new_project_root, name))
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         _audit.audit(
             "session.new",
@@ -5151,7 +5151,7 @@ def _build_tui_context(
         ``sudo`` prompt, then lists worktrees under the same
         ``nonint_command_prefix_for_user`` and parses with Task 2.
         """
-        from uxon.worktrees import parse_worktree_porcelain
+        from uxon.infra.worktrees import parse_worktree_porcelain
 
         repo_root = git_repo_root_nonint_as_user(cwd_arg, launch_user)
         if not repo_root:
@@ -5188,7 +5188,7 @@ def _build_tui_context(
             mode_id,
             worktree=(repo_root, branch),
         )
-        from uxon import audit as _audit
+        from uxon.infra import audit as _audit
 
         _audit.audit(
             "session.new",
@@ -5272,7 +5272,7 @@ def _build_tui_context(
     on_setting_save_mapping = _wrap_tui_callback(on_setting_save_mapping, _CbErr)
     get_git_remote_profile_rows = _wrap_tui_callback(get_git_remote_profile_rows, _CbErr)
 
-    from uxon import agents as _uxon_agents
+    from uxon.infra import agents as _uxon_agents
 
     agent_availability = {
         aid: _uxon_agents.AgentAvailability(status="pending") for aid in cfg.enabled_agents
@@ -5296,8 +5296,8 @@ def _build_tui_context(
     # ``MainScreen.on_mount`` reads to fan out the initial refresh —
     # an empty list there means the "Loading sessions…" placeholder
     # never gets replaced.
-    from uxon.host_breaker import BreakerSpec, HostBreaker
-    from uxon.remote_collector import (
+    from uxon.infra.host_breaker import BreakerSpec, HostBreaker
+    from uxon.infra.remote_collector import (
         RemoteSnapshot,
         fetch_remote_snapshot,
         read_cached_snapshot,
@@ -5437,7 +5437,7 @@ def _build_tui_context(
     host_stats: Any = None
     if not skeleton:
         try:
-            from uxon.probes import read_host_stats
+            from uxon.infra.probes import read_host_stats
 
             host_stats = read_host_stats()
         except Exception:  # pragma: no cover — defensive
@@ -5535,7 +5535,7 @@ def main(argv: list[str] | None = None) -> int:
         # argparse always raises SystemExit with an int (0 for --help,
         # 2 for parse errors); guard the typed-as-``str | int | None`` shape.
         return int(ex.code) if isinstance(ex.code, int) else (0 if ex.code is None else 2)
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     try:
         cfg = load_config(os.getcwd())
@@ -5569,7 +5569,7 @@ def main(argv: list[str] | None = None) -> int:
     # mount stays fast — the TUI runs its own async probe in the
     # background and surfaces the same hints in line.
     if args.action in {"run", "new", "attach", "list", "kill", "kill-all"}:
-        from uxon import probes as uxon_probes
+        from uxon.infra import probes as uxon_probes
 
         report = uxon_probes.probe_host(launch_user)
         if report.tmux.path is None:

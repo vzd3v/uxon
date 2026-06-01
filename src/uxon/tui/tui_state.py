@@ -67,8 +67,8 @@ class TuiState:
     Type annotations on the slot fields use ``Any`` for the slot's
     value parameter rather than the concrete types
     (``AgentAvailability``, ``BinaryStatus``, …) to keep this module
-    importable without pulling :mod:`uxon.agents` /
-    :mod:`uxon.probes` into the TUI's import graph at module-load
+    importable without pulling :mod:`uxon.infra.agents` /
+    :mod:`uxon.infra.probes` into the TUI's import graph at module-load
     time. The dispatcher reaches the concrete types via the slot's
     ``apply`` reducer and the source's fetcher closure.
     """
@@ -86,7 +86,7 @@ class TuiState:
 
     # Per-host remote-SSH poll. One :class:`SlotState` per peer name;
     # entries are inserted lazily on the first landing for that host.
-    # ``RemoteSnapshot`` lives in :mod:`uxon.remote_collector`; the
+    # ``RemoteSnapshot`` lives in :mod:`uxon.infra.remote_collector`; the
     # dict-of-slots shape is what makes per-host repaints O(rows in
     # changed host) instead of O(total sessions across all peers).
     remote: dict[str, SlotState[Any]] = field(default_factory=dict)

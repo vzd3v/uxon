@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""Tests for uxon.duration.parse_duration_seconds."""
+"""Tests for uxon.infra.duration.parse_duration_seconds."""
 
 from __future__ import annotations
 
 import unittest
 
-from uxon.duration import parse_duration_seconds
+from uxon.infra.duration import parse_duration_seconds
 
 
 class ParseDurationSecondsTests(unittest.TestCase):

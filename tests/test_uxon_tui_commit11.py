@@ -52,7 +52,7 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
         return state
 
     def _snap(self, host, sessions):
-        from uxon.remote_collector import RemoteSnapshot
+        from uxon.infra.remote_collector import RemoteSnapshot
 
         return RemoteSnapshot(
             host_name=host,
@@ -66,7 +66,7 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
     def test_only_changed_host_produces_ops(self) -> None:
         from types import SimpleNamespace
 
-        from uxon.remote_hosts import RemoteHost
+        from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.dashboard import model as dashboard_model
         from uxon.tui.dashboard.layout import LayoutFlags, build_active_columns
         from uxon.tui.dashboard.model import select_dashboard_model

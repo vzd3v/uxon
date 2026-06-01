@@ -118,8 +118,8 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
         Stub ``probes.probe_host`` so the test doesn't shell out;
         capture the posted message and assert payload shape.
         """
-        from uxon import agents as uxon_agents
-        from uxon import probes as uxon_probes
+        from uxon.infra import agents as uxon_agents
+        from uxon.infra import probes as uxon_probes
         from uxon.tui.app import UxonApp, _HostReportUpdated
 
         class _BinaryStatus:

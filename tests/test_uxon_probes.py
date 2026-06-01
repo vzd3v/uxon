@@ -6,8 +6,8 @@ import subprocess
 import unittest
 from unittest import mock
 
-from uxon import probes
 from uxon.domain.host_report import BinaryStatus, HostReport
+from uxon.infra import probes
 
 
 class ResolvPathsLocalTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class ResolvPathsLocalTests(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_resolve_single_found(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="tmux\t/usr/bin/tmux\n", stderr=""
             )
@@ -26,7 +26,7 @@ class ResolvPathsLocalTests(unittest.TestCase):
         self.assertEqual(result, {"tmux": "/usr/bin/tmux"})
 
     def test_resolve_single_not_found(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="nosuchbin\t\n", stderr=""
             )
@@ -34,7 +34,7 @@ class ResolvPathsLocalTests(unittest.TestCase):
         self.assertEqual(result, {"nosuchbin": None})
 
     def test_resolve_multiple_mixed(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[],
                 returncode=0,
@@ -52,19 +52,19 @@ class ResolvPathsLocalTests(unittest.TestCase):
         )
 
     def test_resolve_timeout(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.side_effect = subprocess.TimeoutExpired(cmd=["sh"], timeout=2.0)
             result = probes._resolve_paths_local(["tmux", "claude"])
         self.assertEqual(result, {"tmux": None, "claude": None})
 
     def test_resolve_sh_not_found(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.side_effect = FileNotFoundError("no sh")
             result = probes._resolve_paths_local(["tmux"])
         self.assertEqual(result, {"tmux": None})
 
     def test_resolve_nonzero_exit_treated_as_missing(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="", stderr="error"
             )
@@ -81,7 +81,7 @@ class ResolvePathsRemoteTests(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_resolve_sudo_success(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[],
                 returncode=0,
@@ -106,7 +106,7 @@ class ResolvePathsRemoteTests(unittest.TestCase):
         self.assertIn("otheruser", args)
 
     def test_resolve_sudo_nonzero_exit(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="", stderr="sudo: no NOPASSWD"
             )
@@ -115,13 +115,13 @@ class ResolvePathsRemoteTests(unittest.TestCase):
         self.assertEqual(result, {"tmux": None, "claude": None})
 
     def test_resolve_sudo_timeout(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.side_effect = subprocess.TimeoutExpired(cmd=["sudo"], timeout=2.0)
             result = probes._resolve_paths_remote(["tmux"], "otheruser")
         self.assertEqual(result, {"tmux": None})
 
     def test_resolve_sudo_not_found(self) -> None:
-        with mock.patch("uxon.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.subprocess.run") as run:
             run.side_effect = FileNotFoundError("no sudo")
             result = probes._resolve_paths_remote(["tmux"], "otheruser")
         self.assertEqual(result, {"tmux": None})
@@ -170,14 +170,14 @@ class ProbeHostTests(unittest.TestCase):
     """
 
     def test_probe_host_same_user(self) -> None:
-        with mock.patch("uxon.probes._resolve_paths_local") as resolve:
+        with mock.patch("uxon.infra.probes._resolve_paths_local") as resolve:
             resolve.return_value = {
                 "tmux": "/usr/bin/tmux",
                 "claude": "/home/u/.npm/claude",
                 "codex": None,
                 "cursor-agent": None,
             }
-            with mock.patch("uxon.probes._current_user", return_value="devuser"):
+            with mock.patch("uxon.infra.probes._current_user", return_value="devuser"):
                 report = probes.probe_host("devuser")
 
         self.assertEqual(report.launch_user, "devuser")
@@ -187,14 +187,14 @@ class ProbeHostTests(unittest.TestCase):
         self.assertIsNone(report.agents["cursor"].path)
 
     def test_probe_host_different_user(self) -> None:
-        with mock.patch("uxon.probes._resolve_paths_remote") as resolve:
+        with mock.patch("uxon.infra.probes._resolve_paths_remote") as resolve:
             resolve.return_value = {
                 "tmux": "/usr/bin/tmux",
                 "claude": "/home/otheruser/.npm/claude",
                 "codex": None,
                 "cursor-agent": "/home/otheruser/.cursor/cursor-agent",
             }
-            with mock.patch("uxon.probes._current_user", return_value="devuser"):
+            with mock.patch("uxon.infra.probes._current_user", return_value="devuser"):
                 report = probes.probe_host("otheruser")
 
         self.assertEqual(report.launch_user, "otheruser")

@@ -4,7 +4,7 @@ Pure data + small helpers. No textual, no TUI, no cli imports.
 ``_probe_one`` uses subprocess locally but never at module scope; it is
 only called by ``do_doctor`` to fetch the per-agent ``--version`` line
 shown for present binaries (the host-wide "is this installed" probe
-lives in ``uxon.probes`` since 0.5.x).
+lives in ``uxon.infra.probes`` since 0.5.x).
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ def _probe_one(
     and return a status-tagged :class:`AgentAvailability`.
 
     Used by ``do_doctor`` to render the version line for binaries that
-    ``uxon.probes.probe_host`` already confirmed are present. The
+    ``uxon.infra.probes.probe_host`` already confirmed are present. The
     parallel multi-agent driver (``probe_agents``) was removed in 0.5.x
     once the host-wide probe replaced it everywhere except the doctor's
     per-binary version detail.

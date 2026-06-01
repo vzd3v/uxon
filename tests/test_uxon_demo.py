@@ -27,8 +27,8 @@ from unittest import mock
 
 from uxon import _demo as uxon_demo
 from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
-from uxon.remote_collector import fetch_remote_snapshot
-from uxon.remote_hosts import RemoteHost
+from uxon.infra.remote_collector import fetch_remote_snapshot
+from uxon.infra.remote_hosts import RemoteHost
 
 
 def _envelope(sessions: list[dict[str, Any]], *, demo_color: str | None = None) -> dict[str, Any]:

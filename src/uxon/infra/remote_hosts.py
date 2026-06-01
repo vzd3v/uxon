@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from uxon.duration import parse_duration_seconds
+from uxon.infra.duration import parse_duration_seconds
 
 
 class RemoteHostError(ValueError):
@@ -153,7 +153,7 @@ def _validate_host(raw: dict, index: int, seen_names: set[str]) -> RemoteHost:
         # keeps this module pure-data and avoids a circular dep with
         # remote_collector.
         try:
-            from uxon.remote_collector import (  # noqa: PLC0415
+            from uxon.infra.remote_collector import (  # noqa: PLC0415
                 validate_command_template,
             )
         except ImportError:

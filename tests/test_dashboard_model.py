@@ -19,7 +19,7 @@ import unittest
 from types import SimpleNamespace
 from typing import Any
 
-from uxon.remote_collector import RemoteSnapshot
+from uxon.infra.remote_collector import RemoteSnapshot
 from uxon.tui.context import ServerStatus, SudoCapability, TuiSession
 from uxon.tui.dashboard import model as model_mod
 from uxon.tui.dashboard.model import select_dashboard_model

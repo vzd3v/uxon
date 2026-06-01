@@ -49,7 +49,7 @@ import msgspec
 import platformdirs
 
 from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION, RemoteSessionPayload
-from uxon.remote_hosts import RemoteHost
+from uxon.infra.remote_hosts import RemoteHost
 
 # Reasonable defaults: a peer that doesn't answer in 5 s is treated as
 # down. ssh's TCP-level ConnectTimeout caps the connect phase only;
@@ -145,7 +145,7 @@ def snapshot_cache_path(name: str, *, override_dir: Path | None = None) -> Path:
     """Return the on-disk cache path for the host named ``name``.
 
     ``name`` is trusted at this point — :func:`load_remote_hosts` in
-    ``uxon.remote_hosts`` already validated the charset against a
+    ``uxon.infra.remote_hosts`` already validated the charset against a
     conservative ASCII whitelist, so it is safe to use as a filename
     component. We do not double-validate to keep this module's
     surface narrow.

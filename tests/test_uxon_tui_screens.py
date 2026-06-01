@@ -123,7 +123,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         ``LaunchOptionsScreen`` saw a fresh ``pending`` dict and rendered
         ``(checking…)`` forever, blocking the agent commit path.
         """
-        from uxon.agents import AgentAvailability
+        from uxon.infra.agents import AgentAvailability
         from uxon.tui.app import UxonApp
 
         loaded = _mk_ctx()  # loaded ctx with its own fresh availability dict
@@ -494,7 +494,7 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
     """Pilot tests for the two-panel agent × permission-mode modal."""
 
     def _make_avail(self, status: str):
-        from uxon.agents import AgentAvailability
+        from uxon.infra.agents import AgentAvailability
 
         return AgentAvailability(status=status)
 
@@ -583,12 +583,12 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
     """Pilot tests for the third WORKSPACE column (§3) + dismiss arity (B2)."""
 
     def _make_avail(self, status: str):
-        from uxon.agents import AgentAvailability
+        from uxon.infra.agents import AgentAvailability
 
         return AgentAvailability(status=status)
 
     def _workspaces(self):
-        from uxon.worktrees import Workspace
+        from uxon.infra.worktrees import Workspace
 
         return [
             Workspace(label="main", branch="main", path="/srv/work/myapp", is_primary=True),
@@ -715,8 +715,8 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
     workspace-choice dispatch routes to the right callback (§3, §4.2)."""
 
     def _ctx(self, **overrides):
+        from uxon.infra.worktrees import Workspace
         from uxon.tui.context import LaunchRequest
-        from uxon.worktrees import Workspace
 
         probed = [
             Workspace(label="main", branch="main", path="/srv/work", is_primary=True),
@@ -818,8 +818,8 @@ class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
     shared ``_begin_launch_in_folder`` helper (parity with launch-cwd)."""
 
     def _ctx(self, **overrides):
+        from uxon.infra.worktrees import Workspace
         from uxon.tui.context import LaunchRequest
-        from uxon.worktrees import Workspace
 
         probed = [
             Workspace(label="main", branch="main", path="/srv/work/proj", is_primary=True),
@@ -1085,7 +1085,7 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_bool_toggle_saves_value(self):
         from textual.app import App
 
-        from uxon.settings import SettingEntry, SettingSpec
+        from uxon.infra.settings import SettingEntry, SettingSpec
         from uxon.tui.screens.settings import BoolToggleModal, SettingsScreen
 
         spec = SettingSpec("git_create_enabled", "bool", "desc")
@@ -1129,7 +1129,7 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
     """
 
     def _entry(self, key, kind, value, choices=None):
-        from uxon.settings import SettingEntry, SettingSpec
+        from uxon.infra.settings import SettingEntry, SettingSpec
 
         spec = SettingSpec(key, kind, "desc", choices=choices)
         return SettingEntry(spec=spec, value=value, source="default", editable=True)

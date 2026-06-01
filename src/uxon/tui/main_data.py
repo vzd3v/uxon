@@ -22,7 +22,7 @@ from .context import SudoCapability
 
 if TYPE_CHECKING:
     from uxon.domain.session import TuiSession
-    from uxon.probes import HostStatsResult
+    from uxon.infra.probes import HostStatsResult
 
     from .context import TuiContext
 

@@ -22,7 +22,7 @@ from rich.text import Text
 from .row import SessionRow
 
 if TYPE_CHECKING:
-    from uxon.remote_hosts import RemoteHost
+    from uxon.infra.remote_hosts import RemoteHost
 
 
 @dataclass(frozen=True)

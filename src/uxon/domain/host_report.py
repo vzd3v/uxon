@@ -2,7 +2,7 @@
 """Pure host-availability data types.
 
 ``BinaryStatus`` / ``HostReport`` are immutable, stdlib-only DTOs. The
-impure probe machinery that *produces* them lives in :mod:`uxon.probes`
+impure probe machinery that *produces* them lives in :mod:`uxon.infra.probes`
 (an infra adapter); it imports these types from here.
 """
 

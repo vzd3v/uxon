@@ -70,8 +70,8 @@ class DoctorParallelProbeTests(unittest.TestCase):
         """
         import threading
 
-        from uxon import agents as uxon_agents
         from uxon import cli
+        from uxon.infra import agents as uxon_agents
 
         barrier = threading.Barrier(3, timeout=2.0)
         call_args: list[dict] = []
@@ -82,7 +82,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
             return uxon_agents.AgentAvailability(status="ok", version=f"{binary}-1.0")
 
         with (
-            patch("uxon.probes.probe_host", return_value=self._stub_probe_host()),
+            patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host()),
             patch.object(uxon_agents, "_probe_one", side_effect=fake_probe_one),
             patch.object(cli, "collect_sessions", return_value=[]),
             patch.object(cli, "collect_sessions_for_user", return_value=[]),
@@ -97,8 +97,8 @@ class DoctorParallelProbeTests(unittest.TestCase):
 
     def test_missing_path_skips_probe(self) -> None:
         """Agents not in ``agent_paths`` are reported missing without calling _probe_one."""
-        from uxon import agents as uxon_agents
         from uxon import cli
+        from uxon.infra import agents as uxon_agents
 
         report = self._stub_probe_host(present=("claude",))
 
@@ -109,7 +109,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
             return uxon_agents.AgentAvailability(status="ok", version="x")
 
         with (
-            patch("uxon.probes.probe_host", return_value=report),
+            patch("uxon.infra.probes.probe_host", return_value=report),
             patch.object(uxon_agents, "_probe_one", side_effect=fake_probe_one),
             patch.object(cli, "collect_sessions", return_value=[]),
             patch.object(cli, "collect_sessions_for_user", return_value=[]),
@@ -136,7 +136,7 @@ class ProbeOneTimeoutOverrideTests(unittest.TestCase):
     """``_probe_one`` honours ``timeout_override`` keyword-only arg."""
 
     def test_default_timeout_unchanged(self) -> None:
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
 
         captured: dict = {}
 
@@ -154,7 +154,7 @@ class ProbeOneTimeoutOverrideTests(unittest.TestCase):
         self.assertEqual(captured["timeout"], uxon_agents.PROBE_TIMEOUT_SEC)
 
     def test_override_replaces_default(self) -> None:
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
 
         captured: dict = {}
 
@@ -221,11 +221,13 @@ class DoctorRemoteFlagTests(unittest.TestCase):
     def _patches(self):
         from contextlib import ExitStack
 
-        from uxon import agents as uxon_agents
         from uxon import cli
+        from uxon.infra import agents as uxon_agents
 
         stack = ExitStack()
-        stack.enter_context(patch("uxon.probes.probe_host", return_value=self._stub_probe_host()))
+        stack.enter_context(
+            patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host())
+        )
         stack.enter_context(
             patch.object(
                 uxon_agents,
@@ -241,15 +243,15 @@ class DoctorRemoteFlagTests(unittest.TestCase):
     def test_no_flag_no_ssh_attempt(self) -> None:
         """Default doctor (no ``--remote``) never calls the collector."""
         from uxon import cli
-        from uxon.remote_hosts import RemoteHost
+        from uxon.infra.remote_hosts import RemoteHost
 
         hosts = [RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")]
 
         # ``_doctor_remote_rows`` imports ``fetch_remote_snapshot``
         # lazily at call time, so we patch the source module
-        # ``uxon.remote_collector.fetch_remote_snapshot`` and assert
+        # ``uxon.infra.remote_collector.fetch_remote_snapshot`` and assert
         # zero invocations under the default doctor path.
-        from uxon import remote_collector
+        from uxon.infra import remote_collector
 
         with self._patches() as stack:
             stack.enter_context(redirect_stdout(io.StringIO()))
@@ -266,9 +268,10 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         self.assertEqual(collector_mock.call_count, 0)
 
     def test_flag_calls_collector_once_per_host(self) -> None:
-        from uxon import cli, remote_collector
-        from uxon.remote_collector import RemoteSnapshot
-        from uxon.remote_hosts import RemoteHost
+        from uxon import cli
+        from uxon.infra import remote_collector
+        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.infra.remote_hosts import RemoteHost
 
         hosts = [
             RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon"),
@@ -321,9 +324,10 @@ class DoctorRemoteFlagTests(unittest.TestCase):
     def test_json_round_trip_with_remote(self) -> None:
         import json as _json
 
-        from uxon import cli, remote_collector
-        from uxon.remote_collector import RemoteSnapshot
-        from uxon.remote_hosts import RemoteHost
+        from uxon import cli
+        from uxon.infra import remote_collector
+        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.infra.remote_hosts import RemoteHost
 
         hosts = [RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")]
 
@@ -422,11 +426,13 @@ class DoctorAuditLineTests(unittest.TestCase):
     def _patches(self):
         from contextlib import ExitStack
 
-        from uxon import agents as uxon_agents
         from uxon import cli
+        from uxon.infra import agents as uxon_agents
 
         stack = ExitStack()
-        stack.enter_context(patch("uxon.probes.probe_host", return_value=self._stub_probe_host()))
+        stack.enter_context(
+            patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host())
+        )
         stack.enter_context(
             patch.object(
                 uxon_agents,
@@ -440,8 +446,8 @@ class DoctorAuditLineTests(unittest.TestCase):
         return stack
 
     def test_human_readable_has_audit_line(self) -> None:
-        from uxon import audit as au
         from uxon import cli
+        from uxon.infra import audit as au
 
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
@@ -457,8 +463,8 @@ class DoctorAuditLineTests(unittest.TestCase):
     def test_json_output_has_audit_block(self) -> None:
         import json as _json
 
-        from uxon import audit as au
         from uxon import cli
+        from uxon.infra import audit as au
 
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))

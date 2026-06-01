@@ -704,7 +704,7 @@ class HostHealthBadgeTests(unittest.TestCase):
     SlotState[T] surface lands at stage 8."""
 
     def _snap(self, **overrides):
-        from uxon.remote_collector import RemoteSnapshot
+        from uxon.infra.remote_collector import RemoteSnapshot
 
         defaults: dict[str, object] = dict(
             host_name="prod",

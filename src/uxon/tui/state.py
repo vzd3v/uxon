@@ -44,7 +44,7 @@ def effective_agents(
     """
     if configured:
         return configured
-    from uxon import agents as uxon_agents
+    from uxon.infra import agents as uxon_agents
 
     return tuple(aid for aid in uxon_agents.CATALOG if aid in available_ids)
 
@@ -188,7 +188,7 @@ def visible_agent_ids(
             if availability.get(aid) is None
             or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
         )
-    from uxon import agents as uxon_agents
+    from uxon.infra import agents as uxon_agents
 
     return tuple(
         aid
@@ -278,7 +278,7 @@ def agent_list_label(index: int, agent_id: str, availability_obj: Any | None) ->
 
 
 def mode_item_ids(agent_id: str) -> tuple[str, ...]:
-    from uxon import agents as uxon_agents
+    from uxon.infra import agents as uxon_agents
 
     if agent_id not in uxon_agents.CATALOG:
         return ()
@@ -286,7 +286,7 @@ def mode_item_ids(agent_id: str) -> tuple[str, ...]:
 
 
 def launch_mode_id(agent_id: str, mode_index: int) -> str | None:
-    from uxon import agents as uxon_agents
+    from uxon.infra import agents as uxon_agents
 
     if agent_id not in uxon_agents.CATALOG:
         return None

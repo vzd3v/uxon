@@ -17,7 +17,7 @@ from uxon.domain.session import TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
 
 if TYPE_CHECKING:
-    from uxon.probes import HostStatsResult
+    from uxon.infra.probes import HostStatsResult
 
     from .tui_state import TuiState
 
@@ -34,8 +34,8 @@ class SudoCapability:
     safely.
 
     This class lives in ``tui.context`` (rather than alongside the
-    probe machinery in ``uxon.sudo_probe``) so the TUI module is
-    importable without pulling in ``subprocess``. ``uxon.sudo_probe``
+    probe machinery in ``uxon.infra.sudo_probe``) so the TUI module is
+    importable without pulling in ``subprocess``. ``uxon.infra.sudo_probe``
     re-exports the same name so call sites can import it from the
     natural place; both names resolve to this single class.
     """

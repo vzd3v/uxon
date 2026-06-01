@@ -8,7 +8,7 @@ Public API re-exports only. Implementation lives in sibling modules:
   - ``state``    — pure TUI state decisions (not public-re-exported).
   - ``events``   — debug and metrics channels (``debug``,
                    ``metrics_record``).  The audit channel lives in
-                   ``uxon.audit`` and goes to journald / syslog directly.
+                   ``uxon.infra.audit`` and goes to journald / syslog directly.
   - ``launch``   — launch-handoff helpers (runs outside the TUI).
   - ``hints``    — ``TEXTUAL_MISSING_HINT`` install guidance.
   - ``app``      — textual :class:`UxonApp` + :func:`run` outer loop.

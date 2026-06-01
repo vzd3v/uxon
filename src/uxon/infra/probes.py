@@ -168,7 +168,7 @@ def probe_host(launch_user: str) -> HostReport:
     Returns a :class:`HostReport` with:
       - ``tmux``: :class:`BinaryStatus` for tmux
       - ``agents``: dict[agent_id -> BinaryStatus] for every agent in
-        :data:`uxon.agents.CATALOG`. Entries with ``path=None`` are not
+        :data:`uxon.infra.agents.CATALOG`. Entries with ``path=None`` are not
         installed (used for "missing" status in auto-mode this just
         omits them; in strict-whitelist mode the consumer surfaces
         them as "missing").
@@ -178,7 +178,7 @@ def probe_host(launch_user: str) -> HostReport:
     differs from the current user, or directly if it's the same user.
     This matches the login-shell semantics used by the launch builder.
     """
-    from uxon import agents as uxon_agents
+    from uxon.infra import agents as uxon_agents
 
     all_agent_names = [s.binary for s in uxon_agents.CATALOG.values()]
     all_agent_ids = list(uxon_agents.CATALOG.keys())

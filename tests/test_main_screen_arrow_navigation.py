@@ -258,7 +258,7 @@ class FlatBlockJumpTests(unittest.IsolatedAsyncioTestCase):
     """←/→ on the dashboard in flat view jumps cursor between blocks."""
 
     async def test_right_jumps_to_next_block(self) -> None:
-        from uxon.remote_hosts import RemoteHost
+        from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
@@ -309,7 +309,7 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
     """←/→ on the dashboard in by_host view cycles the active host tab."""
 
     async def test_right_cycles_active_tab_forward(self) -> None:
-        from uxon.remote_hosts import RemoteHost
+        from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
@@ -348,7 +348,7 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
         must NOT silently rotate it (regression for the bug where
         clearing search would land on an unexpected tab).
         """
-        from uxon.remote_hosts import RemoteHost
+        from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 

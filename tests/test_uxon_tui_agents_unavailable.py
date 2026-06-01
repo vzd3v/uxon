@@ -63,7 +63,7 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
     """End-to-end: UxonApp pushes AgentsUnavailableScreen iff all probes miss."""
 
     async def test_pushes_when_all_agents_missing(self) -> None:
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
         from uxon.tui.app import UxonApp, _AgentAvailabilityUpdated
         from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
@@ -95,7 +95,7 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
         """Transition gate: after the user dismisses the modal and state
         recovers, a later transition back to all-missing must push again.
         """
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
         from uxon.tui.app import UxonApp, _HostReportUpdated
         from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 

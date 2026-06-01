@@ -600,7 +600,7 @@ class UxonApp(App):
         ring so the latency-p50 tooltip has data.
         """
         host_name = event.name[len("remote:") :]
-        from uxon.remote_collector import RemoteSnapshot
+        from uxon.infra.remote_collector import RemoteSnapshot
 
         from .slot_state import SlotResult, SlotState
         from .slot_state import apply as apply_slot
@@ -795,8 +795,8 @@ class UxonApp(App):
         """
         import time as _time
 
-        from uxon import agents as uxon_agents
-        from uxon import probes as uxon_probes
+        from uxon.infra import agents as uxon_agents
+        from uxon.infra import probes as uxon_probes
 
         target_user = self.cfg.launch_user or uxon_probes._current_user()
 
@@ -1214,7 +1214,7 @@ def run(ctx: TuiContext) -> int:
         return 1
 
     caller_user = os.environ.get("SUDO_USER") or os.environ.get("USER", "")
-    from uxon import audit as _audit
+    from uxon.infra import audit as _audit
 
     _audit.audit("tui.open")
 

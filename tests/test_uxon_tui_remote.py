@@ -24,8 +24,8 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from uxon.remote_collector import RemoteSnapshot
-from uxon.remote_hosts import RemoteHost
+from uxon.infra.remote_collector import RemoteSnapshot
+from uxon.infra.remote_hosts import RemoteHost
 
 
 def _state_with_snapshots(snapshots):

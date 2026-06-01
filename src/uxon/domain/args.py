@@ -76,7 +76,7 @@ class ParsedArgs:
     user: str | None = None  # --user <name>: target a different launch user (kill)
     # Internal peer-protocol flag — propagated by callers to peers so a
     # cross-host operation appears in both audit trails with the same UUID.
-    # Stripped from argv by :func:`uxon.audit.extract_correlation_id` before
+    # Stripped from argv by :func:`uxon.infra.audit.extract_correlation_id` before
     # the per-parser walk sees it; never surfaces in ``--help``.
     audit_correlation_id: str | None = None
     # Populated by ``main()``'s preflight when it probes the host for

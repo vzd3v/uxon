@@ -50,7 +50,7 @@ class AgentsUnavailableScreen(CardModal[None]):
         self.body_text: str = self._render_body()
 
     def _render_body(self) -> str:
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
 
         ids: tuple[str, ...] = self._enabled_agents or tuple(uxon_agents.CATALOG)
         lines: list[str] = []

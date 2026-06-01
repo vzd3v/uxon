@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uxon.remote_hosts import RemoteHost
+from uxon.infra.remote_hosts import RemoteHost
 from uxon.tui.dashboard.columns import assign_block_colors
 
 

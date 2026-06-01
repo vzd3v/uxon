@@ -13,8 +13,8 @@ from unittest import mock
 
 import pytest
 
-from uxon import audit as _audit
 from uxon.domain.host_report import BinaryStatus, HostReport
+from uxon.infra import audit as _audit
 
 # Fully-installed CATALOG, used as the autouse ``probe_host`` stub. Tests
 # that exercise the install-gate path explicitly mock ``probe_host`` in
@@ -44,7 +44,7 @@ def _stub_probe_host_by_default(request: pytest.FixtureRequest):
     if request.node.fspath.basename == "test_uxon_probes.py":
         yield
         return
-    with mock.patch("uxon.probes.probe_host", return_value=_STUB_HOST_REPORT):
+    with mock.patch("uxon.infra.probes.probe_host", return_value=_STUB_HOST_REPORT):
         yield
 
 

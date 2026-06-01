@@ -8,14 +8,14 @@ peer, conforming to :class:`uxon.wire_schema.Envelope` with
 When the env var is set, three data sources are intercepted:
 
 - :func:`synthesize_remote_hosts` returns one synthetic
-  :class:`uxon.remote_hosts.RemoteHost` per ``<host>.json`` file
+  :class:`uxon.infra.remote_hosts.RemoteHost` per ``<host>.json`` file
   (files starting with ``_`` are reserved and skipped). ``ssh_alias``
   is set to a ``demo:`` sentinel that must never reach a real ``ssh``
   invocation.
 - :func:`load_demo_snapshot` reads the per-peer envelope from disk
-  and returns a :class:`uxon.remote_collector.RemoteSnapshot`
+  and returns a :class:`uxon.infra.remote_collector.RemoteSnapshot`
   directly, bypassing SSH entirely. Called from
-  :func:`uxon.remote_collector.fetch_remote_snapshot` before any
+  :func:`uxon.infra.remote_collector.fetch_remote_snapshot` before any
   network I/O.
 - :func:`load_demo_local_sessions` reads the optional
   ``_local.json`` envelope and yields :class:`uxon.cli.SessionInfo`
@@ -39,8 +39,8 @@ from typing import Any
 import msgspec
 
 from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
-from uxon.remote_collector import RemoteSnapshot
-from uxon.remote_hosts import RemoteHost
+from uxon.infra.remote_collector import RemoteSnapshot
+from uxon.infra.remote_hosts import RemoteHost
 
 DEMO_ENV_VAR = "UXON_DEMO_HOSTS"
 """Env var that activates demo mode. Value is a directory of envelopes."""
@@ -306,7 +306,7 @@ def _session_info_from_record(rec: dict[str, Any], cls: type) -> Any:
     Every field is read defensively (``.get(...)``) so an envelope
     authored by a future or past producer can't crash the loader —
     same forward-compat posture as
-    :func:`uxon.remote_collector._parse_envelope`. Type-narrowing of
+    :func:`uxon.infra.remote_collector._parse_envelope`. Type-narrowing of
     primitive fields uses ``str()`` / ``int()`` / ``float()`` /
     ``bool()`` rather than ``isinstance`` checks because the
     envelope is JSON (so the input is already one of those types) and

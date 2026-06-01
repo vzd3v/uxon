@@ -71,7 +71,7 @@ def test_buckets_in_cfg_order_with_locals_first_and_empty_kept():
 
 
 def test_status_block_aggregates_per_host():
-    from uxon.probes import HostStatsResult
+    from uxon.infra.probes import HostStatsResult
 
     rows = (_row(None, "a", cpu=10), _row(None, "b", cpu=20, attached=True))
     cfg = SimpleNamespace(remote_hosts=[])

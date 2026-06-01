@@ -909,7 +909,7 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(path, "/tmp/uxon-u-vz-1001.sock")
 
     def test_doctor_reports_socket_and_config(self) -> None:
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
 
         cfg = self.make_config()
         output = io.StringIO()
@@ -933,7 +933,7 @@ class UxonTests(unittest.TestCase):
             return_value=({}, [Path("/srv/apps/uxon/config/config.toml")]),
         ):
             with mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
-                with mock.patch("uxon.probes.probe_host", return_value=host_report):
+                with mock.patch("uxon.infra.probes.probe_host", return_value=host_report):
                     with mock.patch.object(uxon_agents, "_probe_one", return_value=ok_avail):
                         with mock.patch.object(
                             uxon,
@@ -979,7 +979,7 @@ class UxonTests(unittest.TestCase):
 
         with mock.patch.object(uxon, "resolve_config_layers", return_value=({}, [])):
             with mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
-                with mock.patch("uxon.probes.probe_host", return_value=host_report):
+                with mock.patch("uxon.infra.probes.probe_host", return_value=host_report):
                     with mock.patch.object(uxon, "collect_sessions", return_value=[]):
                         with mock.patch.object(uxon, "collect_sessions_for_user", return_value=[]):
                             with mock.patch.object(uxon, "user_can_write_dir", return_value=True):
@@ -2020,7 +2020,7 @@ class CliPreflightTests(unittest.TestCase):
         """When tmux is missing, run action should fail with friendly message."""
         buf_err = io.StringIO()
         with mock.patch.object(sys, "stderr", buf_err):
-            with mock.patch("uxon.probes.probe_host") as probe:
+            with mock.patch("uxon.infra.probes.probe_host") as probe:
                 mock_tmux_missing = mock.MagicMock()
                 mock_tmux_missing.tmux.path = None
                 mock_tmux_missing.tmux.install_hint = "apt install tmux"
@@ -2043,7 +2043,7 @@ class CliPreflightTests(unittest.TestCase):
         """
         buf_err = io.StringIO()
         with mock.patch.object(sys, "stderr", buf_err):
-            with mock.patch("uxon.probes.probe_host") as probe:
+            with mock.patch("uxon.infra.probes.probe_host") as probe:
                 mock_report = mock.MagicMock()
                 mock_report.tmux.path = "/usr/bin/tmux"
                 mock_claude = mock.MagicMock()
@@ -2062,7 +2062,7 @@ class CliPreflightTests(unittest.TestCase):
 
     def test_preflight_skipped_on_version_action(self) -> None:
         """version action should skip the preflight probe."""
-        with mock.patch("uxon.probes.probe_host") as probe:
+        with mock.patch("uxon.infra.probes.probe_host") as probe:
             with mock.patch("sys.stdout", new_callable=io.StringIO):
                 uxon.main(["version"])
             # Probe should never have been called.
@@ -2070,7 +2070,7 @@ class CliPreflightTests(unittest.TestCase):
 
     def test_preflight_skipped_on_doctor_action(self) -> None:
         """doctor action should skip the preflight probe."""
-        with mock.patch("uxon.probes.probe_host") as probe:
+        with mock.patch("uxon.infra.probes.probe_host") as probe:
             with mock.patch("uxon.cli.do_doctor", return_value=0):
                 uxon.main(["doctor"])
             # Probe should never have been called.
@@ -2084,14 +2084,14 @@ class CliPreflightTests(unittest.TestCase):
         TUI mounted, defeating the fast-first-frame design. The TUI runs
         its own async probe in the background.
         """
-        with mock.patch("uxon.probes.probe_host") as probe:
+        with mock.patch("uxon.infra.probes.probe_host") as probe:
             with mock.patch("uxon.cli.do_interactive", return_value=0):
                 uxon.main([])
             probe.assert_not_called()
 
     def test_preflight_passes_on_run_both_ok(self) -> None:
         """When tmux and agent are both present, run action should proceed past preflight."""
-        with mock.patch("uxon.probes.probe_host") as probe:
+        with mock.patch("uxon.infra.probes.probe_host") as probe:
             mock_report = mock.MagicMock()
             mock_report.tmux.path = "/usr/bin/tmux"
             mock_claude = mock.MagicMock()
@@ -2105,7 +2105,7 @@ class CliPreflightTests(unittest.TestCase):
 
     def test_preflight_list_action_does_not_need_agents(self) -> None:
         """list action should check tmux but not any specific agent."""
-        with mock.patch("uxon.probes.probe_host") as probe:
+        with mock.patch("uxon.infra.probes.probe_host") as probe:
             mock_report = mock.MagicMock()
             mock_report.tmux.path = "/usr/bin/tmux"
             # Agent can be missing; list doesn't care.
@@ -2130,7 +2130,7 @@ class CliPreflightTests(unittest.TestCase):
         # emitted ``outcome=ok`` *before* the gate check, then ``fail``
         # raised SystemExit unaudited.
         import uxon.cli as cli
-        from uxon import audit as uxon_audit
+        from uxon.infra import audit as uxon_audit
 
         recorded: list[tuple[str, dict]] = []
 
@@ -2158,7 +2158,7 @@ class CliPreflightTests(unittest.TestCase):
             git_remote_profiles=[],
         )
 
-        with mock.patch("uxon.probes.probe_host") as probe:
+        with mock.patch("uxon.infra.probes.probe_host") as probe:
             mock_report = mock.MagicMock()
             mock_report.tmux.path = "/usr/bin/tmux"
             mock_report.agents = {"claude": mock.MagicMock(path=None)}
@@ -2456,7 +2456,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
                     cmd=("true",), label=f"launch {s}"
                 ),
             ),
-            mock.patch("uxon.audit.audit", fake_audit),
+            mock.patch("uxon.infra.audit.audit", fake_audit),
         ):
             req = cli.plan_worktree_launch(
                 cfg, "devagent", repo, "feature/auth", "claude", "default"
@@ -2548,7 +2548,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
                     cmd=("true",), label=f"launch {s}"
                 ),
             ),
-            mock.patch("uxon.audit.audit", lambda *a, **k: None),
+            mock.patch("uxon.infra.audit.audit", lambda *a, **k: None),
         ):
             cli.plan_worktree_launch(
                 cfg, "devagent", "/srv/work/myapp", "existing", "claude", "default"
@@ -2585,7 +2585,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             mock.patch.object(cli, "copy_worktreeinclude_matches", lambda *a, **k: None),
             mock.patch.object(cli, "_branch_exists_as_user", return_value=True),
             mock.patch.object(cli, "_build_tmux_launch_request", fake_build),
-            mock.patch("uxon.audit.audit", lambda *a, **k: None),
+            mock.patch("uxon.infra.audit.audit", lambda *a, **k: None),
         ):
             cli.plan_worktree_launch(
                 cfg,
@@ -2683,7 +2683,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
                     cmd=("true",), label=f"launch {s}"
                 ),
             ),
-            mock.patch("uxon.audit.audit", lambda event, **k: events.append(event)),
+            mock.patch("uxon.infra.audit.audit", lambda event, **k: events.append(event)),
         ):
             req = cli.plan_worktree_launch(
                 cfg,

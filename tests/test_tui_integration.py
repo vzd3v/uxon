@@ -191,8 +191,8 @@ class PtyTuiIntegrationTests(unittest.TestCase):
 _DRAIN_CHILD_SCRIPT = r"""
 import sys, os
 from uxon import tui as uxon_tui
-from uxon import agents as uxon_agents
-from uxon import probes as uxon_probes
+from uxon.infra import agents as uxon_agents
+from uxon.infra import probes as uxon_probes
 from uxon.tui.context import LaunchRequest
 
 MARKER = {marker_path!r}

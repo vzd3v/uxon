@@ -2,7 +2,7 @@
 
 The previous JSONL TUI event log (``_log_event`` / ``tui-{user}-{date}.log``)
 was removed in 4.0; audit events now go to journald / syslog via
-``uxon.audit``.  The ``debug`` channel (off by default,
+``uxon.infra.audit``.  The ``debug`` channel (off by default,
 ``UXON_DEBUG``-gated) and the ``metrics`` channel
 (``UXON_METRICS=1``-gated) are unchanged and tested below.
 """
