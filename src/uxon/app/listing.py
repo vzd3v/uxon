@@ -208,7 +208,7 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     marker; no fallback exits with a non-zero code so the caller
     knows to investigate.
     """
-    from uxon.infra.remote_collector import fetch_remote_snapshot
+    from uxon.infra.remote.collector import fetch_remote_snapshot
     from uxon.infra.remote_hosts import find_host
 
     if not cfg.remote_hosts:
@@ -258,7 +258,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     peer failed AND its cache was empty; partial results are still
     rendered.
     """
-    from uxon.infra.remote_collector import fetch_remote_snapshot
+    from uxon.infra.remote.collector import fetch_remote_snapshot
 
     rc = 0
     scope_skipped: list[str] | None

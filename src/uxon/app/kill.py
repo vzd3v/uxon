@@ -55,12 +55,12 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     confirmation is a UI gesture, not a wire concern; the peer
     must not re-prompt.
     """
-    from uxon.infra.remote_collector import (
+    from uxon.infra.remote.collector import (
         DEFAULT_CONNECT_TIMEOUT_SEC,
         DEFAULT_TOTAL_TIMEOUT_SEC,
-        _recover_wedged_master,
-        build_peer_ssh_argv,
     )
+    from uxon.infra.remote.master_recovery import recover_wedged_master
+    from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
     from uxon.infra.remote_hosts import find_host
 
     if not cfg.remote_hosts:
@@ -110,7 +110,10 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
         correlation_id=corr_id,
     )
     ssh_argv = build_peer_ssh_argv(
-        target_host,
+        command_template=target_host.command_template,
+        extra_ssh_options=target_host.extra_ssh_options,
+        ssh_alias=target_host.ssh_alias,
+        remote_uxon=target_host.remote_uxon,
         remote_command=remote_cmd,
         allocate_tty=False,
         connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
@@ -164,7 +167,7 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
         # identically until the master is killed by hand. See
         # ``fetch_remote_snapshot._run_one`` for the rationale.
         if cfg.ssh_multiplex != "off":
-            _recover_wedged_master(target_host)
+            recover_wedged_master(target_host)
         _emit_kill_remote_error("ssh timeout", 124)
         eprint(f"uxon: --host {target_host.name}: ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s")
         return 1

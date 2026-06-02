@@ -319,7 +319,7 @@ class HostDispatchTests(unittest.TestCase):
 
     def test_host_json_envelope_carries_host_field(self) -> None:
         from uxon.app.listing import _do_list_host
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
         args = uxon.ParsedArgs(action="list", host="vz-prod1", json_output=True)
@@ -331,7 +331,7 @@ class HostDispatchTests(unittest.TestCase):
             sessions=[{"name": "uxon-foo@claude", "user": "alice"}],
             cached_at_epoch=1.0,
         )
-        with mock.patch("uxon.infra.remote_collector.fetch_remote_snapshot", return_value=snap):
+        with mock.patch("uxon.infra.remote.collector.fetch_remote_snapshot", return_value=snap):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = _do_list_host(args, cfg)
@@ -345,7 +345,7 @@ class HostDispatchTests(unittest.TestCase):
 
     def test_host_failure_with_no_cache_returns_nonzero(self) -> None:
         from uxon.app.listing import _do_list_host
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
         args = uxon.ParsedArgs(action="list", host="vz-prod1", json_output=True)
@@ -357,7 +357,7 @@ class HostDispatchTests(unittest.TestCase):
             sessions=[],
             cached_at_epoch=None,
         )
-        with mock.patch("uxon.infra.remote_collector.fetch_remote_snapshot", return_value=snap):
+        with mock.patch("uxon.infra.remote.collector.fetch_remote_snapshot", return_value=snap):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 with mock.patch.object(uxon, "eprint"):
@@ -374,7 +374,7 @@ class HostDispatchTests(unittest.TestCase):
         # sessions. We treat that as a soft success — still exit 0
         # so a watchdog doesn't page on every brief outage.
         from uxon.app.listing import _do_list_host
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
         args = uxon.ParsedArgs(action="list", host="vz-prod1", json_output=True)
@@ -386,7 +386,7 @@ class HostDispatchTests(unittest.TestCase):
             sessions=[{"name": "uxon-cached@claude", "user": "bob"}],
             cached_at_epoch=1.0,
         )
-        with mock.patch("uxon.infra.remote_collector.fetch_remote_snapshot", return_value=snap):
+        with mock.patch("uxon.infra.remote.collector.fetch_remote_snapshot", return_value=snap):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = _do_list_host(args, cfg)
@@ -402,7 +402,7 @@ class AllHostsJsonLinesTests(unittest.TestCase):
 
     def test_each_envelope_is_one_line(self) -> None:
         from uxon.app.listing import _do_list_all_hosts
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
         from uxon.infra.remote_hosts import RemoteHost
 
         cfg = _make_config()
@@ -425,7 +425,7 @@ class AllHostsJsonLinesTests(unittest.TestCase):
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch(
-                "uxon.infra.remote_collector.fetch_remote_snapshot", side_effect=_fake_fetch
+                "uxon.infra.remote.collector.fetch_remote_snapshot", side_effect=_fake_fetch
             ),
         ):
             buf = io.StringIO()
@@ -449,12 +449,12 @@ class AllHostsJsonLinesTests(unittest.TestCase):
 class WireRoundTripTests(unittest.TestCase):
     """End-to-end producer ↔ consumer test: emit an envelope the way
     ``_emit_json`` / ``_list_data`` actually does, then feed the
-    captured stdout through the collector's ``_parse_envelope``. This
+    captured stdout through the collector's ``parse_envelope``. This
     catches drift between the two sides of the wire that the
     producer-only and consumer-only test suites would miss."""
 
     def test_local_list_payload_parses_in_collector(self) -> None:
-        from uxon.infra.remote_collector import _parse_envelope
+        from uxon.infra.remote.envelope import parse_envelope
 
         cfg = _make_config()
         sessions = [_make_session("uxon-foo@claude"), _make_session("uxon-bar@claude")]
@@ -463,7 +463,7 @@ class WireRoundTripTests(unittest.TestCase):
             listing_app._emit_json(
                 "list", listing_app._list_data(cfg, sessions, ["u-vz"], all_users=False)
             )
-        parsed, _scope_skipped, _host_stats, err = _parse_envelope(buf.getvalue())
+        parsed, _scope_skipped, _host_stats, err = parse_envelope(buf.getvalue())
         self.assertIsNone(err)
         assert parsed is not None
         self.assertEqual(len(parsed), 2)
@@ -474,7 +474,7 @@ class WireRoundTripTests(unittest.TestCase):
         # The JSON Lines compact form must also parse — the same
         # bytes a peer would emit when invoked with ``--all-hosts
         # --json`` from the local side.
-        from uxon.infra.remote_collector import _parse_envelope
+        from uxon.infra.remote.envelope import parse_envelope
 
         cfg = _make_config()
         buf = io.StringIO()
@@ -484,7 +484,7 @@ class WireRoundTripTests(unittest.TestCase):
                 listing_app._list_data(cfg, [_make_session()], ["u-vz"], all_users=False),
                 compact=True,
             )
-        parsed, _scope_skipped, _host_stats, err = _parse_envelope(buf.getvalue())
+        parsed, _scope_skipped, _host_stats, err = parse_envelope(buf.getvalue())
         self.assertIsNone(err)
         assert parsed is not None
         self.assertEqual(len(parsed), 1)

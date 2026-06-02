@@ -343,7 +343,7 @@ def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:
     ``latency_ms`` (int), ``error`` (str | None), ``from_cache`` (bool),
     ``sessions`` (int).
     """
-    from uxon.infra.remote_collector import fetch_remote_snapshot
+    from uxon.infra.remote.collector import fetch_remote_snapshot
 
     rows: list[dict[str, Any]] = []
     for host in cfg.remote_hosts:

@@ -1,4 +1,4 @@
-"""Tests for ``uxon._demo``.
+"""Tests for ``uxon.infra.demo``.
 
 Pin the contract used by the screenshot demo:
 
@@ -25,10 +25,10 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest import mock
 
-from uxon import _demo as uxon_demo
 from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
+from uxon.infra import demo as uxon_demo
 from uxon.infra import sessions_probe
-from uxon.infra.remote_collector import fetch_remote_snapshot
+from uxon.infra.remote.collector import fetch_remote_snapshot
 from uxon.infra.remote_hosts import RemoteHost
 
 
@@ -176,7 +176,12 @@ class LoadDemoSnapshotTests(unittest.TestCase):
             snap = uxon_demo.load_demo_snapshot("laptop", d, fetched_at=1.0)
         self.assertIsNotNone(snap.error)
         assert snap.error is not None
-        self.assertIn("unreadable", snap.error)
+        # Shape validation is now delegated to ``parse_envelope`` (§B
+        # dedup): a readable-but-malformed-JSON file surfaces the
+        # shared validator's ``invalid JSON`` text rather than the old
+        # demo-specific ``unreadable`` message (which now applies only
+        # to a genuine OSError reading the bytes).
+        self.assertIn("invalid JSON", snap.error)
 
 
 class FetchRemoteSnapshotDemoHookTests(unittest.TestCase):

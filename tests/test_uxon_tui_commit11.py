@@ -52,7 +52,7 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
         return state
 
     def _snap(self, host, sessions):
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
 
         return RemoteSnapshot(
             host_name=host,

@@ -600,7 +600,7 @@ class UxonApp(App):
         ring so the latency-p50 tooltip has data.
         """
         host_name = event.name[len("remote:") :]
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
 
         from .slot_state import SlotResult, SlotState
         from .slot_state import apply as apply_slot

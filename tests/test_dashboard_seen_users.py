@@ -18,7 +18,7 @@ import unittest
 from typing import Any
 
 from uxon.domain.sudo import SudoCapability
-from uxon.infra.remote_collector import RemoteSnapshot
+from uxon.domain.wire_schema import RemoteSnapshot
 from uxon.tui.context import ServerStatus, TuiSession
 from uxon.tui.dashboard.ui_state import MainScreenUiState
 from uxon.tui.main_data import MainData

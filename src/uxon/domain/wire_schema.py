@@ -53,6 +53,7 @@ Top-level optional fields (also forward-compatible, no version bump):
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 WIRE_SCHEMA_VERSION = "1"
@@ -137,7 +138,7 @@ RemoteSessionPayload = dict[str, Any]
 
 Shape mirrors :class:`SessionRecord` (the producer-side total TypedDict
 written by :func:`build_session_records`), but
-:func:`uxon.infra.remote_collector._parse_envelope` validates the envelope
+:func:`uxon.infra.remote.envelope.parse_envelope` validates the envelope
 only and treats individual records as opaque. Forward-compatibility
 with peers running a newer or older uxon is the explicit goal: a peer
 that adds, renames, or omits a per-session field must not blank a
@@ -145,6 +146,74 @@ whole snapshot. Consumers therefore read fields defensively
 (``rec.get(...)``) and cannot assume any field is present even after a
 successful fetch — hence the deliberately permissive type.
 """
+
+
+@dataclass(frozen=True)
+class RemoteSnapshot:
+    """Result of one fetch attempt against one ``RemoteHost``.
+
+    Pure data: the in-memory representation of a peer's session list as
+    it lands at the local collector. Lives in the wire-schema module
+    because it mirrors the wire DTOs (it is the decoded, consumer-side
+    counterpart of an ``uxon list --json`` envelope) and is the
+    widest-shared remote type — the collector, the TUI state, and the
+    demo loader all traffic in it.
+
+    Attributes:
+        host_name: Mirrors ``RemoteHost.name`` — preserved here so
+            consumers that store snapshots without the matching host
+            object can still attribute them.
+        fetched_at_epoch: ``time.time()`` at the moment the fetch
+            attempt finished (success or failure). Used by the TUI to
+            display "stale 12s ago" indicators.
+        from_cache: ``True`` when the sessions list came from the
+            on-disk cache rather than a fresh fetch. In a snapshot
+            returned by ``fetch_remote_snapshot`` this implies
+            :attr:`error` is non-None (the live fetch failed and we
+            fell back). A snapshot returned by ``read_cached_snapshot``
+            in isolation also sets ``from_cache=True`` but leaves
+            ``error=None`` — the cache file alone has no opinion on
+            whether the peer is currently reachable.
+        error: Short, human-readable error string, or ``None`` on a
+            successful fetch. The collector never raises — every
+            failure surfaces here.
+        sessions: List of peer-emitted session records
+            (:data:`RemoteSessionPayload`). Each record's shape mirrors
+            :class:`SessionRecord` but is unvalidated at decode time —
+            consumers must read fields defensively. Empty when the
+            fetch failed AND no cache was available.
+        cached_at_epoch: Wall-clock time at which the underlying
+            payload was originally collected. For a fresh fetch this
+            equals :attr:`fetched_at_epoch`; for a cache fallback it
+            is older.
+        scope_limited: ``True`` when the peer rejected
+            ``list --all-users`` (because its
+            ``enable_all_users_list = false``) and the collector fell
+            back to own-only ``list --json``. The TUI
+            badges the section header with ``(own only)`` so the
+            operator knows the per-peer view is partial. Default
+            ``False`` — fresh peers serve the all-users view.
+        scope_skipped: Users the peer probed for sudo reachability
+            and could not reach. Forward-compatible: missing on older
+            peers that don't emit the field — the collector treats
+            that as ``[]``.
+        host_stats: Optional snapshot of host-level metrics
+            (CPU/RAM/loadavg/uptime/kernel) emitted by the peer
+            alongside the session list. Forward-compatible: missing
+            on peers that don't emit the field — the collector treats
+            that as ``None`` and the host status bar renders without
+            metrics.
+    """
+
+    host_name: str
+    fetched_at_epoch: float
+    from_cache: bool
+    error: str | None
+    sessions: list[RemoteSessionPayload] = field(default_factory=list)
+    cached_at_epoch: float | None = None
+    scope_limited: bool = False
+    scope_skipped: list[str] = field(default_factory=list)
+    host_stats: dict[str, Any] | None = None
 
 
 class _SessionLike(Protocol):

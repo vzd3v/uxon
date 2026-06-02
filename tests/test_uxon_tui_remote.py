@@ -24,7 +24,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from uxon.infra.remote_collector import RemoteSnapshot
+from uxon.domain.wire_schema import RemoteSnapshot
 from uxon.infra.remote_hosts import RemoteHost
 
 

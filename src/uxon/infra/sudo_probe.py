@@ -25,7 +25,7 @@ Design constraints:
 
 The result is consumed by ``cli._build_tui_context`` (TUI: own /
 others' sessions block) and by ``cli`` for ``list --all-users`` (CLI
-parity), and indirectly by ``remote_collector`` for cross-host
+parity), and indirectly by ``remote.collector`` for cross-host
 aggregation (each peer runs its own probe on its own caller).
 """
 

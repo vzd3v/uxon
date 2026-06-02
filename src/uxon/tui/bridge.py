@@ -368,10 +368,8 @@ def _build_on_remote_attach_callback(cfg: Config):
     build_tui_context machinery.
     """
     from uxon.domain.launch_request import LaunchRequest
-    from uxon.infra.remote_collector import (
-        DEFAULT_CONNECT_TIMEOUT_SEC,
-        build_peer_ssh_argv,
-    )
+    from uxon.infra.remote.collector import DEFAULT_CONNECT_TIMEOUT_SEC
+    from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
     from uxon.infra.remote_hosts import find_host
     from uxon.tui.context import CallbackError
 
@@ -403,7 +401,10 @@ def _build_on_remote_attach_callback(cfg: Config):
             f"--audit-correlation-id {shlex.quote(corr_id)}"
         )
         argv = build_peer_ssh_argv(
-            peer,
+            command_template=peer.command_template,
+            extra_ssh_options=peer.extra_ssh_options,
+            ssh_alias=peer.ssh_alias,
+            remote_uxon=peer.remote_uxon,
             remote_command=remote_cmd,
             allocate_tty=True,
             connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
@@ -548,12 +549,12 @@ class TuiBridge:
         import uuid as _uuid
 
         from uxon.infra import audit as _audit
-        from uxon.infra.remote_collector import (
+        from uxon.infra.remote.collector import (
             DEFAULT_CONNECT_TIMEOUT_SEC,
             DEFAULT_TOTAL_TIMEOUT_SEC,
-            _recover_wedged_master,
-            build_peer_ssh_argv,
         )
+        from uxon.infra.remote.master_recovery import recover_wedged_master
+        from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
         from uxon.infra.remote_hosts import find_host
 
         peer = find_host(self.cfg.remote_hosts, host_name)
@@ -580,7 +581,10 @@ class TuiBridge:
             f"--audit-correlation-id {shlex.quote(corr_id)}"
         )
         ssh_argv = build_peer_ssh_argv(
-            peer,
+            command_template=peer.command_template,
+            extra_ssh_options=peer.extra_ssh_options,
+            ssh_alias=peer.ssh_alias,
+            remote_uxon=peer.remote_uxon,
             remote_command=remote_cmd,
             allocate_tty=False,
             connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
@@ -616,7 +620,7 @@ class TuiBridge:
             )
         except subprocess.TimeoutExpired:
             if self.cfg.ssh_multiplex != "off":
-                _recover_wedged_master(peer)
+                recover_wedged_master(peer)
             _emit_kill_remote_error("ssh timeout", 124)
             fail(f"ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s talking to {host_name}", 1)
         except FileNotFoundError:
@@ -920,7 +924,7 @@ def build_tui_context(
         other: list[SessionInfo] = []
         skipped_users: tuple[str, ...] = ()
     else:
-        from uxon import _demo as _uxon_demo_ctx  # noqa: PLC0415
+        from uxon.infra import demo as _uxon_demo_ctx  # noqa: PLC0415
 
         _demo_dir = _uxon_demo_ctx.demo_hosts_dir()
         if _demo_dir is not None:
@@ -1077,11 +1081,9 @@ def build_tui_context(
     # an empty list there means the "Loading sessions…" placeholder
     # never gets replaced.
     from uxon.domain.host_breaker import BreakerSpec, HostBreaker
-    from uxon.infra.remote_collector import (
-        RemoteSnapshot,
-        fetch_remote_snapshot,
-        read_cached_snapshot,
-    )
+    from uxon.domain.wire_schema import RemoteSnapshot
+    from uxon.infra.remote.cache import read_cached_snapshot
+    from uxon.infra.remote.collector import fetch_remote_snapshot
     from uxon.tui.refresh import SourceSpec
 
     # ``main_ctx_rebuild`` returns a fresh ``TuiContext``. The app's

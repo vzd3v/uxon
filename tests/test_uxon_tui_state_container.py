@@ -267,7 +267,7 @@ class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
     """
 
     def test_select_dashboard_model_stable_across_refresh_tick(self) -> None:
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
         from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.dashboard import model as dashboard_model
         from uxon.tui.dashboard.model import select_dashboard_model

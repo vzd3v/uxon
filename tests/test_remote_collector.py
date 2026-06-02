@@ -1,4 +1,4 @@
-"""Tests for ``uxon.infra.remote_collector``.
+"""Tests for the ``uxon.infra.remote`` collector package.
 
 Pin the fail-soft contract that the TUI integration depends on:
 every documented failure mode produces a :class:`RemoteSnapshot`
@@ -23,20 +23,23 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest import mock
 
-from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
-from uxon.infra.remote_collector import (
-    DEFAULT_CONNECT_TIMEOUT_SEC,
-    DEFAULT_TOTAL_TIMEOUT_SEC,
-    RemoteSnapshot,
-    _build_fetch_argv,
-    _parse_envelope,
-    _recover_wedged_master,
-    _resolved_control_path,
-    fetch_remote_snapshot,
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION, RemoteSnapshot
+from uxon.infra.remote.cache import (
     read_cached_snapshot,
     snapshot_cache_path,
     state_dir,
     write_cached_snapshot,
+)
+from uxon.infra.remote.collector import (
+    DEFAULT_CONNECT_TIMEOUT_SEC,
+    DEFAULT_TOTAL_TIMEOUT_SEC,
+    _build_fetch_argv,
+    fetch_remote_snapshot,
+)
+from uxon.infra.remote.envelope import parse_envelope
+from uxon.infra.remote.master_recovery import (
+    _resolved_control_path,
+    recover_wedged_master,
 )
 from uxon.infra.remote_hosts import RemoteHost
 
@@ -50,6 +53,22 @@ def _host(**overrides: object) -> RemoteHost:
     }
     base.update(overrides)
     return RemoteHost(**base)  # type: ignore[arg-type]
+
+
+def _argv_for(host: RemoteHost, **kwargs: Any) -> list[str]:
+    """Call ``build_peer_ssh_argv`` with the four primitive fields of
+    ``host`` — mirrors how production call sites (attach/kill/fetch)
+    invoke it now that the builder is a leaf taking primitives.
+    """
+    from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
+
+    return build_peer_ssh_argv(
+        command_template=host.command_template,
+        extra_ssh_options=host.extra_ssh_options,
+        ssh_alias=host.ssh_alias,
+        remote_uxon=host.remote_uxon,
+        **kwargs,
+    )
 
 
 def _good_envelope(sessions: list[dict[str, Any]]) -> str:
@@ -201,9 +220,7 @@ class BuildFetchArgvTests(unittest.TestCase):
 
 class BuildPeerSshArgvTests(unittest.TestCase):
     def test_default_template_no_tty(self) -> None:
-        from uxon.infra.remote_collector import build_peer_ssh_argv
-
-        argv = build_peer_ssh_argv(
+        argv = _argv_for(
             _host(ssh_alias="edge-eu"),
             remote_command="uxon list --json",
             allocate_tty=False,
@@ -217,9 +234,7 @@ class BuildPeerSshArgvTests(unittest.TestCase):
         self.assertEqual(argv[-1], "uxon list --json")
 
     def test_allocate_tty_inserts_dash_tt_after_ssh(self) -> None:
-        from uxon.infra.remote_collector import build_peer_ssh_argv
-
-        argv = build_peer_ssh_argv(
+        argv = _argv_for(
             _host(),
             remote_command="uxon attach --user alice abc",
             allocate_tty=True,
@@ -232,9 +247,7 @@ class BuildPeerSshArgvTests(unittest.TestCase):
     def test_allocate_tty_skipped_for_non_ssh_first_token(self) -> None:
         # Custom templates that don't start with "ssh" do NOT receive
         # -tt — operator owns interactive-tty plumbing in their argv.
-        from uxon.infra.remote_collector import build_peer_ssh_argv
-
-        argv = build_peer_ssh_argv(
+        argv = _argv_for(
             _host(
                 command_template=(
                     "kubectl",
@@ -255,9 +268,7 @@ class BuildPeerSshArgvTests(unittest.TestCase):
         self.assertNotIn("-tt", argv)
 
     def test_ssh_multiplex_off_strips_control_options(self) -> None:
-        from uxon.infra.remote_collector import build_peer_ssh_argv
-
-        argv = build_peer_ssh_argv(
+        argv = _argv_for(
             _host(),
             remote_command="uxon attach abc",
             allocate_tty=True,
@@ -270,9 +281,7 @@ class BuildPeerSshArgvTests(unittest.TestCase):
         self.assertIn("-tt", argv)  # tty insertion still happens
 
     def test_custom_command_template_honoured(self) -> None:
-        from uxon.infra.remote_collector import build_peer_ssh_argv
-
-        argv = build_peer_ssh_argv(
+        argv = _argv_for(
             _host(command_template=("ssh", "-J", "bastion", "{ssh_alias}", "{remote_command}")),
             remote_command="uxon attach --user alice abc",
             allocate_tty=True,
@@ -288,9 +297,7 @@ class BuildPeerSshArgvTests(unittest.TestCase):
         self.assertEqual(argv[-1], "uxon attach --user alice abc")
 
     def test_extra_ssh_options_inserted_before_alias(self) -> None:
-        from uxon.infra.remote_collector import build_peer_ssh_argv
-
-        argv = build_peer_ssh_argv(
+        argv = _argv_for(
             _host(extra_ssh_options=("-o", "ProxyJump=bastion")),
             remote_command="uxon kill --force abc",
             allocate_tty=False,
@@ -303,7 +310,7 @@ class BuildPeerSshArgvTests(unittest.TestCase):
 
 class ParseEnvelopeTests(unittest.TestCase):
     def test_happy_path(self) -> None:
-        sessions, scope_skipped, host_stats, err = _parse_envelope(
+        sessions, scope_skipped, host_stats, err = parse_envelope(
             _good_envelope([{"name": "uxon-foo@claude"}])
         )
         self.assertIsNone(err)
@@ -315,14 +322,14 @@ class ParseEnvelopeTests(unittest.TestCase):
         self.assertIsNone(host_stats)
 
     def test_invalid_json(self) -> None:
-        sessions, _scope_skipped, _host_stats, err = _parse_envelope("{not json")
+        sessions, _scope_skipped, _host_stats, err = parse_envelope("{not json")
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("invalid JSON", err)
 
     def test_schema_version_mismatch_rejected(self) -> None:
         bad = json.dumps({"schema_version": "2", "kind": "list", "data": {"sessions": []}})
-        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("schema_version mismatch", err)
@@ -331,20 +338,20 @@ class ParseEnvelopeTests(unittest.TestCase):
         bad = json.dumps(
             {"schema_version": WIRE_SCHEMA_VERSION, "kind": "version", "data": {"sessions": []}}
         )
-        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("unexpected envelope kind", err)
 
     def test_missing_sessions_list(self) -> None:
         bad = json.dumps({"schema_version": WIRE_SCHEMA_VERSION, "kind": "list", "data": {}})
-        sessions, _scope_skipped, _host_stats, err = _parse_envelope(bad)
+        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("sessions", err)
 
     def test_top_level_must_be_object(self) -> None:
-        sessions, _scope_skipped, _host_stats, err = _parse_envelope("[]")
+        sessions, _scope_skipped, _host_stats, err = parse_envelope("[]")
         self.assertIsNone(sessions)
         assert err is not None
         self.assertIn("not a JSON object", err)
@@ -360,7 +367,7 @@ class ParseEnvelopeTests(unittest.TestCase):
                 },
             }
         )
-        sessions, scope_skipped, _host_stats, err = _parse_envelope(env)
+        sessions, scope_skipped, _host_stats, err = parse_envelope(env)
         self.assertIsNone(err)
         self.assertEqual(sessions, [])
         self.assertEqual(scope_skipped, ["carol_agent", "dave_agent"])
@@ -381,7 +388,7 @@ class ParseEnvelopeTests(unittest.TestCase):
                 },
             }
         )
-        sessions, _scope_skipped, host_stats, err = _parse_envelope(env)
+        sessions, _scope_skipped, host_stats, err = parse_envelope(env)
         self.assertIsNone(err)
         self.assertEqual(sessions, [])
         assert host_stats is not None
@@ -653,7 +660,7 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
             sessions = [{"name": "uxon-x@claude"}]
             runner = self._runner_returning(returncode=0, stdout=_good_envelope(sessions))
             with mock.patch(
-                "uxon.infra.remote_collector.write_cached_snapshot",
+                "uxon.infra.remote.collector.write_cached_snapshot",
                 side_effect=OSError("simulated"),
             ):
                 snap = fetch_remote_snapshot(
@@ -836,7 +843,7 @@ class DefaultTemplateTests(unittest.TestCase):
     and the closed placeholder set."""
 
     def test_default_template_has_controlmaster(self) -> None:
-        from uxon.infra.remote_collector import _default_template
+        from uxon.infra.remote.ssh_argv import _default_template
 
         tmpl = _default_template()
         flat = " ".join(tmpl)
@@ -849,13 +856,13 @@ class DefaultTemplateTests(unittest.TestCase):
         self.assertIn("ServerAliveInterval=15", flat)
 
     def test_default_template_uses_persist_placeholder(self) -> None:
-        from uxon.infra.remote_collector import _default_template
+        from uxon.infra.remote.ssh_argv import _default_template
 
         template = _default_template()
         assert "ControlPersist={ssh_control_persist_seconds}s" in template
 
     def test_default_template_uses_only_closed_placeholders(self) -> None:
-        from uxon.infra.remote_collector import PLACEHOLDER_CLOSED_SET, _default_template
+        from uxon.infra.remote.ssh_argv import PLACEHOLDER_CLOSED_SET, _default_template
 
         for token in _default_template():
             i = 0
@@ -879,7 +886,7 @@ class RenderArgvTests(unittest.TestCase):
     """Stage 5 step 3: _render_argv substitutes placeholders cleanly."""
 
     def test_renders_full_default_template(self) -> None:
-        from uxon.infra.remote_collector import _default_template, _render_argv
+        from uxon.infra.remote.ssh_argv import _default_template, _render_argv
 
         argv = _render_argv(
             _default_template(),
@@ -898,7 +905,7 @@ class RenderArgvTests(unittest.TestCase):
             self.assertNotRegex(token, r"\{[a-z_]+\}")
 
     def test_kubectl_recipe(self) -> None:
-        from uxon.infra.remote_collector import _render_argv
+        from uxon.infra.remote.ssh_argv import _render_argv
 
         template = [
             "kubectl",
@@ -926,33 +933,33 @@ class ValidateCommandTemplateTests(unittest.TestCase):
     placeholder set and {remote_command}/{remote_uxon} mutual exclusion."""
 
     def test_default_template_validates(self) -> None:
-        from uxon.infra.remote_collector import _default_template, validate_command_template
+        from uxon.infra.remote.ssh_argv import _default_template, validate_command_template
 
         validate_command_template(_default_template())  # must not raise
 
     def test_kubectl_template_validates(self) -> None:
-        from uxon.infra.remote_collector import validate_command_template
+        from uxon.infra.remote.ssh_argv import validate_command_template
 
         validate_command_template(
             ["kubectl", "exec", "uxon-pod", "--", "/bin/sh", "-c", "{remote_command}"]
         )
 
     def test_docker_template_validates(self) -> None:
-        from uxon.infra.remote_collector import validate_command_template
+        from uxon.infra.remote.ssh_argv import validate_command_template
 
         validate_command_template(
             ["docker", "exec", "uxon-container", "/bin/sh", "-c", "{remote_command}"]
         )
 
     def test_unknown_placeholder_rejected(self) -> None:
-        from uxon.infra.remote_collector import validate_command_template
+        from uxon.infra.remote.ssh_argv import validate_command_template
 
         with self.assertRaises(ValueError) as cm:
             validate_command_template(["ssh", "{ssh_alias}", "{bad}"])
         self.assertIn("{bad}", str(cm.exception))
 
     def test_remote_command_and_remote_uxon_mutually_exclusive(self) -> None:
-        from uxon.infra.remote_collector import validate_command_template
+        from uxon.infra.remote.ssh_argv import validate_command_template
 
         with self.assertRaises(ValueError) as cm:
             validate_command_template(
@@ -961,7 +968,7 @@ class ValidateCommandTemplateTests(unittest.TestCase):
         self.assertIn("mutually exclusive", str(cm.exception))
 
     def test_empty_template_rejected(self) -> None:
-        from uxon.infra.remote_collector import validate_command_template
+        from uxon.infra.remote.ssh_argv import validate_command_template
 
         with self.assertRaises(ValueError):
             validate_command_template([])
@@ -1023,7 +1030,7 @@ class RecoverWedgedMasterTests(unittest.TestCase):
     def test_skips_when_host_uses_command_template(self) -> None:
         calls, runner = self._capture_runner()
         host = _host(command_template=["docker", "exec", "uxon-c", "{remote_command}"])
-        _recover_wedged_master(host, _runner=runner)
+        recover_wedged_master(host, _runner=runner)
         self.assertEqual(calls, [])
 
     def test_runs_graceful_then_kills_then_unlinks(self) -> None:
@@ -1045,7 +1052,7 @@ class RecoverWedgedMasterTests(unittest.TestCase):
             def _kill(pid: int, sig: int) -> None:
                 killed.append((pid, sig))
 
-            _recover_wedged_master(
+            recover_wedged_master(
                 _host(),
                 _runner=_runner,
                 _resolve=lambda alias, ctl_dir, _runner: str(socket),
@@ -1062,7 +1069,7 @@ class RecoverWedgedMasterTests(unittest.TestCase):
     def test_skips_kill_when_path_unresolved(self) -> None:
         _, runner = self._capture_runner()
         killed: list[tuple[int, int]] = []
-        _recover_wedged_master(
+        recover_wedged_master(
             _host(),
             _runner=runner,
             _resolve=lambda *a, **kw: None,
@@ -1077,7 +1084,7 @@ class RecoverWedgedMasterTests(unittest.TestCase):
             # File deliberately not created — graceful ssh -O exit removed it.
             _, runner = self._capture_runner()
             killed: list[tuple[int, int]] = []
-            _recover_wedged_master(
+            recover_wedged_master(
                 _host(),
                 _runner=runner,
                 _resolve=lambda *a, **kw: str(ghost),
@@ -1092,7 +1099,7 @@ class RecoverWedgedMasterTests(unittest.TestCase):
             socket.touch()
             _, runner = self._capture_runner()
             killed: list[tuple[int, int]] = []
-            _recover_wedged_master(
+            recover_wedged_master(
                 _host(),
                 _runner=runner,
                 _resolve=lambda *a, **kw: str(socket),
@@ -1109,7 +1116,7 @@ class RecoverWedgedMasterTests(unittest.TestCase):
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=2)
 
         # Must not propagate even when every shell-out times out.
-        _recover_wedged_master(
+        recover_wedged_master(
             _host(),
             _runner=_boom,
             _resolve=lambda *a, **kw: None,
@@ -1137,7 +1144,7 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
         with (
             TemporaryDirectory() as tmp,
             mock.patch(
-                "uxon.infra.remote_collector._recover_wedged_master",
+                "uxon.infra.remote.collector.recover_wedged_master",
                 side_effect=_fake_recover,
             ),
         ):
@@ -1160,7 +1167,7 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
         with (
             TemporaryDirectory() as tmp,
             mock.patch(
-                "uxon.infra.remote_collector._recover_wedged_master",
+                "uxon.infra.remote.collector.recover_wedged_master",
                 side_effect=_fake_recover,
             ),
         ):

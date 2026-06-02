@@ -646,7 +646,7 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         without the USER column — making the user column ambiguous
         across the rows.
         """
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
         from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp, _RefreshSourceLanded
         from uxon.tui.screens.main import MainScreen

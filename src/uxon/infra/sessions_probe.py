@@ -32,7 +32,7 @@ from uxon.domain.session import (
 )
 from uxon.domain.status import LinkHealthStatus, ServerStatus
 from uxon.errors import fail
-from uxon.infra import tmux
+from uxon.infra import demo, tmux
 from uxon.infra.config_loader import normalize_user_list
 from uxon.infra.process import run_cmd
 
@@ -205,11 +205,9 @@ def collect_sessions_for_user(
     # caller's real sessions. The legacy_prefixes argument is irrelevant
     # in demo mode — scenario envelopes already carry fully-qualified
     # session names.
-    from uxon import _demo as _uxon_demo  # noqa: PLC0415
-
-    _demo_dir = _uxon_demo.demo_hosts_dir()
+    _demo_dir = demo.demo_hosts_dir()
     if _demo_dir is not None:
-        return _uxon_demo.load_demo_local_sessions(_demo_dir, user)
+        return demo.load_demo_local_sessions(_demo_dir, user)
 
     # Listing runs without a TTY (CLI ``list``, TUI background poll,
     # remote aggregator). Use the non-interactive sudo prefix so a

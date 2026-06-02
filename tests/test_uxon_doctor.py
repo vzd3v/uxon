@@ -252,15 +252,13 @@ class DoctorRemoteFlagTests(unittest.TestCase):
 
         # ``_doctor_remote_rows`` imports ``fetch_remote_snapshot``
         # lazily at call time, so we patch the source module
-        # ``uxon.infra.remote_collector.fetch_remote_snapshot`` and assert
+        # ``uxon.infra.remote.collector.fetch_remote_snapshot`` and assert
         # zero invocations under the default doctor path.
-        from uxon.infra import remote_collector
+        from uxon.infra.remote import collector
 
         with self._patches() as stack:
             stack.enter_context(redirect_stdout(io.StringIO()))
-            collector_mock = stack.enter_context(
-                patch.object(remote_collector, "fetch_remote_snapshot")
-            )
+            collector_mock = stack.enter_context(patch.object(collector, "fetch_remote_snapshot"))
             doctor_app.do_doctor(
                 self._stub_cfg(remote_hosts=hosts),
                 caller_user=_USER,
@@ -272,8 +270,8 @@ class DoctorRemoteFlagTests(unittest.TestCase):
 
     def test_flag_calls_collector_once_per_host(self) -> None:
         from uxon.app import doctor as doctor_app
-        from uxon.infra import remote_collector
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
+        from uxon.infra.remote import collector
         from uxon.infra.remote_hosts import RemoteHost
 
         hosts = [
@@ -294,7 +292,7 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
             mock_fetch = stack.enter_context(
-                patch.object(remote_collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
+                patch.object(collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
             )
             doctor_app.do_doctor(
                 self._stub_cfg(remote_hosts=hosts),
@@ -328,8 +326,8 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         import json as _json
 
         from uxon.app import doctor as doctor_app
-        from uxon.infra import remote_collector
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
+        from uxon.infra.remote import collector
         from uxon.infra.remote_hosts import RemoteHost
 
         hosts = [RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")]
@@ -347,7 +345,7 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
             stack.enter_context(
-                patch.object(remote_collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
+                patch.object(collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
             )
             doctor_app.do_doctor(
                 self._stub_cfg(remote_hosts=hosts),

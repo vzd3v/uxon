@@ -13,9 +13,9 @@ When the env var is set, three data sources are intercepted:
   is set to a ``demo:`` sentinel that must never reach a real ``ssh``
   invocation.
 - :func:`load_demo_snapshot` reads the per-peer envelope from disk
-  and returns a :class:`uxon.infra.remote_collector.RemoteSnapshot`
+  and returns a :class:`uxon.domain.wire_schema.RemoteSnapshot`
   directly, bypassing SSH entirely. Called from
-  :func:`uxon.infra.remote_collector.fetch_remote_snapshot` before any
+  :func:`uxon.infra.remote.collector.fetch_remote_snapshot` before any
   network I/O.
 - :func:`load_demo_local_sessions` reads the optional
   ``_local.json`` envelope and yields :class:`uxon.cli.SessionInfo`
@@ -38,8 +38,8 @@ from typing import Any
 
 import msgspec
 
-from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
-from uxon.infra.remote_collector import RemoteSnapshot
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION, RemoteSnapshot
+from uxon.infra.remote.envelope import parse_envelope
 from uxon.infra.remote_hosts import RemoteHost
 
 DEMO_ENV_VAR = "UXON_DEMO_HOSTS"
@@ -166,40 +166,27 @@ def _read_demo_color(env_path: Path) -> str | None:
 def load_demo_snapshot(host_name: str, dir_path: Path, fetched_at: float) -> RemoteSnapshot:
     """Read ``<dir>/<host_name>.json`` and return a synthetic snapshot.
 
-    Always returns a :class:`RemoteSnapshot`. A missing / malformed
-    envelope yields a snapshot with an ``error`` set — same contract as
-    a failed live fetch, so the TUI's existing error rendering kicks in.
+    Always returns a :class:`RemoteSnapshot`. A missing / unreadable
+    file yields a snapshot with a demo-specific ``error`` set; once the
+    bytes are in hand, the wire-shape validation is delegated to
+    :func:`uxon.infra.remote.envelope.parse_envelope` — the *same*
+    validator the live collector uses — so a demo envelope and a real
+    peer envelope are held to identical standards (including the
+    ``kind == "list"`` check). Same contract as a failed live fetch, so
+    the TUI's existing error rendering kicks in.
     """
     env_path = dir_path / f"{host_name}.json"
     try:
-        blob: Any = msgspec.json.decode(env_path.read_bytes())
+        raw = env_path.read_bytes()
     except FileNotFoundError:
         return _error_snapshot(host_name, fetched_at, f"demo envelope not found: {env_path}")
-    except (OSError, msgspec.DecodeError) as exc:
+    except OSError as exc:
         return _error_snapshot(host_name, fetched_at, f"demo envelope unreadable: {exc}")
 
-    if not isinstance(blob, dict):
-        return _error_snapshot(host_name, fetched_at, "demo envelope is not a JSON object")
-    if blob.get("schema_version") != WIRE_SCHEMA_VERSION:
-        return _error_snapshot(
-            host_name,
-            fetched_at,
-            f"demo envelope schema_version {blob.get('schema_version')!r} "
-            f"!= local {WIRE_SCHEMA_VERSION!r}",
-        )
-    data = blob.get("data")
-    if not isinstance(data, dict):
-        return _error_snapshot(host_name, fetched_at, "demo envelope.data is not an object")
-    sessions = data.get("sessions")
-    if not isinstance(sessions, list):
-        return _error_snapshot(host_name, fetched_at, "demo envelope.data.sessions is not a list")
-
-    raw_skipped = data.get("scope_skipped", [])
-    scope_skipped = (
-        [str(u) for u in raw_skipped if isinstance(u, str)] if isinstance(raw_skipped, list) else []
-    )
-    raw_host_stats = blob.get("host_stats")
-    host_stats = raw_host_stats if isinstance(raw_host_stats, dict) else None
+    sessions, scope_skipped, host_stats, parse_err = parse_envelope(raw.decode("utf-8", "replace"))
+    if parse_err is not None:
+        return _error_snapshot(host_name, fetched_at, f"demo envelope: {parse_err}")
+    assert sessions is not None
 
     return RemoteSnapshot(
         host_name=host_name,
@@ -306,7 +293,7 @@ def _session_info_from_record(rec: dict[str, Any], cls: type) -> Any:
     Every field is read defensively (``.get(...)``) so an envelope
     authored by a future or past producer can't crash the loader —
     same forward-compat posture as
-    :func:`uxon.infra.remote_collector._parse_envelope`. Type-narrowing of
+    :func:`uxon.infra.remote.envelope.parse_envelope`. Type-narrowing of
     primitive fields uses ``str()`` / ``int()`` / ``float()`` /
     ``bool()`` rather than ``isinstance`` checks because the
     envelope is JSON (so the input is already one of those types) and

@@ -22,7 +22,7 @@ from uxon.domain.config import (
 )
 from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.errors import fail
-from uxon.infra import events, version_probe
+from uxon.infra import demo, events, version_probe
 
 try:
     import tomllib
@@ -350,14 +350,12 @@ def load_config(cwd: str) -> Config:
     # Demo-mode short-circuit: when UXON_DEMO_HOSTS=<dir> is set, replace
     # the configured peer list with synthetic hosts derived from the
     # envelope files in that directory. The collector hook in
-    # ``remote_collector.fetch_remote_snapshot`` then reads each envelope
+    # ``remote.collector.fetch_remote_snapshot`` then reads each envelope
     # from disk instead of running ssh. Operator config is ignored in
     # this mode by design — the scenario is the only source of truth.
-    from uxon import _demo as _uxon_demo  # noqa: PLC0415
-
-    _demo_dir = _uxon_demo.demo_hosts_dir()
+    _demo_dir = demo.demo_hosts_dir()
     if _demo_dir is not None:
-        remote_hosts = _uxon_demo.synthesize_remote_hosts(_demo_dir)
+        remote_hosts = demo.synthesize_remote_hosts(_demo_dir)
 
     audit_tbl = merged.get("audit", DEFAULT_CONFIG["audit"])
     if not isinstance(audit_tbl, dict):

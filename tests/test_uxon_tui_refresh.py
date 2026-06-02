@@ -303,7 +303,7 @@ class RemoteSnapshotSeenUsersTests(unittest.TestCase):
         return UxonApp(ctx, probe_agents=False)
 
     def _snapshot(self, host: str, users: list[str]):
-        from uxon.infra.remote_collector import RemoteSnapshot
+        from uxon.domain.wire_schema import RemoteSnapshot
 
         sessions = [
             {

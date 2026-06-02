@@ -86,7 +86,7 @@ class TuiState:
 
     # Per-host remote-SSH poll. One :class:`SlotState` per peer name;
     # entries are inserted lazily on the first landing for that host.
-    # ``RemoteSnapshot`` lives in :mod:`uxon.infra.remote_collector`; the
+    # ``RemoteSnapshot`` lives in :mod:`uxon.domain.wire_schema`; the
     # dict-of-slots shape is what makes per-host repaints O(rows in
     # changed host) instead of O(total sessions across all peers).
     remote: dict[str, SlotState[Any]] = field(default_factory=dict)

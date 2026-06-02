@@ -28,10 +28,8 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     its own gating. ``--user`` was made required at parse time
     (:func:`_parse_attach_extras`).
     """
-    from uxon.infra.remote_collector import (
-        DEFAULT_CONNECT_TIMEOUT_SEC,
-        build_peer_ssh_argv,
-    )
+    from uxon.infra.remote.collector import DEFAULT_CONNECT_TIMEOUT_SEC
+    from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
     from uxon.infra.remote_hosts import find_host
 
     peer = find_host(cfg.remote_hosts, args.host or "")
@@ -55,7 +53,10 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         f"--audit-correlation-id {shlex.quote(corr_id)}"
     )
     ssh_argv = build_peer_ssh_argv(
-        peer,
+        command_template=peer.command_template,
+        extra_ssh_options=peer.extra_ssh_options,
+        ssh_alias=peer.ssh_alias,
+        remote_uxon=peer.remote_uxon,
         remote_command=remote_cmd,
         allocate_tty=True,
         connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,

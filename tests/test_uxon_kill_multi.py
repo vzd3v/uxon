@@ -476,7 +476,7 @@ class KillHostRemoteTests(unittest.TestCase):
             # isolated from the local ssh setup, and assert that the
             # CLI kill path does invoke it on timeout (mirrors the
             # poller's wedge-recovery contract).
-            mock.patch("uxon.infra.remote_collector._recover_wedged_master") as recover,
+            mock.patch("uxon.infra.remote.master_recovery.recover_wedged_master") as recover,
         ):
             err = io.StringIO()
             with redirect_stderr(err):

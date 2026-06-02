@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from uxon.infra.duration import parse_duration_seconds
+from uxon.infra.remote.ssh_argv import validate_command_template
 
 
 class RemoteHostError(ValueError):
@@ -149,20 +150,12 @@ def _validate_host(raw: dict, index: int, seen_names: set[str]) -> RemoteHost:
                 f"remote_hosts[{name}]: command_template tokens must be non-empty strings"
             )
         command_template = tuple(command_template_raw)
-        # Step 6 wires the real placeholder validator. Local lazy import
-        # keeps this module pure-data and avoids a circular dep with
-        # remote_collector.
+        # ``ssh_argv`` is a leaf (stdlib + platformdirs only), so we
+        # import the placeholder validator at module top — no cycle.
         try:
-            from uxon.infra.remote_collector import (  # noqa: PLC0415
-                validate_command_template,
-            )
-        except ImportError:
-            validate_command_template = None  # type: ignore[assignment]
-        if validate_command_template is not None:
-            try:
-                validate_command_template(list(command_template))
-            except ValueError as exc:
-                raise RemoteHostError(f"remote_hosts[{name}]: {exc}") from exc
+            validate_command_template(list(command_template))
+        except ValueError as exc:
+            raise RemoteHostError(f"remote_hosts[{name}]: {exc}") from exc
 
     color_raw = raw.get("color")
     if color_raw is None:
