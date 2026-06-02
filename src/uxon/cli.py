@@ -393,7 +393,7 @@ def do_interactive(cfg: Config, launch_user: str) -> int:
         return 1
     # Lazy import: the bridge pulls in Textual-adjacent tui modules, which
     # must stay out of ``import uxon.cli`` (latency invariant #7).
-    from uxon.tui.bridge import build_tui_context
+    from uxon.tui.context_builder import build_tui_context
 
     cwd = canonical(os.getcwd())
     # Hand the TUI a skeleton ctx so the first frame paints immediately;

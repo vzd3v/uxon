@@ -80,7 +80,7 @@ class TuiConfig:
     default_git_remote_profile: str
     git_remote_profile_options: tuple[tuple[str, str], ...]
 
-    # ── Callbacks (injected by ``tui.bridge.build_tui_context``) ───────────
+    # ── Callbacks (injected by ``tui.context_builder.build_tui_context``) ──
     on_attach: Callable[[str, str], LaunchRequest]
     on_kill: Callable[[str, str], None]
     on_kill_all: Callable[[], None]

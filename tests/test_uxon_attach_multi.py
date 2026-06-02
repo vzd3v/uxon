@@ -267,8 +267,8 @@ class OnRemoteAttachCallbackTests(unittest.TestCase):
                 )
             ]
         )
-        callback = tui_bridge._build_on_remote_attach_callback(cfg)
-        req = callback("box-b", "alice", "demo@claude")
+        bridge = tui_bridge.TuiBridge(cfg, "devagent", "/tmp")
+        req = bridge.on_remote_attach("box-b", "alice", "demo@claude")
         argv = list(req.cmd)
         self.assertEqual(argv[0], "ssh")
         self.assertIn("-tt", argv)

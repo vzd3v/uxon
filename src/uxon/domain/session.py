@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 
 from uxon.domain.authz import canonical, is_under
+from uxon.domain.format import compact_time, format_cpu_pct, format_rss_kib
 from uxon.errors import fail
 
 
@@ -224,3 +225,36 @@ def session_path_compatible(active_path: str, repo_root: str) -> bool:
         return True
     active = canonical(active_path)
     return is_under(active, repo_root)
+
+
+def to_tui_session(
+    s: SessionInfo, prefix: str, legacy_prefixes: tuple[str, ...] = ()
+) -> TuiSession:
+    short = s.name[len(prefix) :] if s.name.startswith(prefix) else s.name
+    for lp in legacy_prefixes:
+        if s.name.startswith(lp):
+            short = s.name[len(lp) :]
+            break
+    parsed = parse_session_name(s.name, prefix=prefix, legacy_prefixes=legacy_prefixes)
+    if parsed is not None:
+        stem, agent, _idx, legacy = parsed
+    else:
+        stem, agent, legacy = s.name, "unknown", False
+    return TuiSession(
+        name=s.name,
+        short=short,
+        attached=s.attached == "1",
+        pid=str(s.active_pid) if s.active_pid is not None else "-",
+        cpu=format_cpu_pct(s.cpu_pct),
+        ram=format_rss_kib(s.rss_kib),
+        created=compact_time(s.created),
+        last_activity=compact_time(s.last_attached),
+        cmd=s.active_cmd or "-",
+        path=s.active_path or "-",
+        user=s.user,
+        stem=stem,
+        agent=agent,
+        legacy=legacy,
+        created_iso=s.created,
+        last_attached_iso=s.last_attached,
+    )

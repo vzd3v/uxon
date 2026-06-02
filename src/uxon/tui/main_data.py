@@ -31,7 +31,7 @@ class MainData:
     """Output of one local rebuild tick.
 
     Every field here is derived from the live system state by the
-    rebuild path (today: ``tui.bridge.build_tui_context``); none come from
+    rebuild path (today: ``tui.context_builder.build_tui_context``); none come from
     an async source, none belong on :class:`uxon.tui.config.TuiConfig`.
 
     Sequences are tuples (not lists) so two equal :class:`MainData`

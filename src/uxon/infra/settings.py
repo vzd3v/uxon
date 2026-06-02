@@ -21,6 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from uxon.domain.authz import canonical
+from uxon.domain.config import DEFAULT_CONFIG
+from uxon.infra import config_loader
 from uxon.infra.settings_toml import set_dotted, update_repo_config_text
 
 # ── Schema ───────────────────────────────────────────────────────────
@@ -366,3 +369,19 @@ def remove_repo_key(path: Path | str, key: str) -> None:
     elif key in doc:
         del doc[key]
         write_repo_config_toml(tomlkit.dumps(doc), path)
+
+
+def load_settings_sources(cwd: str) -> tuple[dict, dict, Path | None]:
+    """Load raw repo + project config data (unmerged) plus the project path.
+
+    Used by the TUI settings screen so it can show each value's origin and
+    write back only to the repo-level file.
+    """
+    repo_cfg = config_loader.repo_config_path()
+    repo_data = config_loader.load_toml(repo_cfg)
+    seed_allowed = [
+        canonical(p) for p in repo_data.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])
+    ]
+    proj_cfg = config_loader.find_project_config(cwd, seed_allowed)
+    proj_data = config_loader.load_toml(proj_cfg) if proj_cfg else {}
+    return repo_data, proj_data, proj_cfg
