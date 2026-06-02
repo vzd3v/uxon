@@ -130,7 +130,7 @@ class CadencePolicy:
             deterministic tick alignment.
         initial_offset: Seconds to delay the *first* tick. Spaces out
             a fan-out of N sources so they don't all hit at t=0.
-        breaker: Optional :class:`uxon.infra.host_breaker.BreakerSpec` (or
+        breaker: Optional :class:`uxon.domain.host_breaker.BreakerSpec` (or
             similar). Typed as ``object | None`` here to keep this
             module decoupled from the breaker implementation; the
             scheduler is responsible for the duck-typed dispatch.

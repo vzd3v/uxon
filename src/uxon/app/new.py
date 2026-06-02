@@ -275,8 +275,8 @@ def _do_create_git_remote(
             "[[git_remote_profiles]] entry to config/config.toml"
         )
 
+    from uxon.domain import git_profiles as uxon_git_profiles
     from uxon.gitremote import create as uxon_git_create
-    from uxon.gitremote import profiles as uxon_git_profiles
 
     try:
         profile = uxon_git_profiles.resolve_profile_selector(

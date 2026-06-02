@@ -628,7 +628,7 @@ class UxonTests(unittest.TestCase):
             "creds_user": "remdepl",
             "visibility": "private",
         }
-        from uxon.gitremote import profiles as uxon_git_profiles
+        from uxon.domain import git_profiles as uxon_git_profiles
 
         cfg = self.make_config(
             allowed_roots=["/srv/repos"],
@@ -694,7 +694,7 @@ class UxonTests(unittest.TestCase):
                 new_app.do_new(args, cfg, "devagent")
 
     def test_do_new_git_remote_with_worktree_fails(self) -> None:
-        from uxon.gitremote import profiles as uxon_git_profiles
+        from uxon.domain import git_profiles as uxon_git_profiles
 
         cfg = self.make_config(
             git_create_enabled=True,

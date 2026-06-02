@@ -1076,7 +1076,7 @@ def build_tui_context(
     # ``MainScreen.on_mount`` reads to fan out the initial refresh —
     # an empty list there means the "Loading sessions…" placeholder
     # never gets replaced.
-    from uxon.infra.host_breaker import BreakerSpec, HostBreaker
+    from uxon.domain.host_breaker import BreakerSpec, HostBreaker
     from uxon.infra.remote_collector import (
         RemoteSnapshot,
         fetch_remote_snapshot,

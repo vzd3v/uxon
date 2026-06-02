@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.errors import fail
 
 # Recommended uxon-managed tmux options (3.5.0). This is the SINGLE source of
@@ -147,7 +148,7 @@ class Config:
     tui_refresh_interval_seconds: float
     git_create_enabled: bool
     default_git_remote_profile: str
-    git_remote_profiles: list  # list[GitRemoteProfile] — parsed once in load_config
+    git_remote_profiles: list[GitRemoteProfile]  # parsed once in load_config
     tui_ssh_refresh_interval_seconds: float = 10.0
     remote_hosts: list = field(
         default_factory=list

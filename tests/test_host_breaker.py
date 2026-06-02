@@ -1,4 +1,4 @@
-"""Unit tests for :class:`uxon.infra.host_breaker.HostBreaker`.
+"""Unit tests for :class:`uxon.domain.host_breaker.HostBreaker`.
 
 The breaker is pure stdlib state plus an injectable clock and RNG; we
 drive both via test seams so the tests are deterministic and don't
@@ -10,7 +10,7 @@ from __future__ import annotations
 import random
 import unittest
 
-from uxon.infra.host_breaker import BreakerSpec, HostBreaker
+from uxon.domain.host_breaker import BreakerSpec, HostBreaker
 
 
 class FakeClock:

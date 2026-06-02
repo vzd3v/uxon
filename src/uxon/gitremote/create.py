@@ -22,6 +22,7 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass, field
 
+from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.gitremote.backend_gh import BackendError, RunResult, default_run
 from uxon.gitremote.backend_gh import create_remote as gh_create_remote
 from uxon.gitremote.backend_gh import describe_command as gh_describe
@@ -29,7 +30,6 @@ from uxon.gitremote.backend_gh import preflight as gh_preflight
 from uxon.gitremote.backend_token import create_remote as token_create_remote
 from uxon.gitremote.backend_token import describe_command as token_describe
 from uxon.gitremote.backend_token import preflight as token_preflight
-from uxon.gitremote.profiles import GitRemoteProfile
 
 STAGES = ("preflight", "local_init", "remote_create", "remote_config", "push")
 
