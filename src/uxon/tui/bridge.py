@@ -45,6 +45,7 @@ from uxon.errors import fail
 from uxon.infra import (
     config_loader,
     git,
+    host_status_probe,
     identity,
     process,
     sessions_probe,
@@ -689,7 +690,7 @@ class TuiBridge:
         )
 
     def on_probe_link_health(self) -> object | None:
-        return sessions_probe._read_ssh_link_health_status()
+        return host_status_probe.read_ssh_link_health_status()
 
     # ── settings (superuser-only; safe to wire unconditionally) ──
 
@@ -1067,7 +1068,7 @@ def build_tui_context(
         server_status = ServerStatus()
     else:
         existing_projects = _list_existing_projects(cfg.new_project_root)
-        server_status = sessions_probe._read_server_status(cfg.new_project_root)
+        server_status = host_status_probe.read_server_status(cfg.new_project_root)
 
     # Pluggable refresh sources. PR1 ships a single source that wraps
     # ``on_refresh()`` so the existing kick-refresh path runs through the

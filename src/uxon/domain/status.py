@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Pure host-status DTOs rendered by the TUI.
 
-The impure readers that populate these (``_read_server_status``,
-``_read_ssh_link_health_status``) live in the composition root for now;
-they import these types from here.
+The impure readers that populate these (``read_server_status``,
+``read_ssh_link_health_status``) live in
+:mod:`uxon.infra.host_status_probe`; they import these types from here.
 """
 
 from __future__ import annotations

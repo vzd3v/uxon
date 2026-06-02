@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from uxon.infra import settings as cs
+from uxon.infra import settings_toml as ct
 
 DEFAULTS = {
     "runtime_user": "",
@@ -63,7 +64,9 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
             "repeat_noninteractive_mode": "fail",
             "tmux_socket_template": "/tmp/ccw-{user}.sock",
         }
-        content = cs.render_repo_config_toml(data)
+        content = ct.render_repo_config_toml(
+            data, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+        )
         parsed = tomllib.loads(content)
         # Scalars round-trip
         for key in (
@@ -84,7 +87,9 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
             "runtime_user": "a",
             "launch_user_by_caller": {"caller1": "devagent", "caller2": "remdepl"},
         }
-        content = cs.render_repo_config_toml(data)
+        content = ct.render_repo_config_toml(
+            data, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+        )
         parsed = tomllib.loads(content)
         self.assertEqual(
             parsed["launch_user_by_caller"], {"caller1": "devagent", "caller2": "remdepl"}
@@ -92,15 +97,19 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
 
     def test_escapes_quotes_in_strings(self) -> None:
         data = {"runtime_user": 'quote"here'}
-        content = cs.render_repo_config_toml(data)
+        content = ct.render_repo_config_toml(
+            data, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+        )
         parsed = tomllib.loads(content)
         self.assertEqual(parsed["runtime_user"], 'quote"here')
 
     def test_formats_float_values(self) -> None:
-        self.assertEqual(cs._format_value(2.5), "2.5")
+        self.assertEqual(ct._format_value(2.5), "2.5")
 
     def test_always_emits_launch_user_by_caller_header(self) -> None:
-        content = cs.render_repo_config_toml({"runtime_user": "x"})
+        content = ct.render_repo_config_toml(
+            {"runtime_user": "x"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+        )
         self.assertIn("[launch_user_by_caller]", content)
 
 
@@ -141,7 +150,12 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
             "# who launches what\n"
             'alice = "devagent"\n'
         )
-        new = cs.update_repo_config_text(original, {"runtime_user": "remdepl"})
+        new = ct.update_repo_config_text(
+            original,
+            {"runtime_user": "remdepl"},
+            schema_keys=cs.SCHEMA_KEYS,
+            table_keys=cs.TABLE_KEYS,
+        )
         self.assertIn("# top comment", new)
         self.assertIn("# inline comment", new)
         self.assertIn("# section about session_prefix", new)
@@ -161,21 +175,35 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
             "[launch_user_by_caller]\n"
             'alice = "devagent"\n'
         )
-        new = cs.update_repo_config_text(original, {"launch_user_by_caller": {"bob": "remdepl"}})
+        new = ct.update_repo_config_text(
+            original,
+            {"launch_user_by_caller": {"bob": "remdepl"}},
+            schema_keys=cs.SCHEMA_KEYS,
+            table_keys=cs.TABLE_KEYS,
+        )
         self.assertIn("# per-caller overrides live here", new)
         parsed = tomllib.loads(new)
         self.assertEqual(parsed["launch_user_by_caller"], {"bob": "remdepl"})
 
     def test_unknown_key_raises(self) -> None:
         with self.assertRaises(KeyError):
-            cs.update_repo_config_text("", {"nonsense": 1})
+            ct.update_repo_config_text(
+                "", {"nonsense": 1}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+            )
 
     def test_table_requires_mapping(self) -> None:
         with self.assertRaises(ValueError):
-            cs.update_repo_config_text("", {"launch_user_by_caller": "notadict"})
+            ct.update_repo_config_text(
+                "",
+                {"launch_user_by_caller": "notadict"},
+                schema_keys=cs.SCHEMA_KEYS,
+                table_keys=cs.TABLE_KEYS,
+            )
 
     def test_fresh_file_emits_only_requested_keys(self) -> None:
-        new = cs.update_repo_config_text("", {"runtime_user": "x"})
+        new = ct.update_repo_config_text(
+            "", {"runtime_user": "x"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+        )
         parsed = tomllib.loads(new)
         self.assertEqual(parsed, {"runtime_user": "x"})
 
@@ -265,7 +293,12 @@ class NestedAgentKeysTests(unittest.TestCase):
 
     def test_round_trip_nested_agent_keys(self) -> None:
         src = self._src()
-        new = cs.update_repo_config_text(src, {"agents.claude.default_args": ["--verbose"]})
+        new = ct.update_repo_config_text(
+            src,
+            {"agents.claude.default_args": ["--verbose"]},
+            schema_keys=cs.SCHEMA_KEYS,
+            table_keys=cs.TABLE_KEYS,
+        )
         parsed = tomllib.loads(new)
         self.assertEqual(parsed["agents"]["claude"]["default_args"], ["--verbose"])
         # Comment survived
@@ -276,7 +309,9 @@ class NestedAgentKeysTests(unittest.TestCase):
 
     def test_round_trip_agents_default(self) -> None:
         src = self._src()
-        new = cs.update_repo_config_text(src, {"agents.default": "codex"})
+        new = ct.update_repo_config_text(
+            src, {"agents.default": "codex"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+        )
         parsed = tomllib.loads(new)
         self.assertEqual(parsed["agents"]["default"], "codex")
         self.assertIn("# top comment", new)
