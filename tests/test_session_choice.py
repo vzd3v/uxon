@@ -281,9 +281,11 @@ class _StubScreen:
 
 
 def _bind_helper(stub):
-    from uxon.tui.screens.main import MainScreen
+    from uxon.tui.screens.launch_flow import LaunchFlow
 
-    return MainScreen._maybe_show_session_choice.__get__(stub, _StubScreen)
+    # The session-choice body now lives on LaunchFlow; it reaches back
+    # into its host (the stub here) for ``cfg``/``app``/``_attach_session``.
+    return LaunchFlow(stub).maybe_show_session_choice
 
 
 class MainScreenHelperTests(unittest.TestCase):

@@ -175,8 +175,14 @@ class ActionKillRemoteRowTests(unittest.TestCase):
             focused = table  # shadows the reactive descriptor
             app = fake_app  # shadows the MessagePump descriptor
 
+        from uxon.tui.screens.kill_flow import KillFlow
+
         screen = _StubScreen.__new__(_StubScreen)
         screen.cfg = ctx
+        # ``action_kill`` delegates to the KillFlow controller; __new__
+        # bypasses __init__ so wire it up explicitly (the body lives on
+        # the controller, reaching back into this stub host).
+        screen._kill_flow = KillFlow(screen)
         screen._dashboard_rows = (
             SessionRow(
                 host="vz-prod1",
@@ -248,8 +254,13 @@ class OnDataTableRowSelectedRemoteTests(unittest.TestCase):
         class _StubScreen(MainScreen):  # type: ignore[misc]
             app = fake_app
 
+        from uxon.tui.screens.launch_flow import LaunchFlow
+
         screen = _StubScreen.__new__(_StubScreen)
         screen.cfg = ctx
+        # ``on_data_table_row_selected`` delegates the attach dispatch to
+        # the LaunchFlow controller; __new__ bypasses __init__ so wire it.
+        screen._launch_flow = LaunchFlow(screen)
         screen._dashboard_rows = (
             SessionRow(
                 host="vz-prod1",

@@ -22,8 +22,6 @@ reference to the current :class:`TuiContext` and refreshes it on ``r``.
 
 from __future__ import annotations
 
-import os
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.app import ComposeResult
@@ -37,28 +35,28 @@ from uxon.infra.events import debug as _debug
 
 from ..context import (
     ACTION_COUNT,
-    CallbackError,
     TuiContext,
     _segments,
 )
-from ..dashboard.buckets import (
-    compute_block_starts,
-    select_fleet_summary,
-    select_host_buckets,
-    select_host_status_block,
-)
 from ..dashboard.layout import LayoutFlags, build_active_columns
-from ..dashboard.model import select_dashboard_model
-from ..dashboard.reconcile import diff
-from ..dashboard.row import SessionRow
 from ..dashboard.seen_users import collect_user_set, cross_user_latched
-from ..dashboard.ui_state import DashboardUiState, MainScreenUiState, set_filter, set_view_mode
+from ..dashboard.ui_state import (
+    DashboardUiState,
+    MainScreenUiState,
+    next_block_start,
+    set_filter,
+    set_view_mode,
+    step_tab_index,
+    toggle_view_mode,
+)
 from ..keymap import bindings_with_aliases
 from ..state import (
     MainIntent,
     activate_main_index,
+    focus_key_for_row,
     main_action_intent,
     main_status_line,
+    parse_focus_key,
     select_layout_signature,
 )
 from ..widgets import ActionRow
@@ -68,17 +66,15 @@ from ..widgets.host_status_bar import HostStatusBar
 from ..widgets.host_tab_strip import HostTabActivated, HostTabStrip
 from ..widgets.search_bar import FilterChanged, SearchBar
 from ..widgets.session_dashboard_table import SessionDashboardTable
-from .confirm import ConfirmPhrase, ConfirmYesNo
-from .existing import ExistingProjectScreen
-from .git_profile import GitProfileScreen
-from .launch_options import LaunchOptionsScreen
-from .new_project import NewProjectScreen
-from .session_choice import SessionChoiceScreen
-from .worktree_branch import WorktreeBranchScreen
+from . import main_render
+from .dashboard_render import DashboardRender
+from .kill_flow import KillFlow
+from .launch_flow import LaunchFlow
 
 if TYPE_CHECKING:
     from uxon.domain.status import LinkHealthStatus
 
+    from ..dashboard.row import SessionRow
     from ..tui_state import TuiState
 
 
@@ -167,6 +163,13 @@ class MainScreen(Screen):
         # ``cfg`` any more.
         self.cfg = cfg
         self.state = state
+        # Controllers hold the heavy bodies of the launch/kill/refresh
+        # flows; the screen's ``action_*``/``on_*`` handlers stay thin
+        # delegators (AGENTS.md). Each reaches back into this screen via
+        # ``host=self`` so per-build state has one source of truth.
+        self._launch_flow = LaunchFlow(self)
+        self._kill_flow = KillFlow(self)
+        self._dashboard = DashboardRender(self)
         self.loading = bool(cfg.loading)
         self._restore_focus_key = ""
         # Primary repo root resolved by the launch-flow workspace probe
@@ -377,9 +380,7 @@ class MainScreen(Screen):
                     reachable_users = sorted(self.cfg.sudo_caps.reachable_users)
                     yield ActionRow(
                         kind="kill-all-global",
-                        label=(
-                            f"⚡ Kill ALL uxon sessions (reachable users, {total_sessions} total)"
-                        ),
+                        label=main_render.kill_all_global_label(total_sessions),
                         detail=f"({', '.join(reachable_users)} + self)",
                         enabled=True,
                         id="action-kill-all-global",
@@ -393,41 +394,35 @@ class MainScreen(Screen):
             # each row's HOST cell + the dashboard's host colour glyph.
         yield Footer()
 
-    def _superuser_header(self) -> str:
-        """Header for the "Other users' sessions" / superuser block.
+    # Thin Textual-side shells over the pure builders in
+    # :mod:`uxon.tui.screens.main_render` — the "what text to show" logic
+    # is fast-tested there; these adapt the live ``cfg``/slot reads.
 
-        When the per-target probe filtered any candidates (caller's
-        sudoers rule covers some users in ``session_users`` but not
-        all), append a ``(N/M users reachable)`` hint so the operator
-        notices a colleague is missing rather than silently absent.
-        """
-        reachable = sorted(self.cfg.sudo_caps.reachable_users)
-        skipped = list(self.cfg.scope_skipped_users)
-        total = len(reachable) + len(skipped)
-        if skipped and total:
-            return f"── superuser ── ({len(reachable)}/{total} users reachable)"
-        return "── superuser ──"
+    def _superuser_header(self) -> str:
+        return main_render.superuser_header(
+            self.cfg.sudo_caps.reachable_users,
+            self.cfg.scope_skipped_users,
+        )
 
     def _cwd_detail(self) -> str:
-        if self._cwd_writable_now() is False:
-            user = self.cfg.launch_user or self.cfg.current_user or "launch user"
-            return f"({self.cfg.cwd_short} — not launchable for {user})"
-        return f"({self.cfg.cwd_short})"
+        return main_render.cwd_detail(
+            cwd_writable=self._cwd_writable_now(),
+            cwd_short=self.cfg.cwd_short,
+            launch_user=self.cfg.launch_user,
+            current_user=self.cfg.current_user,
+        )
 
     def _open_detail(self) -> str:
-        if self.cfg.loading:
-            return f"({self.cfg.new_project_root}/… — loading)"
-        return f"({self.cfg.new_project_root}/…)"
+        return main_render.open_detail(
+            loading=self.cfg.loading,
+            new_project_root=self.cfg.new_project_root,
+        )
 
     def _top_actions_caption(self) -> str:
-        """Single-line caption rendered under the top action buttons.
-
-        Rebuilt on every ctx swap (see :meth:`_apply_ctx_refresh`) so
-        the cwd / project-root detail stays current. Lives outside the
-        bordered buttons because at 1/3 width per button there isn't
-        room for both the label and the path.
-        """
-        return f"1: {self.cfg.cwd_short}   2 & 3: {self.cfg.new_project_root}/…"
+        return main_render.top_actions_caption(
+            cwd_short=self.cfg.cwd_short,
+            new_project_root=self.cfg.new_project_root,
+        )
 
     def on_mount(self) -> None:
         # Initial dashboard apply. ``state.main`` may still be ``None``
@@ -456,213 +451,8 @@ class MainScreen(Screen):
 
     # ── Dashboard ────────────────────────────────────────────────────
 
-    def _block_colors(self) -> dict[str | None, str]:
-        """Map ``host_name → block colour``, shared by tab strip + table glyphs.
-
-        Single source for the palette/local-host pair so the strip
-        and the dashboard rows can never disagree on hue. Local
-        import keeps the module graph tidy.
-        """
-        from ..dashboard.columns import assign_block_colors
-
-        palette = tuple(getattr(self.cfg, "tui_color_palette", ("cyan", "blue")))
-        local_color = getattr(self.cfg, "local_host_color", "green")
-        return assign_block_colors(
-            tuple(self.cfg.remote_hosts),
-            local_color=local_color,
-            palette=palette,
-        )
-
-    def _build_dashboard_cfg_view(self) -> SimpleNamespace:
-        """Minimal cfg view consumed by :func:`select_dashboard_model`.
-
-        The selector reads only ``cfg.remote_hosts`` today; the namespace
-        includes ``current_user`` for symmetry / future widening. This
-        avoids importing :class:`uxon.tui.config.TuiConfig` here (its
-        constructor demands the full callback bundle, which the bridge
-        does not need).
-        """
-        return SimpleNamespace(
-            remote_hosts=self.cfg.remote_hosts,
-            current_user=self.cfg.current_user,
-        )
-
-    def _cursor_row_key(self, widget: SessionDashboardTable) -> str | None:
-        """Read the dashboard cursor's row-key for pin-after-apply.
-
-        Returns ``None`` for an empty table or out-of-range cursor — the
-        widget's :meth:`pin_cursor_to` accepts ``None`` as "leave alone".
-        """
-        try:
-            idx = widget.cursor_row
-            if idx is None or idx < 0 or idx >= len(widget.ordered_rows):
-                return None
-            key_obj = widget.ordered_rows[idx].key
-            value = getattr(key_obj, "value", None)
-            return value if isinstance(value, str) else None
-        except Exception:  # pragma: no cover — defensive (widget not ready)
-            return None
-
-    def _refresh_dashboard_note(self, all_rows: tuple[SessionRow, ...]) -> None:
-        """Toggle the ``#sessions-note`` placeholder above the dashboard.
-
-        Visible when no rows are present (Loading… on cold start,
-        "No active sessions." once the rebuild has landed). The class
-        toggle keeps the layout signature stable across the
-        empty/non-empty transition — the Static is mounted
-        unconditionally.
-        """
-        try:
-            note = self.query_one("#sessions-note", Static)
-        except Exception:  # pragma: no cover — note not yet mounted
-            return
-        if all_rows:
-            note.set_class(True, "-hidden")
-        else:
-            note.set_class(False, "-hidden")
-            note.update("Loading sessions…" if self.cfg.loading else "No active sessions.")
-
     def _refresh_dashboard(self) -> None:
-        """Compute new model, diff against the previous, apply to the widget.
-
-        Owns the dashboard's per-tick lifecycle: pull state, build the
-        row tuple via :func:`select_dashboard_model` (full model — local
-        own + local other-user + remote per-host rows), diff against the
-        previous tuple, apply the ops to the widget, then pin the cursor
-        by row-key so a no-op tick leaves it where it was.
-
-        ``cross_user`` is *not* recomputed here — the active column
-        tuple is fixed at ``__init__`` time, and a flip in
-        ``bool(ctx.other_sessions)`` forces a recompose via the
-        layout signature.
-        """
-        state = getattr(self.app, "state", None)
-        if state is None:
-            return
-        # ``keys`` channel: bracket every dashboard refresh with entry +
-        # elapsed_ms so the operator can correlate "arrow press swallowed"
-        # with "main thread blocked here". Wall-clock is unsuitable
-        # (NTP jitter); ``time.monotonic`` is the safe diff source.
-        import time as _time  # noqa: PLC0415
-
-        _refresh_t0 = _time.monotonic()
-        _debug("keys", at="refresh_dashboard_enter", ts=_refresh_t0)
-        cfg_view = self._build_dashboard_cfg_view()
-        rows = select_dashboard_model(state, cfg_view, self._dashboard_ui)  # type: ignore[arg-type]
-        # Full model — local (host=None) + remote (host=peer).
-        all_rows = rows
-        # A non-empty filter forces flat render; the tab strip is
-        # hidden (no buckets) so the operator sees every match across
-        # hosts in one list.
-        needle = self._dashboard_ui.filter_text.strip()
-        forced_flat = bool(needle)
-        in_by_host = self._dashboard_ui.view_mode == "by_host" and not forced_flat
-        # Tab strip visible only when in_by_host.
-        try:
-            tab_strip_widget = self.query_one("#host-tabs", HostTabStrip)
-            tab_strip_widget.display = in_by_host
-        except Exception:
-            pass
-        active_bucket = None
-        if in_by_host:
-            buckets = select_host_buckets(rows, cfg_view)
-            # The App holds the surviving tab index so a recompose
-            # doesn't snap the operator back to "local". Apply it
-            # before ``set_buckets`` so the strip mounts already
-            # showing the right tab (avoids a one-frame flicker).
-            saved_idx = self.app.main_ui.active_tab_index  # type: ignore[attr-defined]
-            if buckets and saved_idx >= len(buckets):
-                saved_idx = max(0, len(buckets) - 1)
-                self.app.main_ui.active_tab_index = saved_idx  # type: ignore[attr-defined]
-            try:
-                tab_strip = self.query_one("#host-tabs", HostTabStrip)
-            except Exception:
-                active_idx = saved_idx if buckets else 0
-            else:
-                if tab_strip.active_index != saved_idx:
-                    tab_strip.active_index = saved_idx
-                tab_strip.set_buckets(list(buckets), colors=self._block_colors())
-                active_idx = tab_strip.active_index
-            if buckets:
-                active_bucket = (
-                    buckets[active_idx] if 0 <= active_idx < len(buckets) else buckets[0]
-                )
-                rows = active_bucket.rows
-        try:
-            widget = self.query_one("#sessions-dashboard", SessionDashboardTable)
-        except Exception:  # pragma: no cover — not yet mounted
-            return
-        prev_cursor_key = self._cursor_row_key(widget)
-        plan = diff(self._dashboard_rows, rows, self._active_columns)
-        widget.set_block_meta(self._build_block_meta(rows))
-        widget.set_block_starts(compute_block_starts(rows, self.cfg.current_user))
-        widget.apply(plan)
-        self._dashboard_rows = rows
-        widget.pin_cursor_to(prev_cursor_key)
-        self._refresh_dashboard_note(all_rows)
-        # Status lines aggregate over the unfiltered, full row tuple so the
-        # bars reflect fleet totals even when a search filter narrows the
-        # table.
-        host_stats_local = state.main.host_stats if state.main is not None else None
-        status_lines = select_host_status_block(all_rows, state, host_stats_local, cfg_view)
-        # Compact per-tab line: by_host only, shows the active host's detail
-        # under its tab.
-        try:
-            compact_bar = self.query_one("#host-status-compact", HostStatusBar)
-        except Exception:
-            compact_bar = None
-        if compact_bar is not None:
-            if in_by_host and active_bucket is not None and status_lines:
-                line = next(
-                    (sl for sl in status_lines if sl.host_name == active_bucket.host_name),
-                    status_lines[0],
-                )
-                compact_bar.display = True
-                compact_bar.update_lines((line,))
-            else:
-                compact_bar.display = False
-        # Fleet bar below the table: present in both views. Collapsed =
-        # counts + quiet alerts; expanded (``h``) = one line per host.
-        try:
-            fleet_bar = self.query_one("#fleet-status", FleetStatusBar)
-        except Exception:
-            fleet_bar = None
-        if fleet_bar is not None:
-            fleet_bar.update_fleet(
-                select_fleet_summary(status_lines),
-                status_lines,
-                expanded=self._hosts_expanded,
-            )
-        _debug(
-            "keys",
-            at="refresh_dashboard_exit",
-            ms=int((_time.monotonic() - _refresh_t0) * 1000),
-            rows=len(rows),
-            view=self._dashboard_ui.view_mode,
-            forced_flat=forced_flat,
-        )
-
-    def _build_block_meta(
-        self,
-        rows: tuple[SessionRow, ...],
-    ) -> dict[str, tuple[str, int]]:
-        """Map each row's reconciler key to (block_color, row_in_block).
-
-        ``block_color`` comes from :func:`assign_block_colors` on the
-        cfg's remote hosts; ``row_in_block`` is the row's index inside
-        its host block (0, 1, 2, ...) for zebra parity.
-        """
-        colors = self._block_colors()
-        local_color = colors.get(None, "green")
-        out: dict[str, tuple[str, int]] = {}
-        counters: dict[str | None, int] = {}
-        for row in rows:
-            host_key = row.host  # None for locals
-            idx = counters.get(host_key, 0)
-            counters[host_key] = idx + 1
-            key = f"{row.host or 'local'}/{row.user}/{row.name}"
-            out[key] = (colors.get(host_key, local_color), idx)
-        return out
+        self._dashboard.refresh_dashboard()
 
     # ── ActionRow.Activated dispatcher ───────────────────────────────
 
@@ -688,46 +478,13 @@ class MainScreen(Screen):
             idx = event.cursor_row
             if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
                 return
-            row = self._dashboard_rows[idx]
-            if row.host is not None:
-                # Remote: dispatch via ctx.on_remote_attach over SSH.
-                user = row.user or self.cfg.current_user
-                try:
-                    req = self.cfg.on_remote_attach(row.host, user, row.name)
-                except CallbackError as exc:
-                    self.app.notify(f"Remote attach failed: {exc}", severity="error", timeout=6)
-                    return
-                self.app.request_launch(req)  # type: ignore[attr-defined]
-                return
-            session_user = row.user or self.cfg.current_user
-            self._attach_session(session_user, row.name)
-            return
+            self._launch_flow.attach_row(self._dashboard_rows[idx])
 
     def _run_intent(self, intent: MainIntent | None) -> None:
-        if intent is None:
-            return
-        if intent.index is not None:
-            self._focus_index(intent.index)
-        if intent.kind == "launch-cwd":
-            self._launch_cwd()
-        elif intent.kind == "launch-new":
-            self._launch_new()
-        elif intent.kind == "launch-existing":
-            self._launch_existing()
-        elif intent.kind == "open-settings":
-            self._open_settings()
-        elif intent.kind == "kill-all-global":
-            self._kill_all_global()
-        elif intent.kind == "attach":
-            self._attach_session(intent.user, intent.session_name)
+        self._launch_flow.run_intent(intent)
 
     def _attach_session(self, user: str, session_name: str) -> None:
-        try:
-            req = self.cfg.on_attach(user, session_name)
-        except CallbackError as exc:
-            self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
-            return
-        self.app.request_launch(req)  # type: ignore[attr-defined]
+        self._launch_flow.attach_session(user, session_name)
 
     def _maybe_show_session_choice(
         self,
@@ -738,56 +495,13 @@ class MainScreen(Screen):
         on_new,
         probe=None,
     ) -> None:
-        """Probe for compatible existing sessions; if any, prompt the operator.
-
-        ``target_dir`` is the absolute target path (cwd or
-        ``<new_project_root>/<name>``); the CLI side canonicalises it
-        before lookup. ``on_new`` is invoked when the operator chooses
-        "new alongside" (or when the probe returns no matches) — it's
-        the closure that actually commits the launch by calling the
-        corresponding ``on_launch_*`` callback. The attach branch routes
-        through the existing ``_attach_session`` so audit + LaunchRequest
-        construction stay in one place.
-
-        ``probe`` defaults to the plain path-based
-        ``on_probe_existing_sessions`` (primary / non-git target). A
-        worktree target passes a zero-arg closure over the worktree-aware
-        probe (``on_probe_existing_worktree_sessions``) so the guard uses
-        the repo-qualified stem (§2.5) — "same tmux cwd" alone would not
-        match because the name-stem differs.
-        """
-        try:
-            existing = (
-                probe()
-                if probe is not None
-                else self.cfg.on_probe_existing_sessions(target_dir, agent_id)
-            )
-        except CallbackError as exc:
-            # A probe failure shouldn't silently swallow the launch.
-            # Surface the message and abort — the operator can retry.
-            self.app.notify(f"Session probe failed: {exc}", severity="error", timeout=6)
-            return
-        if not existing:
-            on_new()
-            return
-
-        launch_user = self.cfg.launch_user or self.cfg.current_user
-
-        def after_choice(result):
-            if result is None:
-                return
-            action, name = result
-            if action == "attach" and name:
-                self._attach_session(launch_user, name)
-            elif action == "new":
-                on_new()
-
-        self.app.push_screen(
-            SessionChoiceScreen(target_label=target_label, existing=existing),
-            after_choice,
+        self._launch_flow.maybe_show_session_choice(
+            target_dir=target_dir,
+            target_label=target_label,
+            agent_id=agent_id,
+            on_new=on_new,
+            probe=probe,
         )
-
-    # ── Activation handlers (modals stubbed — T14 replaces stubs) ────
 
     def _begin_launch_in_folder(
         self,
@@ -798,329 +512,28 @@ class MainScreen(Screen):
         launchable: bool | None = None,
         on_probed=None,
     ) -> None:
-        """Worktree-aware launch into an existing folder (cwd or named project).
-
-        Shared by ``_launch_cwd`` and ``_launch_existing``. Order: gate that
-        ``launch_user`` may launch in ``target_dir`` (write access + inside
-        ``allowed_roots``) → probe ``target_dir`` for git worktrees off the
-        event loop (§4.2) → push the launch-options screen. When the folder is
-        a git repo the screen shows the WORKSPACE column (primary tree +
-        existing worktrees + ``+ New worktree…``); a non-git folder degrades to
-        the plain agent/mode screen (§3 degradation).
-
-        The launchability gate is the same predicate for both entry points,
-        which matters now that any of them can create a worktree on disk.
-        ``launchable`` is a pre-resolved value (``cwd`` passes its reactive
-        slot; "open existing" passes ``None``); when ``None`` the gate's
-        ``sudo`` probe runs in the SAME off-loop worker as the worktree probe
-        (never on the event loop, cross-user ``sudo -iu`` would otherwise
-        freeze the UI) and ``on_probed(value)`` lets the caller persist the
-        result (cwd updates its slot + dashboard row — a cwd-only concern
-        kept out of here).
-
-        ``commit_primary(agent_id, mode_id)`` is the folder-specific launch
-        (``on_launch_cwd`` vs ``on_launch_existing``) used for the primary tree
-        and the non-git case; worktree create / attach is generic given the
-        probed ``repo_root`` + branch, so it lives here once rather than being
-        duplicated per entry point.
-        """
-
-        def commit_existing_worktree(
-            agent_id: str, mode_id: str, repo_root: str, path: str, branch: str
-        ) -> None:
-            try:
-                req = self.cfg.on_launch_existing_worktree(
-                    repo_root, branch, path, agent_id, mode_id
-                )
-            except CallbackError as exc:
-                self.app.notify(str(exc), severity="error", timeout=6)
-                return
-            self.app.request_launch(req)  # type: ignore[attr-defined]
-
-        def commit_new_worktree(agent_id: str, mode_id: str, repo_root: str, branch: str) -> None:
-            try:
-                req = self.cfg.on_create_worktree(repo_root, branch, agent_id, mode_id)
-            except CallbackError as exc:
-                self.app.notify(str(exc), severity="error", timeout=6)
-                return
-            self.app.request_launch(req)  # type: ignore[attr-defined]
-
-        def dispatch_workspace(agent_id: str, mode_id: str, choice) -> None:
-            kind = choice[0]
-            if kind == "primary":
-                # Primary tree keeps the plain path-based planner + probe
-                # (§3) — launch into the folder exactly as the non-worktree
-                # path does.
-                self._maybe_show_session_choice(
-                    target_dir=target_dir,
-                    target_label=target_label,
-                    agent_id=agent_id,
-                    on_new=lambda: commit_primary(agent_id, mode_id),
-                )
-                return
-            if kind == "worktree":
-                _, path, branch = choice
-                repo_root = self._workspace_repo_root or target_dir
-                # Worktree target: the attach guard uses the worktree-aware
-                # probe (repo-qualified stem, §2.5), not the path-based one.
-                self._maybe_show_session_choice(
-                    target_dir=path,
-                    target_label=branch,
-                    agent_id=agent_id,
-                    on_new=lambda: commit_existing_worktree(
-                        agent_id, mode_id, repo_root, path, branch
-                    ),
-                    probe=lambda: self.cfg.on_probe_existing_worktree_sessions(
-                        path, repo_root, branch, agent_id
-                    ),
-                )
-                return
-            # ("new", None) → prompt for a branch name, then create + launch.
-            repo_root = self._workspace_repo_root or target_dir
-
-            def after_branch(branch: str | None) -> None:
-                if not branch:
-                    return
-                commit_new_worktree(agent_id, mode_id, repo_root, branch)
-
-            self.app.push_screen(WorktreeBranchScreen(), after_branch)
-
-        def after_opts(result) -> None:
-            if result is None:
-                return
-            # B2: a 3-tuple only arrives when the WORKSPACE column was
-            # shown (git target); a 2-tuple is the non-git path.
-            if len(result) == 3:
-                agent_id, mode_id, choice = result
-                dispatch_workspace(agent_id, mode_id, choice)
-                return
-            agent_id, mode_id = result
-            self._maybe_show_session_choice(
-                target_dir=target_dir,
-                target_label=target_label,
-                agent_id=agent_id,
-                on_new=lambda: commit_primary(agent_id, mode_id),
-            )
-
-        def push_with_workspaces(workspaces) -> None:
-            # The primary working tree carries its own path == repo_root;
-            # thread it into the screen + the dispatch closures so neither
-            # has to re-resolve the repo root on the event loop (§4.2).
-            self._workspace_repo_root = next(
-                (w.path for w in workspaces if getattr(w, "is_primary", False)),
-                target_dir,
-            )
-            self.app.push_screen(  # type: ignore[attr-defined]
-                LaunchOptionsScreen(
-                    self.cfg, self.state, workspaces=workspaces, repo_root=self._workspace_repo_root
-                ),
-                after_opts,
-            )
-
-        def deny() -> None:
-            user = self.cfg.launch_user or self.cfg.current_user or "launch user"
-            self.app.notify(
-                f"Cannot launch in {target_label} as {user} "
-                "(no write access, or outside allowed_roots)",
-                severity="warning",
-                timeout=6,
-            )
-
-        def on_probed_workspaces(resolved: bool | None, workspaces) -> None:
-            # On-loop callback (off the worker thread). ``resolved is None``
-            # ⟺ the caller pre-resolved launchability and no worker probe
-            # ran, so ``on_probed`` (cwd slot persist) fires only on a fresh
-            # probe — matching the original never-loaded-only refresh.
-            if resolved is not None and on_probed is not None:
-                on_probed(bool(resolved))
-            if resolved is False:
-                deny()
-                return
-            push_with_workspaces(workspaces)
-
-        # Pre-resolved False (cwd's populated slot) gates inline — no I/O, no
-        # fresh probe to persist. Otherwise the launchability ``sudo`` probe
-        # rides the same off-loop worker as the worktree probe; a pre-resolved
-        # True skips it (probe_launchable=None → resolved=None).
-        if launchable is False:
-            deny()
-            return
-        self.app.probe_workspaces_then(  # type: ignore[attr-defined]
-            target_dir,
-            on_probed_workspaces,
-            probe_launchable=(
-                None if launchable is True else lambda: self.cfg.on_probe_dir_launchable(target_dir)
-            ),
-        )
-
-    def _launch_cwd(self) -> None:
-        def commit_primary(agent_id: str, mode_id: str) -> None:
-            try:
-                req = self.cfg.on_launch_cwd(agent_id, mode_id)
-            except CallbackError as exc:
-                self.app.notify(str(exc), severity="error", timeout=6)
-                return
-            self.app.request_launch(req)  # type: ignore[attr-defined]
-
-        def on_probed(value: bool) -> None:
-            # The cross-user / sudo probe may not have landed yet; when the
-            # gate resolves it synchronously, persist into the reactive slot
-            # and re-render the cwd row so its enabled state stops lying. The
-            # slot getter prefers a later background-worker write, so this
-            # never masks a fresher value (a legitimate ``value=None`` does
-            # not retrigger — the slot is concrete after any probe attempt).
-            # Persist onto the static seed; ``_cwd_writable_now`` reads it
-            # until a worker probe lands on ``state.cwd_writable``.
-            self.cfg.cwd_writable = value
-            self._refresh_cwd_row()
-
-        self._begin_launch_in_folder(
-            target_dir=self.cfg.cwd,
-            target_label=self.cfg.cwd_short or self.cfg.cwd,
+        self._launch_flow.begin_launch_in_folder(
+            target_dir=target_dir,
+            target_label=target_label,
             commit_primary=commit_primary,
-            launchable=self._cwd_writable_now(),
+            launchable=launchable,
             on_probed=on_probed,
         )
 
+    def _launch_cwd(self) -> None:
+        self._launch_flow.launch_cwd()
+
     def _launch_new(self) -> None:
-        def after_opts(name: str, git_profile: str):
-            # Built WITHOUT ``workspaces`` → only ever a 2-tuple at runtime
-            # (B2). The annotation covers the screen's widened result type
-            # so pyright accepts the callback; ``result[:2]`` is robust if a
-            # 3-tuple ever reaches here.
-            def _on_opts(result: tuple[str, str] | tuple[str, str, object] | None) -> None:
-                if result is None:
-                    return
-                agent_id, mode_id = result[0], result[1]
-
-                def commit_new() -> None:
-                    try:
-                        req = self.cfg.on_launch_new(name, agent_id, mode_id, git_profile)
-                    except CallbackError as exc:
-                        self.app.notify(str(exc), severity="error", timeout=6)
-                        return
-                    self.app.request_launch(req)  # type: ignore[attr-defined]
-
-                self._maybe_show_session_choice(
-                    target_dir=os.path.join(self.cfg.new_project_root, name),
-                    target_label=name,
-                    agent_id=agent_id,
-                    on_new=commit_new,
-                )
-
-            return _on_opts
-
-        def after_git(name: str):
-            def _on_git(git_profile: str | None) -> None:
-                if git_profile is None:
-                    return  # user cancelled the whole chain
-                self.app.push_screen(
-                    LaunchOptionsScreen(self.cfg, self.state), after_opts(name, git_profile)
-                )
-
-            return _on_git
-
-        def after_name(name: str | None) -> None:
-            if not name:
-                return
-            if self.cfg.git_create_enabled and self.cfg.git_remote_profile_options:
-                self.app.push_screen(
-                    GitProfileScreen(
-                        self.cfg.git_remote_profile_options,
-                        default_profile=self.cfg.default_git_remote_profile,
-                    ),
-                    after_git(name),
-                )
-            else:
-                self.app.push_screen(
-                    LaunchOptionsScreen(self.cfg, self.state), after_opts(name, "")
-                )
-
-        self.app.push_screen(NewProjectScreen(self.cfg.new_project_root), after_name)
+        self._launch_flow.launch_new()
 
     def _launch_existing(self) -> None:
-        if not self.cfg.existing_projects:
-            self.app.notify(
-                f"No projects in {self.cfg.new_project_root}",
-                severity="warning",
-                timeout=4,
-            )
-            return
-
-        def after_name(name: str | None) -> None:
-            if not name:
-                return
-
-            target_dir = os.path.join(self.cfg.new_project_root, name)
-
-            def commit_primary(agent_id: str, mode_id: str) -> None:
-                try:
-                    req = self.cfg.on_launch_existing(name, agent_id, mode_id)
-                except CallbackError as exc:
-                    self.app.notify(str(exc), severity="error", timeout=6)
-                    return
-                self.app.request_launch(req)  # type: ignore[attr-defined]
-
-            # Same worktree-aware flow as launch-cwd: a git project shows the
-            # WORKSPACE column, a non-git one degrades to agent/mode only (§3).
-            self._begin_launch_in_folder(
-                target_dir=target_dir,
-                target_label=name,
-                commit_primary=commit_primary,
-            )
-
-        self.app.push_screen(
-            ExistingProjectScreen(self.cfg.existing_projects, self.cfg.new_project_root),
-            after_name,
-        )
+        self._launch_flow.launch_existing()
 
     def _open_settings(self) -> None:
-        """Push SettingsScreen with the context's callback bundle."""
-        from .settings import SettingsCallbacks, SettingsScreen
-
-        cbs = SettingsCallbacks(
-            get_entries=self.cfg.get_settings_entries,
-            save_setting=self.cfg.on_setting_save,
-            remove_setting=self.cfg.on_setting_remove,
-            save_mapping=self.cfg.on_setting_save_mapping,
-            get_git_remote_profile_rows=self.cfg.get_git_remote_profile_rows,
-        )
-        self.app.push_screen(SettingsScreen(cbs))
+        self._launch_flow.open_settings()
 
     def _kill_all_global(self) -> None:
-        total = len(self.cfg.sessions) + len(self.cfg.other_sessions)
-        if total == 0:
-            return
-        reachable = sorted(self.cfg.sudo_caps.reachable_users)
-        # User-visible scope summary: name the reachable users
-        # explicitly so the operator can't confuse "all reachable"
-        # with "all users on the host" — those diverge under the
-        # per-target sudo model.
-        scope_summary = f"{', '.join(reachable)} (+ self)" if reachable else "self only"
-        n_users = len(reachable) + 1  # + launch_user
-
-        def after_confirm(confirmed: bool | None) -> None:
-            if not confirmed:
-                return
-            try:
-                self.cfg.on_kill_all_global()
-                self.app.notify(f"Killed all {total} sessions across {n_users} reachable users")
-            except CallbackError as exc:
-                self.app.notify(
-                    f"Kill all (reachable) failed: {exc}",
-                    severity="error",
-                    timeout=6,
-                )
-                return
-            self.action_refresh()
-
-        self.app.push_screen(
-            ConfirmPhrase(
-                (f"Kill ALL {total} sessions for {n_users} reachable users? [{scope_summary}]"),
-                "kill-all-reachable",
-            ),
-            after_confirm,
-        )
+        self._kill_flow.kill_all_global()
 
     # ── Core bindings ────────────────────────────────────────────────
 
@@ -1145,7 +558,7 @@ class MainScreen(Screen):
             kick()
 
     def action_toggle_view(self) -> None:
-        new_mode = "flat" if self._dashboard_ui.view_mode == "by_host" else "by_host"
+        new_mode = toggle_view_mode(self._dashboard_ui.view_mode)
         # The tab strip is hidden in flat mode. If focus is currently
         # inside the strip, ``_refresh_dashboard`` is about to strand
         # it on a ``display: none`` widget — move it to the dashboard
@@ -1224,20 +637,18 @@ class MainScreen(Screen):
             strip = self.query_one("#host-tabs", HostTabStrip)
         except Exception:
             return
-        n = len(strip._buckets)
-        if n <= 1:
-            return
-        strip.active_index = (strip.active_index - 1) % n
+        new_idx = step_tab_index(strip.active_index, len(strip._buckets), -1)
+        if new_idx is not None:
+            strip.active_index = new_idx
 
     def action_next_tab(self) -> None:
         try:
             strip = self.query_one("#host-tabs", HostTabStrip)
         except Exception:
             return
-        n = len(strip._buckets)
-        if n <= 1:
-            return
-        strip.active_index = (strip.active_index + 1) % n
+        new_idx = step_tab_index(strip.active_index, len(strip._buckets), +1)
+        if new_idx is not None:
+            strip.active_index = new_idx
 
     def on_session_dashboard_table_host_navigate(
         self,
@@ -1265,18 +676,9 @@ class MainScreen(Screen):
             table = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:
             return
-        starts = table.block_starts
-        if len(starts) <= 1:
-            return
-        cur = table.cursor_row
-        block_idx = 0
-        for i, s in enumerate(starts):
-            if s <= cur:
-                block_idx = i
-            else:
-                break
-        new_block = (block_idx + (1 if event.direction > 0 else -1)) % len(starts)
-        table.move_cursor(row=starts[new_block])
+        target = next_block_start(table.block_starts, table.cursor_row, event.direction)
+        if target is not None:
+            table.move_cursor(row=target)
 
     def on_host_tab_activated(self, event: HostTabActivated) -> None:
         # Persist the new index on the App so a recompose mid-session
@@ -1315,45 +717,7 @@ class MainScreen(Screen):
         row._render_text()
 
     def _apply_ctx_refresh(self) -> bool:
-        try:
-            self._refresh_cwd_row()
-            open_row = self.query_one("#action-open", ActionRow)
-            open_row.detail = self._open_detail()
-            open_row.set_enabled(self.cfg.loading or bool(self.cfg.existing_projects))
-            self.query_one("#action-new", ActionRow).detail = f"({self.cfg.new_project_root}/…)"
-            self.query_one("#action-new", ActionRow)._render_text()
-            open_row._render_text()
-            try:
-                self.query_one("#top-actions-caption", Static).update(self._top_actions_caption())
-            except Exception:  # pragma: no cover — caption mounted in compose
-                pass
-        except Exception:
-            return False
-
-        # All sessions (own + other-user + remote) render through the
-        # unified dashboard widget; ``_refresh_dashboard`` below pulls
-        # a consistent ``state.main`` + ``state.remote`` snapshot.
-
-        if bool(self.cfg.sudo_caps.reachable_users):
-            try:
-                kill_row = self.query_one("#action-kill-all-global", ActionRow)
-            except Exception:
-                kill_row = None
-            if kill_row is not None:
-                total_sessions = len(self.cfg.sessions) + len(self.cfg.other_sessions)
-                kill_row.label = (
-                    f"⚡ Kill ALL uxon sessions (reachable users, {total_sessions} total)"
-                )
-                kill_row._render_text()
-
-        # The "Loading sessions…" / "No active sessions." placeholder
-        # is owned by ``_refresh_dashboard_note`` (called from
-        # ``_refresh_dashboard`` below), which also toggles its
-        # visibility based on the current local-row count.
-        self._refresh_dashboard()
-
-        self._update_status_line()
-        return True
+        return self._dashboard.apply_ctx_refresh()
 
     def apply_loaded_ctx(self, new_cfg: TuiContext, *, focus_key: str | None = None) -> None:
         """Swap the screen's static snapshot in. Patches in place if the
@@ -1483,81 +847,10 @@ class MainScreen(Screen):
         Any other focus target falls through to the "select a session"
         notify.
         """
-        focused = self.focused
-        if not isinstance(focused, SessionDashboardTable):
-            self.app.notify("Select a session first.", severity="warning")
-            return
-        idx = focused.cursor_row
-        if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
-            return
-        row = self._dashboard_rows[idx]
-        session_user = row.user or self.cfg.current_user
-        session_name = row.name
-        session_short = row.short or row.name
-
-        if row.host is not None:
-            # Remote: dispatch via SSH through ctx.on_remote_kill.
-            host = row.host
-
-            def after_confirm_remote(ok: bool | None) -> None:
-                if not ok:
-                    return
-                try:
-                    self.cfg.on_remote_kill(host, session_user, session_name)
-                    self.app.notify(
-                        f"Killed {session_short} on {host}; remote table will update on next poll"
-                    )
-                except CallbackError as exc:
-                    self.app.notify(f"Remote kill failed: {exc}", severity="error", timeout=6)
-                    return
-                self.action_refresh()
-
-            self.app.push_screen(
-                ConfirmYesNo(f"Kill {session_name} on {host} (user={session_user})?"),
-                after_confirm_remote,
-            )
-            return
-
-        def after_confirm(ok: bool | None) -> None:
-            if not ok:
-                return
-            try:
-                self.cfg.on_kill(session_user, session_name)
-                self.app.notify(f"Killed {session_short}")
-            except CallbackError as exc:
-                self.app.notify(
-                    f"Kill {session_short} failed: {exc}",
-                    severity="error",
-                    timeout=6,
-                )
-                return
-            self.action_refresh()
-
-        self.app.push_screen(
-            ConfirmYesNo(f"Kill {session_name} (user={session_user})?"),
-            after_confirm,
-        )
+        self._kill_flow.kill()
 
     def action_kill_all_own(self) -> None:
-        if not self.cfg.sessions:
-            return
-        n = len(self.cfg.sessions)
-
-        def after_confirm(ok: bool | None) -> None:
-            if not ok:
-                return
-            try:
-                self.cfg.on_kill_all()
-                self.app.notify(f"Killed all {n} sessions")
-            except CallbackError as exc:
-                self.app.notify(f"Kill all failed: {exc}", severity="error", timeout=6)
-                return
-            self.action_refresh()
-
-        self.app.push_screen(
-            ConfirmPhrase(f"Kill ALL {n} sessions?", "kill-all"),
-            after_confirm,
-        )
+        self._kill_flow.kill_all_own()
 
     def _activate_index(self, idx: int) -> None:
         """Resolve index into a concrete item and fire its activation."""
@@ -1598,6 +891,8 @@ class MainScreen(Screen):
             pass
 
     def _current_focus_key(self) -> str:
+        # Pure encode lives in :func:`focus_key_for_row`; the cursor-row
+        # read off the live widget stays here (Textual half).
         focused = self.focused
         if isinstance(focused, ActionRow):
             return f"action:{focused.id or ''}"
@@ -1606,50 +901,41 @@ class MainScreen(Screen):
             if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
                 return ""
             row = self._dashboard_rows[idx]
-            # Remote rows carry ``host=peer``; serialise as
-            # ``remote:host/user/name`` so a recompose can pin the
-            # cursor back onto the right peer's session.
-            if row.host is not None:
-                return f"remote:{row.host}/{row.user}/{row.name}"
-            # Local rows (own + other-user) carry ``host=None``.
-            # Other-user rows are tagged with the row's user so a
-            # focus restore after recompose lands on the right row
-            # rather than colliding with an own-session of the same
-            # name.
-            if row.user and row.user != self.cfg.current_user:
-                return f"other:{row.user}/{row.name}"
-            return f"own:{row.name}"
+            return focus_key_for_row(
+                host=row.host,
+                user=row.user,
+                name=row.name,
+                current_user=self.cfg.current_user,
+            )
         return ""
 
     def _focus_key(self, key: str) -> bool:
-        if key.startswith("action:"):
-            selector = key.removeprefix("action:")
-            if not selector:
+        # Pure decode lives in :func:`parse_focus_key`; the
+        # ``query``/``focus``/``move_cursor`` half stays here.
+        parsed = parse_focus_key(key)
+        if parsed.kind == "action":
+            if not parsed.selector:
                 return False
             try:
-                self.query_one(f"#{selector}", ActionRow).focus()
+                self.query_one(f"#{parsed.selector}", ActionRow).focus()
                 return True
             except Exception:
                 return False
-        if key.startswith("own:"):
-            return self._focus_dashboard_own(key.removeprefix("own:"))
-        if key.startswith("other:"):
-            user, _, session_name = key.removeprefix("other:").partition("/")
-            return self._focus_dashboard_other(user, session_name)
-        if key.startswith("remote:"):
-            return self._focus_remote_key(key.removeprefix("remote:"))
+        if parsed.kind == "own":
+            return self._focus_dashboard_own(parsed.name)
+        if parsed.kind == "other":
+            return self._focus_dashboard_other(parsed.user, parsed.name)
+        if parsed.kind == "remote":
+            return self._focus_remote_key(parsed.host, parsed.user, parsed.name)
         return False
 
-    def _focus_remote_key(self, suffix: str) -> bool:
+    def _focus_remote_key(self, host: str, user: str, name: str) -> bool:
         """Restore focus on a dashboard remote row keyed by ``host/user/name``.
 
-        Suffix shape mirrors :meth:`_current_focus_key`: ``host/user/name``.
         Falls back gracefully when the dashboard is not mounted, the row
         no longer exists (peer dropped the session between the focus
         capture and the restore), or the suffix is malformed.
         """
-        host, _, rest = suffix.partition("/")
-        user, _, name = rest.partition("/")
         if not (host and name):
             return False
         try:

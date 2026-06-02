@@ -471,6 +471,66 @@ def activate_main_index(ctx: TuiContext, idx: int) -> MainIntent | None:
     return None
 
 
+def focus_key_for_row(
+    *,
+    host: str | None,
+    user: str,
+    name: str,
+    current_user: str,
+) -> str:
+    """Encode a dashboard row into a focus-restore key string.
+
+    Pure inverse of :func:`parse_focus_key`. The Textual half (reading
+    the cursor row off the widget) stays on the Screen; this is the
+    string codec only.
+
+    * Remote rows (``host`` set) → ``remote:host/user/name`` so a
+      recompose can pin the cursor back onto the right peer's session.
+    * Local other-user rows (``user`` differs from ``current_user``) →
+      ``other:user/name`` so a focus restore lands on the right row
+      rather than colliding with an own-session of the same name.
+    * Local own rows → ``own:name``.
+    """
+    if host is not None:
+        return f"remote:{host}/{user}/{name}"
+    if user and user != current_user:
+        return f"other:{user}/{name}"
+    return f"own:{name}"
+
+
+@dataclass(frozen=True)
+class ParsedFocusKey:
+    """Decoded shape of a focus-restore key (see :func:`parse_focus_key`)."""
+
+    kind: str  # "action" | "own" | "other" | "remote" | ""
+    selector: str = ""  # action: the ActionRow id
+    host: str = ""  # remote: peer host
+    user: str = ""  # other/remote: row user
+    name: str = ""  # own/other/remote: session name
+
+
+def parse_focus_key(key: str) -> ParsedFocusKey:
+    """Decode a focus-restore key string into its parts.
+
+    Pure inverse of :func:`focus_key_for_row` (plus the ``action:``
+    variant the Screen emits for focused :class:`ActionRow` widgets).
+    Returns ``kind == ""`` for an unrecognised / empty key. The Textual
+    half (``query_one``/``focus``/``move_cursor``) stays on the Screen.
+    """
+    if key.startswith("action:"):
+        return ParsedFocusKey("action", selector=key.removeprefix("action:"))
+    if key.startswith("own:"):
+        return ParsedFocusKey("own", name=key.removeprefix("own:"))
+    if key.startswith("other:"):
+        user, _, name = key.removeprefix("other:").partition("/")
+        return ParsedFocusKey("other", user=user, name=name)
+    if key.startswith("remote:"):
+        host, _, rest = key.removeprefix("remote:").partition("/")
+        user, _, name = rest.partition("/")
+        return ParsedFocusKey("remote", host=host, user=user, name=name)
+    return ParsedFocusKey("")
+
+
 def confirm_phrase_matches(value: str, phrase: str) -> bool:
     return value.strip() == phrase
 
