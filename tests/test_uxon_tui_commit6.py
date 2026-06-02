@@ -4,11 +4,10 @@ plus the cwd-change invalidation contract.
 Pinned contracts:
 
 * link_health probe results land on ``state.link_health`` via
-  ``slot_state.apply``. The shim ``ctx.link_health_status`` reads
-  ``state.link_health.value``.
+  ``slot_state.apply``; consumers read ``state.link_health.value``.
 * cwd_writable probe results land on ``state.cwd_writable`` via the
-  same path; the shim returns the slot value when probed, else
-  legacy.
+  same path; ``MainScreen._cwd_writable_now`` returns the slot value
+  once probed, else the static ``cfg`` seed.
 * The on-loop handler drops a cwd-write probe whose ``cwd_at_start``
   no longer matches the live ``ctx.cwd`` (in-flight reattribution
   guard).
@@ -74,8 +73,6 @@ class LinkHealthSlotApplyTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertIs(app.state.link_health.value, status)
             self.assertIsNotNone(app.state.link_health.last_attempt_at)
-            # Shim reads through.
-            self.assertIs(app.ctx.link_health_status, status)
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")

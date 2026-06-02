@@ -118,10 +118,15 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 
         Regression for a bug where ``apply_loaded_ctx`` carried over
         ``link_health_status`` but not ``agent_availability``: the probe
-        worker writes to ``app.ctx.agent_availability`` and after the
-        first refresh tick that dict was orphaned — every subsequent
+        result used to be orphaned on a ctx swap, so every subsequent
         ``LaunchOptionsScreen`` saw a fresh ``pending`` dict and rendered
         ``(checking…)`` forever, blocking the agent commit path.
+
+        Post-shim-removal the availability lives on the App-owned
+        ``state.agent_availability`` slot (identity-stable across rebuild
+        ticks), so the swap can no longer orphan it. Pin both: the slot
+        keeps the probe result, and the static snapshot stays shared
+        (``app.ctx is app.screen.cfg``).
         """
         from uxon.infra.agents import AgentAvailability
         from uxon.tui.app import UxonApp
@@ -133,7 +138,8 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 
         skeleton = _mk_ctx(loading=True, on_refresh=fake_refresh)
         # Pre-seed the skeleton's availability dict with a non-pending
-        # entry — emulates the probe completing before the swap.
+        # entry — emulates the probe completing before the swap. The App
+        # seeds ``state.agent_availability`` from this at construction.
         skeleton.agent_availability["claude"] = AgentAvailability(status="ok")
 
         app = UxonApp(skeleton, probe_agents=False)
@@ -143,14 +149,14 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             app.screen.apply_loaded_ctx(loaded)
             await pilot.pause()
             self.assertEqual(
-                app.screen.ctx.agent_availability["claude"].status,
+                app.state.agent_availability.value["claude"].status,
                 "ok",
-                msg="screen.ctx lost the probe result",
+                msg="state slot lost the probe result across the ctx swap",
             )
             self.assertIs(
                 app.ctx,
-                app.screen.ctx,
-                msg="app.ctx and screen.ctx must point to the same TuiContext",
+                app.screen.cfg,
+                msg="app.ctx and screen.cfg must point to the same TuiContext snapshot",
             )
 
     async def test_main_ui_survives_recompose(self) -> None:
@@ -220,7 +226,8 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             app.main_ui.active_tab_index = 2
             app.main_ui.pending_tab_focus_restore = True
             # Swap to a ctx with a different layout signature → triggers
-            # the ``MainScreen(self.ctx)`` rebuild + ``switch_screen`` path.
+            # the ``MainScreen(self.cfg, self.state)`` rebuild +
+            # ``switch_screen`` path.
             app.screen.apply_loaded_ctx(loaded)
             await pilot.pause()
             self.assertIsNot(

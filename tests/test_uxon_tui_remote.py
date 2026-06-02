@@ -176,7 +176,7 @@ class ActionKillRemoteRowTests(unittest.TestCase):
             app = fake_app  # shadows the MessagePump descriptor
 
         screen = _StubScreen.__new__(_StubScreen)
-        screen.ctx = ctx
+        screen.cfg = ctx
         screen._dashboard_rows = (
             SessionRow(
                 host="vz-prod1",
@@ -249,7 +249,7 @@ class OnDataTableRowSelectedRemoteTests(unittest.TestCase):
             app = fake_app
 
         screen = _StubScreen.__new__(_StubScreen)
-        screen.ctx = ctx
+        screen.cfg = ctx
         screen._dashboard_rows = (
             SessionRow(
                 host="vz-prod1",
@@ -339,17 +339,17 @@ class RemoteStateSurvivesRebuildTests(unittest.TestCase):
             app = fake_app
 
         screen = _StubScreen.__new__(_StubScreen)
-        screen.ctx = old
+        screen.cfg = old
+        screen.state = state
         screen._restore_focus_key = ""
         screen._apply_ctx_refresh = lambda: True  # type: ignore[method-assign]
 
         screen.apply_loaded_ctx(new, focus_key="")
-        self.assertIs(screen.ctx, new)
+        self.assertIs(screen.cfg, new)
         # The slot is unchanged — same SlotState identity, same value.
+        # ``apply_loaded_ctx`` swaps only the static snapshot (``cfg``);
+        # the live ``state.remote`` store is never touched.
         self.assertIs(state.remote["vz-prod1"].value, snap)
-        # Shim flattens state.remote into the legacy dict shape on read.
-        self.assertIn("vz-prod1", screen.ctx.remote_snapshots)
-        self.assertIs(screen.ctx.remote_snapshots["vz-prod1"], snap)
 
 
 class RemoteFocusKeyTests(unittest.TestCase):
@@ -397,7 +397,7 @@ class RemoteFocusKeyTests(unittest.TestCase):
 
         screen = _StubScreen.__new__(_StubScreen)
         screen._dashboard_rows = tuple(rows)
-        screen.ctx = SimpleNamespace(current_user="vasily")  # type: ignore[assignment]
+        screen.cfg = SimpleNamespace(current_user="vasily")  # type: ignore[assignment]
         return screen, table
 
     def test_current_focus_key_for_remote_row(self) -> None:

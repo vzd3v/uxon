@@ -261,18 +261,19 @@ class UxonApp(App):
         # state populated alongside the live ctx.
         self.cfg: TuiConfig = TuiConfig.from_context(ctx)
         self.state: TuiState = TuiState()
-        # Hoist the cli-built initial dicts into state slots so the
-        # slot is canonical from construction. ``dataclasses.replace``
-        # produces a new (frozen) :class:`SlotState` carrying the same
-        # dict reference — worker-thread in-place mutations through
-        # ``ctx.agent_availability[aid] = …`` land on this dict.
+        # Seed the agent-availability slot from the cli-built initial
+        # dict so the slot is canonical from construction.
+        # ``dataclasses.replace`` produces a new (frozen)
+        # :class:`SlotState` carrying a fresh copy of the seed dict;
+        # the live value is read off ``state.agent_availability`` by
+        # every consumer thereafter (the old read-through proxy on
+        # ``ctx`` is gone).
         from dataclasses import replace as _replace
 
         self.state.agent_availability = _replace(
             self.state.agent_availability,
             value=dict(ctx.agent_availability),
         )
-        self.ctx._state = self.state
         self.pending_launch: LaunchRequest | None = None
         self.quit_rc: int | None = None
         self.pending_status = pending_status
@@ -403,7 +404,7 @@ class UxonApp(App):
         # ``time.monotonic()`` for diffs only — wall-clock jitters
         # under NTP corrections.
         _debug("startup", at="mount_started", ts=time.monotonic())
-        self.push_screen(MainScreen(self.ctx))
+        self.push_screen(MainScreen(self.ctx, self.state))
         if self.pending_status:
             # A notify() raised on mount survives the app re-create
             # cycle when the outer loop stashes the message.
@@ -1052,9 +1053,9 @@ class UxonApp(App):
         ``state.agent_availability`` via :func:`slot_state.apply`.
         The dispatcher is the *only* on-loop site that mutates this
         slot, so observers see a consistent fresh dict on each tick.
-        ``ctx.agent_availability`` returns ``state.<slot>.value`` —
-        the freshly-allocated dict — so by-reference snapshots
-        captured at modal-construction time would go stale.
+        Consumers read ``state.agent_availability.value`` — the
+        freshly-allocated dict — so by-reference snapshots captured at
+        modal-construction time would go stale.
         """
         from .slot_state import SlotResult
         from .slot_state import apply as apply_slot

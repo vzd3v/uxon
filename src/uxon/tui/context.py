@@ -20,8 +20,6 @@ from uxon.domain.sudo import SudoCapability
 if TYPE_CHECKING:
     from uxon.infra.probes import HostStatsResult
 
-    from .tui_state import TuiState
-
 
 # ── Errors ───────────────────────────────────────────────────────────
 
@@ -53,14 +51,17 @@ class TuiContext:
     new_project_root: str
     existing_projects: list[tuple[str, str]]  # (name, compact_mtime) under new_project_root
     server_status: ServerStatus = field(default_factory=ServerStatus)
+    # Static seed for the SSH-link-health line. The live value lives on
+    # ``TuiState.link_health`` (a :class:`SlotState`); the App seeds the
+    # slot from this field at construction and screens read the live
+    # slot directly thereafter. This field is the cold-start / no-App
+    # fallback only.
     link_health_status: LinkHealthStatus = field(default_factory=LinkHealthStatus)
-    # ``refresh_tick`` is declared here so pyright sees the
-    # attribute, but the property descriptor installed *after the
-    # class body* (see below) replaces this default at runtime —
-    # reads/writes go through ``self._state.refresh_tick`` when a
-    # state is linked, otherwise through a private fallback slot.
-    # ``init=False`` keeps the kwarg out of ``__init__`` (no caller
-    # passes ``refresh_tick=`` today).
+    # Static seed for the refresh counter. The live counter lives on
+    # ``TuiState.refresh_tick`` (sole writer:
+    # ``UxonApp._handle_main_ctx_rebuild``); screens read it from
+    # ``state`` directly. No caller passes ``refresh_tick=`` today, so
+    # ``init=False`` keeps it out of ``__init__``.
     refresh_tick: int = field(default=0, init=False)
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
@@ -116,7 +117,11 @@ class TuiContext:
     enabled_agents: tuple[str, ...] = ()
     default_agent: str = ""
     launch_user: str = ""
-    # Maps agent_id → AgentAvailability (status: "pending"|"ok"|"missing"|"timeout")
+    # Static seed for agent availability (agent_id → AgentAvailability,
+    # status: "pending"|"ok"|"missing"|"timeout"). The live value lives
+    # on ``TuiState.agent_availability`` (a :class:`SlotState`); the App
+    # seeds the slot from this dict at construction and screens read the
+    # live slot directly. Cold-start / no-App fallback only.
     agent_availability: dict[str, Any] = field(default_factory=dict)
 
     # Callbacks — TUI calls these, uxon provides them.
@@ -241,11 +246,10 @@ class TuiContext:
     tui_search_fields: tuple[str, ...] = ("name", "user")
     tui_color_palette: tuple[str, ...] = ("cyan", "blue")
     local_host_color: str = "green"
-    # Exposed via the property defined after the class body. Reads
-    # return a flattened view of ``self._state.remote`` when a state
-    # is linked, or the kwarg-stored dict for unit tests that don't
-    # build an App. Writes go to the kwarg-stored dict only — the
-    # dispatcher mutates ``state.remote`` directly via ``apply``.
+    # Static seed for the per-host snapshot map. The live store is
+    # ``TuiState.remote`` (one :class:`SlotState` per peer); the
+    # dashboard model selector reads ``state.remote`` directly. This
+    # field is the cold-start / no-App fallback only.
     remote_snapshots: dict = field(default_factory=dict)  # dict[str, RemoteSnapshot]
 
     # Pluggable refresh sources. Each entry is a ``SourceSpec`` (see
@@ -260,150 +264,6 @@ class TuiContext:
     # populates this with the ``main_ctx_rebuild`` source that wraps
     # ``on_refresh()``; future hosts add more entries here.
     refresh_sources: list = field(default_factory=list)
-
-    # Linked :class:`uxon.tui.tui_state.TuiState` — the App sets this
-    # at ``__init__`` time so the canonical ``refresh_tick`` (and
-    # every async slot) is shared between the live ctx and the state
-    # container. Defaults to ``None`` for tests and the skeleton ctx
-    # that don't run inside an App; the property accessors below fall
-    # back to a private kwarg-stored slot. Excluded from ``__repr__``
-    # to keep test failures readable.
-    _state: TuiState | None = field(default=None, repr=False, compare=False)
-
-
-# ── refresh_tick property ───────────────────────────────────────────
-#
-# Defined after the dataclass body so the property descriptor is not
-# shadowed by the @dataclass-generated ``__init__`` field assignment.
-# When ``_state`` is linked (App is running), reads/writes go through
-# ``state.refresh_tick``; otherwise a private slot in ``__dict__``
-# keeps the dataclass-style attribute semantics intact.
-
-
-def _tui_refresh_tick_get(self: TuiContext) -> int:
-    state = getattr(self, "_state", None)
-    if state is not None:
-        return state.refresh_tick
-    return self.__dict__.get("_legacy_refresh_tick", 0)
-
-
-def _tui_refresh_tick_set(self: TuiContext, value: int) -> None:
-    value = int(value)
-    state = getattr(self, "_state", None)
-    if state is not None:
-        state.refresh_tick = value
-    self.__dict__["_legacy_refresh_tick"] = value
-
-
-TuiContext.refresh_tick = property(  # type: ignore[assignment]
-    _tui_refresh_tick_get,
-    _tui_refresh_tick_set,
-)
-
-
-# ── remote_snapshots property (read-through view onto state.remote) ─
-#
-# ``state.remote`` is the canonical store. Reads flatten the slot
-# dict to ``dict[str, RemoteSnapshot]``; writes (rare; mostly test
-# fixtures setting via the constructor kwarg) land on a private dict
-# so test paths that don't run inside an App keep working.
-#
-# The flattened view is rebuilt on every access — sub-optimal, but
-# the dashboard model selector keys on ``id(slot.value)`` (not on
-# ``id(snapshots)``), so the rebuild cost is bounded by the number
-# of configured hosts.
-
-
-def _tui_remote_snapshots_get(self: TuiContext) -> dict:
-    state = getattr(self, "_state", None)
-    if state is not None and state.remote:
-        return {name: slot.value for name, slot in state.remote.items() if slot.value is not None}
-    return self.__dict__.get("_legacy_remote_snapshots", {})
-
-
-def _tui_remote_snapshots_set(self: TuiContext, value: dict) -> None:
-    self.__dict__["_legacy_remote_snapshots"] = value
-
-
-TuiContext.remote_snapshots = property(  # type: ignore[assignment]
-    _tui_remote_snapshots_get,
-    _tui_remote_snapshots_set,
-)
-
-
-# ── agent_availability read-through property ────────────────────────
-#
-# Canonical store: ``state.agent_availability``
-# (a :class:`SlotState[dict[...]]`). Reads return
-# ``state.<slot>.value`` when a state is linked, falling back to a
-# private kwarg-stored dict for unit tests that build a bare ctx
-# without an App.
-
-
-def _availability_get(self: TuiContext) -> dict:
-    state = getattr(self, "_state", None)
-    if state is not None and state.agent_availability.value is not None:
-        return state.agent_availability.value
-    return self.__dict__.get("_legacy_agent_availability", {})
-
-
-def _availability_set(self: TuiContext, value: dict) -> None:
-    self.__dict__["_legacy_agent_availability"] = value
-
-
-TuiContext.agent_availability = property(  # type: ignore[assignment]
-    _availability_get,
-    _availability_set,
-)
-
-
-# ── link_health_status / cwd_writable read-through properties ───────
-#
-# Canonical: ``state.link_health`` / ``state.cwd_writable``. Reads
-# return ``state.<slot>.value``; the kwarg-stored fallback covers
-# unit tests that build a bare ctx without an App.
-
-
-def _link_health_get(self: TuiContext) -> LinkHealthStatus:
-    state = getattr(self, "_state", None)
-    if state is not None and state.link_health.value is not None:
-        return state.link_health.value
-    return self.__dict__.get("_legacy_link_health_status", LinkHealthStatus())
-
-
-def _link_health_set(self: TuiContext, value: LinkHealthStatus) -> None:
-    self.__dict__["_legacy_link_health_status"] = value
-
-
-def _cwd_writable_get(self: TuiContext) -> bool | None:
-    """Return the cached cwd-writable flag.
-
-    Three-valued semantics:
-      ``None``  — probe still in flight or never ran
-      ``True``  — launchable
-      ``False`` — not launchable
-
-    "Never loaded" is structural: ``state.cwd_writable.last_attempt_at
-    is None`` regardless of value.
-    """
-    state = getattr(self, "_state", None)
-    if state is not None and state.cwd_writable.last_attempt_at is not None:
-        return state.cwd_writable.value
-    return self.__dict__.get("_legacy_cwd_writable", None)
-
-
-def _cwd_writable_set(self: TuiContext, value: bool | None) -> None:
-    self.__dict__["_legacy_cwd_writable"] = value
-
-
-TuiContext.link_health_status = property(  # type: ignore[assignment]
-    _link_health_get,
-    _link_health_set,
-)
-TuiContext.cwd_writable = property(  # type: ignore[assignment]
-    _cwd_writable_get,
-    _cwd_writable_set,
-)
 
 
 # Number of action items at the top of the main list.

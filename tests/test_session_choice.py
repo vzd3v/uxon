@@ -263,13 +263,13 @@ class _StubScreen:
     ``MainScreen.app`` is a read-only property on the Textual base class,
     so we can't monkeypatch it onto a real MainScreen instance. Instead
     we re-bind the unbound function onto this lightweight stub — the
-    helper only touches ``self.ctx``, ``self.app.push_screen``,
+    helper only touches ``self.cfg``, ``self.app.push_screen``,
     ``self.app.notify``, ``self.app.request_launch``, and the
     ``_attach_session`` method, all of which we mock here.
     """
 
     def __init__(self, ctx, attach_log):
-        self.ctx = ctx
+        self.cfg = ctx
         self.app = MagicMock()
         self.app.push_screen = MagicMock()
         self.app.notify = MagicMock()

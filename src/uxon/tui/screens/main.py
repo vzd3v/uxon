@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -75,6 +75,11 @@ from .launch_options import LaunchOptionsScreen
 from .new_project import NewProjectScreen
 from .session_choice import SessionChoiceScreen
 from .worktree_branch import WorktreeBranchScreen
+
+if TYPE_CHECKING:
+    from uxon.domain.status import LinkHealthStatus
+
+    from ..tui_state import TuiState
 
 
 class MainScreen(Screen):
@@ -150,10 +155,19 @@ class MainScreen(Screen):
     # is None)`` directly.
     loading: reactive[bool] = reactive(True)
 
-    def __init__(self, ctx: TuiContext) -> None:
+    def __init__(self, cfg: TuiContext, state: TuiState) -> None:
         super().__init__()
-        self.ctx = ctx
-        self.loading = bool(ctx.loading)
+        # ``cfg`` is the static rebuild snapshot (sessions, cwd,
+        # sudo_caps, callbacks, …) — swapped wholesale on each rebuild
+        # tick by :meth:`apply_loaded_ctx`. ``state`` is the App-owned
+        # live :class:`TuiState`; its identity is stable across rebuild
+        # ticks. The three async-slot fields the screen renders
+        # (``refresh_tick``, ``link_health``, ``cwd_writable``) are read
+        # from ``state`` directly — there is no read-through proxy on
+        # ``cfg`` any more.
+        self.cfg = cfg
+        self.state = state
+        self.loading = bool(cfg.loading)
         self._restore_focus_key = ""
         # Primary repo root resolved by the launch-flow workspace probe
         # (§4.2). Threaded into LaunchOptionsScreen + the workspace-choice
@@ -178,11 +192,11 @@ class MainScreen(Screen):
         # keeping recompose-trigger and column-mount predicate in
         # lockstep.
         flags = LayoutFlags(
-            multi_host=bool(ctx.remote_hosts),
+            multi_host=bool(cfg.remote_hosts),
             cross_user=cross_user_latched(self._main_ui_or_empty()),
         )
         self._active_columns = build_active_columns(
-            cfg_columns=ctx.tui_table_columns,
+            cfg_columns=cfg.tui_table_columns,
             flags=flags,
         )
         # Cached layout signature for the patch-vs-recompose decision.
@@ -198,7 +212,7 @@ class MainScreen(Screen):
         # value is the *previous* signature — what was committed last
         # time apply_loaded_ctx finished — making the False→True
         # transition observable regardless of who flipped the latch.
-        self._cached_signature = select_layout_signature(ctx, self._main_ui_or_empty())
+        self._cached_signature = select_layout_signature(cfg, self._main_ui_or_empty())
 
     def _main_ui_or_empty(self) -> MainScreenUiState:
         """Return ``app.main_ui`` if reachable, otherwise a fresh empty
@@ -219,6 +233,31 @@ class MainScreen(Screen):
         if isinstance(ui, MainScreenUiState):
             return ui
         return MainScreenUiState()
+
+    # ── Live async-slot reads ─────────────────────────────────────────
+    #
+    # These read the App-owned :class:`TuiState` slots directly. They
+    # replicate exactly what the deleted ``TuiContext`` read-through
+    # properties did: prefer the live slot once a probe has landed,
+    # otherwise fall back to the static seed carried on ``cfg``.
+
+    def _link_health_now(self) -> LinkHealthStatus:
+        """Current SSH-link health: live slot, else the ``cfg`` seed."""
+        value = self.state.link_health.value
+        if value is not None:
+            return value
+        return self.cfg.link_health_status
+
+    def _cwd_writable_now(self) -> bool | None:
+        """Current cwd-writable flag with three-valued semantics.
+
+        Returns the live slot value once any probe has landed
+        (``last_attempt_at is not None``); otherwise the static seed on
+        ``cfg`` (``None`` when the probe is still in flight / never ran).
+        """
+        if self.state.cwd_writable.last_attempt_at is not None:
+            return self.state.cwd_writable.value
+        return self.cfg.cwd_writable
 
     # ── Recompose-safe UI state proxies ──────────────────────────────
     #
@@ -255,10 +294,10 @@ class MainScreen(Screen):
         yield Header()
         with Vertical(id="main-body"):
             line = main_status_line(
-                self.ctx.server_status,
-                self.ctx.link_health_status,
-                self.ctx.refresh_tick,
-                loading=self.ctx.loading,
+                self.cfg.server_status,
+                self._link_health_now(),
+                self.state.refresh_tick,
+                loading=self.cfg.loading,
             )
             yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
             # Top action row — three side-by-side bordered buttons.
@@ -272,7 +311,7 @@ class MainScreen(Screen):
                 yield ActionRow(
                     kind="action-cwd",
                     label="New session in current folder",
-                    enabled=self.ctx.cwd_writable is not False,
+                    enabled=self._cwd_writable_now() is not False,
                     id="action-cwd",
                 )
                 yield ActionRow(
@@ -287,7 +326,7 @@ class MainScreen(Screen):
                     # While loading we don't yet know whether projects exist.
                     # Keep the row enabled so it isn't dimmed; activation falls
                     # through to the existing "no projects" notify path.
-                    enabled=self.ctx.loading or bool(self.ctx.existing_projects),
+                    enabled=self.cfg.loading or bool(self.cfg.existing_projects),
                     id="action-open",
                 )
             yield Static(self._top_actions_caption(), id="top-actions-caption")
@@ -300,9 +339,9 @@ class MainScreen(Screen):
             # is set, the HOST column when ``multi_host`` is set.
             yield SearchBar(id="search-bar")
             yield Static("── sessions ──", classes="segment-header")
-            note = "Loading sessions…" if self.ctx.loading else "No active sessions."
+            note = "Loading sessions…" if self.cfg.loading else "No active sessions."
             note_classes = "empty-note"
-            if self.ctx.sessions or self.ctx.other_sessions:
+            if self.cfg.sessions or self.cfg.other_sessions:
                 # Dashboard will populate momentarily — start hidden so
                 # the layout doesn't flicker an empty-note at first paint.
                 note_classes = "empty-note -hidden"
@@ -323,7 +362,7 @@ class MainScreen(Screen):
             # arrowing down off the table lands on it first. Collapsed by
             # default; ``h`` (or a click on the bar) expands it.
             yield FleetStatusBar(id="fleet-status")
-            if bool(self.ctx.sudo_caps.reachable_users):
+            if bool(self.cfg.sudo_caps.reachable_users):
                 yield Static(self._superuser_header(), classes="segment-header")
                 yield ActionRow(
                     kind="settings",
@@ -333,9 +372,9 @@ class MainScreen(Screen):
                     id="action-settings",
                     singleton=True,
                 )
-                total_sessions = len(self.ctx.sessions) + len(self.ctx.other_sessions)
+                total_sessions = len(self.cfg.sessions) + len(self.cfg.other_sessions)
                 if total_sessions > 0:
-                    reachable_users = sorted(self.ctx.sudo_caps.reachable_users)
+                    reachable_users = sorted(self.cfg.sudo_caps.reachable_users)
                     yield ActionRow(
                         kind="kill-all-global",
                         label=(
@@ -362,23 +401,23 @@ class MainScreen(Screen):
         all), append a ``(N/M users reachable)`` hint so the operator
         notices a colleague is missing rather than silently absent.
         """
-        reachable = sorted(self.ctx.sudo_caps.reachable_users)
-        skipped = list(self.ctx.scope_skipped_users)
+        reachable = sorted(self.cfg.sudo_caps.reachable_users)
+        skipped = list(self.cfg.scope_skipped_users)
         total = len(reachable) + len(skipped)
         if skipped and total:
             return f"── superuser ── ({len(reachable)}/{total} users reachable)"
         return "── superuser ──"
 
     def _cwd_detail(self) -> str:
-        if self.ctx.cwd_writable is False:
-            user = self.ctx.launch_user or self.ctx.current_user or "launch user"
-            return f"({self.ctx.cwd_short} — not launchable for {user})"
-        return f"({self.ctx.cwd_short})"
+        if self._cwd_writable_now() is False:
+            user = self.cfg.launch_user or self.cfg.current_user or "launch user"
+            return f"({self.cfg.cwd_short} — not launchable for {user})"
+        return f"({self.cfg.cwd_short})"
 
     def _open_detail(self) -> str:
-        if self.ctx.loading:
-            return f"({self.ctx.new_project_root}/… — loading)"
-        return f"({self.ctx.new_project_root}/…)"
+        if self.cfg.loading:
+            return f"({self.cfg.new_project_root}/… — loading)"
+        return f"({self.cfg.new_project_root}/…)"
 
     def _top_actions_caption(self) -> str:
         """Single-line caption rendered under the top action buttons.
@@ -388,7 +427,7 @@ class MainScreen(Screen):
         bordered buttons because at 1/3 width per button there isn't
         room for both the label and the path.
         """
-        return f"1: {self.ctx.cwd_short}   2 & 3: {self.ctx.new_project_root}/…"
+        return f"1: {self.cfg.cwd_short}   2 & 3: {self.cfg.new_project_root}/…"
 
     def on_mount(self) -> None:
         # Initial dashboard apply. ``state.main`` may still be ``None``
@@ -426,10 +465,10 @@ class MainScreen(Screen):
         """
         from ..dashboard.columns import assign_block_colors
 
-        palette = tuple(getattr(self.ctx, "tui_color_palette", ("cyan", "blue")))
-        local_color = getattr(self.ctx, "local_host_color", "green")
+        palette = tuple(getattr(self.cfg, "tui_color_palette", ("cyan", "blue")))
+        local_color = getattr(self.cfg, "local_host_color", "green")
         return assign_block_colors(
-            tuple(self.ctx.remote_hosts),
+            tuple(self.cfg.remote_hosts),
             local_color=local_color,
             palette=palette,
         )
@@ -444,8 +483,8 @@ class MainScreen(Screen):
         does not need).
         """
         return SimpleNamespace(
-            remote_hosts=self.ctx.remote_hosts,
-            current_user=self.ctx.current_user,
+            remote_hosts=self.cfg.remote_hosts,
+            current_user=self.cfg.current_user,
         )
 
     def _cursor_row_key(self, widget: SessionDashboardTable) -> str | None:
@@ -481,7 +520,7 @@ class MainScreen(Screen):
             note.set_class(True, "-hidden")
         else:
             note.set_class(False, "-hidden")
-            note.update("Loading sessions…" if self.ctx.loading else "No active sessions.")
+            note.update("Loading sessions…" if self.cfg.loading else "No active sessions.")
 
     def _refresh_dashboard(self) -> None:
         """Compute new model, diff against the previous, apply to the widget.
@@ -556,7 +595,7 @@ class MainScreen(Screen):
         prev_cursor_key = self._cursor_row_key(widget)
         plan = diff(self._dashboard_rows, rows, self._active_columns)
         widget.set_block_meta(self._build_block_meta(rows))
-        widget.set_block_starts(compute_block_starts(rows, self.ctx.current_user))
+        widget.set_block_starts(compute_block_starts(rows, self.cfg.current_user))
         widget.apply(plan)
         self._dashboard_rows = rows
         widget.pin_cursor_to(prev_cursor_key)
@@ -652,15 +691,15 @@ class MainScreen(Screen):
             row = self._dashboard_rows[idx]
             if row.host is not None:
                 # Remote: dispatch via ctx.on_remote_attach over SSH.
-                user = row.user or self.ctx.current_user
+                user = row.user or self.cfg.current_user
                 try:
-                    req = self.ctx.on_remote_attach(row.host, user, row.name)
+                    req = self.cfg.on_remote_attach(row.host, user, row.name)
                 except CallbackError as exc:
                     self.app.notify(f"Remote attach failed: {exc}", severity="error", timeout=6)
                     return
                 self.app.request_launch(req)  # type: ignore[attr-defined]
                 return
-            session_user = row.user or self.ctx.current_user
+            session_user = row.user or self.cfg.current_user
             self._attach_session(session_user, row.name)
             return
 
@@ -684,7 +723,7 @@ class MainScreen(Screen):
 
     def _attach_session(self, user: str, session_name: str) -> None:
         try:
-            req = self.ctx.on_attach(user, session_name)
+            req = self.cfg.on_attach(user, session_name)
         except CallbackError as exc:
             self.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
             return
@@ -721,7 +760,7 @@ class MainScreen(Screen):
             existing = (
                 probe()
                 if probe is not None
-                else self.ctx.on_probe_existing_sessions(target_dir, agent_id)
+                else self.cfg.on_probe_existing_sessions(target_dir, agent_id)
             )
         except CallbackError as exc:
             # A probe failure shouldn't silently swallow the launch.
@@ -732,7 +771,7 @@ class MainScreen(Screen):
             on_new()
             return
 
-        launch_user = self.ctx.launch_user or self.ctx.current_user
+        launch_user = self.cfg.launch_user or self.cfg.current_user
 
         def after_choice(result):
             if result is None:
@@ -790,7 +829,7 @@ class MainScreen(Screen):
             agent_id: str, mode_id: str, repo_root: str, path: str, branch: str
         ) -> None:
             try:
-                req = self.ctx.on_launch_existing_worktree(
+                req = self.cfg.on_launch_existing_worktree(
                     repo_root, branch, path, agent_id, mode_id
                 )
             except CallbackError as exc:
@@ -800,7 +839,7 @@ class MainScreen(Screen):
 
         def commit_new_worktree(agent_id: str, mode_id: str, repo_root: str, branch: str) -> None:
             try:
-                req = self.ctx.on_create_worktree(repo_root, branch, agent_id, mode_id)
+                req = self.cfg.on_create_worktree(repo_root, branch, agent_id, mode_id)
             except CallbackError as exc:
                 self.app.notify(str(exc), severity="error", timeout=6)
                 return
@@ -831,7 +870,7 @@ class MainScreen(Screen):
                     on_new=lambda: commit_existing_worktree(
                         agent_id, mode_id, repo_root, path, branch
                     ),
-                    probe=lambda: self.ctx.on_probe_existing_worktree_sessions(
+                    probe=lambda: self.cfg.on_probe_existing_worktree_sessions(
                         path, repo_root, branch, agent_id
                     ),
                 )
@@ -873,13 +912,13 @@ class MainScreen(Screen):
             )
             self.app.push_screen(  # type: ignore[attr-defined]
                 LaunchOptionsScreen(
-                    self.ctx, workspaces=workspaces, repo_root=self._workspace_repo_root
+                    self.cfg, self.state, workspaces=workspaces, repo_root=self._workspace_repo_root
                 ),
                 after_opts,
             )
 
         def deny() -> None:
-            user = self.ctx.launch_user or self.ctx.current_user or "launch user"
+            user = self.cfg.launch_user or self.cfg.current_user or "launch user"
             self.app.notify(
                 f"Cannot launch in {target_label} as {user} "
                 "(no write access, or outside allowed_roots)",
@@ -910,14 +949,14 @@ class MainScreen(Screen):
             target_dir,
             on_probed_workspaces,
             probe_launchable=(
-                None if launchable is True else lambda: self.ctx.on_probe_dir_launchable(target_dir)
+                None if launchable is True else lambda: self.cfg.on_probe_dir_launchable(target_dir)
             ),
         )
 
     def _launch_cwd(self) -> None:
         def commit_primary(agent_id: str, mode_id: str) -> None:
             try:
-                req = self.ctx.on_launch_cwd(agent_id, mode_id)
+                req = self.cfg.on_launch_cwd(agent_id, mode_id)
             except CallbackError as exc:
                 self.app.notify(str(exc), severity="error", timeout=6)
                 return
@@ -930,14 +969,16 @@ class MainScreen(Screen):
             # slot getter prefers a later background-worker write, so this
             # never masks a fresher value (a legitimate ``value=None`` does
             # not retrigger — the slot is concrete after any probe attempt).
-            self.ctx.cwd_writable = value
+            # Persist onto the static seed; ``_cwd_writable_now`` reads it
+            # until a worker probe lands on ``state.cwd_writable``.
+            self.cfg.cwd_writable = value
             self._refresh_cwd_row()
 
         self._begin_launch_in_folder(
-            target_dir=self.ctx.cwd,
-            target_label=self.ctx.cwd_short or self.ctx.cwd,
+            target_dir=self.cfg.cwd,
+            target_label=self.cfg.cwd_short or self.cfg.cwd,
             commit_primary=commit_primary,
-            launchable=self.ctx.cwd_writable,
+            launchable=self._cwd_writable_now(),
             on_probed=on_probed,
         )
 
@@ -954,14 +995,14 @@ class MainScreen(Screen):
 
                 def commit_new() -> None:
                     try:
-                        req = self.ctx.on_launch_new(name, agent_id, mode_id, git_profile)
+                        req = self.cfg.on_launch_new(name, agent_id, mode_id, git_profile)
                     except CallbackError as exc:
                         self.app.notify(str(exc), severity="error", timeout=6)
                         return
                     self.app.request_launch(req)  # type: ignore[attr-defined]
 
                 self._maybe_show_session_choice(
-                    target_dir=os.path.join(self.ctx.new_project_root, name),
+                    target_dir=os.path.join(self.cfg.new_project_root, name),
                     target_label=name,
                     agent_id=agent_id,
                     on_new=commit_new,
@@ -973,30 +1014,34 @@ class MainScreen(Screen):
             def _on_git(git_profile: str | None) -> None:
                 if git_profile is None:
                     return  # user cancelled the whole chain
-                self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts(name, git_profile))
+                self.app.push_screen(
+                    LaunchOptionsScreen(self.cfg, self.state), after_opts(name, git_profile)
+                )
 
             return _on_git
 
         def after_name(name: str | None) -> None:
             if not name:
                 return
-            if self.ctx.git_create_enabled and self.ctx.git_remote_profile_options:
+            if self.cfg.git_create_enabled and self.cfg.git_remote_profile_options:
                 self.app.push_screen(
                     GitProfileScreen(
-                        self.ctx.git_remote_profile_options,
-                        default_profile=self.ctx.default_git_remote_profile,
+                        self.cfg.git_remote_profile_options,
+                        default_profile=self.cfg.default_git_remote_profile,
                     ),
                     after_git(name),
                 )
             else:
-                self.app.push_screen(LaunchOptionsScreen(self.ctx), after_opts(name, ""))
+                self.app.push_screen(
+                    LaunchOptionsScreen(self.cfg, self.state), after_opts(name, "")
+                )
 
-        self.app.push_screen(NewProjectScreen(self.ctx.new_project_root), after_name)
+        self.app.push_screen(NewProjectScreen(self.cfg.new_project_root), after_name)
 
     def _launch_existing(self) -> None:
-        if not self.ctx.existing_projects:
+        if not self.cfg.existing_projects:
             self.app.notify(
-                f"No projects in {self.ctx.new_project_root}",
+                f"No projects in {self.cfg.new_project_root}",
                 severity="warning",
                 timeout=4,
             )
@@ -1006,11 +1051,11 @@ class MainScreen(Screen):
             if not name:
                 return
 
-            target_dir = os.path.join(self.ctx.new_project_root, name)
+            target_dir = os.path.join(self.cfg.new_project_root, name)
 
             def commit_primary(agent_id: str, mode_id: str) -> None:
                 try:
-                    req = self.ctx.on_launch_existing(name, agent_id, mode_id)
+                    req = self.cfg.on_launch_existing(name, agent_id, mode_id)
                 except CallbackError as exc:
                     self.app.notify(str(exc), severity="error", timeout=6)
                     return
@@ -1025,7 +1070,7 @@ class MainScreen(Screen):
             )
 
         self.app.push_screen(
-            ExistingProjectScreen(self.ctx.existing_projects, self.ctx.new_project_root),
+            ExistingProjectScreen(self.cfg.existing_projects, self.cfg.new_project_root),
             after_name,
         )
 
@@ -1034,19 +1079,19 @@ class MainScreen(Screen):
         from .settings import SettingsCallbacks, SettingsScreen
 
         cbs = SettingsCallbacks(
-            get_entries=self.ctx.get_settings_entries,
-            save_setting=self.ctx.on_setting_save,
-            remove_setting=self.ctx.on_setting_remove,
-            save_mapping=self.ctx.on_setting_save_mapping,
-            get_git_remote_profile_rows=self.ctx.get_git_remote_profile_rows,
+            get_entries=self.cfg.get_settings_entries,
+            save_setting=self.cfg.on_setting_save,
+            remove_setting=self.cfg.on_setting_remove,
+            save_mapping=self.cfg.on_setting_save_mapping,
+            get_git_remote_profile_rows=self.cfg.get_git_remote_profile_rows,
         )
         self.app.push_screen(SettingsScreen(cbs))
 
     def _kill_all_global(self) -> None:
-        total = len(self.ctx.sessions) + len(self.ctx.other_sessions)
+        total = len(self.cfg.sessions) + len(self.cfg.other_sessions)
         if total == 0:
             return
-        reachable = sorted(self.ctx.sudo_caps.reachable_users)
+        reachable = sorted(self.cfg.sudo_caps.reachable_users)
         # User-visible scope summary: name the reachable users
         # explicitly so the operator can't confuse "all reachable"
         # with "all users on the host" — those diverge under the
@@ -1058,7 +1103,7 @@ class MainScreen(Screen):
             if not confirmed:
                 return
             try:
-                self.ctx.on_kill_all_global()
+                self.cfg.on_kill_all_global()
                 self.app.notify(f"Killed all {total} sessions across {n_users} reachable users")
             except CallbackError as exc:
                 self.app.notify(
@@ -1260,13 +1305,13 @@ class MainScreen(Screen):
         return select_layout_signature(ctx, self._main_ui_or_empty())
 
     def _refresh_cwd_row(self) -> None:
-        """Re-render the cwd action row from the current ctx.cwd_writable."""
+        """Re-render the cwd action row from the current cwd-writable flag."""
         try:
             row = self.query_one("#action-cwd", ActionRow)
         except Exception:  # pragma: no cover — DOM not mounted yet
             return
         row.detail = self._cwd_detail()
-        row.set_enabled(self.ctx.cwd_writable is not False)
+        row.set_enabled(self._cwd_writable_now() is not False)
         row._render_text()
 
     def _apply_ctx_refresh(self) -> bool:
@@ -1274,8 +1319,8 @@ class MainScreen(Screen):
             self._refresh_cwd_row()
             open_row = self.query_one("#action-open", ActionRow)
             open_row.detail = self._open_detail()
-            open_row.set_enabled(self.ctx.loading or bool(self.ctx.existing_projects))
-            self.query_one("#action-new", ActionRow).detail = f"({self.ctx.new_project_root}/…)"
+            open_row.set_enabled(self.cfg.loading or bool(self.cfg.existing_projects))
+            self.query_one("#action-new", ActionRow).detail = f"({self.cfg.new_project_root}/…)"
             self.query_one("#action-new", ActionRow)._render_text()
             open_row._render_text()
             try:
@@ -1289,13 +1334,13 @@ class MainScreen(Screen):
         # unified dashboard widget; ``_refresh_dashboard`` below pulls
         # a consistent ``state.main`` + ``state.remote`` snapshot.
 
-        if bool(self.ctx.sudo_caps.reachable_users):
+        if bool(self.cfg.sudo_caps.reachable_users):
             try:
                 kill_row = self.query_one("#action-kill-all-global", ActionRow)
             except Exception:
                 kill_row = None
             if kill_row is not None:
-                total_sessions = len(self.ctx.sessions) + len(self.ctx.other_sessions)
+                total_sessions = len(self.cfg.sessions) + len(self.cfg.other_sessions)
                 kill_row.label = (
                     f"⚡ Kill ALL uxon sessions (reachable users, {total_sessions} total)"
                 )
@@ -1310,9 +1355,14 @@ class MainScreen(Screen):
         self._update_status_line()
         return True
 
-    def apply_loaded_ctx(self, new_ctx: TuiContext, *, focus_key: str | None = None) -> None:
-        """Swap the screen's ctx in. Patches in place if the layout signature
-        matches, otherwise switches to a freshly composed MainScreen.
+    def apply_loaded_ctx(self, new_cfg: TuiContext, *, focus_key: str | None = None) -> None:
+        """Swap the screen's static snapshot in. Patches in place if the
+        layout signature matches, otherwise switches to a freshly composed
+        MainScreen.
+
+        ``new_cfg`` is the fresh rebuild snapshot (the value
+        ``on_refresh()`` produced); the live :class:`TuiState` is
+        unchanged and shared with the App.
 
         ``focus_key=None`` (default) captures the currently focused widget
         before the swap so it can be restored after. Pass ``""`` to skip
@@ -1322,16 +1372,16 @@ class MainScreen(Screen):
             "refresh",
             at="apply_loaded_ctx",
             action="enter",
-            sessions=len(new_ctx.sessions),
-            other=len(new_ctx.other_sessions),
-            tick=new_ctx.refresh_tick,
+            sessions=len(new_cfg.sessions),
+            other=len(new_cfg.other_sessions),
+            tick=self.state.refresh_tick,
         )
         if focus_key is None:
             focus_key = self._current_focus_key()
         # ``old_signature`` is the value committed on the prior
         # apply_loaded_ctx call (or on ``__init__`` for the first
         # mount). Reading from the cache rather than recomputing
-        # against ``self.ctx`` makes the comparison sensitive to
+        # against ``self.cfg`` makes the comparison sensitive to
         # ``cross_user`` latch flips applied by handlers that update
         # ``app.main_ui.seen_users`` directly (see the field's
         # docstring on ``__init__``).
@@ -1339,43 +1389,34 @@ class MainScreen(Screen):
         # Hand-stubbed test screens (``MainScreen.__new__`` paths) can
         # skip ``__init__`` and therefore lack the cache; in that
         # case fall back to a fresh computation from the current
-        # ctx — preserves the original (pre-cache) behaviour for
+        # snapshot — preserves the original (pre-cache) behaviour for
         # those legacy stubs.
         old_signature = getattr(self, "_cached_signature", None)
         if old_signature is None:
-            old_signature = self._layout_signature(self.ctx)
-        # Link the new ctx to the App's TuiState before writing
-        # through the ``refresh_tick`` proxy. Without this link the
-        # assignment would land on the new ctx's own default-factory
-        # state (transient and unobserved by anyone) instead of the
-        # App-owned state container. Some unit tests build a FakeApp
-        # without ``state``; fall through in that case.
-        app_state = getattr(self.app, "state", None)
-        if app_state is not None:
-            new_ctx._state = app_state
-        else:
-            # Carry the prior ctx's _state across so the proxy keeps
-            # round-tripping the counter when no App is in the picture.
-            new_ctx._state = self.ctx._state
+            old_signature = self._layout_signature(self.cfg)
         # cwd-change invalidation: reset ``state.cwd_writable`` to its
         # zero state so the row paints "checking…" until the next
         # probe lands. Worker-side gating
         # (``_CwdWritableUpdated.cwd_at_start``) drops in-flight
-        # probes that started against the old cwd.
-        if app_state is not None and new_ctx.cwd != self.ctx.cwd:
+        # probes that started against the old cwd. Operates on the
+        # App-owned state container so the reset is observed by the
+        # probe handlers; some unit-test FakeApps lack ``state``.
+        app_state = getattr(self.app, "state", None)
+        if app_state is not None and new_cfg.cwd != self.cfg.cwd:
             from uxon.tui.slot_state import SlotState as _SlotState
 
             app_state.cwd_writable = _SlotState[bool | None]()
-        self.ctx = new_ctx
+        self.cfg = new_cfg
         # The reactive descriptor needs Textual node setup (``_id``);
         # test stubs that bypass ``__init__`` (``MainScreen.__new__``)
         # would hit ReactiveError on assignment, so guard with
         # ``hasattr`` rather than try/except.
         if hasattr(self, "_id"):
-            self.loading = bool(new_ctx.loading)
-        # Keep app.ctx in lockstep so the probe worker's writes target the
-        # same dict that screens read from.
-        self.app.ctx = new_ctx  # type: ignore[attr-defined]
+            self.loading = bool(new_cfg.loading)
+        # Keep app.ctx in lockstep so the probe worker's reads target the
+        # same static snapshot that screens read from (``app._probe_cwd_*``
+        # gates against ``self.app.ctx.cwd``).
+        self.app.ctx = new_cfg  # type: ignore[attr-defined]
         # Defensive feed: walk the current state (with ``state.main``
         # synced from ``new_ctx``) and fold any new users into the
         # cross-user latch accumulator. Production already feeds via
@@ -1390,17 +1431,17 @@ class MainScreen(Screen):
         #    accumulator picks up the new local own / other-user
         #    rows it produced.
         #
-        # ``state.main = MainData.from_context(new_ctx)`` is idempotent
+        # ``state.main = MainData.from_context(new_cfg)`` is idempotent
         # with the dispatcher's earlier write in production; the sync
-        # keeps the dashboard model aligned with ``self.ctx`` for the
+        # keeps the dashboard model aligned with ``self.cfg`` for the
         # in-place patch path below regardless of who called us.
         main_ui = getattr(self.app, "main_ui", None)
         if isinstance(main_ui, MainScreenUiState) and app_state is not None:
             from uxon.tui.main_data import MainData as _MainData
 
-            app_state.main = _MainData.from_context(new_ctx)
+            app_state.main = _MainData.from_context(new_cfg)
             main_ui.seen_users |= collect_user_set(app_state)
-        new_signature = self._layout_signature(self.ctx)
+        new_signature = self._layout_signature(self.cfg)
         self._cached_signature = new_signature
         if new_signature == old_signature and self._apply_ctx_refresh():
             _debug("keys", at="apply_loaded_ctx", path="patch", focus_key=focus_key)
@@ -1421,7 +1462,7 @@ class MainScreen(Screen):
             old_sig=str(old_signature),
             new_sig=str(new_signature),
         )
-        new_screen = MainScreen(self.ctx)
+        new_screen = MainScreen(self.cfg, self.state)
         new_screen._restore_focus_key = focus_key
         self.app.switch_screen(new_screen)
 
@@ -1450,7 +1491,7 @@ class MainScreen(Screen):
         if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
             return
         row = self._dashboard_rows[idx]
-        session_user = row.user or self.ctx.current_user
+        session_user = row.user or self.cfg.current_user
         session_name = row.name
         session_short = row.short or row.name
 
@@ -1462,7 +1503,7 @@ class MainScreen(Screen):
                 if not ok:
                     return
                 try:
-                    self.ctx.on_remote_kill(host, session_user, session_name)
+                    self.cfg.on_remote_kill(host, session_user, session_name)
                     self.app.notify(
                         f"Killed {session_short} on {host}; remote table will update on next poll"
                     )
@@ -1481,7 +1522,7 @@ class MainScreen(Screen):
             if not ok:
                 return
             try:
-                self.ctx.on_kill(session_user, session_name)
+                self.cfg.on_kill(session_user, session_name)
                 self.app.notify(f"Killed {session_short}")
             except CallbackError as exc:
                 self.app.notify(
@@ -1498,15 +1539,15 @@ class MainScreen(Screen):
         )
 
     def action_kill_all_own(self) -> None:
-        if not self.ctx.sessions:
+        if not self.cfg.sessions:
             return
-        n = len(self.ctx.sessions)
+        n = len(self.cfg.sessions)
 
         def after_confirm(ok: bool | None) -> None:
             if not ok:
                 return
             try:
-                self.ctx.on_kill_all()
+                self.cfg.on_kill_all()
                 self.app.notify(f"Killed all {n} sessions")
             except CallbackError as exc:
                 self.app.notify(f"Kill all failed: {exc}", severity="error", timeout=6)
@@ -1520,16 +1561,16 @@ class MainScreen(Screen):
 
     def _activate_index(self, idx: int) -> None:
         """Resolve index into a concrete item and fire its activation."""
-        self._run_intent(activate_main_index(self.ctx, idx))
+        self._run_intent(activate_main_index(self.cfg, idx))
 
     def _focus_index(self, idx: int) -> None:
         """Move focus to the widget backing ``idx`` on the current screen."""
-        own_start, _other_start, settings_idx, kill_idx, has_super = _segments(self.ctx)
+        own_start, _other_start, settings_idx, kill_idx, has_super = _segments(self.cfg)
         # Own + other-user share the dashboard, so the local segment
         # ends at ``settings_idx`` (when sudo) or
         # ``own_start + len(ctx.sessions)`` (no sudo — no other-user
         # segment at all).
-        local_end = settings_idx if has_super else own_start + len(self.ctx.sessions)
+        local_end = settings_idx if has_super else own_start + len(self.cfg.sessions)
         try:
             if idx < own_start:
                 action_ids = ("action-cwd", "action-new", "action-open")
@@ -1575,7 +1616,7 @@ class MainScreen(Screen):
             # focus restore after recompose lands on the right row
             # rather than colliding with an own-session of the same
             # name.
-            if row.user and row.user != self.ctx.current_user:
+            if row.user and row.user != self.cfg.current_user:
                 return f"other:{row.user}/{row.name}"
             return f"own:{row.name}"
         return ""
@@ -1638,7 +1679,7 @@ class MainScreen(Screen):
             table = self.query_one("#sessions-dashboard", SessionDashboardTable)
         except Exception:
             return False
-        current_user = self.ctx.current_user
+        current_user = self.cfg.current_user
         for idx, row in enumerate(self._dashboard_rows):
             if row.host is not None or row.name != session_name:
                 continue
@@ -1671,10 +1712,10 @@ class MainScreen(Screen):
 
     def _update_status_line(self) -> None:
         line = main_status_line(
-            self.ctx.server_status,
-            self.ctx.link_health_status,
-            self.ctx.refresh_tick,
-            loading=self.ctx.loading,
+            self.cfg.server_status,
+            self._link_health_now(),
+            self.state.refresh_tick,
+            loading=self.cfg.loading,
         )
         status = self.query_one("#server-status", Static)
         status.update(line.text)
@@ -1690,7 +1731,7 @@ class MainScreen(Screen):
 
     def segments(self) -> tuple[int, int, int, int, bool]:
         """Expose segment indices for tests and intent-routing math."""
-        return _segments(self.ctx)
+        return _segments(self.cfg)
 
     def action_count(self) -> int:
         return ACTION_COUNT

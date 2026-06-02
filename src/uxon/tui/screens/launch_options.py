@@ -61,9 +61,20 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         Binding("enter", "commit", "Select", show=True, priority=True),
     )
 
-    def __init__(self, ctx, workspaces: list | None = None, repo_root: str = "") -> None:
+    def __init__(
+        self, cfg, state=None, workspaces: list | None = None, repo_root: str = ""
+    ) -> None:
         super().__init__()
-        self.ctx = ctx
+        # ``cfg`` is the static rebuild snapshot (carries
+        # ``enabled_agents`` / ``default_agent`` + the static
+        # availability seed); ``state`` is the App-owned live
+        # :class:`TuiState`. Availability is read live from
+        # ``state.agent_availability`` when present, falling back to the
+        # ``cfg`` seed for unit tests that build a bare cfg without an
+        # App. ``state`` is optional so those bare-cfg tests need not
+        # construct a TuiState.
+        self.cfg = cfg
+        self._state = state
         # The WORKSPACE column is folder-selection only (§3). The rows are
         # built from ``workspaces`` (filled by the launch-screen worker —
         # Task 17). ``repo_root`` is the primary repo root the probe
@@ -74,15 +85,15 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         # Compute the initial visible set from current availability.
         # ``_rebuild_agent_list`` re-reads on every probe-result
         # dispatch so the modal reflects fresh data without a re-open.
-        state = launch_options_state(
-            enabled_agents=tuple(ctx.enabled_agents),
-            default_agent=ctx.default_agent,
+        opts = launch_options_state(
+            enabled_agents=tuple(cfg.enabled_agents),
+            default_agent=cfg.default_agent,
             availability=self._availability_now(),
         )
-        self._visible_agents = list(state.visible_agents)
-        self._single_agent = state.single_agent
-        self._active_panel = state.active_panel
-        self._current_agent = state.current_agent
+        self._visible_agents = list(opts.visible_agents)
+        self._single_agent = opts.single_agent
+        self._active_panel = opts.active_panel
+        self._current_agent = opts.current_agent
         self._panel_order = self._compute_panel_order()
 
     def _compute_panel_order(self) -> tuple[str, ...]:
@@ -101,13 +112,14 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
     def _availability_now(self) -> dict:
         """Read the current availability dict from the live slot store.
 
-        Falls back to ``ctx.agent_availability`` for unit tests that
-        build a bare ctx without an App.
+        Prefers the injected ``state`` (or the App's live state when the
+        screen is attached), falling back to the ``cfg`` availability
+        seed for unit tests that build a bare cfg without a state.
         """
-        state = getattr(self.app, "state", None)
+        state = self._state if self._state is not None else getattr(self.app, "state", None)
         if state is not None and state.agent_availability.value is not None:
             return state.agent_availability.value
-        return self.ctx.agent_availability
+        return self.cfg.agent_availability
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -283,8 +295,8 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         """
         avail = self._availability_now()
         update = update_launch_options_after_availability(
-            enabled_agents=tuple(self.ctx.enabled_agents),
-            default_agent=self.ctx.default_agent,
+            enabled_agents=tuple(self.cfg.enabled_agents),
+            default_agent=self.cfg.default_agent,
             availability=avail,
             current_agent=self._current_agent,
             active_panel=self._active_panel,
