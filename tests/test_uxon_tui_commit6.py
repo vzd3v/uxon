@@ -61,8 +61,9 @@ def _mk_ctx(**overrides):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class LinkHealthSlotApplyTests(unittest.IsolatedAsyncioTestCase):
     async def test_link_health_lands_on_state_slot(self) -> None:
-        from uxon.tui.app import UxonApp, _LinkHealthUpdated
+        from uxon.tui.app import UxonApp
         from uxon.tui.context import LinkHealthStatus
+        from uxon.tui.messages import _LinkHealthUpdated
 
         ctx = _mk_ctx()
         app = UxonApp(ctx, probe_agents=False)
@@ -78,7 +79,8 @@ class LinkHealthSlotApplyTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class CwdWritableSlotApplyTests(unittest.IsolatedAsyncioTestCase):
     async def test_cwd_writable_lands_on_state_slot(self) -> None:
-        from uxon.tui.app import UxonApp, _CwdWritableUpdated
+        from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _CwdWritableUpdated
 
         ctx = _mk_ctx()
         app = UxonApp(ctx, probe_agents=False)
@@ -93,7 +95,8 @@ class CwdWritableSlotApplyTests(unittest.IsolatedAsyncioTestCase):
         against ``cwd_old`` lands after the user switched to ``cwd_new``.
         The handler must drop the result; the slot stays in zero state.
         """
-        from uxon.tui.app import UxonApp, _CwdWritableUpdated
+        from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _CwdWritableUpdated
 
         ctx = _mk_ctx()  # cwd = /srv/work
         app = UxonApp(ctx, probe_agents=False)
@@ -107,7 +110,8 @@ class CwdWritableSlotApplyTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app.state.cwd_writable.last_attempt_at)
 
     async def test_fresh_probe_against_current_cwd_lands(self) -> None:
-        from uxon.tui.app import UxonApp, _CwdWritableUpdated
+        from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _CwdWritableUpdated
 
         ctx = _mk_ctx()
         app = UxonApp(ctx, probe_agents=False)
@@ -126,7 +130,8 @@ class CwdChangeInvalidationTests(unittest.IsolatedAsyncioTestCase):
         new ctx's cwd differs from the previous tick's cwd. Pre-fix
         behaviour was a stale ``True`` lingering until the next probe.
         """
-        from uxon.tui.app import UxonApp, _CwdWritableUpdated
+        from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _CwdWritableUpdated
 
         ctx = _mk_ctx()  # cwd = /srv/work
         app = UxonApp(ctx, probe_agents=False)
@@ -137,7 +142,7 @@ class CwdChangeInvalidationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(app.state.cwd_writable.last_attempt_at)
 
             # Synthesise an apply_loaded_ctx with a *different* cwd.
-            from uxon.tui.app import _MainCtxLoaded
+            from uxon.tui.messages import _MainCtxLoaded
 
             new_ctx = _mk_ctx(cwd="/srv/other", cwd_short="other")
             app.post_message(_MainCtxLoaded(new_ctx))

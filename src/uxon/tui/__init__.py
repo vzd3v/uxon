@@ -11,7 +11,11 @@ Public API re-exports only. Implementation lives in sibling modules:
                    ``uxon.infra.audit`` and goes to journald / syslog directly.
   - ``launch``   — launch-handoff helpers (runs outside the TUI).
   - ``hints``    — ``TEXTUAL_MISSING_HINT`` install guidance.
-  - ``app``      — textual :class:`UxonApp` + :func:`run` outer loop.
+  - ``app``      — textual :class:`UxonApp` host (worker routing + on__*).
+  - ``runner``   — :func:`run` outer create/exit/re-create loop (TTY handoff).
+  - ``messages`` — worker payload :class:`Message` envelopes (pure data).
+  - ``workers``  — :class:`WorkerCoordinator` (probe/source worker bodies).
+  - ``source_dispatch`` — landed-result → :class:`TuiState` reducers.
   - ``screens/`` — one module per screen (MainScreen, modals, …).
   - ``widgets/`` — custom widgets (``ActionRow``,
                    ``DetectedAgentsBanner``, ``SessionDashboardTable``).
@@ -42,7 +46,8 @@ from .context import (
 from .hints import TEXTUAL_MISSING_HINT
 
 if TYPE_CHECKING:
-    from .app import UxonApp, run
+    from .app import UxonApp
+    from .runner import run
 
 __all__ = [
     "CallbackError",
@@ -60,8 +65,12 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name in ("UxonApp", "run"):
+    if name == "UxonApp":
         from . import app as _app
 
-        return getattr(_app, name)
+        return _app.UxonApp
+    if name == "run":
+        from . import runner as _runner
+
+        return _runner.run
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -179,7 +179,7 @@ class DispatchRegistryTests(unittest.TestCase):
         self.assertIn("remote:", prefixes)
 
     def test_main_ctx_handler_requests_render(self) -> None:
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         app = self._make_app()
         ctx = app.ctx  # type: ignore[attr-defined]
@@ -197,7 +197,7 @@ class DispatchRegistryTests(unittest.TestCase):
         — the dispatcher skips the epoch gate so legacy tests keep
         working unchanged.
         """
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         ev = _RefreshSourceLanded(name="x", value=None)
         self.assertEqual(ev.instance_epoch, -1)
@@ -209,7 +209,7 @@ class DispatchRegistryTests(unittest.TestCase):
         previous app instance landing after a TTY-handoff app
         re-creation.
         """
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         app = self._make_app()
         posted: list[object] = []
@@ -232,7 +232,7 @@ class DispatchRegistryTests(unittest.TestCase):
         dispatched normally — the gate's job is to drop *stale*
         events, not all stamped events.
         """
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         app = self._make_app()
         requests: list[str] = []
@@ -247,7 +247,7 @@ class DispatchRegistryTests(unittest.TestCase):
         self.assertEqual(requests, ["main_ctx"])
 
     def test_unknown_name_falls_through_to_drop(self) -> None:
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         app = self._make_app()
         # No-op post_message; an unknown source name must NOT post
@@ -334,7 +334,7 @@ class RemoteSnapshotSeenUsersTests(unittest.TestCase):
         )
 
     def test_handler_feeds_seen_users_from_snapshot(self) -> None:
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         app = self._make_app()
         # Seed the accumulator with the local user so the latch is
@@ -348,7 +348,7 @@ class RemoteSnapshotSeenUsersTests(unittest.TestCase):
         self.assertIn("bob", app.main_ui.seen_users)  # type: ignore[attr-defined]
 
     def test_handler_escalates_to_main_ctx_on_latch_flip(self) -> None:
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         app = self._make_app()
         app.main_ui.seen_users.add("alice")  # type: ignore[attr-defined]
@@ -364,7 +364,7 @@ class RemoteSnapshotSeenUsersTests(unittest.TestCase):
         self.assertEqual(requests, ["main_ctx"])
 
     def test_handler_keeps_remote_fast_path_when_latch_already_set(self) -> None:
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         app = self._make_app()
         # Latch already True — accumulator has two users.
@@ -383,7 +383,7 @@ class RemoteSnapshotSeenUsersTests(unittest.TestCase):
         self.assertIn("carol", app.main_ui.seen_users)  # type: ignore[attr-defined]
 
     def test_handler_no_flip_when_remote_user_already_known(self) -> None:
-        from uxon.tui.app import _RefreshSourceLanded
+        from uxon.tui.messages import _RefreshSourceLanded
 
         app = self._make_app()
         # Latch is False (only one user); remote brings the same user.
@@ -400,7 +400,7 @@ class RemoteSnapshotSeenUsersTests(unittest.TestCase):
 
 
 class WorkerDrainTests(unittest.TestCase):
-    """Stage 8 § Worker lifetime: ``UxonApp._drain_workers`` cancels
+    """Stage 8 § Worker lifetime: ``WorkerCoordinator.drain`` cancels
     every tracked handle and waits a bounded grace before returning,
     so no worker thread survives the app instance that spawned it.
     """
@@ -460,33 +460,33 @@ class WorkerDrainTests(unittest.TestCase):
         app = self._make_app()
         w_a = self._fake_worker(active=True)
         w_b = self._fake_worker(active=True)
-        app._source_handles = {"main_ctx_rebuild": w_a, "remote:foo": w_b}  # type: ignore[attr-defined,assignment]
+        app._worker_coord._source_handles = {"main_ctx_rebuild": w_a, "remote:foo": w_b}  # type: ignore[attr-defined,assignment]
         # Wipe the host_probe / link_health slots so they don't try
         # to reach into a real WorkerManager.
-        app._host_probe_handle = None  # type: ignore[attr-defined]
-        app._link_health_handle = None  # type: ignore[attr-defined]
-        app._drain_workers(grace_seconds=0.05)  # type: ignore[attr-defined]
+        app._worker_coord._host_probe_handle = None  # type: ignore[attr-defined]
+        app._worker_coord._link_health_handle = None  # type: ignore[attr-defined]
+        app._worker_coord.drain(grace_seconds=0.05)  # type: ignore[attr-defined]
         self.assertEqual(w_a.cancel_called, 1)
         self.assertEqual(w_b.cancel_called, 1)
 
     def test_drain_skips_already_completed_workers(self) -> None:
         app = self._make_app()
         done = self._fake_worker(active=False)
-        app._source_handles = {"main_ctx_rebuild": done}  # type: ignore[attr-defined,assignment]
-        app._host_probe_handle = None  # type: ignore[attr-defined]
-        app._link_health_handle = None  # type: ignore[attr-defined]
-        app._drain_workers(grace_seconds=0.0)  # type: ignore[attr-defined]
+        app._worker_coord._source_handles = {"main_ctx_rebuild": done}  # type: ignore[attr-defined,assignment]
+        app._worker_coord._host_probe_handle = None  # type: ignore[attr-defined]
+        app._worker_coord._link_health_handle = None  # type: ignore[attr-defined]
+        app._worker_coord.drain(grace_seconds=0.0)  # type: ignore[attr-defined]
         # Already-done worker must not be cancelled — there's nothing
         # to cancel and ``Worker.cancel`` would warn in textual.
         self.assertEqual(done.cancel_called, 0)
 
     def test_drain_handles_empty_state(self) -> None:
         app = self._make_app()
-        app._source_handles = {}  # type: ignore[attr-defined,assignment]
-        app._host_probe_handle = None  # type: ignore[attr-defined]
-        app._link_health_handle = None  # type: ignore[attr-defined]
+        app._worker_coord._source_handles = {}  # type: ignore[attr-defined,assignment]
+        app._worker_coord._host_probe_handle = None  # type: ignore[attr-defined]
+        app._worker_coord._link_health_handle = None  # type: ignore[attr-defined]
         # Must not raise.
-        app._drain_workers(grace_seconds=0.0)  # type: ignore[attr-defined]
+        app._worker_coord.drain(grace_seconds=0.0)  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":

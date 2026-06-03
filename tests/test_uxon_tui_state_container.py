@@ -177,7 +177,7 @@ class AvailabilitySeedTests(unittest.TestCase):
 
 class StateMainCanonicalTests(unittest.TestCase):
     """Stage 8 commit 7: ``state.main`` is canonical, written by
-    ``UxonApp._handle_main_ctx_rebuild``. Pin the contract:
+    ``source_dispatch.handle_main_ctx_rebuild``. Pin the contract:
 
     * On the first rebuild landing the slot flips from None to a
       fresh :class:`MainData`.
@@ -192,8 +192,10 @@ class StateMainCanonicalTests(unittest.TestCase):
             import textual  # noqa: F401
         except ImportError:
             self.skipTest("textual not available")
-        from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.app import UxonApp
         from uxon.tui.context import TuiContext
+        from uxon.tui.messages import _RefreshSourceLanded
+        from uxon.tui.source_dispatch import handle_main_ctx_rebuild
 
         ctx = _bare_ctx(loading=True)
         app = UxonApp(ctx, probe_agents=False)
@@ -210,7 +212,7 @@ class StateMainCanonicalTests(unittest.TestCase):
             new_project_root="/srv/work",
             existing_projects=[("p", "1m")],
         )
-        UxonApp._handle_main_ctx_rebuild(
+        handle_main_ctx_rebuild(
             app,
             _RefreshSourceLanded(name="main_ctx_rebuild", value=loaded_ctx),
         )

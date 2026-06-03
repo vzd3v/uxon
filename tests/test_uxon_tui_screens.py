@@ -350,7 +350,7 @@ class WorkerGateTests(unittest.TestCase):
     def test_worker_active_helper(self) -> None:
         from textual.worker import WorkerState
 
-        from uxon.tui.app import _worker_active
+        from uxon.tui.workers import _worker_active
 
         class _FakeWorker:
             def __init__(self, state: WorkerState) -> None:

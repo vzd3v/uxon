@@ -60,7 +60,8 @@ def _mk_ctx(**overrides):
 class ProbeWorkerRaceFixTests(unittest.IsolatedAsyncioTestCase):
     async def test_apply_runs_only_on_event_loop(self) -> None:
         from uxon.tui import app as app_mod
-        from uxon.tui.app import UxonApp, _HostReportUpdated
+        from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _HostReportUpdated
 
         # Spy on slot_state.apply: capture thread id when called.
         # Patching the module-level binding inside ``app`` keeps the
@@ -120,7 +121,8 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
         """
         from uxon.infra import agents as uxon_agents
         from uxon.infra import probes as uxon_probes
-        from uxon.tui.app import UxonApp, _HostReportUpdated
+        from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _HostReportUpdated
 
         class _BinaryStatus:
             def __init__(self, name, path):
@@ -162,7 +164,7 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
 
                 def runner():
                     try:
-                        app._probe_host_worker()
+                        app._worker_coord._probe_host_worker()
                     finally:
                         event_loop.call_soon_threadsafe(done.set_result, None)
 

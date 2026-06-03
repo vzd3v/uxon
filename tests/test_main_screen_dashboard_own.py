@@ -648,7 +648,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         """
         from uxon.domain.wire_schema import RemoteSnapshot
         from uxon.infra.remote_hosts import RemoteHost
-        from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _RefreshSourceLanded
         from uxon.tui.screens.main import MainScreen
 
         ctx = _mk_ctx(

@@ -66,8 +66,10 @@ class StartupChannelTests(unittest.TestCase):
         """
         from unittest.mock import MagicMock
 
-        from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.app import UxonApp
         from uxon.tui.context import TuiContext
+        from uxon.tui.messages import _RefreshSourceLanded
+        from uxon.tui.source_dispatch import handle_main_ctx_rebuild
         from uxon.tui.tui_state import TuiState
 
         ctx = TuiContext(
@@ -93,15 +95,15 @@ class StartupChannelTests(unittest.TestCase):
             captured.append({"topic": topic, **fields})
 
         with (
-            mock.patch("uxon.tui.app._debug", _fake_debug),
+            mock.patch("uxon.tui.source_dispatch._debug", _fake_debug),
             mock.patch.object(
                 UxonApp, "screen_stack", new_callable=mock.PropertyMock, return_value=[]
             ),
         ):
             ev1 = _RefreshSourceLanded(name="main_ctx_rebuild", value=ctx)
-            UxonApp._handle_main_ctx_rebuild(app, ev1)
+            handle_main_ctx_rebuild(app, ev1)
             ev2 = _RefreshSourceLanded(name="main_ctx_rebuild", value=ctx)
-            UxonApp._handle_main_ctx_rebuild(app, ev2)
+            handle_main_ctx_rebuild(app, ev2)
 
         startup_records = [r for r in captured if r["topic"] == "startup"]
         self.assertEqual(len(startup_records), 1)
