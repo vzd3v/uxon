@@ -33,7 +33,9 @@ from helpers import make_session as _make_session
 
 import uxon.app.kill as kill_app
 import uxon.app.listing as listing_app
-import uxon.cli as uxon
+from uxon.cli.parsing import parse_args
+from uxon.domain.args import ParsedArgs
+from uxon.domain.config import Config
 from uxon.infra import version_probe
 
 
@@ -43,35 +45,35 @@ class JsonFlagParsingTests(unittest.TestCase):
     new — those would need a separate design for streaming output)."""
 
     def test_list_subcommand(self) -> None:
-        self.assertTrue(uxon.parse_args(["list", "--json"]).json_output)
-        self.assertTrue(uxon.parse_args(["list", "--all-users", "--json"]).json_output)
+        self.assertTrue(parse_args(["list", "--json"]).json_output)
+        self.assertTrue(parse_args(["list", "--all-users", "--json"]).json_output)
 
     def test_list_short_flag(self) -> None:
-        self.assertTrue(uxon.parse_args(["-l", "--json"]).json_output)
+        self.assertTrue(parse_args(["-l", "--json"]).json_output)
 
     def test_version_subcommand_and_flags(self) -> None:
-        self.assertTrue(uxon.parse_args(["version", "--json"]).json_output)
-        self.assertTrue(uxon.parse_args(["-V", "--json"]).json_output)
-        self.assertTrue(uxon.parse_args(["--version", "--json"]).json_output)
+        self.assertTrue(parse_args(["version", "--json"]).json_output)
+        self.assertTrue(parse_args(["-V", "--json"]).json_output)
+        self.assertTrue(parse_args(["--version", "--json"]).json_output)
 
     def test_doctor_subcommand(self) -> None:
-        self.assertTrue(uxon.parse_args(["doctor", "--json"]).json_output)
+        self.assertTrue(parse_args(["doctor", "--json"]).json_output)
 
     def test_kill_subcommand_and_flag(self) -> None:
-        a = uxon.parse_args(["kill", "uxon-foo@claude", "--json"])
+        a = parse_args(["kill", "uxon-foo@claude", "--json"])
         self.assertTrue(a.json_output)
         self.assertEqual(a.action, "kill")
-        b = uxon.parse_args(["-k", "uxon-foo@claude", "--json", "--dry-run"])
+        b = parse_args(["-k", "uxon-foo@claude", "--json", "--dry-run"])
         self.assertTrue(b.json_output)
         self.assertTrue(b.dry_run)
 
     def test_kill_all_subcommand_and_flag(self) -> None:
-        self.assertTrue(uxon.parse_args(["kill-all", "--json", "--force"]).json_output)
-        self.assertTrue(uxon.parse_args(["--killall", "--json", "--dry-run"]).json_output)
+        self.assertTrue(parse_args(["kill-all", "--json", "--force"]).json_output)
+        self.assertTrue(parse_args(["--killall", "--json", "--dry-run"]).json_output)
 
     def test_default_is_off(self) -> None:
-        self.assertFalse(uxon.parse_args(["list"]).json_output)
-        self.assertFalse(uxon.parse_args(["version"]).json_output)
+        self.assertFalse(parse_args(["list"]).json_output)
+        self.assertFalse(parse_args(["version"]).json_output)
 
 
 class VersionJsonTests(unittest.TestCase):
@@ -139,9 +141,7 @@ class KillJsonTests(unittest.TestCase):
     def test_dry_run_emits_would_kill(self) -> None:
         cfg = _make_config()
         target = _make_session("uxon-demo@claude")
-        args = uxon.ParsedArgs(
-            action="kill", target_id="demo@claude", dry_run=True, json_output=True
-        )
+        args = ParsedArgs(action="kill", target_id="demo@claude", dry_run=True, json_output=True)
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
             mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
@@ -160,7 +160,7 @@ class KillJsonTests(unittest.TestCase):
     def test_real_kill_emits_killed(self) -> None:
         cfg = _make_config()
         target = _make_session("uxon-demo@claude")
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", json_output=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", json_output=True)
         completed = mock.Mock(returncode=0, stdout="", stderr="")
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
@@ -180,7 +180,7 @@ class KillJsonTests(unittest.TestCase):
 class KillAllJsonTests(unittest.TestCase):
     def test_no_sessions_emits_empty_envelope(self) -> None:
         cfg = _make_config()
-        args = uxon.ParsedArgs(action="kill-all", force=True, json_output=True)
+        args = ParsedArgs(action="kill-all", force=True, json_output=True)
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
@@ -197,7 +197,7 @@ class KillAllJsonTests(unittest.TestCase):
         cfg = _make_config()
         s1 = _make_session("uxon-a@claude")
         s2 = _make_session("uxon-b@claude")
-        args = uxon.ParsedArgs(action="kill-all", dry_run=True, json_output=True)
+        args = ParsedArgs(action="kill-all", dry_run=True, json_output=True)
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[s1, s2]),
             mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
@@ -219,7 +219,7 @@ class KillAllJsonTests(unittest.TestCase):
         # AND there is nowhere to read confirmation from. We require
         # the caller to be explicit.
         cfg = _make_config()
-        args = uxon.ParsedArgs(action="kill-all", json_output=True)
+        args = ParsedArgs(action="kill-all", json_output=True)
         with (
             mock.patch(
                 "uxon.infra.sessions_probe.collect_sessions", return_value=[_make_session()]
@@ -233,7 +233,7 @@ class KillAllJsonTests(unittest.TestCase):
     def test_failed_kill_records_failed_action(self) -> None:
         cfg = _make_config()
         s1 = _make_session("uxon-a@claude")
-        args = uxon.ParsedArgs(action="kill-all", force=True, json_output=True)
+        args = ParsedArgs(action="kill-all", force=True, json_output=True)
         cp_fail = mock.Mock(returncode=1, stdout="", stderr="boom")
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[s1]),
@@ -254,36 +254,36 @@ class HostFlagParsingTests(unittest.TestCase):
     are mutually exclusive."""
 
     def test_host_with_value(self) -> None:
-        a = uxon.parse_args(["list", "--host", "vz-prod1"])
+        a = parse_args(["list", "--host", "vz-prod1"])
         self.assertEqual(a.host, "vz-prod1")
         self.assertFalse(a.all_hosts)
 
     def test_all_hosts_flag(self) -> None:
-        a = uxon.parse_args(["list", "--all-hosts"])
+        a = parse_args(["list", "--all-hosts"])
         self.assertTrue(a.all_hosts)
         self.assertIsNone(a.host)
 
     def test_host_requires_value(self) -> None:
         with self.assertRaises(SystemExit):
-            uxon.parse_args(["list", "--host"])
+            parse_args(["list", "--host"])
 
     def test_host_and_all_hosts_mutually_exclusive(self) -> None:
         with self.assertRaises(SystemExit):
-            uxon.parse_args(["list", "--host", "x", "--all-hosts"])
+            parse_args(["list", "--host", "x", "--all-hosts"])
 
     def test_combines_with_json(self) -> None:
-        a = uxon.parse_args(["list", "--host", "x", "--json"])
+        a = parse_args(["list", "--host", "x", "--json"])
         self.assertEqual(a.host, "x")
         self.assertTrue(a.json_output)
 
     def test_default_off(self) -> None:
-        a = uxon.parse_args(["list"])
+        a = parse_args(["list"])
         self.assertIsNone(a.host)
         self.assertFalse(a.all_hosts)
 
 
 class HostDispatchTests(unittest.TestCase):
-    def _cfg_with_hosts(self, hosts: list) -> uxon.Config:
+    def _cfg_with_hosts(self, hosts: list) -> Config:
         from uxon.infra.remote_hosts import RemoteHost
 
         cfg = _make_config()
@@ -296,7 +296,7 @@ class HostDispatchTests(unittest.TestCase):
         from uxon.app.listing import _do_list_host
 
         cfg = self._cfg_with_hosts(["a", "b"])
-        args = uxon.ParsedArgs(action="list", host="missing")
+        args = ParsedArgs(action="list", host="missing")
         with mock.patch("uxon.errors.eprint") as eprint:
             with self.assertRaises(SystemExit):
                 _do_list_host(args, cfg)
@@ -311,7 +311,7 @@ class HostDispatchTests(unittest.TestCase):
 
         cfg = _make_config()
         cfg.remote_hosts = []
-        args = uxon.ParsedArgs(action="list", host="any")
+        args = ParsedArgs(action="list", host="any")
         with mock.patch("uxon.errors.eprint") as eprint:
             with self.assertRaises(SystemExit):
                 _do_list_host(args, cfg)
@@ -322,7 +322,7 @@ class HostDispatchTests(unittest.TestCase):
         from uxon.domain.wire_schema import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
-        args = uxon.ParsedArgs(action="list", host="vz-prod1", json_output=True)
+        args = ParsedArgs(action="list", host="vz-prod1", json_output=True)
         snap = RemoteSnapshot(
             host_name="vz-prod1",
             fetched_at_epoch=1.0,
@@ -348,7 +348,7 @@ class HostDispatchTests(unittest.TestCase):
         from uxon.domain.wire_schema import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
-        args = uxon.ParsedArgs(action="list", host="vz-prod1", json_output=True)
+        args = ParsedArgs(action="list", host="vz-prod1", json_output=True)
         snap = RemoteSnapshot(
             host_name="vz-prod1",
             fetched_at_epoch=1.0,
@@ -360,7 +360,7 @@ class HostDispatchTests(unittest.TestCase):
         with mock.patch("uxon.infra.remote.collector.fetch_remote_snapshot", return_value=snap):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                with mock.patch.object(uxon, "eprint"):
+                with mock.patch.object(listing_app, "eprint"):
                     rc = _do_list_host(args, cfg)
         # Failure with no cache: empty sessions, exit non-zero so the
         # operator's pipeline knows to investigate.
@@ -377,7 +377,7 @@ class HostDispatchTests(unittest.TestCase):
         from uxon.domain.wire_schema import RemoteSnapshot
 
         cfg = self._cfg_with_hosts(["vz-prod1"])
-        args = uxon.ParsedArgs(action="list", host="vz-prod1", json_output=True)
+        args = ParsedArgs(action="list", host="vz-prod1", json_output=True)
         snap = RemoteSnapshot(
             host_name="vz-prod1",
             fetched_at_epoch=2.0,
@@ -410,7 +410,7 @@ class AllHostsJsonLinesTests(unittest.TestCase):
             RemoteHost(name="a", ssh_alias="a", description="", remote_uxon="uxon"),
             RemoteHost(name="b", ssh_alias="b", description="", remote_uxon="uxon"),
         ]
-        args = uxon.ParsedArgs(action="list", all_hosts=True, json_output=True)
+        args = ParsedArgs(action="list", all_hosts=True, json_output=True)
 
         def _fake_fetch(host, **_kwargs) -> RemoteSnapshot:
             return RemoteSnapshot(

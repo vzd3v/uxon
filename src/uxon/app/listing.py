@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Sequence
 from typing import Any
 
@@ -323,6 +324,105 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             eprint(f"uxon: --host {host.name}: {snap.error}")
             rc = 1
     return rc
+
+
+def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+    """Handle the full ``uxon list`` use-case (local + remote + audit/scope).
+
+    Dispatches the ``--host`` / ``--all-hosts`` variants to their
+    dedicated handlers, then runs the local-listing audit/scope logic
+    (peer-inbound ``list.remote.in`` vs caller-side ``list.peek``, the
+    ``--all-users`` enable gate, and the JSON-vs-human emit). Lifted
+    verbatim from the old ``cli.main`` inline branch so behavior is
+    identical; ``dispatch`` calls this as a thin router target.
+    """
+    from uxon.infra import audit as _audit
+
+    if args.host is not None:
+        return _do_list_host(args, cfg)
+    if args.all_hosts:
+        return _do_list_all_hosts(args, cfg, launch_user)
+    # Peer-inbound branch: a peer-collector invocation arrives with
+    # ``SSH_CONNECTION`` set and neither ``--host`` nor ``--all-hosts``.
+    # Fires *after* those early-returns so a caller-side
+    # ``uxon list --host`` does not double-emit on its own host.
+    # Spec line 306: when peer-inbound, ``list.remote.in`` replaces
+    # ``list.peek`` ("instead of"), so we suppress the latter on
+    # this code path.
+    #
+    # Spec line 207-209: state-changing events emit on **both**
+    # success and failure paths.  ``list.remote.in`` is no
+    # exception: the previous shape (single ``outcome=ok`` emit at
+    # the top, before the all-users-disabled gate) lost the denied
+    # outcome — a peer that refused ``--all-users`` recorded a
+    # stale ``ok``.  Emit at outcome boundaries instead: once on
+    # the all-users-disabled denial, once on success after the
+    # gate passes (or for the own-only branch).
+    peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
+    # ``correlation_id`` for ``list.remote.in`` is auto-injected by
+    # ``audit()`` from module state when the parser popped
+    # ``--audit-correlation-id`` off argv.  See spec §"Correlation
+    # across hosts" ("omitted rather than synthesized").
+    list_scope = "all-users" if args.all_users else "own"
+    if args.all_users:
+        if not cfg.enable_all_users_list:
+            # Stable error tag. The remote-host aggregator's
+            # fallback detector greps for this exact substring to
+            # decide whether to retry with the legacy ``list
+            # --json`` (own-only) command.
+            if peer_inbound:
+                _audit.audit(
+                    "list.remote.in",
+                    outcome="denied",
+                    scope=list_scope,
+                )
+            fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
+        scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
+        # ``list.peek`` / ``list.remote.in`` fires only after the
+        # gate passes — placement ensures we never log a successful
+        # peek for a denied invocation.
+        if peer_inbound:
+            _audit.audit(
+                "list.remote.in",
+                scope=list_scope,
+            )
+        else:
+            _audit.audit(
+                "list.peek",
+                scope_users=scope_users,
+                scope_skipped=list(scope_skipped),
+            )
+        sessions = sessions_probe.collect_sessions(scope_users, cfg)
+        if args.json_output:
+            _emit_json(
+                "list",
+                _list_data(
+                    cfg,
+                    sessions,
+                    scope_users,
+                    all_users=True,
+                    scope_skipped=scope_skipped,
+                ),
+            )
+            return 0
+        rc = print_list(cfg, sessions, scope_users, show_user=True)
+        _emit_scope_skipped_hint(scope_skipped)
+        return rc
+    # Own-only branch: no gate, single success emit on the peer
+    # side (the local-side ``list`` does not produce a ``list.peek``
+    # for its own user — that's by spec, only ``--all-users``
+    # local enumeration triggers ``list.peek``).
+    if peer_inbound:
+        _audit.audit(
+            "list.remote.in",
+            scope=list_scope,
+        )
+    scope_users = [launch_user]
+    sessions = sessions_probe.collect_sessions(scope_users, cfg)
+    if args.json_output:
+        _emit_json("list", _list_data(cfg, sessions, scope_users, all_users=False))
+        return 0
+    return print_list(cfg, sessions, scope_users, show_user=False)
 
 
 def _emit_json(kind: str, data: dict[str, Any], *, compact: bool = False) -> None:

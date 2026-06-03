@@ -1,40 +1,19 @@
 # SPDX-License-Identifier: MIT
-"""uxon: readable wrapper for terminal AI coding agent sessions."""
+"""Impure argv parsing layer for the ``uxon`` CLI.
+
+Sits above the pure :mod:`uxon.domain.args` data model: these
+functions read TTY state and pop the audit correlation-id out of argv
+(side-effecting), then build a :class:`~uxon.domain.args.ParsedArgs`.
+Kept free of ``uxon.tui`` / ``textual`` imports so module-load of
+``uxon.cli`` stays fast (latency invariant #7).
+"""
 
 from __future__ import annotations
 
-import os
-import sys
-
-import uxon.app.attach as attach_app
-import uxon.app.doctor as doctor_app
-import uxon.app.kill as kill_app
-import uxon.app.listing as listing_app
-import uxon.app.new as new_app
-import uxon.app.run as run_app
 from uxon.domain.args import SUBCOMMANDS, USAGE, ParsedArgs
-from uxon.domain.authz import canonical
-from uxon.domain.config import (
-    Config,
-)
 from uxon.domain.constants import VALID_AGENT_IDS
-from uxon.errors import eprint, fail
-from uxon.infra import (
-    config_loader,
-    identity,
-    sessions_probe,
-    version_probe,
-)
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    tomllib = None
-
-# The TUI context-builder lives in ``uxon.tui.bridge`` and is imported
-# lazily inside ``do_interactive`` so module-load of ``uxon.cli`` never
-# pulls ``uxon.tui`` / Textual (~90 ms saved on ``uxon version`` /
-# ``uxon list``; latency invariant #7).
+from uxon.errors import fail
+from uxon.infra import identity
 
 
 def parse_list_args(argv: list[str]) -> ParsedArgs:
@@ -159,20 +138,10 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
     """Parse the arg tail of ``uxon kill <id> [...]``.
 
     Shared between the subcommand form and the ``-k`` / ``--kill`` short
-    form so both surfaces accept exactly the same flag set.
-
-    Recognised flags:
-        --dry-run        : print the would-be argv (or SSH command),
-                           do not execute.
-        --force          : skip the interactive confirmation prompt.
-        --json           : emit a wire-schema envelope on stdout.
-        --user <name>    : kill a session belonging to a different
-                           launch user (per-target NOPASSWD required).
-        --host <alias>   : route the kill to a configured remote peer
-                           over SSH.
-
-    Unknown flags fail loudly. Returns a fully populated
-    :class:`ParsedArgs` with ``action="kill"``.
+    form so both accept the same flags: ``--dry-run``, ``--force``,
+    ``--json``, ``--user <name>`` (per-target NOPASSWD required),
+    ``--host <alias>`` (route over SSH). Unknown flags fail loudly.
+    Returns a populated :class:`ParsedArgs` with ``action="kill"``.
     """
     from uxon.infra.audit import extract_correlation_id, set_correlation_id
 
@@ -365,229 +334,3 @@ def parse_args(argv: list[str]) -> ParsedArgs:
         fail(f"unknown command: {argv[0]}\n{USAGE}")
     # Convenience: support `uxon --model sonnet` as run passthrough.
     return parse_run_like(argv, "run")
-
-
-def format_version() -> str:
-    """Render the ``uxon version`` display string.
-
-    Delegates to :func:`uxon.infra.version_probe.format_version`, which
-    composes the impure git/FS readers with the pure
-    :func:`uxon.domain.version.format_version` builder.
-    """
-    return version_probe.format_version()
-
-
-def do_interactive(cfg: Config, launch_user: str) -> int:
-    try:
-        from uxon import tui as uxon_tui
-    except ImportError:
-        try:
-            from uxon.tui.hints import TEXTUAL_MISSING_HINT
-
-            eprint(TEXTUAL_MISSING_HINT)
-        except ImportError:
-            eprint(
-                "uxon: interactive mode requires the 'textual' package "
-                "(pip install --user textual)."
-            )
-        return 1
-    # Lazy import: the bridge pulls in Textual-adjacent tui modules, which
-    # must stay out of ``import uxon.cli`` (latency invariant #7).
-    from uxon.tui.context_builder import build_tui_context
-
-    cwd = canonical(os.getcwd())
-    # Hand the TUI a skeleton ctx so the first frame paints immediately;
-    # the real ctx is loaded by a worker once the app is mounted.
-    ctx = build_tui_context(cfg, launch_user, cwd, skeleton=True)
-    return uxon_tui.run(ctx)
-
-
-def main(argv: list[str] | None = None) -> int:
-    if argv is None:
-        argv = sys.argv[1:]
-    try:
-        args = parse_args(argv)
-    except SystemExit as ex:
-        # argparse always raises SystemExit with an int (0 for --help,
-        # 2 for parse errors); guard the typed-as-``str | int | None`` shape.
-        return int(ex.code) if isinstance(ex.code, int) else (0 if ex.code is None else 2)
-    from uxon.infra import audit as _audit
-
-    try:
-        cfg = config_loader.load_config(os.getcwd())
-    except SystemExit as ex:
-        # Bug 5 part 2 — convert config-load failure into an audit event.
-        # The audit module's compile-time defaults (``enabled=True``,
-        # ``syslog_facility="user"``) are what fires here; ``configure()``
-        # has not run yet because ``config_loader.load_config`` is what feeds it.
-        # Spec says ``error`` carries the first 256 chars of the error
-        # text; ``fail()`` stashes the human-readable message on
-        # ``ex.uxon_msg`` so we don't end up logging just the int exit
-        # code (``str(SystemExit(1)) == "1"``).
-        err_msg = getattr(ex, "uxon_msg", None) or str(ex.code)
-        _audit.audit(
-            "config.error",
-            outcome="error",
-            path=str(config_loader.repo_config_path()),
-            error=err_msg[:256],
-        )
-        raise
-    _audit.configure(
-        enabled=cfg.audit_enabled,
-        syslog_facility=cfg.audit_syslog_facility,
-        subcmd=args.action,
-    )
-    caller_user = identity.resolve_caller_user()
-    launch_user = identity.resolve_launch_user(cfg, caller_user)
-
-    # CLI preflight: probe for tmux and required agents on actions that
-    # actually shell out to tmux. ``interactive`` is excluded so the TUI
-    # mount stays fast — the TUI runs its own async probe in the
-    # background and surfaces the same hints in line.
-    if args.action in {"run", "new", "attach", "list", "kill", "kill-all"}:
-        from uxon.infra import probes as uxon_probes
-
-        report = uxon_probes.probe_host(launch_user)
-        if report.tmux.path is None:
-            fail(f"tmux is not installed.\n{report.tmux.install_hint}", 1)
-        # Stash the report on ``args`` so downstream ``resolve_agent_id``
-        # reuses it instead of paying a second sudo round-trip. Agent
-        # install-gating is owned by ``resolve_agent_id`` — it now
-        # validates the picked candidate (including ``--agent`` and
-        # ``agents.default``) against this same report.
-        args.host_report = report
-
-    if args.action == "interactive":
-        return do_interactive(cfg, launch_user)
-    if args.action == "version":
-        if args.json_output:
-            listing_app._emit_json("version", version_probe._version_data())
-            return 0
-        print(format_version())
-        return 0
-    # Emit ``cli.start`` *after* the ``version`` early-return (the version
-    # subcommand is a no-op probe; we don't litter the audit trail with it)
-    # but *before* the ``doctor`` early-return — ``uxon doctor`` is a
-    # substantive operator gesture that belongs in the audit history.
-    _audit.audit(
-        "cli.start",
-        flags=_audit._sanitize_flags(list(argv or [])),
-        agents_enabled=list(cfg.enabled_agents),
-        enable_all_users_list=cfg.enable_all_users_list,
-        audit_enabled=True,
-        allowed_roots_count=len(cfg.allowed_roots),
-        remote_hosts_count=len(cfg.remote_hosts),
-    )
-    if args.action == "doctor":
-        return doctor_app.do_doctor(
-            cfg,
-            caller_user,
-            launch_user,
-            canonical(os.getcwd()),
-            json_output=args.json_output,
-            probe_remote=args.all_hosts,
-        )
-    if args.action == "run":
-        return run_app.do_run(args, cfg, launch_user)
-    if args.action == "list":
-        if args.host is not None:
-            return listing_app._do_list_host(args, cfg)
-        if args.all_hosts:
-            return listing_app._do_list_all_hosts(args, cfg, launch_user)
-        # Peer-inbound branch: a peer-collector invocation arrives with
-        # ``SSH_CONNECTION`` set and neither ``--host`` nor ``--all-hosts``.
-        # Fires *after* those early-returns so a caller-side
-        # ``uxon list --host`` does not double-emit on its own host.
-        # Spec line 306: when peer-inbound, ``list.remote.in`` replaces
-        # ``list.peek`` ("instead of"), so we suppress the latter on
-        # this code path.
-        #
-        # Spec line 207-209: state-changing events emit on **both**
-        # success and failure paths.  ``list.remote.in`` is no
-        # exception: the previous shape (single ``outcome=ok`` emit at
-        # the top, before the all-users-disabled gate) lost the denied
-        # outcome — a peer that refused ``--all-users`` recorded a
-        # stale ``ok``.  Emit at outcome boundaries instead: once on
-        # the all-users-disabled denial, once on success after the
-        # gate passes (or for the own-only branch).
-        peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-        # ``correlation_id`` for ``list.remote.in`` is auto-injected by
-        # ``audit()`` from module state when the parser popped
-        # ``--audit-correlation-id`` off argv.  See spec §"Correlation
-        # across hosts" ("omitted rather than synthesized").
-        list_scope = "all-users" if args.all_users else "own"
-        if args.all_users:
-            if not cfg.enable_all_users_list:
-                # Stable error tag. The remote-host aggregator's
-                # fallback detector greps for this exact substring to
-                # decide whether to retry with the legacy ``list
-                # --json`` (own-only) command.
-                if peer_inbound:
-                    _audit.audit(
-                        "list.remote.in",
-                        outcome="denied",
-                        scope=list_scope,
-                    )
-                fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
-            scope_users, scope_skipped = listing_app._resolve_all_users_scope(cfg, launch_user)
-            # ``list.peek`` / ``list.remote.in`` fires only after the
-            # gate passes — placement ensures we never log a successful
-            # peek for a denied invocation.
-            if peer_inbound:
-                _audit.audit(
-                    "list.remote.in",
-                    scope=list_scope,
-                )
-            else:
-                _audit.audit(
-                    "list.peek",
-                    scope_users=scope_users,
-                    scope_skipped=list(scope_skipped),
-                )
-            sessions = sessions_probe.collect_sessions(scope_users, cfg)
-            if args.json_output:
-                listing_app._emit_json(
-                    "list",
-                    listing_app._list_data(
-                        cfg,
-                        sessions,
-                        scope_users,
-                        all_users=True,
-                        scope_skipped=scope_skipped,
-                    ),
-                )
-                return 0
-            rc = listing_app.print_list(cfg, sessions, scope_users, show_user=True)
-            listing_app._emit_scope_skipped_hint(scope_skipped)
-            return rc
-        # Own-only branch: no gate, single success emit on the peer
-        # side (the local-side ``list`` does not produce a ``list.peek``
-        # for its own user — that's by spec, only ``--all-users``
-        # local enumeration triggers ``list.peek``).
-        if peer_inbound:
-            _audit.audit(
-                "list.remote.in",
-                scope=list_scope,
-            )
-        scope_users = [launch_user]
-        sessions = sessions_probe.collect_sessions(scope_users, cfg)
-        if args.json_output:
-            listing_app._emit_json(
-                "list", listing_app._list_data(cfg, sessions, scope_users, all_users=False)
-            )
-            return 0
-        return listing_app.print_list(cfg, sessions, scope_users, show_user=False)
-    if args.action == "attach":
-        return attach_app.do_attach(args, cfg, launch_user)
-    if args.action == "kill":
-        return kill_app.do_kill(args, cfg, launch_user)
-    if args.action == "kill-all":
-        return kill_app.do_kill_all(args, cfg, launch_user)
-    if args.action == "new":
-        return new_app.do_new(args, cfg, launch_user)
-    fail(f"unsupported action: {args.action}")
-    return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

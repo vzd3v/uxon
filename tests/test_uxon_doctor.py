@@ -21,7 +21,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
     """``do_doctor`` parallelises ``_probe_one`` across ``cfg.enabled_agents``."""
 
     def _stub_cfg(self):
-        from uxon.cli import Config
+        from uxon.domain.config import Config
 
         return Config(
             runtime_user="",
@@ -181,7 +181,7 @@ class DoctorRemoteFlagTests(unittest.TestCase):
     """
 
     def _stub_cfg(self, remote_hosts=None):
-        from uxon.cli import Config
+        from uxon.domain.config import Config
 
         return Config(
             runtime_user="",
@@ -388,7 +388,7 @@ class DoctorAuditLineTests(unittest.TestCase):
     """``uxon doctor`` reports audit-channel status (Bug 2)."""
 
     def _stub_cfg(self):
-        from uxon.cli import Config
+        from uxon.domain.config import Config
 
         return Config(
             runtime_user="",

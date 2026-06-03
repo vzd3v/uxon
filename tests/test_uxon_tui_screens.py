@@ -1093,7 +1093,8 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
         from textual.app import App
 
         from uxon.infra.settings import SettingEntry, SettingSpec
-        from uxon.tui.screens.settings import BoolToggleModal, SettingsScreen
+        from uxon.tui.screens.settings import SettingsScreen
+        from uxon.tui.screens.settings_modals import BoolToggleModal
 
         spec = SettingSpec("git_create_enabled", "bool", "desc")
         entries = [SettingEntry(spec=spec, value=False, source="default", editable=True)]
@@ -1112,7 +1113,7 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
             # Click True button.
-            from uxon.tui.screens.settings import BoolToggleModal
+            from uxon.tui.screens.settings_modals import BoolToggleModal
 
             modal = app.screen_stack[-1]
             self.assertIsInstance(modal, BoolToggleModal)
@@ -1180,7 +1181,7 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
         return captured["r"], still_open
 
     async def test_string_saves_raw(self):
-        from uxon.tui.screens.settings import StringInputModal
+        from uxon.tui.screens.settings_modals import StringInputModal
 
         saved, cbs = self._cbs()
         modal = StringInputModal(self._entry("k", "string", ""), cbs)
@@ -1190,7 +1191,7 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
 
     async def test_number_saves_float(self):
-        from uxon.tui.screens.settings import NumberInputModal
+        from uxon.tui.screens.settings_modals import NumberInputModal
 
         saved, cbs = self._cbs()
         modal = NumberInputModal(self._entry("k", "number", 0), cbs)
@@ -1199,7 +1200,7 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
 
     async def test_number_rejects_non_number_and_stays_open(self):
-        from uxon.tui.screens.settings import NumberInputModal
+        from uxon.tui.screens.settings_modals import NumberInputModal
 
         saved, cbs = self._cbs()
         modal = NumberInputModal(self._entry("k", "number", 0), cbs)
@@ -1208,7 +1209,7 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(still_open)
 
     async def test_array_parses_csv(self):
-        from uxon.tui.screens.settings import ArrayCsvModal
+        from uxon.tui.screens.settings_modals import ArrayCsvModal
 
         saved, cbs = self._cbs()
         modal = ArrayCsvModal(self._entry("k", "array", []), cbs)
@@ -1220,7 +1221,7 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
         from textual.app import App
         from textual.widgets import Input
 
-        from uxon.tui.screens.settings import ArrayCsvModal
+        from uxon.tui.screens.settings_modals import ArrayCsvModal
 
         saved, cbs = self._cbs()
         modal = ArrayCsvModal(self._entry("k", "array", ["p", "q"]), cbs)
@@ -1240,7 +1241,7 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
         from textual.app import App
         from textual.widgets import Input
 
-        from uxon.tui.screens.settings import NumberInputModal
+        from uxon.tui.screens.settings_modals import NumberInputModal
 
         _saved, cbs = self._cbs()
         modal = NumberInputModal(self._entry("k", "number", 0), cbs)
@@ -1255,7 +1256,7 @@ class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(modal.query_one(Input).value, "0")
 
     async def test_table_parses_kv_via_save_mapping(self):
-        from uxon.tui.screens.settings import TableMappingModal
+        from uxon.tui.screens.settings_modals import TableMappingModal
 
         saved, cbs = self._cbs()
         modal = TableMappingModal(self._entry("k", "table", {}), cbs)

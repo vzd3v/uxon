@@ -16,20 +16,22 @@ from helpers import make_config as _make_config
 
 import uxon.app.attach as attach_app
 import uxon.tui.bridge as tui_bridge
-from uxon import cli as uxon
+from uxon.cli.parsing import parse_args
+from uxon.domain.args import ParsedArgs
+from uxon.domain.config import Config
 from uxon.infra.remote_hosts import RemoteHost
 
 
 class AttachParserTests(unittest.TestCase):
     def test_attach_with_user(self) -> None:
-        a = uxon.parse_args(["attach", "demo@claude", "--user", "alice"])
+        a = parse_args(["attach", "demo@claude", "--user", "alice"])
         self.assertEqual(a.action, "attach")
         self.assertEqual(a.target_id, "demo@claude")
         self.assertEqual(a.user, "alice")
         self.assertIsNone(a.host)
 
     def test_attach_with_host_and_user(self) -> None:
-        a = uxon.parse_args(["attach", "demo@claude", "--host", "box-b", "--user", "alice"])
+        a = parse_args(["attach", "demo@claude", "--host", "box-b", "--user", "alice"])
         self.assertEqual(a.host, "box-b")
         self.assertEqual(a.user, "alice")
 
@@ -38,17 +40,15 @@ class AttachParserTests(unittest.TestCase):
         # peer-login-user defaults invite "where did this attach
         # actually go?" surprises.
         with self.assertRaises(SystemExit):
-            uxon.parse_args(["attach", "demo@claude", "--host", "box-b"])
+            parse_args(["attach", "demo@claude", "--host", "box-b"])
 
     def test_attach_dry_run(self) -> None:
-        a = uxon.parse_args(
-            ["attach", "demo@claude", "--host", "box-b", "--user", "alice", "--dry-run"]
-        )
+        a = parse_args(["attach", "demo@claude", "--host", "box-b", "--user", "alice", "--dry-run"])
         self.assertTrue(a.dry_run)
 
     def test_attach_unknown_flag(self) -> None:
         with self.assertRaises(SystemExit):
-            uxon.parse_args(["attach", "demo@claude", "--unknown"])
+            parse_args(["attach", "demo@claude", "--unknown"])
 
     def test_peer_side_parses_remote_attach_argv_built_by_local(self) -> None:
         # Regression: ``_do_attach_remote`` and TUI ``on_remote_attach``
@@ -65,7 +65,7 @@ class AttachParserTests(unittest.TestCase):
             "--audit-correlation-id",
             "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f",
         ]
-        parsed = uxon.parse_args(argv)
+        parsed = parse_args(argv)
         self.assertEqual(parsed.action, "attach")
         self.assertEqual(parsed.target_id, "demo@claude")
         self.assertEqual(parsed.user, "alice")
@@ -78,12 +78,12 @@ class AttachCrossUserTests(unittest.TestCase):
     Mirror of ``KillUserCrossUserTests`` in test_uxon_kill_multi.py.
     """
 
-    def _cfg(self) -> uxon.Config:
+    def _cfg(self) -> Config:
         return _make_config()
 
     def test_same_user_no_sudo_path(self) -> None:
         cfg = self._cfg()
-        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="u-vz", dry_run=True)
+        args = ParsedArgs(action="attach", target_id="demo@claude", user="u-vz", dry_run=True)
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions") as cs,
             mock.patch("uxon.infra.sessions_probe.resolve_session") as rs,
@@ -98,7 +98,7 @@ class AttachCrossUserTests(unittest.TestCase):
 
     def test_cross_user_unreachable_emits_stable_tag(self) -> None:
         cfg = self._cfg()
-        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
+        args = ParsedArgs(action="attach", target_id="demo@claude", user="alice")
         from uxon.domain.sudo import SudoCapability
 
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
@@ -127,7 +127,7 @@ class AttachCrossUserTests(unittest.TestCase):
         from uxon.domain.sudo import SudoCapability
 
         cfg = self._cfg()
-        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice")
+        args = ParsedArgs(action="attach", target_id="demo@claude", user="alice")
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         recorded: list[tuple[str, dict]] = []
 
@@ -158,7 +158,7 @@ class AttachCrossUserTests(unittest.TestCase):
 
     def test_cross_user_reachable_dry_run_shows_sudo_prefix(self) -> None:
         cfg = self._cfg()
-        args = uxon.ParsedArgs(action="attach", target_id="demo@claude", user="alice", dry_run=True)
+        args = ParsedArgs(action="attach", target_id="demo@claude", user="alice", dry_run=True)
         from uxon.domain.sudo import SudoCapability
 
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
@@ -184,7 +184,7 @@ class AttachCrossUserTests(unittest.TestCase):
 class AttachHostRemoteTests(unittest.TestCase):
     """``uxon attach --host <alias> --user <u>`` SSH-routed dispatch."""
 
-    def _cfg_with_host(self, **host_kwargs) -> uxon.Config:
+    def _cfg_with_host(self, **host_kwargs) -> Config:
         return _make_config(
             remote_hosts=[
                 RemoteHost(
@@ -199,7 +199,7 @@ class AttachHostRemoteTests(unittest.TestCase):
 
     def test_host_dry_run_prints_ssh_attach_command(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="attach",
             target_id="demo@claude",
             host="box-b",
@@ -223,7 +223,7 @@ class AttachHostRemoteTests(unittest.TestCase):
         cfg = self._cfg_with_host(
             command_template=("ssh", "-J", "bastion", "{ssh_alias}", "{remote_command}"),
         )
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="attach",
             target_id="demo@claude",
             host="box-b",
@@ -243,7 +243,7 @@ class AttachHostRemoteTests(unittest.TestCase):
 
     def test_host_unknown_alias_fails(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="attach",
             target_id="demo@claude",
             host="unknown",

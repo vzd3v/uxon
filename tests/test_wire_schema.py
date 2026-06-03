@@ -6,7 +6,7 @@ tests must fail loudly if the field set, types, or
 prefix-strip / attached-conversion semantics drift.
 
 These tests are pure: no tmux, no subprocess, no Textual. They use
-the real :class:`uxon.cli.SessionInfo` dataclass as input so they
+the real :class:`uxon.domain.session.SessionInfo` dataclass as input so they
 also catch a SessionInfo field rename that breaks the protocol.
 """
 

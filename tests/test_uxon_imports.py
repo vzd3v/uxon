@@ -75,7 +75,9 @@ class CliImportSurfaceTests(unittest.TestCase):
         # builder composed with the (git/FS) readers. Must not pull
         # textual / tui / probes.
         modules = self._modules_after_dispatch(
-            "cli.parse_args(['version'])\nassert cli.format_version().startswith('uxon ')\n"
+            "from uxon.cli.parsing import parse_args\n"
+            "from uxon.cli.main import format_version\n"
+            "parse_args(['version'])\nassert format_version().startswith('uxon ')\n"
         )
         self._assert_no_heavy(modules)
 
@@ -84,7 +86,8 @@ class CliImportSurfaceTests(unittest.TestCase):
         # wire-schema records for an empty session set. Must not pull
         # textual / tui / probes.
         modules = self._modules_after_dispatch(
-            "args = cli.parse_args(['list'])\n"
+            "from uxon.cli.parsing import parse_args\n"
+            "args = parse_args(['list'])\n"
             "assert args.action == 'list'\n"
             "from uxon.domain.wire_schema import build_session_records\n"
             "build_session_records([], session_prefix='uxon-')\n"
