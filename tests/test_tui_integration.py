@@ -165,7 +165,19 @@ class PtyTuiIntegrationTests(unittest.TestCase):
         and keep running."""
         press = b"\x1b[<0;5;4M"
         release = b"\x1b[<0;5;4m"
-        trace = self._run([press, release, b"q"])
+        # Synchronize on the first rendered frame before clicking: under
+        # -n auto CPU contention textual's import+first-render can outlast
+        # a fixed initial_drain, and the click+q then land on a blank
+        # screen (the captured trace holds only the echoed input bytes).
+        # `initial_wait_for` drains until the main screen *body* is actually
+        # on screen — "No active sessions." paints in the body burst after
+        # the action rows, ~770 ms behind the title bar — so the click lands
+        # on a rendered, parseable frame.
+        trace = self._run(
+            [press, release, b"q"],
+            initial_drain=20.0,
+            initial_wait_for="No active sessions",
+        )
         self.assertNotIn("Traceback", trace.plain)
         self.assertNotIn("crashed", trace.plain)
         # All three action rows should still be visible in the last frame.
@@ -287,17 +299,26 @@ class DrainAfterLaunchTests(unittest.TestCase):
         trace = run_python_snippet(
             code,
             [
-                (8.0, b"\r", "1 normal"),
-                (4.0, b"\r"),
+                (12.0, b"\r", "1 normal"),
+                (6.0, b"\r"),
                 # Stray digit during launch — must not stale-activate
                 # any row on re-entry. ``2`` is unbound on MainScreen
                 # (digit-jump was retired) so this is a no-op; the
                 # test asserts the no-op stays a no-op.
-                (1.0, b"2"),
+                (2.0, b"2"),
                 b"q",
             ],
-            initial_drain=10.0,
-            timeout=60.0,
+            # Gate the first Enter on the main screen *body* actually
+            # rendering: under -n auto CPU contention textual's
+            # import+first-render can outlast a fixed initial_drain, and the
+            # Enter then lands on a not-yet-interactive screen so the launch
+            # never fires (empty marker). "No active sessions." renders in the
+            # body burst that follows the action rows (the title bar paints
+            # ~770 ms earlier), so waiting for it guarantees the action
+            # ListView is mounted and input-ready.
+            initial_drain=20.0,
+            initial_wait_for="No active sessions",
+            timeout=90.0,
         )
         self.assertNotIn("Traceback", trace.plain)
         marker = Path(marker_path).read_text(encoding="utf-8")

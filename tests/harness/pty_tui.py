@@ -36,6 +36,17 @@ _ANSI_MODE = re.compile(rb"\x1b[=>]")
 # (textual import takes 2–3 s) are not cut short.
 _IDLE_MS = 100
 
+# Settle threshold (milliseconds) used *after* a ``wait_for_text`` marker has
+# been seen. Textual's first render arrives in bursts with sub-second gaps
+# between them — measured ~770 ms (quiet host) and >1.4 s (under -n auto CPU
+# contention) between the title bar and the interactive body. The 100 ms
+# steady-state idle window fires in one of those gaps and returns the drain
+# while the screen is still painting and the ListView/focus is not yet
+# mounted, so the next keypress is dropped. After a marker match we instead
+# wait for this longer quiet period, which clears those inter-burst gaps and
+# guarantees the app is input-ready before the test sends its next key.
+_SETTLE_MS = 1500
+
 
 def _make_controlling_tty(slave_fd: int) -> None:
     """Child-side setup for ``subprocess.Popen``.
@@ -92,6 +103,7 @@ def run_pty(
     rows: int = 40,
     cols: int = 140,
     initial_drain: float = 6.0,
+    initial_wait_for: str | None = None,
     per_key_drain: float = 0.4,
     final_drain: float = 0.8,
     timeout: float = 30.0,
@@ -112,6 +124,16 @@ def run_pty(
     which can take 2–3 s to import, are not cut short). Once data has started
     flowing, the drain exits as soon as the pty has been idle for ``_IDLE_MS``
     milliseconds (default 100). All values cap the worst-case wait.
+
+    ``initial_wait_for`` makes the initial drain synchronize on the first
+    rendered frame instead of a fixed delay: the drain keeps reading until
+    that text appears in the trace (or ``initial_drain`` is exhausted). Pass a
+    marker that only appears once the TUI's first frame is on screen (e.g. a
+    main-screen label) so that input sent afterwards lands on a *rendered*
+    app. Without it, under heavy CPU contention textual's import+first-render
+    can outlast a fixed ``initial_drain`` and the keys hit a blank screen — the
+    captured trace then contains only the echoed input bytes. This is the
+    render-race source fix for the pty click/launch tests (Phase P9a).
 
     Returns a :class:`PtyTrace` with the combined raw output, per-frame
     snapshots, and the child's exit code.
@@ -145,27 +167,41 @@ def run_pty(
 
     def _drain(max_secs: float, wait_for_text: str | None = None) -> None:
         idle = _IDLE_MS / 1000.0
+        settle = _SETTLE_MS / 1000.0
         deadline = min(time.monotonic() + max_secs, deadline_outer)
         got_data = False
+        # Once a requested marker has been seen, keep draining through a
+        # *settle* window instead of returning the instant the substring
+        # appears mid-render. The marker can land in the byte stream while the
+        # frame is still painting and the app has not finished the
+        # render/mount/focus cycle it kicked off — returning immediately then
+        # races the next keypress against an app that is not yet input-ready
+        # (observed under -n auto contention: the keypress is dropped and the
+        # launch never fires). Draining to the longer ``settle`` quiet period
+        # clears textual's inter-burst render gaps so that cycle completes.
+        matched = False
         while time.monotonic() < deadline:
-            # If caller asked for a specific text and it is already in the
-            # rendered trace, we are done — no point waiting further.
-            if wait_for_text and wait_for_text in trace.plain:
-                return
+            if wait_for_text and not matched and wait_for_text in trace.plain:
+                matched = True
             remaining = deadline - time.monotonic()
-            if got_data and not wait_for_text:
-                # After first data: apply idle window so we exit quickly
-                # once the pty goes quiet instead of sleeping the full budget.
+            if got_data and matched:
+                # Marker seen: wait for the longer settle quiet period so the
+                # render burst the marker belongs to fully drains.
+                timeout_for_select = min(settle, remaining)
+            elif got_data and not wait_for_text:
+                # After first data and no marker requested: apply the short
+                # idle window so we exit quickly once the pty goes quiet
+                # instead of sleeping the full budget.
                 timeout_for_select = min(idle, remaining)
             else:
-                # Before any data, OR while still waiting for a specific
-                # text marker, stay until the full remaining budget so slow
-                # processes (textual import 2–3s, modal mount under -n auto)
-                # are not cut short.
+                # Before any data, OR still waiting for the marker to appear:
+                # stay until the full remaining budget so slow processes
+                # (textual import 2–3s, modal mount under -n auto) are not cut
+                # short.
                 timeout_for_select = remaining
             rlist, _, _ = select.select([fd], [], [], timeout_for_select)
             if not rlist:
-                # select timed out — either truly idle (no wait_for_text),
+                # select timed out — truly idle (marker seen or none asked),
                 # or hit `remaining` near deadline. Stop.
                 return
             try:
@@ -178,7 +214,7 @@ def run_pty(
             trace.raw += chunk
 
     try:
-        _drain(initial_drain)
+        _drain(initial_drain, initial_wait_for)
         trace.frames.append(trace.plain)
 
         for item in keys:
