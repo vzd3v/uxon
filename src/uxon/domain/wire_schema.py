@@ -10,18 +10,17 @@ Two things live here:
 
 - Constants and TypedDicts that describe the wire format. They are
   the source of truth — both the producer (``--json`` rendering in
-  ``cli.py``, added in the next commit) and the consumer (the SSH
-  ``RemoteCollector``, added later) import from this module.
+  ``app.listing``) and the consumer (the SSH collector in
+  ``infra.remote.collector``) import from this module.
 - :func:`build_session_records`, a pure function that turns
-  :class:`uxon.cli.SessionInfo` instances into wire records. Pure
-  means: no subprocess, no I/O, no formatting decisions beyond what
+  :class:`uxon.domain.session.SessionInfo` instances into wire records.
+  Pure means: no subprocess, no I/O, no formatting decisions beyond what
   ``SessionInfo`` already carries. Output is JSON-serialisable as-is.
 
-Why a separate module: ``cli.py`` already does data collection, data
-shaping and presentation in one pass (see ``print_list``). Splitting
-the *shaping* step out lets the same function feed both the human
-table and the JSON envelope, and lets a remote consumer parse a JSON
-snapshot without importing any of cli.py's tmux-poking machinery.
+Why a separate module: keeping the *shaping* step pure lets the same
+function feed both the human table (``app.listing.print_list``) and the
+JSON envelope, and lets a remote consumer parse a JSON snapshot without
+importing any of the tmux-poking probe machinery.
 
 Versioning: :data:`WIRE_SCHEMA_VERSION` is bumped on **incompatible**
 changes (renamed/removed fields, semantic changes). Adding a new
@@ -219,8 +218,8 @@ class RemoteSnapshot:
 class _SessionLike(Protocol):
     """Structural type for what :func:`build_session_records` reads.
 
-    Decoupled from :class:`uxon.cli.SessionInfo` to keep this module
-    importable without a cycle. ``cli.SessionInfo`` satisfies this
+    Decoupled from :class:`uxon.domain.session.SessionInfo` to keep this
+    module importable without a cycle. ``SessionInfo`` satisfies this
     protocol by attribute name and type.
     """
 

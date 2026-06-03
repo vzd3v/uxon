@@ -2,7 +2,7 @@
 
 Off by default. Activated by setting ``UXON_DEMO_HOSTS=<dir>``: a
 directory of pre-rendered wire envelopes (one ``<host>.json`` per
-peer, conforming to :class:`uxon.wire_schema.Envelope` with
+peer, conforming to :class:`uxon.domain.wire_schema.Envelope` with
 ``kind="list"``).
 
 When the env var is set, three data sources are intercepted:
@@ -18,7 +18,7 @@ When the env var is set, three data sources are intercepted:
   :func:`uxon.infra.remote.collector.fetch_remote_snapshot` before any
   network I/O.
 - :func:`load_demo_local_sessions` reads the optional
-  ``_local.json`` envelope and yields :class:`uxon.cli.SessionInfo`
+  ``_local.json`` envelope and yields :class:`uxon.domain.session.SessionInfo`
   records for the requested user, bypassing tmux entirely. Called
   from :func:`uxon.infra.sessions_probe.collect_sessions_for_user` before any
   subprocess invocation. Absent file ⇒ empty list, which is the
@@ -241,7 +241,7 @@ def load_demo_local_scope_users(dir_path: Path) -> list[str]:
 def load_demo_local_sessions(dir_path: Path, user: str) -> list[Any]:
     """Read ``<dir>/_local.json`` and return ``SessionInfo`` for ``user``.
 
-    Inverse of :func:`uxon.wire_schema.build_session_records` for the
+    Inverse of :func:`uxon.domain.wire_schema.build_session_records` for the
     list-kind envelope, scoped to one OS user. The envelope can carry
     sessions for multiple users (mirroring how a remote peer reports
     its full ``session_users`` scope); this loader filters by
@@ -288,7 +288,7 @@ def load_demo_local_sessions(dir_path: Path, user: str) -> list[Any]:
 
 
 def _session_info_from_record(rec: dict[str, Any], cls: type) -> Any:
-    """Build one :class:`uxon.cli.SessionInfo` from a wire record.
+    """Build one :class:`uxon.domain.session.SessionInfo` from a wire record.
 
     Every field is read defensively (``.get(...)``) so an envelope
     authored by a future or past producer can't crash the loader —
@@ -302,7 +302,7 @@ def _session_info_from_record(rec: dict[str, Any], cls: type) -> Any:
     ``cls`` is passed in by the caller (rather than imported here) to
     keep this helper free of the lazy-import dance — it's only ever
     invoked from :func:`load_demo_local_sessions`, which already
-    resolved :class:`uxon.cli.SessionInfo`.
+    resolved :class:`uxon.domain.session.SessionInfo`.
     """
     pane_pids_raw = rec.get("pane_pids") or []
     pane_pids = tuple(p for p in pane_pids_raw if isinstance(p, int))

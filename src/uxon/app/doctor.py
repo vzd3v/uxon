@@ -13,7 +13,6 @@ that can exceed it.
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -25,21 +24,6 @@ from uxon.domain.config import Config
 from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.domain.session import SessionInfo
 from uxon.infra import config_loader, identity, sessions_probe, tmux, version_probe
-
-
-def command_path_for_user(command: str, target_user: str) -> str | None:
-    cp = subprocess.run(
-        identity.command_prefix_for_user(target_user)
-        + ["sh", "-lc", f"command -v {shlex.quote(command)}"],
-        text=True,
-        capture_output=True,
-    )
-    if cp.returncode != 0:
-        return None
-    resolved = (cp.stdout or "").strip().splitlines()
-    if not resolved:
-        return None
-    return resolved[0]
 
 
 def user_can_write_dir(path: str, target_user: str) -> bool:

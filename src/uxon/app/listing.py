@@ -101,7 +101,7 @@ def _emit_json_with_host(
     Used by ``list --host <name>``: the local CLI is not running on
     the peer, so the envelope is *attributed* to the named host
     rather than implying a local origin. The field follows the
-    optional shape documented in :class:`uxon.wire_schema.Envelope`.
+    optional shape documented in :class:`uxon.domain.wire_schema.Envelope`.
 
     ``compact=True`` emits the envelope on a single line (no
     indentation) so a sequence of calls produces a valid JSON

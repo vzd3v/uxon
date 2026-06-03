@@ -1848,7 +1848,7 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
     but missed ``do_new``, ``_resolve_tui_project_dir``,
     ``do_doctor`` and ``find_project_config``. After the unification
     refactor every consumer routes through
-    :func:`uxon.cli.is_under_allowed_roots` so the four sites behave
+    :func:`uxon.domain.authz.is_under_allowed_roots` so the four sites behave
     identically.
     """
 

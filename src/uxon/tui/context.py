@@ -260,7 +260,7 @@ class TuiContext:
     # declarative append rather than a wiring change in ``app.py``.
     #
     # ``None`` (the default) means "no registered sources" — used by
-    # tests and the skeleton context. The CLI's ``_build_tui_context``
+    # tests and the skeleton context. ``tui.context_builder.build_tui_context``
     # populates this with the ``main_ctx_rebuild`` source that wraps
     # ``on_refresh()``; future hosts add more entries here.
     refresh_sources: list = field(default_factory=list)

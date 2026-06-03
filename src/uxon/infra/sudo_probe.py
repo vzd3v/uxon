@@ -23,9 +23,10 @@ Design constraints:
 - **Fail-soft.** Any per-probe failure (timeout, OSError, non-zero
   exit) means *not reachable*. No retries, no error surface.
 
-The result is consumed by ``cli._build_tui_context`` (TUI: own /
-others' sessions block) and by ``cli`` for ``list --all-users`` (CLI
-parity), and indirectly by ``remote.collector`` for cross-host
+The result is consumed by ``tui.context_builder.build_tui_context``
+(TUI: own / others' sessions block) and by the ``app`` use-cases
+(``app.listing`` / ``app.doctor``) for ``list --all-users`` (CLI
+parity), and indirectly by ``infra.remote.collector`` for cross-host
 aggregation (each peer runs its own probe on its own caller).
 """
 
