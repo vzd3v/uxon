@@ -50,6 +50,14 @@ class CliImportSurfaceTests(unittest.TestCase):
         modules = self._modules_after_cli_import()
         self.assertNotIn("uxon.infra.agents", modules)
 
+    def test_cli_does_not_pull_structlog(self) -> None:
+        # ``import structlog`` eagerly loads ``structlog.dev`` → rich →
+        # pygments (~0.6 s). ``events`` sits on the hot startup path but
+        # only needs structlog when ``UXON_DEBUG`` is set, so the import
+        # is deferred to first use. Keep it that way.
+        modules = self._modules_after_cli_import()
+        self.assertNotIn("structlog", modules)
+
     def _modules_after_dispatch(self, body: str) -> set[str]:
         """Run ``body`` (which exercises a dispatch path) in a fresh
         interpreter after importing ``uxon.cli`` and return the module set."""

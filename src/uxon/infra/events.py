@@ -26,12 +26,24 @@ Fields (all optional except ``ts`` and ``event``):
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import platformdirs
-import structlog
 
-# Module-level structlog renderer for the off-by-default debug channel.
+if TYPE_CHECKING:
+    import structlog
+
+# Lazily-built structlog renderer for the off-by-default debug channel.
+# ``import structlog`` is expensive (~0.6 s — it eagerly pulls
+# ``structlog.dev`` → rich → pygments) and ``events`` sits on the hot
+# startup path (``cli.main`` → ``config_loader`` → ``events``, and the
+# TUI first-frame path). The renderer is only ever needed when
+# ``UXON_DEBUG`` is set, so we defer the import to first use inside
+# :func:`_debug_renderer` (called from :func:`debug`) and cache the
+# renderer here — keeping every normal
+# ``uxon`` invocation (and the TUI first frame) ~0.6 s faster. See
+# ``tests/test_uxon_imports.py`` for the regression guard.
+#
 # We bypass structlog's logger configuration on purpose: the debug log
 # is a per-day, per-user file whose path is recomputed per call (so a
 # long-running TUI rolls cleanly across midnight, and so tests can
@@ -39,10 +51,26 @@ import structlog
 # line; we write it ourselves. This keeps the on-disk shape
 # byte-identical to the prior ``json.dumps(...)`` output and to the
 # format consumers (tests, ``jq`` pipelines) rely on.
-_DEBUG_RENDERER: structlog.processors.JSONRenderer = structlog.processors.JSONRenderer(
-    sort_keys=False,
-    ensure_ascii=False,
-)
+_DEBUG_RENDERER: structlog.processors.JSONRenderer | None = None
+
+
+def _debug_renderer() -> structlog.processors.JSONRenderer:
+    """Return the cached debug JSON renderer, importing structlog on first use.
+
+    ``debug()`` runs on Textual worker threads, so first-use entry here can
+    race. Left lock-free deliberately: the build is idempotent (constant
+    args, no per-call state) and the ref assignment is atomic under CPython,
+    so a racing double-build just has the last writer win an identical object.
+    """
+    global _DEBUG_RENDERER
+    if _DEBUG_RENDERER is None:
+        import structlog
+
+        _DEBUG_RENDERER = structlog.processors.JSONRenderer(
+            sort_keys=False,
+            ensure_ascii=False,
+        )
+    return _DEBUG_RENDERER
 
 
 def _default_log_dir() -> str:
@@ -131,7 +159,7 @@ def debug(topic: str, **fields: Any) -> None:
         # the JSON processor.
         # JSONRenderer is statically typed ``str | bytes``; with our
         # config (no bytes serializer) it always returns ``str`` here.
-        line = _DEBUG_RENDERER(None, "debug", record)
+        line = _debug_renderer()(None, "debug", record)
         assert isinstance(line, str)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
