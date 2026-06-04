@@ -52,14 +52,16 @@ list. Cursor and selection bindings work without leaving the input.
 
 Pushed by every launch action (`New session in current folder`,
 `Create new project`, `Open existing project`) when a compatible
-session for the target directory already exists. Lets the operator
-attach to an existing session or knowingly start a parallel one.
+session for the target directory already exists. A pure list: each
+compatible session is a row, followed by a `+ Start new session
+alongside` row. Pick a row to attach to that session, or the trailing
+row to knowingly start a parallel one.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` | Navigate the existing-session list |
-| `a` / `Enter` | Attach to the highlighted session |
-| `n` | Start a new (parallel) session |
+| `↑` / `↓` | Navigate the list (sessions + the trailing *start-new* row) |
+| `Enter` | Confirm the highlighted row (a session attaches; the trailing row starts a new parallel session) |
+| `n` | Shortcut: start a new (parallel) session |
 | `Esc` | Cancel the launch |
 
 ## ⚙ Settings screen (superuser block only)

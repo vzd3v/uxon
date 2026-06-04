@@ -6,8 +6,9 @@ Two scopes:
    no textual dependency. Filters a fake session list down to entries
    compatible with (target_dir, agent_id).
 
-2. ``SessionChoiceScreen`` modal behaviour — keyboard a/n/Esc and the
-   shape of the dismiss values. Requires textual + pilot.
+2. ``SessionChoiceScreen`` modal behaviour — ↑/↓ + Enter row selection,
+   the ``n`` new-alongside shortcut, Esc cancel, and the shape of the
+   dismiss values. Requires textual + pilot.
 
 3. End-to-end MainScreen wiring: ``_launch_cwd`` must consult
    ``on_probe_existing_sessions`` before committing, and route the
@@ -114,7 +115,8 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
 
         async with _Host().run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            await pilot.press("a")
+            # First row is highlighted on mount; Enter confirms it (attach).
+            await pilot.press("enter")
             await pilot.pause()
 
         self.assertEqual(results, [("attach", "uxon-myproj@claude")])
@@ -141,6 +143,89 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(results, [("new", None)])
 
+    async def test_attach_non_first_session_row(self) -> None:
+        """Navigating to a non-first session row attaches *that* session.
+
+        Guards the ``0 <= idx < len(self.existing)`` bound in
+        ``action_pick`` that tells a session row apart from the trailing
+        new row — with two sessions, index 1 is still a session, not new.
+        """
+        from textual.app import App
+
+        from uxon.tui.screens.session_choice import SessionChoiceScreen
+
+        results: list[object] = []
+
+        class _Host(App):
+            async def on_mount(self) -> None:
+                screen = SessionChoiceScreen(
+                    target_label="myproj",
+                    existing=(
+                        ("uxon-myproj@claude", False),
+                        ("uxon-myproj@claude-2", True),
+                    ),
+                )
+                await self.push_screen(screen, lambda r: results.append(r))
+
+        async with _Host().run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # Rows: 0,1 = sessions; 2 = trailing new. Move to the second
+            # session and confirm → attach to it (not new).
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+        self.assertEqual(results, [("attach", "uxon-myproj@claude-2")])
+
+    async def test_mouse_click_session_row_attaches(self) -> None:
+        """Clicking a session row confirms it (the mouse-only path)."""
+        from textual.app import App
+
+        from uxon.tui.screens.session_choice import SessionChoiceScreen
+
+        results: list[object] = []
+
+        class _Host(App):
+            async def on_mount(self) -> None:
+                screen = SessionChoiceScreen(
+                    target_label="myproj",
+                    existing=(("uxon-myproj@claude", False),),
+                )
+                await self.push_screen(screen, lambda r: results.append(r))
+
+        async with _Host().run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await pilot.click("#sess-0")
+            await pilot.pause()
+
+        self.assertEqual(results, [("attach", "uxon-myproj@claude")])
+
+    async def test_enter_on_trailing_row_starts_new(self) -> None:
+        """The ``+ Start new session alongside`` row, picked with Enter."""
+        from textual.app import App
+
+        from uxon.tui.screens.session_choice import SessionChoiceScreen
+
+        results: list[object] = []
+
+        class _Host(App):
+            async def on_mount(self) -> None:
+                screen = SessionChoiceScreen(
+                    target_label="myproj",
+                    existing=(("uxon-myproj@claude", False),),
+                )
+                await self.push_screen(screen, lambda r: results.append(r))
+
+        async with _Host().run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # One session row (index 0) + trailing new row (index 1):
+            # move the highlight down to the new row, then confirm.
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+        self.assertEqual(results, [("new", None)])
+
     async def test_keyboard_works_when_pushed_from_dismiss_callback(self) -> None:
         """Regression: keyboard-dead modal when opened from another modal.
 
@@ -150,7 +235,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
         which stole focus to a background widget and left the modal
         keyboard-dead. Declarative ``AUTO_FOCUS`` is applied at the
         framework's compose/resume moment instead, so focus lands on the
-        list and the ``n``/``a`` bindings fire. Mirrors the production
+        list and the ``n`` binding fires. Mirrors the production
         stacking (base screen -> first modal -> dismiss -> this modal).
         """
         from textual.app import App

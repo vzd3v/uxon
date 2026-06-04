@@ -7,6 +7,17 @@ target directory. Lets the operator either attach to one of the existing
 sessions or knowingly start a parallel one — replaces the previous
 silent auto-attach in the planner.
 
+A pure-``ListView`` card, identical in shape to the other list modals
+(``GitProfileScreen``, ``ExistingProjectScreen``): the compatible
+sessions are rows, and a final ``+ Start new session alongside`` row
+carries the parallel-launch action — the same sentinel/extra-row idiom
+``GitProfileScreen`` (skip row) and ``LaunchOptionsScreen`` (``+ New
+worktree…`` row) already use. ↑/↓ move the highlight, Enter confirms the
+highlighted row, Esc cancels. No button row: it would be the only
+list+buttons modal in the package, and its buttons could not be operated
+by keyboard (no focus cycling on a list card; a priority Enter binding
+stole the gesture).
+
 Dismiss values:
   - ``("attach", session_name)`` — attach to the highlighted session.
   - ``("new", None)`` — start a new (parallel) session.
@@ -19,8 +30,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
-from textual.widgets import Button, Label, ListItem, ListView, Static
+from textual.widgets import Label, ListItem, ListView, Static
 
 from ..keymap import bindings_with_aliases
 from .modal_base import CardModal
@@ -32,18 +42,22 @@ def _row_label(name: str, attached: bool) -> str:
     return f"{name}{marker}"
 
 
+# Label for the trailing action row that starts a parallel session.
+_NEW_ROW_LABEL = "+ Start new session alongside"
+
+
 SessionChoiceResult = tuple[str, str | None] | None
 
 
 class SessionChoiceScreen(CardModal[SessionChoiceResult]):
     """Modal asking attach-vs-new when compatible sessions already exist.
 
-    The list shows every compatible session (one row each); the operator
-    moves the highlight with ↑/↓ and confirms with ``a`` (or Enter) to
-    attach to the highlighted session, or ``n`` to start a new parallel
-    one. ``Esc`` cancels the launch entirely. Mouse: clicking a row picks
-    "attach" for that row; the two buttons at the bottom mirror the ``a``
-    / ``n`` keyboard shortcuts for users who prefer pointing.
+    The list shows every compatible session (one row each) followed by a
+    ``+ Start new session alongside`` row. The operator moves the
+    highlight with ↑/↓ and confirms with Enter: a session row attaches to
+    that session, the trailing row starts a new parallel one. ``Esc``
+    cancels the launch entirely. ``n`` is a hidden shortcut for the
+    new-alongside action. Mouse: clicking any row activates it.
     """
 
     # Card chrome (centred card, title, Esc→cancel) comes from CardModal;
@@ -59,12 +73,22 @@ class SessionChoiceScreen(CardModal[SessionChoiceResult]):
         max-height: 12;
         margin-bottom: 1;
     }
+    SessionChoiceScreen .hint {
+        color: $text-muted;
+    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
-        Binding("a", "attach", "Attach", show=True, priority=True),
-        Binding("enter", "attach", "Attach", show=False, priority=True),
-        Binding("n", "new_alongside", "New", show=True, priority=True),
+        # Enter confirms the highlighted row; ``n`` is a hidden quick-path
+        # to the new-alongside action. ``priority=True`` so the screen
+        # owns Enter before the ListView's own Selected does: this modal is
+        # pushed from another modal's dismiss callback, and the Enter that
+        # dismissed the prior modal can otherwise leak into the freshly
+        # mounted ListView and auto-confirm a row. The screen-level
+        # priority binding absorbs that stray gesture (as ExistingProjectScreen
+        # does); mouse clicks still confirm via on_list_view_selected.
+        Binding("enter", "pick", "Select", show=True, priority=True),
+        Binding("n", "new_alongside", "New session", show=False),
     )
 
     # Initial focus via Textual's declarative AUTO_FOCUS — the framework
@@ -103,47 +127,34 @@ class SessionChoiceScreen(CardModal[SessionChoiceResult]):
                 ListItem(Label(_row_label(name, attached)), id=f"sess-{idx}")
                 for idx, (name, attached) in enumerate(self.existing)
             ]
+            # Trailing action row — the new-alongside choice, mirroring
+            # LaunchOptionsScreen's "+ New worktree…" sentinel row.
+            items.append(ListItem(Label(_NEW_ROW_LABEL), id="sess-new"))
             yield ListView(*items, id="session-list")
-            with Horizontal(classes="buttons"):
-                yield Button("Attach", variant="primary", id="attach")
-                yield Button("New alongside", variant="warning", id="new")
-                yield Button("Cancel", id="cancel")
+            yield Static(
+                "↑/↓ select · enter confirm · esc cancel",
+                classes="hint",
+            )
 
     def on_mount(self) -> None:
         # Default-highlight the first row; focus is handled by AUTO_FOCUS.
-        if self.existing:
-            self.query_one("#session-list", ListView).index = 0
+        self.query_one("#session-list", ListView).index = 0
 
-    def _highlighted_name(self) -> str | None:
-        if not self.existing:
-            return None
+    def action_pick(self) -> None:
+        """Confirm the highlighted row: session → attach, last → new."""
         lv = self.query_one("#session-list", ListView)
         idx = lv.index if lv.index is not None else 0
         if 0 <= idx < len(self.existing):
-            return self.existing[idx][0]
-        return None
-
-    def action_attach(self) -> None:
-        name = self._highlighted_name()
-        if name is None:
-            # Defensive — modal should never be pushed with empty list.
-            self.dismiss(None)
+            self.dismiss(("attach", self.existing[idx][0]))
             return
-        self.dismiss(("attach", name))
+        # The trailing row (or any out-of-range index) → start new.
+        self.dismiss(("new", None))
 
     def action_new_alongside(self) -> None:
         self.dismiss(("new", None))
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        # Mouse click on a row → attach to that row. (Enter is captured
-        # by the screen-level priority binding above and routes through
-        # ``action_attach`` without ever reaching the ListView.)
-        self.action_attach()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "attach":
-            self.action_attach()
-        elif event.button.id == "new":
-            self.action_new_alongside()
-        else:
-            self.action_cancel()
+        # Mouse click on a row → confirm it. Keyboard Enter is taken by the
+        # screen-level ``priority`` binding (``action_pick``) before the
+        # ListView can fire Selected, so this path is mouse-only.
+        self.action_pick()
