@@ -474,8 +474,8 @@ class UxonApp(App):
             self.call_later(top._refresh_cwd_row)
 
     def on__worktrees_probed(self, event: _WorktreesProbed) -> None:
-        """Invoke the launch-flow callback with launchability + workspaces."""
-        event.on_done(event.launchable, event.workspaces)
+        """Invoke the launch-flow callback with launchability + workspaces + error."""
+        event.on_done(event.launchable, event.workspaces, event.error)
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 

@@ -15,6 +15,17 @@ from dataclasses import dataclass
 from uxon.domain.session import slugify
 
 
+class WorktreeProbeError(Exception):
+    """A worktree probe found a real repo but ``git worktree list`` failed.
+
+    Distinct from "not a git repo", which the probe represents as an empty
+    list: the TUI surfaces this as an error row in the WORKSPACE column
+    rather than the benign "git not initialized" hint, so a genuine git
+    failure (corrupt repo, permission, broken git) isn't silently
+    mislabelled as "no repo here".
+    """
+
+
 def compute_worktree_path(*, repo_root: str, branch: str, worktree_root: str) -> str:
     """Return the absolute directory a worktree for ``branch`` should occupy.
 

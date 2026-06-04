@@ -99,24 +99,34 @@ class _WorktreesProbed(Message):
     """Posted by the one-shot worktree probe worker (launch-screen open).
 
     Carries the resolved launchability flag + the probed ``workspaces``
-    list plus the ``on_done`` callback the launch flow handed in. The
-    on-loop handler invokes ``on_done(launchable, workspaces)`` so it can
-    gate / push :class:`LaunchOptionsScreen` safely off the worker thread
-    (§4.2 — both the launchability ``sudo`` probe and the git worktree
-    probe run in the thread; the screen push runs on the loop).
-    ``launchable`` is ``None`` when the caller pre-resolved it (cwd's
-    reactive slot) and asked for no probe. The callable travels on the
-    message because it is an in-process closure on the screen, not
-    serialised state.
+    list + an optional ``error`` message plus the ``on_done`` callback the
+    launch flow handed in. The on-loop handler invokes
+    ``on_done(launchable, workspaces, error)`` so it can gate / push
+    :class:`LaunchOptionsScreen` safely off the worker thread (§4.2 — both
+    the launchability ``sudo`` probe and the git worktree probe run in the
+    thread; the screen push runs on the loop). ``launchable`` is ``None``
+    when the caller pre-resolved it (cwd's reactive slot) and asked for no
+    probe. ``error`` is a non-empty string only when the git probe raised
+    (e.g. ``git worktree list`` failed on a real repo) — it drives the
+    WORKSPACE error row, distinct from the empty-list "not a git repo" hint.
+    The callable travels on the message because it is an in-process closure
+    on the screen, not serialised state.
     """
 
     bubble = False
 
-    def __init__(self, launchable: bool | None, workspaces: list, on_done: Any) -> None:
+    def __init__(
+        self,
+        launchable: bool | None,
+        workspaces: list,
+        on_done: Any,
+        error: str | None = None,
+    ) -> None:
         super().__init__()
         self.launchable = launchable
         self.workspaces = workspaces
         self.on_done = on_done
+        self.error = error
 
 
 class _MainCtxLoaded(Message):

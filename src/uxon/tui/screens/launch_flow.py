@@ -291,7 +291,7 @@ class LaunchFlow:
                 on_new=lambda: commit_primary(agent_id, mode_id),
             )
 
-        def push_with_workspaces(workspaces) -> None:
+        def push_with_workspaces(workspaces, error) -> None:
             # The primary working tree carries its own path == repo_root;
             # thread it into the screen + the dispatch closures so neither
             # has to re-resolve the repo root on the event loop (§4.2).
@@ -301,7 +301,11 @@ class LaunchFlow:
             )
             host.app.push_screen(  # type: ignore[attr-defined]
                 LaunchOptionsScreen(
-                    host.cfg, host.state, workspaces=workspaces, repo_root=host._workspace_repo_root
+                    host.cfg,
+                    host.state,
+                    workspaces=workspaces,
+                    repo_root=host._workspace_repo_root,
+                    probe_error=error,
                 ),
                 after_opts,
             )
@@ -315,7 +319,7 @@ class LaunchFlow:
                 timeout=6,
             )
 
-        def on_probed_workspaces(resolved: bool | None, workspaces) -> None:
+        def on_probed_workspaces(resolved: bool | None, workspaces, error=None) -> None:
             # On-loop callback (off the worker thread). ``resolved is None``
             # ⟺ the caller pre-resolved launchability and no worker probe
             # ran, so ``on_probed`` (cwd slot persist) fires only on a fresh
@@ -325,7 +329,7 @@ class LaunchFlow:
             if resolved is False:
                 deny()
                 return
-            push_with_workspaces(workspaces)
+            push_with_workspaces(workspaces, error)
 
         # Pre-resolved False (cwd's populated slot) gates inline — no I/O, no
         # fresh probe to persist. Otherwise the launchability ``sudo`` probe

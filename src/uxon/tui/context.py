@@ -190,10 +190,14 @@ class TuiContext:
 
     # ── Worktree callbacks (3.5.0) ───────────────────────────────────
     # Worktree probe: returns the workspaces (folders only — no session
-    # data) for ``cwd``'s repo, parsed from ``git worktree list``. Empty
-    # list for a non-git target → no WORKSPACE column. Runs ONCE in a
-    # worker when the launch screen opens, under the non-interactive sudo
-    # prefix so a missing NOPASSWD grant fails fast (§4.2).
+    # data) for ``cwd``'s repo, parsed from ``git worktree list``. An empty
+    # list = a non-git target → the WORKSPACE column shows a benign "git not
+    # initialized" hint; RAISING (a real repo whose ``git worktree list``
+    # failed) → the column shows an error row carrying the message. Hiding
+    # the column entirely is the screen-side ``workspaces=None`` (never
+    # probed) case, not anything this callback returns. Runs ONCE in a worker
+    # when the launch screen opens, under the non-interactive sudo prefix so a
+    # missing NOPASSWD grant fails fast (§4.2).
     on_probe_worktrees: Callable[[str], list] = lambda cwd: []
     # Worktree create → plan_worktree_launch. Builds + launches a
     # uxon-managed worktree for ``branch`` under the repo at ``repo_root``.

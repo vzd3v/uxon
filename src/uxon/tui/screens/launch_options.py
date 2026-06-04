@@ -11,9 +11,12 @@ Dismiss value (variable arity, B2):
 
 Up to three panels: AGENT (left) lists enabled + available agents and is
 hidden when a single agent is enabled; PERMISSION lists permission modes
-for the focused agent; WORKSPACE (only when ``workspaces`` is passed) lists
-the primary working tree + one row per existing worktree + a
-``+ New worktree…`` row.
+for the focused agent; WORKSPACE (shown whenever ``workspaces`` is not
+``None`` — i.e. the folder was probed) lists the primary working tree + one
+row per existing worktree + a ``+ New worktree…`` row, or — when the probe
+returned no worktrees (an empty list) — a single non-selectable row: a
+``git not initialized`` hint for a git-less folder, or a ``git error: …``
+row when the probe raised (``probe_error`` set).
 
 Key map: ↑/↓ navigate within the focused panel; ←/→ cycle only the VISIBLE
 panels (``next_launch_panel`` skips hidden columns). No h/j/k/l bindings —
@@ -62,7 +65,12 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
     )
 
     def __init__(
-        self, cfg, state=None, workspaces: list | None = None, repo_root: str = ""
+        self,
+        cfg,
+        state=None,
+        workspaces: list | None = None,
+        repo_root: str = "",
+        probe_error: str | None = None,
     ) -> None:
         super().__init__()
         # ``cfg`` is the static rebuild snapshot (carries
@@ -80,7 +88,23 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         # Task 17). ``repo_root`` is the primary repo root the probe
         # resolved off the event loop; ``action_commit`` reads it for the
         # ``("primary", repo_root)`` choice without re-resolving on the loop.
-        self._workspaces = list(workspaces or [])
+        #
+        # Tri-state: ``None`` ⟺ the caller never probed (project-create flow)
+        # → no WORKSPACE column at all; ``[]`` ⟺ probed but the folder is not a
+        # git repo → the column shows a single non-selectable
+        # "git not initialized" hint; a non-empty list ⟺ git target → primary
+        # tree + worktrees + "+ New worktree…". Visibility keys off
+        # ``is not None``; focusability/selection keys off truthiness, so the
+        # hint column renders but ←/→ skips it and Enter falls through to the
+        # plain 2-tuple launch.
+        #
+        # ``probe_error`` is set (and ``workspaces`` is ``[]``) when the git
+        # probe RAISED — a real repo whose ``git worktree list`` failed, not a
+        # git-less folder. The same non-interactive column then shows an error
+        # row instead of the benign hint, so a genuine failure isn't
+        # mislabelled as "no repo here".
+        self._workspaces = None if workspaces is None else list(workspaces)
+        self._probe_error = probe_error
         self._repo_root = repo_root
         # Compute the initial visible set from current availability.
         # ``_rebuild_agent_list`` re-reads on every probe-result
@@ -138,7 +162,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             with Vertical(id="mode-panel"):
                 yield Static("Permission mode", classes="panel-title")
                 yield ListView(id="mode-list")
-            if self._workspaces:
+            if self._workspaces is not None:
                 with Vertical(id="workspace-panel"):
                     yield Static("Workspace", classes="panel-title")
                     yield ListView(id="workspace-list")
@@ -167,7 +191,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             except ValueError:
                 agent_list.index = 0
         await self._rebuild_mode_list(self._current_agent)
-        if self._workspaces:
+        if self._workspaces is not None:
             await self._populate_workspace_list()
         self._reflect_focus()
 
@@ -177,9 +201,31 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         The primary row carries a ``(primary)`` suffix and is the default
         highlight (index 0) so Enter from any panel commits the common
         "launch in the primary tree" case (§3 degradation).
+
+        When the probe returned no worktrees (an empty list, distinct from the
+        ``None`` "never probed" case that hides the column entirely) the column
+        instead shows a single disabled row and omits "+ New worktree…": either
+        the benign "git not initialized" hint (a git-less folder) or, when the
+        probe RAISED, a "git error: …" row carrying the failure message — a
+        real git failure must not read as "no repo here". Both are
+        non-selectable; the panel is left out of ``_panel_order``
+        (focusability keys off truthiness), so ←/→ skips it and Enter falls
+        through to ``action_commit``'s plain 2-tuple launch.
         """
         workspace_list = self.query_one("#workspace-list", ListView)
         await workspace_list.clear()
+        if not self._workspaces:
+            if self._probe_error:
+                # First line only, capped — git stderr can be multi-line/long
+                # and the column is one third of an 80-cell modal.
+                detail = self._probe_error.splitlines()[0][:60]
+                label = f"git error: {detail}"
+            else:
+                label = "git not initialized"
+            await workspace_list.extend(
+                [ListItem(Static(label), id="workspace-none", disabled=True)]
+            )
+            return
         items = []
         for idx, w in enumerate(self._workspaces):
             label = f"{w.label}  (primary)" if w.is_primary else w.label

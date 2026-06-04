@@ -503,14 +503,21 @@ class TuiBridge:
         return tuple((s.name, s.attached == "1") for s in matches)
 
     def on_probe_worktrees(self, cwd_arg: str) -> list:
-        """Workspaces for ``cwd_arg``'s repo (folders only). Non-git → [].
+        """Workspaces for ``cwd_arg``'s repo (folders only).
 
         Resolves ``cwd`` → primary repo root with the NON-interactive
         resolvers (Task 5) so the fullscreen TUI never blocks on a hidden
         ``sudo`` prompt, then lists worktrees under the same
         ``identity.nonint_command_prefix_for_user`` and parses with Task 2.
+
+        Two empty-ish outcomes are kept distinct so the WORKSPACE column can
+        tell them apart: a folder that is **not a git repo** returns ``[]``
+        (the benign "git not initialized" hint), whereas a folder that **is**
+        a repo but whose ``git worktree list`` enumeration fails raises
+        :class:`WorktreeProbeError` (an error row) — a real git failure must
+        not masquerade as "no repo here".
         """
-        from uxon.infra.worktrees import parse_worktree_porcelain
+        from uxon.infra.worktrees import WorktreeProbeError, parse_worktree_porcelain
 
         repo_root = git.git_repo_root_nonint_as_user(cwd_arg, self.launch_user)
         if not repo_root:
@@ -525,7 +532,7 @@ class TuiBridge:
             capture_output=True,
         )
         if cp.returncode != 0:
-            return []
+            raise WorktreeProbeError((cp.stderr or "").strip() or "git worktree list failed")
         return parse_worktree_porcelain(cp.stdout or "", repo_root=repo_root)
 
     def on_create_worktree(self, repo_root: str, branch: str, agent_id: str, mode_id: str):

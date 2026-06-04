@@ -2848,6 +2848,41 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
             ctx = context_builder.build_tui_context(cfg, "devagent", "/tmp/plain", skeleton=True)
             self.assertEqual(ctx.on_probe_worktrees("/tmp/plain"), [])
 
+    def test_probe_worktrees_git_failure_raises(self) -> None:
+        """A real repo whose ``git worktree list`` errors makes the probe RAISE
+        (carrying stderr) — distinct from the non-git empty-list path, so the
+        TUI can show an error row, not "no repo". The bridge raises
+        ``WorktreeProbeError``; the context-level callback wrapper re-raises it
+        as ``CallbackError`` with the message preserved (this is what the probe
+        worker catches and stringifies into the WORKSPACE error row)."""
+        from uxon.tui.context import CallbackError
+
+        def fake_run(cmd, **kw):
+            class CP:
+                returncode = 128
+                stdout = ""
+                stderr = "fatal: not a git repository: '.git'\n"
+
+            return CP()
+
+        cfg = config_loader.load_config("/tmp")
+        with (
+            mock.patch(
+                "uxon.infra.git.git_repo_root_nonint_as_user", return_value="/srv/work/myapp"
+            ),
+            mock.patch(
+                "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/work/myapp"
+            ),
+            mock.patch.object(tui_bridge.subprocess, "run", fake_run),
+            mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
+        ):
+            ctx = context_builder.build_tui_context(
+                cfg, "devagent", "/srv/work/myapp", skeleton=True
+            )
+            with self.assertRaises(CallbackError) as caught:
+                ctx.on_probe_worktrees("/srv/work/myapp")
+        self.assertIn("fatal: not a git repository", str(caught.exception))
+
 
 class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
     def test_callback_uses_worktree_stem(self) -> None:

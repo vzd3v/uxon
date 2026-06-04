@@ -714,6 +714,141 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_non_git_shows_hint_row_and_commits_plain(self) -> None:
+        """An empty ``workspaces`` (probed, not a git repo) keeps the WORKSPACE
+        column visible with a single non-selectable "git not initialized" hint —
+        no "+ New worktree…" — and the column is skipped by ←/→. Enter falls
+        through to the plain 2-tuple launch (no workspace choice)."""
+        from textual.app import App
+        from textual.widgets import ListView
+
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("ok")},
+        )
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+
+                # Empty list, not None: probed git-less folder.
+                self.push_screen(
+                    LaunchOptionsScreen(ctx, workspaces=[], repo_root="/srv/work/plain"),
+                    done,
+                )
+
+        app = Host()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            # Column is rendered (panel present) ...
+            self.assertEqual(len(screen.query("#workspace-panel")), 1)
+            labels = [
+                str(i.query_one("Static").content)
+                for i in screen.query("#workspace-list ListItem")
+            ]
+            self.assertEqual(labels, ["git not initialized"])
+            self.assertFalse(any("New worktree" in s for s in labels), labels)
+            # ... but is NOT an interactive panel (←/→ skips it): both the
+            # mechanism (panel_order) and the behaviour (pressing → never lands
+            # on workspace) are asserted, so a future regression that re-adds
+            # workspace to _panel_order is caught.
+            self.assertNotIn("workspace", screen._panel_order)
+            await pilot.press("right")
+            await pilot.pause()
+            self.assertNotEqual(screen._active_panel, "workspace")
+            # Enter commits the plain 2-tuple (no third workspace element).
+            self.assertEqual(screen.query_one("#workspace-list", ListView).index, None)
+            await pilot.press("enter")
+            await pilot.pause()
+        self.assertEqual(app.result, ("claude", "normal"))
+
+    async def test_none_workspaces_hides_column(self) -> None:
+        """``workspaces=None`` (never probed — the project-create flow) renders
+        no WORKSPACE column at all, distinct from the empty-list hint."""
+        from textual.app import App
+
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("ok")},
+        )
+
+        class Host(App):
+            def on_mount(self):
+                self.push_screen(LaunchOptionsScreen(ctx))
+
+        app = Host()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            self.assertEqual(len(screen.query("#workspace-panel")), 0)
+            self.assertNotIn("workspace", screen._panel_order)
+
+    async def test_probe_error_shows_error_row_not_hint(self) -> None:
+        """When the git probe RAISED (``probe_error`` set, ``workspaces=[]``)
+        the column shows a ``git error: …`` row — NOT the benign "git not
+        initialized" hint — so a real failure isn't mislabelled. The row is
+        still non-interactive and Enter commits the plain 2-tuple."""
+        from textual.app import App
+        from textual.widgets import ListView
+
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        ctx = _mk_ctx(
+            enabled_agents=("claude",),
+            default_agent="claude",
+            agent_availability={"claude": self._make_avail("ok")},
+        )
+
+        class Host(App):
+            result = "unset"
+
+            def on_mount(self):
+                def done(r):
+                    self.result = r
+                    self.exit()
+
+                self.push_screen(
+                    LaunchOptionsScreen(
+                        ctx,
+                        workspaces=[],
+                        repo_root="/srv/work/broken",
+                        probe_error="fatal: not a git repository (corrupt)",
+                    ),
+                    done,
+                )
+
+        app = Host()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            labels = [
+                str(i.query_one("Static").content)
+                for i in screen.query("#workspace-list ListItem")
+            ]
+            self.assertEqual(len(labels), 1)
+            self.assertTrue(labels[0].startswith("git error:"), labels)
+            self.assertIn("fatal:", labels[0])
+            self.assertNotIn("git not initialized", labels[0])
+            self.assertFalse(any("New worktree" in s for s in labels), labels)
+            # Non-interactive, same as the benign hint: ←/→ skips it, the
+            # disabled row stays unhighlighted, Enter commits the 2-tuple.
+            self.assertNotIn("workspace", screen._panel_order)
+            self.assertEqual(screen.query_one("#workspace-list", ListView).index, None)
+            await pilot.press("enter")
+            await pilot.pause()
+        self.assertEqual(app.result, ("claude", "normal"))
+
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
@@ -765,6 +900,40 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(top._workspaces)
             self.assertTrue(top._workspaces[0].is_primary)
             self.assertEqual(top._repo_root, "/srv/work")
+
+    async def test_probe_failure_threads_error_into_screen(self) -> None:
+        """A raising ``on_probe_worktrees`` (real git failure) is captured by
+        the worker and threaded to the screen as ``probe_error`` with empty
+        ``workspaces`` — the WORKSPACE column shows the error row end-to-end,
+        not a silently hidden column."""
+        from textual.widgets import ListView
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        def boom(_cwd):
+            from uxon.infra.worktrees import WorktreeProbeError
+
+            raise WorktreeProbeError("fatal: not a git repository (corrupt HEAD)")
+
+        app = UxonApp(self._ctx(on_probe_worktrees=boom), probe_agents=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # activate action-cwd
+            await pilot.pause()
+            await pilot.pause()  # let the probe worker land + push the screen
+            top = app.screen_stack[-1]
+            self.assertIsInstance(top, LaunchOptionsScreen)
+            self.assertEqual(top._workspaces, [])
+            self.assertIn("corrupt HEAD", top._probe_error or "")
+            labels = [
+                str(i.query_one("Static").content)
+                for i in top.query("#workspace-list ListItem")
+            ]
+            self.assertEqual(len(labels), 1)
+            self.assertTrue(labels[0].startswith("git error:"), labels)
+            self.assertNotIn("workspace", top._panel_order)
+            self.assertEqual(top.query_one("#workspace-list", ListView).index, None)
 
     async def test_new_worktree_row_opens_branch_input(self) -> None:
         from textual.widgets import ListView
