@@ -15,10 +15,12 @@ from unittest import mock
 from helpers import make_config as _make_config
 
 import uxon.app.attach as attach_app
+import uxon.app.tui_planning as tui_planning
 import uxon.tui.bridge as tui_bridge
 from uxon.cli.parsing import parse_args
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
+from uxon.domain.launch_request import LaunchRequest
 from uxon.infra.remote_hosts import RemoteHost
 
 
@@ -290,3 +292,39 @@ class OnRemoteAttachCallbackTests(unittest.TestCase):
         self.assertNotIn("ControlMaster", joined)
         self.assertNotIn("ControlPath", joined)
         self.assertNotIn("ControlPersist", joined)
+
+
+class OnLaunchCwdTargetDirTests(unittest.TestCase):
+    """``on_launch_cwd`` anchors the launch on the resolved primary repo
+    root when one is passed (WORKSPACE primary row started inside a linked
+    worktree), and falls back to ``cwd`` otherwise."""
+
+    def _capture_target(self, *, target_dir):
+        cfg = _make_config()
+        # The TUI was opened from inside a linked worktree.
+        bridge = tui_bridge.TuiBridge(cfg, "devagent", "/srv/work/myapp-wt")
+        captured = {}
+
+        def _fake_plan(cfg_, user_, cwd_, agent_, mode_):
+            captured["cwd"] = cwd_
+            return LaunchRequest(cmd=("true",), label="uxon-myapp@claude")
+
+        with (
+            mock.patch.object(tui_planning, "_plan_tui_run_agent", _fake_plan),
+            mock.patch("uxon.infra.audit.audit"),
+        ):
+            if target_dir is None:
+                bridge.on_launch_cwd("claude", "normal")
+            else:
+                bridge.on_launch_cwd("claude", "normal", target_dir)
+        return captured["cwd"]
+
+    def test_primary_repo_root_overrides_cwd(self) -> None:
+        # Picking the primary WORKSPACE row passes the resolved repo root;
+        # the launch must land there, not in the worktree the TUI was
+        # started from.
+        self.assertEqual(self._capture_target(target_dir="/srv/work/myapp"), "/srv/work/myapp")
+
+    def test_falls_back_to_cwd_when_no_target(self) -> None:
+        # The non-git / "launch in this folder" path passes no override.
+        self.assertEqual(self._capture_target(target_dir=None), "/srv/work/myapp-wt")

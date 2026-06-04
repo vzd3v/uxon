@@ -163,8 +163,10 @@ class TuiContext:
     # project" launch synchronously at activation — that flow has no
     # pre-probed reactive slot like ``cwd`` does.
     on_probe_dir_launchable: Callable[[str], bool] = lambda target_dir: True
-    on_launch_cwd: Callable[[str, str], LaunchRequest] = lambda agent_id, mode_id: LaunchRequest(
-        cmd=("true",), label="noop-launch-cwd"
+    on_launch_cwd: Callable[..., LaunchRequest] = (
+        lambda agent_id, mode_id, target_dir=None: LaunchRequest(
+            cmd=("true",), label="noop-launch-cwd"
+        )
     )
     on_launch_new: Callable[[str, str, str, str], LaunchRequest] = (
         lambda name, agent_id, mode_id, git_profile: LaunchRequest(

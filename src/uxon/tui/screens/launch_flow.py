@@ -193,10 +193,16 @@ class LaunchFlow:
         result (cwd updates its slot + dashboard row — a cwd-only concern
         kept out of here).
 
-        ``commit_primary(agent_id, mode_id)`` is the folder-specific launch
-        (``on_launch_cwd`` vs ``on_launch_existing``) used for the primary tree
-        and the non-git case; worktree create / attach is generic given the
-        probed ``repo_root`` + branch, so it lives here once rather than being
+        ``commit_primary(agent_id, mode_id, target_dir=None)`` is the
+        folder-specific launch (``on_launch_cwd`` vs ``on_launch_existing``)
+        used for the primary tree and the non-git case. ``target_dir`` is the
+        resolved primary ``repo_root`` the WORKSPACE primary row carries — the
+        cwd flow anchors its launch there (so the primary row lands in the
+        primary tree even when the TUI was started in a linked worktree or a
+        subdirectory of the repo); the non-git / 2-tuple path passes ``None``
+        to launch the folder as-is.
+        Worktree create / attach is generic given the probed ``repo_root`` +
+        branch, so it lives here once rather than being
         duplicated per entry point.
         """
         host = self.host
@@ -225,13 +231,20 @@ class LaunchFlow:
             kind = choice[0]
             if kind == "primary":
                 # Primary tree keeps the plain path-based planner + probe
-                # (§3) — launch into the folder exactly as the non-worktree
-                # path does.
+                # (§3), but anchored on the resolved primary ``repo_root`` the
+                # choice carries rather than on ``target_dir``. They coincide
+                # when the TUI was started at the primary repo root, and differ
+                # when it was started anywhere else (a linked worktree or a
+                # subdirectory): the primary row then launches into — and
+                # probes for existing sessions in — the primary tree, matching
+                # the row's ``(primary)`` label, not wherever the TUI was
+                # opened.
+                _, primary_root = choice
                 self.maybe_show_session_choice(
-                    target_dir=target_dir,
+                    target_dir=primary_root,
                     target_label=target_label,
                     agent_id=agent_id,
-                    on_new=lambda: commit_primary(agent_id, mode_id),
+                    on_new=lambda: commit_primary(agent_id, mode_id, primary_root),
                 )
                 return
             if kind == "worktree":
@@ -332,9 +345,9 @@ class LaunchFlow:
     def launch_cwd(self) -> None:
         host = self.host
 
-        def commit_primary(agent_id: str, mode_id: str) -> None:
+        def commit_primary(agent_id: str, mode_id: str, target_dir: str | None = None) -> None:
             try:
-                req = host.cfg.on_launch_cwd(agent_id, mode_id)
+                req = host.cfg.on_launch_cwd(agent_id, mode_id, target_dir)
             except CallbackError as exc:
                 host.app.notify(str(exc), severity="error", timeout=6)
                 return
@@ -436,7 +449,15 @@ class LaunchFlow:
 
             target_dir = os.path.join(host.cfg.new_project_root, name)
 
-            def commit_primary(agent_id: str, mode_id: str) -> None:
+            def commit_primary(
+                agent_id: str, mode_id: str, target_dir: str | None = None
+            ) -> None:
+                # ``target_dir`` (the primary ``repo_root`` from the WORKSPACE
+                # choice) is accepted for a uniform ``commit_primary`` signature
+                # but intentionally unused here: a named project launches by
+                # name, not path, so the primary tree is already its
+                # ``new_project_root/<name>`` root. The named-project-is-a-linked-
+                # worktree case is out of scope (the backlog item is cwd-only).
                 try:
                     req = host.cfg.on_launch_existing(name, agent_id, mode_id)
                 except CallbackError as exc:

@@ -62,7 +62,7 @@ def _mk_ctx(**overrides) -> TuiContext:
         on_refresh=lambda: _mk_ctx(),
         on_probe_link_health=lambda: None,
         on_probe_cwd_writable=lambda: True,
-        on_launch_cwd=lambda a, m: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+        on_launch_cwd=lambda a, m, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
         on_launch_new=lambda n, a, m, g: LaunchRequest(cmd=("/bin/true",), label="new"),
         on_launch_existing=lambda n, a, m: LaunchRequest(cmd=("/bin/true",), label="exist"),
         get_settings_entries=lambda: [],

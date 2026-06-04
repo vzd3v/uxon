@@ -416,9 +416,20 @@ class TuiBridge:
 
     # ── launch ──
 
-    def on_launch_cwd(self, agent_id: str, mode_id: str):
+    def on_launch_cwd(self, agent_id: str, mode_id: str, target_dir: str | None = None):
+        # ``target_dir`` is the resolved primary ``repo_root`` for the
+        # WORKSPACE primary row. It coincides with ``self.cwd`` when the TUI
+        # was started at the primary repo root, and differs when it was
+        # started anywhere else — a linked worktree OR a subdirectory of the
+        # repo — so the primary row always launches into the primary tree
+        # (matching its ``(primary)`` label), not wherever the TUI was opened.
+        # ``None`` (the non-git / "launch in this folder" path) keeps
+        # ``self.cwd`` unchanged. The plain path-based stem
+        # (``session_stem_for_path``) is correct for the primary tree, so no
+        # ``worktree=`` argument is threaded here.
+        target = target_dir or self.cwd
         req = tui_planning._plan_tui_run_agent(
-            self.cfg, self.launch_user, self.cwd, agent_id, mode_id
+            self.cfg, self.launch_user, target, agent_id, mode_id
         )
         # ``_plan_tui_run_agent`` only ever yields a launch (never an
         # attach), so this path is unconditional ``session.new``.
@@ -427,7 +438,7 @@ class TuiBridge:
         _audit.audit(
             "session.new",
             agent=agent_id,
-            project=self.cwd,
+            project=target,
             branch="",
             session=attach_app._session_name_from_launch_label(req.label),
             dry_run=False,

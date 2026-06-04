@@ -91,7 +91,7 @@ class TuiConfig:
     on_probe_link_health: Callable[[], Any]
     on_probe_cwd_writable: Callable[[], bool]
     on_probe_dir_launchable: Callable[[str], bool]
-    on_launch_cwd: Callable[[str, str], LaunchRequest]
+    on_launch_cwd: Callable[..., LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
     on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]]

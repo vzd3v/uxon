@@ -159,7 +159,7 @@ class DispatchRegistryTests(unittest.TestCase):
             existing_projects=[],
             cwd_writable=True,
             current_user="u",
-            on_launch_cwd=lambda agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+            on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
             on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
                 cmd=("/bin/true",), label="new"
             ),
@@ -292,7 +292,7 @@ class RemoteSnapshotSeenUsersTests(unittest.TestCase):
             existing_projects=[],
             cwd_writable=True,
             current_user="alice",
-            on_launch_cwd=lambda agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+            on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
             on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
                 cmd=("/bin/true",), label="new"
             ),
@@ -423,7 +423,7 @@ class WorkerDrainTests(unittest.TestCase):
             existing_projects=[],
             cwd_writable=True,
             current_user="u",
-            on_launch_cwd=lambda agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+            on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
             on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
                 cmd=("/bin/true",), label="new"
             ),

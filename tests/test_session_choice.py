@@ -247,7 +247,7 @@ def _mk_ctx(**overrides):
         cwd_writable=True,
         current_user="dev",
         launch_user="dev",
-        on_launch_cwd=lambda a, m: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+        on_launch_cwd=lambda a, m, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
         on_launch_new=lambda n, a, m, g: LaunchRequest(cmd=("/bin/true",), label="new"),
         on_launch_existing=lambda n, a, m: LaunchRequest(cmd=("/bin/true",), label="existing"),
     )
