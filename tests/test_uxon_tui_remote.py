@@ -24,6 +24,8 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from helpers import run_off_loop_sync
+
 from uxon.domain.wire_schema import RemoteSnapshot
 from uxon.infra.remote_hosts import RemoteHost
 
@@ -150,6 +152,8 @@ class ActionKillRemoteRowTests(unittest.TestCase):
             def push_screen(self, _modal: object, callback) -> None:
                 captured_callback.append(callback)
 
+            run_off_loop = staticmethod(run_off_loop_sync)
+
         class _StubTable(SessionDashboardTable):  # type: ignore[misc]
             cursor_row = 0  # shadows the reactive descriptor
 
@@ -232,6 +236,8 @@ class OnDataTableRowSelectedRemoteTests(unittest.TestCase):
 
             def request_launch(self, req: LaunchRequest) -> None:
                 captured.append(req)
+
+            run_off_loop = staticmethod(run_off_loop_sync)
 
         # Stub-construct a SessionDashboardTable instance.
         table = SessionDashboardTable.__new__(SessionDashboardTable)

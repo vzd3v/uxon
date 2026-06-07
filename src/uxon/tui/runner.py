@@ -40,6 +40,15 @@ def run(ctx: TuiContext) -> int:
         print(TEXTUAL_MISSING_HINT, file=sys.stderr)
         return 1
 
+    # Root invariant: from here on this process runs an event loop. Any
+    # blocking subprocess on the loop thread (the keystroke-swallowing
+    # bug class) now raises at the spawn site instead of degrading the
+    # UI silently. Launch handoff (``_run_launch_request``) runs between
+    # app instances with no loop on the thread, so it is unaffected.
+    from uxon.infra.loop_guard import install_subprocess_guard
+
+    install_subprocess_guard()
+
     from .app import UxonApp
 
     caller_user = os.environ.get("SUDO_USER") or os.environ.get("USER", "")

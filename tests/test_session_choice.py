@@ -20,7 +20,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from helpers import make_config
+from helpers import make_config, run_off_loop_sync
 
 from uxon.domain.session import SessionInfo
 from uxon.infra import sessions_probe
@@ -359,6 +359,10 @@ class _StubScreen:
         self.app.push_screen = MagicMock()
         self.app.notify = MagicMock()
         self.app.request_launch = MagicMock()
+        # The probe now runs through ``run_off_loop``; the stub executes it
+        # synchronously so these direct-call tests still see the modal push
+        # / on_new continuation without a live event loop.
+        self.app.run_off_loop = run_off_loop_sync
         self._attach_log = attach_log
 
     def _attach_session(self, user, session_name):

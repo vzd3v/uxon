@@ -37,6 +37,7 @@ from .messages import (
     _HostReportUpdated,
     _LinkHealthUpdated,
     _MainCtxLoaded,
+    _OffLoopCallbackDone,
     _RefreshSourceLanded,
     _WorktreesProbed,
 )
@@ -304,6 +305,15 @@ class UxonApp(App):
     def kick_refresh(self) -> None:
         self._worker_coord.kick_refresh()
 
+    def run_off_loop(self, fn, *, on_success=None, on_error=None, label="action") -> None:
+        """Run a blocking interactive callback off the loop (see coordinator).
+
+        The single entry point screens/controllers use to keep tmux / ssh
+        / sudo / git off the event-loop thread. Thin delegator to
+        :meth:`WorkerCoordinator.run_off_loop`.
+        """
+        self._worker_coord.run_off_loop(fn, on_success=on_success, on_error=on_error, label=label)
+
     def _kick_initial_sources(self) -> None:
         self._worker_coord.kick_initial_sources()
 
@@ -476,6 +486,24 @@ class UxonApp(App):
     def on__worktrees_probed(self, event: _WorktreesProbed) -> None:
         """Invoke the launch-flow callback with launchability + workspaces + error."""
         event.on_done(event.launchable, event.workspaces, event.error)
+
+    def on__off_loop_callback_done(self, event: _OffLoopCallbackDone) -> None:
+        """Run the on-loop continuation for a blocking callback finished off-loop.
+
+        Cross-instance gate mirrors :meth:`on__refresh_source_landed`: a
+        result stamped with a prior app instance's epoch is dropped (the
+        worker belongs to an app that no longer exists, e.g. after a TTY
+        handoff recreated the instance). ``-1`` is the unstamped-test
+        sentinel and skips the gate.
+        """
+        if event.instance_epoch != -1 and event.instance_epoch != self._instance_epoch:
+            return
+        if event.error is not None:
+            if event.on_error is not None:
+                event.on_error(event.error)
+            return
+        if event.on_success is not None:
+            event.on_success(event.value)
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..context import CallbackError
 from ..widgets.session_dashboard_table import SessionDashboardTable
 from .confirm import ConfirmPhrase, ConfirmYesNo
 
@@ -64,16 +63,24 @@ class KillFlow:
             def after_confirm_remote(ok: bool | None) -> None:
                 if not ok:
                     return
-                try:
-                    host.cfg.on_remote_kill(host_name, session_user, session_name)
+
+                def on_ok(_result) -> None:
                     host.app.notify(
                         f"Killed {session_short} on {host_name}; "
                         "remote table will update on next poll"
                     )
-                except CallbackError as exc:
-                    host.app.notify(f"Remote kill failed: {exc}", severity="error", timeout=6)
-                    return
-                host.action_refresh()
+                    host.action_refresh()
+
+                # SSH round-trip — off the event loop (§ blocking invariant).
+                fn = host.cfg.on_remote_kill
+                host.app.run_off_loop(
+                    lambda: fn(host_name, session_user, session_name),
+                    on_success=on_ok,
+                    on_error=lambda exc: host.app.notify(
+                        f"Remote kill failed: {exc}", severity="error", timeout=6
+                    ),
+                    label="remote_kill",
+                )
 
             host.app.push_screen(
                 ConfirmYesNo(f"Kill {session_name} on {host_name} (user={session_user})?"),
@@ -84,17 +91,23 @@ class KillFlow:
         def after_confirm(ok: bool | None) -> None:
             if not ok:
                 return
-            try:
-                host.cfg.on_kill(session_user, session_name)
+
+            def on_ok(_result) -> None:
                 host.app.notify(f"Killed {session_short}")
-            except CallbackError as exc:
-                host.app.notify(
+                host.action_refresh()
+
+            # ``on_kill`` shells out to tmux — off the event loop (§ invariant).
+            fn = host.cfg.on_kill
+            host.app.run_off_loop(
+                lambda: fn(session_user, session_name),
+                on_success=on_ok,
+                on_error=lambda exc: host.app.notify(
                     f"Kill {session_short} failed: {exc}",
                     severity="error",
                     timeout=6,
-                )
-                return
-            host.action_refresh()
+                ),
+                label="kill",
+            )
 
         host.app.push_screen(
             ConfirmYesNo(f"Kill {session_name} (user={session_user})?"),
@@ -110,13 +123,20 @@ class KillFlow:
         def after_confirm(ok: bool | None) -> None:
             if not ok:
                 return
-            try:
-                host.cfg.on_kill_all()
+
+            def on_ok(_result) -> None:
                 host.app.notify(f"Killed all {n} sessions")
-            except CallbackError as exc:
-                host.app.notify(f"Kill all failed: {exc}", severity="error", timeout=6)
-                return
-            host.action_refresh()
+                host.action_refresh()
+
+            # Loops tmux kill-session over every own session — off-loop.
+            host.app.run_off_loop(
+                host.cfg.on_kill_all,
+                on_success=on_ok,
+                on_error=lambda exc: host.app.notify(
+                    f"Kill all failed: {exc}", severity="error", timeout=6
+                ),
+                label="kill_all",
+            )
 
         host.app.push_screen(
             ConfirmPhrase(f"Kill ALL {n} sessions?", "kill-all"),
@@ -139,17 +159,22 @@ class KillFlow:
         def after_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
-            try:
-                host.cfg.on_kill_all_global()
+
+            def on_ok(_result) -> None:
                 host.app.notify(f"Killed all {total} sessions across {n_users} reachable users")
-            except CallbackError as exc:
-                host.app.notify(
+                host.action_refresh()
+
+            # Fans out tmux/ssh kills across reachable users — off-loop.
+            host.app.run_off_loop(
+                host.cfg.on_kill_all_global,
+                on_success=on_ok,
+                on_error=lambda exc: host.app.notify(
                     f"Kill all (reachable) failed: {exc}",
                     severity="error",
                     timeout=6,
-                )
-                return
-            host.action_refresh()
+                ),
+                label="kill_all_global",
+            )
 
         host.app.push_screen(
             ConfirmPhrase(

@@ -18,7 +18,6 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from ..context import CallbackError
 from .git_profile import GitProfileScreen
 from .launch_options import LaunchOptionsScreen
 from .new_project import NewProjectScreen
@@ -73,12 +72,19 @@ class LaunchFlow:
 
     def attach_session(self, user: str, session_name: str) -> None:
         host = self.host
-        try:
-            req = host.cfg.on_attach(user, session_name)
-        except CallbackError as exc:
-            host.app.notify(f"Attach failed: {exc}", severity="error", timeout=6)
-            return
-        host.app.request_launch(req)  # type: ignore[attr-defined]
+        # ``on_attach`` shells out to tmux — run it off the event loop so
+        # the keystroke pump never starves (§ blocking-call invariant).
+        # Snapshot the bound callback on the loop: a background refresh may
+        # swap ``host.cfg`` while the worker runs.
+        fn = host.cfg.on_attach
+        host.app.run_off_loop(  # type: ignore[attr-defined]
+            lambda: fn(user, session_name),
+            on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+            on_error=lambda exc: host.app.notify(
+                f"Attach failed: {exc}", severity="error", timeout=6
+            ),
+            label="attach",
+        )
 
     def attach_row(self, row) -> None:
         """Attach to the session under a dashboard row (Enter / click).
@@ -89,14 +95,18 @@ class LaunchFlow:
         """
         host = self.host
         if row.host is not None:
-            # Remote: dispatch via ctx.on_remote_attach over SSH.
+            # Remote: dispatch via ctx.on_remote_attach over SSH — a network
+            # round-trip, so it MUST run off the event loop (§ invariant).
             user = row.user or host.cfg.current_user
-            try:
-                req = host.cfg.on_remote_attach(row.host, user, row.name)
-            except CallbackError as exc:
-                host.app.notify(f"Remote attach failed: {exc}", severity="error", timeout=6)
-                return
-            host.app.request_launch(req)  # type: ignore[attr-defined]
+            fn = host.cfg.on_remote_attach
+            host.app.run_off_loop(  # type: ignore[attr-defined]
+                lambda: fn(row.host, user, row.name),
+                on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                on_error=lambda exc: host.app.notify(
+                    f"Remote attach failed: {exc}", severity="error", timeout=6
+                ),
+                label="remote_attach",
+            )
             return
         session_user = row.user or host.cfg.current_user
         host._attach_session(session_user, row.name)
@@ -129,39 +139,46 @@ class LaunchFlow:
         match because the name-stem differs.
         """
         host = self.host
-        try:
-            existing = (
-                probe()
-                if probe is not None
-                else host.cfg.on_probe_existing_sessions(target_dir, agent_id)
-            )
-        except CallbackError as exc:
-            # A probe failure shouldn't silently swallow the launch.
-            # Surface the message and abort — the operator can retry.
-            host.app.notify(f"Session probe failed: {exc}", severity="error", timeout=6)
-            return
-        if not existing:
-            on_new()
-            return
+        # The probe shells out to tmux (``tmux list-sessions``) — the call
+        # that used to freeze "new project" on the event loop. Run it in a
+        # worker; the on-loop continuation prompts or commits (§ invariant).
+        _probe = host.cfg.on_probe_existing_sessions
+        probe_fn = probe if probe is not None else (lambda: _probe(target_dir, agent_id))
 
-        launch_user = host.cfg.launch_user or host.cfg.current_user
-
-        def after_choice(result):
-            if result is None:
-                return
-            action, name = result
-            if action == "attach" and name:
-                # Route through the Screen's thin delegator so a test that
-                # overrides ``_attach_session`` on a stub host still sees
-                # the call (and audit/LaunchRequest construction stays in
-                # one place).
-                host._attach_session(launch_user, name)
-            elif action == "new":
+        def on_probed(existing) -> None:
+            if not existing:
                 on_new()
+                return
 
-        host.app.push_screen(
-            SessionChoiceScreen(target_label=target_label, existing=existing),
-            after_choice,
+            launch_user = host.cfg.launch_user or host.cfg.current_user
+
+            def after_choice(result):
+                if result is None:
+                    return
+                action, name = result
+                if action == "attach" and name:
+                    # Route through the Screen's thin delegator so a test that
+                    # overrides ``_attach_session`` on a stub host still sees
+                    # the call (and audit/LaunchRequest construction stays in
+                    # one place).
+                    host._attach_session(launch_user, name)
+                elif action == "new":
+                    on_new()
+
+            host.app.push_screen(
+                SessionChoiceScreen(target_label=target_label, existing=existing),
+                after_choice,
+            )
+
+        host.app.run_off_loop(  # type: ignore[attr-defined]
+            probe_fn,
+            on_success=on_probed,
+            # A probe failure shouldn't silently swallow the launch — surface
+            # it and abort; the operator can retry.
+            on_error=lambda exc: host.app.notify(
+                f"Session probe failed: {exc}", severity="error", timeout=6
+            ),
+            label="probe_sessions",
         )
 
     def begin_launch_in_folder(
@@ -210,22 +227,26 @@ class LaunchFlow:
         def commit_existing_worktree(
             agent_id: str, mode_id: str, repo_root: str, path: str, branch: str
         ) -> None:
-            try:
-                req = host.cfg.on_launch_existing_worktree(
-                    repo_root, branch, path, agent_id, mode_id
-                )
-            except CallbackError as exc:
-                host.app.notify(str(exc), severity="error", timeout=6)
-                return
-            host.app.request_launch(req)  # type: ignore[attr-defined]
+            # Launches into an existing worktree — the planner shells out to
+            # tmux (`collect_sessions`), so it runs off the loop (§ invariant).
+            fn = host.cfg.on_launch_existing_worktree
+            host.app.run_off_loop(  # type: ignore[attr-defined]
+                lambda: fn(repo_root, branch, path, agent_id, mode_id),
+                on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                label="launch_existing_worktree",
+            )
 
         def commit_new_worktree(agent_id: str, mode_id: str, repo_root: str, branch: str) -> None:
-            try:
-                req = host.cfg.on_create_worktree(repo_root, branch, agent_id, mode_id)
-            except CallbackError as exc:
-                host.app.notify(str(exc), severity="error", timeout=6)
-                return
-            host.app.request_launch(req)  # type: ignore[attr-defined]
+            # Creates a git worktree (`git worktree add`, possibly `git fetch`)
+            # then launches — heavy subprocess work, strictly off the loop.
+            fn = host.cfg.on_create_worktree
+            host.app.run_off_loop(  # type: ignore[attr-defined]
+                lambda: fn(repo_root, branch, agent_id, mode_id),
+                on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                label="create_worktree",
+            )
 
         def dispatch_workspace(agent_id: str, mode_id: str, choice) -> None:
             kind = choice[0]
@@ -350,12 +371,15 @@ class LaunchFlow:
         host = self.host
 
         def commit_primary(agent_id: str, mode_id: str, target_dir: str | None = None) -> None:
-            try:
-                req = host.cfg.on_launch_cwd(agent_id, mode_id, target_dir)
-            except CallbackError as exc:
-                host.app.notify(str(exc), severity="error", timeout=6)
-                return
-            host.app.request_launch(req)  # type: ignore[attr-defined]
+            # The planner probes tmux (`collect_sessions`) before building the
+            # request — off the loop so the launch never freezes the UI.
+            fn = host.cfg.on_launch_cwd
+            host.app.run_off_loop(  # type: ignore[attr-defined]
+                lambda: fn(agent_id, mode_id, target_dir),
+                on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                label="launch_cwd",
+            )
 
         def on_probed(value: bool) -> None:
             # The cross-user / sudo probe may not have landed yet; when the
@@ -391,12 +415,15 @@ class LaunchFlow:
                 agent_id, mode_id = result[0], result[1]
 
                 def commit_new() -> None:
-                    try:
-                        req = host.cfg.on_launch_new(name, agent_id, mode_id, git_profile)
-                    except CallbackError as exc:
-                        host.app.notify(str(exc), severity="error", timeout=6)
-                        return
-                    host.app.request_launch(req)  # type: ignore[attr-defined]
+                    # Creates the project dir (`mkdir -p`), optionally a git
+                    # remote, and probes tmux — all subprocess, off the loop.
+                    fn = host.cfg.on_launch_new
+                    host.app.run_off_loop(  # type: ignore[attr-defined]
+                        lambda: fn(name, agent_id, mode_id, git_profile),
+                        on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                        on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                        label="launch_new",
+                    )
 
                 self.maybe_show_session_choice(
                     target_dir=os.path.join(host.cfg.new_project_root, name),
@@ -453,21 +480,22 @@ class LaunchFlow:
 
             target_dir = os.path.join(host.cfg.new_project_root, name)
 
-            def commit_primary(
-                agent_id: str, mode_id: str, target_dir: str | None = None
-            ) -> None:
+            def commit_primary(agent_id: str, mode_id: str, target_dir: str | None = None) -> None:
                 # ``target_dir`` (the primary ``repo_root`` from the WORKSPACE
                 # choice) is accepted for a uniform ``commit_primary`` signature
                 # but intentionally unused here: a named project launches by
                 # name, not path, so the primary tree is already its
                 # ``new_project_root/<name>`` root. The named-project-is-a-linked-
                 # worktree case is out of scope (the backlog item is cwd-only).
-                try:
-                    req = host.cfg.on_launch_existing(name, agent_id, mode_id)
-                except CallbackError as exc:
-                    host.app.notify(str(exc), severity="error", timeout=6)
-                    return
-                host.app.request_launch(req)  # type: ignore[attr-defined]
+                # The planner probes tmux before building the request —
+                # off the loop (§ invariant).
+                fn = host.cfg.on_launch_existing
+                host.app.run_off_loop(  # type: ignore[attr-defined]
+                    lambda: fn(name, agent_id, mode_id),
+                    on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                    on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                    label="launch_existing",
+                )
 
             # Same worktree-aware flow as launch-cwd: a git project shows the
             # WORKSPACE column, a non-git one degrades to agent/mode only (§3).

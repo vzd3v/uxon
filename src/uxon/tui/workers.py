@@ -36,6 +36,7 @@ from .messages import (
     _CwdWritableUpdated,
     _HostReportUpdated,
     _LinkHealthUpdated,
+    _OffLoopCallbackDone,
     _RefreshSourceLanded,
     _WorktreesProbed,
 )
@@ -384,6 +385,65 @@ class WorkerCoordinator:
             self._post_message(_WorktreesProbed(launchable, workspaces, on_done, error))
 
         self._run_worker(_worker, thread=True, exclusive=False, group="worktree_probe")
+
+    # ── Interactive blocking callbacks (run off the event loop) ──────
+
+    def run_off_loop(
+        self,
+        fn: Any,
+        *,
+        on_success: Any = None,
+        on_error: Any = None,
+        label: str = "action",
+    ) -> None:
+        """Run a blocking interactive callback in a worker, continue on loop.
+
+        ``fn`` is a zero-arg callable that performs blocking work
+        (``tmux`` / ``ssh`` / ``sudo`` / ``git`` via subprocess) — it MUST
+        NOT touch Textual or the DOM. The worker runs it off the event
+        loop, then posts a :class:`_OffLoopCallbackDone` so the App's
+        on-loop handler invokes ``on_success(result)`` (or
+        ``on_error(exc)`` if ``fn`` raised). Both continuations run back on
+        the event loop and may safely ``notify`` / ``push_screen`` /
+        ``request_launch`` / ``action_refresh``.
+
+        This is the single mechanism that keeps the interactive blocking
+        class off the loop. Every error is captured (the worker never dies
+        silently): :class:`CallbackError` is the expected shape, but any
+        other ``Exception`` is delivered to ``on_error`` too so a
+        misbehaving callback surfaces as a toast rather than a dropped
+        action. ``BaseException`` (KeyboardInterrupt / SystemExit /
+        CancelledError) propagates — worker cancellation must stay
+        effective.
+        """
+
+        def _worker() -> None:
+            try:
+                value: object = fn()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as exc:  # noqa: BLE001 — delivered to on_error
+                self._post_message(
+                    _OffLoopCallbackDone(
+                        None,
+                        exc,
+                        on_success,
+                        on_error,
+                        instance_epoch=self._instance_epoch(),
+                    )
+                )
+                return
+            self._post_message(
+                _OffLoopCallbackDone(
+                    value,
+                    None,
+                    on_success,
+                    on_error,
+                    instance_epoch=self._instance_epoch(),
+                )
+            )
+
+        self._run_worker(_worker, thread=True, exclusive=False, group=f"action:{label}")
 
     # ── Teardown drain ──────────────────────────────────────────────
 

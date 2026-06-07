@@ -129,6 +129,43 @@ class _WorktreesProbed(Message):
         self.error = error
 
 
+class _OffLoopCallbackDone(Message):
+    """Posted when a blocking interactive callback finishes in a worker.
+
+    Carries the result (or the exception) of a callback that
+    :meth:`WorkerCoordinator.run_off_loop` ran on a worker thread, plus
+    the two on-loop continuations the caller supplied. The on-loop
+    handler invokes ``on_success(value)`` or ``on_error(exc)`` — both run
+    back on the event loop so they may safely ``notify`` / ``push_screen``
+    / ``request_launch`` / ``action_refresh``.
+
+    This is the generic carrier for the interactive blocking class
+    (attach / kill / kill-all / remote-kill / existing-session probe):
+    the blocking ``tmux`` / ``ssh`` / ``sudo`` call runs in the worker;
+    only the cheap UI continuation runs on the loop. ``instance_epoch``
+    gates stale results from a previous app instance, exactly like
+    :class:`_RefreshSourceLanded`.
+    """
+
+    bubble = False
+
+    def __init__(
+        self,
+        value: object,
+        error: BaseException | None,
+        on_success: Any,
+        on_error: Any,
+        *,
+        instance_epoch: int = -1,
+    ) -> None:
+        super().__init__()
+        self.value = value
+        self.error = error
+        self.on_success = on_success
+        self.on_error = on_error
+        self.instance_epoch = instance_epoch
+
+
 class _MainCtxLoaded(Message):
     """Posted when the ``main_ctx_rebuild`` source returns a fresh ctx.
 

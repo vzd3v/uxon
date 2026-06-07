@@ -31,6 +31,22 @@ _STUB_HOST_REPORT = HostReport(
 )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _install_loop_guard():
+    """Install the event-loop blocking guard for the whole test session.
+
+    Process-wide and a no-op off the loop, so non-Pilot tests are
+    unaffected. Under a Textual ``Pilot`` (event loop on the test
+    thread) any interactive action that still spawns a subprocess on
+    the loop raises :class:`EventLoopBlockedError` at the spawn site —
+    turning the keystroke-swallow class into a hard test failure.
+    """
+    from uxon.infra.loop_guard import install_subprocess_guard
+
+    install_subprocess_guard()
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _stub_probe_host_by_default(request: pytest.FixtureRequest):
     """Default ``probes.probe_host`` to a fully-installed CATALOG.
