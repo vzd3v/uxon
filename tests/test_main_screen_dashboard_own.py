@@ -512,8 +512,14 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             ids = tuple(c.id for c in app.screen._active_columns)
             self.assertNotIn("user", ids)
 
-    async def test_recompose_when_cross_user_flips_true(self) -> None:
-        """A refresh that lands an other-user row triggers recompose → USER column appears."""
+    async def test_user_column_appears_in_place_when_cross_user_flips(self) -> None:
+        """A refresh that lands an other-user row adds the USER column IN PLACE.
+
+        The cross_user latch flip used to force a ``switch_screen`` swap;
+        it now rebuilds the table's columns on the live widget. The
+        screen object must NOT be replaced (so the focus holder and
+        Textual's queued input survive), and the USER column must appear.
+        """
         from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.main import MainScreen
@@ -537,20 +543,20 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             )
             old_screen.apply_loaded_ctx(new_ctx, focus_key="")
             await pilot.pause()
-            # The screen must have been recomposed (signature flipped).
-            self.assertIsNot(app.screen, old_screen)
+            # In-place: same screen object, no swap.
+            self.assertIs(app.screen, old_screen)
             self.assertIsInstance(app.screen, MainScreen)
             self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
 
-    async def test_cursor_pinned_across_cross_user_recompose(self) -> None:
-        """Cursor on an own row survives the recompose triggered by other_sessions arriving.
+    async def test_cursor_pinned_across_cross_user_column_add(self) -> None:
+        """Cursor on an own row survives the in-place column add when other_sessions arrive.
 
         Sequence: mount with no other-user rows; place cursor on the
         first own row; apply a fresh ctx that adds an other-user
-        session. The signature flip recomposes ``MainScreen``; the
-        new screen must restore focus to the same own row by KEY
-        (own:<name>), not by index — index 0 in the new model could
-        be the alice.bar row depending on sort order.
+        session. The cross_user latch flip rebuilds the table columns
+        in place (USER column appears); the cursor must re-pin to the
+        same own row by KEY (own:<name>), not by index — index 0 in the
+        new model could be the alice.bar row depending on sort order.
         """
         from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
@@ -583,8 +589,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             )
             old_screen.apply_loaded_ctx(new_ctx)
             await pilot.pause()
-            # Recompose happened.
-            self.assertIsNot(app.screen, old_screen)
+            # In-place: same screen object (no focus-dropping swap).
+            self.assertIs(app.screen, old_screen)
             self.assertIsInstance(app.screen, MainScreen)
             # USER column is now active.
             self.assertIn("user", tuple(c.id for c in app.screen._active_columns))

@@ -159,19 +159,18 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
                 msg="app.ctx and screen.cfg must point to the same TuiContext snapshot",
             )
 
-    async def test_main_ui_survives_recompose(self) -> None:
+    async def test_main_ui_survives_structural_refresh(self) -> None:
         """Dashboard view, tab index, and focus-restore flag survive
-        a layout-signature recompose.
+        a layout-signature change.
 
-        Regression for a bug class: ``apply_loaded_ctx`` builds a
-        fresh ``MainScreen`` whenever ``select_layout_signature``
-        flips (e.g. another user starts a session). Three pieces of
-        operator-set UI state used to die with the old screen — view
-        mode, active host tab, pending tab-focus-restore — silently
-        snapping the operator back to defaults mid-session. The fix
-        moved them to ``self.app.main_ui`` (a
-        :class:`MainScreenUiState`), which the App keeps stable
-        across screen swaps.
+        Regression for a bug class: ``apply_loaded_ctx`` used to build a
+        fresh ``MainScreen`` whenever ``select_layout_signature`` flipped
+        (e.g. another user starts a session). Three pieces of operator-set
+        UI state died with the old screen — view mode, active host tab,
+        pending tab-focus-restore — snapping the operator back to defaults
+        mid-session. Two layers now defend this: the state lives on
+        ``self.app.main_ui`` (App-owned), AND the structural refresh is
+        reconciled in place, so the screen is no longer swapped at all.
         """
         from uxon.tui.app import UxonApp
         from uxon.tui.context import TuiSession
@@ -225,15 +224,16 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             app.main_ui.ui = set_view_mode(app.main_ui.ui, "flat")
             app.main_ui.active_tab_index = 2
             app.main_ui.pending_tab_focus_restore = True
-            # Swap to a ctx with a different layout signature → triggers
-            # the ``MainScreen(self.cfg, self.state)`` rebuild +
-            # ``switch_screen`` path.
+            # Apply a ctx with a different layout signature. This is now
+            # reconciled IN PLACE (no ``switch_screen`` swap), so the
+            # screen object itself is preserved — and the App-owned
+            # ``main_ui`` with it.
             app.screen.apply_loaded_ctx(loaded)
             await pilot.pause()
-            self.assertIsNot(
-                app.screen, old_screen, msg="layout flip should have produced a fresh MainScreen"
+            self.assertIs(
+                app.screen, old_screen, msg="structural refresh must patch in place, not swap"
             )
-            self.assertIs(app.main_ui, old_main_ui, msg="main_ui must survive the screen swap")
+            self.assertIs(app.main_ui, old_main_ui, msg="main_ui must survive the refresh")
             self.assertEqual(app.main_ui.ui.view_mode, "flat")
             self.assertEqual(app.main_ui.active_tab_index, 2)
             self.assertTrue(app.main_ui.pending_tab_focus_restore)

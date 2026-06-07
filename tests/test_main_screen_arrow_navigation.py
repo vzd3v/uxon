@@ -36,7 +36,9 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="me",
-        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
+            cmd=("/bin/true",), label="cwd"
+        ),
         on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
             cmd=("/bin/true",), label="new"
         ),
@@ -423,13 +425,16 @@ class FleetStatusBarToggleTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.main_ui.hosts_expanded)
             self.assertTrue(screen.query_one("#fleet-collapsed").display)
 
-    async def test_expanded_state_survives_recompose(self) -> None:
+    async def test_expanded_state_survives_structural_refresh(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.main import MainScreen
 
-        # Start with NO own sessions so the first layout-signature bit is
-        # False; adding one below flips it True → a real switch_screen
-        # recompose (an in-place patch would not exercise the regression).
+        # Start with NO own sessions, then add one — flips the
+        # has_own_sessions layout-signature bit, the canonical structural
+        # refresh. This used to force a ``switch_screen`` swap (which
+        # dropped in-flight keys); it is now reconciled IN PLACE. The
+        # test pins both halves: the screen object is NOT replaced, and
+        # the App-owned expanded toggle still renders.
         ctx = _mk_ctx(sessions=[])
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
@@ -440,15 +445,122 @@ class FleetStatusBarToggleTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("h")
             await pilot.pause()
             self.assertTrue(app.main_ui.hosts_expanded)
-            # has_own_sessions False→True flips the signature → MainScreen is
-            # rebuilt via switch_screen. The toggle lives on the App-owned
-            # main_ui, so the fresh screen must still render expanded.
             app.screen.apply_loaded_ctx(_mk_ctx(sessions=[_session("a")]))
             await pilot.pause()
             self.assertIsInstance(app.screen, MainScreen)
-            self.assertIsNot(app.screen, first_screen, msg="expected a switch_screen recompose")
+            # The fix: a structural signature flip no longer swaps the
+            # screen, so the focus holder (and Textual's queued input)
+            # survives the refresh — no keys dropped mid-update.
+            self.assertIs(
+                app.screen, first_screen, msg="structural refresh must patch in place, not swap"
+            )
             self.assertTrue(app.main_ui.hosts_expanded)
             self.assertTrue(app.screen.query_one("#fleet-expanded").display)
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class RefreshDoesNotDropKeysTests(unittest.IsolatedAsyncioTestCase):
+    """A background refresh that flips the layout signature must not drop
+    in-flight key events.
+
+    Regression for the swallowed-keys bug: ``apply_loaded_ctx`` used to
+    answer a signature change with ``app.switch_screen`` — a full screen
+    swap that destroyed the focused widget, so any ↓ already queued in
+    Textual's input pump hit a dead DOM target and vanished. The fix
+    reconciles structural deltas in place (display toggles + live column
+    rebuild), keeping the focus holder alive. This pins the contract by
+    machine count: post exactly N ↓ events, flip the signature mid-stream
+    (cross_user latch → USER column), and assert the cursor advanced by
+    all N. Pre-fix this lost exactly the one key in flight during the
+    swap (cursor 11 instead of 12); see
+    ``experiments/260605-key-drop-deterministic``.
+    """
+
+    async def test_signature_flip_mid_stream_drops_no_keys(self) -> None:
+        from textual.events import Key
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+
+        sessions = [_session(f"s{i:02d}") for i in range(20)]
+        app = UxonApp(_mk_ctx(sessions=sessions), probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app.kick_refresh()
+            await pilot.pause()
+            await pilot.pause()
+            table = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table.focus()
+            table.move_cursor(row=0)
+            await pilot.pause()
+            self.assertNotIn("user", tuple(c.id for c in app.screen._active_columns))
+
+            presses = 12
+            for i in range(presses):
+                app.post_message(Key("down", None))
+                if i == presses // 2:
+                    # Flip cross_user → in-place column rebuild, while ↓
+                    # events are still queued in the pump.
+                    app.screen.apply_loaded_ctx(
+                        _mk_ctx(
+                            sessions=sessions,
+                            other_sessions=[_session("z-alice", user="alice")],
+                        )
+                    )
+            for _ in range(3):
+                await pilot.pause()
+
+            table = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            # The signature flip really happened (USER column is live)...
+            self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
+            # ...and every one of the 12 presses landed: cursor advanced
+            # from row 0 to row 12, no key swallowed by the refresh.
+            self.assertEqual(
+                table.cursor_row,
+                presses,
+                msg="a refresh that flips the layout signature dropped an in-flight key",
+            )
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class FocusRestoreSkipsHiddenRowTests(unittest.IsolatedAsyncioTestCase):
+    """``_focus_key`` must not claim a hidden superuser row as a focus target.
+
+    The superuser rows are now always mounted and toggled via
+    ``display``. ``_focus_key`` queries them by id; without a display
+    guard it would call ``.focus()`` on a ``display:none`` row and report
+    success, parking focus on an invisible widget and leaning on Textual's
+    hide-reflow to bounce it back. Pre-always-mount the row was simply
+    absent → ``query_one`` miss → ``False`` → clean fallback. This pins
+    that contract: a hidden target returns ``False``, a visible one True.
+    """
+
+    async def test_focus_key_returns_false_for_hidden_action_row(self) -> None:
+        from uxon.domain.sudo import SudoCapability
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets import ActionRow
+
+        ctx = _mk_ctx(
+            sessions=[_session("a")],
+            sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app.kick_refresh()
+            await pilot.pause()
+            screen = app.screen
+            settings = screen.query_one("#action-settings", ActionRow)
+            # has_super is True → the row is visible and a valid target.
+            self.assertTrue(settings.display)
+            self.assertTrue(screen._focus_key("action:action-settings"))
+            # Hide it (as a has_super False flip would) → no longer a
+            # valid focus target.
+            settings.display = False
+            await pilot.pause()
+            self.assertFalse(screen._focus_key("action:action-settings"))
+            # Control: a visible row still restores.
+            self.assertTrue(screen._focus_key("action:action-cwd"))
 
 
 if __name__ == "__main__":

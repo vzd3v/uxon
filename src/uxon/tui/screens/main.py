@@ -57,7 +57,6 @@ from ..state import (
     main_action_intent,
     main_status_line,
     parse_focus_key,
-    select_layout_signature,
 )
 from ..widgets import ActionRow
 from ..widgets.action_row import ACTION_GROUP_CONTAINER_ID
@@ -74,6 +73,7 @@ from .launch_flow import LaunchFlow
 if TYPE_CHECKING:
     from uxon.domain.status import LinkHealthStatus
 
+    from ..dashboard.columns import ColumnSpec
     from ..dashboard.row import SessionRow
     from ..tui_state import TuiState
 
@@ -183,39 +183,14 @@ class MainScreen(Screen):
         # :class:`MainScreenUiState`) so a layout-signature flip
         # doesn't silently snap the operator back to defaults.
         self._dashboard_rows: tuple[SessionRow, ...] = ()
-        # Compute active dashboard columns once and reuse from
-        # ``compose`` and ``_refresh_dashboard``. ``cross_user`` reads
-        # the monotonic latch on ``app.main_ui.seen_users`` (see
-        # :mod:`uxon.tui.dashboard.seen_users`) so the USER column
-        # mounts whenever two distinct users have been observed
-        # across any source — local own, local other-user, or remote
-        # peers. The latch never resets, so the column doesn't flicker
-        # when a foreign user's sessions die or filtering narrows the
-        # row set. The same accessor backs ``select_layout_signature``,
-        # keeping recompose-trigger and column-mount predicate in
-        # lockstep.
-        flags = LayoutFlags(
-            multi_host=bool(cfg.remote_hosts),
-            cross_user=cross_user_latched(self._main_ui_or_empty()),
-        )
-        self._active_columns = build_active_columns(
-            cfg_columns=cfg.tui_table_columns,
-            flags=flags,
-        )
-        # Cached layout signature for the patch-vs-recompose decision.
-        # Captured here at construction; refreshed at the end of every
-        # :meth:`apply_loaded_ctx` call. Caching is the only way the
-        # ``cross_user_latched`` predicate (a side-channel through
-        # ``app.main_ui.seen_users``) can drive a recompose: callers
-        # that flip the latch from outside ``apply_loaded_ctx`` (e.g.
-        # :meth:`UxonApp._handle_remote_snapshot` folding a foreign
-        # user from a peer's snapshot) update the live set first, so
-        # an entry-time recomputation of "old signature" would already
-        # see the flipped value and miss the transition. The cached
-        # value is the *previous* signature — what was committed last
-        # time apply_loaded_ctx finished — making the False→True
-        # transition observable regardless of who flipped the latch.
-        self._cached_signature = select_layout_signature(cfg, self._main_ui_or_empty())
+        # Active dashboard columns, recomputed every refresh and rebuilt
+        # on the live table when they change (USER column on the
+        # ``cross_user`` latch, HOST column on ``multi_host``) — see
+        # :meth:`_compute_active_columns` and
+        # :meth:`DashboardRender.refresh_dashboard`. The latch never
+        # resets, so the column doesn't flicker when a foreign user's
+        # sessions die or filtering narrows the row set.
+        self._active_columns = self._compute_active_columns()
 
     def _main_ui_or_empty(self) -> MainScreenUiState:
         """Return ``app.main_ui`` if reachable, otherwise a fresh empty
@@ -236,6 +211,21 @@ class MainScreen(Screen):
         if isinstance(ui, MainScreenUiState):
             return ui
         return MainScreenUiState()
+
+    def _compute_active_columns(self) -> tuple[ColumnSpec, ...]:
+        """Active dashboard column tuple for the current cfg + latch state.
+
+        Recomputed on every refresh (not just at ``__init__``) so the
+        USER column (``cross_user`` latch) and HOST column
+        (``multi_host``) can be mounted on the *live* table in place —
+        see :meth:`DashboardRender.refresh_dashboard`. Pure; cheap to
+        recompute and equality-compared by the caller.
+        """
+        flags = LayoutFlags(
+            multi_host=bool(self.cfg.remote_hosts),
+            cross_user=cross_user_latched(self._main_ui_or_empty()),
+        )
+        return build_active_columns(cfg_columns=self.cfg.tui_table_columns, flags=flags)
 
     # ── Live async-slot reads ─────────────────────────────────────────
     #
@@ -365,27 +355,44 @@ class MainScreen(Screen):
             # arrowing down off the table lands on it first. Collapsed by
             # default; ``h`` (or a click on the bar) expands it.
             yield FleetStatusBar(id="fleet-status")
-            if bool(self.cfg.sudo_caps.reachable_users):
-                yield Static(self._superuser_header(), classes="segment-header")
-                yield ActionRow(
-                    kind="settings",
-                    label="⚙ Settings",
-                    detail="(repo-level config.toml)",
-                    enabled=True,
-                    id="action-settings",
-                    singleton=True,
-                )
-                total_sessions = len(self.cfg.sessions) + len(self.cfg.other_sessions)
-                if total_sessions > 0:
-                    reachable_users = sorted(self.cfg.sudo_caps.reachable_users)
-                    yield ActionRow(
-                        kind="kill-all-global",
-                        label=main_render.kill_all_global_label(total_sessions),
-                        detail=f"({', '.join(reachable_users)} + self)",
-                        enabled=True,
-                        id="action-kill-all-global",
-                        singleton=True,
-                    )
+            # Superuser block (header + Settings + Kill-ALL-global) is
+            # mounted UNCONDITIONALLY and shown/hidden via ``display`` in
+            # ``refresh_dashboard`` — the same stable-tree idiom the tab
+            # strip / status bars use above. Mounting it conditionally on
+            # ``has_super`` meant a sudo-reachability flip changed the
+            # widget tree, which forced ``apply_loaded_ctx`` down the
+            # ``switch_screen`` path — a full screen swap that destroys
+            # the focused widget and drops any in-flight key events. The
+            # initial ``display`` is set here so non-super sessions never
+            # flash the block before the first refresh tick.
+            has_super = bool(self.cfg.sudo_caps.reachable_users)
+            total_sessions = len(self.cfg.sessions) + len(self.cfg.other_sessions)
+            reachable_users = sorted(self.cfg.sudo_caps.reachable_users)
+            super_header = Static(
+                self._superuser_header(), id="superuser-header", classes="segment-header"
+            )
+            super_header.display = has_super
+            yield super_header
+            settings_row = ActionRow(
+                kind="settings",
+                label="⚙ Settings",
+                detail="(repo-level config.toml)",
+                enabled=True,
+                id="action-settings",
+                singleton=True,
+            )
+            settings_row.display = has_super
+            yield settings_row
+            kill_global_row = ActionRow(
+                kind="kill-all-global",
+                label=main_render.kill_all_global_label(total_sessions),
+                detail=f"({', '.join(reachable_users)} + self)" if reachable_users else "",
+                enabled=True,
+                id="action-kill-all-global",
+                singleton=True,
+            )
+            kill_global_row.display = has_super and total_sessions > 0
+            yield kill_global_row
             # Multi-host: remote rows fold into the unified dashboard
             # above. The HOST column is auto-prepended when the
             # ``multi_host`` LayoutFlag is True (data-driven via
@@ -695,17 +702,6 @@ class MainScreen(Screen):
         self.app.main_ui.active_tab_index = event.index  # type: ignore[attr-defined]
         self._refresh_dashboard()
 
-    def _layout_signature(self, ctx: TuiContext) -> tuple[bool, bool, bool, bool]:
-        """Instance-method wrapper over :func:`select_layout_signature`.
-
-        Pulls the App-owned :class:`MainScreenUiState` (which carries
-        the ``seen_users`` accumulator) and forwards it. Falls back to
-        a fresh empty UI state when the screen is not attached to the
-        App yet — keeps the unit-test path that builds a screen via
-        ``MainScreen.__new__`` working.
-        """
-        return select_layout_signature(ctx, self._main_ui_or_empty())
-
     def _refresh_cwd_row(self) -> None:
         """Re-render the cwd action row from the current cwd-writable flag."""
         try:
@@ -742,22 +738,6 @@ class MainScreen(Screen):
         )
         if focus_key is None:
             focus_key = self._current_focus_key()
-        # ``old_signature`` is the value committed on the prior
-        # apply_loaded_ctx call (or on ``__init__`` for the first
-        # mount). Reading from the cache rather than recomputing
-        # against ``self.cfg`` makes the comparison sensitive to
-        # ``cross_user`` latch flips applied by handlers that update
-        # ``app.main_ui.seen_users`` directly (see the field's
-        # docstring on ``__init__``).
-        #
-        # Hand-stubbed test screens (``MainScreen.__new__`` paths) can
-        # skip ``__init__`` and therefore lack the cache; in that
-        # case fall back to a fresh computation from the current
-        # snapshot — preserves the original (pre-cache) behaviour for
-        # those legacy stubs.
-        old_signature = getattr(self, "_cached_signature", None)
-        if old_signature is None:
-            old_signature = self._layout_signature(self.cfg)
         # cwd-change invalidation: reset ``state.cwd_writable`` to its
         # zero state so the row paints "checking…" until the next
         # probe lands. Worker-side gating
@@ -805,26 +785,36 @@ class MainScreen(Screen):
 
             app_state.main = _MainData.from_context(new_cfg)
             main_ui.seen_users |= collect_user_set(app_state)
-        new_signature = self._layout_signature(self.cfg)
-        self._cached_signature = new_signature
-        if new_signature == old_signature and self._apply_ctx_refresh():
+        # In-place patch is the ONLY refresh path. Every structural delta
+        # the layout signature used to gate is now reconciled in place by
+        # ``_apply_ctx_refresh`` → ``refresh_dashboard``:
+        #   * superuser block (header / Settings / Kill-ALL-global) →
+        #     ``display`` toggle on the always-mounted widgets;
+        #   * USER / HOST columns (cross_user latch / multi_host) →
+        #     live ``SessionDashboardTable.set_columns`` rebuild.
+        # So a background refresh never destroys the focused widget, and
+        # keys in Textual's input queue always have a live target. This
+        # is the fix for keys vanishing mid-refresh: the old
+        # ``switch_screen`` swap tore down the DOM and dropped any
+        # in-flight key events aimed at it (proven deterministically in
+        # ``experiments/260605-key-drop-deterministic``).
+        if self._apply_ctx_refresh():
             _debug("keys", at="apply_loaded_ctx", path="patch", focus_key=focus_key)
             if focus_key and self._focus_key(focus_key):
                 return
-            # Don't yank focus when the in-place patch leaves the DOM
-            # untouched; the focused widget still exists and is fine.
+            # Don't yank focus when the in-place patch leaves the focused
+            # widget intact.
             return
-        # Full re-compose when section structure changed. ``keys``
-        # channel: log this path explicitly — a full screen swap drops
-        # focus and any in-flight key events targeted at the old DOM,
-        # so it's the most likely culprit when arrow keys "vanish".
+        # Fallback only: the action-row DOM genuinely isn't ready (not a
+        # routine refresh — e.g. a half-mounted screen). The full swap is
+        # the safety net; it can drop in-flight keys, but it fires only
+        # when the in-place path cannot run at all, never on a normal
+        # signature change.
         _debug(
             "keys",
             at="apply_loaded_ctx",
-            path="switch_screen",
+            path="switch_screen_fallback",
             focus_key=focus_key,
-            old_sig=str(old_signature),
-            new_sig=str(new_signature),
         )
         new_screen = MainScreen(self.cfg, self.state)
         new_screen._restore_focus_key = focus_key
@@ -917,10 +907,20 @@ class MainScreen(Screen):
             if not parsed.selector:
                 return False
             try:
-                self.query_one(f"#{parsed.selector}", ActionRow).focus()
-                return True
+                row = self.query_one(f"#{parsed.selector}", ActionRow)
             except Exception:
                 return False
+            # The superuser rows (#action-settings / #action-kill-all-global)
+            # are always mounted and toggled via ``display``; a hidden row
+            # is not a valid focus target. Report failure so the caller
+            # falls back instead of parking focus on an invisible widget.
+            # (Before these rows were always-mounted, this was a query_one
+            # miss → False; preserve that contract rather than leaning on
+            # Textual's hide-reflow to bounce focus back off.)
+            if not row.display:
+                return False
+            row.focus()
+            return True
         if parsed.kind == "own":
             return self._focus_dashboard_own(parsed.name)
         if parsed.kind == "other":

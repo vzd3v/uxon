@@ -187,6 +187,19 @@ class DashboardRender:
         except Exception:  # pragma: no cover — not yet mounted
             return
         prev_cursor_key = self.cursor_row_key(widget)
+        # Live column-set reconciliation. The USER column (``cross_user``
+        # latch) and HOST column (``multi_host``) can appear at runtime;
+        # rebuild them on the live widget instead of re-composing the
+        # screen, so the focus holder survives and no in-flight key is
+        # dropped. ``set_columns`` clears rows, so reset the row cache —
+        # the diff below then re-adds every row against the new columns.
+        # ``prev_cursor_key`` was captured above, so the cursor still
+        # re-pins by identity after the rebuild.
+        new_columns = host._compute_active_columns()
+        if new_columns != host._active_columns:
+            host._active_columns = new_columns
+            widget.set_columns(new_columns)
+            host._dashboard_rows = ()
         plan = diff(host._dashboard_rows, rows, host._active_columns)
         widget.set_block_meta(self.build_block_meta(rows))
         widget.set_block_starts(compute_block_starts(rows, host.cfg.current_user))
@@ -227,6 +240,38 @@ class DashboardRender:
                 status_lines,
                 expanded=host._hosts_expanded,
             )
+        # Superuser block (header / Settings / Kill-ALL-global) is always
+        # mounted; its visibility is toggled here, never by re-composing
+        # the tree. A sudo-reachability flip (has_super) or a 0↔N session
+        # crossing (kill-global) used to change the widget tree, forcing a
+        # focus-dropping screen swap; the ``display`` toggle keeps the
+        # tree stable so refresh can't drop keys. Mirrors the tab-strip /
+        # status-bar idiom above.
+        has_super = bool(host.cfg.sudo_caps.reachable_users)
+        total_sessions = len(host.cfg.sessions) + len(host.cfg.other_sessions)
+        try:
+            super_header = host.query_one("#superuser-header", Static)
+        except Exception:
+            super_header = None
+        if super_header is not None:
+            super_header.update(host._superuser_header())
+            super_header.display = has_super
+        try:
+            settings_row = host.query_one("#action-settings", ActionRow)
+        except Exception:
+            settings_row = None
+        if settings_row is not None:
+            settings_row.display = has_super
+        try:
+            kill_row = host.query_one("#action-kill-all-global", ActionRow)
+        except Exception:
+            kill_row = None
+        if kill_row is not None:
+            kill_row.label = main_render.kill_all_global_label(total_sessions)
+            reachable = sorted(host.cfg.sudo_caps.reachable_users)
+            kill_row.detail = f"({', '.join(reachable)} + self)" if reachable else ""
+            kill_row._render_text()
+            kill_row.display = has_super and total_sessions > 0
         _debug(
             "keys",
             at="refresh_dashboard_exit",
@@ -264,17 +309,9 @@ class DashboardRender:
 
         # All sessions (own + other-user + remote) render through the
         # unified dashboard widget; ``refresh_dashboard`` below pulls
-        # a consistent ``state.main`` + ``state.remote`` snapshot.
-
-        if bool(host.cfg.sudo_caps.reachable_users):
-            try:
-                kill_row = host.query_one("#action-kill-all-global", ActionRow)
-            except Exception:
-                kill_row = None
-            if kill_row is not None:
-                total_sessions = len(host.cfg.sessions) + len(host.cfg.other_sessions)
-                kill_row.label = main_render.kill_all_global_label(total_sessions)
-                kill_row._render_text()
+        # a consistent ``state.main`` + ``state.remote`` snapshot. It also
+        # owns the superuser block's visibility + content (Settings /
+        # Kill-ALL-global), so no separate update is needed here.
 
         # The "Loading sessions…" / "No active sessions." placeholder
         # is owned by ``refresh_dashboard_note`` (called from

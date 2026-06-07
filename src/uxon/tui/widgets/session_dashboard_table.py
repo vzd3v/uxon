@@ -210,6 +210,28 @@ class SessionDashboardTable(FocusReleasingDataTable):
         for col in self._columns:
             self.add_column(col.label, key=col.id)
 
+    def set_columns(self, columns: tuple[ColumnSpec, ...]) -> None:
+        """Rebuild the column set on the LIVE widget, in place.
+
+        Used when the active column tuple changes at runtime — the USER
+        column on the ``cross_user`` latch, the HOST column on
+        ``multi_host``. Rebuilding in place (rather than re-composing the
+        whole screen) keeps this widget instance alive, so it stays in
+        the focus chain and Textual's queued key events keep a live
+        target — no keys dropped mid-refresh.
+
+        ``clear(columns=True)`` drops all rows too; the caller
+        (``refresh_dashboard``) resets its row cache so the very next
+        diff re-adds every row with cell tuples matching the new column
+        count. No-op when ``columns`` is unchanged.
+        """
+        if columns == self._columns:
+            return
+        self._columns = columns
+        self.clear(columns=True)
+        for col in columns:
+            self.add_column(col.label, key=col.id)
+
     # ── op application ──────────────────────────────────────────────
 
     def apply(self, plan: ApplyPlan) -> None:
