@@ -143,13 +143,36 @@ class MainScreen(Screen):
         Binding("down", "app.focus_next", "", show=False),
     )
 
-    # Writable reactive driving the ``#sessions-note`` re-render when
-    # the first ``MainData`` lands. Plain assignment only — defining a
-    # ``compute_loading`` method would make Textual's reactive
-    # descriptor read-only (textual/reactive.py:330-333). The
-    # rebuild-source dispatcher writes ``screen.loading = (state.main
-    # is None)`` directly.
+    # Writable cold-start flag the rebuild dispatcher flips when the
+    # first ``MainData`` lands (``screen.loading = state.main is None``).
+    # Plain assignment only — a ``compute_loading`` method would make the
+    # reactive read-only (textual/reactive.py:330-333).
+    #
+    # NOTE: this name shadows Textual's built-in ``Widget.loading``,
+    # whose watcher would otherwise cover the WHOLE screen with a
+    # ``LoadingIndicator`` (a blue full-screen dots overlay). We don't
+    # want that — the cold-start view is the composed skeleton (server
+    # status line + "Loading sessions…" note + action rows), not a blank
+    # overlay. ``set_loading`` below is overridden to a no-op so the flag
+    # stays a plain reactive and never engages Textual's overlay. (Before
+    # that override, the in-place refresh path could leave the cover
+    # stuck up: the cold-start cover is mounted via a mount-time
+    # ``call_later`` that could land *after* the data-arrival
+    # ``loading = False``, re-covering a screen nothing would uncover —
+    # the whole UI froze on the loader. The old ``switch_screen`` refresh
+    # masked it by always building a fresh, uncovered screen.)
     loading: reactive[bool] = reactive(True)
+
+    def set_loading(self, loading: bool) -> None:  # noqa: ARG002 — overrides Textual hook
+        """No-op override of Textual's loading-overlay hook.
+
+        See the ``loading`` reactive note above: MainScreen renders its
+        own cold-start skeleton, so it must never be replaced by the
+        built-in full-screen ``LoadingIndicator``. Severing the cover
+        hook keeps the ``loading`` flag a plain writable reactive while
+        making Textual's overlay machinery inert for this screen.
+        """
+        return
 
     def __init__(self, cfg: TuiContext, state: TuiState) -> None:
         super().__init__()

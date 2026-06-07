@@ -140,6 +140,48 @@ class MainScreenLoadingReactiveTests(unittest.TestCase):
         self.assertTrue(hasattr(MainScreen, "loading"))
 
 
+class MainScreenLoadingOverlayTests(unittest.IsolatedAsyncioTestCase):
+    """``MainScreen.loading`` must NOT engage Textual's full-screen
+    ``LoadingIndicator`` overlay.
+
+    The reactive shadows Textual's built-in ``Widget.loading``, whose
+    watcher covers the whole widget with a blue ``LoadingIndicator``.
+    MainScreen renders its own cold-start skeleton (status line +
+    "Loading sessions…" note + action rows), so it overrides
+    ``set_loading`` to a no-op. Regression for the frozen-on-loader bug:
+    once the in-place refresh path replaced ``switch_screen``, a stuck
+    cold-start cover (mounted via a mount-time ``call_later`` that landed
+    after ``loading = False``) hid the entire UI — only the dashboard
+    table punched through on navigation. Pin it: even with
+    ``loading = True`` set explicitly, no cover widget is mounted and the
+    composed content stays live.
+    """
+
+    async def test_loading_true_does_not_cover_the_screen(self) -> None:
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            self.skipTest("textual not available")
+        from textual.widgets import LoadingIndicator
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets import ActionRow
+
+        app = UxonApp(_bare_ctx(loading=True), probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            # Force the overlay path the way the dispatcher would.
+            screen.loading = True
+            await pilot.pause()
+            await pilot.pause()
+            # No cover widget, no LoadingIndicator anywhere on the screen.
+            self.assertIsNone(getattr(screen, "_cover_widget", None))
+            self.assertEqual(len(list(screen.query(LoadingIndicator))), 0)
+            # The composed skeleton is still live underneath.
+            self.assertTrue(screen.query_one("#action-cwd", ActionRow).display)
+
+
 class AvailabilitySeedTests(unittest.TestCase):
     """The App seeds ``state.agent_availability`` from the launching
     ctx's static availability dict at construction. Consumers read the
