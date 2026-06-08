@@ -28,6 +28,7 @@ from textual.binding import Binding
 from uxon import __version__
 from uxon.domain.launch_request import LaunchRequest
 from uxon.infra.events import debug as _debug
+from uxon.infra.events import is_enabled as _debug_enabled
 
 from .config import TuiConfig
 from .context import TuiContext
@@ -50,6 +51,13 @@ from .state import (
 )
 from .tui_state import TuiState
 from .workers import WorkerCoordinator
+
+# Event-loop watchdog cadence (UXON_DEBUG=keys only). Poll fast enough
+# to resolve a stall on the order of a single rendered frame; report any
+# tick that lands ≥ _WATCHDOG_STALL_S late, the scale at which a blocked
+# loop would visibly starve the input parser.
+_WATCHDOG_INTERVAL_S: float = 0.02
+_WATCHDOG_STALL_S: float = 0.04
 
 
 class UxonApp(App):
@@ -120,6 +128,23 @@ class UxonApp(App):
         self.quit_rc: int | None = None
         self.pending_status = pending_status
         self.probe_agents = probe_agents
+        # ── Key-drop diagnostics (UXON_DEBUG=keys) ──────────────────
+        # Resolved once at construction so the hot ``on_event`` tap and
+        # the loop watchdog cost a single bool check in production. The
+        # tap records EVERY key at the instant Textual first sees it
+        # (before bindings/forwarding); the existing ``on_key`` only
+        # sees keys that bubble up UNHANDLED — by definition never the
+        # ones that vanish. Together with an external stdin oracle
+        # (``script --log-in``) and the loop watchdog below, a dropped
+        # key gets an empirical verdict (parser/loop-starvation vs
+        # focus/routing) instead of a guess. See
+        # ``experiments/260607-key-drop-oracle/``.
+        self._key_trace: bool = _debug_enabled("keys")
+        # Monotonic timestamp of the previous watchdog tick; the gap to
+        # the next tick beyond its scheduled interval is event-loop lag
+        # (a blocked loop delays our own timer — the standard asyncio
+        # stall probe). ``None`` until the first tick.
+        self._wd_prev: float | None = None
         # Snapshot the process-wide counter, then bump it. Production
         # ``_source_worker`` stamps the live epoch on every result.
         # ``_RefreshSourceLanded.instance_epoch`` defaults to the
@@ -208,6 +233,63 @@ class UxonApp(App):
             if s.user:
                 self.main_ui.seen_users.add(s.user)
 
+    async def on_event(self, event: _events.Event) -> None:
+        """Total key tap: record EVERY key the instant Textual sees it.
+
+        ``App.on_event`` is the one seam every non-forwarded input event
+        crosses before bindings or forwarding (Textual 8.x). A real
+        key, typed at the terminal, that reached the app's message pump
+        at all appears here exactly once (``is_forwarded`` False). Diff
+        this stream against the external stdin oracle
+        (``script --log-in``) and any byte the oracle saw but this tap
+        did NOT is a key lost *upstream* of the pump — in the terminal
+        driver / escape-sequence parser, the half no prior in-process
+        repro could observe (they injected synthetic ``Key`` messages
+        straight into the pump, downstream of the parser). A byte that
+        DID appear here but produced no action is the routing/focus
+        half. Off by default; one bool check when disabled.
+        """
+        if self._key_trace and isinstance(event, _events.Key) and not event.is_forwarded:
+            focused = self.focused
+            _debug(
+                "keys",
+                at="app_received",
+                key=getattr(event, "key", ""),
+                screen=type(self.screen).__name__ if self.screen is not None else None,
+                focused_id=getattr(focused, "id", None) if focused is not None else None,
+                focused_kind=type(focused).__name__ if focused is not None else None,
+                workers=self._worker_coord.active_source_count(),
+                pending_launch=self.pending_launch is not None,
+                mono=time.monotonic(),
+                wall=time.time(),
+            )
+        await super().on_event(event)
+
+    def _loop_watchdog(self) -> None:
+        """Record event-loop stalls that could starve the input parser.
+
+        Scheduled on the loop via ``set_interval``; a blocked loop
+        delays this very callback, so the gap beyond the scheduled
+        interval IS the stall duration. Correlate a logged stall window
+        against a key the oracle saw vanish to confirm-or-refute the
+        ``run all blocking callbacks off the loop`` theory (35387a2) in
+        real usage rather than by assertion.
+        """
+        now = time.monotonic()
+        prev = self._wd_prev
+        self._wd_prev = now
+        if prev is None:
+            return
+        lag = (now - prev) - _WATCHDOG_INTERVAL_S
+        if lag >= _WATCHDOG_STALL_S:
+            _debug(
+                "keys",
+                at="loop_stall",
+                stall_ms=round(lag * 1000, 1),
+                mono=now,
+                wall=time.time(),
+            )
+
     def on_key(self, event: _events.Key) -> None:
         """Diagnostic log for keys that fall through unhandled.
 
@@ -241,6 +323,9 @@ class UxonApp(App):
         # ``time.monotonic()`` for diffs only — wall-clock jitters
         # under NTP corrections.
         _debug("startup", at="mount_started", ts=time.monotonic())
+        if self._key_trace:
+            # Arm the loop-stall watchdog only when key tracing is on.
+            self.set_interval(_WATCHDOG_INTERVAL_S, self._loop_watchdog)
         self.push_screen(MainScreen(self.ctx, self.state))
         if self.pending_status:
             # A notify() raised on mount survives the app re-create

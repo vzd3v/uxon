@@ -116,6 +116,19 @@ def _parse_debug_topics() -> frozenset[str]:
 _DEBUG_TOPICS: frozenset[str] = _parse_debug_topics()
 
 
+def is_enabled(topic: str) -> bool:
+    """Return whether the debug ``topic`` channel is active.
+
+    Cheap (one ``frozenset`` membership check, no I/O). For call sites
+    that must decide whether to *install* instrumentation at all — e.g.
+    arming a recurring event-loop watchdog — rather than merely whether
+    to emit a single record (which :func:`debug` already gates itself).
+    """
+    if not _DEBUG_TOPICS:
+        return False
+    return "*" in _DEBUG_TOPICS or topic in _DEBUG_TOPICS
+
+
 def debug(topic: str, **fields: Any) -> None:
     """Append one JSON line to the debug log iff ``UXON_DEBUG`` enables ``topic``.
 
