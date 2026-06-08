@@ -127,7 +127,11 @@ class FleetStatusBar(Widget):
         if expanded:
             self._render_expanded(expanded_box)
         else:
-            counts.update(format_collapsed(summary))
+            # ``layout=False``: the counts line is a single row of stable
+            # height — a content swap must repaint it, not request a
+            # screen-global relayout (AC8). The fleet totals shift on every
+            # telemetry tick, so this is on the steady-tick hot path.
+            counts.update(format_collapsed(summary), layout=False)
             counts.set_class(bool(summary.alerts), "-alert")
 
     def _render_expanded(self, box: Vertical) -> None:
@@ -137,6 +141,8 @@ class FleetStatusBar(Widget):
         for i, line in enumerate(self._lines):
             text = _render(line)
             if i < len(existing):
-                existing[i].update(text)  # type: ignore[attr-defined]
+                # ``layout=False``: stable single-line host row; content
+                # swap repaints without a global relayout (AC8).
+                existing[i].update(text, layout=False)  # type: ignore[attr-defined]
             else:
                 box.mount(Static(text, id=f"fleet-line-{i}"))

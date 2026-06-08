@@ -128,17 +128,24 @@ class DashboardRender:
         toggle keeps the layout signature stable across the
         empty/non-empty transition — the Static is mounted
         unconditionally.
+
+        Changed-only (AC11): the ``-hidden`` class and the placeholder
+        text are each written only when their value changed vs the last
+        tick, so an identical-data tick issues no ``set_class`` / ``update``
+        at the call site (not merely relies on Textual's self-no-op).
         """
         host = self.host
         try:
             note = host.query_one("#sessions-note", Static)
         except Exception:  # pragma: no cover — note not yet mounted
             return
-        if all_rows:
-            note.set_class(True, "-hidden")
-        else:
-            note.set_class(False, "-hidden")
-            note.update("Loading sessions…" if host.cfg.loading else "No active sessions.")
+        hidden = bool(all_rows)
+        if self._changed("note_hidden", hidden):
+            note.set_class(hidden, "-hidden")
+        if not all_rows:
+            text = "Loading sessions…" if host.cfg.loading else "No active sessions."
+            if self._changed("note_text", text):
+                note.update(text)
 
     def refresh_dashboard(self) -> None:
         """Compute the model, place it in frozen order, drive the list view.

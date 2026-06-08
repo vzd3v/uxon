@@ -122,6 +122,12 @@ class SessionListView(ScrollView):
         self._rows: tuple[SessionRow, ...] = ()
         self._block_meta: dict[str, tuple[str, int]] = {}
         self._block_starts: tuple[int, ...] = ()
+        # AC11 no-op gate. ``set_block_meta`` runs before ``set_rows`` every
+        # tick; a hue/zebra change with otherwise-unchanged rows must still
+        # repaint, so ``set_block_meta`` flips this flag on a real change and
+        # ``set_rows`` consults it. An identical-data tick (rows unchanged AND
+        # meta unchanged) issues **zero** ``refresh`` calls.
+        self._render_dirty: bool = False
         self._cursor_row: int = 0
         # Mirrors the DataTable ``cursor_type`` none↔row toggle: the row
         # cursor is hidden until the widget actually has focus, so the
@@ -145,7 +151,20 @@ class SessionListView(ScrollView):
         when the row *count* changes — a steady tick that swaps cell
         values at the same length repaints visible lines with no
         relayout. The cursor is clamped into the new bounds.
+
+        AC11: an identical-data tick — ``rows`` value-equal to the
+        current rows (``SessionRow`` is a frozen dataclass, so ``==`` is
+        a deep value compare) and no block-meta change since the last
+        paint (``_render_dirty`` unset) — issues **zero** ``refresh``
+        calls and does not touch ``virtual_size``. Any real change (a
+        cell value, an arrival/departure, or a hue/zebra flip via
+        :meth:`set_block_meta`) repaints exactly as before.
         """
+        rows_changed = rows != self._rows
+        if not rows_changed and not self._render_dirty:
+            # Identical data and no pending meta change → no-op. No
+            # ``refresh``, no ``virtual_size`` write, cursor untouched.
+            return
         count_changed = len(rows) != len(self._rows)
         self._rows = rows
         # Row content feeds the width calc — invalidate the cache. (Always:
@@ -158,6 +177,7 @@ class SessionListView(ScrollView):
         if count_changed:
             self._update_virtual_size()
         self.refresh()
+        self._render_dirty = False
 
     def set_columns(self, columns: tuple[ColumnSpec, ...]) -> None:
         """Replace the active column set (cross_user / multi_host latch).
@@ -177,8 +197,17 @@ class SessionListView(ScrollView):
 
         Seeds the block-hue (NAME / HOST foreground) and zebra parity
         at render time. Called every tick before :meth:`set_rows`.
+
+        AC11: a no-op when ``meta`` equals the current map. On a real
+        change it flips ``_render_dirty`` so the following
+        :meth:`set_rows` repaints even if the rows themselves are
+        unchanged (a hue/zebra change with stable rows still needs a
+        repaint). The flag is reset inside ``set_rows`` after it paints.
         """
+        if meta == self._block_meta:
+            return
         self._block_meta = meta
+        self._render_dirty = True
 
     def set_block_starts(self, starts: tuple[int, ...]) -> None:
         """Update the row indices that begin a logical block.
@@ -233,6 +262,11 @@ class SessionListView(ScrollView):
         operator never lands on a non-existent row.
         """
         if row_key is None:
+            return
+        # AC11: the cursor is already on this key — no ``move_cursor``
+        # (and thus no ``refresh``). A no-op tick that re-pins the same
+        # selection must mutate nothing.
+        if self.selected_row_key == row_key:
             return
         for i, row in enumerate(self._rows):
             if row.key == row_key:
