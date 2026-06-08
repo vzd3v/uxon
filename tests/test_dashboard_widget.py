@@ -1,23 +1,24 @@
-"""Pilot tests for :class:`SessionDashboardTable` (commit 8).
+"""Pilot tests for :class:`SessionListView` (render-on-demand dashboard).
 
-Standalone Pilot — these tests assert ``add_row`` / ``remove_row`` /
-``update_cell`` spy counts, which the batched ``run_screen_scenarios``
-smoke tests don't care about. Per AGENTS.md § Pilot batching
-(AGENTS.md:160-168), structural-mutator spy tests don't share that batch.
+Standalone Pilot — these assert the widget's **observable behaviour** (row
+order, cursor pin-by-key, edge-release focus handoff, message emission,
+viewport-only render), not DataTable / reconciler internals (both gone in the
+render-on-demand refactor). Replaces the old ``SessionDashboardTable`` spy
+tests.
 
 Pinned contracts:
 
-* Mounting with N rows produces ``row_count == N``.
-* A pure ``CellUpdate`` op never calls ``add_row`` / ``remove_row`` and
-  leaves the cursor on its prior row.
-* ``pin_cursor_to(prev_key)`` after a re-order keeps the cursor on the
-  same logical row.
-* ``pin_cursor_to(missing_key)`` falls back to the nearest surviving
-  sibling at the same visual index (clamped to ``row_count - 1``).
-* Inline-insert (``RowAdd`` with non-None ``before_key`` in the middle)
-  produces the visual order specified by ``new``.
-* Module import-time guard: if Textual ever drops ``_row_locations``
-  initialisation in :meth:`DataTable.__init__`, the assertion fires.
+* ``set_rows`` lands the rows in the given order; ``row_count == len``.
+* ``pin_cursor_to(key)`` follows the logical row across a reorder, and clamps
+  to the nearest surviving sibling when the key is gone.
+* Edge-release: ``↑`` on row 0 hands focus to the leftmost ActionRow in
+  ``#top-actions``; ``↓`` on the last row hands focus to the next sibling.
+* Enter / click post ``RowSelected`` carrying the cursor row; ``←/→`` post
+  ``HostNavigate`` carrying the direction.
+* ``render_line`` only builds the visible viewport (out-of-range lines are
+  blank).
+
+Pure ``order.py::place`` tests live in ``test_dashboard_order.py``.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ def _make_row(
     name: str,
     cpu: float = 0.0,
     rss_kib: int = 0,
+    last_attached_epoch: float | None = None,
 ):
     from uxon.tui.dashboard.row import SessionRow
 
@@ -55,7 +57,7 @@ def _make_row(
         cpu_pct=cpu,
         rss_kib=rss_kib,
         created_epoch=None,
-        last_attached_epoch=None,
+        last_attached_epoch=last_attached_epoch,
         cmd="",
         path="",
     )
@@ -70,13 +72,12 @@ def _active_columns():
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
-    async def test_mount_with_15_rows(self) -> None:
-        """3 hosts × 5 sessions = 15 rows after applying the initial diff."""
+class SessionListViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_set_rows_order_and_count(self) -> None:
+        """3 hosts × 5 = 15 rows, in the order passed to ``set_rows``."""
         from textual.app import App, ComposeResult
 
-        from uxon.tui.dashboard.reconcile import diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         cols = _active_columns()
         rows = tuple(
@@ -87,393 +88,273 @@ class SessionDashboardTableTests(unittest.IsolatedAsyncioTestCase):
 
         class Host(App):
             def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
+                yield SessionListView(cols, id="dash")
 
         app = Host()
         async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            plan = diff((), rows, cols)
-            table.apply(plan)
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows(rows)
             await pilot.pause()
-            self.assertEqual(table.row_count, 15)
+            self.assertEqual(view.row_count, 15)
+            view.focus()
+            await pilot.pause()
+            view.move_cursor(row=0)
+            await pilot.pause()
+            self.assertEqual(view.selected_row_key, rows[0].key)
 
-    async def test_cell_update_does_not_touch_row_structure(self) -> None:
-        """A single CellUpdate must not invoke add_row/remove_row, and the
-        cursor must stay where it was.
-        """
+    async def test_pin_cursor_follows_row_key_across_reorder(self) -> None:
+        """``pin_cursor_to(prev_key)`` lands on the new index of the row."""
         from textual.app import App, ComposeResult
 
-        from uxon.tui.dashboard.reconcile import diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         cols = _active_columns()
-        old_rows = (
-            _make_row(host="a", user="u", name="s1", cpu=1.0),
-            _make_row(host="a", user="u", name="s2", cpu=2.0),
-            _make_row(host="b", user="u", name="s3", cpu=3.0),
+        a = _make_row(host="a", user="u", name="s1")
+        b = _make_row(host="a", user="u", name="s2")
+        c = _make_row(host="b", user="u", name="s3")
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionListView(cols, id="dash")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows((a, b, c))
+            await pilot.pause()
+            view.focus()
+            await pilot.pause()
+            view.move_cursor(row=1)  # park on b
+            await pilot.pause()
+            self.assertEqual(view.selected_row_key, b.key)
+
+            view.set_rows((c, a, b))  # b now at index 2
+            view.pin_cursor_to(b.key)
+            await pilot.pause()
+            self.assertEqual(view.cursor_row, 2)
+
+    async def test_pin_cursor_clamps_when_key_missing(self) -> None:
+        """Removing the cursor's row → pin clamps to ``row_count - 1``."""
+        from textual.app import App, ComposeResult
+
+        from uxon.tui.widgets.session_list_view import SessionListView
+
+        cols = _active_columns()
+        a = _make_row(host="a", user="u", name="s1")
+        b = _make_row(host="a", user="u", name="s2")
+        c = _make_row(host="b", user="u", name="s3")
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionListView(cols, id="dash")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows((a, b, c))
+            await pilot.pause()
+            view.focus()
+            await pilot.pause()
+            view.move_cursor(row=1)
+            await pilot.pause()
+
+            view.set_rows((a, c))  # b gone; cursor clamps
+            view.pin_cursor_to(b.key)
+            await pilot.pause()
+            self.assertEqual(view.row_count, 2)
+            self.assertEqual(view.cursor_row, 1)
+
+    async def test_edge_release_up_lands_on_leftmost_action_row(self) -> None:
+        """``↑`` on row 0 focuses the leftmost ActionRow in #top-actions."""
+        from textual.app import App, ComposeResult
+        from textual.containers import Horizontal
+
+        from uxon.tui.widgets.action_row import ACTION_GROUP_CONTAINER_ID, ActionRow
+        from uxon.tui.widgets.session_list_view import SessionListView
+
+        cols = _active_columns()
+        a = _make_row(host="a", user="u", name="s1")
+        b = _make_row(host="a", user="u", name="s2")
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                with Horizontal(id=ACTION_GROUP_CONTAINER_ID):
+                    yield ActionRow(kind="cwd", label="Set cwd", id="action-cwd")
+                    yield ActionRow(kind="open", label="Open", id="action-open")
+                yield SessionListView(cols, id="dash")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows((a, b))
+            await pilot.pause()
+            view.focus()
+            await pilot.pause()
+            view.move_cursor(row=0)
+            await pilot.pause()
+            view.action_cursor_up()
+            await pilot.pause()
+            focused = app.focused
+            assert focused is not None
+            self.assertEqual(focused.id, "action-cwd")
+
+    async def test_edge_release_down_hands_focus_to_next(self) -> None:
+        """``↓`` on the last row hands focus off the list (focus_next)."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Button
+
+        from uxon.tui.widgets.session_list_view import SessionListView
+
+        cols = _active_columns()
+        a = _make_row(host="a", user="u", name="s1")
+        b = _make_row(host="a", user="u", name="s2")
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionListView(cols, id="dash")
+                yield Button("after", id="after")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows((a, b))
+            await pilot.pause()
+            view.focus()
+            await pilot.pause()
+            view.move_cursor(row=1)  # last row
+            await pilot.pause()
+            view.action_cursor_down()
+            await pilot.pause()
+            focused = app.focused
+            assert focused is not None
+            self.assertNotEqual(focused.id, "dash")
+
+    async def test_enter_posts_row_selected(self) -> None:
+        """``action_select_cursor`` posts ``RowSelected`` with cursor_row."""
+        from textual.app import App, ComposeResult
+
+        from uxon.tui.widgets.session_list_view import SessionListView
+
+        cols = _active_columns()
+        rows = (
+            _make_row(host="a", user="u", name="s1"),
+            _make_row(host="a", user="u", name="s2"),
+        )
+        captured: list[int] = []
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionListView(cols, id="dash")
+
+            def on_session_list_view_row_selected(self, event: SessionListView.RowSelected) -> None:
+                captured.append(event.cursor_row)
+
+        app = Host()
+        async with app.run_test() as pilot:
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows(rows)
+            await pilot.pause()
+            view.focus()
+            await pilot.pause()
+            view.move_cursor(row=1)
+            await pilot.pause()
+            view.action_select_cursor()
+            await pilot.pause()
+            self.assertEqual(captured, [1])
+
+    async def test_arrow_posts_host_navigate(self) -> None:
+        """``←/→`` post ``HostNavigate`` carrying the direction."""
+        from textual.app import App, ComposeResult
+
+        from uxon.tui.widgets.session_list_view import SessionListView
+
+        cols = _active_columns()
+        rows = (_make_row(host="a", user="u", name="s1"),)
+        captured: list[int] = []
+
+        class Host(App):
+            def compose(self) -> ComposeResult:
+                yield SessionListView(cols, id="dash")
+
+            def on_session_list_view_host_navigate(
+                self, event: SessionListView.HostNavigate
+            ) -> None:
+                captured.append(event.direction)
+
+        app = Host()
+        async with app.run_test() as pilot:
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows(rows)
+            await pilot.pause()
+            view.focus()
+            await pilot.pause()
+            view.action_host_navigate(1)
+            view.action_host_navigate(-1)
+            await pilot.pause()
+            self.assertEqual(captured, [1, -1])
+
+    async def test_render_line_is_viewport_only(self) -> None:
+        """``render_line`` builds the header + in-range rows; oob is blank."""
+        from textual.app import App, ComposeResult
+
+        from uxon.tui.widgets.session_list_view import SessionListView
+
+        cols = _active_columns()
+        rows = (
+            _make_row(host="a", user="u", name="s1"),
+            _make_row(host="a", user="u", name="s2"),
         )
 
         class Host(App):
             def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
+                yield SessionListView(cols, id="dash")
 
         app = Host()
         async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            table.apply(diff((), old_rows, cols))
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows(rows)
             await pilot.pause()
+            # Line 0 = header.
+            self.assertIn("NAME", view.render_line(0).text)
+            # Lines 1, 2 = data rows.
+            self.assertIn("s1", view.render_line(1).text)
+            self.assertIn("s2", view.render_line(2).text)
+            # A line past the data is blank (no content built for it).
+            self.assertEqual(view.render_line(50).text.strip(), "")
 
-            table.focus()
-            await pilot.pause()
-            table.move_cursor(row=1)
-            await pilot.pause()
-            self.assertEqual(table.cursor_row, 1)
+    async def test_set_rows_same_length_does_not_change_virtual_size(self) -> None:
+        """A same-length cell update keeps ``virtual_size`` height stable.
 
-            # Spy on structural mutators.
-            add_calls: list[tuple] = []
-            remove_calls: list[str] = []
-            real_add = table.add_row
-            real_remove = table.remove_row
-
-            def spy_add(*cells, **kw):
-                add_calls.append((cells, kw))
-                return real_add(*cells, **kw)
-
-            def spy_remove(key):
-                remove_calls.append(key)
-                return real_remove(key)
-
-            table.add_row = spy_add  # type: ignore[method-assign]
-            table.remove_row = spy_remove  # type: ignore[method-assign]
-
-            new_rows = (
-                _make_row(host="a", user="u", name="s1", cpu=1.0),
-                _make_row(host="a", user="u", name="s2", cpu=42.0),  # cell change
-                _make_row(host="b", user="u", name="s3", cpu=3.0),
-            )
-            plan = diff(old_rows, new_rows, cols)
-            table.apply(plan)
-            await pilot.pause()
-
-            self.assertEqual(add_calls, [])
-            self.assertEqual(remove_calls, [])
-            self.assertEqual(table.cursor_row, 1)
-
-    async def test_reorder_pin_cursor_follows_row_key(self) -> None:
-        """After a re-order, ``pin_cursor_to(prev_key)`` lands on the new
-        index of the same logical row.
+        The render-on-demand contract: only a row *count* change moves
+        ``virtual_size`` (the one legitimate relayout).
         """
         from textual.app import App, ComposeResult
 
-        from uxon.tui.dashboard.reconcile import _row_key, diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         cols = _active_columns()
-        a = _make_row(host="a", user="u", name="s1")
-        b = _make_row(host="a", user="u", name="s2")
-        c = _make_row(host="b", user="u", name="s3")
-        old_rows = (a, b, c)
-        new_rows = (c, a, b)  # rotate: c moves to front
+        old = (
+            _make_row(host="a", user="u", name="s1", cpu=1.0),
+            _make_row(host="a", user="u", name="s2", cpu=2.0),
+        )
+        new = (
+            _make_row(host="a", user="u", name="s1", cpu=1.0),
+            _make_row(host="a", user="u", name="s2", cpu=42.0),  # cell change
+        )
 
         class Host(App):
             def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
+                yield SessionListView(cols, id="dash")
 
         app = Host()
         async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            table.apply(diff((), old_rows, cols))
+            view = app.query_one("#dash", SessionListView)
+            view.set_rows(old)
             await pilot.pause()
-            table.focus()
+            height_before = view.virtual_size.height
+            view.set_rows(new)
             await pilot.pause()
-            # Park the cursor on row b (index 1 in old_rows).
-            cursor_key = _row_key(b)
-            table.move_cursor(row=1)
-            await pilot.pause()
-
-            table.apply(diff(old_rows, new_rows, cols))
-            table.pin_cursor_to(cursor_key)
-            await pilot.pause()
-
-            # In new_rows, b is at index 2.
-            self.assertEqual(table.cursor_row, 2)
-
-    async def test_pin_cursor_falls_back_when_key_missing(self) -> None:
-        """Removing the row under the cursor → ``pin_cursor_to`` clamps to
-        ``row_count - 1`` so the cursor never lands on a non-existent row.
-        """
-        from textual.app import App, ComposeResult
-
-        from uxon.tui.dashboard.reconcile import _row_key, diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
-
-        cols = _active_columns()
-        a = _make_row(host="a", user="u", name="s1")
-        b = _make_row(host="a", user="u", name="s2")
-        c = _make_row(host="b", user="u", name="s3")
-        old_rows = (a, b, c)
-        new_rows = (a, c)  # b is gone
-
-        class Host(App):
-            def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
-
-        app = Host()
-        async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            table.apply(diff((), old_rows, cols))
-            await pilot.pause()
-            table.focus()
-            await pilot.pause()
-            # Park on the row that's about to be removed.
-            table.move_cursor(row=1)
-            await pilot.pause()
-            self.assertEqual(table.cursor_row, 1)
-
-            table.apply(diff(old_rows, new_rows, cols))
-            await pilot.pause()
-            # Pin to the now-missing key — cursor should clamp.
-            table.pin_cursor_to(_row_key(b))
-            await pilot.pause()
-            self.assertEqual(table.row_count, 2)
-            # cursor_row was 1 before, row_count - 1 == 1 → stays 1.
-            self.assertEqual(table.cursor_row, 1)
-
-    async def test_inline_insert_preserves_visual_order(self) -> None:
-        """[A, B, C] → [A, X, B, C] where X is new. The widget must end
-        with the visual order [A, X, B, C].
-        """
-        from textual.app import App, ComposeResult
-
-        from uxon.tui.dashboard.reconcile import _row_key, diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
-
-        cols = _active_columns()
-        a = _make_row(host="a", user="u", name="s-a")
-        b = _make_row(host="a", user="u", name="s-b")
-        c = _make_row(host="a", user="u", name="s-c")
-        x = _make_row(host="a", user="u", name="s-x")
-        old_rows = (a, b, c)
-        new_rows = (a, x, b, c)
-
-        class Host(App):
-            def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
-
-        app = Host()
-        async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            table.apply(diff((), old_rows, cols))
-            await pilot.pause()
-
-            table.apply(diff(old_rows, new_rows, cols))
-            await pilot.pause()
-
-            ordered_keys = [
-                row.key.value if hasattr(row.key, "value") else str(row.key)
-                for row in table.ordered_rows
-            ]
-            expected = [_row_key(a), _row_key(x), _row_key(b), _row_key(c)]
-            self.assertEqual(ordered_keys, expected)
-
-    async def test_two_inline_inserts_in_one_apply_batch(self) -> None:
-        """[A, B] → [A, X, B, Y]: two interior inserts in a single
-        ``apply`` call. Final visual order must match ``new`` exactly,
-        row count is 4, and no ``CellUpdate`` op fires (both surviving
-        rows occupy the same surviving-relative position).
-        """
-        from textual.app import App, ComposeResult
-
-        from uxon.tui.dashboard.reconcile import CellUpdate, _row_key, diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
-
-        cols = _active_columns()
-        a = _make_row(host="a", user="u", name="s-a")
-        b = _make_row(host="a", user="u", name="s-b")
-        x = _make_row(host="a", user="u", name="s-x")
-        y = _make_row(host="a", user="u", name="s-y")
-        old_rows = (a, b)
-        new_rows = (a, x, b, y)
-
-        class Host(App):
-            def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
-
-        app = Host()
-        async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            table.apply(diff((), old_rows, cols))
-            await pilot.pause()
-
-            plan = diff(old_rows, new_rows, cols)
-            # Surviving rows (a, b) keep their surviving-relative
-            # position, so reconcile must not emit any CellUpdate.
-            self.assertEqual([o for o in plan.ops if isinstance(o, CellUpdate)], [])
-
-            table.apply(plan)
-            await pilot.pause()
-
-            self.assertEqual(table.row_count, 4)
-            ordered_keys = [
-                row.key.value if hasattr(row.key, "value") else str(row.key)
-                for row in table.ordered_rows
-            ]
-            expected = [_row_key(a), _row_key(x), _row_key(b), _row_key(y)]
-            self.assertEqual(ordered_keys, expected)
-
-    async def test_remove_missing_key_does_not_crash(self) -> None:
-        """``_apply_remove`` swallows the underlying remove_row error
-        when the row-key is not present (covered by the defensive
-        try/except). Widget must survive and row count is unchanged.
-        """
-        from textual.app import App, ComposeResult
-
-        from uxon.tui.dashboard.reconcile import ApplyPlan, RowRemove, diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
-
-        cols = _active_columns()
-        a = _make_row(host="a", user="u", name="s-a")
-        b = _make_row(host="a", user="u", name="s-b")
-
-        class Host(App):
-            def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
-
-        app = Host()
-        async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            table.apply(diff((), (a, b), cols))
-            await pilot.pause()
-            self.assertEqual(table.row_count, 2)
-
-            # Synthetic op: a key that was never added.
-            table.apply(ApplyPlan(ops=(RowRemove("nonexistent/u/x"),), new_keys=()))
-            await pilot.pause()
-            self.assertEqual(table.row_count, 2)
-            # Widget remains queryable — no exception bubbled.
-            self.assertEqual(app.query_one("#dash", SessionDashboardTable).row_count, 2)
-
-    async def test_update_missing_key_does_not_crash(self) -> None:
-        """``_apply_update`` swallows the underlying update_cell error
-        when the row-key is not present. Row count unchanged, widget
-        survives.
-        """
-        from rich.text import Text
-        from textual.app import App, ComposeResult
-
-        from uxon.tui.dashboard.reconcile import ApplyPlan, CellUpdate, diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
-
-        cols = _active_columns()
-        a = _make_row(host="a", user="u", name="s-a")
-        b = _make_row(host="a", user="u", name="s-b")
-
-        class Host(App):
-            def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
-
-        app = Host()
-        async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            table.apply(diff((), (a, b), cols))
-            await pilot.pause()
-            self.assertEqual(table.row_count, 2)
-
-            table.apply(
-                ApplyPlan(
-                    ops=(CellUpdate("nonexistent/u/x", "cpu", Text("99")),),
-                    new_keys=(),
-                )
-            )
-            await pilot.pause()
-            self.assertEqual(table.row_count, 2)
-
-    async def test_remove_row_under_cursor_lands_on_replacement(self) -> None:
-        """When the row under the cursor is removed and a new row takes
-        its visual slot, ``apply`` followed by ``pin_cursor_to(prev_key)``
-        clamps to the same visual index.
-        """
-        from textual.app import App, ComposeResult
-
-        from uxon.tui.dashboard.reconcile import _row_key, diff
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
-
-        cols = _active_columns()
-        a = _make_row(host="a", user="u", name="s1")
-        b = _make_row(host="a", user="u", name="s2")
-        c = _make_row(host="b", user="u", name="s3")
-        old_rows = (a, b, c)
-        new_rows = (a, c)  # drop b; c slides up to row 1
-
-        class Host(App):
-            def compose(self) -> ComposeResult:
-                yield SessionDashboardTable(cols, id="dash")
-
-        app = Host()
-        async with app.run_test() as pilot:
-            table: SessionDashboardTable = app.query_one("#dash", SessionDashboardTable)
-            table.apply(diff((), old_rows, cols))
-            await pilot.pause()
-            table.focus()
-            await pilot.pause()
-            table.move_cursor(row=1)  # on b
-            await pilot.pause()
-
-            table.apply(diff(old_rows, new_rows, cols))
-            table.pin_cursor_to(_row_key(b))
-            await pilot.pause()
-
-            # b is gone; c took row 1 (the row that "took its place").
-            self.assertEqual(table.cursor_row, 1)
-            # Verify it's c by reading the row key at the cursor.
-            ordered_keys = [
-                row.key.value if hasattr(row.key, "value") else str(row.key)
-                for row in table.ordered_rows
-            ]
-            self.assertEqual(ordered_keys[1], _row_key(c))
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class ImportGuardTests(unittest.TestCase):
-    """If Textual ever drops the private ``_row_locations`` attribute we
-    rely on, the widget module must fail to import — the assertion is
-    the early-warning system.
-    """
-
-    def test_assertion_fires_when_row_locations_disappears(self) -> None:
-        import importlib
-        import inspect
-        import sys
-
-        from textual.widgets._data_table import DataTable
-
-        import uxon.tui.widgets.session_dashboard_table as mod
-
-        # Confirm the live source contains the marker we depend on; if
-        # this ever fails the production assertion was already silently
-        # broken.
-        self.assertIn("_row_locations", inspect.getsource(DataTable.__init__))
-
-        # Patch ``inspect.getsource`` so that, for ``DataTable.__init__``
-        # specifically, the returned source omits ``_row_locations``.
-        # That mirrors a Textual refactor that drops the attribute.
-        orig_getsource = inspect.getsource
-
-        def fake_getsource(obj):
-            text = orig_getsource(obj)
-            if obj is DataTable.__init__:
-                return text.replace("_row_locations", "_REMOVED")
-            return text
-
-        inspect.getsource = fake_getsource  # type: ignore[assignment]
-        try:
-            sys.modules.pop("uxon.tui.widgets.session_dashboard_table", None)
-            with self.assertRaises(AssertionError):
-                importlib.import_module("uxon.tui.widgets.session_dashboard_table")
-        finally:
-            inspect.getsource = orig_getsource  # type: ignore[assignment]
-            # Restore the production module so other tests can import it.
-            sys.modules["uxon.tui.widgets.session_dashboard_table"] = mod
+            self.assertEqual(view.virtual_size.height, height_before)
 
 
 if __name__ == "__main__":  # pragma: no cover
