@@ -73,7 +73,7 @@ class KillFlow:
 
                 # SSH round-trip — off the event loop (§ blocking invariant).
                 fn = host.cfg.on_remote_kill
-                host.app.run_off_loop(
+                host.app.run_off_loop(  # type: ignore[attr-defined]  # type: ignore[attr-defined]
                     lambda: fn(host_name, session_user, session_name),
                     on_success=on_ok,
                     on_error=lambda exc: host.app.notify(
@@ -98,7 +98,7 @@ class KillFlow:
 
             # ``on_kill`` shells out to tmux — off the event loop (§ invariant).
             fn = host.cfg.on_kill
-            host.app.run_off_loop(
+            host.app.run_off_loop(  # type: ignore[attr-defined]
                 lambda: fn(session_user, session_name),
                 on_success=on_ok,
                 on_error=lambda exc: host.app.notify(
@@ -129,7 +129,7 @@ class KillFlow:
                 host.action_refresh()
 
             # Loops tmux kill-session over every own session — off-loop.
-            host.app.run_off_loop(
+            host.app.run_off_loop(  # type: ignore[attr-defined]
                 host.cfg.on_kill_all,
                 on_success=on_ok,
                 on_error=lambda exc: host.app.notify(
@@ -165,7 +165,7 @@ class KillFlow:
                 host.action_refresh()
 
             # Fans out tmux/ssh kills across reachable users — off-loop.
-            host.app.run_off_loop(
+            host.app.run_off_loop(  # type: ignore[attr-defined]
                 host.cfg.on_kill_all_global,
                 on_success=on_ok,
                 on_error=lambda exc: host.app.notify(

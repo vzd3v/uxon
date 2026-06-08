@@ -37,7 +37,9 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="devagent",
-        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
+            cmd=("/bin/true",), label="cwd"
+        ),
         on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
             cmd=("/bin/true",), label="new"
         ),
@@ -751,8 +753,7 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
             # Column is rendered (panel present) ...
             self.assertEqual(len(screen.query("#workspace-panel")), 1)
             labels = [
-                str(i.query_one("Static").content)
-                for i in screen.query("#workspace-list ListItem")
+                str(i.query_one("Static").content) for i in screen.query("#workspace-list ListItem")
             ]
             self.assertEqual(labels, ["git not initialized"])
             self.assertFalse(any("New worktree" in s for s in labels), labels)
@@ -833,8 +834,7 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             screen = app.screen
             labels = [
-                str(i.query_one("Static").content)
-                for i in screen.query("#workspace-list ListItem")
+                str(i.query_one("Static").content) for i in screen.query("#workspace-list ListItem")
             ]
             self.assertEqual(len(labels), 1)
             self.assertTrue(labels[0].startswith("git error:"), labels)
@@ -927,8 +927,7 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(top._workspaces, [])
             self.assertIn("corrupt HEAD", top._probe_error or "")
             labels = [
-                str(i.query_one("Static").content)
-                for i in top.query("#workspace-list ListItem")
+                str(i.query_one("Static").content) for i in top.query("#workspace-list ListItem")
             ]
             self.assertEqual(len(labels), 1)
             self.assertTrue(labels[0].startswith("git error:"), labels)

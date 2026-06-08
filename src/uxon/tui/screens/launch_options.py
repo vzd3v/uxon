@@ -319,7 +319,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         """
         workspace_list = self.query_one("#workspace-list", ListView)
         idx = workspace_list.index or 0
-        if idx >= len(self._workspaces):
+        if not self._workspaces or idx >= len(self._workspaces):
             return ("new", None)
         w = self._workspaces[idx]
         if w.is_primary:

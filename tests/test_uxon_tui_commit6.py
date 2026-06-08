@@ -46,7 +46,9 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="devagent",
-        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
+            cmd=("/bin/true",), label="cwd"
+        ),
         on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
             cmd=("/bin/true",), label="new"
         ),
