@@ -4,7 +4,16 @@
 async-side :class:`uxon.tui.tui_state.TuiState`, the immutable
 :class:`uxon.tui.config.TuiConfig`, and the transient
 :class:`uxon.tui.dashboard.ui_state.DashboardUiState` to a flat
-``tuple[SessionRow, ...]`` ready for the reconciler / widget.
+``tuple[SessionRow, ...]``.
+
+This selector emits the **current** row set in canonical model order
+(locals → cfg-order remote blocks, recency within each block). The
+dashboard does **not** render that order directly: it is the recency
+reference for new arrivals only. Final on-screen order is owned by the
+frozen-order placement function (:func:`uxon.tui.dashboard.order.place`),
+so existing rows never swap on a telemetry tick (spec D2 / AC3). This
+selector therefore re-sorts every tick cheaply; placement decides what
+actually moves.
 
 The selector is deliberately pure (no Textual imports, no subprocess,
 no filesystem) so it can be unit-tested without an event loop and

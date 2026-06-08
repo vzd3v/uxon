@@ -6,9 +6,9 @@ Layout:
     │ │ action-cwd │ action-new │ action-open       │  │
     │ └─────────────────────────────────────────────┘  │
     │ ── sessions ──                                   │
-    │ SessionDashboardTable (own + other-user + remote │
-    │   rows; USER column iff cross_user, HOST column  │
-    │   iff multi_host)                                │
+    │ SessionListView (own + other-user + remote rows; │
+    │   USER column iff cross_user, HOST column iff    │
+    │   multi_host)                                    │
     │ ── superuser ── (when reachable_users is set)    │
     │ ActionRow settings                               │
     │ ActionRow kill-all-global                        │
@@ -29,7 +29,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Header, Static
 
 from uxon.infra.events import debug as _debug
 
@@ -61,10 +61,11 @@ from ..state import (
 from ..widgets import ActionRow
 from ..widgets.action_row import ACTION_GROUP_CONTAINER_ID
 from ..widgets.fleet_status_bar import FleetStatusBar
+from ..widgets.gated_footer import GatedFooter
 from ..widgets.host_status_bar import HostStatusBar
 from ..widgets.host_tab_strip import HostTabActivated, HostTabStrip
 from ..widgets.search_bar import FilterChanged, SearchBar
-from ..widgets.session_dashboard_table import SessionDashboardTable
+from ..widgets.session_list_view import SessionListView
 from . import main_render
 from .dashboard_render import DashboardRender
 from .kill_flow import KillFlow
@@ -373,7 +374,7 @@ class MainScreen(Screen):
             # collapsed/expanded fleet summary in both views.
             yield HostTabStrip([], id="host-tabs")
             yield HostStatusBar(mode="compact", id="host-status-compact")
-            yield SessionDashboardTable(columns=self._active_columns, id="sessions-dashboard")
+            yield SessionListView(columns=self._active_columns, id="sessions-dashboard")
             # Fleet status: below the table, before the superuser block, so
             # arrowing down off the table lands on it first. Collapsed by
             # default; ``h`` (or a click on the bar) expands it.
@@ -422,7 +423,7 @@ class MainScreen(Screen):
             # ``cfg.remote_hosts`` in ``__init__``). No separate widget
             # / section header is needed — per-host attribution lives on
             # each row's HOST cell + the dashboard's host colour glyph.
-        yield Footer()
+        yield GatedFooter()
 
     # Thin Textual-side shells over the pure builders in
     # :mod:`uxon.tui.screens.main_render` — the "what text to show" logic
@@ -459,7 +460,7 @@ class MainScreen(Screen):
         # at this point (cold-start skeleton ctx) — ``_refresh_dashboard``
         # treats that as a zero-row tick and toggles the empty-note in
         # response. ``#sessions-dashboard`` (the unified
-        # :class:`SessionDashboardTable`) owns row display end-to-end.
+        # :class:`SessionListView`) owns row display end-to-end.
         self._refresh_dashboard()
         self.call_after_refresh(self._update_status_line)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
@@ -495,20 +496,19 @@ class MainScreen(Screen):
 
     # ── DataTable row activation (Enter on a session row) ───────────
 
-    def on_data_table_row_selected(self, event) -> None:  # type: ignore[no-untyped-def]
+    def on_session_list_view_row_selected(self, event: SessionListView.RowSelected) -> None:
         """Enter/click on a session row attaches to that session.
 
-        SessionDashboardTable rows dispatch the right callback based
-        on ``row.host``: local rows (``host is None``) go through
-        ``ctx.on_attach``; remote rows go through
-        ``ctx.on_remote_attach`` (SSH).
+        SessionListView rows dispatch the right callback based on
+        ``row.host``: local rows (``host is None``) go through
+        ``ctx.on_attach``; remote rows go through ``ctx.on_remote_attach``
+        (SSH). The message carries ``cursor_row``; the row list is owned
+        by ``self._dashboard_rows`` (kept in lockstep by the refresh).
         """
-        table = event.data_table
-        if isinstance(table, SessionDashboardTable):
-            idx = event.cursor_row
-            if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
-                return
-            self._launch_flow.attach_row(self._dashboard_rows[idx])
+        idx = event.cursor_row
+        if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
+            return
+        self._launch_flow.attach_row(self._dashboard_rows[idx])
 
     def _run_intent(self, intent: MainIntent | None) -> None:
         self._launch_flow.run_intent(intent)
@@ -597,7 +597,7 @@ class MainScreen(Screen):
         was_on_strip = self._focus_in_tab_strip()
         if new_mode == "flat" and was_on_strip:
             try:
-                self.query_one("#sessions-dashboard", SessionDashboardTable).focus()
+                self.query_one("#sessions-dashboard", SessionListView).focus()
             except Exception:
                 pass
         self._dashboard_ui = set_view_mode(self._dashboard_ui, new_mode)
@@ -680,9 +680,9 @@ class MainScreen(Screen):
         if new_idx is not None:
             strip.active_index = new_idx
 
-    def on_session_dashboard_table_host_navigate(
+    def on_session_list_view_host_navigate(
         self,
-        event: SessionDashboardTable.HostNavigate,
+        event: SessionListView.HostNavigate,
     ) -> None:
         """Route ←/→ on the dashboard.
 
@@ -703,7 +703,7 @@ class MainScreen(Screen):
                 self.action_next_tab()
             return
         try:
-            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = self.query_one("#sessions-dashboard", SessionListView)
         except Exception:
             return
         target = next_block_start(table.block_starts, table.cursor_row, event.direction)
@@ -814,7 +814,7 @@ class MainScreen(Screen):
         #   * superuser block (header / Settings / Kill-ALL-global) →
         #     ``display`` toggle on the always-mounted widgets;
         #   * USER / HOST columns (cross_user latch / multi_host) →
-        #     live ``SessionDashboardTable.set_columns`` rebuild.
+        #     live ``SessionListView.set_columns`` rebuild.
         # So a background refresh never destroys the focused widget, and
         # keys in Textual's input queue always have a live target. This
         # is the fix for keys vanishing mid-refresh: the old
@@ -846,7 +846,7 @@ class MainScreen(Screen):
     def action_kill(self) -> None:
         """Confirm then kill the session under focus.
 
-        Only fires on :class:`SessionDashboardTable`
+        Only fires on :class:`SessionListView`
         (``#sessions-dashboard``). Resolves via the cursor index into
         ``self._dashboard_rows``:
 
@@ -890,7 +890,7 @@ class MainScreen(Screen):
                 # visual order may not match
                 # ``ctx.sessions + ctx.other_sessions``). Out-of-range
                 # cursor moves are silently no-op.
-                t = self.query_one("#sessions-dashboard", SessionDashboardTable)
+                t = self.query_one("#sessions-dashboard", SessionListView)
                 t.move_cursor(row=idx - own_start)
                 t.focus()
                 return
@@ -909,7 +909,7 @@ class MainScreen(Screen):
         focused = self.focused
         if isinstance(focused, ActionRow):
             return f"action:{focused.id or ''}"
-        if isinstance(focused, SessionDashboardTable):
+        if isinstance(focused, SessionListView):
             idx = focused.cursor_row
             if idx is None or idx < 0 or idx >= len(self._dashboard_rows):
                 return ""
@@ -962,7 +962,7 @@ class MainScreen(Screen):
         if not (host and name):
             return False
         try:
-            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = self.query_one("#sessions-dashboard", SessionListView)
         except Exception:
             return False
         for idx, row in enumerate(self._dashboard_rows):
@@ -985,7 +985,7 @@ class MainScreen(Screen):
         is empty.
         """
         try:
-            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = self.query_one("#sessions-dashboard", SessionListView)
         except Exception:
             return False
         current_user = self.cfg.current_user
@@ -1009,7 +1009,7 @@ class MainScreen(Screen):
         if not (user and session_name):
             return False
         try:
-            table = self.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = self.query_one("#sessions-dashboard", SessionListView)
         except Exception:
             return False
         for idx, row in enumerate(self._dashboard_rows):

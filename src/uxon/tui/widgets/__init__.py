@@ -5,24 +5,19 @@ custom surface is small and focused:
 
 - :class:`ActionRow` — clickable, hoverable, focusable action row
   used on MainScreen.
-- :class:`SessionDashboardTable` — the unified session table (local
-  own + other-user + every remote peer) used on MainScreen. Being
-  replaced by :class:`SessionListView` (render-on-demand, Line API);
-  both are exported during the migration (Phase 1 additive).
-- :class:`SessionListView` — the render-on-demand session list on
-  Textual's Line API; the Phase-2 swap target for the dashboard.
+- :class:`SessionListView` — the render-on-demand session list (local
+  own + other-user + every remote peer) on Textual's Line API; the
+  dashboard widget on MainScreen. Owns viewport-only render, the row
+  cursor with edge-release navigation, block hue, zebra, and
+  selection-by-key.
 - :class:`GatedFooter` — stock ``Footer`` with the recompose gate
-  (spec D3); mounted in place of stock ``Footer`` in Phase 2.
-
-Boundary-aware navigation and visual defaults come from
-:class:`FocusReleasingDataTable` (internal — not re-exported).
+  (spec D3); mounted in place of stock ``Footer`` on MainScreen.
 """
 
 from .action_row import ActionRow
 from .fleet_status_bar import FleetStatusBar
 from .gated_footer import GatedFooter
 from .search_bar import FilterChanged, SearchBar
-from .session_dashboard_table import SessionDashboardTable
 from .session_list_view import SessionListView
 
 __all__ = [
@@ -31,6 +26,5 @@ __all__ = [
     "FilterChanged",
     "GatedFooter",
     "SearchBar",
-    "SessionDashboardTable",
     "SessionListView",
 ]

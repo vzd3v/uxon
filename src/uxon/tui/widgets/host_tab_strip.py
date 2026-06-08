@@ -28,6 +28,7 @@ from __future__ import annotations
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.reactive import reactive
@@ -64,11 +65,25 @@ class _TabButton(Static):
     """Single tab. Per-instance ``can_focus`` — only the active tab
     is in the focus chain so Tab / ↑ / ↓ enter and leave the strip
     in one step instead of stopping on every tab.
+
+    Navigation goes through ``BINDINGS`` (no ``on_key`` — AGENTS.md hard
+    rule, enforced by ``tests/test_uxon_tui_bindings.py``).
     """
 
     # Class default: not focusable. The owning strip flips this to
     # ``True`` on the active tab in :meth:`HostTabStrip._sync_focus`.
     can_focus = False
+
+    BINDINGS = [
+        # ← / → cycle within the strip. ↑ / ↓ leave it via the focus
+        # chain (only the active tab is a stop, so one press lands on the
+        # action row above / dashboard below). Tab / Shift+Tab fall
+        # through to the default handler.
+        Binding("left", "cycle(-1)", "", show=False),
+        Binding("right", "cycle(1)", "", show=False),
+        Binding("up", "leave_up", "", show=False),
+        Binding("down", "leave_down", "", show=False),
+    ]
 
     def __init__(self, *, index: int, id: str) -> None:
         super().__init__("", id=id)
@@ -89,39 +104,29 @@ class _TabButton(Static):
         # ``watch_active_index`` flipped ``can_focus`` for us; safe to focus.
         self.focus()
 
-    def on_key(self, event: events.Key) -> None:
-        # ← / → cycle within the strip. ↑ / ↓ leave the strip via the
-        # focus chain (where only the active tab is a stop, so they
-        # land on the action row above / dashboard table below in one
-        # step). Tab / Shift+Tab fall through to the default handler.
-        if event.key == "left":
-            event.stop()
-            self._cycle(-1)
-        elif event.key == "right":
-            event.stop()
-            self._cycle(1)
-        elif event.key == "down":
-            event.stop()
-            self.screen.focus_next()
-        elif event.key == "up":
-            event.stop()
-            # Same rationale as SessionDashboardTable.action_cursor_up:
-            # walking the focus chain backwards lands on the last
-            # ActionRow (action-open / rightmost), not the leftmost
-            # button operators expect. Resolve #top-actions's first
-            # child explicitly when reachable.
-            from .action_row import ACTION_GROUP_CONTAINER_ID, ActionRow
+    def action_leave_down(self) -> None:
+        self.screen.focus_next()
 
-            try:
-                group = self.screen.query_one(f"#{ACTION_GROUP_CONTAINER_ID}")
-            except Exception:
-                group = None
-            if group is not None:
-                for child in group.children:
-                    if isinstance(child, ActionRow):
-                        child.focus()
-                        return
-            self.screen.focus_previous()
+    def action_leave_up(self) -> None:
+        # Same rationale as SessionListView.action_cursor_up: walking the
+        # focus chain backwards lands on the last ActionRow (action-open /
+        # rightmost), not the leftmost button operators expect. Resolve
+        # #top-actions's first child explicitly when reachable.
+        from .action_row import ACTION_GROUP_CONTAINER_ID, ActionRow
+
+        try:
+            group = self.screen.query_one(f"#{ACTION_GROUP_CONTAINER_ID}")
+        except Exception:
+            group = None
+        if group is not None:
+            for child in group.children:
+                if isinstance(child, ActionRow):
+                    child.focus()
+                    return
+        self.screen.focus_previous()
+
+    def action_cycle(self, delta: int) -> None:
+        self._cycle(delta)
 
     def _cycle(self, delta: int) -> None:
         strip = self._strip()
@@ -182,7 +187,9 @@ class HostTabStrip(Widget):
     def _build_tab(self, i: int, bucket: HostBucket) -> _TabButton:
         btn = _TabButton(index=i, id=f"tab-{i}")
         color = self._colors.get(bucket.host_name, "white")
-        btn.update(_render_label(bucket.label, color))
+        # ``layout=False``: tab content is a fixed-size cell; a label/colour
+        # swap never resizes it, so skip the screen-global relayout (AC8).
+        btn.update(_render_label(bucket.label, color), layout=False)
         active = i == self.active_index
         if active:
             btn.add_class("-active")
@@ -201,7 +208,7 @@ class HostTabStrip(Widget):
             w.set_class(active, "-active")
             w.can_focus = active
             color = self._colors.get(bucket.host_name, "white")
-            w.update(_render_label(bucket.label, color))
+            w.update(_render_label(bucket.label, color), layout=False)
         self.post_message(HostTabActivated(new))
 
     def set_buckets(
@@ -239,7 +246,7 @@ class HostTabStrip(Widget):
             if i < len(existing):
                 w = existing[i]
                 if isinstance(w, _TabButton):
-                    w.update(label_text)
+                    w.update(label_text, layout=False)
                     w.set_class(active, "-active")
                     w.can_focus = active
             else:

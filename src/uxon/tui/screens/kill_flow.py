@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..widgets.session_dashboard_table import SessionDashboardTable
+from ..widgets.session_list_view import SessionListView
 from .confirm import ConfirmPhrase, ConfirmYesNo
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ class KillFlow:
         """
         host = self.host
         focused = host.focused
-        if not isinstance(focused, SessionDashboardTable):
+        if not isinstance(focused, SessionListView):
             host.app.notify("Select a session first.", severity="warning")
             return
         idx = focused.cursor_row
@@ -73,7 +73,7 @@ class KillFlow:
 
                 # SSH round-trip — off the event loop (§ blocking invariant).
                 fn = host.cfg.on_remote_kill
-                host.app.run_off_loop(  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+                host.app.run_off_loop(  # type: ignore[attr-defined]
                     lambda: fn(host_name, session_user, session_name),
                     on_success=on_ok,
                     on_error=lambda exc: host.app.notify(

@@ -3,10 +3,13 @@
 Two assertions (per plan T18):
   (a) Every destructive binding (action_kill*) carries ``show=True``
       and a non-empty description.
-  (b) No Screen subclass in ``src/uxon/tui/screens/`` overrides ``on_key``.
-      All keystroke handling must go through ``BINDINGS``. Catches the
-      ``g`` footgun from PR 10 where a dev added ``if event.key == "g":
-      ...`` in ``on_key``, bypassing the declarative registry.
+  (b) No Screen subclass in ``src/uxon/tui/screens/`` — and no custom
+      widget in ``src/uxon/tui/widgets/`` — overrides ``on_key``. All
+      keystroke handling must go through ``BINDINGS`` (AGENTS.md hard
+      rule). Catches the ``g`` footgun from PR 10 where a dev added
+      ``if event.key == "g": ...`` in ``on_key``, bypassing the
+      declarative registry, and holds the render-on-demand widget
+      (``SessionListView``) + the ``GatedFooter`` to the same rule.
 """
 
 from __future__ import annotations
@@ -81,21 +84,19 @@ class DestructiveBindingVisibilityTests(unittest.TestCase):
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class NoOnKeyOverrideTests(unittest.TestCase):
-    """No Screen subclass may override ``on_key``.
+    """No Screen subclass — and no custom widget — may override ``on_key``.
 
     All keystroke handling must go through ``BINDINGS``. AST-walks every
-    screen file to spot ``def on_key`` at class scope.
+    screen and widget file to spot ``def on_key`` at class scope.
     """
 
-    def test_no_on_key_override_in_screens(self) -> None:
-        import uxon.tui.screens as screens_pkg
-
-        screens_dir = os.path.dirname(screens_pkg.__file__)
+    @staticmethod
+    def _on_key_offenders(directory: str) -> list[str]:
         offenders: list[str] = []
-        for fname in os.listdir(screens_dir):
+        for fname in os.listdir(directory):
             if not fname.endswith(".py") or fname == "__init__.py":
                 continue
-            path = os.path.join(screens_dir, fname)
+            path = os.path.join(directory, fname)
             with open(path, encoding="utf-8") as fh:
                 src = fh.read()
             tree = ast.parse(src)
@@ -109,9 +110,24 @@ class NoOnKeyOverrideTests(unittest.TestCase):
                             offenders.append(
                                 f"{fname}::{node.name}.{item.name} at line {item.lineno}"
                             )
+        return offenders
+
+    def test_no_on_key_override_in_screens(self) -> None:
+        import uxon.tui.screens as screens_pkg
+
+        offenders = self._on_key_offenders(os.path.dirname(screens_pkg.__file__))
         self.assertFalse(
             offenders,
             f"Screen classes must not override on_key — use BINDINGS instead; found: {offenders}",
+        )
+
+    def test_no_on_key_override_in_widgets(self) -> None:
+        import uxon.tui.widgets as widgets_pkg
+
+        offenders = self._on_key_offenders(os.path.dirname(widgets_pkg.__file__))
+        self.assertFalse(
+            offenders,
+            f"Custom widgets must not override on_key — use BINDINGS instead; found: {offenders}",
         )
 
 

@@ -18,9 +18,10 @@ Public API re-exports only. Implementation lives in sibling modules:
   - ``source_dispatch`` — landed-result → :class:`TuiState` reducers.
   - ``screens/`` — one module per screen (MainScreen, modals, …).
   - ``widgets/`` — custom widgets (``ActionRow``,
-                   ``DetectedAgentsBanner``, ``SessionDashboardTable``).
-  - ``dashboard/``— pure layers behind ``SessionDashboardTable``
-                   (row, columns, layout, ui_state, model, reconcile).
+                   ``DetectedAgentsBanner``, ``SessionListView``,
+                   ``GatedFooter``).
+  - ``dashboard/``— pure layers behind ``SessionListView``
+                   (row, columns, layout, ui_state, model, order).
 
 Pure-data re-exports load eagerly. Textual-dependent names (``UxonApp``,
 ``run``) are deferred via ``__getattr__`` so that

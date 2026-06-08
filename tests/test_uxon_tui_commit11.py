@@ -1,5 +1,5 @@
 """Reactive read-only trap on ``MainScreen.loading`` and per-host
-diff-op isolation in ``select_dashboard_model`` + ``diff``.
+repaint isolation in ``select_dashboard_model`` + ``place``.
 
 (Render-coalescer contract is pinned by
 ``tests/test_render_scheduler.py``.)
@@ -36,10 +36,15 @@ class ReactiveReadOnlyTrapTests(unittest.TestCase):
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class DashboardPerHostRepaintTests(unittest.TestCase):
-    """``select_dashboard_model`` + ``diff`` preserve the per-host
-    repaint invariant: a snapshot replacement on one host produces
-    diff ops only for that host's rows; rows belonging to unchanged
-    hosts produce zero ops.
+    """``select_dashboard_model`` + ``place`` preserve the per-host
+    repaint invariant: a snapshot replacement on one host changes only
+    that host's rows; rows belonging to unchanged hosts keep both their
+    value (equal rows) and their slot in the placed order.
+
+    This is the render-on-demand replacement for the old reconciler
+    op-isolation assertion: the widget repaints visible lines from the
+    placed model, and ``place`` keeps unchanged rows in their slot, so an
+    unchanged host's rows never move.
     """
 
     def _state_with(self, snaps_by_host):
@@ -68,9 +73,8 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
 
         from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.dashboard import model as dashboard_model
-        from uxon.tui.dashboard.layout import LayoutFlags, build_active_columns
         from uxon.tui.dashboard.model import select_dashboard_model
-        from uxon.tui.dashboard.reconcile import diff
+        from uxon.tui.dashboard.order import place
         from uxon.tui.dashboard.ui_state import DashboardUiState
         from uxon.tui.slot_state import SlotState
 
@@ -81,10 +85,6 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
         host_b = RemoteHost(name="b", ssh_alias="b", description="", remote_uxon="uxon")
         cfg = SimpleNamespace(remote_hosts=[host_a, host_b], current_user="u1")
         ui = DashboardUiState()
-        cols = build_active_columns(
-            cfg_columns=None,
-            flags=LayoutFlags(multi_host=True, cross_user=False),
-        )
 
         state = self._state_with(
             {
@@ -93,6 +93,7 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
             }
         )
         first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
+        order = tuple(r.key for r in place((), first))
 
         # Replace only host A's slot with a different snapshot.
         state.remote["a"] = SlotState(
@@ -102,16 +103,27 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
         second = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
         self.assertIsNot(first, second)
 
-        ops = diff(first, second, cols).ops
-        # Inspect ops: row_keys touched must all begin with "a/" —
-        # rows belonging to host B (prefix "b/") are not touched.
-        # ``_row_key`` formats as "<host>/<user>/<name>".
-        self.assertGreater(len(ops), 0, "expected ops for the changed host")
-        for op in ops:
-            self.assertTrue(
-                op.row_key.startswith("a/"),
-                f"op {op!r} touched a non-host-a row",
-            )
+        # Host B's row is unchanged: same value object survives the rebuild
+        # (model identity stability), so the widget repaints it from
+        # identical data — no movement, no value change.
+        b_first = next(r for r in first if r.host == "b")
+        b_second = next(r for r in second if r.host == "b")
+        self.assertEqual(b_first, b_second)
+
+        # Place ``second`` against the order frozen from ``first``: host B's
+        # row keeps its slot; only host A's row content changed. (Host A's
+        # key changed because the session name changed — a new arrival the
+        # model places in host A's block, never in host B's.)
+        placed = place(order, second)
+        placed_keys = [r.key for r in placed]
+        self.assertIn(b_second.key, placed_keys, "host B row must survive the rebuild")
+        b_idx = placed_keys.index(b_second.key)
+        # No host-A row crossed into host B's slot — every key before B is
+        # an "a/" key, every B-block key is "b/".
+        self.assertTrue(
+            all(placed_keys[i].startswith("a/") for i in range(b_idx)),
+            f"a non-host-a row moved ahead of host B: {placed_keys}",
+        )
 
 
 if __name__ == "__main__":

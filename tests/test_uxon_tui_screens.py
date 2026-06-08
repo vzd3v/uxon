@@ -309,20 +309,17 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            # Focus the dashboard table and press 'd'. Commit 10
-            # replaced ``#sessions-own`` (the legacy local table) with
-            # ``#sessions-dashboard`` (SessionDashboardTable). The
-            # dashboard is data-driven from ``state.main`` — inject a
-            # ``MainData`` snapshot so the model selector emits the row
-            # without waiting for the periodic rebuild source to run.
+            # Focus the dashboard and press 'd'. The dashboard widget is
+            # ``#sessions-dashboard`` (SessionListView), data-driven from
+            # ``state.main`` — inject a ``MainData`` snapshot so the model
+            # selector emits the row without waiting for the periodic
+            # rebuild source to run.
             from uxon.tui.main_data import MainData
-            from uxon.tui.widgets.session_dashboard_table import (
-                SessionDashboardTable,
-            )
+            from uxon.tui.widgets.session_list_view import SessionListView
 
             app.state.main = MainData.from_context(ctx)
             app.screen._refresh_dashboard()
-            t = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            t = app.screen.query_one("#sessions-dashboard", SessionListView)
             app.screen.action_refresh = lambda: None
             t.focus()
             t.move_cursor(row=0)

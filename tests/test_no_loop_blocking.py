@@ -153,7 +153,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_local_kill_runs_off_loop(self) -> None:
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         rec: list[bool] = []
         ctx = _mk_ctx(
@@ -165,7 +165,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app.kick_refresh()
             await self._settle(pilot)
-            table = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = app.screen.query_one("#sessions-dashboard", SessionListView)
             table.focus()
             table.move_cursor(row=0)
             await pilot.pause()
@@ -344,7 +344,7 @@ class LoopStaysResponsiveTests(unittest.IsolatedAsyncioTestCase):
         from helpers import LoopBlockMonitor
 
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         # Loose backstop, not a tight bound: the thread-identity tests above
         # are the real contract. A generous block/threshold ratio keeps this
@@ -363,7 +363,7 @@ class LoopStaysResponsiveTests(unittest.IsolatedAsyncioTestCase):
             app.kick_refresh()
             for _ in range(4):
                 await pilot.pause()
-            table = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = app.screen.query_one("#sessions-dashboard", SessionListView)
             table.focus()
             table.move_cursor(row=0)
             await pilot.pause()

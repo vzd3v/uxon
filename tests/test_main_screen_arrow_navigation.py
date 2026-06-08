@@ -153,7 +153,7 @@ class UpFromButtonsLandsOnLastRowTests(unittest.IsolatedAsyncioTestCase):
     async def test_up_from_first_button_focuses_last_row(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets import ActionRow
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(sessions=[_session("a"), _session("b"), _session("c")])
         app = UxonApp(ctx, probe_agents=False)
@@ -163,13 +163,13 @@ class UpFromButtonsLandsOnLastRowTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             screen = app.screen
-            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = screen.query_one("#sessions-dashboard", SessionListView)
             self.assertGreaterEqual(table.row_count, 2, msg="need ≥2 rows so first/last differ")
             screen.query_one("#action-cwd", ActionRow).focus()
             await pilot.pause()
             await pilot.press("up")
             await pilot.pause()
-            self.assertIsInstance(app.focused, SessionDashboardTable)
+            self.assertIsInstance(app.focused, SessionListView)
             self.assertEqual(
                 table.cursor_row,
                 table.row_count - 1,
@@ -192,7 +192,7 @@ class DownFromButtonsLandsOnFirstRowTests(unittest.IsolatedAsyncioTestCase):
     async def test_down_from_first_button_focuses_first_row(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets import ActionRow
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(sessions=[_session("a"), _session("b"), _session("c")])
         app = UxonApp(ctx, probe_agents=False)
@@ -202,7 +202,7 @@ class DownFromButtonsLandsOnFirstRowTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             screen = app.screen
-            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = screen.query_one("#sessions-dashboard", SessionListView)
             self.assertGreaterEqual(table.row_count, 2)
             # Pre-position the cursor on the LAST row so that landing
             # on row 0 is observably different from "no-op preserve".
@@ -211,7 +211,7 @@ class DownFromButtonsLandsOnFirstRowTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("down")
             await pilot.pause()
-            self.assertIsInstance(app.focused, SessionDashboardTable)
+            self.assertIsInstance(app.focused, SessionListView)
             self.assertEqual(
                 table.cursor_row,
                 0,
@@ -226,13 +226,13 @@ class DashboardUpFocusFirstButtonTests(unittest.IsolatedAsyncioTestCase):
     Regression for the bug where ``app.action_focus_previous()`` walks
     the focus chain backwards and lands on ``action-open`` (3rd / right-
     most button), which doesn't match how operators read the row left
-    to right. The override on :class:`SessionDashboardTable` jumps to
+    to right. :meth:`SessionListView.action_cursor_up` jumps to
     ``#top-actions``'s first child instead.
     """
 
     async def test_up_from_top_row_focuses_first_button(self) -> None:
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(sessions=[_session("a-own1")])
         app = UxonApp(ctx, probe_agents=False)
@@ -242,7 +242,7 @@ class DashboardUpFocusFirstButtonTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             screen = app.screen
-            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = screen.query_one("#sessions-dashboard", SessionListView)
             table.focus()
             table.move_cursor(row=0)
             await pilot.pause()
@@ -262,7 +262,7 @@ class FlatBlockJumpTests(unittest.IsolatedAsyncioTestCase):
     async def test_right_jumps_to_next_block(self) -> None:
         from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         # Names chosen so the recency-then-name sort lands the own
         # rows before the other-user row (otherwise alphabet alone
@@ -284,7 +284,7 @@ class FlatBlockJumpTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             screen = app.screen
-            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = screen.query_one("#sessions-dashboard", SessionListView)
             # Default view is flat — sanity check the strip is hidden.
             strip = screen.query_one("#host-tabs")
             self.assertFalse(strip.display, "default view should be flat")
@@ -313,7 +313,7 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
     async def test_right_cycles_active_tab_forward(self) -> None:
         from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(
             remote_hosts=[
@@ -331,7 +331,7 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.main_ui.ui.view_mode, "by_host")
             self.assertEqual(app.main_ui.active_tab_index, 0)
             # ←/→ on the dashboard table cycles the active tab.
-            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = screen.query_one("#sessions-dashboard", SessionListView)
             table.focus()
             await pilot.pause()
             await pilot.press("right")
@@ -352,7 +352,7 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
         """
         from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(
             remote_hosts=[
@@ -375,7 +375,7 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app.main_ui.ui.filter_text)
             tab_before = app.main_ui.active_tab_index
             # Focus the table and press → — must NOT advance the tab.
-            table = screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = screen.query_one("#sessions-dashboard", SessionListView)
             table.focus()
             await pilot.pause()
             await pilot.press("right")
@@ -480,7 +480,7 @@ class RefreshDoesNotDropKeysTests(unittest.IsolatedAsyncioTestCase):
         from textual.events import Key
 
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         sessions = [_session(f"s{i:02d}") for i in range(20)]
         app = UxonApp(_mk_ctx(sessions=sessions), probe_agents=False)
@@ -489,7 +489,7 @@ class RefreshDoesNotDropKeysTests(unittest.IsolatedAsyncioTestCase):
             app.kick_refresh()
             await pilot.pause()
             await pilot.pause()
-            table = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = app.screen.query_one("#sessions-dashboard", SessionListView)
             table.focus()
             table.move_cursor(row=0)
             await pilot.pause()
@@ -510,7 +510,7 @@ class RefreshDoesNotDropKeysTests(unittest.IsolatedAsyncioTestCase):
             for _ in range(3):
                 await pilot.pause()
 
-            table = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            table = app.screen.query_one("#sessions-dashboard", SessionListView)
             # The signature flip really happened (USER column is live)...
             self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
             # ...and every one of the 12 presses landed: cursor advanced

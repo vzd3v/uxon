@@ -6,8 +6,9 @@ red/yellow CPU thresholds at >50 / >10, deterministic per-host
 colour glyph on the NAME column so per-row attribution survives
 sort even with the HOST column hidden.
 
-These callables are invoked many times per tick by the reconciler;
-they MUST stay closure-free over mutable state.
+These callables are invoked many times per repaint by the dashboard
+widget (once per visible cell); they MUST stay closure-free over
+mutable state.
 """
 
 from __future__ import annotations
@@ -170,8 +171,8 @@ def _format_name(row: SessionRow) -> Text:
     (the AGENT column carries that already) but keeps the ``-N``
     disambiguator so siblings remain distinguishable. Block hue and
     zebra dim are layered by the widget at render time; this
-    formatter stays pure data so the reconciler can diff cells
-    without knowing positional metadata.
+    formatter stays pure data (no positional metadata) so the widget
+    can colour the cell from the block-meta map at paint time.
     """
     glyph = "● " if row.attached else "○ "
     text = Text(glyph)

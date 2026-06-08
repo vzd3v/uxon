@@ -129,6 +129,11 @@ class SessionListView(ScrollView):
         # sibling widget.
         self._focused: bool = False
         self._hover_row: int | None = None
+        # Cached column widths. ``_column_widths`` is O(rows×cols) — called
+        # once per visible ``render_line`` it would be O(viewport×rows×cols)
+        # per repaint. Compute once, invalidate on ``set_rows`` / ``set_columns``
+        # (the only inputs to the width calc). ``None`` = stale → recompute.
+        self._widths_cache: tuple[int, ...] | None = None
         self._update_virtual_size()
 
     # ── data setters ───────────────────────────────────────────────
@@ -143,6 +148,9 @@ class SessionListView(ScrollView):
         """
         count_changed = len(rows) != len(self._rows)
         self._rows = rows
+        # Row content feeds the width calc — invalidate the cache. (Always:
+        # a same-count tick can still change a cell's rendered width.)
+        self._widths_cache = None
         if self._rows:
             self._cursor_row = max(0, min(self._cursor_row, len(self._rows) - 1))
         else:
@@ -160,6 +168,7 @@ class SessionListView(ScrollView):
         if columns == self._columns:
             return
         self._columns = columns
+        self._widths_cache = None
         self._update_virtual_size()
         self.refresh()
 
@@ -386,9 +395,17 @@ class SessionListView(ScrollView):
         Computed across the full row set (not just the viewport) so the
         column geometry is stable while scrolling — a viewport-only
         width would make columns jitter as rows scroll past.
+
+        Memoized: this is O(rows×cols) and is read once per visible line
+        in :meth:`render_line`; without the cache a repaint would be
+        O(viewport×rows×cols). The cache is invalidated whenever the row
+        list or column set changes (:meth:`set_rows` / :meth:`set_columns`).
         """
+        if self._widths_cache is not None:
+            return self._widths_cache
         if not self._columns:
-            return ()
+            self._widths_cache = ()
+            return self._widths_cache
         widths = [max(_MIN_COL_WIDTH, cell_len(col.label)) for col in self._columns]
         for row in self._rows:
             for i, col in enumerate(self._columns):
@@ -396,7 +413,8 @@ class SessionListView(ScrollView):
                 w = cell_len(text)
                 if w > widths[i]:
                     widths[i] = w
-        return tuple(widths)
+        self._widths_cache = tuple(widths)
+        return self._widths_cache
 
     @staticmethod
     def _cell_plain(row: SessionRow, col: ColumnSpec) -> str:

@@ -1,6 +1,6 @@
 """SessionRow — unified row type for local and remote sessions.
 
-Every later layer (column formatters, selector, reconciler, widget)
+Every later layer (column formatters, selector, placement, widget)
 types against :class:`SessionRow`. The two adapters
 :func:`from_tui_session` and :func:`from_wire_record` are the *only*
 boundaries where source-specific shapes meet the dashboard pipeline:

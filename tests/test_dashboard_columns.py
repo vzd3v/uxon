@@ -212,7 +212,7 @@ class NameFormatterTests(unittest.TestCase):
         self.assertIsInstance(text, Text)
         # ``○`` is the unattached glyph; block hue is layered by the
         # widget at render time, NOT by the formatter. The formatter
-        # stays pure data so the reconciler can diff cells.
+        # stays pure data so the widget can colour the cell at paint time.
         self.assertEqual(text.plain, "○ foo")
 
     def test_remote_row_emits_plain_text(self) -> None:
