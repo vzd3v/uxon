@@ -125,11 +125,23 @@ class ActionRow(Static):
         self.detail = detail
         self._enabled = enabled
         self._singleton = singleton
+        # ``(label, detail, enabled)`` of the last painted state — the
+        # widget-boundary change gate for :meth:`_render_text`. ``None``
+        # until the first paint (from this ``__init__``).
+        self._last_painted: tuple[str, str, bool] | None = None
         if singleton:
             self.add_class("-singleton")
         self._render_text()
 
     def _render_text(self) -> None:
+        # Widget-boundary change gate: every caller (apply_ctx_refresh's
+        # cwd/open/new rows, launch_flow, the cwd-writable landing, the
+        # superuser kill row) routes through here, so a tick that leaves
+        # label/detail/enabled untouched issues zero writes (AC2/RC3).
+        key = (self.label, self.detail, self._enabled)
+        if key == self._last_painted:
+            return
+        self._last_painted = key
         t = Text()
         if self._singleton:
             # Compact single-line layout for Settings / Kill-ALL rows

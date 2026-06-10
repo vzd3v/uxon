@@ -33,6 +33,19 @@ scroll beneath it. ``virtual_size`` height is ``1 (header) + row_count``.
 ``render_line(y)`` maps viewport ``y == 0`` → header and ``y >= 1`` →
 data row ``(y - 1) + scroll_y``. Cell widths are Unicode-safe via
 :func:`rich.cells.cell_len` — no 1-byte-equals-1-column assumption.
+
+Render contract
+---------------
+
+Cursor and hover changes repaint **only the affected rows**, not the whole
+widget: :meth:`move_cursor`, :meth:`on_mouse_move`, and :meth:`on_leave` go
+through :meth:`_refresh_rows`, which issues a region-scoped ``refresh(Region)``
+for the old and new rows (content-area-relative; a data row's y is
+``(idx - scroll_y) + 1``, the sticky header owning line 0). A whole-widget
+repaint is reserved for data/column changes (:meth:`set_rows` /
+:meth:`set_columns`). Focus/blur issue no uxon refresh — Textual's base
+``Widget._on_focus`` / ``_on_blur`` each already do one whole-widget repaint
+(framework gesture-rate, accepted; the private handlers are not overridden).
 """
 
 from __future__ import annotations
@@ -45,7 +58,7 @@ from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.binding import Binding
-from textual.geometry import Size
+from textual.geometry import Region, Size
 from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
@@ -244,14 +257,40 @@ class SessionListView(ScrollView):
 
     # ── cursor management ──────────────────────────────────────────
 
+    def _refresh_rows(self, *data_indices: int | None) -> None:
+        """Repaint specific data rows. Regions are content-area-relative
+        (Widget._set_dirty translates by content_offset); data row y is
+        (idx - scroll_y) + 1 — the sticky header owns line 0."""
+        scroll_y = round(self.scroll_offset.y)
+        height, width = self.size.height, self.size.width
+        regions = []
+        for idx in data_indices:
+            if idx is None or not (0 <= idx < len(self._rows)):
+                continue
+            y = (idx - scroll_y) + 1
+            if 1 <= y < height:
+                regions.append(Region(0, y, width, 1))
+        if regions:
+            self.refresh(*regions)  # NEVER call refresh() with no regions here
+
     def move_cursor(self, *, row: int) -> None:
-        """Move the cursor to ``row`` (clamped) and scroll it into view."""
+        """Move the cursor to ``row`` (clamped), scroll it into view, and
+        repaint only the old and new cursor rows.
+
+        A whole-widget ``refresh()`` is deliberately avoided. The two row
+        regions are computed at the *post-scroll* offset; when the move
+        crossed the viewport edge, ``ScrollView.watch_scroll_y`` already
+        refreshed the full viewport region (the two rows are a harmless
+        subset of it), so there is no scroll-offset read-back timing
+        dependency.
+        """
         if not self._rows:
             self._cursor_row = 0
             return
+        old = self._cursor_row
         self._cursor_row = max(0, min(row, len(self._rows) - 1))
         self._scroll_cursor_into_view()
-        self.refresh()
+        self._refresh_rows(old, self._cursor_row)
 
     def pin_cursor_to(self, row_key: str | None) -> None:
         """Restore the cursor to ``row_key`` after a refresh.
@@ -367,12 +406,13 @@ class SessionListView(ScrollView):
     # ── focus / mouse ──────────────────────────────────────────────
 
     def on_focus(self) -> None:
+        # Textual's base ``Widget._on_focus`` already issues one whole-widget
+        # refresh (framework gesture-rate, accepted per AC4) — no uxon refresh.
         self._focused = True
-        self.refresh()
 
     def on_blur(self) -> None:
+        # See ``on_focus``: the framework's ``_on_blur`` handles the repaint.
         self._focused = False
-        self.refresh()
 
     def on_click(self, event: events.Click) -> None:
         idx = self._row_at(event.y)
@@ -385,13 +425,15 @@ class SessionListView(ScrollView):
     def on_mouse_move(self, event: events.MouseMove) -> None:
         idx = self._row_at(event.y)
         if idx != self._hover_row:
+            old = self._hover_row
             self._hover_row = idx
-            self.refresh()
+            self._refresh_rows(old, idx)
 
     def on_leave(self, event: events.Leave) -> None:
         if self._hover_row is not None:
+            old = self._hover_row
             self._hover_row = None
-            self.refresh()
+            self._refresh_rows(old)
 
     def _row_at(self, viewport_y: int) -> int | None:
         """Map a viewport y (widget-relative) to a data-row index.

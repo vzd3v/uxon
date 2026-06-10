@@ -93,6 +93,12 @@ class FleetStatusBar(Widget):
         self._summary: FleetSummary | None = None
         self._lines: tuple[HostStatusLine, ...] = ()
         self._expanded = False
+        # Last applied ``expanded`` state — the gate for the two ``display``
+        # writes below. ``None`` until the first ``update_fleet`` so the
+        # initial state always lands. The collapsed-counts line still updates
+        # every tick (telemetry shifts each tick; ``layout=False`` keeps it a
+        # repaint, not a relayout — AC7).
+        self._last_expanded: bool | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="fleet-collapsed"):
@@ -122,8 +128,10 @@ class FleetStatusBar(Widget):
             counts = self.query_one("#fleet-counts", Static)
         except Exception:  # pragma: no cover — not mounted yet
             return
-        collapsed_row.display = not expanded
-        expanded_box.display = expanded
+        if self._last_expanded != expanded:
+            collapsed_row.display = not expanded
+            expanded_box.display = expanded
+            self._last_expanded = expanded
         if expanded:
             self._render_expanded(expanded_box)
         else:

@@ -120,6 +120,8 @@ class MainScreen(Screen):
         color: $text-muted;
         padding: 0 1;
         margin-bottom: 1;
+        height: 1;
+        text-wrap: nowrap;
     }
     #server-status.-alert {
         color: $error;
@@ -215,6 +217,9 @@ class MainScreen(Screen):
         # resets, so the column doesn't flicker when a foreign user's
         # sessions die or filtering narrows the row set.
         self._active_columns = self._compute_active_columns()
+        # ``(text, alert)`` of the last status-line write — the change gate
+        # for :meth:`_update_status_line`. ``None`` until the first write.
+        self._status_last: tuple[str, bool] | None = None
 
     def _main_ui_or_empty(self) -> MainScreenUiState:
         """Return ``app.main_ui`` if reachable, otherwise a fresh empty
@@ -1019,6 +1024,17 @@ class MainScreen(Screen):
         return False
 
     def _update_status_line(self) -> None:
+        """Repaint the ``#server-status`` line, gated on a content change.
+
+        Identical ``(text, alert)`` since the last write → zero widget
+        writes (AC8: a no-change link-health landing mutates nothing). A
+        glyph-only delta (the spinner advances every tick by construction)
+        or a content delta → exactly one ``update(layout=False)`` — the
+        fixed ``height: 1`` + ``text-wrap: nowrap`` CSS means the spinner
+        repaint never relayouts the screen (AC2/AC3). ``set_class`` fires
+        only on an alert flip. The ``batch_update`` covers the link-health
+        path, which does not pass through ``_render_dirty`` (AC6).
+        """
         line = main_status_line(
             self.cfg.server_status,
             self._link_health_now(),
@@ -1026,8 +1042,14 @@ class MainScreen(Screen):
             loading=self.cfg.loading,
         )
         status = self.query_one("#server-status", Static)
-        status.update(line.text)
-        status.set_class(line.alert, "-alert")
+        prev = self._status_last
+        if prev is not None and prev == (line.text, line.alert):
+            return
+        with self.app.batch_update():
+            status.update(line.text, layout=False)
+            if prev is None or prev[1] != line.alert:
+                status.set_class(line.alert, "-alert")
+        self._status_last = (line.text, line.alert)
 
     def _focus_default_action(self) -> None:
         try:

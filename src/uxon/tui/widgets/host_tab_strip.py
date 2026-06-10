@@ -178,6 +178,12 @@ class HostTabStrip(Widget):
         super().__init__(id=id)
         self._buckets = buckets
         self._colors: dict[str | None, str] = {}
+        # ``(label, color, active)`` per tab as last written — the change
+        # gate for :meth:`set_buckets`. A per-tick rebuild whose tabs match
+        # the last applied state issues zero ``update`` / ``set_class`` /
+        # ``can_focus`` writes (RC3). Kept in sync by ``watch_active_index``
+        # for the tabs it rewrites on a tab switch.
+        self._last_tabs: list[tuple[str, str, bool]] = []
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -209,6 +215,10 @@ class HostTabStrip(Widget):
             w.can_focus = active
             color = self._colors.get(bucket.host_name, "white")
             w.update(_render_label(bucket.label, color), layout=False)
+            # Keep the change-gate in sync with the tabs we just rewrote so
+            # a following ``set_buckets`` doesn't skip a needed write.
+            if i < len(self._last_tabs):
+                self._last_tabs[i] = (bucket.label, color, active)
         self.post_message(HostTabActivated(new))
 
     def set_buckets(
@@ -238,15 +248,22 @@ class HostTabStrip(Widget):
         except Exception:
             return
         existing = list(container.children)
+        new_last_tabs: list[tuple[str, str, bool]] = []
         # Update / append.
         for i, bucket in enumerate(buckets):
             active = i == self.active_index
             color = self._colors.get(bucket.host_name, "white")
-            label_text = _render_label(bucket.label, color)
+            triple = (bucket.label, color, active)
+            new_last_tabs.append(triple)
             if i < len(existing):
                 w = existing[i]
                 if isinstance(w, _TabButton):
-                    w.update(label_text, layout=False)
+                    # Skip the writes when this tab is unchanged vs the last
+                    # applied state (RC3) — but only for tabs that actually
+                    # existed last pass (``i < len(self._last_tabs)``).
+                    if i < len(self._last_tabs) and self._last_tabs[i] == triple:
+                        continue
+                    w.update(_render_label(bucket.label, color), layout=False)
                     w.set_class(active, "-active")
                     w.can_focus = active
             else:
@@ -255,3 +272,4 @@ class HostTabStrip(Widget):
         # Drop excess (async removal — IDs free up next frame).
         for w in existing[len(buckets) :]:
             w.remove()
+        self._last_tabs = new_last_tabs

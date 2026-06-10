@@ -367,10 +367,9 @@ class UxonApp(App):
                     float(cadence),
                     lambda spec=spec: self._worker_coord.kick_source(spec),
                 )
-            self.set_timer(
-                self.ctx.tui_ssh_refresh_interval_seconds,
-                self._worker_coord.kick_link_health_probe,
-            )
+            # ``set_interval`` already fires its first probe one interval out
+            # — the same offset a one-shot ``set_timer(interval)`` would use,
+            # so a separate one-shot only double-fires the first probe (RC6).
             self.set_interval(
                 self.ctx.tui_ssh_refresh_interval_seconds,
                 self._worker_coord.kick_link_health_probe,
@@ -453,6 +452,12 @@ class UxonApp(App):
         signature) re-evaluate. A ``remote``-only batch is a hot-path
         update of dashboard rows; :meth:`_refresh_dashboard` pulls
         from ``state.remote`` directly and is enough.
+
+        Both branches' widget mutations run inside one
+        :meth:`App.batch_update` so a landing yields at most one composite
+        (AC6). Nesting with the status writer's own ``batch_update`` is
+        safe — ``_batch_count`` is counter-based — and the batch wraps
+        synchronous widget writes only (no awaits).
         """
         screen = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
         if screen is None:
@@ -460,12 +465,13 @@ class UxonApp(App):
         top = self.screen_stack[-1] if self.screen_stack else None
         if not isinstance(top, MainScreen):
             return False
-        if "main_ctx" in kinds and self._latest_ctx is not None:
-            screen.apply_loaded_ctx(self._latest_ctx)
-            return True
-        if "remote" in kinds:
-            screen._refresh_dashboard()
-            return True
+        with self.batch_update():
+            if "main_ctx" in kinds and self._latest_ctx is not None:
+                screen.apply_loaded_ctx(self._latest_ctx)
+                return True
+            if "remote" in kinds:
+                screen._refresh_dashboard()
+                return True
         return False
 
     def on__refresh_source_landed(self, event: _RefreshSourceLanded) -> None:

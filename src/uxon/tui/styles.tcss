@@ -135,6 +135,12 @@ HostStatusBar {
     margin-bottom: 1;
 }
 
+/* The compact host bar renders exactly ``lines[:1]`` — pin it to one row
+   so a steady-tick content swap is a repaint, never a relayout (AC7). */
+#host-status-compact {
+    height: 1;
+}
+
 /* ── Modals (ConfirmYesNo, ConfirmPhrase, Permissions, etc.) ─────── */
 
 ModalScreen {

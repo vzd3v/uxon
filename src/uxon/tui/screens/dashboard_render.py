@@ -16,7 +16,12 @@ in one ``set_rows`` call and the cursor is re-pinned by row-key. No diff, no
 reconciler — the widget repaints only the visible viewport. Each widget is
 queried once, and aux widgets (status bars, tab strip, superuser header,
 captions) are written **only when their value changed** vs the last tick
-(AC11), so an identical-data tick mutates nothing.
+(AC11), so an identical-data tick mutates nothing. The change-gate extends to
+the ``apply_ctx_refresh`` tail too: the top-actions caption goes through
+``_changed("caption", …)`` + ``layout=False`` (its second guaranteed per-tick
+relayout, RC2), the tab-strip ``display`` write through
+``_changed("tabs_display", …)``, and the status line through the screen's own
+gated ``_update_status_line`` writer (AC2/AC3).
 """
 
 from __future__ import annotations
@@ -203,7 +208,7 @@ class DashboardRender:
             tab_strip: HostTabStrip | None = host.query_one("#host-tabs", HostTabStrip)
         except Exception:
             tab_strip = None
-        if tab_strip is not None:
+        if tab_strip is not None and self._changed("tabs_display", in_by_host):
             tab_strip.display = in_by_host
         active_bucket = None
         if in_by_host:
@@ -381,7 +386,12 @@ class DashboardRender:
             host.query_one("#action-new", ActionRow)._render_text()
             open_row._render_text()
             try:
-                host.query_one("#top-actions-caption", Static).update(host._top_actions_caption())
+                caption = host._top_actions_caption()
+                if self._changed("caption", caption):
+                    # ``#top-actions-caption`` has ``height: 1`` (main.py) so
+                    # ``layout=False`` is size-safe; gating drops the second
+                    # guaranteed per-tick relayout (RC2/AC2/AC7).
+                    host.query_one("#top-actions-caption", Static).update(caption, layout=False)
             except Exception:  # pragma: no cover — caption mounted in compose
                 pass
         except Exception:
