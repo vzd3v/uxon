@@ -819,8 +819,7 @@ class MainScreen(Screen):
         # keys in Textual's input queue always have a live target. This
         # is the fix for keys vanishing mid-refresh: the old
         # ``switch_screen`` swap tore down the DOM and dropped any
-        # in-flight key events aimed at it (proven deterministically in
-        # ``experiments/260605-key-drop-deterministic``).
+        # in-flight key events aimed at it.
         if self._apply_ctx_refresh():
             _debug("keys", at="apply_loaded_ctx", path="patch", focus_key=focus_key)
             if focus_key and self._focus_key(focus_key):

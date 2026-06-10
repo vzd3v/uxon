@@ -134,11 +134,7 @@ class UxonApp(App):
         # tap records EVERY key at the instant Textual first sees it
         # (before bindings/forwarding); the existing ``on_key`` only
         # sees keys that bubble up UNHANDLED — by definition never the
-        # ones that vanish. Together with an external stdin oracle
-        # (``script --log-in``) and the loop watchdog below, a dropped
-        # key gets an empirical verdict (parser/loop-starvation vs
-        # focus/routing) instead of a guess. See
-        # ``experiments/260607-key-drop-oracle/``.
+        # ones that vanish.
         self._key_trace: bool = _debug_enabled("keys")
         # Monotonic timestamp of the previous watchdog tick; the gap to
         # the next tick beyond its scheduled interval is event-loop lag

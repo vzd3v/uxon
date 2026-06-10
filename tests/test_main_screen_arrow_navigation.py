@@ -472,8 +472,7 @@ class RefreshDoesNotDropKeysTests(unittest.IsolatedAsyncioTestCase):
     machine count: post exactly N ↓ events, flip the signature mid-stream
     (cross_user latch → USER column), and assert the cursor advanced by
     all N. Pre-fix this lost exactly the one key in flight during the
-    swap (cursor 11 instead of 12); see
-    ``experiments/260605-key-drop-deterministic``.
+    swap (cursor 11 instead of 12).
     """
 
     async def test_signature_flip_mid_stream_drops_no_keys(self) -> None:
