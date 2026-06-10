@@ -117,10 +117,10 @@ configured `[[remote_hosts]]` peer. Two view modes — `flat`
 a status bar); toggle with `v`. ←/→ on the dashboard cycles
 between hosts (host tabs in `by_host`, `(host, own/other)`
 transitions in `flat`).
-A search bar at the top filters across all rows; `/` refocuses
-it. Per-row data: agent, working dir, live CPU / RAM, attached
-glyph (`●`/`○`), creation time, last activity time. `Enter`
-attaches; `d` kills with confirmation.
+A search bar filters across all rows — hidden by default, press
+`s` (or `/`) to summon it. Per-row data: agent, working dir,
+live CPU / RAM, attached glyph (`●`/`○`), creation time, last
+activity time. `Enter` attaches; `d` kills with confirmation.
 
 Every launch asks whether to start in normal mode or with
 `--dangerously-skip-permissions` ("yolo") — the TUI does not

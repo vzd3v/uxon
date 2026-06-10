@@ -90,6 +90,15 @@ columns = ["name", "path", "last"]
   column carries it. Sibling sessions on the same stem keep
   their `-N` index so they stay visually distinct
   (`proj@claude-2` → `proj-2`).
+- The LAST column tints by how long a session has been idle
+  (no I/O): the timestamp turns **yellow** after 24 h and
+  **red** after 3 days, so stale sessions stand out at a glance.
+  The thresholds are fixed and not configurable.
+
+The fleet status bar sits below the table in both views. Press
+`h` to toggle it between collapsed (`N hosts · M sess` plus
+unreachable / high-memory alerts) and an expanded per-host
+detail line.
 
 ## Colour and accessibility
 
@@ -108,4 +117,4 @@ your team needs a no-colour mode, file a feature request.
 ## Reference
 
 - [`../../reference/configuration.md`](../../reference/configuration.md) — `[tui.table]`, `[tui.search]`, `[tui]`, `[local_host]` keys.
-- [`../../reference/keybindings.md`](../../reference/keybindings.md) — TUI keys including `v`, `[`, `]`, `/`.
+- [`../../reference/keybindings.md`](../../reference/keybindings.md) — TUI keys including `v`, `h`, `s` / `/`, and ←/→ host cycling.

@@ -293,7 +293,7 @@ class UxonApp(App):
         bubbles all the way up to the App without being consumed by a
         widget binding or ``event.stop()`` along the chain. Combined
         with the ``keys`` log entries on widget-side actions
-        (ActionRow cycle/leave, SessionDashboardTable cursor up/down,
+        (ActionRow cycle/leave, SessionListView cursor up/down,
         ``MainScreen._refresh_dashboard`` entry/elapsed) this gives a
         timeline of "key arrived → who handled it (or didn't) → was a
         refresh in flight". Off by default; the call site costs one

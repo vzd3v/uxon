@@ -17,9 +17,8 @@ Public API re-exports only. Implementation lives in sibling modules:
   - ``workers``  — :class:`WorkerCoordinator` (probe/source worker bodies).
   - ``source_dispatch`` — landed-result → :class:`TuiState` reducers.
   - ``screens/`` — one module per screen (MainScreen, modals, …).
-  - ``widgets/`` — custom widgets (``ActionRow``,
-                   ``DetectedAgentsBanner``, ``SessionListView``,
-                   ``GatedFooter``).
+  - ``widgets/`` — custom widgets (``ActionRow``, ``SessionListView``,
+                   ``FleetStatusBar``, ``GatedFooter``).
   - ``dashboard/``— pure layers behind ``SessionListView``
                    (row, columns, layout, ui_state, model, order).
 

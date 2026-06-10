@@ -39,8 +39,12 @@ that match its patterns (e.g. `.env`) into the new worktree.
 
 ## Removing a worktree
 
-Not yet a uxon gesture — remove manually:
+Not yet a uxon gesture — remove manually, from the repo root:
 
 ```bash
 git worktree remove .uxon/worktrees/<branch-slug>
 ```
+
+(If you set `worktree_root`, the path is
+`<worktree_root>/<repo-slug>/<branch-slug>` instead — run
+`git worktree list` to see the exact path.)

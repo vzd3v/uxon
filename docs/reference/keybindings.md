@@ -28,6 +28,24 @@ JCUKEN twins: every dashboard key has a Russian-layout twin
 (`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`, `h`/`р`) so the
 keymap survives a Cyrillic layout without `xkb` tweaks.
 
+## Launch options screen
+
+Shown after picking a launch action (New session / Create new
+project / Open existing project). Three side-by-side panels —
+AGENT, PERMISSION, and WORKSPACE (the WORKSPACE panel appears
+for any git target: the primary tree, existing worktrees, and a
+`+ New worktree…` row).
+
+| Key | Action |
+|---|---|
+| `←` / `→` | Move between the AGENT / PERMISSION / WORKSPACE panels |
+| `↑` / `↓` | Move within the focused panel |
+| `Enter` | Confirm and launch (on `+ New worktree…`, opens the branch-name prompt) |
+| `Esc` | Cancel |
+
+The branch-name prompt (reached via `+ New worktree…`) takes
+`Enter` to create and `Esc` to cancel.
+
 ## "Open existing project" screen
 
 The filter input owns focus on mount — start typing to narrow the

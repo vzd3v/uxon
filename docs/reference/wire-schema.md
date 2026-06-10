@@ -13,7 +13,8 @@ schema is part of the public contract.
   "uxon_version": "<emitter version>",
   "kind": "list" | "doctor" | "version" | "kill" | "kill-all",
   "data": { ... kind-specific },
-  "host": "<peer name>"
+  "host": "<peer name>",
+  "host_stats": { ... optional, see below }
 }
 ```
 
@@ -22,6 +23,17 @@ schema is part of the public contract.
   dropping fields.
 - `host` — added by the aggregator when the envelope came from a
   peer; absent on locally-emitted envelopes.
+- `host_stats` — optional, present only on `kind = "list"`
+  envelopes from peers that could read `/proc`. Older peers omit
+  it; treat missing/null as absent. Additive — adding new keys
+  inside the block does not bump `schema_version`, so consumers
+  `.get(...)` defensively. Fields:
+  - `cpu_pct` (float, host CPU %)
+  - `mem_used_kib` / `mem_total_kib` (int)
+  - `loadavg_1m` (float — carried on the wire but no longer
+    rendered by the dashboard)
+  - `uptime_s` (int)
+  - `kernel` (string, `uname -r`)
 
 ## `kind = "list"`
 
@@ -103,7 +115,7 @@ JSON envelope keeps the raw value.
 {
   "kind": "version",
   "data": {
-    "uxon_version": "3.3.0",
+    "uxon_version": "3.5.0",
     "commit": "5a50ec3",
     "commit_dirty": false
   }
@@ -123,13 +135,19 @@ Local kill (own user):
   "data": {
     "target": "uxon-myproj@claude",
     "user": "alice_agent",
-    "target_user": "alice_agent",
-    "reachable": true,
     "socket": "/tmp/uxon-alice_agent.sock",
     "action": "killed",
     "dry_run": false
   }
 }
+```
+
+A cross-user kill (`--user <name>` where the target differs from
+the caller's launch user) adds two fields:
+
+```json
+    "target_user": "bob_agent",
+    "reachable": true
 ```
 
 Remote kill (`--host <alias>`) carries an extra `ssh_argv`
@@ -140,10 +158,12 @@ non-dry-run remote kill goes through and emits the same
 - `target` — the resolved session name as `tmux` sees it.
 - `user` — the launch user the kill ran under (caller's launch
   user for self-only, the `--user` argument for cross-user).
-- `target_user` — the target's launch user (identical to
-  `user` on self-kill, distinct on cross-user / cross-host).
-- `reachable` — `true` when the per-target sudo probe
-  succeeded; only meaningful for cross-user `--user` calls.
+- `socket` — path of the per-user tmux socket the kill ran
+  against.
+- `target_user` — **cross-user only.** The target's launch user.
+  Absent on a self-kill (where it would just equal `user`).
+- `reachable` — **cross-user only.** `true` when the per-target
+  sudo probe succeeded. Absent on a self-kill.
 - `action` — `"killed"`, `"would-kill"` (dry-run), or
   `"failed"`.
 

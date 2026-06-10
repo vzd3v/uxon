@@ -21,7 +21,10 @@ worktree flag. Three reasons:
 Worktrees live under `<repo>/.uxon/worktrees/<branch-slug>/` and
 are excluded from git automatically via `.git/info/exclude` — no
 manual `.gitignore` edit. (`claude -w` only advises a manual
-`.gitignore` change.)
+`.gitignore` change.) Setting `worktree_root` relocates them to
+`<worktree_root>/<repo-slug>/<branch-slug>/`, outside the repo;
+there the `.git/info/exclude` entry is unnecessary and is not
+written.
 
 ## Two deliberate deviations from `claude -w`
 
@@ -31,8 +34,10 @@ manual `.gitignore` edit. (`claude -w` only advises a manual
    auto-cleanup — worktree *removal* is manual for now.
 2. **The base ref defaults to local (no fetch).** `claude -w`
    fetches `origin` by default so the new branch tracks the latest
-   remote. uxon defaults to a local base because in the
-   multi-user / `sudo` launch context an implicit per-create
-   `git fetch` against a possibly private remote can hang or prompt
-   for credentials. Switch to remote for claude-like freshness — see
+   remote. uxon defaults to a local base — `origin/HEAD` if the
+   local remote-tracking symref is present, otherwise `HEAD`, with
+   no network I/O either way — because in the multi-user / `sudo`
+   launch context an implicit per-create `git fetch` against a
+   possibly private remote can hang or prompt for credentials.
+   Switch to remote for claude-like freshness — see
    [`worktree_base`](../reference/configuration.md#top-level-keys).
