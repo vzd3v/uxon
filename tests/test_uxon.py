@@ -2759,8 +2759,11 @@ class ExcludeWriterTests(unittest.TestCase):
     def test_appends_uxon_line_once_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             _init_repo(d)
-            git.write_uxon_exclude_entry(d, "devagent")
-            git.write_uxon_exclude_entry(d, "devagent")  # idempotent
+            # Launch user == process user so the sudo prefix collapses —
+            # the CI runner has no fixed username to hard-code.
+            with mock.patch("uxon.infra.identity.process_user", return_value="devagent"):
+                git.write_uxon_exclude_entry(d, "devagent")
+                git.write_uxon_exclude_entry(d, "devagent")  # idempotent
             with open(os.path.join(d, ".git", "info", "exclude")) as fh:
                 text = fh.read()
         self.assertEqual(text.count(".uxon/"), 1)
@@ -2789,7 +2792,9 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
             subprocess.run(["git", "-C", d, "commit", "-qm", "init"], check=True)
             dest = os.path.join(d, ".uxon", "worktrees", "feat")
             os.makedirs(dest)
-            git.copy_worktreeinclude_matches(d, dest, "devagent")
+            # Same process_user collapse as ExcludeWriterTests above.
+            with mock.patch("uxon.infra.identity.process_user", return_value="devagent"):
+                git.copy_worktreeinclude_matches(d, dest, "devagent")
             self.assertTrue(os.path.exists(os.path.join(dest, ".env")))
             self.assertFalse(os.path.exists(os.path.join(dest, "debug.log")))
             self.assertFalse(os.path.exists(os.path.join(dest, "tracked.txt")))
