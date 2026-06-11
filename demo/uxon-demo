@@ -15,6 +15,22 @@ SCENARIOS="$DIR/scenarios"
 # always writable by the running user.
 BUILD="${XDG_CACHE_HOME:-$HOME/.cache}/uxon-demo/build"
 
+# `uv run` insists on managing uv.lock / .venv *inside the project*, so
+# launching from source only works when those writes will succeed for
+# the current user. On a shared host the repo is owned by one operator
+# and read-only to everyone else (ACLs / group perms), so a teammate
+# running the demo as their own account hits EACCES on uv.lock. Gate
+# the source-tree path on real writability; the installed binary ships
+# the demo hook since 3.5.0, so it's a fine fallback.
+repo_launchable_from_source() {
+  local root="$1"
+  command -v uv >/dev/null 2>&1 || return 1
+  [[ -f "$root/pyproject.toml" ]] || return 1
+  [[ -w "$root" ]] || return 1
+  # uv re-locks on run: lockfile must be absent or writable.
+  [[ ! -e "$root/uv.lock" || -w "$root/uv.lock" ]]
+}
+
 usage() {
   cat <<EOF
 uxon-demo — render YAML scenarios and launch the TUI against them.
@@ -30,9 +46,10 @@ Examples:
   $(basename "$0") run team-n              # the headline demo: cross-team, multi-host.
   $(basename "$0") run solo-1              # single dev on a single host.
 
-The TUI's local section reflects whatever real tmux sessions the
-current user owns. For clean screenshots run on a host with no
-uxon-prefixed sessions (or 'tmux kill-server' first).
+In demo mode the local section comes entirely from the scenario's
+'_local.json' envelope — tmux is never invoked, so your own real
+sessions never leak into the screenshot. A scenario with no 'local:'
+block shows an empty local section.
 EOF
 }
 
@@ -81,14 +98,21 @@ case "$cmd" in
         ;;
       run)
         export UXON_DEMO_HOSTS="$BUILD"
-        # Prefer the in-repo source tree (via `uv run`) over a
-        # system-installed `uxon`: the demo hook only exists in the
-        # local source until a release ships. Falls back to the
-        # `$PATH` binary when `uv` is unavailable.
-        if command -v uv >/dev/null 2>&1 && [[ -f "$DIR/../pyproject.toml" ]]; then
-          cd "$DIR/.." && exec uv run --quiet uxon
-        else
+        repo_root="$(cd "$DIR/.." && pwd)"
+        # Prefer the in-repo source tree (via `uv run`) so demo changes
+        # are testable before a release — but only when this user can
+        # actually write the repo (see repo_launchable_from_source).
+        # Otherwise use the installed `uxon`, which carries the demo
+        # hook since 3.5.0. This avoids the EACCES-on-uv.lock failure
+        # when the demo is launched as a non-owner on a shared host.
+        if repo_launchable_from_source "$repo_root"; then
+          cd "$repo_root" && exec uv run --quiet uxon
+        elif command -v uxon >/dev/null 2>&1; then
           exec uxon
+        else
+          echo "no installed 'uxon' on PATH and repo not launchable from source: $repo_root" >&2
+          echo "install uxon, or run as a user who can write the repo (uv needs uv.lock/.venv)." >&2
+          exit 1
         fi
         ;;
     esac
