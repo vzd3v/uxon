@@ -6,6 +6,11 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Main screen redesigned around the session table — one flat visual style instead of mixed chrome. The three launch actions render as single-line rows with the target path inline (replacing the tall bordered buttons and the path caption beneath them); ↑/↓ walks all rows top-to-bottom and ←/→ no longer cycles the action row. The `── sessions ──` / `── superuser ──` headers are gone (the table's own column header labels the list; the Settings/Kill-ALL colours mark the superuser block), as is the blank line the hidden search bar used to reserve. The table now sits directly under the actions and ends where its rows end, with the fleet bar attached beneath. Partial sudo reachability (`N/M users reachable`) moved from the superuser header onto the Kill-ALL row. Status-line separators unified on `·`, and the fleet bar drops its `h · hosts` hint (the `h` key stays in the footer).
+
 ## [3.5.0] — 2026-06-11
 
 ### Added

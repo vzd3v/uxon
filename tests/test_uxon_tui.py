@@ -133,7 +133,7 @@ class TuiContextShapeTests(unittest.TestCase):
         )
         self.assertEqual(
             server_status_line(status),
-            "server: cpu 11% load 0.42 | ram 2.0G/8.0G 25% | disk 20G/100G 20% | up 3d 2h",
+            "server: cpu 11% load 0.42 · ram 2.0G/8.0G 25% · disk 20G/100G 20% · up 3d 2h",
         )
 
 

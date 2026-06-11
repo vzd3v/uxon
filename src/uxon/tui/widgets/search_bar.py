@@ -1,9 +1,11 @@
 """SearchBar — summon-on-demand wrapper around :class:`FilterInput`.
 
-Hidden by default (CSS ``visibility: hidden`` reserves the line so
-the segment header below doesn't shift when the bar shows or
-hides). The screen binds ``s`` / ``/`` to :meth:`show`; ``Esc``
-inside the bar runs :meth:`action_scope_cancel`.
+Hidden by default via CSS ``display: none`` — the bar occupies no
+line until summoned, so the idle screen carries no blank row.
+(Content below shifts down one line when the bar opens; that is the
+standard summon-a-filter-bar behaviour.) The screen binds ``s`` /
+``/`` to :meth:`show`; ``Esc`` inside the bar runs
+:meth:`action_scope_cancel`.
 
 Esc behaviour:
 
@@ -39,10 +41,10 @@ class SearchBar(Widget):
     DEFAULT_CSS = """
     SearchBar {
         height: 1;
-        visibility: hidden;
+        display: none;
     }
     SearchBar.-shown {
-        visibility: visible;
+        display: block;
     }
     """
 

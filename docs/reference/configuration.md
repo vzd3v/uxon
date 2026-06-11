@@ -187,7 +187,7 @@ short list that the dashboard commits to:
 | `d` (`в`) | Kill highlighted session (typed-phrase confirm). |
 | `D` (`В`) | Kill all own sessions. |
 | `v` (`м`) | Toggle dashboard view between `flat` and `by_host`. |
-| `←` / `→` | Top action row: cycle the three buttons cyclically. Dashboard: in `by_host` advance the active host tab; in `flat` jump across `(host, own/other)` transitions; both cyclic. |
+| `←` / `→` | Dashboard: in `by_host` advance the active host tab; in `flat` jump across `(host, own/other)` transitions; both cyclic. |
 | `s` (or `/`) | Focus the search bar from anywhere. |
 | `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
 

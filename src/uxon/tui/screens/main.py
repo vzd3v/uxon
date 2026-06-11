@@ -1,17 +1,18 @@
 """MainScreen — the top-level menu rendered by :class:`UxonApp`.
 
-Layout:
+Layout (one flat visual language — every action is a single-line
+ActionRow; the session table is the dominant element):
     ┌ Header ──────────────────────────────────────────┐
-    │ ┌─ #top-actions ──────────────────────────────┐  │
-    │ │ action-cwd │ action-new │ action-open       │  │
-    │ └─────────────────────────────────────────────┘  │
-    │ ── sessions ──                                   │
+    │ server-status line                               │
+    │ ActionRow action-cwd   (detail: cwd)             │
+    │ ActionRow action-new   (detail: project root)    │
+    │ ActionRow action-open  (detail: project root)    │
     │ SessionListView (own + other-user + remote rows; │
     │   USER column iff cross_user, HOST column iff    │
-    │   multi_host)                                    │
-    │ ── superuser ── (when reachable_users is set)    │
-    │ ActionRow settings                               │
-    │ ActionRow kill-all-global                        │
+    │   multi_host; height hugs content)               │
+    │ FleetStatusBar                                   │
+    │ ActionRow settings          (superuser only)     │
+    │ ActionRow kill-all-global   (superuser only)     │
     └ Footer ──────────────────────────────────────────┘
 
 T7a shipped layout + core bindings (q/f1/d/D/r); 3.4 dropped
@@ -26,7 +27,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Header, Static
@@ -59,7 +60,6 @@ from ..state import (
     parse_focus_key,
 )
 from ..widgets import ActionRow
-from ..widgets.action_row import ACTION_GROUP_CONTAINER_ID
 from ..widgets.fleet_status_bar import FleetStatusBar
 from ..widgets.gated_footer import GatedFooter
 from ..widgets.host_status_bar import HostStatusBar
@@ -89,25 +89,6 @@ class MainScreen(Screen):
     #main-body {
         width: 1fr;
         height: 1fr;
-    }
-    /* The literal id below mirrors ACTION_GROUP_CONTAINER_ID in
-       widgets/action_row.py. CSS can't reference Python constants;
-       keep the two in sync (the constant is what the group's
-       ←/→/↑/↓ navigation keys off). Height matches the bordered
-       ActionRow visual (border + 1 line + border = 3). */
-    #top-actions {
-        height: 3;
-        width: 1fr;
-    }
-    #top-actions-caption {
-        height: 1;
-        width: 1fr;
-        color: $text-muted;
-        padding: 0 1;
-    }
-    .segment-header {
-        color: $text-muted;
-        padding: 0 1;
     }
     .empty-note {
         color: $text-muted;
@@ -322,45 +303,44 @@ class MainScreen(Screen):
                 loading=self.cfg.loading,
             )
             yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
-            # Top action row — three side-by-side bordered buttons.
-            # ←/→ cycle cyclically inside the group; ↓ exits the group
-            # to the sessions block below; ↑ exits upward. Per-button
-            # detail (cwd / project root) is rendered as a single
-            # caption line below the row instead of inside each button
-            # — at 1/3 of terminal width the label alone is already
-            # tight; folding detail in truncates it on most layouts.
-            with Horizontal(id=ACTION_GROUP_CONTAINER_ID):
-                yield ActionRow(
-                    kind="action-cwd",
-                    label="New session in current folder",
-                    enabled=self._cwd_writable_now() is not False,
-                    id="action-cwd",
-                )
-                yield ActionRow(
-                    kind="action-new",
-                    label="Create new project",
-                    enabled=True,
-                    id="action-new",
-                )
-                yield ActionRow(
-                    kind="action-open",
-                    label="Open existing project",
-                    # While loading we don't yet know whether projects exist.
-                    # Keep the row enabled so it isn't dimmed; activation falls
-                    # through to the existing "no projects" notify path.
-                    enabled=self.cfg.loading or bool(self.cfg.existing_projects),
-                    id="action-open",
-                )
-            yield Static(self._top_actions_caption(), id="top-actions-caption")
-            # Sessions header + unified dashboard. The dashboard is
-            # mounted unconditionally — empty-state copy is rendered by
-            # the ``#sessions-note`` Static above it (toggled by class
-            # in ``_refresh_dashboard_note``). Local own + local
+            # Launch actions — a vertical stack of flat single-line
+            # rows (one visual language with the superuser rows below).
+            # ↑/↓ walk the stack via the standard focus chain; per-row
+            # detail (cwd / project root) renders inline as a dim
+            # suffix after the label.
+            yield ActionRow(
+                kind="action-cwd",
+                label="New session in current folder",
+                detail=self._cwd_detail(),
+                enabled=self._cwd_writable_now() is not False,
+                id="action-cwd",
+            )
+            yield ActionRow(
+                kind="action-new",
+                label="Create new project",
+                detail=main_render.new_project_detail(self.cfg.new_project_root),
+                enabled=True,
+                id="action-new",
+            )
+            yield ActionRow(
+                kind="action-open",
+                label="Open existing project",
+                detail=self._open_detail(),
+                # While loading we don't yet know whether projects exist.
+                # Keep the row enabled so it isn't dimmed; activation falls
+                # through to the existing "no projects" notify path.
+                enabled=self.cfg.loading or bool(self.cfg.existing_projects),
+                id="action-open",
+            )
+            # Unified dashboard. The table's own column header labels
+            # the block — no section header. The dashboard is mounted
+            # unconditionally; empty-state copy is rendered by the
+            # ``#sessions-note`` Static above it (toggled by class in
+            # ``_refresh_dashboard_note``). Local own + local
             # other-user + remote per-host rows all flow through this
             # one widget; the USER column appears when ``cross_user``
             # is set, the HOST column when ``multi_host`` is set.
             yield SearchBar(id="search-bar")
-            yield Static("── sessions ──", classes="segment-header")
             note = "Loading sessions…" if self.cfg.loading else "No active sessions."
             note_classes = "empty-note"
             if self.cfg.sessions or self.cfg.other_sessions:
@@ -384,8 +364,8 @@ class MainScreen(Screen):
             # arrowing down off the table lands on it first. Collapsed by
             # default; ``h`` (or a click on the bar) expands it.
             yield FleetStatusBar(id="fleet-status")
-            # Superuser block (header + Settings + Kill-ALL-global) is
-            # mounted UNCONDITIONALLY and shown/hidden via ``display`` in
+            # Superuser block (Settings + Kill-ALL-global) is mounted
+            # UNCONDITIONALLY and shown/hidden via ``display`` in
             # ``refresh_dashboard`` — the same stable-tree idiom the tab
             # strip / status bars use above. Mounting it conditionally on
             # ``has_super`` meant a sudo-reachability flip changed the
@@ -393,32 +373,27 @@ class MainScreen(Screen):
             # ``switch_screen`` path — a full screen swap that destroys
             # the focused widget and drops any in-flight key events. The
             # initial ``display`` is set here so non-super sessions never
-            # flash the block before the first refresh tick.
+            # flash the block before the first refresh tick. No section
+            # header: the rows' own colours (settings amber, kill red)
+            # mark the privileged block; the partial-reachability hint
+            # rides on the kill row's detail.
             has_super = bool(self.cfg.sudo_caps.reachable_users)
             total_sessions = len(self.cfg.sessions) + len(self.cfg.other_sessions)
-            reachable_users = sorted(self.cfg.sudo_caps.reachable_users)
-            super_header = Static(
-                self._superuser_header(), id="superuser-header", classes="segment-header"
-            )
-            super_header.display = has_super
-            yield super_header
             settings_row = ActionRow(
                 kind="settings",
                 label="⚙ Settings",
                 detail="(repo-level config.toml)",
                 enabled=True,
                 id="action-settings",
-                singleton=True,
             )
             settings_row.display = has_super
             yield settings_row
             kill_global_row = ActionRow(
                 kind="kill-all-global",
                 label=main_render.kill_all_global_label(total_sessions),
-                detail=f"({', '.join(reachable_users)} + self)" if reachable_users else "",
+                detail=self._kill_all_global_detail(),
                 enabled=True,
                 id="action-kill-all-global",
-                singleton=True,
             )
             kill_global_row.display = has_super and total_sessions > 0
             yield kill_global_row
@@ -434,8 +409,8 @@ class MainScreen(Screen):
     # :mod:`uxon.tui.screens.main_render` — the "what text to show" logic
     # is fast-tested there; these adapt the live ``cfg``/slot reads.
 
-    def _superuser_header(self) -> str:
-        return main_render.superuser_header(
+    def _kill_all_global_detail(self) -> str:
+        return main_render.kill_all_global_detail(
             self.cfg.sudo_caps.reachable_users,
             self.cfg.scope_skipped_users,
         )
@@ -451,12 +426,6 @@ class MainScreen(Screen):
     def _open_detail(self) -> str:
         return main_render.open_detail(
             loading=self.cfg.loading,
-            new_project_root=self.cfg.new_project_root,
-        )
-
-    def _top_actions_caption(self) -> str:
-        return main_render.top_actions_caption(
-            cwd_short=self.cfg.cwd_short,
             new_project_root=self.cfg.new_project_root,
         )
 

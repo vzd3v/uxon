@@ -382,7 +382,9 @@ def server_status_line(status: ServerStatus) -> str:
         parts.append(f"up {status.uptime}")
     if not parts:
         return "server: unavailable"
-    return "server: " + " | ".join(parts)
+    # " · " separator — the one metadata-separator idiom across the TUI
+    # (fleet bar, status lines, action details).
+    return "server: " + " · ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -404,11 +406,11 @@ def main_status_line(
 ) -> MainStatusLine:
     summary = (link_health_status.summary or "").strip()
     if loading:
-        text = f"uxon {refresh_tick_glyph(refresh_tick)} | server: loading…"
+        text = f"uxon {refresh_tick_glyph(refresh_tick)} · server: loading…"
     else:
-        text = f"uxon {refresh_tick_glyph(refresh_tick)} | {server_status_line(server_status)}"
+        text = f"uxon {refresh_tick_glyph(refresh_tick)} · {server_status_line(server_status)}"
     if summary:
-        text += f" | ssh-link: {summary}"
+        text += f" · ssh-link: {summary}"
     return MainStatusLine(
         text=text,
         alert=link_health_status.state == "error",

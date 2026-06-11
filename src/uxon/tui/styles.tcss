@@ -33,45 +33,30 @@ Footer {
     height: 1fr;
 }
 
-.segment-header {
+.empty-note {
     color: $uxon-dim;
     padding: 0 1;
     margin-top: 1;
-    text-style: dim;
-}
-
-.empty-note {
-    color: $uxon-dim;
-    padding: 1 2;
     text-style: italic;
 }
 
 /* ── ActionRow ───────────────────────────────────────────────────── */
 
-/* Bordered button visual for the three top action rows
- * (#action-cwd / #action-new / #action-open). Singleton rows in the
- * bottom Vertical (Settings / Kill-ALL) opt out via the ``-singleton``
- * class (set by ActionRow.__init__ when ``singleton=True``) — they
- * keep the pre-3.4 flat look so the heavy bordered chrome stays on
- * the primary actions at the top.
- *
- * styles.tcss takes precedence over the widget's DEFAULT_CSS
- * (CSS_PATH on the App), so border + height live here as the single
- * source of truth — keep them in lockstep with #top-actions in
- * MainScreen.DEFAULT_CSS (height matches: border + 1 line + border = 3).
- */
+/* One flat single-line visual for every action row — the launch stack
+ * at the top and the superuser rows (Settings / Kill-ALL) at the
+ * bottom. styles.tcss takes precedence over the widget's DEFAULT_CSS
+ * (CSS_PATH on the App), so the look lives here as the single source
+ * of truth; keep it in lockstep with ActionRow.DEFAULT_CSS. */
 
 ActionRow {
     width: 1fr;
-    height: 3;
+    height: 1;
     padding: 0 1;
-    content-align: center middle;
-    border: round $accent;
-    background: $surface;
+    content-align: left middle;
+    background: transparent;
 }
 
 ActionRow:focus {
-    border: round $accent;
     background: $accent 30%;
     text-style: bold;
 }
@@ -83,25 +68,6 @@ ActionRow:hover {
 ActionRow.-disabled {
     color: $uxon-dim;
     text-style: dim;
-    border: round gray;
-}
-
-ActionRow.-singleton {
-    height: 1;
-    border: none;
-    padding: 0 1;
-    content-align: left middle;
-    background: transparent;
-}
-
-ActionRow.-singleton:focus {
-    border: none;
-    background: $accent 30%;
-}
-
-ActionRow.-singleton:hover {
-    border: none;
-    background: $boost;
 }
 
 ActionRow.destructive,
@@ -111,28 +77,31 @@ ActionRow.destructive,
 
 #action-settings {
     color: $uxon-sudo;
+    /* One blank line separates the superuser block from the session
+       block above. Margin (not a header widget): it vanishes with the
+       row when ``display`` hides the block for non-super sessions. */
+    margin-top: 1;
 }
 
 /* ── SessionListView ─────────────────────────────────────────────── */
 
-/* Width / height / min-height come from :class:`SessionListView`
- * ``DEFAULT_CSS`` (the widget's own single source of truth). Per-cell
- * colour (attached green, CPU hot/warm, sudo-only highlights), block
- * hue, zebra and the cursor highlight are painted by the widget's
+/* Width / height come from :class:`SessionListView` ``DEFAULT_CSS``
+ * (the widget's own single source of truth). Per-cell colour
+ * (attached green, CPU hot/warm, sudo-only highlights), block hue,
+ * zebra and the cursor highlight are painted by the widget's
  * ``render_line`` (Line API) from the ``dashboard/columns.py``
  * formatters + the block-meta map, so no class-bound rules are needed
- * here. */
+ * here. The margin separates the session block (tab strip / table)
+ * from the action stack above with exactly one blank line. */
+
+SessionListView {
+    margin-top: 1;
+}
 
 /* ── HostTabStrip ───────────────────────────────────────────────── */
 
 HostTabStrip {
-    margin-bottom: 1;
-}
-
-/* ── HostStatusBar ──────────────────────────────────────────────── */
-
-HostStatusBar {
-    margin-bottom: 1;
+    margin-top: 1;
 }
 
 /* The compact host bar renders exactly ``lines[:1]`` — pin it to one row

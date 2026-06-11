@@ -14,12 +14,10 @@ persisted order (existing rows keep their slot, new rows land in their host
 block, dead rows drop); the result is pushed to the :class:`SessionListView`
 in one ``set_rows`` call and the cursor is re-pinned by row-key. No diff, no
 reconciler — the widget repaints only the visible viewport. Each widget is
-queried once, and aux widgets (status bars, tab strip, superuser header,
-captions) are written **only when their value changed** vs the last tick
-(AC11), so an identical-data tick mutates nothing. The change-gate extends to
-the ``apply_ctx_refresh`` tail too: the top-actions caption goes through
-``_changed("caption", …)`` + ``layout=False`` (its second guaranteed per-tick
-relayout, RC2), the tab-strip ``display`` write through
+queried once, and aux widgets (status bars, tab strip, superuser rows) are
+written **only when their value changed** vs the last tick (AC11), so an
+identical-data tick mutates nothing. The change-gate extends to the
+``apply_ctx_refresh`` tail too: the tab-strip ``display`` write goes through
 ``_changed("tabs_display", …)``, and the status line through the screen's own
 gated ``_update_status_line`` writer (AC2/AC3).
 """
@@ -166,8 +164,8 @@ class DashboardRender:
         tick leaves it where it was.
 
         Each widget is queried once; aux widgets (tab strip, status bars,
-        superuser header, captions) are written only when their value
-        changed vs the last tick (AC11).
+        superuser rows) are written only when their value changed vs the
+        last tick (AC11).
 
         ``cross_user`` is *not* recomputed here — the active column tuple
         is fixed at ``__init__`` time, and a flip in
@@ -323,25 +321,15 @@ class DashboardRender:
     def _update_superuser_block(self) -> None:
         """Drive the superuser block visibility + labels (changed-only).
 
-        The header / Settings / Kill-ALL-global rows are always mounted;
-        their visibility is toggled here, never by re-composing the tree
+        The Settings / Kill-ALL-global rows are always mounted; their
+        visibility is toggled here, never by re-composing the tree
         (a sudo-reachability flip or a 0↔N session crossing used to force
-        a focus-dropping screen swap). Each ``update`` / ``display`` /
-        ``label`` write is gated on a value change vs the last tick (AC11).
+        a focus-dropping screen swap). Each ``display`` / ``label`` write
+        is gated on a value change vs the last tick (AC11).
         """
         host = self.host
         has_super = bool(host.cfg.sudo_caps.reachable_users)
         total_sessions = len(host.cfg.sessions) + len(host.cfg.other_sessions)
-        try:
-            super_header = host.query_one("#superuser-header", Static)
-        except Exception:
-            super_header = None
-        if super_header is not None:
-            header_text = host._superuser_header()
-            if self._changed("super_header_text", header_text):
-                super_header.update(header_text)
-            if self._changed("super_header_display", has_super):
-                super_header.display = has_super
         try:
             settings_row = host.query_one("#action-settings", ActionRow)
         except Exception:
@@ -354,8 +342,7 @@ class DashboardRender:
             kill_row = None
         if kill_row is not None:
             label = main_render.kill_all_global_label(total_sessions)
-            reachable = sorted(host.cfg.sudo_caps.reachable_users)
-            detail = f"({', '.join(reachable)} + self)" if reachable else ""
+            detail = host._kill_all_global_detail()
             kill_display = has_super and total_sessions > 0
             if self._changed("kill_global_label", label):
                 kill_row.label = label
@@ -385,15 +372,6 @@ class DashboardRender:
             )
             host.query_one("#action-new", ActionRow)._render_text()
             open_row._render_text()
-            try:
-                caption = host._top_actions_caption()
-                if self._changed("caption", caption):
-                    # ``#top-actions-caption`` has ``height: 1`` (main.py) so
-                    # ``layout=False`` is size-safe; gating drops the second
-                    # guaranteed per-tick relayout (RC2/AC2/AC7).
-                    host.query_one("#top-actions-caption", Static).update(caption, layout=False)
-            except Exception:  # pragma: no cover — caption mounted in compose
-                pass
         except Exception:
             return False
 
