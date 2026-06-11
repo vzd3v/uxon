@@ -21,10 +21,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from uxon.remote_hosts import RemoteHost
+    from uxon.domain.launch_request import LaunchRequest
+    from uxon.infra.remote_hosts import RemoteHost
     from uxon.tui.refresh import SourceSpec
 
-    from .context import LaunchRequest, TuiContext
+    from .context import TuiContext
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ class TuiConfig:
     default_git_remote_profile: str
     git_remote_profile_options: tuple[tuple[str, str], ...]
 
-    # ── Callbacks (injected by ``cli._build_tui_context``) ───────────
+    # ── Callbacks (injected by ``tui.context_builder.build_tui_context``) ──
     on_attach: Callable[[str, str], LaunchRequest]
     on_kill: Callable[[str, str], None]
     on_kill_all: Callable[[], None]
@@ -89,9 +90,17 @@ class TuiConfig:
     on_refresh: Callable[[], TuiContext]
     on_probe_link_health: Callable[[], Any]
     on_probe_cwd_writable: Callable[[], bool]
-    on_launch_cwd: Callable[[str, str], LaunchRequest]
+    on_probe_dir_launchable: Callable[[str], bool]
+    on_launch_cwd: Callable[..., LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
+    on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]]
+    on_probe_worktrees: Callable[[str], list]
+    on_create_worktree: Callable[[str, str, str, str], LaunchRequest]
+    on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest]
+    on_probe_existing_worktree_sessions: Callable[
+        [str, str, str, str], tuple[tuple[str, bool], ...]
+    ]
     get_settings_entries: Callable[[], list]
     on_setting_save: Callable[[str, Any], None]
     on_setting_remove: Callable[[str], None]
@@ -139,9 +148,15 @@ class TuiConfig:
             on_refresh=ctx.on_refresh,
             on_probe_link_health=ctx.on_probe_link_health,
             on_probe_cwd_writable=ctx.on_probe_cwd_writable,
+            on_probe_dir_launchable=ctx.on_probe_dir_launchable,
             on_launch_cwd=ctx.on_launch_cwd,
             on_launch_new=ctx.on_launch_new,
             on_launch_existing=ctx.on_launch_existing,
+            on_probe_existing_sessions=ctx.on_probe_existing_sessions,
+            on_probe_worktrees=ctx.on_probe_worktrees,
+            on_create_worktree=ctx.on_create_worktree,
+            on_launch_existing_worktree=ctx.on_launch_existing_worktree,
+            on_probe_existing_worktree_sessions=ctx.on_probe_existing_worktree_sessions,
             get_settings_entries=ctx.get_settings_entries,
             on_setting_save=ctx.on_setting_save,
             on_setting_remove=ctx.on_setting_remove,

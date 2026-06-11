@@ -1,7 +1,7 @@
 """Pilot tests for the unified session-dashboard widget on ``MainScreen``.
 
 Standalone Pilot — these scenarios verify that ``MainScreen`` mounts
-the new :class:`SessionDashboardTable` (commit 10), populates own rows
+the :class:`SessionListView` dashboard widget, populates own rows
 through the dashboard model, and dispatches kill/attach correctly when
 the dashboard is focused. The structural mutators here
 (``_refresh_dashboard``, ``action_kill`` widening, attach dispatch) are
@@ -46,7 +46,9 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="devagent",
-        on_launch_cwd=lambda agent_id, mode_id: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
+            cmd=("/bin/true",), label="cwd"
+        ),
         on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
             cmd=("/bin/true",), label="new"
         ),
@@ -117,13 +119,13 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         empty and ``#sessions-note`` shows the loading copy.
         """
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(loading=True)
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             self.assertEqual(widget.row_count, 0)
             # Empty-note visible (no own rows yet, ctx.loading=True).
             from textual.widgets import Static
@@ -140,7 +142,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         construction time elsewhere.
         """
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(sessions=[_own_session()])
         app = UxonApp(ctx, probe_agents=False)
@@ -148,7 +150,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             _seed_state_main(app, ctx)
             app.screen._refresh_dashboard()
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             self.assertEqual(widget.row_count, 1)
             self.assertEqual(len(app.screen._dashboard_rows), 1)
             self.assertEqual(app.screen._dashboard_rows[0].name, "devagent.foo")
@@ -166,7 +168,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         ``(user, name)`` pair and the local kill callback is wired.
         """
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         kill_calls: list[tuple[str, str]] = []
 
@@ -183,7 +185,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             # and noisily push a second worker; we only care about
             # the kill dispatch here.
             app.screen.action_refresh = lambda: None
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             widget.focus()
             widget.move_cursor(row=0)
             await pilot.pause()
@@ -203,7 +205,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         """
         from uxon.tui.app import UxonApp
         from uxon.tui.context import LaunchRequest
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         attach_calls: list[tuple[str, str]] = []
 
@@ -219,7 +221,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             _seed_state_main(app, ctx)
             app.screen._refresh_dashboard()
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             widget.focus()
             widget.move_cursor(row=0)
             await pilot.pause()
@@ -240,7 +242,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         """
         from uxon.tui.app import UxonApp
         from uxon.tui.dashboard.row import SessionRow
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         local_kill_calls: list[tuple[str, str]] = []
         remote_kill_calls: list[tuple[str, str, str]] = []
@@ -279,7 +281,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
                 path="/srv/work",
             )
             app.screen._dashboard_rows = (synthetic_remote_row,)
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             widget.focus()
             widget.move_cursor(row=0)
             await pilot.pause()
@@ -299,7 +301,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         Cursor must stay at row 1, not snap back to 0.
         """
         from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         sessions = [_own_session(name="devagent.a", short="a")]
         sessions.append(_own_session(name="devagent.b", short="b"))
@@ -309,7 +311,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             _seed_state_main(app, ctx)
             app.screen._refresh_dashboard()
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             widget.focus()
             widget.move_cursor(row=1)
             await pilot.pause()
@@ -359,9 +361,9 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         The legacy ``#sessions-other`` widget is no longer mounted —
         verify the dashboard carries both own and other-user rows.
         """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(
             sessions=[_own_session()],
@@ -373,7 +375,7 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             _seed_state_main(app, ctx)
             app.screen._refresh_dashboard()
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             self.assertEqual(widget.row_count, 2)
             users = sorted(r.user for r in app.screen._dashboard_rows)
             self.assertEqual(users, ["alice", "devagent"])
@@ -383,9 +385,10 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sudo_attach_via_dashboard(self) -> None:
         """Enter on an other-user dashboard row dispatches ``ctx.on_attach`` with the row's user."""
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import LaunchRequest, SudoCapability
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.context import LaunchRequest
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         attach_calls: list[tuple[str, str]] = []
 
@@ -406,7 +409,7 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             _seed_state_main(app, ctx)
             app.screen._refresh_dashboard()
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             # Locate the row for "alice.bar" — sort_by may reorder.
             target_idx = next(
                 i
@@ -429,10 +432,10 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         — so the operator visually confirms they're killing alice's
         session, not their own.
         """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
         from uxon.tui.screens.confirm import ConfirmYesNo
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         kill_calls: list[tuple[str, str]] = []
 
@@ -461,7 +464,7 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
                 return orig_push_screen(screen, *args, **kwargs)
 
             app.push_screen = _capture_push  # type: ignore[method-assign]
-            widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             target_idx = next(
                 i
                 for i, r in enumerate(app.screen._dashboard_rows)
@@ -486,8 +489,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_user_column_present_when_cross_user_true(self) -> None:
         """Construction with ``other_sessions`` non-empty includes the USER column."""
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
 
         ctx = _mk_ctx(
             sessions=[_own_session()],
@@ -511,10 +514,16 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             ids = tuple(c.id for c in app.screen._active_columns)
             self.assertNotIn("user", ids)
 
-    async def test_recompose_when_cross_user_flips_true(self) -> None:
-        """A refresh that lands an other-user row triggers recompose → USER column appears."""
+    async def test_user_column_appears_in_place_when_cross_user_flips(self) -> None:
+        """A refresh that lands an other-user row adds the USER column IN PLACE.
+
+        The cross_user latch flip used to force a ``switch_screen`` swap;
+        it now rebuilds the table's columns on the live widget. The
+        screen object must NOT be replaced (so the focus holder and
+        Textual's queued input survive), and the USER column must appear.
+        """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
         from uxon.tui.screens.main import MainScreen
 
         ctx = _mk_ctx(
@@ -536,25 +545,25 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             )
             old_screen.apply_loaded_ctx(new_ctx, focus_key="")
             await pilot.pause()
-            # The screen must have been recomposed (signature flipped).
-            self.assertIsNot(app.screen, old_screen)
+            # In-place: same screen object, no swap.
+            self.assertIs(app.screen, old_screen)
             self.assertIsInstance(app.screen, MainScreen)
             self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
 
-    async def test_cursor_pinned_across_cross_user_recompose(self) -> None:
-        """Cursor on an own row survives the recompose triggered by other_sessions arriving.
+    async def test_cursor_pinned_across_cross_user_column_add(self) -> None:
+        """Cursor on an own row survives the in-place column add when other_sessions arrive.
 
         Sequence: mount with no other-user rows; place cursor on the
         first own row; apply a fresh ctx that adds an other-user
-        session. The signature flip recomposes ``MainScreen``; the
-        new screen must restore focus to the same own row by KEY
-        (own:<name>), not by index — index 0 in the new model could
-        be the alice.bar row depending on sort order.
+        session. The cross_user latch flip rebuilds the table columns
+        in place (USER column appears); the cursor must re-pin to the
+        same own row by KEY (own:<name>), not by index — index 0 in the
+        new model could be the alice.bar row depending on sort order.
         """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
         from uxon.tui.screens.main import MainScreen
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         ctx = _mk_ctx(
             sessions=[_own_session()],
@@ -567,7 +576,7 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             _seed_state_main(app, ctx)
             app.screen._refresh_dashboard()
             old_screen = app.screen
-            old_widget = old_screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            old_widget = old_screen.query_one("#sessions-dashboard", SessionListView)
             old_widget.focus()
             old_widget.move_cursor(row=0)
             await pilot.pause()
@@ -582,14 +591,14 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             )
             old_screen.apply_loaded_ctx(new_ctx)
             await pilot.pause()
-            # Recompose happened.
-            self.assertIsNot(app.screen, old_screen)
+            # In-place: same screen object (no focus-dropping swap).
+            self.assertIs(app.screen, old_screen)
             self.assertIsInstance(app.screen, MainScreen)
             # USER column is now active.
             self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
             # Cursor is pinned to the devagent.foo row by key, not
             # index — even if the sort places alice.bar above it.
-            new_widget = app.screen.query_one("#sessions-dashboard", SessionDashboardTable)
+            new_widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             self.assertIs(app.screen.focused, new_widget)
             cursor_idx = new_widget.cursor_row
             assert cursor_idx is not None
@@ -607,8 +616,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         the column on every transient remote-snapshot dropout or
         filter narrowing was the very bug this design fixes.
         """
+        from uxon.domain.sudo import SudoCapability
         from uxon.tui.app import UxonApp
-        from uxon.tui.context import SudoCapability
 
         ctx = _mk_ctx(
             sessions=[_own_session()],
@@ -645,9 +654,10 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
         without the USER column — making the user column ambiguous
         across the rows.
         """
-        from uxon.remote_collector import RemoteSnapshot
-        from uxon.remote_hosts import RemoteHost
-        from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.domain.wire_schema import RemoteSnapshot
+        from uxon.infra.remote_hosts import RemoteHost
+        from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _RefreshSourceLanded
         from uxon.tui.screens.main import MainScreen
 
         ctx = _mk_ctx(

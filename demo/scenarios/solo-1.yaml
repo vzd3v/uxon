@@ -1,0 +1,52 @@
+# solo-1 — one developer, one dev box.
+#
+# The smallest meaningful demo: Wes runs ``uxon`` on his own
+# dev-server, all sessions are local. Three sessions, one of each
+# state — attached / idle / stale — so the LAST column tints land
+# (no tint → yellow → red).
+
+schema_version: 1
+
+defaults:
+  agent: claude
+  windows: 1
+  cpu_pct: 0.0
+  rss_mib: 220
+
+local:
+  - user: wes-agent
+    slot: crm-billing
+    agent: claude
+    attached: true
+    windows: 3
+    cpu_pct: 16.4
+    rss_mib: 612
+    path: /home/wes-agent/work/crm-billing
+    cmd: claude
+    age_min: 25
+
+  - user: wes-agent
+    slot: crm-ui
+    agent: codex
+    attached: false
+    attached_min_ago: 1800           # 30h → yellow (idle)
+    windows: 1
+    cpu_pct: 1.1
+    rss_mib: 240
+    path: /home/wes-agent/work/crm-ui
+    cmd: codex
+    age_min: 220
+
+  - user: wes-agent
+    slot: backend-debug
+    agent: cursor
+    attached: false
+    attached_min_ago: 7200           # 5d → red (stale)
+    windows: 1
+    cpu_pct: 0.0
+    rss_mib: 156
+    path: /home/wes-agent/work/backend
+    cmd: cursor-agent
+    age_min: 10_080
+
+hosts: []

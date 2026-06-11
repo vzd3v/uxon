@@ -1,8 +1,8 @@
 import unittest
 
-from uxon import git_backend_gh as gh
-from uxon import git_backend_token as tok
-from uxon import git_profiles as gp
+from uxon.domain import git_profiles as gp
+from uxon.gitremote import backend_gh as gh
+from uxon.gitremote import backend_token as tok
 
 SECRET = "ghp_SENSITIVE_DO_NOT_LEAK"
 

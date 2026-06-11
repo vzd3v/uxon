@@ -16,6 +16,11 @@ config/*
 AGENTS.md
 CLAUDE.md
 docs/agents/
+docs/superpowers/
+docs/specs/
+docs/plans/
+docs/dev/
+docs/prototypes/
 experiments/
 
 # Misc
@@ -33,3 +38,6 @@ uv.lock
 *.swp
 .idea/
 .vscode/
+# Stray debug captures (e.g. Textual key-inspector output). The real
+# UXON_DEBUG logs live under $XDG_STATE_HOME/uxon, outside the repo.
+*.log

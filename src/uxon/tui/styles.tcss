@@ -113,15 +113,15 @@ ActionRow.destructive,
     color: $uxon-sudo;
 }
 
-/* ── SessionDashboardTable ───────────────────────────────────────── */
+/* ── SessionListView ─────────────────────────────────────────────── */
 
-/* Width / height / min-height + hover come from
- * :class:`FocusReleasingDataTable` ``DEFAULT_CSS`` (the single source
- * of truth shared by every session-listing DataTable). Per-cell colour
- * (attached green, CPU hot/warm, sudo-only highlights) is emitted
- * inline via ``rich.text.Text(..., style=...)`` from
- * ``dashboard/columns.py`` formatters, so no class-bound rules are
- * needed here. The cursor highlight is the textual default. */
+/* Width / height / min-height come from :class:`SessionListView`
+ * ``DEFAULT_CSS`` (the widget's own single source of truth). Per-cell
+ * colour (attached green, CPU hot/warm, sudo-only highlights), block
+ * hue, zebra and the cursor highlight are painted by the widget's
+ * ``render_line`` (Line API) from the ``dashboard/columns.py``
+ * formatters + the block-meta map, so no class-bound rules are needed
+ * here. */
 
 /* ── HostTabStrip ───────────────────────────────────────────────── */
 
@@ -133,6 +133,12 @@ HostTabStrip {
 
 HostStatusBar {
     margin-bottom: 1;
+}
+
+/* The compact host bar renders exactly ``lines[:1]`` — pin it to one row
+   so a steady-tick content swap is a repaint, never a relayout (AC7). */
+#host-status-compact {
+    height: 1;
 }
 
 /* ── Modals (ConfirmYesNo, ConfirmPhrase, Permissions, etc.) ─────── */

@@ -1,18 +1,16 @@
 """Unit tests for :class:`uxon.tui.tui_state.TuiState` and the
-:class:`TuiContext` ↔ :class:`TuiState` plumbing introduced in
-commit 3 of the TuiContext-split plan.
+:class:`TuiContext` → :class:`TuiState` seeding at App construction.
 
 Pinned contracts:
 
 * ``TuiState()`` constructs with every slot in its zero state and
   ``main is None`` (the "never loaded" sentinel).
-* ``TuiContext.refresh_tick`` is a write-through proxy onto
-  ``ctx._state.refresh_tick`` when a state is linked. Tests cover
-  both sides — read after write goes through state, and reads when
-  no state is linked fall back to a private legacy slot.
-* ``UxonApp`` constructs a fresh :class:`TuiState`, links the live
-  ``ctx._state``, and the App's ``state`` is identity-stable across
-  ctx replacement (``app.ctx`` may change; ``app.state`` does not).
+* ``state.refresh_tick`` is the live counter (a plain mutable field);
+  the read-through proxy on ``TuiContext`` is gone (Phase P5).
+* ``UxonApp`` constructs a fresh :class:`TuiState`, seeds the agent
+  availability slot from the launching ctx, and the App's ``state`` is
+  identity-stable across ctx replacement (``app.ctx`` may change;
+  ``app.state`` does not).
 * ``MainScreen.loading`` is declared as a writable reactive and has
   no ``compute_loading`` method (a compute would make the reactive
   read-only — see plan §commit 3 / §commit 11 verification).
@@ -78,36 +76,18 @@ class TuiStateZeroStateTests(unittest.TestCase):
         self.assertEqual(s.refresh_tick, 7)
 
 
-class RefreshTickProxyTests(unittest.TestCase):
-    def test_proxy_read_after_write_goes_through_state(self) -> None:
+class RefreshTickFieldTests(unittest.TestCase):
+    def test_refresh_tick_is_a_plain_mutable_field(self) -> None:
+        # Post-P5 the live counter is a plain field on ``TuiState`` —
+        # no read-through proxy on ``TuiContext``.
         state = TuiState()
-        ctx = _bare_ctx()
-        ctx._state = state
-        ctx.refresh_tick = 5
+        self.assertEqual(state.refresh_tick, 0)
+        state.refresh_tick = 5
         self.assertEqual(state.refresh_tick, 5)
-        self.assertEqual(ctx.refresh_tick, 5)
-
-    def test_proxy_reflects_external_state_writes(self) -> None:
-        state = TuiState()
-        ctx = _bare_ctx()
-        ctx._state = state
-        state.refresh_tick = 11
-        self.assertEqual(ctx.refresh_tick, 11)
-
-    def test_legacy_fallback_when_no_state_is_linked(self) -> None:
-        ctx = _bare_ctx()
-        # No state linked — assignments still round-trip via a
-        # private legacy slot. Pinned so test fixtures that build a
-        # bare ``TuiContext`` for unit-testing pure helpers don't
-        # break in the migration window.
-        self.assertEqual(ctx.refresh_tick, 0)
-        ctx.refresh_tick = 9
-        self.assertEqual(ctx.refresh_tick, 9)
-        self.assertIsNone(ctx._state)
 
 
 class AppStateIntegrationTests(unittest.TestCase):
-    def test_app_creates_state_and_links_ctx(self) -> None:
+    def test_app_creates_state(self) -> None:
         try:
             import textual  # noqa: F401
         except ImportError:
@@ -117,9 +97,9 @@ class AppStateIntegrationTests(unittest.TestCase):
         ctx = _bare_ctx(loading=True)
         app = UxonApp(ctx, probe_agents=False)
         self.assertIsInstance(app.state, TuiState)
-        self.assertIs(app.ctx._state, app.state)
-        # Round-trip through the proxy.
-        ctx.refresh_tick = 3
+        # The live counter advances on the App's state, written by the
+        # rebuild handler — not via any proxy on ``ctx``.
+        app.state.refresh_tick = 3
         self.assertEqual(app.state.refresh_tick, 3)
 
     def test_state_is_identity_stable_across_ctx_replacement(self) -> None:
@@ -160,14 +140,55 @@ class MainScreenLoadingReactiveTests(unittest.TestCase):
         self.assertTrue(hasattr(MainScreen, "loading"))
 
 
-class AvailabilityShimTests(unittest.TestCase):
-    """``ctx.agent_availability`` is a read-through property onto
-    ``state.agent_availability.value``. The shim exposes the *same
-    dict object* the slot stores so worker-thread snapshots and
-    on-loop reads see consistent state.
+class MainScreenLoadingOverlayTests(unittest.IsolatedAsyncioTestCase):
+    """``MainScreen.loading`` must NOT engage Textual's full-screen
+    ``LoadingIndicator`` overlay.
+
+    The reactive shadows Textual's built-in ``Widget.loading``, whose
+    watcher covers the whole widget with a blue ``LoadingIndicator``.
+    MainScreen renders its own cold-start skeleton (status line +
+    "Loading sessions…" note + action rows), so it overrides
+    ``set_loading`` to a no-op. Regression for the frozen-on-loader bug:
+    once the in-place refresh path replaced ``switch_screen``, a stuck
+    cold-start cover (mounted via a mount-time ``call_later`` that landed
+    after ``loading = False``) hid the entire UI — only the dashboard
+    table punched through on navigation. Pin it: even with
+    ``loading = True`` set explicitly, no cover widget is mounted and the
+    composed content stays live.
     """
 
-    def test_availability_reads_state_slot_value(self) -> None:
+    async def test_loading_true_does_not_cover_the_screen(self) -> None:
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            self.skipTest("textual not available")
+        from textual.widgets import LoadingIndicator
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.widgets import ActionRow
+
+        app = UxonApp(_bare_ctx(loading=True), probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            # Force the overlay path the way the dispatcher would.
+            screen.loading = True
+            await pilot.pause()
+            await pilot.pause()
+            # No cover widget, no LoadingIndicator anywhere on the screen.
+            self.assertIsNone(getattr(screen, "_cover_widget", None))
+            self.assertEqual(len(list(screen.query(LoadingIndicator))), 0)
+            # The composed skeleton is still live underneath.
+            self.assertTrue(screen.query_one("#action-cwd", ActionRow).display)
+
+
+class AvailabilitySeedTests(unittest.TestCase):
+    """The App seeds ``state.agent_availability`` from the launching
+    ctx's static availability dict at construction. Consumers read the
+    live slot directly thereafter (no read-through proxy on ``ctx``).
+    """
+
+    def test_app_seeds_availability_slot_from_ctx(self) -> None:
         try:
             import textual  # noqa: F401
         except ImportError:
@@ -177,18 +198,9 @@ class AvailabilityShimTests(unittest.TestCase):
         ctx = _bare_ctx(loading=True)
         ctx.agent_availability = {"claude": "pending"}
         app = UxonApp(ctx, probe_agents=False)
-        # State slot was populated from the legacy dict; the shim
-        # now reads through state.<slot>.value.
-        self.assertEqual(app.ctx.agent_availability, {"claude": "pending"})
-        self.assertIs(app.ctx.agent_availability, app.state.agent_availability.value)
+        self.assertEqual(app.state.agent_availability.value, {"claude": "pending"})
 
-    def test_in_place_mutation_lands_on_state(self) -> None:
-        """Pin the race-prone-but-functional behaviour: a thread that
-        mutates the shim's dict in place writes to state.<slot>.value
-        (same dict reference). Commit 5b fixes the race; this test
-        survives that fix because the fixed worker no longer mutates
-        ctx.<field> at all.
-        """
+    def test_seed_is_a_copy_not_the_ctx_dict(self) -> None:
         try:
             import textual  # noqa: F401
         except ImportError:
@@ -198,20 +210,16 @@ class AvailabilityShimTests(unittest.TestCase):
         ctx = _bare_ctx(loading=True)
         ctx.agent_availability = {}
         app = UxonApp(ctx, probe_agents=False)
-        app.ctx.agent_availability["codex"] = "ok"
+        # Mutating the live slot's dict does not leak back to the
+        # static seed on ``ctx`` (the App copied it at construction).
+        app.state.agent_availability.value["codex"] = "ok"
+        self.assertEqual(ctx.agent_availability, {})
         self.assertEqual(app.state.agent_availability.value, {"codex": "ok"})
-
-    def test_legacy_fallback_when_no_state_linked(self) -> None:
-        ctx = _bare_ctx()
-        # No state linked. Setter writes to legacy slot; getter reads
-        # from there because state is None.
-        ctx.agent_availability = {"claude": "ok"}
-        self.assertEqual(ctx.agent_availability, {"claude": "ok"})
 
 
 class StateMainCanonicalTests(unittest.TestCase):
     """Stage 8 commit 7: ``state.main`` is canonical, written by
-    ``UxonApp._handle_main_ctx_rebuild``. Pin the contract:
+    ``source_dispatch.handle_main_ctx_rebuild``. Pin the contract:
 
     * On the first rebuild landing the slot flips from None to a
       fresh :class:`MainData`.
@@ -226,8 +234,10 @@ class StateMainCanonicalTests(unittest.TestCase):
             import textual  # noqa: F401
         except ImportError:
             self.skipTest("textual not available")
-        from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.app import UxonApp
         from uxon.tui.context import TuiContext
+        from uxon.tui.messages import _RefreshSourceLanded
+        from uxon.tui.source_dispatch import handle_main_ctx_rebuild
 
         ctx = _bare_ctx(loading=True)
         app = UxonApp(ctx, probe_agents=False)
@@ -244,7 +254,7 @@ class StateMainCanonicalTests(unittest.TestCase):
             new_project_root="/srv/work",
             existing_projects=[("p", "1m")],
         )
-        UxonApp._handle_main_ctx_rebuild(
+        handle_main_ctx_rebuild(
             app,
             _RefreshSourceLanded(name="main_ctx_rebuild", value=loaded_ctx),
         )
@@ -267,8 +277,8 @@ class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
     """
 
     def test_select_dashboard_model_stable_across_refresh_tick(self) -> None:
-        from uxon.remote_collector import RemoteSnapshot
-        from uxon.remote_hosts import RemoteHost
+        from uxon.domain.wire_schema import RemoteSnapshot
+        from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.dashboard import model as dashboard_model
         from uxon.tui.dashboard.model import select_dashboard_model
         from uxon.tui.dashboard.ui_state import DashboardUiState

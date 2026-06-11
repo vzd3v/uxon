@@ -6,6 +6,24 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.5.0] — 2026-06-11
+
+### Added
+- Attach-vs-new prompt on every launch action ("New session in current folder", "Create new project", "Open existing project"). When a compatible session for the target directory + agent already exists, uxon asks whether to **attach** to it or **start a new one alongside**, instead of silently auto-attaching. The old auto-attach ignored the operator's selected permission mode; the explicit choice always honours it.
+- Native, uxon-managed git worktrees for every agent. The launch-options screen has a new WORKSPACE column (primary tree + existing worktrees + "+ New worktree…"); pick a workspace or create one and uxon launches the agent there. The column appears for any git target in both launch flows — **New session in current folder** and **Open existing project**; a non-git target shows a "git not initialized" hint (or a "git error" row if the probe fails). New config keys `worktree_root` and `worktree_base`.
+- uxon-managed tmux options, **off by default** (opt-in). When enabled, uxon applies a recommended set — `mouse`, `allow-passthrough`, `extended-keys`, and `terminal-features=xterm*:extkeys` — to the sessions it launches, layered on top of the launch user's own tmux config without editing any file. Enable with `tmux.manage_options = true` (also editable from the superuser settings screen); customise per scope via `[tmux.options]`/`[tmux.server_options]`/`[tmux.append_server_options]` in `config.toml`. A rejected option fails the launch — no degraded session.
+
+### Fixed
+- Interactive actions no longer freeze the dashboard or swallow keystrokes. Attaching, killing a session, kill-all (own / reachable), remote attach/kill, and every launch — **New session in current folder**, **Create new project**, **Open existing project**, and worktree create/attach — ran their `tmux` / `ssh` / `sudo` / `git` calls (session probe, `mkdir`, git-remote create, `git worktree add`) on the UI thread, so the dashboard went deaf to input for the duration. That read as arrow keys vanishing, `Esc` needing several presses to close a modal, and a launch appearing to hang on the first press. These calls now run off the UI thread, with only the cheap prompt/notify running back on it, so the interface stays responsive throughout. A built-in guard turns any future on-thread blocking into an immediate, loud failure instead of silent input loss (override with `UXON_DISABLE_LOOP_GUARD=1`). For diagnosing dropped keystrokes or a stalled interface, `UXON_DEBUG=keys` logs every keypress the app sees plus an event-loop-stall watchdog (see the [enable-debug-logs guide](docs/guides/debug/enable-debug-logs.md)).
+- Keystrokes no longer get swallowed in the dashboard during a background refresh. When a refresh changed the screen's structure — a second user appearing (USER column), a sudo-reachable peer (superuser block), or your session count crossing 0↔1 — uxon rebuilt the whole screen, which destroyed the focused widget and dropped any key already in flight. It read as random dropped arrows/letters mid-update, worse the busier the fleet. The dashboard now reconciles those structural changes in place (the focused table is never torn down on a refresh), so input is never lost.
+- The dashboard no longer burns CPU while you sit idle. A steady telemetry tick used to relayout and repaint the whole screen every ~2 s even when nothing visible changed; now an unchanged tick repaints nothing, and held-arrow navigation repaints only the rows the cursor leaves and lands on instead of the entire list. The status-line spinner still animates. One visible side effect: on a terminal too narrow for the full status line, the line now clips to a single row instead of wrapping to two. Operators bothered by terminal-focus-driven restyles can set `tmux set -g focus-events off` (see the render-performance debug guide).
+
+### Changed
+- Dashboard row order is now stable across refreshes. A telemetry tick (CPU/RAM/activity updating) no longer re-sorts the list under you — each session keeps its slot; a new session is placed by recency within its host block without shifting the rows already on screen, and an ended session drops out in place. Reorders and large fleets no longer stutter or drop keystrokes: the session list repaints only the visible rows instead of rebuilding the whole grid, so navigation stays smooth at hundreds of sessions.
+- Per-host server metrics moved out of the way of the session list. The block that stacked one full status line per host **above** the table is replaced by a single collapsible **fleet status bar below** the table. Collapsed (default) it shows `N hosts · M sess` plus alerts when a host is unreachable or its memory is ≥ 90 %; press `h` (or click the bar) to expand it into one detail line per host. Load average (`la`) is no longer shown.
+- `uxon -w/--worktree <branch>` no longer delegates to `claude`'s native `-w` and is no longer claude-only. uxon now creates and owns the worktree itself under `<repo>/.uxon/worktrees/<branch-slug>/` (excluded automatically via `.git/info/exclude`) and launches any agent there, forwarding agent passthrough flags. When a matching session already exists, `uxon new -w` keeps its attach-vs-new guard (prompt in a TTY, `repeat_noninteractive_mode` otherwise); `uxon run -w` always creates and fails if the worktree already exists. Set `worktree_base = "remote"` for the previous claude-like behaviour of basing new branches on a freshly fetched `origin/HEAD` (the default `local` does no network fetch).
+- Dashboard `LAST` column tints sessions by activity age: yellow after 24 h without I/O, red after 3 d. Thresholds are hard-coded for now.
+
 ## [3.4.0] — 2026-05-13
 
 ### Added
@@ -242,3 +260,12 @@ First release on PyPI as
 [`uxon`](https://pypi.org/project/uxon/). Install via
 `uv tool install uxon`, `pipx install uxon`, or
 `pip install --user uxon`.
+
+[3.5.0]: https://github.com/vzd3v/uxon/compare/v3.4.0...v3.5.0
+[3.4.0]: https://github.com/vzd3v/uxon/compare/v3.3.0...v3.4.0
+[3.3.0]: https://github.com/vzd3v/uxon/compare/v3.2.2...v3.3.0
+[3.2.2]: https://github.com/vzd3v/uxon/compare/v3.2.1...v3.2.2
+[3.2.1]: https://github.com/vzd3v/uxon/compare/v3.2.0...v3.2.1
+[3.2.0]: https://github.com/vzd3v/uxon/compare/v3.1.0...v3.2.0
+[3.1.0]: https://github.com/vzd3v/uxon/compare/v3.0.0...v3.1.0
+[3.0.0]: https://github.com/vzd3v/uxon/releases/tag/v3.0.0

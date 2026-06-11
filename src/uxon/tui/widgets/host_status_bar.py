@@ -52,22 +52,22 @@ def _format_mem(used_kib: int, total_kib: int) -> str:
 def _render(line: HostStatusLine) -> str:
     """One compact host-status line, dot-separated.
 
-    Layout: ``label · N/M · cpu X% · mem U/TG · la X.XX · up Xd[Xh] · state``.
+    Layout: ``label · N/M · cpu X% · mem U/TG · up Xd[Xh] · state``.
     Sessions are written ``total/attached`` to fold two numbers into
     one column. CPU is the per-host sum with no decoration (the
     aggregate is implicit from context). Empty-data fields collapse
     to ``—`` rather than the whole segment vanishing — column count
-    stays stable across hosts.
+    stays stable across hosts. ``la`` (load average) is no longer
+    rendered (FleetStatusBar redesign, 2026-05-30); it carries little
+    value at a glance and is gone from both bar states.
     """
     parts = [
         line.label,
         f"{line.session_count}/{line.attached_count} sess",
         f"cpu {line.cpu_pct_sum:.0f}%",
         f"mem {_format_mem(line.mem_used_kib, line.mem_total_kib)}",
+        f"up {_format_uptime(line.uptime_s)}",
     ]
-    if line.loadavg_1m is not None:
-        parts.append(f"la {line.loadavg_1m:.2f}")
-    parts.append(f"up {_format_uptime(line.uptime_s)}")
     if line.state:
         parts.append(line.state)
     return " · ".join(parts)
@@ -116,6 +116,9 @@ class HostStatusBar(Widget):
         for i, line in enumerate(target):
             text = _render(line)
             if i < len(existing):
-                existing[i].update(text)  # type: ignore[attr-defined]
+                # ``layout=False``: stable single-line status row; content
+                # swap repaints without a global relayout (AC8). On the
+                # by_host steady-tick path the compact bar updates every tick.
+                existing[i].update(text, layout=False)  # type: ignore[attr-defined]
             else:
                 container.mount(Static(text, id=f"{self.id or 'hsb'}-line-{i}"))

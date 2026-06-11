@@ -35,11 +35,13 @@ The TUI's ⚙ Settings screen rewrites repo config in place via a
 | `tui_refresh_interval_seconds` | number | `2.0` | Local-tmux refresh cadence. |
 | `tui_ssh_refresh_interval_seconds` | number | `10.0` | Cadence for SSH-driven streams: the `ssh-link` probe (visible inside SSH) and the per-peer remote-sessions poller (when `[[remote_hosts]]` is configured). |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback when `uxon new` finds an existing matching session. |
+| `worktree_root` | string | `""` | Base directory for uxon-managed worktrees. Empty = default `<repo>/.uxon/worktrees/<branch-slug>/` (excluded from git via `.git/info/exclude`). When set: `<worktree_root>/<repo-slug>/<branch-slug>/` — the admin must ensure it is writable by the launch user and inside `allowed_roots`. |
+| `worktree_base` | `"local"` / `"remote"` | `"local"` | Base ref for a *new* worktree branch. `local` (default): branch off the local `origin/HEAD` if present, else local `HEAD` — no `git fetch`, no network. `remote`: `git fetch origin` first, then branch off the fetched `origin/HEAD` (claude-like; needs network + credentials). |
 | `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
 | `default_git_remote_profile` | string | `""` | Profile picked by `--git-remote default` and the TUI default. |
 | `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=<ssh_control_persist_seconds>s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
 | `ssh_control_persist_seconds` | int | `300` | `ControlPersist` lifetime (seconds) for the multiplex master. Must be `> 0`; to disable multiplexing entirely set `ssh_multiplex = "off"` rather than zeroing this out. Ignored when `ssh_multiplex = "off"` and per-host when `command_template` is set. |
-| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. |
+| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. Not exposed on the TUI's ⚙ Settings screen — edit `config.toml` directly. |
 
 ## `[agents]` table
 
@@ -221,3 +223,89 @@ that infra shouldn't hard-code across hosts. Hand-edit them in
 
 For the multi-host operating model see
 [`explain/multi-host-philosophy.md`](../explain/multi-host-philosophy.md).
+
+## `[tmux]` managed options (3.5.0)
+
+**Off by default.** When enabled, uxon layers a recommended set of `set`
+options (see below) on top of whatever the launch user's own tmux config
+(`/etc/tmux.conf`, `~/.tmux.conf`, XDG) provides, at session launch, without
+editing anyone's files and without guessing config paths. The recommended
+tables ship built-in, so enabling is a one-line toggle — set
+`manage_options = true` under `[tmux]`; you only write your own `[tmux.*]`
+tables if you want to customise the set.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `tmux.manage_options` | bool | `false` | Master switch. Default (or absent) emits none — launch argv is byte-identical to pre-3.5.0. Set `true` to emit the configured `set` commands. |
+| `[tmux.options]` | table | recommended (`mouse`, `allow-passthrough`) | Rendered as `set -g <key> <value>` (global session options). Applied only when `manage_options = true`. |
+| `[tmux.server_options]` | table | recommended (`extended-keys`) | Rendered as `set -s <key> <value>` (server options). Applied only when `manage_options = true`. |
+| `[tmux.append_server_options]` | table | recommended (`terminal-features`) | Rendered as `set -as <key> <value>` (append to a server option's list). Applied only when `manage_options = true`. |
+
+**Enabling and overriding.** Setting `manage_options = true` alone (e.g. from
+the settings screen) applies the recommended set — the scope tables ship
+built-in and stay intact. To customise, override is **per scope**: writing a
+`[tmux.options]` table replaces *that* scope's defaults (re-list every global
+option you want to keep) while scopes you omit — `[tmux.server_options]`,
+`[tmux.append_server_options]` — keep their recommended defaults.
+
+Values are bool / int / str and passed to tmux **verbatim** — uxon does not
+validate option names or values (tmux is the authority on what is valid).
+Booleans render as tmux's `on` / `off`.
+
+**Emission order.** The chain is emitted in a fixed inter-table order —
+global (`-g`) → server (`-s`) → append-server (`-as`) — and within each table
+in declaration order (TOML insertion order is preserved). It is prepended to
+the session-creating tmux invocation, before `new-session` (or before
+`attach-session` / `switch-client` on the attach path), in a single command
+(separated by bare `;` tokens).
+
+**When it runs (server birth vs. live server).** The tmux server is **per
+launch-user** and born once; these options are server-scoped, so they only
+need applying when the server is born. uxon already knows whether a user's
+server is live (a non-empty session list ⇒ alive), so:
+
+- **Server birth** (the launch creates the user's first session): the **full**
+  chain — `-g` + `-s` + `-as` — rides the `new-session` invocation.
+- **Server already live** (any later launch or attach): uxon re-asserts only
+  the **overwrite** scopes `-g` and `-s`. They are idempotent, so re-asserting
+  is harmless and lets a `config.toml` edit to e.g. `mouse` take effect on the
+  next launch/attach **without** a `tmux kill-server`. The **`-as`** scope is
+  **not** re-emitted on a live server — `set -as` *appends* (tmux has no
+  idempotent-append), so re-emitting it would grow the target list (e.g.
+  duplicate `terminal-features` entries) without bound. `-as` is therefore
+  applied once, at birth; editing an `[tmux.append_server_options]` value
+  takes effect after a `tmux kill-server` (these are static terminal-capability
+  declarations, not values one tunes at runtime).
+
+**Fail-fast.** Because the `set` chain runs in the same invocation as
+`new-session` and tmux aborts a `;`-sequence at the first failing command, a
+bad option **aborts the launch — no session is created**. uxon never starts a
+session whose requested options failed to apply; the operator sees tmux's
+error and fixes their config. The recommended set below is verified to apply
+cleanly, so only a user's own bad option trips this path.
+
+**The recommended set** — shipped built-in and applied as soon as
+`manage_options = true`; also shown for reference in
+[`config/config.example.toml`](../../config/config.example.toml):
+
+```toml
+[tmux]
+manage_options = true
+
+[tmux.options]            # set -g
+mouse = "on"
+allow-passthrough = "on"
+
+[tmux.server_options]     # set -s
+extended-keys = "on"
+
+[tmux.append_server_options]   # set -as
+terminal-features = "xterm*:extkeys"
+```
+
+**Scope notes.** Structural validation is enforced at load time: a `[tmux]`
+or `[tmux.*]` value that is not a table, or a non-scalar option leaf, fails
+loud with a clear message. Options apply only on the host where the session is
+**born** (each peer runs its own uxon with its own `config.toml`); the
+aggregator never pushes options to peers. uxon never touches the operator's
+laptop terminal or any outer tmux it cannot reach.

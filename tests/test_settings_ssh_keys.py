@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uxon.settings import SCHEMA_KEYS
+from uxon.infra.settings import SCHEMA_KEYS
 
 
 def test_ssh_multiplex_registered():

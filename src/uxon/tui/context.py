@@ -12,32 +12,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from uxon.domain.launch_request import LaunchRequest
+from uxon.domain.session import TuiSession
+from uxon.domain.status import LinkHealthStatus, ServerStatus
+from uxon.domain.sudo import SudoCapability
+
 if TYPE_CHECKING:
-    from uxon.probes import HostStatsResult
-
-    from .tui_state import TuiState
-
-
-@dataclass(frozen=True)
-class SudoCapability:
-    """Per-target sudo snapshot consumed by the TUI.
-
-    ``reachable_users`` is the subset of ``session_users`` the caller
-    can sudo into via ``sudo -niu <U>`` (probed once at startup).
-    ``can_root`` is the root-NOPASSWD flag used to gate the
-    Settings-screen write fallback (``sudo tee`` of root-owned
-    config). The set is frozen so consumers can hash / store it
-    safely.
-
-    This class lives in ``tui.context`` (rather than alongside the
-    probe machinery in ``uxon.sudo_probe``) so the TUI module is
-    importable without pulling in ``subprocess``. ``uxon.sudo_probe``
-    re-exports the same name so call sites can import it from the
-    natural place; both names resolve to this single class.
-    """
-
-    reachable_users: frozenset[str] = frozenset()
-    can_root: bool = False
+    from uxon.infra.probes import HostStatsResult
 
 
 # ── Errors ───────────────────────────────────────────────────────────
@@ -57,84 +38,6 @@ class CallbackError(Exception):
 # ── Data ─────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class LaunchRequest:
-    """Describes a tmux invocation the TUI wants the outer loop to fork-and-wait.
-
-    The TUI itself never spawns subprocesses; activation handlers return
-    one of these, the main loop exits the fullscreen context, runs
-    the ``prelaunch`` commands and then ``cmd``, waits for exit, and
-    re-enters the main screen with a refreshed context.
-    """
-
-    cmd: tuple[str, ...]
-    prelaunch: tuple[tuple[str, ...], ...] = ()
-    label: str = ""
-
-
-def session_name_from_launch_label(label: str) -> str:
-    """Extract the bare tmux session name from a LaunchRequest label.
-
-    Labels are constructed as ``"<verb> <session>"`` (verbs ``launch``,
-    ``attach``, ``switch-client``) with an optional ``" (nested)"``
-    suffix on the switch-client form.  Audit ``session.*`` events take
-    the bare session name in the ``session`` field; the labelled form
-    breaks cross-event correlation with CLI emits.
-    """
-    if " " not in label:
-        return label
-    rest = label.split(" ", 1)[1]
-    if rest.endswith(" (nested)"):
-        rest = rest[: -len(" (nested)")]
-    return rest
-
-
-@dataclass
-class TuiSession:
-    """Flattened session data for TUI rendering (decoupled from uxon internals)."""
-
-    name: str
-    short: str
-    attached: bool
-    pid: str
-    cpu: str
-    ram: str
-    created: str
-    last_activity: str
-    cmd: str
-    path: str
-    user: str
-    # Multi-agent fields (default to backward-compatible values).
-    stem: str = ""  # bare project stem, e.g. "myproject"
-    agent: str = "claude"  # agent id, e.g. "claude", "codex", "cursor"
-    legacy: bool = False  # True when parsed from old cc-<stem> naming
-    # Raw ISO 8601 timestamps preserved alongside the pre-formatted
-    # display strings so dashboard sort by ``new`` / ``last`` ranks
-    # local rows correctly. Empty string mirrors the wire schema
-    # convention for "missing".
-    created_iso: str = ""
-    last_attached_iso: str = ""
-
-
-@dataclass(frozen=True)
-class ServerStatus:
-    """Compact host health snapshot rendered on the main TUI screen."""
-
-    load: str = ""
-    cpu: str = ""
-    ram: str = ""
-    disk: str = ""
-    uptime: str = ""
-
-
-@dataclass(frozen=True)
-class LinkHealthStatus:
-    """Async SSH-path health probe rendered on the main TUI screen."""
-
-    state: str = "hidden"  # hidden | ok | error | info
-    summary: str = ""
-
-
 @dataclass
 class TuiContext:
     """Everything the TUI needs from uxon to operate."""
@@ -148,21 +51,24 @@ class TuiContext:
     new_project_root: str
     existing_projects: list[tuple[str, str]]  # (name, compact_mtime) under new_project_root
     server_status: ServerStatus = field(default_factory=ServerStatus)
+    # Static seed for the SSH-link-health line. The live value lives on
+    # ``TuiState.link_health`` (a :class:`SlotState`); the App seeds the
+    # slot from this field at construction and screens read the live
+    # slot directly thereafter. This field is the cold-start / no-App
+    # fallback only.
     link_health_status: LinkHealthStatus = field(default_factory=LinkHealthStatus)
-    # ``refresh_tick`` is declared here so pyright sees the
-    # attribute, but the property descriptor installed *after the
-    # class body* (see below) replaces this default at runtime —
-    # reads/writes go through ``self._state.refresh_tick`` when a
-    # state is linked, otherwise through a private fallback slot.
-    # ``init=False`` keeps the kwarg out of ``__init__`` (no caller
-    # passes ``refresh_tick=`` today).
+    # Static seed for the refresh counter. The live counter lives on
+    # ``TuiState.refresh_tick`` (sole writer:
+    # ``UxonApp._handle_main_ctx_rebuild``); screens read it from
+    # ``state`` directly. No caller passes ``refresh_tick=`` today, so
+    # ``init=False`` keeps it out of ``__init__``.
     refresh_tick: int = field(default=0, init=False)
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
     tui_render_debounce_ms: int = 300
     tui_render_max_latency_ms: int = 1000
     # Multi-host transport knobs. Forwarded into per-host fetch
-    # closures by ``cli._build_tui_context`` and snapshotted into
+    # closures by ``tui.context_builder.build_tui_context`` and snapshotted into
     # :class:`uxon.tui.config.TuiConfig` at App-construction time.
     # Defaults mirror :data:`uxon.cli.DEFAULT_CONFIG` so test fixtures
     # that build a bare ``TuiContext`` keep working unchanged.
@@ -211,7 +117,11 @@ class TuiContext:
     enabled_agents: tuple[str, ...] = ()
     default_agent: str = ""
     launch_user: str = ""
-    # Maps agent_id → AgentAvailability (status: "pending"|"ok"|"missing"|"timeout")
+    # Static seed for agent availability (agent_id → AgentAvailability,
+    # status: "pending"|"ok"|"missing"|"timeout"). The live value lives
+    # on ``TuiState.agent_availability`` (a :class:`SlotState`); the App
+    # seeds the slot from this dict at construction and screens read the
+    # live slot directly. Cold-start / no-App fallback only.
     agent_availability: dict[str, Any] = field(default_factory=dict)
 
     # Callbacks — TUI calls these, uxon provides them.
@@ -247,8 +157,14 @@ class TuiContext:
     # thread on mount when ``cwd_writable`` is None; activation also
     # calls it synchronously as a fallback if the probe hasn't landed.
     on_probe_cwd_writable: Callable[[], bool] = lambda: True
-    on_launch_cwd: Callable[[str, str], LaunchRequest] = lambda agent_id, mode_id: LaunchRequest(
-        cmd=("true",), label="noop-launch-cwd"
+    # Same predicate as ``on_probe_cwd_writable`` but for an arbitrary target
+    # directory (``is_launch_target_allowed``): launch_user can write it and
+    # it sits under ``allowed_roots``. Used to gate the "Open existing
+    # project" launch synchronously at activation — that flow has no
+    # pre-probed reactive slot like ``cwd`` does.
+    on_probe_dir_launchable: Callable[[str], bool] = lambda target_dir: True
+    on_launch_cwd: Callable[..., LaunchRequest] = lambda agent_id, mode_id, target_dir=None: (
+        LaunchRequest(cmd=("true",), label="noop-launch-cwd")
     )
     on_launch_new: Callable[[str, str, str, str], LaunchRequest] = (
         lambda name, agent_id, mode_id, git_profile: LaunchRequest(
@@ -258,6 +174,49 @@ class TuiContext:
     on_launch_existing: Callable[[str, str, str], LaunchRequest] = lambda name, agent_id, mode_id: (
         LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
+    # Probe callback: returns (session_name, attached) pairs for the
+    # launch_user's sessions compatible with (target_dir, agent_id). The
+    # TUI calls this after the operator picks agent+mode in
+    # ``LaunchOptionsScreen`` and before committing to ``on_launch_*``;
+    # a non-empty result triggers ``SessionChoiceScreen`` so the operator
+    # can attach to an existing session or knowingly start a parallel one.
+    # ``target_dir`` is an absolute, canonicalised path (either ``ctx.cwd``
+    # or ``<new_project_root>/<name>``).
+    on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]] = (
+        lambda target_dir, agent_id: ()
+    )
+
+    # ── Worktree callbacks (3.5.0) ───────────────────────────────────
+    # Worktree probe: returns the workspaces (folders only — no session
+    # data) for ``cwd``'s repo, parsed from ``git worktree list``. An empty
+    # list = a non-git target → the WORKSPACE column shows a benign "git not
+    # initialized" hint; RAISING (a real repo whose ``git worktree list``
+    # failed) → the column shows an error row carrying the message. Hiding
+    # the column entirely is the screen-side ``workspaces=None`` (never
+    # probed) case, not anything this callback returns. Runs ONCE in a worker
+    # when the launch screen opens, under the non-interactive sudo prefix so a
+    # missing NOPASSWD grant fails fast (§4.2).
+    on_probe_worktrees: Callable[[str], list] = lambda cwd: []
+    # Worktree create → plan_worktree_launch. Builds + launches a
+    # uxon-managed worktree for ``branch`` under the repo at ``repo_root``.
+    on_create_worktree: Callable[[str, str, str, str], LaunchRequest] = (
+        lambda repo_root, branch, agent_id, mode_id: LaunchRequest(
+            cmd=("true",), label="noop-create-worktree"
+        )
+    )
+    # Launch into an EXISTING worktree (or the primary tree treated as a
+    # worktree target) with the repo-qualified stem (§2.5) — never
+    # re-creates the worktree.
+    on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest] = (
+        lambda repo_root, branch, worktree_path, agent_id, mode_id: LaunchRequest(
+            cmd=("true",), label="noop-launch-existing-worktree"
+        )
+    )
+    # Worktree-aware attach-vs-new probe (§2.5, §3): derives the
+    # repo-qualified stem and uses the worktree path as compatibility root.
+    on_probe_existing_worktree_sessions: Callable[
+        [str, str, str, str], tuple[tuple[str, bool], ...]
+    ] = lambda worktree_path, repo_root, branch, agent_id: ()
 
     # Git remote on new project — display only. The TUI never edits these.
     git_create_enabled: bool = False
@@ -291,11 +250,10 @@ class TuiContext:
     tui_search_fields: tuple[str, ...] = ("name", "user")
     tui_color_palette: tuple[str, ...] = ("cyan", "blue")
     local_host_color: str = "green"
-    # Exposed via the property defined after the class body. Reads
-    # return a flattened view of ``self._state.remote`` when a state
-    # is linked, or the kwarg-stored dict for unit tests that don't
-    # build an App. Writes go to the kwarg-stored dict only — the
-    # dispatcher mutates ``state.remote`` directly via ``apply``.
+    # Static seed for the per-host snapshot map. The live store is
+    # ``TuiState.remote`` (one :class:`SlotState` per peer); the
+    # dashboard model selector reads ``state.remote`` directly. This
+    # field is the cold-start / no-App fallback only.
     remote_snapshots: dict = field(default_factory=dict)  # dict[str, RemoteSnapshot]
 
     # Pluggable refresh sources. Each entry is a ``SourceSpec`` (see
@@ -306,154 +264,10 @@ class TuiContext:
     # declarative append rather than a wiring change in ``app.py``.
     #
     # ``None`` (the default) means "no registered sources" — used by
-    # tests and the skeleton context. The CLI's ``_build_tui_context``
+    # tests and the skeleton context. ``tui.context_builder.build_tui_context``
     # populates this with the ``main_ctx_rebuild`` source that wraps
     # ``on_refresh()``; future hosts add more entries here.
     refresh_sources: list = field(default_factory=list)
-
-    # Linked :class:`uxon.tui.tui_state.TuiState` — the App sets this
-    # at ``__init__`` time so the canonical ``refresh_tick`` (and
-    # every async slot) is shared between the live ctx and the state
-    # container. Defaults to ``None`` for tests and the skeleton ctx
-    # that don't run inside an App; the property accessors below fall
-    # back to a private kwarg-stored slot. Excluded from ``__repr__``
-    # to keep test failures readable.
-    _state: TuiState | None = field(default=None, repr=False, compare=False)
-
-
-# ── refresh_tick property ───────────────────────────────────────────
-#
-# Defined after the dataclass body so the property descriptor is not
-# shadowed by the @dataclass-generated ``__init__`` field assignment.
-# When ``_state`` is linked (App is running), reads/writes go through
-# ``state.refresh_tick``; otherwise a private slot in ``__dict__``
-# keeps the dataclass-style attribute semantics intact.
-
-
-def _tui_refresh_tick_get(self: TuiContext) -> int:
-    state = getattr(self, "_state", None)
-    if state is not None:
-        return state.refresh_tick
-    return self.__dict__.get("_legacy_refresh_tick", 0)
-
-
-def _tui_refresh_tick_set(self: TuiContext, value: int) -> None:
-    value = int(value)
-    state = getattr(self, "_state", None)
-    if state is not None:
-        state.refresh_tick = value
-    self.__dict__["_legacy_refresh_tick"] = value
-
-
-TuiContext.refresh_tick = property(  # type: ignore[assignment]
-    _tui_refresh_tick_get,
-    _tui_refresh_tick_set,
-)
-
-
-# ── remote_snapshots property (read-through view onto state.remote) ─
-#
-# ``state.remote`` is the canonical store. Reads flatten the slot
-# dict to ``dict[str, RemoteSnapshot]``; writes (rare; mostly test
-# fixtures setting via the constructor kwarg) land on a private dict
-# so test paths that don't run inside an App keep working.
-#
-# The flattened view is rebuilt on every access — sub-optimal, but
-# the dashboard model selector keys on ``id(slot.value)`` (not on
-# ``id(snapshots)``), so the rebuild cost is bounded by the number
-# of configured hosts.
-
-
-def _tui_remote_snapshots_get(self: TuiContext) -> dict:
-    state = getattr(self, "_state", None)
-    if state is not None and state.remote:
-        return {name: slot.value for name, slot in state.remote.items() if slot.value is not None}
-    return self.__dict__.get("_legacy_remote_snapshots", {})
-
-
-def _tui_remote_snapshots_set(self: TuiContext, value: dict) -> None:
-    self.__dict__["_legacy_remote_snapshots"] = value
-
-
-TuiContext.remote_snapshots = property(  # type: ignore[assignment]
-    _tui_remote_snapshots_get,
-    _tui_remote_snapshots_set,
-)
-
-
-# ── agent_availability read-through property ────────────────────────
-#
-# Canonical store: ``state.agent_availability``
-# (a :class:`SlotState[dict[...]]`). Reads return
-# ``state.<slot>.value`` when a state is linked, falling back to a
-# private kwarg-stored dict for unit tests that build a bare ctx
-# without an App.
-
-
-def _availability_get(self: TuiContext) -> dict:
-    state = getattr(self, "_state", None)
-    if state is not None and state.agent_availability.value is not None:
-        return state.agent_availability.value
-    return self.__dict__.get("_legacy_agent_availability", {})
-
-
-def _availability_set(self: TuiContext, value: dict) -> None:
-    self.__dict__["_legacy_agent_availability"] = value
-
-
-TuiContext.agent_availability = property(  # type: ignore[assignment]
-    _availability_get,
-    _availability_set,
-)
-
-
-# ── link_health_status / cwd_writable read-through properties ───────
-#
-# Canonical: ``state.link_health`` / ``state.cwd_writable``. Reads
-# return ``state.<slot>.value``; the kwarg-stored fallback covers
-# unit tests that build a bare ctx without an App.
-
-
-def _link_health_get(self: TuiContext) -> LinkHealthStatus:
-    state = getattr(self, "_state", None)
-    if state is not None and state.link_health.value is not None:
-        return state.link_health.value
-    return self.__dict__.get("_legacy_link_health_status", LinkHealthStatus())
-
-
-def _link_health_set(self: TuiContext, value: LinkHealthStatus) -> None:
-    self.__dict__["_legacy_link_health_status"] = value
-
-
-def _cwd_writable_get(self: TuiContext) -> bool | None:
-    """Return the cached cwd-writable flag.
-
-    Three-valued semantics:
-      ``None``  — probe still in flight or never ran
-      ``True``  — launchable
-      ``False`` — not launchable
-
-    "Never loaded" is structural: ``state.cwd_writable.last_attempt_at
-    is None`` regardless of value.
-    """
-    state = getattr(self, "_state", None)
-    if state is not None and state.cwd_writable.last_attempt_at is not None:
-        return state.cwd_writable.value
-    return self.__dict__.get("_legacy_cwd_writable", None)
-
-
-def _cwd_writable_set(self: TuiContext, value: bool | None) -> None:
-    self.__dict__["_legacy_cwd_writable"] = value
-
-
-TuiContext.link_health_status = property(  # type: ignore[assignment]
-    _link_health_get,
-    _link_health_set,
-)
-TuiContext.cwd_writable = property(  # type: ignore[assignment]
-    _cwd_writable_get,
-    _cwd_writable_set,
-)
 
 
 # Number of action items at the top of the main list.

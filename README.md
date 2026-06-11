@@ -11,7 +11,7 @@ agents (Claude Code, Codex, Cursor CLI) on one or more Linux
 servers. Team visibility via OS accounts, cross-host visibility
 via SSH, supervision via sudoers.
 
-<!-- screenshot goes here -->
+![uxon dashboard — a lead sees the whole team's agent sessions across hosts](docs/images/uxon-full-team-n.png)
 
 ## When to use uxon
 
@@ -117,10 +117,10 @@ configured `[[remote_hosts]]` peer. Two view modes — `flat`
 a status bar); toggle with `v`. ←/→ on the dashboard cycles
 between hosts (host tabs in `by_host`, `(host, own/other)`
 transitions in `flat`).
-A search bar at the top filters across all rows; `/` refocuses
-it. Per-row data: agent, working dir, live CPU / RAM, attached
-glyph (`●`/`○`), creation time, last activity time. `Enter`
-attaches; `d` kills with confirmation.
+A search bar filters across all rows — hidden by default, press
+`s` (or `/`) to summon it. Per-row data: agent, working dir,
+live CPU / RAM, attached glyph (`●`/`○`), creation time, last
+activity time. `Enter` attaches; `d` kills with confirmation.
 
 Every launch asks whether to start in normal mode or with
 `--dangerously-skip-permissions` ("yolo") — the TUI does not
@@ -145,8 +145,8 @@ enabled = ["claude", "codex"]
 default = "claude"
 ```
 
-`-w <branch>` (worktree) is currently claude-only. `--auto` is
-unavailable for cursor.
+`-w <branch>` (worktree) works with any agent; uxon manages the worktree
+itself. `--auto` is unavailable for cursor.
 
 `uxon doctor` probes each enabled agent and prints its path,
 version, and status. The TUI auto-detects newly-installed

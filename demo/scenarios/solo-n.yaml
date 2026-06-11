@@ -1,0 +1,73 @@
+# solo-n — one developer across two boxes.
+#
+# Wes's primary dev server is local; he also leases a GPU box for ML
+# experiments. Demonstrates the HOST column with two hosts and the
+# typical "stuff piles up on the box you don't SSH into every day"
+# pattern — the abandoned session sits on the GPU box, not on his
+# everyday machine.
+
+schema_version: 1
+
+defaults:
+  agent: claude
+  windows: 1
+  cpu_pct: 0.0
+  rss_mib: 220
+
+local:
+  - user: wes-agent
+    slot: crm-billing
+    agent: claude
+    attached: true
+    windows: 4
+    cpu_pct: 18.6
+    rss_mib: 720
+    path: /home/wes-agent/work/crm-billing
+    cmd: claude
+    age_min: 42
+
+  - user: wes-agent
+    slot: crm-ui
+    agent: codex
+    attached: false
+    attached_min_ago: 1500           # ~25h → yellow
+    windows: 2
+    cpu_pct: 0.6
+    rss_mib: 312
+    path: /home/wes-agent/work/crm-ui
+    cmd: codex
+    age_min: 240
+
+hosts:
+  - name: gpu-box
+    color: magenta
+    host_stats:
+      cpu_pct: 82.6
+      mem_used_kib: 64_000_000
+      mem_total_kib: 96_000_000
+      loadavg_1m: 9.4
+      uptime_s: 432_000             # 5d
+      kernel: "6.8.0-87-generic"
+    sessions:
+      - user: wes-agent
+        slot: train-llama
+        agent: claude
+        attached: true
+        windows: 5
+        cpu_pct: 71.2
+        rss_mib: 3_400
+        path: /home/wes-agent/exp/llama
+        cmd: claude
+        age_min: 380
+
+      - user: wes-agent
+        slot: eval-old
+        agent: cursor
+        attached: false
+        attached_min_ago: 14400      # 10d → red (forgotten on remote box)
+        windows: 1
+        cpu_pct: 0.0
+        rss_mib: 152
+        path: /home/wes-agent/exp/eval
+        cmd: cursor-agent
+        age_min: 20_160

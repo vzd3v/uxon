@@ -44,7 +44,7 @@ Start an agent in the **current working directory**.
 | `--agent claude\|codex\|cursor` | Pick the agent. Default: `agents.default` from config. |
 | `--auto` | Agent's "auto" permission mode. `claude` → `--permission-mode auto`. `codex` → `--full-auto`. **Not supported by `cursor`** (error). |
 | `--dsp` | Agent's "yolo" permission mode. Short for `--dangerously-skip-permissions` (both forms accepted). `claude` → `--dangerously-skip-permissions`. `codex` → `--dangerously-bypass-approvals-and-sandbox`. `cursor` → `--yolo`. Legacy aliases: `--dap`, `-dap`, `-dsp`. |
-| `-w <branch>` | Run inside an existing git worktree branch at `cwd`. **claude only** — error for other agents. |
+| `-w <branch>` | Create a git worktree for `<branch>` in `cwd`'s repo and launch any agent there. Fails if the worktree already exists. See [Worktrees](#worktrees--w-branch). |
 | `--dry-run` | Print the `tmux` command instead of executing. |
 
 `--auto` and `--dsp` are mutually exclusive.
@@ -65,12 +65,13 @@ starts the agent there.
 
 With `-w <branch>`: uses the git repo inside
 `<new_project_root>/<name>` (the directory must already exist and
-be a git repo — `uxon` never creates worktrees for you).
+be a git repo) and launches in a worktree for `<branch>`. See
+[Worktrees](#worktrees--w-branch).
 
 | Flag | Effect |
 |------|--------|
 | `--attach-existing` / `--new-session` | Bypass the repeat prompt (see [Repeat behaviour](#repeat-behaviour)). |
-| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses `default_git_remote_profile`. Incompatible with `-w`. Without this flag, no git is touched (CLI is non-interactive). |
+| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses `default_git_remote_profile`. Cannot be combined with `-w` (rejected). Without this flag, no git is touched (CLI is non-interactive). |
 | `--git-visibility private\|public` | Override the profile's visibility default for this one call. |
 | `--no-git` | Explicit "don't touch git" (same as omitting `--git-remote`). |
 
@@ -186,13 +187,19 @@ local cross-user case so the dry-run output reflects reachability.
 `uxon kill-all --host`. Per-session kill is the only destructive
 operation that crosses hosts.
 
-## `uxon kill-all [--force] [--dry-run]`
+## `uxon kill-all [--force] [--dry-run] [--json]`
 
 Alias: `uxon --killall`.
 
 Kills every `uxon-*` (and configured legacy-prefix) session for
 the current launch user. Requires interactive confirmation (typing
 `kill-all`) or `--force`.
+
+**`--json`** emits a wire-schema envelope (`kind: "kill-all"`) with
+the launch user, socket path, and a per-session result list
+(`killed` / `failed` / `would-kill` under `--dry-run`). Like
+`kill`, `--json` is non-interactive and refuses to run without
+`--force` or `--dry-run`.
 
 This **only** kills sessions for the current launch user. The
 "kill all sessions for every reachable user on this host"
@@ -239,13 +246,18 @@ into observability pipelines.
 
 Use this first whenever behaviour is unexpected.
 
-## `uxon version`
+## `uxon version [--json]`
 
 Aliases: `uxon -V`, `uxon --version`.
 
 Prints `__version__` from the installed `uxon` package and the short
 git commit (with a `-dirty` suffix when the checkout has uncommitted
 changes; the commit/dirty info is only available in dev checkouts).
+
+**`--json`** emits the same data as a wire-schema envelope
+(`kind: "version"`) — see
+[`reference/wire-schema.md`](wire-schema.md). The subcommand stays
+a no-op probe either way: it emits no audit event.
 
 ---
 
@@ -268,14 +280,24 @@ socket.
 
 ## Worktrees (`-w <branch>`)
 
-- `uxon run -w <branch>` — uses the git repo at `cwd`.
-- `uxon new <name> -w <branch>` — uses the repo inside
-  `<new_project_root>/<name>`. Directory must already exist and be
-  a git repo. `uxon` never creates worktrees for you.
+- `uxon run -w <branch>` — repo at `cwd`. `uxon new <name> -w <branch>`
+  — repo inside `<new_project_root>/<name>` (must already exist and be a
+  git repo).
+- uxon creates and owns the worktree itself for **any** agent — it does
+  not call the agent's native `-w`. The worktree lives under
+  `<repo>/.uxon/worktrees/<branch-slug>/` (excluded via `.git/info/exclude`),
+  or under [`worktree_root`](configuration.md#top-level-keys) when set.
+- `run -w` always creates the worktree and fails if it already exists
+  (path taken, or the branch is checked out elsewhere). `new -w`
+  additionally applies the repeat guard (attach vs new) when a matching
+  **session** already exists. New branches are based per
+  [`worktree_base`](configuration.md#top-level-keys).
 - The session name includes both repo and branch slugs, so multiple
   branches of the same repo coexist cleanly.
-- **Currently `claude`-only.** Using `-w` with `codex` or `cursor`
-  is an error.
+- Forwarded agent flags apply (e.g. `uxon run -w feat --agent codex --dsp`).
+
+See the how-to: [Work in a git worktree](../guides/customise/worktrees.md)
+and [why uxon manages worktrees](../explain/worktrees.md).
 
 ## Session naming
 

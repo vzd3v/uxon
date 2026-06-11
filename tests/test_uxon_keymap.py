@@ -26,3 +26,9 @@ def test_uppercase_letter_twin_exists():
     out = bindings_with_aliases(Binding("D", "kill_all", "", show=True))
     keys = {b.key for b in out}
     assert "D" in keys and LAYOUT_ALIASES["D"] in keys
+
+
+def test_hosts_toggle_key_has_ru_twin():
+    # The FleetStatusBar `h` toggle must reach RU-layout operators too.
+    out = bindings_with_aliases(Binding("h", "toggle_hosts", "Hosts", show=True))
+    assert {"h", "р"} <= {b.key for b in out}

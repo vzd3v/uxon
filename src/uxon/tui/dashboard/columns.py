@@ -6,8 +6,9 @@ red/yellow CPU thresholds at >50 / >10, deterministic per-host
 colour glyph on the NAME column so per-row attribution survives
 sort even with the HOST column hidden.
 
-These callables are invoked many times per tick by the reconciler;
-they MUST stay closure-free over mutable state.
+These callables are invoked many times per repaint by the dashboard
+widget (once per visible cell); they MUST stay closure-free over
+mutable state.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from rich.text import Text
 from .row import SessionRow
 
 if TYPE_CHECKING:
-    from uxon.remote_hosts import RemoteHost
+    from uxon.infra.remote_hosts import RemoteHost
 
 
 @dataclass(frozen=True)
@@ -170,8 +171,8 @@ def _format_name(row: SessionRow) -> Text:
     (the AGENT column carries that already) but keeps the ``-N``
     disambiguator so siblings remain distinguishable. Block hue and
     zebra dim are layered by the widget at render time; this
-    formatter stays pure data so the reconciler can diff cells
-    without knowing positional metadata.
+    formatter stays pure data (no positional metadata) so the widget
+    can colour the cell from the block-meta map at paint time.
     """
     glyph = "● " if row.attached else "○ "
     text = Text(glyph)
@@ -202,8 +203,24 @@ def _format_new(row: SessionRow) -> str:
     return format_relative_time(row.created_epoch)
 
 
-def _format_last(row: SessionRow) -> str:
-    return format_relative_time(row.last_attached_epoch)
+_LAST_IDLE_SECONDS = 24 * 3600
+_LAST_STALE_SECONDS = 3 * 86_400
+
+
+def _format_last(row: SessionRow) -> Text:
+    # ``last_attached_epoch`` is tmux ``#{session_activity}`` — it ticks on
+    # I/O, so attached-but-quiet sessions also age into idle/stale.
+    epoch = row.last_attached_epoch
+    now = time.time()
+    label = format_relative_time(epoch, now=now)
+    if epoch is None:
+        return Text(label)
+    delta = max(0.0, now - epoch)
+    if delta >= _LAST_STALE_SECONDS:
+        return Text(label, style="red")
+    if delta >= _LAST_IDLE_SECONDS:
+        return Text(label, style="yellow")
+    return Text(label)
 
 
 # WINS placeholder: the wire schema carries ``windows`` but

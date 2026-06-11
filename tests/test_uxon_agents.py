@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from uxon import agents as uxon_agents
+from uxon.infra import agents as uxon_agents
 
 
 class CatalogTests(unittest.TestCase):
@@ -73,11 +73,11 @@ class ProbeOneTests(unittest.TestCase):
     """Tests for the per-binary ``--version`` probe used by ``do_doctor``.
 
     The parallel multi-agent ``probe_agents`` driver was removed in 0.5.x
-    once the host-wide probe in ``uxon.probes`` replaced it.
+    once the host-wide probe in ``uxon.infra.probes`` replaced it.
     """
 
     def test_probe_ok(self) -> None:
-        with mock.patch("uxon.agents.subprocess.run") as run:
+        with mock.patch("uxon.infra.agents.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="1.0.1\n", stderr=""
             )
@@ -87,7 +87,7 @@ class ProbeOneTests(unittest.TestCase):
 
     def test_probe_missing_filenotfound(self) -> None:
         with mock.patch(
-            "uxon.agents.subprocess.run",
+            "uxon.infra.agents.subprocess.run",
             side_effect=FileNotFoundError("no such binary"),
         ):
             result = uxon_agents._probe_one("codex", launch_user=None)
@@ -95,7 +95,7 @@ class ProbeOneTests(unittest.TestCase):
         self.assertIsNone(result.version)
 
     def test_probe_missing_nonzero_exit(self) -> None:
-        with mock.patch("uxon.agents.subprocess.run") as run:
+        with mock.patch("uxon.infra.agents.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=127, stdout="", stderr="not found"
             )
@@ -104,7 +104,7 @@ class ProbeOneTests(unittest.TestCase):
 
     def test_probe_timeout(self) -> None:
         with mock.patch(
-            "uxon.agents.subprocess.run",
+            "uxon.infra.agents.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=1.5),
         ):
             result = uxon_agents._probe_one("claude", launch_user=None)
@@ -117,8 +117,8 @@ class ProbeOneTests(unittest.TestCase):
             captured.append(cmd)
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="v\n", stderr="")
 
-        with mock.patch("uxon.agents.subprocess.run", side_effect=fake_run):
-            with mock.patch("uxon.agents._current_user", return_value="root"):
+        with mock.patch("uxon.infra.agents.subprocess.run", side_effect=fake_run):
+            with mock.patch("uxon.infra.agents._current_user", return_value="root"):
                 uxon_agents._probe_one("claude", launch_user="devagent")
 
         self.assertEqual(len(captured), 1)

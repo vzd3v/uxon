@@ -5,8 +5,7 @@ Off by default — gated by ``UXON_PERF=1`` so it never runs on CI.  The
 suite as a whole must stay deterministic; perf assertions belong here,
 not in the unit tests.
 
-Spec budgets (``docs/superpowers/specs/2026-05-05-audit-log-design.md``
-§ Performance verification):
+Performance budgets:
 
 - cold first-call latency:  < 200 µs (sink detection + connect)
 - steady-state median:      <  30 µs
@@ -23,7 +22,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from uxon import audit as au
+from uxon.infra import audit as au
 
 
 def _reset_audit_state() -> None:

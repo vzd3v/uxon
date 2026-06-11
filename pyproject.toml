@@ -47,10 +47,10 @@ uxon = "uxon.cli:main"
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "pytest-asyncio",
     "pytest-xdist",
     "ruff",
     "pyright",
+    "import-linter>=2.11",
 ]
 
 # ---------------------------------------------------------------------------
@@ -130,3 +130,51 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning:textual.*",
 ]
+
+# ---------------------------------------------------------------------------
+# Import Linter — enforces the package layering (run `lint-imports`).
+#
+# The single source of truth for "lower layers must not import higher" is the
+# layered contract below. It walks lazy/function-scoped imports too, so the
+# known downward lazy edges (cli/main → uxon.tui inside do_interactive, the
+# app/* lazy infra imports, bridge → domain.host_breaker) all satisfy it —
+# tui is BELOW cli, so the lazy tui import is allowed. The latency invariant
+# ("import uxon.cli" stays textual-free at MODULE LOAD) is orthogonal and is
+# enforced separately by tests/test_uxon_imports.py.
+#
+# Zero `ignore_imports` by design — a layering violation is fixed structurally,
+# never excepted (Part 2 plan, criterion #6).
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "uxon"
+# Required because the forbidden contracts below reference the external
+# `textual` package; the layered contract still only reasons about uxon.*.
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "uxon layered architecture"
+type = "layers"
+layers = [
+    "uxon.cli",
+    "uxon.tui",
+    "uxon.app",
+    "uxon.gitremote",
+    "uxon.infra",
+    "uxon.domain",
+    "uxon.errors",
+]
+# Layers higher in the list may import lower ones, never the reverse. Sibling
+# modules within a layer (e.g. uxon.app.kill ↔ uxon.app.listing) may import
+# each other — independence is not required here.
+
+[[tool.importlinter.contracts]]
+name = "domain stays pure (no Textual)"
+type = "forbidden"
+source_modules = ["uxon.domain"]
+forbidden_modules = ["textual"]
+
+[[tool.importlinter.contracts]]
+name = "infra never reaches into Textual"
+type = "forbidden"
+source_modules = ["uxon.infra"]
+forbidden_modules = ["textual"]

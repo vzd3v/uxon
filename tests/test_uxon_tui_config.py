@@ -62,7 +62,7 @@ def _mk_ctx(**overrides) -> TuiContext:
         on_refresh=lambda: _mk_ctx(),
         on_probe_link_health=lambda: None,
         on_probe_cwd_writable=lambda: True,
-        on_launch_cwd=lambda a, m: LaunchRequest(cmd=("/bin/true",), label="cwd"),
+        on_launch_cwd=lambda a, m, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
         on_launch_new=lambda n, a, m, g: LaunchRequest(cmd=("/bin/true",), label="new"),
         on_launch_existing=lambda n, a, m: LaunchRequest(cmd=("/bin/true",), label="exist"),
         get_settings_entries=lambda: [],
@@ -118,6 +118,29 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertIs(cfg.on_setting_remove, ctx.on_setting_remove)
         self.assertIs(cfg.on_setting_save_mapping, ctx.on_setting_save_mapping)
         self.assertIs(cfg.get_git_remote_profile_rows, ctx.get_git_remote_profile_rows)
+
+
+class WorktreeCallbacksRoundTripTests(unittest.TestCase):
+    def test_from_context_snapshots_worktree_callbacks(self) -> None:
+        sentinel_probe = lambda cwd: []  # noqa: E731
+        sentinel_create = lambda repo, branch, agent, mode: LaunchRequest(  # noqa: E731
+            cmd=("/bin/true",), label="create"
+        )
+        sentinel_launch = lambda repo, branch, path, agent, mode: LaunchRequest(  # noqa: E731
+            cmd=("/bin/true",), label="launch-existing"
+        )
+        sentinel_probe_sess = lambda path, repo, branch, agent: ()  # noqa: E731
+        ctx = _mk_ctx(
+            on_probe_worktrees=sentinel_probe,
+            on_create_worktree=sentinel_create,
+            on_launch_existing_worktree=sentinel_launch,
+            on_probe_existing_worktree_sessions=sentinel_probe_sess,
+        )
+        cfg = TuiConfig.from_context(ctx)
+        self.assertIs(cfg.on_probe_worktrees, sentinel_probe)
+        self.assertIs(cfg.on_create_worktree, sentinel_create)
+        self.assertIs(cfg.on_launch_existing_worktree, sentinel_launch)
+        self.assertIs(cfg.on_probe_existing_worktree_sessions, sentinel_probe_sess)
 
 
 class OnRemoteAttachPropagatedTests(unittest.TestCase):

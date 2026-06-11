@@ -1,186 +1,63 @@
 """Textual app shell for the uxon TUI.
 
-:class:`UxonApp` is a thin shell that, on T5, mounts a placeholder main
-screen. Subsequent tasks (T6/T7*) replace the placeholder with the
-real :class:`MainScreen`.
+:class:`UxonApp` is the Textual host. On mount it pushes the
+:class:`MainScreen`, kicks the background fan-out (delegated to
+:class:`uxon.tui.workers.WorkerCoordinator`), and routes worker results
+through its ``on__*`` message handlers into canonical :class:`TuiState`.
 
-The outer :func:`run` loop is the non-textual controller. It creates a
-:class:`UxonApp`, waits for it to exit (either via quit binding or
-:meth:`UxonApp.request_launch`), and — on launch intent — executes the
-requested subprocess outside the textual render loop before creating a
-fresh app instance. This is the ``exit()``-based TTY handoff pattern
-described in the migration plan.
+The outer non-textual controller (``request_launch`` → ``exit()`` → re-create
+loop / TTY handoff) lives in :func:`uxon.tui.runner.run`. The worker bodies
+live in :mod:`uxon.tui.workers`; the landed-result reducers in
+:mod:`uxon.tui.source_dispatch`; the message envelopes in
+:mod:`uxon.tui.messages`. This module keeps the Textual message-routing
+surface (every ``on__*`` handler is a method here) plus the
+``push_screen``/``call_later`` decisions that must stay on the event loop.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 import time
 from collections.abc import Callable
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from textual import events as _events
 from textual.app import App
 from textual.binding import Binding
-from textual.message import Message
-from textual.worker import Worker, WorkerState
+
+from uxon import __version__
+from uxon.domain.launch_request import LaunchRequest
+from uxon.infra.events import debug as _debug
+from uxon.infra.events import is_enabled as _debug_enabled
 
 from .config import TuiConfig
-from .context import CallbackError, LaunchRequest, TuiContext
-from .events import debug as _debug
-from .events import metrics_record
-from .hints import TEXTUAL_MISSING_HINT
-from .launch import _run_launch_request, pause_on_launch_failure
+from .context import TuiContext
+from .messages import (
+    _AgentAvailabilityUpdated,
+    _CwdWritableUpdated,
+    _HostReportUpdated,
+    _LinkHealthUpdated,
+    _MainCtxLoaded,
+    _OffLoopCallbackDone,
+    _RefreshSourceLanded,
+    _WorktreesProbed,
+)
 from .screens.agents_unavailable import AgentsUnavailableScreen
 from .screens.main import MainScreen
+from .source_dispatch import build_source_dispatch
 from .state import (
     compute_all_missing,
     should_push_agents_unavailable,
 )
 from .tui_state import TuiState
+from .workers import WorkerCoordinator
 
-_ACTIVE_STATES = (WorkerState.PENDING, WorkerState.RUNNING)
-
-
-def _worker_active(w: Worker | None) -> bool:
-    """True iff ``w`` is queued or running.
-
-    Used as the in-flight gate for periodic kick-X helpers — derives
-    from worker state rather than a separate bool, so a cancelled or
-    crashed worker frees its slot automatically.
-    """
-    return w is not None and w.state in _ACTIVE_STATES
-
-
-class _AgentAvailabilityUpdated(Message):
-    """Posted by the background probe worker when its dict update lands.
-
-    Handled only at the app level (:meth:`UxonApp.on__agent_availability_updated`).
-    Modals that need to refresh are invoked via ``call_later`` — no
-    re-posting of this message. Re-posting to screens caused the message
-    to bubble back up to the app and trigger a second dispatch, observed
-    as an infinitely-flashing agent list with the selection resetting
-    each tick.
-
-    Kept for backward compatibility with existing tests that synthesise
-    this message; the worker now posts :class:`_HostReportUpdated` and
-    derives the same dispatch from there.
-    """
-
-    bubble = False
-
-
-class _HostReportUpdated(Message):
-    """Posted by ``_probe_host_worker`` once a fresh :class:`HostReport` lands.
-
-    Carries the locally-built availability dict; the on-loop handler
-    folds the payload into the slot store via :func:`slot_state.apply`.
-    On failure ``error`` is non-empty and the dict may be ``None``;
-    the handler skips the slot apply but still triggers the
-    availability-dispatch path so the UI re-renders with whatever
-    state currently holds.
-
-    ``availability`` defaulting to ``None`` is the "skip the slot
-    apply" signal used by tests that mutate the slot directly and
-    post a bare message to wake the handler.
-    """
-
-    bubble = False
-
-    def __init__(
-        self,
-        availability: dict | None = None,
-        error: str = "",
-        elapsed_ms: int = 0,
-    ) -> None:
-        super().__init__()
-        self.availability = availability
-        self.error = error
-        self.elapsed_ms = elapsed_ms
-
-
-class _LinkHealthUpdated(Message):
-    """Posted by the background SSH-path probe worker when status changes."""
-
-    bubble = False
-
-    def __init__(self, status: Any) -> None:
-        super().__init__()
-        self.status = status
-
-
-class _CwdWritableUpdated(Message):
-    """Posted by the cwd-write probe worker when the result lands.
-
-    Carries ``cwd_at_start`` — the cwd value captured at probe
-    launch time. The on-loop handler drops results whose
-    ``cwd_at_start`` does not match the current ``state.main.cwd``,
-    so an in-flight probe started against ``cwd_old`` is not
-    attributed to ``cwd_new`` after a directory change.
-    """
-
-    bubble = False
-
-    def __init__(self, writable: bool, *, cwd_at_start: str = "") -> None:
-        super().__init__()
-        self.writable = writable
-        self.cwd_at_start = cwd_at_start
-
-
-class _MainCtxLoaded(Message):
-    """Posted when the ``main_ctx_rebuild`` source returns a fresh ctx.
-
-    Applied via :meth:`MainScreen.apply_loaded_ctx`. The screen patches
-    itself in place or swaps for a fresh MainScreen when the layout
-    changed. Dispatched from :class:`_RefreshSourceLanded` for the
-    ``main_ctx_rebuild`` source.
-    """
-
-    bubble = False
-
-    def __init__(self, ctx: TuiContext | None, error: str = "") -> None:
-        super().__init__()
-        self.ctx = ctx
-        self.error = error
-
-
-class _RefreshSourceLanded(Message):
-    """Posted by every registered refresh source when its worker finishes.
-
-    The handler dispatches on :attr:`name` to the per-source apply logic.
-    Sources are fail-soft: ``error`` may be set and ``value`` may be
-    ``None`` — the handler logs via ``UXON_DEBUG=refresh`` and otherwise
-    leaves state untouched, so a transient source failure does not
-    corrupt good data.
-
-    ``instance_epoch`` carries the spawning :class:`UxonApp`'s
-    monotonically-increasing epoch. The dispatcher drops events whose
-    epoch does not match the current app's epoch, catching the race
-    where a worker thread spawned by instance-N posts its result after
-    the outer ``run()`` loop has already created instance-N+1 (e.g.
-    after a TTY handoff). The default ``-1`` is a sentinel meaning
-    "unstamped" — the dispatcher skips the epoch gate then, so tests
-    that synthesise this message directly without an epoch keep working.
-    """
-
-    bubble = False
-
-    def __init__(
-        self,
-        name: str,
-        value: object,
-        error: str = "",
-        elapsed_ms: int = 0,
-        *,
-        instance_epoch: int = -1,
-    ) -> None:
-        super().__init__()
-        self.name = name
-        self.value = value
-        self.error = error
-        self.elapsed_ms = elapsed_ms
-        self.instance_epoch = instance_epoch
+# Event-loop watchdog cadence (UXON_DEBUG=keys only). Poll fast enough
+# to resolve a stall on the order of a single rendered frame; report any
+# tick that lands ≥ _WATCHDOG_STALL_S late, the scale at which a blocked
+# loop would visibly starve the input parser.
+_WATCHDOG_INTERVAL_S: float = 0.02
+_WATCHDOG_STALL_S: float = 0.04
 
 
 class UxonApp(App):
@@ -219,6 +96,10 @@ class UxonApp(App):
         probe_agents: bool = True,
     ) -> None:
         super().__init__()
+        # Terminal/window title — "uxon <version>" rather than Textual's
+        # default class-name ("UxonApp"). Version read live from the
+        # single source of truth so it never drifts.
+        self.title = f"uxon {__version__}"
         self.ctx = ctx
         # Snapshot the immutable side of ``ctx`` once at construction.
         # ``cfg`` is shared across rebuild ticks — ``on_refresh()``
@@ -230,22 +111,36 @@ class UxonApp(App):
         # state populated alongside the live ctx.
         self.cfg: TuiConfig = TuiConfig.from_context(ctx)
         self.state: TuiState = TuiState()
-        # Hoist the cli-built initial dicts into state slots so the
-        # slot is canonical from construction. ``dataclasses.replace``
-        # produces a new (frozen) :class:`SlotState` carrying the same
-        # dict reference — worker-thread in-place mutations through
-        # ``ctx.agent_availability[aid] = …`` land on this dict.
+        # Seed the agent-availability slot from the cli-built initial
+        # dict so the slot is canonical from construction.
+        # ``dataclasses.replace`` produces a new (frozen)
+        # :class:`SlotState` carrying a fresh copy of the seed dict;
+        # the live value is read off ``state.agent_availability`` by
+        # every consumer thereafter (the old read-through proxy on
+        # ``ctx`` is gone).
         from dataclasses import replace as _replace
 
         self.state.agent_availability = _replace(
             self.state.agent_availability,
             value=dict(ctx.agent_availability),
         )
-        self.ctx._state = self.state
         self.pending_launch: LaunchRequest | None = None
         self.quit_rc: int | None = None
         self.pending_status = pending_status
         self.probe_agents = probe_agents
+        # ── Key-drop diagnostics (UXON_DEBUG=keys) ──────────────────
+        # Resolved once at construction so the hot ``on_event`` tap and
+        # the loop watchdog cost a single bool check in production. The
+        # tap records EVERY key at the instant Textual first sees it
+        # (before bindings/forwarding); the existing ``on_key`` only
+        # sees keys that bubble up UNHANDLED — by definition never the
+        # ones that vanish.
+        self._key_trace: bool = _debug_enabled("keys")
+        # Monotonic timestamp of the previous watchdog tick; the gap to
+        # the next tick beyond its scheduled interval is event-loop lag
+        # (a blocked loop delays our own timer — the standard asyncio
+        # stall probe). ``None`` until the first tick.
+        self._wd_prev: float | None = None
         # Snapshot the process-wide counter, then bump it. Production
         # ``_source_worker`` stamps the live epoch on every result.
         # ``_RefreshSourceLanded.instance_epoch`` defaults to the
@@ -256,17 +151,12 @@ class UxonApp(App):
         # is the sentinel branch, not the integer compare.
         self._instance_epoch: int = UxonApp._next_epoch
         UxonApp._next_epoch += 1
-        # Worker-handle in-flight gates (see :func:`_worker_active`).
-        # Each kick also pins its worker to a dedicated group so an
-        # ``exclusive=True`` call cancels only siblings, never workers
-        # from another stream.
-        #
-        # Registry sources gate per-source: ``self._source_handles[name]``
-        # holds the in-flight worker for that source so a slow source
-        # never blocks a faster sibling's next tick.
-        self._source_handles: dict[str, Worker | None] = {}
-        self._host_probe_handle: Worker | None = None
-        self._link_health_handle: Worker | None = None
+        # Background-worker coordinator: owns the per-source/per-probe
+        # in-flight gates, the worker bodies, and the teardown drain.
+        # Constructed after ``cfg``/``state``/``_instance_epoch`` so it
+        # can capture them; reads ``_instance_epoch`` live at post time
+        # (the cross-instance drop gate).
+        self._worker_coord = WorkerCoordinator(self)
         # Latch so ``UXON_DEBUG=startup`` fires ``first_data_landed``
         # exactly once per app instance.
         self._first_data_landed_logged: bool = False
@@ -327,10 +217,10 @@ class UxonApp(App):
         # Seed the cross-user accumulator from the initial ctx so the
         # very first ``MainScreen.__init__`` mounts with the right
         # column set when the launching ctx already carries multi-user
-        # data (the synchronous build path in ``cli._build_tui_context``
+        # data (the synchronous build path in ``tui.context_builder.build_tui_context``
         # populates ``other_sessions`` before the TUI runs at all).
         # Remote landings feed the same set lazily in
-        # :meth:`_handle_remote_snapshot`; local rebuilds in
+        # :func:`source_dispatch.handle_remote_snapshot`; local rebuilds in
         # :meth:`MainScreen.apply_loaded_ctx`.
         for s in ctx.sessions:
             if s.user:
@@ -339,6 +229,63 @@ class UxonApp(App):
             if s.user:
                 self.main_ui.seen_users.add(s.user)
 
+    async def on_event(self, event: _events.Event) -> None:
+        """Total key tap: record EVERY key the instant Textual sees it.
+
+        ``App.on_event`` is the one seam every non-forwarded input event
+        crosses before bindings or forwarding (Textual 8.x). A real
+        key, typed at the terminal, that reached the app's message pump
+        at all appears here exactly once (``is_forwarded`` False). Diff
+        this stream against the external stdin oracle
+        (``script --log-in``) and any byte the oracle saw but this tap
+        did NOT is a key lost *upstream* of the pump — in the terminal
+        driver / escape-sequence parser, the half no prior in-process
+        repro could observe (they injected synthetic ``Key`` messages
+        straight into the pump, downstream of the parser). A byte that
+        DID appear here but produced no action is the routing/focus
+        half. Off by default; one bool check when disabled.
+        """
+        if self._key_trace and isinstance(event, _events.Key) and not event.is_forwarded:
+            focused = self.focused
+            _debug(
+                "keys",
+                at="app_received",
+                key=getattr(event, "key", ""),
+                screen=type(self.screen).__name__ if self.screen is not None else None,
+                focused_id=getattr(focused, "id", None) if focused is not None else None,
+                focused_kind=type(focused).__name__ if focused is not None else None,
+                workers=self._worker_coord.active_source_count(),
+                pending_launch=self.pending_launch is not None,
+                mono=time.monotonic(),
+                wall=time.time(),
+            )
+        await super().on_event(event)
+
+    def _loop_watchdog(self) -> None:
+        """Record event-loop stalls that could starve the input parser.
+
+        Scheduled on the loop via ``set_interval``; a blocked loop
+        delays this very callback, so the gap beyond the scheduled
+        interval IS the stall duration. Correlate a logged stall window
+        against a key the oracle saw vanish to confirm-or-refute the
+        ``run all blocking callbacks off the loop`` theory (35387a2) in
+        real usage rather than by assertion.
+        """
+        now = time.monotonic()
+        prev = self._wd_prev
+        self._wd_prev = now
+        if prev is None:
+            return
+        lag = (now - prev) - _WATCHDOG_INTERVAL_S
+        if lag >= _WATCHDOG_STALL_S:
+            _debug(
+                "keys",
+                at="loop_stall",
+                stall_ms=round(lag * 1000, 1),
+                mono=now,
+                wall=time.time(),
+            )
+
     def on_key(self, event: _events.Key) -> None:
         """Diagnostic log for keys that fall through unhandled.
 
@@ -346,7 +293,7 @@ class UxonApp(App):
         bubbles all the way up to the App without being consumed by a
         widget binding or ``event.stop()`` along the chain. Combined
         with the ``keys`` log entries on widget-side actions
-        (ActionRow cycle/leave, SessionDashboardTable cursor up/down,
+        (ActionRow cycle/leave, SessionListView cursor up/down,
         ``MainScreen._refresh_dashboard`` entry/elapsed) this gives a
         timeline of "key arrived → who handled it (or didn't) → was a
         refresh in flight". Off by default; the call site costs one
@@ -356,7 +303,7 @@ class UxonApp(App):
         focused_id = getattr(focused, "id", None) if focused is not None else None
         focused_kind = type(focused).__name__ if focused is not None else None
         screen = self.screen
-        active_workers = sum(1 for h in self._source_handles.values() if _worker_active(h))
+        active_workers = self._worker_coord.active_source_count()
         _debug(
             "keys",
             at="app_unhandled",
@@ -372,7 +319,10 @@ class UxonApp(App):
         # ``time.monotonic()`` for diffs only — wall-clock jitters
         # under NTP corrections.
         _debug("startup", at="mount_started", ts=time.monotonic())
-        self.push_screen(MainScreen(self.ctx))
+        if self._key_trace:
+            # Arm the loop-stall watchdog only when key tracing is on.
+            self.set_interval(_WATCHDOG_INTERVAL_S, self._loop_watchdog)
+        self.push_screen(MainScreen(self.ctx, self.state))
         if self.pending_status:
             # A notify() raised on mount survives the app re-create
             # cycle when the outer loop stashes the message.
@@ -380,27 +330,21 @@ class UxonApp(App):
         self.pending_status = ""
         # If the caller handed us a skeleton ctx, populate it
         # asynchronously — keeps the first frame fast and the event
-        # loop unblocked. ``_kick_initial_sources`` honours
+        # loop unblocked. ``kick_initial_sources`` honours
         # ``SourceSpec.kick_on_mount`` so future one-shot or interval-only
         # sources can opt out of the initial fan-out.
         if self.ctx.loading:
-            self._kick_initial_sources()
+            self._worker_coord.kick_initial_sources()
         # Kick off background host probe (tmux + all known agents).
         # Probes every CATALOG agent regardless of cfg.enabled_agents
         # so auto-mode (empty enabled list) sees what is installed for
         # ``launch_user``.
         if self.probe_agents:
-            self._kick_host_probe()
+            self._worker_coord.kick_host_probe()
         # Cross-user case: the synchronous path leaves ``cwd_writable``
         # as None because the check would shell out via sudo.
         if self.ctx.cwd_writable is None:
-            cwd_at_start = self.ctx.cwd
-            self.run_worker(
-                lambda cwd=cwd_at_start: self._probe_cwd_writable_worker(cwd),
-                thread=True,
-                exclusive=False,
-                group="cwd_writable",
-            )
+            self._worker_coord.kick_cwd_writable(self.ctx.cwd)
         timers_enabled = not self.is_headless and "PYTEST_CURRENT_TEST" not in os.environ
         if timers_enabled:
             # Per-source periodic timers. Each source advances
@@ -421,94 +365,48 @@ class UxonApp(App):
                     continue
                 self.set_interval(
                     float(cadence),
-                    lambda spec=spec: self._kick_source(spec),
+                    lambda spec=spec: self._worker_coord.kick_source(spec),
                 )
-            self.set_timer(self.ctx.tui_ssh_refresh_interval_seconds, self._kick_link_health_probe)
+            # ``set_interval`` already fires its first probe one interval out
+            # — the same offset a one-shot ``set_timer(interval)`` would use,
+            # so a separate one-shot only double-fires the first probe (RC6).
             self.set_interval(
                 self.ctx.tui_ssh_refresh_interval_seconds,
-                self._kick_link_health_probe,
+                self._worker_coord.kick_link_health_probe,
             )
 
-    def _kick_initial_sources(self) -> None:
-        """Kick every refresh source whose ``kick_on_mount`` is True.
-
-        Distinct from :meth:`kick_refresh` (which fans out
-        unconditionally) so a "lazy" source can opt out of the startup
-        wave without affecting the user-visible ``r`` keybinding.
-        """
-        for spec in self.ctx.refresh_sources or ():
-            if spec.kick_on_mount:
-                self._kick_source(spec)
+    # ── Background fan-out: thin delegators to the coordinator ───────
+    #
+    # ``MainScreen.action_refresh`` / ``launch_flow`` call these on the
+    # App; the bodies live in :class:`WorkerCoordinator`. Kept as
+    # methods so the production + test call surface (``app.kick_refresh``
+    # etc.) is unchanged.
 
     def kick_refresh(self) -> None:
-        """Fan out: kick every registered refresh source.
+        self._worker_coord.kick_refresh()
 
-        Each source is gated independently — a source whose worker is
-        still in flight is skipped without affecting siblings.
+    def run_off_loop(self, fn, *, on_success=None, on_error=None, label="action") -> None:
+        """Run a blocking interactive callback off the loop (see coordinator).
+
+        The single entry point screens/controllers use to keep tmux / ssh
+        / sudo / git off the event-loop thread. Thin delegator to
+        :meth:`WorkerCoordinator.run_off_loop`.
         """
-        sources = self.ctx.refresh_sources or ()
-        if not sources:
-            _debug("refresh", at="kick_refresh", action="skip", reason="no_sources")
-            return
-        _debug("refresh", at="kick_refresh", action="fanout", count=len(sources))
-        for spec in sources:
-            self._kick_source(spec)
+        self._worker_coord.run_off_loop(fn, on_success=on_success, on_error=on_error, label=label)
 
-    def _kick_source(self, spec: Any) -> None:
-        """Schedule one source's fetcher in a worker if not already running.
+    def _kick_initial_sources(self) -> None:
+        self._worker_coord.kick_initial_sources()
 
-        Worker group is namespaced ``refresh:<name>`` so an ``exclusive``
-        call from one source can never cancel another source's worker
-        (the same per-stream isolation that the 3.2.2 fix established).
-        """
-        handle = self._source_handles.get(spec.name)
-        if _worker_active(handle):
-            _debug("refresh", at="kick_source", source=spec.name, action="skip", reason="in_flight")
-            return
-        _debug("refresh", at="kick_source", source=spec.name, action="spawn")
-        self._source_handles[spec.name] = self.run_worker(
-            lambda spec=spec: self._source_worker(spec),
-            thread=True,
-            exclusive=False,
-            group=f"refresh:{spec.name}",
-        )
+    def _kick_host_probe(self) -> None:
+        self._worker_coord.kick_host_probe()
 
-    def _source_worker(self, spec: Any) -> None:
-        """Background thread: run a source's fetcher with fail-soft semantics.
+    def _kick_link_health_probe(self) -> None:
+        self._worker_coord.kick_link_health_probe()
 
-        ``run_source`` never raises — exceptions are captured into the
-        result.
-        """
-        from .refresh import run_source
-
-        result = run_source(spec)
-        _debug(
-            "refresh",
-            at="source_worker",
-            source=result.name,
-            action="done" if result.error is None else "error",
-            error=result.error or "",
-            elapsed_ms=result.elapsed_ms,
-        )
-        # ``from_cache`` is available on ``RemoteSnapshot`` (the
-        # remote-host path) but not on ``TuiContext`` (the local
-        # rebuild path), so we read it defensively.
-        from_cache = bool(getattr(result.value, "from_cache", False))
-        metrics_record(
-            result.name,
-            elapsed_ms=result.elapsed_ms,
-            error=result.error or None,
-            from_cache=from_cache,
-        )
-        self.post_message(
-            _RefreshSourceLanded(
-                name=result.name,
-                value=result.value,
-                error=result.error or "",
-                elapsed_ms=result.elapsed_ms,
-                instance_epoch=self._instance_epoch,
-            )
-        )
+    def probe_workspaces_then(
+        self, cwd: str, on_done: object, *, probe_launchable: object = None
+    ) -> None:
+        self._worker_coord.probe_workspaces_then(cwd, on_done, probe_launchable=probe_launchable)
 
     # ── Source landing dispatch ─────────────────────────────────────
     #
@@ -516,105 +414,30 @@ class UxonApp(App):
     # source-id → handler so adding an asynchronous stream is a
     # registry entry rather than an if/elif ladder. Inspected in order:
     #
-    # 1. ``_EXACT_HANDLERS``: ``dict[str, handler]`` — exact name match
-    #    (``"main_ctx_rebuild"`` etc.). Most sources land here.
-    # 2. ``_PREFIX_HANDLERS``: ordered ``list[(prefix, handler)]`` —
-    #    fallback for families like ``"remote:<host>"`` where the
+    # 1. ``_source_dispatch_exact``: ``dict[str, handler]`` — exact name
+    #    match (``"main_ctx_rebuild"`` etc.). Most sources land here.
+    # 2. ``_source_dispatch_prefix``: ordered ``list[(prefix, handler)]``
+    #    — fallback for families like ``"remote:<host>"`` where the
     #    handler peels the prefix off and routes by suffix.
     #
-    # An unknown name falls through to a debug-log drop. Handlers are
-    # bound methods on :class:`UxonApp`. The registry is built once
-    # per instance in :meth:`__init__` so tests can inspect it without
-    # going through the Pilot harness.
+    # An unknown name falls through to a debug-log drop. The reducer
+    # bodies live in :mod:`uxon.tui.source_dispatch`; the registry is
+    # built once per instance in :meth:`__init__` so tests can inspect
+    # it without going through the Pilot harness.
 
-    def _handle_main_ctx_rebuild(self, event: _RefreshSourceLanded) -> None:
-        """Apply a ``main_ctx_rebuild`` landing into canonical state.
+    def _build_source_dispatch(
+        self,
+    ) -> tuple[
+        dict[str, Callable[[_RefreshSourceLanded], None]],
+        list[tuple[str, Callable[[_RefreshSourceLanded], None]]],
+    ]:
+        """Construct the (exact, prefix) dispatch registries (shell).
 
-        Sole writer of ``state.refresh_tick`` and ``state.main``.
-        Requests a render via the scheduler; the scheduler decides
-        when ``apply_loaded_ctx`` actually fires.
+        Delegates to :func:`source_dispatch.build_source_dispatch`, which
+        returns reducers bound to this App. Inspected by
+        :meth:`on__refresh_source_landed` and by unit tests.
         """
-        if event.error:
-            self.notify(f"Refresh failed: {event.error}", severity="error", timeout=6)
-            return
-        ctx = event.value if isinstance(event.value, TuiContext) else None
-        if ctx is None:
-            return
-        if not self._first_data_landed_logged:
-            self._first_data_landed_logged = True
-            _debug(
-                "startup",
-                at="first_data_landed",
-                source=event.name,
-                ts=time.monotonic(),
-            )
-        from .main_data import MainData
-
-        self.state.refresh_tick += 1
-        self.state.main = MainData.from_context(ctx)
-        self._latest_ctx = ctx
-        screen = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
-        if screen is not None and hasattr(screen, "_id"):
-            screen.loading = self.state.main is None
-        self._render.request("main_ctx")
-
-    def _handle_remote_snapshot(self, event: _RefreshSourceLanded) -> None:
-        """Apply a remote-host snapshot via the slot store.
-
-        Source name is ``remote:<host>``. The fetcher always returns a
-        :class:`RemoteSnapshot` (the collector is fail-soft); we wrap
-        it in a :class:`SlotResult` and fold it into
-        ``state.remote[host]`` via the pure :func:`slot_state.apply`.
-        ``elapsed_ms`` from the fetcher is surfaced on the slot's
-        ring so the latency-p50 tooltip has data.
-        """
-        host_name = event.name[len("remote:") :]
-        from uxon.remote_collector import RemoteSnapshot
-
-        from .slot_state import SlotResult, SlotState
-        from .slot_state import apply as apply_slot
-
-        # Resolve attempted_at from the source result's timing
-        # signature: ``time.time()`` at landing is close enough — the
-        # fetcher itself doesn't emit a timestamp, and the wall-clock
-        # at dispatch is what staleness logic compares against.
-        attempted_at = time.time()
-
-        snap = event.value if isinstance(event.value, RemoteSnapshot) else None
-        if snap is None and not event.error:
-            # Defensive: a remote source landed with neither a
-            # RemoteSnapshot nor an error — drop without mutating.
-            return
-
-        from_cache = bool(getattr(snap, "from_cache", False)) if snap is not None else False
-        result: SlotResult[RemoteSnapshot] = SlotResult(
-            value=snap,
-            error=event.error or None,
-            elapsed_ms=event.elapsed_ms,
-            attempted_at=attempted_at,
-            from_cache=from_cache,
-        )
-        prev = self.state.remote.get(host_name) or SlotState[RemoteSnapshot]()
-        self.state.remote[host_name] = apply_slot(prev, result)
-
-        # Fold peer-emitted users into the cross-user latch accumulator.
-        # If this snapshot brings the very first foreign user, the latch
-        # flips False→True — request the ``main_ctx`` render kind so
-        # :meth:`MainScreen.apply_loaded_ctx` re-evaluates the layout
-        # signature (and mounts the USER column). Otherwise the
-        # ``remote`` fast path is enough — row-level diff against the
-        # updated slot, no recompose.
-        prev_latched = len(self.main_ui.seen_users) > 1
-        if snap is not None:
-            for rec in snap.sessions:
-                user = rec.get("user") if isinstance(rec, dict) else None
-                if user:
-                    self.main_ui.seen_users.add(str(user))
-        new_latched = len(self.main_ui.seen_users) > 1
-        if not prev_latched and new_latched:
-            self._render.request("main_ctx")
-        else:
-            self._render.request("remote")
+        return build_source_dispatch(self)
 
     def _render_dirty(self, kinds: frozenset[str]) -> bool:
         """Single render-dispatch entry. Called by :class:`RenderScheduler`.
@@ -629,6 +452,12 @@ class UxonApp(App):
         signature) re-evaluate. A ``remote``-only batch is a hot-path
         update of dashboard rows; :meth:`_refresh_dashboard` pulls
         from ``state.remote`` directly and is enough.
+
+        Both branches' widget mutations run inside one
+        :meth:`App.batch_update` so a landing yields at most one composite
+        (AC6). Nesting with the status writer's own ``batch_update`` is
+        safe — ``_batch_count`` is counter-based — and the batch wraps
+        synchronous widget writes only (no awaits).
         """
         screen = next((s for s in self.screen_stack if isinstance(s, MainScreen)), None)
         if screen is None:
@@ -636,35 +465,14 @@ class UxonApp(App):
         top = self.screen_stack[-1] if self.screen_stack else None
         if not isinstance(top, MainScreen):
             return False
-        if "main_ctx" in kinds and self._latest_ctx is not None:
-            screen.apply_loaded_ctx(self._latest_ctx)
-            return True
-        if "remote" in kinds:
-            screen._refresh_dashboard()
-            return True
+        with self.batch_update():
+            if "main_ctx" in kinds and self._latest_ctx is not None:
+                screen.apply_loaded_ctx(self._latest_ctx)
+                return True
+            if "remote" in kinds:
+                screen._refresh_dashboard()
+                return True
         return False
-
-    def _build_source_dispatch(
-        self,
-    ) -> tuple[
-        dict[str, Callable[[_RefreshSourceLanded], None]],
-        list[tuple[str, Callable[[_RefreshSourceLanded], None]]],
-    ]:
-        """Construct the (exact, prefix) dispatch registries.
-
-        Inspected by :meth:`on__refresh_source_landed` and by unit
-        tests (no Pilot required). Adding a new source means adding
-        an entry here in the same change as the source-spec
-        registration.
-        """
-        exact: dict[str, Callable[[_RefreshSourceLanded], None]] = {
-            "main_ctx_rebuild": self._handle_main_ctx_rebuild,
-        }
-        # Prefix matchers are scanned in order; the first match wins.
-        prefix: list[tuple[str, Callable[[_RefreshSourceLanded], None]]] = [
-            ("remote:", self._handle_remote_snapshot),
-        ]
-        return exact, prefix
 
     def on__refresh_source_landed(self, event: _RefreshSourceLanded) -> None:
         """Dispatch a source's result via the id → handler registry.
@@ -679,7 +487,7 @@ class UxonApp(App):
         miss, scans ``_source_dispatch_prefix`` for the first prefix
         match. Unknown names are debug-logged and dropped — adding a
         new source means registering a handler in
-        :meth:`_build_source_dispatch`.
+        :func:`source_dispatch.build_source_dispatch`.
         """
         # Sentinel ``-1`` = unstamped (synthetic test post). Production
         # workers always stamp ``self._instance_epoch``; a real event
@@ -731,106 +539,6 @@ class UxonApp(App):
         if isinstance(top, MainScreen):
             top.apply_loaded_ctx(event.ctx)
 
-    def _kick_host_probe(self) -> None:
-        """Schedule the host probe iff one isn't already in flight.
-
-        Wired into ``on_mount`` (initial) and ``MainScreen.action_refresh``
-        (manual ``r`` keybinding). The probe is one-shot on mount; the
-        user picks up freshly-installed binaries via ``r``. Honours
-        ``self.probe_agents`` so tests that opt out of probing (Pilot
-        tests with ``probe_agents=False``, the pty integration suite
-        that stubs ``probes.probe_host``) do not start a real subprocess
-        from the manual-refresh path.
-        """
-        if not self.probe_agents:
-            return
-        if _worker_active(self._host_probe_handle):
-            return
-        self._host_probe_handle = self.run_worker(
-            self._probe_host_worker, thread=True, exclusive=True, group="host_probe"
-        )
-
-    def _probe_host_worker(self) -> None:
-        """Background thread: probe tmux + all known agent binaries.
-
-        Race-free: the worker builds a local availability dict and
-        posts it in a single :class:`_HostReportUpdated`; the on-loop
-        handler folds the payload into ``state.agent_availability``
-        via :func:`slot_state.apply`. No ``self.ctx.<field>`` access
-        from the thread.
-
-        Uses ``probes.probe_host`` so one ``sh -lc`` round-trip covers
-        every CATALOG agent.
-        """
-        import time as _time
-
-        from uxon import agents as uxon_agents
-        from uxon import probes as uxon_probes
-
-        target_user = self.cfg.launch_user or uxon_probes._current_user()
-
-        t0 = _time.monotonic()
-        try:
-            report = uxon_probes.probe_host(target_user)
-        except Exception as exc:  # pragma: no cover — defensive
-            self.post_message(
-                _HostReportUpdated(
-                    error=str(exc) or exc.__class__.__name__,
-                    elapsed_ms=int((_time.monotonic() - t0) * 1000),
-                )
-            )
-            return
-
-        # Strict-whitelist mode (``enabled_agents`` non-empty): surface
-        # exactly the enabled ids, marking absent binaries as "missing"
-        # so the unavailable-modal can fire. Auto-mode (empty config):
-        # surface only what is actually installed; un-installed
-        # CATALOG ids stay out of the availability map entirely.
-        configured = self.cfg.enabled_agents
-        availability: dict = {}
-        if configured:
-            for aid in configured:
-                status = report.agents.get(aid)
-                if status is not None and status.path is not None:
-                    availability[aid] = uxon_agents.AgentAvailability(
-                        status="ok",
-                        path=status.path,
-                    )
-                else:
-                    binary = uxon_agents.CATALOG[aid].binary if aid in uxon_agents.CATALOG else aid
-                    availability[aid] = uxon_agents.AgentAvailability(
-                        status="missing",
-                        error=f"{binary} not found on PATH",
-                    )
-        else:
-            for aid, status in report.agents.items():
-                if status.path is not None:
-                    availability[aid] = uxon_agents.AgentAvailability(
-                        status="ok",
-                        path=status.path,
-                    )
-        self.post_message(
-            _HostReportUpdated(
-                availability=availability,
-                elapsed_ms=int((_time.monotonic() - t0) * 1000),
-            )
-        )
-
-    def _probe_cwd_writable_worker(self, cwd_at_start: str = "") -> None:
-        """Background thread: probe write access and post the result.
-
-        ``cwd_at_start`` threads through the message envelope so the
-        on-loop handler can gate against an in-flight probe whose
-        result no longer applies to the current cwd.
-        """
-        try:
-            writable = bool(self.cfg.on_probe_cwd_writable())
-        except CallbackError:
-            writable = False
-        except Exception:  # pragma: no cover — defensive
-            writable = False
-        self.post_message(_CwdWritableUpdated(writable, cwd_at_start=cwd_at_start))
-
     def on__cwd_writable_updated(self, event: _CwdWritableUpdated) -> None:
         """Apply a cwd-write probe result to ``state.cwd_writable``.
 
@@ -862,34 +570,27 @@ class UxonApp(App):
         if isinstance(top, MainScreen):
             self.call_later(top._refresh_cwd_row)
 
-    def _kick_link_health_probe(self) -> None:
-        if _worker_active(self._link_health_handle):
-            return
-        self._link_health_handle = self.run_worker(
-            self._probe_link_health_worker, thread=True, exclusive=False, group="link_health"
-        )
+    def on__worktrees_probed(self, event: _WorktreesProbed) -> None:
+        """Invoke the launch-flow callback with launchability + workspaces + error."""
+        event.on_done(event.launchable, event.workspaces, event.error)
 
-    def _probe_link_health_worker(self) -> None:
-        """Background thread: probe SSH-path health and post the result.
+    def on__off_loop_callback_done(self, event: _OffLoopCallbackDone) -> None:
+        """Run the on-loop continuation for a blocking callback finished off-loop.
 
-        Reads ``on_probe_link_health`` off the frozen :class:`TuiConfig`
-        (no mutable ctx access from the thread) — ``apply_loaded_ctx``
-        may replace ``self.app.ctx`` concurrently on the event loop,
-        so reading ``self.ctx`` from the worker is a data race.
+        Cross-instance gate mirrors :meth:`on__refresh_source_landed`: a
+        result stamped with a prior app instance's epoch is dropped (the
+        worker belongs to an app that no longer exists, e.g. after a TTY
+        handoff recreated the instance). ``-1`` is the unstamped-test
+        sentinel and skips the gate.
         """
-        from uxon import tui as uxon_tui
-
-        try:
-            probe = self.cfg.on_probe_link_health
-            status = probe() if callable(probe) else None
-        except Exception as exc:  # pragma: no cover — defensive
-            status = uxon_tui.LinkHealthStatus(
-                state="error",
-                summary=str(exc).strip() or exc.__class__.__name__,
-            )
-        if status is None:
-            status = uxon_tui.LinkHealthStatus()
-        self.post_message(_LinkHealthUpdated(status))
+        if event.instance_epoch != -1 and event.instance_epoch != self._instance_epoch:
+            return
+        if event.error is not None:
+            if event.on_error is not None:
+                event.on_error(event.error)
+            return
+        if event.on_success is not None:
+            event.on_success(event.value)
 
     # ── Public protocol: screens call this to hand off TTY ──────────
 
@@ -977,9 +678,9 @@ class UxonApp(App):
         ``state.agent_availability`` via :func:`slot_state.apply`.
         The dispatcher is the *only* on-loop site that mutates this
         slot, so observers see a consistent fresh dict on each tick.
-        ``ctx.agent_availability`` returns ``state.<slot>.value`` —
-        the freshly-allocated dict — so by-reference snapshots
-        captured at modal-construction time would go stale.
+        Consumers read ``state.agent_availability.value`` — the
+        freshly-allocated dict — so by-reference snapshots captured at
+        modal-construction time would go stale.
         """
         from .slot_state import SlotResult
         from .slot_state import apply as apply_slot
@@ -1023,77 +724,6 @@ class UxonApp(App):
 
     # ── Worker drain on teardown ────────────────────────────────────
 
-    def _drain_workers(self, *, grace_seconds: float = 0.1) -> None:
-        """Cancel every tracked worker and wait briefly for completion.
-
-        Spec § Worker lifetime: "Before App.run() returns, every
-        in-flight worker is awaited (or hard-cancelled with a 100 ms
-        grace). No worker thread survives the App instance that
-        spawned it."
-
-        Cancel-then-poll-until-grace is the simplest portable
-        implementation: textual's :meth:`Worker.cancel` flips the
-        state to ``CANCELLED`` for thread workers more or less
-        immediately; for any straggler we sleep in 10 ms slices up
-        to ``grace_seconds`` total so a slow shutdown doesn't make
-        teardown synchronous on the worker.
-
-        Called from :meth:`on_unmount`. Safe to call multiple times.
-        """
-        import time as _time
-
-        # Collect every tracked handle into one flat list. ``run_worker``
-        # may have produced a ``Worker`` for any of these slots.
-        candidates: list[Worker] = []
-        for w in self._source_handles.values():
-            if w is not None:
-                candidates.append(w)
-        if self._host_probe_handle is not None:
-            candidates.append(self._host_probe_handle)
-        if self._link_health_handle is not None:
-            candidates.append(self._link_health_handle)
-
-        # cwd_writable workers were spawned without a handle; reach
-        # into the worker manager group instead. ``self.workers``
-        # exposes a :class:`WorkerManager` whose ``__iter__`` yields
-        # every worker; filtering by group avoids touching workers
-        # already covered above.
-        try:
-            for w in list(self.workers):
-                if w.group == "cwd_writable":
-                    candidates.append(w)
-        except Exception:  # pragma: no cover — defensive
-            pass
-
-        cancelled = 0
-        already_done = 0
-        for w in candidates:
-            if w.state in _ACTIVE_STATES:
-                try:
-                    w.cancel()
-                    cancelled += 1
-                except Exception:  # pragma: no cover — defensive
-                    pass
-            else:
-                already_done += 1
-
-        # Bounded polling — never block teardown more than the grace
-        # window. 10 ms slices keep the wakeup cost negligible.
-        deadline = _time.monotonic() + max(grace_seconds, 0.0)
-        while _time.monotonic() < deadline:
-            if not any(w.state in _ACTIVE_STATES for w in candidates):
-                break
-            _time.sleep(0.01)
-
-        _debug(
-            "refresh",
-            at="drain",
-            cancelled=cancelled,
-            already_done=already_done,
-            total=len(candidates),
-            instance_epoch=self._instance_epoch,
-        )
-
     def on_unmount(self) -> None:
         """Drain in-flight workers before the app loop returns.
 
@@ -1104,7 +734,7 @@ class UxonApp(App):
         returns" point the spec calls for.
         """
         self._render.shutdown()
-        self._drain_workers()
+        self._worker_coord.drain()
 
     def pop_until_main(self) -> None:
         """Dismiss every modal above the main screen.
@@ -1118,94 +748,3 @@ class UxonApp(App):
                 self.pop_screen()
             except Exception:  # pragma: no cover — belt-and-braces
                 break
-
-
-# ── Outer run loop ──────────────────────────────────────────────────
-
-
-def run(ctx: TuiContext) -> int:
-    """Run the interactive uxon TUI.
-
-    Creates a :class:`UxonApp`, waits for it to exit, and on every
-    launch-triggered exit runs the requested subprocess and re-creates
-    the app with a refreshed context. On ``CallbackError`` from
-    ``on_refresh`` the error is stashed in ``pending_status`` and
-    surfaces as a toast when the next app instance mounts.
-    """
-    try:
-        import textual  # noqa: F401 — presence check
-    except ImportError:
-        print(TEXTUAL_MISSING_HINT, file=sys.stderr)
-        return 1
-
-    caller_user = os.environ.get("SUDO_USER") or os.environ.get("USER", "")
-    from uxon import audit as _audit
-
-    _audit.audit("tui.open")
-
-    pending_status: str = ""
-    while True:
-        if sys.stdout.isatty():
-            sys.stdout.write(
-                "\ruxon | New session in current folder | Create new project | Open existing project\r"
-            )
-            sys.stdout.flush()
-        app = UxonApp(ctx, pending_status=pending_status)
-        app.run()
-
-        if app.quit_rc is not None:
-            _debug("tui", reason=f"rc={app.quit_rc}")
-            return app.quit_rc
-
-        req = app.pending_launch
-        if req is None:
-            # Defensive: App exited without setting quit_rc or launch —
-            # treat as a clean quit.
-            return 0
-        # Audit-channel ``session.new`` is emitted by the per-callback
-        # sites in ``cli.py::on_launch_*``; here we keep only the
-        # developer-facing ``debug`` record (off by default,
-        # ``UXON_DEBUG=tui`` opts in) so the dev-only fields (stage / cmd
-        # head / label) survive the migration to journald.
-        _debug(
-            "launch",
-            caller_user=caller_user,
-            launch_user=ctx.current_user,
-            label=req.label,
-            cmd=list(req.cmd)[:2],
-        )
-        sys.stdout.flush()
-        from uxon.tui.context import session_name_from_launch_label
-
-        _session = session_name_from_launch_label(req.label)
-        _t0 = time.monotonic()
-        try:
-            rc, stage, wall_seconds = _run_launch_request(req)
-        except Exception as exc:
-            # ``Exception`` (not ``BaseException``): a KeyboardInterrupt or
-            # SystemExit propagating up here is a user-driven interruption,
-            # not an error in the launched subprocess.  Spec's outcome
-            # alphabet has no "cancelled" label, so leave those uncaught
-            # rather than mislabel them as ``outcome="error"``.
-            _audit.audit(
-                "session.ended",
-                outcome="error",
-                session=_session,
-                rc=-1,
-                wall_seconds=round(time.monotonic() - _t0, 3),
-                error=str(exc)[:256],
-            )
-            raise
-        _audit.audit(
-            "session.ended",
-            outcome="ok" if rc == 0 else "error",
-            session=_session,
-            rc=rc,
-            wall_seconds=round(wall_seconds, 3),
-        )
-        pause_on_launch_failure(sys.stdout, req, rc, stage, wall_seconds)
-        try:
-            ctx = ctx.on_refresh()
-            pending_status = ""
-        except CallbackError as exc:
-            pending_status = f"Refresh failed: {exc}"

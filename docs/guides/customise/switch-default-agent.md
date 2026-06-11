@@ -56,8 +56,8 @@ translate to per-agent equivalents:
 
 ## Worktree mode
 
-`-w <branch>` (worktree) is currently **claude-only**. Using
-`-w` with `codex` or `cursor` is an error.
+`-w <branch>` (worktree) works with **any** agent — uxon manages the
+worktree itself. See [Worktrees](../../reference/cli.md#worktrees--w-branch).
 
 ## Auto-mode and host probe
 

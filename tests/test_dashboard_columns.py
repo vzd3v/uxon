@@ -212,7 +212,7 @@ class NameFormatterTests(unittest.TestCase):
         self.assertIsInstance(text, Text)
         # ``○`` is the unattached glyph; block hue is layered by the
         # widget at render time, NOT by the formatter. The formatter
-        # stays pure data so the reconciler can diff cells.
+        # stays pure data so the widget can colour the cell at paint time.
         self.assertEqual(text.plain, "○ foo")
 
     def test_remote_row_emits_plain_text(self) -> None:
@@ -343,7 +343,11 @@ class RelativeColumnFormatterTests(unittest.TestCase):
         self.assertEqual(_by_id("new").format(_row(created_epoch=None)), "-")
 
     def test_last_none_dash(self) -> None:
-        self.assertEqual(_by_id("last").format(_row(last_attached_epoch=None)), "-")
+        # LAST returns a Rich ``Text`` so the cell can be tinted by staleness;
+        # check the displayed string, not the wrapper type.
+        cell = _by_id("last").format(_row(last_attached_epoch=None))
+        self.assertEqual(cell.plain, "-")
+        self.assertEqual(cell.style, "")
 
 
 class SortKeyTests(unittest.TestCase):

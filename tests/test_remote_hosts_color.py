@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from uxon.remote_hosts import RemoteHostError, load_remote_hosts
+from uxon.infra.remote_hosts import RemoteHostError, load_remote_hosts
 
 
 def test_color_defaults_to_none():

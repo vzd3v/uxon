@@ -2,8 +2,8 @@
 """Regression: ``import uxon.cli`` must stay textual-free.
 
 Non-interactive CLI paths (``uxon version``, ``uxon list --json``, etc.)
-must not pull in ``textual``, ``uxon.tui.context``, or ``uxon.probes``.
-The fast paths import only what they need.
+must not pull in ``textual``, ``uxon.tui.context``, ``uxon.infra.probes``,
+or ``uxon.infra.agents``. The fast paths import only what they need.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import unittest
 
 
 class CliImportSurfaceTests(unittest.TestCase):
-    """``import uxon.cli`` does not load textual, tui.context, or probes."""
+    """``import uxon.cli`` does not load textual, tui.context, probes, or agents."""
 
     def _modules_after_cli_import(self) -> set[str]:
         cp = subprocess.run(
@@ -42,9 +42,65 @@ class CliImportSurfaceTests(unittest.TestCase):
         textual_mods = {m for m in modules if m == "textual" or m.startswith("textual.")}
         self.assertEqual(set(), textual_mods, f"textual leaked: {textual_mods!r}")
 
-    def test_cli_does_not_pull_uxon_probes(self) -> None:
+    def test_cli_does_not_pull_uxon_infra_probes(self) -> None:
         modules = self._modules_after_cli_import()
-        self.assertNotIn("uxon.probes", modules)
+        self.assertNotIn("uxon.infra.probes", modules)
+
+    def test_cli_does_not_pull_uxon_infra_agents(self) -> None:
+        modules = self._modules_after_cli_import()
+        self.assertNotIn("uxon.infra.agents", modules)
+
+    def test_cli_does_not_pull_structlog(self) -> None:
+        # ``import structlog`` eagerly loads ``structlog.dev`` → rich →
+        # pygments (~0.6 s). ``events`` sits on the hot startup path but
+        # only needs structlog when ``UXON_DEBUG`` is set, so the import
+        # is deferred to first use. Keep it that way.
+        modules = self._modules_after_cli_import()
+        self.assertNotIn("structlog", modules)
+
+    def _modules_after_dispatch(self, body: str) -> set[str]:
+        """Run ``body`` (which exercises a dispatch path) in a fresh
+        interpreter after importing ``uxon.cli`` and return the module set."""
+        prog = f"import sys, uxon.cli as cli\n{body}\nprint('\\n'.join(sorted(sys.modules)))\n"
+        cp = subprocess.run(
+            [sys.executable, "-c", prog],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return set(cp.stdout.splitlines())
+
+    def _assert_no_heavy(self, modules: set[str]) -> None:
+        textual_mods = {m for m in modules if m == "textual" or m.startswith("textual.")}
+        self.assertEqual(set(), textual_mods, f"textual leaked: {textual_mods!r}")
+        self.assertNotIn("uxon.tui", modules)
+        self.assertNotIn("uxon.tui.context", modules)
+        self.assertNotIn("uxon.infra.probes", modules)
+        self.assertNotIn("uxon.infra.agents", modules)
+
+    def test_version_dispatch_stays_lazy(self) -> None:
+        # The ``version`` dispatch path: parse + the pure version-string
+        # builder composed with the (git/FS) readers. Must not pull
+        # textual / tui / probes.
+        modules = self._modules_after_dispatch(
+            "from uxon.cli.parsing import parse_args\n"
+            "from uxon.cli.main import format_version\n"
+            "parse_args(['version'])\nassert format_version().startswith('uxon ')\n"
+        )
+        self._assert_no_heavy(modules)
+
+    def test_list_dispatch_stays_lazy(self) -> None:
+        # The ``list`` dispatch path: parse the subcommand and build the
+        # wire-schema records for an empty session set. Must not pull
+        # textual / tui / probes.
+        modules = self._modules_after_dispatch(
+            "from uxon.cli.parsing import parse_args\n"
+            "args = parse_args(['list'])\n"
+            "assert args.action == 'list'\n"
+            "from uxon.domain.wire_schema import build_session_records\n"
+            "build_session_records([], session_prefix='uxon-')\n"
+        )
+        self._assert_no_heavy(modules)
 
 
 if __name__ == "__main__":  # pragma: no cover

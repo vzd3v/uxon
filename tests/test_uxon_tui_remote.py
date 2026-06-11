@@ -1,7 +1,7 @@
 """Tests for the multi-host TUI block.
 
 Pin the rendering contract for remote rows in the unified
-:class:`SessionDashboardTable`:
+:class:`SessionListView`:
 
 - ``select_dashboard_model`` follows ``cfg.remote_hosts`` order
   (config-defined), skips hosts with no snapshot yet, and emits
@@ -9,7 +9,7 @@ Pin the rendering contract for remote rows in the unified
   to the peer name).
 - ``MainScreen.action_kill`` dispatches via ``ctx.on_remote_kill``
   when the focused dashboard row carries a non-``None`` host.
-- ``MainScreen.on_data_table_row_selected`` dispatches via
+- ``MainScreen.on_session_list_view_row_selected`` dispatches via
   ``ctx.on_remote_attach`` for remote rows.
 - Focus key round-trip: ``_current_focus_key`` / ``_focus_key``
   preserve cursor placement on a remote dashboard row across an
@@ -24,8 +24,10 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from uxon.remote_collector import RemoteSnapshot
-from uxon.remote_hosts import RemoteHost
+from helpers import run_off_loop_sync
+
+from uxon.domain.wire_schema import RemoteSnapshot
+from uxon.infra.remote_hosts import RemoteHost
 
 
 def _state_with_snapshots(snapshots):
@@ -138,7 +140,7 @@ class ActionKillRemoteRowTests(unittest.TestCase):
         from uxon.tui.context import TuiContext
         from uxon.tui.dashboard.row import SessionRow
         from uxon.tui.screens.main import MainScreen
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
         kill_calls: list[tuple[str, str, str]] = []
         captured_callback: list = []
@@ -150,11 +152,13 @@ class ActionKillRemoteRowTests(unittest.TestCase):
             def push_screen(self, _modal: object, callback) -> None:
                 captured_callback.append(callback)
 
-        class _StubTable(SessionDashboardTable):  # type: ignore[misc]
-            cursor_row = 0  # shadows the reactive descriptor
+            run_off_loop = staticmethod(run_off_loop_sync)
 
-        # SessionDashboardTable's __init__ requires columns; build via
-        # __new__ so we can avoid the Textual mount machinery.
+        class _StubTable(SessionListView):  # type: ignore[misc]
+            cursor_row = 0  # shadows the property with a plain attr
+
+        # SessionListView's __init__ requires columns; build via __new__
+        # so we can avoid the Textual mount machinery.
         table = _StubTable.__new__(_StubTable)
 
         ctx = TuiContext(
@@ -175,8 +179,14 @@ class ActionKillRemoteRowTests(unittest.TestCase):
             focused = table  # shadows the reactive descriptor
             app = fake_app  # shadows the MessagePump descriptor
 
+        from uxon.tui.screens.kill_flow import KillFlow
+
         screen = _StubScreen.__new__(_StubScreen)
-        screen.ctx = ctx
+        screen.cfg = ctx
+        # ``action_kill`` delegates to the KillFlow controller; __new__
+        # bypasses __init__ so wire it up explicitly (the body lives on
+        # the controller, reaching back into this stub host).
+        screen._kill_flow = KillFlow(screen)
         screen._dashboard_rows = (
             SessionRow(
                 host="vz-prod1",
@@ -204,14 +214,13 @@ class ActionKillRemoteRowTests(unittest.TestCase):
         self.assertEqual(kill_calls, [("vz-prod1", "alice", "uxon-foo@claude")])
 
 
-class OnDataTableRowSelectedRemoteTests(unittest.TestCase):
+class OnRowSelectedRemoteTests(unittest.TestCase):
     """Enter on a remote dashboard row dispatches ``ctx.on_remote_attach``."""
 
-    def test_on_data_table_row_selected_remote_dispatches(self) -> None:
+    def test_on_session_list_view_row_selected_remote_dispatches(self) -> None:
         from uxon.tui.context import LaunchRequest, TuiContext
         from uxon.tui.dashboard.row import SessionRow
         from uxon.tui.screens.main import MainScreen
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
 
         attach_calls: list[tuple[str, str, str]] = []
         captured: list[LaunchRequest] = []
@@ -227,8 +236,7 @@ class OnDataTableRowSelectedRemoteTests(unittest.TestCase):
             def request_launch(self, req: LaunchRequest) -> None:
                 captured.append(req)
 
-        # Stub-construct a SessionDashboardTable instance.
-        table = SessionDashboardTable.__new__(SessionDashboardTable)
+            run_off_loop = staticmethod(run_off_loop_sync)
 
         ctx = TuiContext(
             sessions=[],
@@ -248,8 +256,13 @@ class OnDataTableRowSelectedRemoteTests(unittest.TestCase):
         class _StubScreen(MainScreen):  # type: ignore[misc]
             app = fake_app
 
+        from uxon.tui.screens.launch_flow import LaunchFlow
+
         screen = _StubScreen.__new__(_StubScreen)
-        screen.ctx = ctx
+        screen.cfg = ctx
+        # ``on_session_list_view_row_selected`` delegates the attach
+        # dispatch to the LaunchFlow controller; __new__ bypasses __init__.
+        screen._launch_flow = LaunchFlow(screen)
         screen._dashboard_rows = (
             SessionRow(
                 host="vz-prod1",
@@ -269,11 +282,12 @@ class OnDataTableRowSelectedRemoteTests(unittest.TestCase):
             ),
         )
 
+        # The ``RowSelected`` message carries ``cursor_row`` directly; the
+        # handler indexes ``screen._dashboard_rows`` off it.
         class _Event:
-            data_table = table
             cursor_row = 0
 
-        screen.on_data_table_row_selected(_Event())
+        screen.on_session_list_view_row_selected(_Event())
         self.assertEqual(attach_calls, [("vz-prod1", "alice", "uxon-foo@claude")])
         self.assertEqual(len(captured), 1)
 
@@ -339,17 +353,17 @@ class RemoteStateSurvivesRebuildTests(unittest.TestCase):
             app = fake_app
 
         screen = _StubScreen.__new__(_StubScreen)
-        screen.ctx = old
+        screen.cfg = old
+        screen.state = state
         screen._restore_focus_key = ""
         screen._apply_ctx_refresh = lambda: True  # type: ignore[method-assign]
 
         screen.apply_loaded_ctx(new, focus_key="")
-        self.assertIs(screen.ctx, new)
+        self.assertIs(screen.cfg, new)
         # The slot is unchanged — same SlotState identity, same value.
+        # ``apply_loaded_ctx`` swaps only the static snapshot (``cfg``);
+        # the live ``state.remote`` store is never touched.
         self.assertIs(state.remote["vz-prod1"].value, snap)
-        # Shim flattens state.remote into the legacy dict shape on read.
-        self.assertIn("vz-prod1", screen.ctx.remote_snapshots)
-        self.assertIs(screen.ctx.remote_snapshots["vz-prod1"], snap)
 
 
 class RemoteFocusKeyTests(unittest.TestCase):
@@ -384,10 +398,10 @@ class RemoteFocusKeyTests(unittest.TestCase):
 
     def _stub_screen(self, rows, *, cursor_row=0):
         from uxon.tui.screens.main import MainScreen
-        from uxon.tui.widgets.session_dashboard_table import SessionDashboardTable
+        from uxon.tui.widgets.session_list_view import SessionListView
 
-        class _StubTable(SessionDashboardTable):  # type: ignore[misc]
-            cursor_row = 0  # shadows the reactive descriptor
+        class _StubTable(SessionListView):  # type: ignore[misc]
+            cursor_row = 0  # shadows the property with a plain attr
 
         _StubTable.cursor_row = cursor_row  # type: ignore[assignment]
         table = _StubTable.__new__(_StubTable)
@@ -397,7 +411,7 @@ class RemoteFocusKeyTests(unittest.TestCase):
 
         screen = _StubScreen.__new__(_StubScreen)
         screen._dashboard_rows = tuple(rows)
-        screen.ctx = SimpleNamespace(current_user="vasily")  # type: ignore[assignment]
+        screen.cfg = SimpleNamespace(current_user="vasily")  # type: ignore[assignment]
         return screen, table
 
     def test_current_focus_key_for_remote_row(self) -> None:
@@ -585,7 +599,8 @@ class StateSelectorTests(unittest.TestCase):
         """The latch lives on ``ui.seen_users``, not on ctx — so a
         ctx carrying ``other_sessions`` but a fresh ui must report
         position 2 = False. This pins that the old proxy is gone."""
-        from uxon.tui.context import SudoCapability, TuiContext, TuiSession
+        from uxon.domain.sudo import SudoCapability
+        from uxon.tui.context import TuiContext, TuiSession
         from uxon.tui.dashboard.ui_state import MainScreenUiState
         from uxon.tui.state import select_layout_signature
 

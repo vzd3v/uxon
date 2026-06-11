@@ -2,7 +2,7 @@
 
 The previous JSONL TUI event log (``_log_event`` / ``tui-{user}-{date}.log``)
 was removed in 4.0; audit events now go to journald / syslog via
-``uxon.audit``.  The ``debug`` channel (off by default,
+``uxon.infra.audit``.  The ``debug`` channel (off by default,
 ``UXON_DEBUG``-gated) and the ``metrics`` channel
 (``UXON_METRICS=1``-gated) are unchanged and tested below.
 """
@@ -39,14 +39,14 @@ class StartupChannelTests(unittest.TestCase):
         # The ``startup`` channel rides the same ``_debug`` helper used
         # everywhere else; we only need to verify the topic filter
         # passes the new topic name through.
-        from uxon.tui.events import _parse_debug_topics, debug
+        from uxon.infra.events import _parse_debug_topics, debug
 
         with tempfile.TemporaryDirectory() as td:
             with self._enable(td):
                 # Re-resolve the topic set: events.py snapshots
                 # UXON_DEBUG at import. We patch the module-level set
                 # for the duration of the test.
-                from uxon.tui import events as ev
+                from uxon.infra import events as ev
 
                 with mock.patch.object(ev, "_DEBUG_TOPICS", _parse_debug_topics()):
                     debug("startup", at="mount_started", ts=1.5)
@@ -66,8 +66,10 @@ class StartupChannelTests(unittest.TestCase):
         """
         from unittest.mock import MagicMock
 
-        from uxon.tui.app import UxonApp, _RefreshSourceLanded
+        from uxon.tui.app import UxonApp
         from uxon.tui.context import TuiContext
+        from uxon.tui.messages import _RefreshSourceLanded
+        from uxon.tui.source_dispatch import handle_main_ctx_rebuild
         from uxon.tui.tui_state import TuiState
 
         ctx = TuiContext(
@@ -93,15 +95,15 @@ class StartupChannelTests(unittest.TestCase):
             captured.append({"topic": topic, **fields})
 
         with (
-            mock.patch("uxon.tui.app._debug", _fake_debug),
+            mock.patch("uxon.tui.source_dispatch._debug", _fake_debug),
             mock.patch.object(
                 UxonApp, "screen_stack", new_callable=mock.PropertyMock, return_value=[]
             ),
         ):
             ev1 = _RefreshSourceLanded(name="main_ctx_rebuild", value=ctx)
-            UxonApp._handle_main_ctx_rebuild(app, ev1)
+            handle_main_ctx_rebuild(app, ev1)
             ev2 = _RefreshSourceLanded(name="main_ctx_rebuild", value=ctx)
-            UxonApp._handle_main_ctx_rebuild(app, ev2)
+            handle_main_ctx_rebuild(app, ev2)
 
         startup_records = [r for r in captured if r["topic"] == "startup"]
         self.assertEqual(len(startup_records), 1)
@@ -121,7 +123,7 @@ class MetricsJsonlTests(unittest.TestCase):
         return mock.patch.dict(os.environ, {"UXON_LOG_DIR": td, "UXON_METRICS": "1"})
 
     def test_disabled_by_default(self) -> None:
-        from uxon.tui.events import metrics_record
+        from uxon.infra.events import metrics_record
 
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.dict(os.environ, {"UXON_LOG_DIR": td}, clear=False):
@@ -130,7 +132,7 @@ class MetricsJsonlTests(unittest.TestCase):
             self.assertEqual(list(pathlib.Path(td).iterdir()), [])
 
     def test_writes_one_jsonl_line(self) -> None:
-        from uxon.tui.events import metrics_record
+        from uxon.infra.events import metrics_record
 
         with tempfile.TemporaryDirectory() as td:
             with self._enable(td):
@@ -153,7 +155,7 @@ class MetricsJsonlTests(unittest.TestCase):
             self.assertEqual(rec["attempted_at"], 1700000000.0)
 
     def test_swallows_errors(self) -> None:
-        from uxon.tui.events import metrics_record
+        from uxon.infra.events import metrics_record
 
         with mock.patch.dict(
             os.environ,
@@ -165,7 +167,7 @@ class MetricsJsonlTests(unittest.TestCase):
                 self.fail(f"metrics_record raised: {exc!r}")
 
     def test_rotation_at_threshold(self) -> None:
-        from uxon.tui import events as ev
+        from uxon.infra import events as ev
 
         with tempfile.TemporaryDirectory() as td:
             with self._enable(td), mock.patch.object(ev, "_METRICS_ROTATE_BYTES", 256):

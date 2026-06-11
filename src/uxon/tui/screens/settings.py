@@ -1,7 +1,8 @@
-"""SettingsScreen + per-kind edit modals.
+"""SettingsScreen — the settings DataTable host.
 
 Reuses :class:`SettingEntry` from the ``uxon_settings`` module —
-the TUI-facing I/O contract lives there; this file owns the UI.
+the TUI-facing I/O contract lives there; this file owns the UI. The
+per-kind edit modals live in :mod:`uxon.tui.screens.settings_modals`.
 """
 
 from __future__ import annotations
@@ -12,22 +13,25 @@ from typing import Any, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen, Screen
+from textual.screen import Screen
 from textual.widgets import (
-    Button,
     DataTable,
     Footer,
     Header,
-    Input,
-    Label,
-    ListItem,
-    ListView,
     Static,
 )
 
 from ..context import CallbackError
 from ..keymap import bindings_with_aliases
+from .settings_modals import (
+    ArrayCsvModal,
+    BoolToggleModal,
+    EnumCycleModal,
+    NumberInputModal,
+    StringInputModal,
+    TableMappingModal,
+    _EditModalBase,
+)
 
 GIT_REMOTES_VIEW_LABEL = "Git remote profiles (view)"
 
@@ -75,6 +79,9 @@ class SettingsScreen(Screen):
         Binding("enter", "edit", "Edit", show=True),
     )
 
+    # Framework-managed initial focus (rationale: SessionChoiceScreen).
+    AUTO_FOCUS = "#settings-table"
+
     def __init__(self, cbs: Any) -> None:
         super().__init__()
         self.cbs = cbs
@@ -95,7 +102,6 @@ class SettingsScreen(Screen):
         t = self.query_one("#settings-table", DataTable)
         t.add_columns("KEY", "VALUE", "SOURCE")
         self._reload()
-        t.focus()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Delegate ``Enter`` on the table to :meth:`action_edit`."""
@@ -171,7 +177,7 @@ class SettingsScreen(Screen):
             if changed:
                 self._reload()
 
-        modal: ModalScreen | None = None
+        modal: _EditModalBase | None = None
         if kind == "bool":
             modal = BoolToggleModal(entry, self.cbs)
         elif kind == "enum":
@@ -239,242 +245,3 @@ def _source_text(source: str) -> str:
     if source == "default":
         return "default"
     return source  # project:<path>
-
-
-# ── Per-kind edit modals ─────────────────────────────────────────────
-
-
-class _EditModalBase(ModalScreen[bool]):
-    DEFAULT_CSS = """
-    _EditModalBase, BoolToggleModal, EnumCycleModal,
-    StringInputModal, NumberInputModal, ArrayCsvModal, TableMappingModal {
-        align: center middle;
-    }
-    _EditModalBase > Vertical, BoolToggleModal > Vertical,
-    EnumCycleModal > Vertical, StringInputModal > Vertical,
-    NumberInputModal > Vertical, ArrayCsvModal > Vertical, TableMappingModal > Vertical {
-        width: 80;
-        max-height: 30;
-        padding: 1 2;
-        border: round $accent;
-        background: $surface;
-    }
-    .title {
-        text-style: bold;
-        margin-bottom: 1;
-    }
-    .desc {
-        color: $text-muted;
-        margin-bottom: 1;
-    }
-    .buttons {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    """
-
-    BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
-        Binding("escape", "cancel", "Cancel", show=True),
-        Binding("up", "app.focus_previous", "", show=False),
-        Binding("down", "app.focus_next", "", show=False),
-    )
-
-    def __init__(self, entry: Any, cbs: Any) -> None:
-        super().__init__()
-        self.entry = entry
-        self.cbs = cbs
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
-
-    def _try_save(self, new_value: Any) -> None:
-        try:
-            self.cbs.save_setting(self.entry.spec.key, new_value)
-        except Exception as exc:
-            self.app.notify(f"Save failed: {exc}", severity="error", timeout=6)
-            self.dismiss(False)
-            return
-        self.dismiss(True)
-
-    def _title(self) -> str:
-        return f"Edit {self.entry.spec.key}"
-
-
-class BoolToggleModal(_EditModalBase):
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(self.entry.spec.description, classes="desc")
-            with Horizontal(classes="buttons"):
-                yield Button("True", variant="success", id="true")
-                yield Button("False", variant="error", id="false")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self._try_save(event.button.id == "true")
-
-
-class EnumCycleModal(_EditModalBase):
-    def compose(self) -> ComposeResult:
-        choices = self.entry.spec.choices or ()
-        current = self.entry.value
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(self.entry.spec.description, classes="desc")
-            items = []
-            for c in choices:
-                items.append(ListItem(Label(c)))
-            lv = ListView(*items, id="enum-list")
-            self._lv_default = 0
-            for i, c in enumerate(choices):
-                if c == current:
-                    self._lv_default = i
-            yield lv
-
-    def on_mount(self) -> None:
-        lv = self.query_one(ListView)
-        lv.index = self._lv_default
-        lv.focus()
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        choices = self.entry.spec.choices or ()
-        idx = self.query_one(ListView).index or 0
-        if 0 <= idx < len(choices):
-            self._try_save(choices[idx])
-
-
-class StringInputModal(_EditModalBase):
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(self.entry.spec.description, classes="desc")
-            yield Input(value=str(self.entry.value or ""), id="string-input")
-            with Horizontal(classes="buttons"):
-                yield Button("Save", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
-
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save":
-            self._try_save(self.query_one(Input).value)
-        elif event.button.id == "cancel":
-            self.dismiss(False)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._try_save(event.value)
-
-
-class NumberInputModal(_EditModalBase):
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(self.entry.spec.description, classes="desc")
-            yield Input(value=str(self.entry.value or ""), id="number-input")
-            with Horizontal(classes="buttons"):
-                yield Button("Save", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
-
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save":
-            self._save_value(self.query_one(Input).value)
-        elif event.button.id == "cancel":
-            self.dismiss(False)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._save_value(event.value)
-
-    def _save_value(self, raw: str) -> None:
-        try:
-            value = float(raw)
-        except ValueError:
-            self.app.notify("Expected a number.", severity="error", timeout=4)
-            return
-        self._try_save(value)
-
-
-class ArrayCsvModal(_EditModalBase):
-    def compose(self) -> ComposeResult:
-        current = ", ".join(self.entry.value or [])
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(
-                f"{self.entry.spec.description}  (comma-separated)",
-                classes="desc",
-            )
-            yield Input(value=current, id="array-input")
-            with Horizontal(classes="buttons"):
-                yield Button("Save", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
-
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def _parse(self, s: str) -> list[str]:
-        return [p.strip() for p in s.split(",") if p.strip()]
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save":
-            self._try_save(self._parse(self.query_one(Input).value))
-        elif event.button.id == "cancel":
-            self.dismiss(False)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._try_save(self._parse(event.value))
-
-
-class TableMappingModal(_EditModalBase):
-    """Edit a ``table`` setting as ``key=value,key=value`` CSV."""
-
-    def compose(self) -> ComposeResult:
-        current = ", ".join(f"{k}={v}" for k, v in sorted((self.entry.value or {}).items()))
-        with Vertical():
-            yield Static(self._title(), classes="title")
-            yield Static(
-                f"{self.entry.spec.description}  (key=value, comma-separated)",
-                classes="desc",
-            )
-            yield Input(value=current, id="table-input")
-            with Horizontal(classes="buttons"):
-                yield Button("Save", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
-
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def _parse(self, s: str) -> dict[str, str]:
-        result: dict[str, str] = {}
-        for part in s.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if "=" not in part:
-                continue
-            k, _, v = part.partition("=")
-            k = k.strip()
-            v = v.strip()
-            if k:
-                result[k] = v
-        return result
-
-    def _try_save_mapping(self, mapping: dict[str, str]) -> None:
-        try:
-            self.cbs.save_mapping(self.entry.spec.key, mapping)
-        except Exception as exc:
-            self.app.notify(f"Save failed: {exc}", severity="error", timeout=6)
-            self.dismiss(False)
-            return
-        self.dismiss(True)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save":
-            self._try_save_mapping(self._parse(self.query_one(Input).value))
-        elif event.button.id == "cancel":
-            self.dismiss(False)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._try_save_mapping(self._parse(event.value))

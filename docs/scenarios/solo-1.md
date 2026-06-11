@@ -34,6 +34,8 @@ sessions on it.
   [`guides/customise/template-uxon-toml.md`](../guides/customise/template-uxon-toml.md)
 - **Tune dashboard refresh on a slow link** —
   [`guides/customise/tune-refresh-cadence.md`](../guides/customise/tune-refresh-cadence.md)
+- **Work in a git worktree** —
+  [`guides/customise/worktrees.md`](../guides/customise/worktrees.md)
 
 ## Reference
 

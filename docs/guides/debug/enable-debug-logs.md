@@ -20,7 +20,7 @@ default and goes to journald / syslog (see
 ## `UXON_DEBUG=<topics>`
 
 ```bash
-UXON_DEBUG=tui,startup uxon
+UXON_DEBUG=keys,startup uxon
 ```
 
 Comma-separated topic names. Each topic gates a small set of
@@ -31,14 +31,15 @@ Available topics:
 | Topic | What it logs |
 |---|---|
 | `startup` | Startup phases (`mount_started`, `first_paint`, `first_data_landed`). |
-| `tui` | TUI state transitions, focus changes, key routing decisions. |
-| `tui-table` | Dashboard reconcile diff ops (one log line per applied mutation; zero on a no-op tick). |
-| `refresh` | Pluggable refresh-source registry events per source per tick. |
+| `keys` | Per-keypress trace (every key before binding dispatch), cursor / host-navigation, refresh-dashboard timing, and the event-loop stall watchdog. The primary channel for dropped-keystroke and freeze investigation. |
+| `refresh` | Pluggable refresh-source registry events per source per tick (fan-out, per-source spawn / skip). |
+| `tui` | Sparse lifecycle markers — app-quit reason and unknown-column-id on config load. |
+| `probes` | Host-stats probe failures during `list --json` collection. |
 
-Output goes to `${state_dir}/uxon-debug.jsonl` (one JSON line
-per event). Default `state_dir` is
-`${XDG_STATE_HOME:-~/.local/state}/uxon`. Override with
-`UXON_LOG_DIR=/path`.
+Output goes to `${state_dir}/tui-debug-{user}-{YYYYMMDD}.log` (one
+JSON line per event; one file per launch user per day). Default
+`state_dir` is `${XDG_STATE_HOME:-~/.local/state}/uxon`. Override
+with `UXON_LOG_DIR=/path`.
 
 ## `UXON_METRICS=1`
 
@@ -47,26 +48,33 @@ UXON_METRICS=1 uxon list --all-hosts --json > /dev/null
 cat ~/.local/state/uxon/metrics.jsonl | tail
 ```
 
-Writes one JSON line per remote-collector fetch attempt with
-timing breakdown:
+Writes one JSON line per fetch attempt (the local context rebuild
+plus one per remote peer) with timing:
 
-- `peer_name`, `ssh_alias`
-- `connect_ms`, `command_ms`, `parse_ms`, `total_ms`
-- `outcome` (`ok` / `cache_fallback` / `error` / …)
+- `source_id` (`main_ctx_rebuild`, or `remote:<host>` for a peer)
+- `elapsed_ms` (wall-time of the fetch attempt)
+- `error` (first-line error string, or `null` on success)
+- `from_cache` (`true` when the result was served from the
+  on-disk snapshot cache)
+- `attempted_at` (optional epoch seconds, when the caller supplies it)
 
-Rotated at 1 MiB, capped at 3 files.
+Goes to `${state_dir}/metrics.jsonl`, rotated at 1 MiB, capped at
+3 files.
 
 ## Reading the JSONL
 
 ```bash
+# Today's debug log (substitute the launch user / date):
+DBG=~/.local/state/uxon/tui-debug-$(id -un)-$(date +%Y%m%d).log
+
 # Pretty-print:
-jq . ~/.local/state/uxon/uxon-debug.jsonl | less
+jq . "$DBG" | less
 
 # Filter by topic:
-jq -c 'select(.topic == "tui-table")' ~/.local/state/uxon/uxon-debug.jsonl
+jq -c 'select(.topic == "keys")' "$DBG"
 
 # Histogram fetch latencies:
-jq -r '.total_ms' ~/.local/state/uxon/metrics.jsonl | \
+jq -r '.elapsed_ms' ~/.local/state/uxon/metrics.jsonl | \
   awk '{bucket=int($1/100)*100; count[bucket]++} END {for (b in count) print b "ms", count[b]}'
 ```
 
@@ -89,7 +97,7 @@ Or just close the shell. The channels stop writing immediately;
 existing JSONL files remain on disk. Delete them:
 
 ```bash
-rm ~/.local/state/uxon/uxon-debug.jsonl
+rm ~/.local/state/uxon/tui-debug-*.log
 rm ~/.local/state/uxon/metrics.jsonl*
 ```
 
@@ -100,25 +108,29 @@ rm ~/.local/state/uxon/metrics.jsonl*
 ```bash
 UXON_DEBUG=startup uxon
 # After it opens, quit. Inspect:
-jq -c '.event' ~/.local/state/uxon/uxon-debug.jsonl
+DBG=~/.local/state/uxon/tui-debug-$(id -un)-$(date +%Y%m%d).log
+jq -c '.at' "$DBG"
 # Look for the time delta between mount_started and first_data_landed.
 ```
 
-**Dashboard repaints feel laggy:**
+**Keystrokes feel dropped, or the dashboard freezes:**
 
 ```bash
-UXON_DEBUG=tui-table uxon
-# Run for a minute. Each line = one cell mutation.
-wc -l ~/.local/state/uxon/uxon-debug.jsonl
-# A no-op tick should be 0 lines; non-zero means rows are diffing
-# unnecessarily.
+UXON_DEBUG=keys uxon
+# Reproduce the stutter, then quit. Inspect:
+DBG=~/.local/state/uxon/tui-debug-$(id -un)-$(date +%Y%m%d).log
+# Every key the app saw, plus any event-loop stall the watchdog caught:
+jq -c 'select(.topic == "keys")' "$DBG"
 ```
+
+See [`render-performance.md`](render-performance.md) for the full
+dropped-keystroke / idle-CPU playbook.
 
 **Per-peer SSH cost across the fleet:**
 
 ```bash
 UXON_METRICS=1 uxon list --all-hosts --json > /dev/null
-jq -c '{peer: .peer_name, total: .total_ms}' \
+jq -c '{source: .source_id, ms: .elapsed_ms, cached: .from_cache}' \
   ~/.local/state/uxon/metrics.jsonl
 ```
 

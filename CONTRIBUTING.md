@@ -1,7 +1,8 @@
 # Contributing to uxon
 
 Thanks for taking the time. This guide covers everything you need
-to make and ship a change.
+to make and ship a change. By participating you agree to the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Local setup
 
@@ -78,8 +79,9 @@ Then add a matching entry to [`CHANGELOG.md`](CHANGELOG.md) under
 
 ## Architectural rules a contributor will hit
 
-These are non-negotiable — see [`docs/architecture.md`](docs/explain/architecture.md)
-for the full picture. Quick list:
+These are non-negotiable — see
+[`docs/explain/architecture.md`](docs/explain/architecture.md) for the
+full picture. Quick list:
 
 - **`textual` is imported lazily inside `do_interactive`.** Non-TUI
   subcommands (`uxon list`, `uxon doctor`, `uxon version`) must run

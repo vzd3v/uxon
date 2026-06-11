@@ -14,6 +14,7 @@ the visible subset.
 | `d` | Kill highlighted session (with confirmation) |
 | `D` (Shift+d) | Kill all *own* sessions (`kill-all` to confirm) |
 | `v` | Toggle dashboard view (`flat` ↔ `by_host`) |
+| `h` | Toggle the fleet status bar (collapsed counts+alerts ↔ per-host detail) |
 | `s` (or `/`) | Focus the search bar from anywhere |
 | `r` | Refresh |
 | `q` | Quit |
@@ -24,8 +25,26 @@ Sort is a fixed contract (locals → cfg-order remotes →
 within-block by recency); there are no sort bindings.
 
 JCUKEN twins: every dashboard key has a Russian-layout twin
-(`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`) so the
+(`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`, `h`/`р`) so the
 keymap survives a Cyrillic layout without `xkb` tweaks.
+
+## Launch options screen
+
+Shown after picking a launch action (New session / Create new
+project / Open existing project). Three side-by-side panels —
+AGENT, PERMISSION, and WORKSPACE (the WORKSPACE panel appears
+for any git target: the primary tree, existing worktrees, and a
+`+ New worktree…` row).
+
+| Key | Action |
+|---|---|
+| `←` / `→` | Move between the AGENT / PERMISSION / WORKSPACE panels |
+| `↑` / `↓` | Move within the focused panel |
+| `Enter` | Confirm and launch (on `+ New worktree…`, opens the branch-name prompt) |
+| `Esc` | Cancel |
+
+The branch-name prompt (reached via `+ New worktree…`) takes
+`Enter` to create and `Esc` to cancel.
 
 ## "Open existing project" screen
 
@@ -46,6 +65,22 @@ list. Cursor and selection bindings work without leaving the input.
 | `0`–`9` | Pick profile by number |
 | `Enter` | Confirm |
 | `Esc` | Cancel |
+
+## "Existing session" modal
+
+Pushed by every launch action (`New session in current folder`,
+`Create new project`, `Open existing project`) when a compatible
+session for the target directory already exists. A pure list: each
+compatible session is a row, followed by a `+ Start new session
+alongside` row. Pick a row to attach to that session, or the trailing
+row to knowingly start a parallel one.
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Navigate the list (sessions + the trailing *start-new* row) |
+| `Enter` | Confirm the highlighted row (a session attaches; the trailing row starts a new parallel session) |
+| `n` | Shortcut: start a new (parallel) session |
+| `Esc` | Cancel the launch |
 
 ## ⚙ Settings screen (superuser block only)
 

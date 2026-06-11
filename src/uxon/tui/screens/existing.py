@@ -16,13 +16,12 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.screen import ModalScreen
 from textual.widgets import Label, ListItem, ListView, Static
 
 from ..keymap import bindings_with_aliases
 from ..state import filter_existing_projects
 from ..widgets.filter_input import FilterChanged, FilterInput
+from .modal_base import CardModal
 
 
 def _row_label(name: str, mtime: str) -> str:
@@ -32,21 +31,14 @@ def _row_label(name: str, mtime: str) -> str:
     return f"{name:<60.60} {mtime:>5}"
 
 
-class ExistingProjectScreen(ModalScreen["str | None"]):
+class ExistingProjectScreen(CardModal["str | None"]):
+    # Card chrome + Esc binding come from CardModal; this screen overrides
+    # the width and makes the card full-height (a long, scrolling list),
+    # then layers on the FilterInput/ListView styling below.
     DEFAULT_CSS = """
-    ExistingProjectScreen {
-        align: center middle;
-    }
-    ExistingProjectScreen > Vertical {
+    ExistingProjectScreen .modal-card {
         width: 70;
         height: 90%;
-        padding: 1 2;
-        border: round $accent;
-        background: $surface;
-    }
-    ExistingProjectScreen .title {
-        text-style: bold;
-        margin-bottom: 1;
     }
     ExistingProjectScreen FilterInput {
         margin-top: 1;
@@ -84,6 +76,12 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         Binding("down", "cursor_down", "", show=False, priority=True),
     )
 
+    # Framework-managed initial focus (rationale: SessionChoiceScreen):
+    # Textual focuses this on compose AND on resume after a child modal
+    # dismisses, with no synchronous-``on_mount`` race. ``#filter-input``
+    # is the Input nested inside the FilterInput widget.
+    AUTO_FOCUS = "#filter-input"
+
     def __init__(self, projects: list[tuple[str, str]], project_root: str) -> None:
         super().__init__()
         # Each entry: (name, compact_mtime). See _list_existing_projects.
@@ -94,7 +92,7 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
         self._filtered: list[tuple[str, str]] = list(projects)
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        with self.card():
             yield Static("Open existing project", classes="title")
             yield Static(f"  {self.project_root}/")
             yield FilterInput(placeholder="filter…", id="project-filter")
@@ -102,21 +100,7 @@ class ExistingProjectScreen(ModalScreen["str | None"]):
             yield ListView(*items, id="existing-list")
 
     def on_mount(self) -> None:
-        # Defer focus to the next event-loop tick: ``Widget.focus()``
-        # itself schedules ``set_focus`` via ``call_later``, and a
-        # synchronous focus call from ``on_mount`` races the screen's
-        # activation — operators saw the first 1–3 keystrokes vanish
-        # because the Input wasn't yet wired up to receive them.
-        self.call_later(self._focus_filter)
         self._sync_match_count()
-
-    def on_show(self) -> None:
-        # ``on_mount`` only fires once; ``on_show`` covers the case
-        # where the screen is re-shown after a child modal dismissed.
-        self.call_later(self._focus_filter)
-
-    def _focus_filter(self) -> None:
-        self.query_one(FilterInput).focus_input()
 
     def action_cancel(self) -> None:
         fi = self.query_one(FilterInput)

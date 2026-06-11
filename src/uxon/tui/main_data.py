@@ -16,12 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .context import ServerStatus, SudoCapability
+from uxon.domain.status import ServerStatus
+from uxon.domain.sudo import SudoCapability
 
 if TYPE_CHECKING:
-    from uxon.probes import HostStatsResult
+    from uxon.domain.session import TuiSession
+    from uxon.infra.probes import HostStatsResult
 
-    from .context import TuiContext, TuiSession
+    from .context import TuiContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +31,7 @@ class MainData:
     """Output of one local rebuild tick.
 
     Every field here is derived from the live system state by the
-    rebuild path (today: ``cli._build_tui_context``); none come from
+    rebuild path (today: ``tui.context_builder.build_tui_context``); none come from
     an async source, none belong on :class:`uxon.tui.config.TuiConfig`.
 
     Sequences are tuples (not lists) so two equal :class:`MainData`

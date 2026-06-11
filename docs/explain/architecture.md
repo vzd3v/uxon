@@ -46,22 +46,32 @@ for the remote-collector pollers.
 
 ## Top-level layout
 
+The package is layered; the layering is enforced by import-linter
+in CI (`lint-imports`). Each layer may import only from the ones
+above it.
+
 ```
 src/uxon/                     Python package (pipx / uv tool / pip installable).
   __init__.py                 Package version (single source of truth).
   __main__.py                 `python -m uxon` shim → cli.main().
-  cli.py                      Single-file CLI entrypoint.
-  settings.py                 Settings schema, layered TOML read/write.
-  audit.py                    Audit channel — journald / syslog emit.
-  agents.py                   Pure-data agent catalog and probe.
-  wire_schema.py              Versioned JSON envelope for `--json` output.
-  remote_hosts.py             [[remote_hosts]] schema and validation.
-  remote_collector.py         SSH transport + on-disk snapshot cache for peers.
-  git_profiles.py             [[git_remote_profiles]] schema.
-  git_backend_gh.py           `gh repo create` backend.
-  git_backend_token.py        GitHub REST + fine-grained PAT backend.
-  git_create.py               Orchestrator for the new-project git flow.
-  tui/                        Textual TUI (lazy-imported by cli.py).
+  errors.py                   Shared eprint / fail leaf (no deps).
+  domain/                     Pure logic — no subprocess, no I/O. Config schema
+                              and defaults, wire-schema envelope, session naming,
+                              launch-request shape, host circuit-breaker,
+                              [[git_remote_profiles]] schema, sudo/authz rules.
+  infra/                     Impure adapters — subprocess / ssh / tmux / fs /
+                              journald. Probes, layered TOML read (`config_loader`)
+                              and round-trip write (`settings_toml`), audit emit,
+                              agent catalog + probe, tmux launch builder, worktree
+                              creation, debug/metrics channels, and the `remote/`
+                              SSH transport + on-disk snapshot cache for peers.
+  app/                        Use-cases wiring domain + infra: list / attach /
+                              kill / new / run / doctor, the launch planner
+                              (`plan_worktree_launch`), and the `--json` emitters.
+  gitremote/                  New-project GitHub repo creation (`gh` + PAT backends).
+  cli/                        Argv parse → dispatch → main. The thin entry layer.
+  tui/                        Textual TUI (lazy-imported — never pulled in by the
+                              non-TUI subcommands `list` / `doctor` / `version`).
 install/
   install_uxon.py             Multi-host venv-and-symlink installer.
   render_uxon_config.py       JSON-to-TOML config renderer.
@@ -71,6 +81,9 @@ examples/
   uxon-config.json            Example payload for render_uxon_config.py.
 tests/                        unittest.TestCase, run via `pytest -n auto`.
 ```
+
+Per-file detail (every module's role, the exact import boundaries)
+lives in the agent-facing code map under `docs/agents/`.
 
 ## Data flow
 
@@ -113,20 +126,24 @@ Sub-modules under `src/uxon/tui/`:
   `SourceResult`, `run_source`). One source per stream — local
   tmux, each `[[remote_hosts]]` peer — runs in its own worker
   group so a slow peer never stalls the others.
-- `screens/` — one module per screen: `main`, `confirm`,
-  `launch_options`, `new_project`, `git_profile`, `existing`,
-  `settings`, `git_remotes`, `agents_unavailable`.
-- `widgets/` — `ActionRow`, `DetectedAgentsBanner`,
-  `SessionDashboardTable` (the unified session table),
+- `screens/` — one module per screen and per multi-step flow:
+  `main`, `confirm`, `launch_options`, `launch_flow`, `kill_flow`,
+  `session_choice` (the attach-vs-new prompt), `worktree_branch`
+  (new-worktree name input), `new_project`, `git_profile`,
+  `existing`, `settings`, `agents_unavailable`, plus the shared
+  `modal_base` chrome.
+- `widgets/` — `ActionRow`, `SessionListView` (the unified session
+  table — a render-on-demand `ScrollView` on Textual's Line API),
   `HostTabStrip` (per-host tabs above the table in `by_host`
-  view), `HostStatusBar` (per-host CPU/RAM/load line, compact
-  under the active tab and expanded above the flat list),
-  `SearchBar` (summoned filter input), and
-  `FocusReleasingDataTable` (internal base). Everything else is
-  stock `textual`.
-- `dashboard/` — pure layers behind `SessionDashboardTable`
+  view), `HostStatusBar` (compact per-host CPU/RAM line under the
+  active tab in `by_host`), `FleetStatusBar` (collapsible fleet
+  summary below the table in both views — counts + alerts collapsed,
+  per-host detail when expanded with `h`), `SearchBar` (summoned
+  filter input), and `GatedFooter` (footer that only repaints when
+  the binding set changes). Everything else is stock `textual`.
+- `dashboard/` — pure layers behind `SessionListView`
   (`row.py`, `columns.py`, `layout.py`, `ui_state.py`, `model.py`,
-  `reconcile.py`, `buckets.py`). See § "Session dashboard" below.
+  `order.py`, `buckets.py`). See § "Session dashboard" below.
 - `keymap.py` — `bindings_with_aliases(...)` decorator that
   attaches JCUKEN twins to QWERTY bindings so the keymap survives
   a Russian layout without `xkb`.
@@ -134,12 +151,12 @@ Sub-modules under `src/uxon/tui/`:
 
 ## Session dashboard
 
-`SessionDashboardTable` (one row per visible session — local own,
+`SessionListView` (one row per visible session — local own,
 local other-user under sudo, and one row per session on every
 configured peer) is built on pure layers under
 [`src/uxon/tui/dashboard/`](../../src/uxon/tui/dashboard/) plus the
 widget shell at
-[`src/uxon/tui/widgets/session_dashboard_table.py`](../../src/uxon/tui/widgets/session_dashboard_table.py):
+[`src/uxon/tui/widgets/session_list_view.py`](../../src/uxon/tui/widgets/session_list_view.py):
 
 1. **`row.py` — `SessionRow`.** A single frozen dataclass is the
    unified row type. Two adapters land the source shapes onto it:
@@ -173,63 +190,75 @@ widget shell at
    state — it is a fixed contract owned by the model selector
    (locals → cfg-order remotes → within-block by recency).
 
-The selector, bucket layer, and reconciler tie those to the widgets:
+The selector, bucket layer, and stable-order placer tie those to
+the widget:
 
 5. **`model.py` — `select_dashboard_model(...)`.** Identity-stable
    selector: returns the same `(rows, columns, ui)` tuple by `is`
    when nothing changed since the previous call, so a no-op tick
-   short-circuits the reconciler. The cache lives in
-   `_LAST_OUTPUT`.
+   repaints nothing. The cache lives in `_LAST_OUTPUT`.
 6. **`buckets.py` — `select_host_buckets(...)`,
    `select_host_status_block(...)`.** Two pure selectors layered
    on the row tuple. The first groups rows into a `HostBucket`
    per configured host (locals + each `[[remote_hosts]]` peer,
    preserved across empty hosts so the tab strip is stable). The
-   second aggregates per-bucket CPU / RAM / loadavg / uptime /
-   kernel into a `HostStatusLine` tuple consumed by
-   `HostStatusBar`. Per-host metrics ride the wire envelope as
-   the optional additive `host_stats` block; absence renders the
-   bar without metrics.
-7. **`reconcile.py` — `diff(old, new, columns)` →
-   `ApplyPlan`.** Pure reconciler over rows × columns. Returns an
-   `ApplyPlan` (the minimal ops tuple plus the new key list) that
-   the widget applies. A no-op tick produces zero ops and zero log
-   lines on the `tui-table` debug channel. Per-host repaint: a
-   single peer's snapshot landing produces ops only for that
-   peer's rows; every other row compares equal and is skipped.
-   `RowAdd` ops are applied in reverse new-index order so multiple
-   inserts in one tick land at the right positions.
+   second aggregates per-bucket CPU / RAM / uptime / kernel into a
+   `HostStatusLine` tuple consumed by `HostStatusBar`. (Load
+   average is carried on the `host_stats` envelope but no longer
+   rendered — see the fleet-status-bar redesign.) Per-host metrics
+   ride the wire envelope as the optional additive `host_stats`
+   block; absence renders the bar without metrics.
+7. **`order.py` — `place(persisted_order, current_rows)`.** Pure
+   stable-order placer that replaced the per-tick re-sort. An
+   existing key keeps its established slot, so a telemetry tick
+   that only changes recency never moves a row; a new key lands at
+   its position within its own host block; a vanished key drops
+   out in place. Cold start (no persisted order) yields
+   `current_rows` verbatim.
 
-The widget at `widgets/session_dashboard_table.py` is a thin
-shell. Its `apply(plan)` mutates the underlying Textual `DataTable`
-from the `ApplyPlan`; all decisions about what to display live in
-the layers above. The widget subclasses
-`FocusReleasingDataTable` for boundary-aware navigation.
+The widget at `widgets/session_list_view.py` is a `ScrollView` on
+Textual's Line API: it owns the current row list and paints **only
+the visible viewport lines** via `render_line`. `set_rows(new)`
+repaints the visible lines; the virtual size (and thus a layout)
+changes only when the row *count* changes — a real arrival or
+departure. This is the render-on-demand replacement for the old
+`DataTable`-backed table, whose every structural mutation forced a
+screen-global relayout. Edge-aware navigation (releasing focus at
+the list boundary) is reproduced through `BINDINGS` actions only —
+no `on_key` override, per the AGENTS.md hard rule.
 
 ## Module boundaries
 
-These are enforced by tests and CI:
+These are enforced by tests and CI (`lint-imports` runs the
+import-linter contracts):
 
-- **`src/uxon/cli.py` may import from `src/uxon/*`. Sibling modules
-  may not import from `cli`.** The CLI assembles pieces; pieces don't
-  reach back.
+- **The layers import only downward: `cli` → `tui` → `app` →
+  `gitremote` → `infra` → `domain` → `errors`.** `domain` imports
+  nothing from the others; lower layers never reach back up. (The
+  layered import-linter contract lists this exact order.)
 - **`src/uxon/tui/*` may not import `subprocess` or `pwd`** or touch
   the filesystem directly. Side effects flow through callbacks on
   `TuiContext` / `SettingsCallbacks`. This keeps the TUI testable
   with Textual `Pilot` without spawning real processes.
-- **`textual` is imported lazily inside `do_interactive`.** Non-TUI
-  subcommands (`uxon list`, `uxon doctor`, `uxon version`) must run
-  with `textual` absent.
+- **`textual` is imported lazily inside the interactive dispatch.**
+  Non-TUI subcommands (`uxon list`, `uxon doctor`, `uxon version`)
+  must run with `textual` absent — `python -c "import uxon.cli"`
+  must not pull it in.
 - **All key handling goes through `BINDINGS`.** No `on_key`
   overrides on screen classes; a drift guard test
   (`tests/test_uxon_tui_bindings.py`) refuses any PR that adds one.
 - **One launch builder.** `_build_tmux_launch_request` in
-  `src/uxon/cli.py` is the single place that builds agent command
-  lines. Don't add direct `claude` / `codex` / `cursor-agent` exec
-  calls anywhere else.
+  `src/uxon/infra/tmux.py` is the single place that builds agent
+  command lines (it consults `uxon.infra.agents.CATALOG`). Don't
+  add direct `claude` / `codex` / `cursor-agent` exec calls
+  anywhere else.
+- **One worktree-creation site.** Both the CLI `-w` flag and the
+  TUI new-worktree path route through `plan_worktree_launch`
+  (`src/uxon/app/launch.py`); there is no second `git worktree add`
+  call site.
 - **Config writes use `tomlkit`.** The round-trip writer in
-  `src/uxon/settings.py` preserves comments and formatting. CLI read
-  paths stay on stdlib `tomllib`.
+  `src/uxon/infra/settings_toml.py` preserves comments and
+  formatting. CLI read paths stay on stdlib `tomllib`.
 - **One tmux socket per launch user.** No code path silently falls
   back to the default socket.
 
@@ -237,7 +266,7 @@ These are enforced by tests and CI:
 
 ```
 uxon-<stem>@<agent>           plain sessions
-uxon-<repo>-<branch>@<agent>  worktree sessions (claude only)
+uxon-<repo>-<branch>@<agent>  worktree sessions
 ```
 
 Parallels append `-2`, `-3`, … *after* the agent suffix:
@@ -247,8 +276,9 @@ via `session_prefix`. Names matching any prefix listed in
 `kill` (so existing sessions stay reachable across renames) but
 are never *created*.
 
-`parse_session_name` and `candidate_session_name` in `src/uxon/cli.py`
-must move together. Don't touch one without the other.
+`parse_session_name` and `candidate_session_name` (in the
+session-naming module under `src/uxon/domain/`) must move
+together. Don't touch one without the other.
 
 ## Tests
 
@@ -276,9 +306,10 @@ Two layers, merged in order (later wins):
    project config.
 
 The single source of truth for known keys is
-`src/uxon/settings.py::SETTINGS_SPECS`. Add a key there in the same
-commit as the matching `DEFAULT_CONFIG` / `Config` / `load_config`
-changes in `src/uxon/cli.py`.
+`src/uxon/infra/settings.py::SETTINGS_SPECS`. Add a key there in
+the same commit as the matching `DEFAULT_CONFIG` / `Config`
+changes in `src/uxon/domain/config.py` and the `load_config`
+read path in `src/uxon/infra/config_loader.py`.
 
 ## Security boundaries
 

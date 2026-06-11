@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Static
 
-from ..events import debug as _debug
+from uxon.infra.events import debug as _debug
 
 # Container ID that signals a row-of-buttons group. ActionRows whose
 # parent carries this id get cyclic ←/→ navigation and a single-step
@@ -125,11 +125,23 @@ class ActionRow(Static):
         self.detail = detail
         self._enabled = enabled
         self._singleton = singleton
+        # ``(label, detail, enabled)`` of the last painted state — the
+        # widget-boundary change gate for :meth:`_render_text`. ``None``
+        # until the first paint (from this ``__init__``).
+        self._last_painted: tuple[str, str, bool] | None = None
         if singleton:
             self.add_class("-singleton")
         self._render_text()
 
     def _render_text(self) -> None:
+        # Widget-boundary change gate: every caller (apply_ctx_refresh's
+        # cwd/open/new rows, launch_flow, the cwd-writable landing, the
+        # superuser kill row) routes through here, so a tick that leaves
+        # label/detail/enabled untouched issues zero writes (AC2/RC3).
+        key = (self.label, self.detail, self._enabled)
+        if key == self._last_painted:
+            return
+        self._last_painted = key
         t = Text()
         if self._singleton:
             # Compact single-line layout for Settings / Kill-ALL rows
@@ -146,7 +158,10 @@ class ActionRow(Static):
             # stays narrow enough for the label to survive a 1/3-width
             # split.
             t.append(self.label, style="bold")
-        self.update(t)
+        # ``layout=False``: the row's box is a fixed cell — a label/detail
+        # text swap never changes its size, so skip the screen-global
+        # relayout the default ``update`` would request (AC8).
+        self.update(t, layout=False)
         if not self._enabled:
             self.add_class("-disabled")
         else:
@@ -259,17 +274,16 @@ class ActionRow(Static):
             seen.add(fid)
             if not isinstance(focused, ActionRow) or focused not in siblings:
                 # On either direction, force the dashboard's cursor to
-                # the symmetric edge of the table so that the visual
-                # transition matches the keypress. Without this, the
-                # DataTable preserves its prior ``cursor_row`` (e.g.
-                # row 13 if the operator went ↑ from row 13 to the
-                # buttons earlier in the same session), and pressing
-                # ↓ from a button lands "wherever I was before" — a
-                # surprising teleport. Duck-typed to keep this widget
-                # independent of the concrete dashboard subclass.
-                from textual.widgets import DataTable as _DataTable
+                # the symmetric edge of the list so that the visual
+                # transition matches the keypress. Without this, the list
+                # preserves its prior ``cursor_row`` (e.g. row 13 if the
+                # operator went ↑ from row 13 to the buttons earlier in
+                # the same session), and pressing ↓ from a button lands
+                # "wherever I was before" — a surprising teleport. Imported
+                # locally to keep ``action_row`` import-light.
+                from .session_list_view import SessionListView
 
-                if isinstance(focused, _DataTable) and focused.row_count > 0:
+                if isinstance(focused, SessionListView) and focused.row_count > 0:
                     target = focused.row_count - 1 if direction < 0 else 0
                     focused.move_cursor(row=target)
                 return

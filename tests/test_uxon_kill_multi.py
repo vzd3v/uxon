@@ -27,56 +27,59 @@ from unittest import mock
 from helpers import make_config as _make_config
 from helpers import make_session as _make_session
 
-import uxon.cli as uxon
-from uxon import audit as uxon_audit
-from uxon.remote_hosts import RemoteHost
-from uxon.tui.context import SudoCapability
+import uxon.app.kill as kill_app
+from uxon.cli.parsing import parse_args
+from uxon.domain.args import ParsedArgs
+from uxon.domain.config import Config
+from uxon.domain.sudo import SudoCapability
+from uxon.infra import audit as uxon_audit
+from uxon.infra.remote_hosts import RemoteHost
 
 
 class ParseKillFlagsTests(unittest.TestCase):
     """Both ``kill <id> ...`` and ``-k <id> ...`` accept the same flags."""
 
     def test_subcommand_user_flag(self) -> None:
-        a = uxon.parse_args(["kill", "demo@claude", "--user", "alice"])
+        a = parse_args(["kill", "demo@claude", "--user", "alice"])
         self.assertEqual(a.action, "kill")
         self.assertEqual(a.target_id, "demo@claude")
         self.assertEqual(a.user, "alice")
         self.assertIsNone(a.host)
 
     def test_subcommand_host_flag(self) -> None:
-        a = uxon.parse_args(["kill", "demo@claude", "--host", "box-b"])
+        a = parse_args(["kill", "demo@claude", "--host", "box-b"])
         self.assertEqual(a.host, "box-b")
         self.assertIsNone(a.user)
 
     def test_subcommand_user_and_host(self) -> None:
-        a = uxon.parse_args(["kill", "demo@claude", "--host", "box-b", "--user", "alice"])
+        a = parse_args(["kill", "demo@claude", "--host", "box-b", "--user", "alice"])
         self.assertEqual(a.host, "box-b")
         self.assertEqual(a.user, "alice")
 
     def test_short_form_user_and_host(self) -> None:
-        a = uxon.parse_args(["-k", "demo@claude", "--user", "alice", "--host", "box-b", "--json"])
+        a = parse_args(["-k", "demo@claude", "--user", "alice", "--host", "box-b", "--json"])
         self.assertEqual(a.action, "kill")
         self.assertEqual(a.user, "alice")
         self.assertEqual(a.host, "box-b")
         self.assertTrue(a.json_output)
 
     def test_force_flag(self) -> None:
-        a = uxon.parse_args(["kill", "demo@claude", "--force"])
+        a = parse_args(["kill", "demo@claude", "--force"])
         self.assertTrue(a.force)
 
     def test_kill_requires_id(self) -> None:
         with self.assertRaises(SystemExit):
-            uxon.parse_args(["kill"])
+            parse_args(["kill"])
         with self.assertRaises(SystemExit):
-            uxon.parse_args(["-k"])
+            parse_args(["-k"])
 
     def test_unknown_extras_rejected(self) -> None:
         with self.assertRaises(SystemExit):
-            uxon.parse_args(["kill", "demo@claude", "--bogus"])
+            parse_args(["kill", "demo@claude", "--bogus"])
 
     def test_user_requires_value(self) -> None:
         with self.assertRaises(SystemExit):
-            uxon.parse_args(["kill", "demo@claude", "--user"])
+            parse_args(["kill", "demo@claude", "--user"])
 
 
 class KillUserLocalTests(unittest.TestCase):
@@ -85,36 +88,36 @@ class KillUserLocalTests(unittest.TestCase):
     def test_user_equals_self_skips_probe(self) -> None:
         cfg = _make_config()
         target = _make_session("uxon-demo@claude")
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="u-vz")
+        args = ParsedArgs(action="kill", target_id="demo@claude", user="u-vz")
         completed = mock.Mock(returncode=0, stdout="", stderr="")
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
-            mock.patch.object(uxon, "run_cmd", return_value=completed),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability") as probe,
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", return_value=completed),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability") as probe,
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         probe.assert_not_called()
 
     def test_user_other_reachable_kills_via_sudo(self) -> None:
         cfg = _make_config()
         target = _make_session("uxon-demo@claude", user="alice")
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
         completed = mock.Mock(returncode=0, stdout="", stderr="")
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps) as probe,
-            mock.patch.object(uxon, "run_cmd", return_value=completed) as run,
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps) as probe,
+            mock.patch("uxon.infra.process.run_cmd", return_value=completed) as run,
         ):
-            with mock.patch.object(uxon, "process_user", return_value="u-vz"):
+            with mock.patch("uxon.infra.identity.process_user", return_value="u-vz"):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
-                    rc = uxon.do_kill(args, cfg, "u-vz")
+                    rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         probe.assert_called_once_with(["alice"])
         # The argv contains the non-interactive sudo prefix and kill-session.
@@ -126,16 +129,16 @@ class KillUserLocalTests(unittest.TestCase):
 
     def test_user_other_unreachable_emits_error_tag(self) -> None:
         cfg = _make_config()
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         with (
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
-            mock.patch.object(uxon, "run_cmd") as run,
-            mock.patch.object(uxon, "collect_sessions") as collect,
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.process.run_cmd") as run,
+            mock.patch("uxon.infra.sessions_probe.collect_sessions") as collect,
         ):
             err = io.StringIO()
             with redirect_stderr(err):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         self.assertIn("uxon-error: not-reachable", err.getvalue())
         run.assert_not_called()
@@ -144,7 +147,7 @@ class KillUserLocalTests(unittest.TestCase):
     def test_user_dry_run_json_includes_target_user_and_reachable(self) -> None:
         cfg = _make_config()
         target = _make_session("uxon-demo@claude", user="alice")
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="kill",
             target_id="demo@claude",
             user="alice",
@@ -153,13 +156,13 @@ class KillUserLocalTests(unittest.TestCase):
         )
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["kind"], "kill")
@@ -174,7 +177,7 @@ class KillUserLocalTests(unittest.TestCase):
         # "no sessions found" exit 2. The contract is: if the target is
         # unreachable, surface the error tag and exit 1 even on dry-run.
         cfg = _make_config()
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="kill",
             target_id="demo@claude",
             user="alice",
@@ -182,13 +185,13 @@ class KillUserLocalTests(unittest.TestCase):
         )
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         with (
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
-            mock.patch.object(uxon, "run_cmd") as run,
-            mock.patch.object(uxon, "collect_sessions") as collect,
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.process.run_cmd") as run,
+            mock.patch("uxon.infra.sessions_probe.collect_sessions") as collect,
         ):
             err = io.StringIO()
             with redirect_stderr(err):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         self.assertIn("uxon-error: not-reachable", err.getvalue())
         run.assert_not_called()
@@ -196,16 +199,14 @@ class KillUserLocalTests(unittest.TestCase):
 
     def test_json_without_force_or_dry_run_fails(self) -> None:
         cfg = _make_config()
-        args = uxon.ParsedArgs(
-            action="kill", target_id="demo@claude", user="alice", json_output=True
-        )
+        args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", json_output=True)
         caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
         with (
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
-            mock.patch.object(uxon, "is_interactive_tty", return_value=False),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False),
         ):
             with self.assertRaises(SystemExit):
-                uxon.do_kill(args, cfg, "u-vz")
+                kill_app.do_kill(args, cfg, "u-vz")
 
     def test_peer_side_parses_remote_kill_argv_built_by_local(self) -> None:
         # Regression: ``_do_kill_remote`` and TUI ``on_remote_kill``
@@ -223,7 +224,7 @@ class KillUserLocalTests(unittest.TestCase):
             "--audit-correlation-id",
             "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f",
         ]
-        parsed = uxon.parse_args(argv)
+        parsed = parse_args(argv)
         self.assertEqual(parsed.action, "kill")
         self.assertEqual(parsed.target_id, "demo@claude")
         self.assertEqual(parsed.user, "alice")
@@ -239,7 +240,7 @@ class KillUserLocalTests(unittest.TestCase):
         # re-raising — spec line 208.
         cfg = _make_config()
         target = _make_session("uxon-demo@claude")
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="u-vz")
+        args = ParsedArgs(action="kill", target_id="demo@claude", user="u-vz")
         boom = subprocess.CalledProcessError(returncode=2, cmd=["tmux", "kill-session"])
         recorded: list[tuple[str, dict]] = []
 
@@ -247,13 +248,13 @@ class KillUserLocalTests(unittest.TestCase):
             recorded.append((event, {"outcome": outcome, **fields}))
 
         with (
-            mock.patch.object(uxon, "collect_sessions", return_value=[target]),
-            mock.patch.object(uxon, "configured_tmux_base", return_value=["tmux"]),
-            mock.patch.object(uxon, "run_cmd", side_effect=boom),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", side_effect=boom),
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
         ):
             with self.assertRaises(subprocess.CalledProcessError):
-                uxon.do_kill(args, cfg, "u-vz")
+                kill_app.do_kill(args, cfg, "u-vz")
 
         kill_emits = [e for e in recorded if e[0] == "session.kill"]
         # Exactly one ``session.kill`` emit must fire on this path —
@@ -278,7 +279,7 @@ class KillPeerInboundTests(unittest.TestCase):
 
     def test_peer_inbound_unreachable_emits_kill_remote_in_denied(self) -> None:
         cfg = _make_config()
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
         recorded: list[tuple[str, dict]] = []
 
@@ -287,11 +288,11 @@ class KillPeerInboundTests(unittest.TestCase):
 
         with (
             mock.patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}),
-            mock.patch("uxon.sudo_probe.probe_sudo_capability", return_value=caps),
+            mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
             mock.patch("sys.stderr", new_callable=io.StringIO),
         ):
-            rc = uxon.do_kill(args, cfg, "u-vz")
+            rc = kill_app.do_kill(args, cfg, "u-vz")
 
         self.assertEqual(rc, 1)
         # Exactly one kill.remote.in emit, denied; no parallel
@@ -309,7 +310,7 @@ class KillPeerInboundTests(unittest.TestCase):
 class KillHostRemoteTests(unittest.TestCase):
     """``uxon kill --host <alias>`` SSH-routed remote dispatch."""
 
-    def _cfg_with_host(self) -> uxon.Config:
+    def _cfg_with_host(self) -> Config:
         return _make_config(
             remote_hosts=[
                 RemoteHost(
@@ -323,16 +324,16 @@ class KillHostRemoteTests(unittest.TestCase):
 
     def test_host_dry_run_prints_ssh_command(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="kill",
             target_id="demo@claude",
             host="box-b",
             dry_run=True,
         )
-        with mock.patch.object(uxon.subprocess, "run") as srun:
+        with mock.patch.object(kill_app.subprocess, "run") as srun:
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         srun.assert_not_called()
         out = buf.getvalue()
@@ -344,7 +345,7 @@ class KillHostRemoteTests(unittest.TestCase):
 
     def test_host_with_user_appends_user_flag(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="kill",
             target_id="demo@claude",
             host="box-b",
@@ -353,19 +354,19 @@ class KillHostRemoteTests(unittest.TestCase):
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = uxon.do_kill(args, cfg, "u-vz")
+            rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         self.assertIn("--user", buf.getvalue())
         self.assertIn("alice", buf.getvalue())
 
     def test_host_executes_ssh_with_expected_argv(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         cp = mock.Mock(returncode=0, stdout="killed: uxon-demo@claude\n", stderr="")
-        with mock.patch.object(uxon.subprocess, "run", return_value=cp) as srun:
+        with mock.patch.object(kill_app.subprocess, "run", return_value=cp) as srun:
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         srun.assert_called_once()
         argv = srun.call_args[0][0]
@@ -391,7 +392,7 @@ class KillHostRemoteTests(unittest.TestCase):
 
     def test_host_user_combined_in_remote_cmd(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="kill",
             target_id="demo@claude",
             host="box-b",
@@ -399,8 +400,8 @@ class KillHostRemoteTests(unittest.TestCase):
             force=True,
         )
         cp = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(uxon.subprocess, "run", return_value=cp) as srun:
-            uxon.do_kill(args, cfg, "u-vz")
+        with mock.patch.object(kill_app.subprocess, "run", return_value=cp) as srun:
+            kill_app.do_kill(args, cfg, "u-vz")
         argv = srun.call_args[0][0]
         remote_cmd = argv[-1]
         self.assertIn("--user", remote_cmd)
@@ -418,10 +419,10 @@ class KillHostRemoteTests(unittest.TestCase):
                 )
             ]
         )
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         cp = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(uxon.subprocess, "run", return_value=cp) as srun:
-            uxon.do_kill(args, cfg, "u-vz")
+        with mock.patch.object(kill_app.subprocess, "run", return_value=cp) as srun:
+            kill_app.do_kill(args, cfg, "u-vz")
         argv = srun.call_args[0][0]
         # Bug fix: kill-remote now honours command_template.
         self.assertIn("-J", argv)
@@ -429,73 +430,71 @@ class KillHostRemoteTests(unittest.TestCase):
 
     def test_host_unknown_alias_exits_2_with_hint(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="bogus", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", host="bogus", force=True)
         err = io.StringIO()
         with redirect_stderr(err):
             with self.assertRaises(SystemExit) as ctx:
-                uxon.do_kill(args, cfg, "u-vz")
+                kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("configured:", err.getvalue())
         self.assertIn("box-b", err.getvalue())
 
     def test_host_no_remote_hosts_exits_2(self) -> None:
         cfg = _make_config()  # no remote_hosts
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         with self.assertRaises(SystemExit):
-            uxon.do_kill(args, cfg, "u-vz")
+            kill_app.do_kill(args, cfg, "u-vz")
 
     def test_host_peer_nonzero_rc_returns_1_and_forwards_stderr(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         cp = mock.Mock(
             returncode=1,
             stdout="",
             stderr="uxon-error: not-reachable (cannot sudo -niu alice; ...)\n",
         )
-        with mock.patch.object(uxon.subprocess, "run", return_value=cp):
+        with mock.patch.object(kill_app.subprocess, "run", return_value=cp):
             err = io.StringIO()
             out = io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         # Peer's stderr surfaced unwrapped — the error tag must be parseable.
         self.assertIn("uxon-error: not-reachable", err.getvalue())
 
     def test_host_ssh_timeout_returns_1(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
+        args = ParsedArgs(action="kill", target_id="demo@claude", host="box-b", force=True)
         with (
             mock.patch.object(
-                uxon.subprocess,
+                kill_app.subprocess,
                 "run",
-                side_effect=uxon.subprocess.TimeoutExpired(cmd=["ssh"], timeout=10),
+                side_effect=kill_app.subprocess.TimeoutExpired(cmd=["ssh"], timeout=10),
             ),
             # Recovery is best-effort and runs real ssh subprocesses by
             # default; pin it to a no-op here so the test stays
             # isolated from the local ssh setup, and assert that the
             # CLI kill path does invoke it on timeout (mirrors the
             # poller's wedge-recovery contract).
-            mock.patch("uxon.remote_collector._recover_wedged_master") as recover,
+            mock.patch("uxon.infra.remote.master_recovery.recover_wedged_master") as recover,
         ):
             err = io.StringIO()
             with redirect_stderr(err):
-                rc = uxon.do_kill(args, cfg, "u-vz")
+                rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 1)
         self.assertIn("ssh timeout", err.getvalue())
         recover.assert_called_once()
 
     def test_host_json_without_force_or_dry_run_fails(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(
-            action="kill", target_id="demo@claude", host="box-b", json_output=True
-        )
-        with mock.patch.object(uxon, "is_interactive_tty", return_value=False):
+        args = ParsedArgs(action="kill", target_id="demo@claude", host="box-b", json_output=True)
+        with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
             with self.assertRaises(SystemExit):
-                uxon.do_kill(args, cfg, "u-vz")
+                kill_app.do_kill(args, cfg, "u-vz")
 
     def test_host_dry_run_json_envelope_has_host(self) -> None:
         cfg = self._cfg_with_host()
-        args = uxon.ParsedArgs(
+        args = ParsedArgs(
             action="kill",
             target_id="demo@claude",
             host="box-b",
@@ -505,7 +504,7 @@ class KillHostRemoteTests(unittest.TestCase):
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = uxon.do_kill(args, cfg, "u-vz")
+            rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["kind"], "kill")

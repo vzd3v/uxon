@@ -21,7 +21,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
     """``do_doctor`` parallelises ``_probe_one`` across ``cfg.enabled_agents``."""
 
     def _stub_cfg(self):
-        from uxon.cli import Config
+        from uxon.domain.config import Config
 
         return Config(
             runtime_user="",
@@ -45,17 +45,17 @@ class DoctorParallelProbeTests(unittest.TestCase):
         )
 
     def _stub_probe_host(self, *, present: tuple[str, ...] = ("claude", "codex", "cursor")):
-        from uxon import probes
+        from uxon.domain.host_report import BinaryStatus, HostReport
 
         agents = {}
         for aid in ("claude", "codex", "cursor"):
-            agents[aid] = probes.BinaryStatus(
+            agents[aid] = BinaryStatus(
                 name=aid,
                 path=f"/fake/{aid}" if aid in present else None,
                 install_hint="",
             )
-        return probes.HostReport(
-            tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
+        return HostReport(
+            tmux=BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
             agents=agents,
             launch_user=_USER,
         )
@@ -70,8 +70,8 @@ class DoctorParallelProbeTests(unittest.TestCase):
         """
         import threading
 
-        from uxon import agents as uxon_agents
-        from uxon import cli
+        from uxon.app import doctor as doctor_app
+        from uxon.infra import agents as uxon_agents
 
         barrier = threading.Barrier(3, timeout=2.0)
         call_args: list[dict] = []
@@ -82,14 +82,14 @@ class DoctorParallelProbeTests(unittest.TestCase):
             return uxon_agents.AgentAvailability(status="ok", version=f"{binary}-1.0")
 
         with (
-            patch("uxon.probes.probe_host", return_value=self._stub_probe_host()),
+            patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host()),
             patch.object(uxon_agents, "_probe_one", side_effect=fake_probe_one),
-            patch.object(cli, "collect_sessions", return_value=[]),
-            patch.object(cli, "collect_sessions_for_user", return_value=[]),
-            patch.object(cli, "resolve_config_layers", return_value=({}, [])),
+            patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]),
+            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, [])),
             redirect_stdout(io.StringIO()),
         ):
-            cli.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
+            doctor_app.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
 
         # All three were called with the 2 s override (not the default 10 s).
         timeouts = sorted(arg["timeout_override"] for arg in call_args)
@@ -97,8 +97,8 @@ class DoctorParallelProbeTests(unittest.TestCase):
 
     def test_missing_path_skips_probe(self) -> None:
         """Agents not in ``agent_paths`` are reported missing without calling _probe_one."""
-        from uxon import agents as uxon_agents
-        from uxon import cli
+        from uxon.app import doctor as doctor_app
+        from uxon.infra import agents as uxon_agents
 
         report = self._stub_probe_host(present=("claude",))
 
@@ -109,14 +109,14 @@ class DoctorParallelProbeTests(unittest.TestCase):
             return uxon_agents.AgentAvailability(status="ok", version="x")
 
         with (
-            patch("uxon.probes.probe_host", return_value=report),
+            patch("uxon.infra.probes.probe_host", return_value=report),
             patch.object(uxon_agents, "_probe_one", side_effect=fake_probe_one),
-            patch.object(cli, "collect_sessions", return_value=[]),
-            patch.object(cli, "collect_sessions_for_user", return_value=[]),
-            patch.object(cli, "resolve_config_layers", return_value=({}, [])),
+            patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]),
+            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, [])),
             redirect_stdout(io.StringIO()) as captured,
         ):
-            cli.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
+            doctor_app.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
 
         # _probe_one called only for the present binary (CATALOG name, not path).
         self.assertEqual(called, ["claude"])
@@ -136,7 +136,7 @@ class ProbeOneTimeoutOverrideTests(unittest.TestCase):
     """``_probe_one`` honours ``timeout_override`` keyword-only arg."""
 
     def test_default_timeout_unchanged(self) -> None:
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
 
         captured: dict = {}
 
@@ -154,7 +154,7 @@ class ProbeOneTimeoutOverrideTests(unittest.TestCase):
         self.assertEqual(captured["timeout"], uxon_agents.PROBE_TIMEOUT_SEC)
 
     def test_override_replaces_default(self) -> None:
-        from uxon import agents as uxon_agents
+        from uxon.infra import agents as uxon_agents
 
         captured: dict = {}
 
@@ -181,7 +181,7 @@ class DoctorRemoteFlagTests(unittest.TestCase):
     """
 
     def _stub_cfg(self, remote_hosts=None):
-        from uxon.cli import Config
+        from uxon.domain.config import Config
 
         return Config(
             runtime_user="",
@@ -206,14 +206,14 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         )
 
     def _stub_probe_host(self):
-        from uxon import probes
+        from uxon.domain.host_report import BinaryStatus, HostReport
 
-        return probes.HostReport(
-            tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
+        return HostReport(
+            tmux=BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
             agents={
-                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
-                "codex": probes.BinaryStatus(name="codex", path=None, install_hint=""),
-                "cursor": probes.BinaryStatus(name="cursor-agent", path=None, install_hint=""),
+                "claude": BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
+                "codex": BinaryStatus(name="codex", path=None, install_hint=""),
+                "cursor": BinaryStatus(name="cursor-agent", path=None, install_hint=""),
             },
             launch_user=_USER,
         )
@@ -221,11 +221,12 @@ class DoctorRemoteFlagTests(unittest.TestCase):
     def _patches(self):
         from contextlib import ExitStack
 
-        from uxon import agents as uxon_agents
-        from uxon import cli
+        from uxon.infra import agents as uxon_agents
 
         stack = ExitStack()
-        stack.enter_context(patch("uxon.probes.probe_host", return_value=self._stub_probe_host()))
+        stack.enter_context(
+            patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host())
+        )
         stack.enter_context(
             patch.object(
                 uxon_agents,
@@ -233,30 +234,32 @@ class DoctorRemoteFlagTests(unittest.TestCase):
                 return_value=uxon_agents.AgentAvailability(status="ok", version="x"),
             )
         )
-        stack.enter_context(patch.object(cli, "collect_sessions", return_value=[]))
-        stack.enter_context(patch.object(cli, "collect_sessions_for_user", return_value=[]))
-        stack.enter_context(patch.object(cli, "resolve_config_layers", return_value=({}, [])))
+        stack.enter_context(patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]))
+        stack.enter_context(
+            patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[])
+        )
+        stack.enter_context(
+            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, []))
+        )
         return stack
 
     def test_no_flag_no_ssh_attempt(self) -> None:
         """Default doctor (no ``--remote``) never calls the collector."""
-        from uxon import cli
-        from uxon.remote_hosts import RemoteHost
+        from uxon.app import doctor as doctor_app
+        from uxon.infra.remote_hosts import RemoteHost
 
         hosts = [RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")]
 
         # ``_doctor_remote_rows`` imports ``fetch_remote_snapshot``
         # lazily at call time, so we patch the source module
-        # ``uxon.remote_collector.fetch_remote_snapshot`` and assert
+        # ``uxon.infra.remote.collector.fetch_remote_snapshot`` and assert
         # zero invocations under the default doctor path.
-        from uxon import remote_collector
+        from uxon.infra.remote import collector
 
         with self._patches() as stack:
             stack.enter_context(redirect_stdout(io.StringIO()))
-            collector_mock = stack.enter_context(
-                patch.object(remote_collector, "fetch_remote_snapshot")
-            )
-            cli.do_doctor(
+            collector_mock = stack.enter_context(patch.object(collector, "fetch_remote_snapshot"))
+            doctor_app.do_doctor(
                 self._stub_cfg(remote_hosts=hosts),
                 caller_user=_USER,
                 launch_user=_USER,
@@ -266,9 +269,10 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         self.assertEqual(collector_mock.call_count, 0)
 
     def test_flag_calls_collector_once_per_host(self) -> None:
-        from uxon import cli, remote_collector
-        from uxon.remote_collector import RemoteSnapshot
-        from uxon.remote_hosts import RemoteHost
+        from uxon.app import doctor as doctor_app
+        from uxon.domain.wire_schema import RemoteSnapshot
+        from uxon.infra.remote import collector
+        from uxon.infra.remote_hosts import RemoteHost
 
         hosts = [
             RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon"),
@@ -288,9 +292,9 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
             mock_fetch = stack.enter_context(
-                patch.object(remote_collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
+                patch.object(collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
             )
-            cli.do_doctor(
+            doctor_app.do_doctor(
                 self._stub_cfg(remote_hosts=hosts),
                 caller_user=_USER,
                 launch_user=_USER,
@@ -305,11 +309,11 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         self.assertIn("stage  ok", out)
 
     def test_flag_with_no_hosts_reports_cleanly(self) -> None:
-        from uxon import cli
+        from uxon.app import doctor as doctor_app
 
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
-            cli.do_doctor(
+            doctor_app.do_doctor(
                 self._stub_cfg(remote_hosts=[]),
                 caller_user=_USER,
                 launch_user=_USER,
@@ -321,9 +325,10 @@ class DoctorRemoteFlagTests(unittest.TestCase):
     def test_json_round_trip_with_remote(self) -> None:
         import json as _json
 
-        from uxon import cli, remote_collector
-        from uxon.remote_collector import RemoteSnapshot
-        from uxon.remote_hosts import RemoteHost
+        from uxon.app import doctor as doctor_app
+        from uxon.domain.wire_schema import RemoteSnapshot
+        from uxon.infra.remote import collector
+        from uxon.infra.remote_hosts import RemoteHost
 
         hosts = [RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")]
 
@@ -340,9 +345,9 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
             stack.enter_context(
-                patch.object(remote_collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
+                patch.object(collector, "fetch_remote_snapshot", side_effect=_fake_fetch)
             )
-            cli.do_doctor(
+            doctor_app.do_doctor(
                 self._stub_cfg(remote_hosts=hosts),
                 caller_user=_USER,
                 launch_user=_USER,
@@ -363,11 +368,11 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         """Without ``--remote``, the JSON envelope must not carry the new key."""
         import json as _json
 
-        from uxon import cli
+        from uxon.app import doctor as doctor_app
 
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
-            cli.do_doctor(
+            doctor_app.do_doctor(
                 self._stub_cfg(),
                 caller_user=_USER,
                 launch_user=_USER,
@@ -383,7 +388,7 @@ class DoctorAuditLineTests(unittest.TestCase):
     """``uxon doctor`` reports audit-channel status (Bug 2)."""
 
     def _stub_cfg(self):
-        from uxon.cli import Config
+        from uxon.domain.config import Config
 
         return Config(
             runtime_user="",
@@ -407,14 +412,14 @@ class DoctorAuditLineTests(unittest.TestCase):
         )
 
     def _stub_probe_host(self):
-        from uxon import probes
+        from uxon.domain.host_report import BinaryStatus, HostReport
 
-        return probes.HostReport(
-            tmux=probes.BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
+        return HostReport(
+            tmux=BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint=""),
             agents={
-                "claude": probes.BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
-                "codex": probes.BinaryStatus(name="codex", path=None, install_hint=""),
-                "cursor": probes.BinaryStatus(name="cursor-agent", path=None, install_hint=""),
+                "claude": BinaryStatus(name="claude", path="/fake/claude", install_hint=""),
+                "codex": BinaryStatus(name="codex", path=None, install_hint=""),
+                "cursor": BinaryStatus(name="cursor-agent", path=None, install_hint=""),
             },
             launch_user=_USER,
         )
@@ -422,11 +427,12 @@ class DoctorAuditLineTests(unittest.TestCase):
     def _patches(self):
         from contextlib import ExitStack
 
-        from uxon import agents as uxon_agents
-        from uxon import cli
+        from uxon.infra import agents as uxon_agents
 
         stack = ExitStack()
-        stack.enter_context(patch("uxon.probes.probe_host", return_value=self._stub_probe_host()))
+        stack.enter_context(
+            patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host())
+        )
         stack.enter_context(
             patch.object(
                 uxon_agents,
@@ -434,14 +440,18 @@ class DoctorAuditLineTests(unittest.TestCase):
                 return_value=uxon_agents.AgentAvailability(status="ok", version="x"),
             )
         )
-        stack.enter_context(patch.object(cli, "collect_sessions", return_value=[]))
-        stack.enter_context(patch.object(cli, "collect_sessions_for_user", return_value=[]))
-        stack.enter_context(patch.object(cli, "resolve_config_layers", return_value=({}, [])))
+        stack.enter_context(patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]))
+        stack.enter_context(
+            patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[])
+        )
+        stack.enter_context(
+            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, []))
+        )
         return stack
 
     def test_human_readable_has_audit_line(self) -> None:
-        from uxon import audit as au
-        from uxon import cli
+        from uxon.app import doctor as doctor_app
+        from uxon.infra import audit as au
 
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
@@ -449,7 +459,7 @@ class DoctorAuditLineTests(unittest.TestCase):
             stack.enter_context(patch.object(au, "_open_sink_socket", return_value=None))
             au.enabled = True
             au._initialized = False
-            cli.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
+            doctor_app.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
         out = captured.getvalue()
         self.assertIn("audit:", out)
         self.assertIn("sink=syslog", out)
@@ -457,8 +467,8 @@ class DoctorAuditLineTests(unittest.TestCase):
     def test_json_output_has_audit_block(self) -> None:
         import json as _json
 
-        from uxon import audit as au
-        from uxon import cli
+        from uxon.app import doctor as doctor_app
+        from uxon.infra import audit as au
 
         with self._patches() as stack:
             captured = stack.enter_context(redirect_stdout(io.StringIO()))
@@ -466,7 +476,7 @@ class DoctorAuditLineTests(unittest.TestCase):
             stack.enter_context(patch.object(au, "_open_sink_socket", return_value=None))
             au.enabled = True
             au._initialized = False
-            cli.do_doctor(
+            doctor_app.do_doctor(
                 self._stub_cfg(),
                 caller_user=_USER,
                 launch_user=_USER,

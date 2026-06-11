@@ -1,4 +1,4 @@
-"""Tests for ``[[remote_hosts]]`` parsing in ``uxon.remote_hosts``.
+"""Tests for ``[[remote_hosts]]`` parsing in ``uxon.infra.remote_hosts``.
 
 The schema is the entry surface for multi-host SSH support. These
 tests pin:
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import unittest
 
-from uxon.remote_hosts import (
+from uxon.infra.remote_hosts import (
     RemoteHost,
     RemoteHostError,
     find_host,

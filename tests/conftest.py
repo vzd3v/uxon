@@ -13,22 +13,38 @@ from unittest import mock
 
 import pytest
 
-from uxon import audit as _audit
-from uxon import probes as _probes
+from uxon.domain.host_report import BinaryStatus, HostReport
+from uxon.infra import audit as _audit
 
 # Fully-installed CATALOG, used as the autouse ``probe_host`` stub. Tests
 # that exercise the install-gate path explicitly mock ``probe_host`` in
 # their own scope (the inner ``with mock.patch`` shadows this fixture for
 # the duration of that block).
-_STUB_HOST_REPORT = _probes.HostReport(
-    tmux=_probes.BinaryStatus("tmux", "/usr/bin/tmux", ""),
+_STUB_HOST_REPORT = HostReport(
+    tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
     agents={
-        "claude": _probes.BinaryStatus("claude", "/usr/local/bin/claude", ""),
-        "codex": _probes.BinaryStatus("codex", "/usr/local/bin/codex", ""),
-        "cursor": _probes.BinaryStatus("cursor-agent", "/usr/local/bin/cursor-agent", ""),
+        "claude": BinaryStatus("claude", "/usr/local/bin/claude", ""),
+        "codex": BinaryStatus("codex", "/usr/local/bin/codex", ""),
+        "cursor": BinaryStatus("cursor-agent", "/usr/local/bin/cursor-agent", ""),
     },
     launch_user="",
 )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _install_loop_guard():
+    """Install the event-loop blocking guard for the whole test session.
+
+    Process-wide and a no-op off the loop, so non-Pilot tests are
+    unaffected. Under a Textual ``Pilot`` (event loop on the test
+    thread) any interactive action that still spawns a subprocess on
+    the loop raises :class:`EventLoopBlockedError` at the spawn site —
+    turning the keystroke-swallow class into a hard test failure.
+    """
+    from uxon.infra.loop_guard import install_subprocess_guard
+
+    install_subprocess_guard()
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +60,7 @@ def _stub_probe_host_by_default(request: pytest.FixtureRequest):
     if request.node.fspath.basename == "test_uxon_probes.py":
         yield
         return
-    with mock.patch("uxon.probes.probe_host", return_value=_STUB_HOST_REPORT):
+    with mock.patch("uxon.infra.probes.probe_host", return_value=_STUB_HOST_REPORT):
         yield
 
 

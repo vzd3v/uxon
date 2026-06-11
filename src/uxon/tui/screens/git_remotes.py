@@ -32,6 +32,9 @@ class GitRemotesScreen(ModalScreen[None]):
         Binding("q", "back", "Back", show=False),
     )
 
+    # Framework-managed initial focus (rationale: SessionChoiceScreen).
+    AUTO_FOCUS = "#git-remotes-table"
+
     def __init__(self, rows: list[tuple]) -> None:
         super().__init__()
         self.rows = list(rows)
@@ -48,7 +51,6 @@ class GitRemotesScreen(ModalScreen[None]):
             # Pad the row to 7 columns if callers supply fewer.
             padded = list(row) + [""] * (7 - len(row))
             t.add_row(*padded[:7])
-        t.focus()
 
     def action_back(self) -> None:
         self.dismiss(None)

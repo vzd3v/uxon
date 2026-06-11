@@ -1,6 +1,6 @@
 """SessionRow — unified row type for local and remote sessions.
 
-Every later layer (column formatters, selector, reconciler, widget)
+Every later layer (column formatters, selector, placement, widget)
 types against :class:`SessionRow`. The two adapters
 :func:`from_tui_session` and :func:`from_wire_record` are the *only*
 boundaries where source-specific shapes meet the dashboard pipeline:
@@ -46,6 +46,20 @@ class SessionRow:
     last_attached_epoch: float | None
     cmd: str
     path: str
+
+    @property
+    def key(self) -> str:
+        """Stable identity for this row across ticks.
+
+        ``host`` defaults to ``"local"`` when ``None`` so local rows
+        share a deterministic prefix and never collide with peer-named
+        rows. This is the canonical row-identity key — the placement
+        function (:mod:`uxon.tui.dashboard.order`), the dashboard widget
+        selection, and the block-meta map all key off it. A ``property``
+        is a class-level descriptor, so it is ``slots=True``-compatible
+        (``key`` is not a declared field).
+        """
+        return f"{self.host or 'local'}/{self.user}/{self.name}"
 
 
 def _parse_pid(raw: str) -> int | None:

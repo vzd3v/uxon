@@ -1,0 +1,66 @@
+# team-1 — four engineers on one shared dev box.
+#
+# The "shared dev host" case from the article — a smaller-team variant
+# where everyone runs on the same Linux server under their own
+# ``-agent`` accounts. Marcus (the lead) opens uxon here and sees all
+# four engineers' sessions via sudo, hence everything sits in
+# ``local:``. Useful for showing the ``*-agent`` separation when there
+# is no multi-host story.
+
+schema_version: 1
+
+defaults:
+  agent: claude
+  windows: 1
+  cpu_pct: 0.0
+  rss_mib: 220
+
+local:
+  - user: wes-agent
+    slot: crm-billing
+    agent: claude
+    attached: true
+    windows: 3
+    cpu_pct: 22.4
+    rss_mib: 720
+    path: /srv/work/crm-billing
+    cmd: claude
+    age_min: 60
+
+  - user: marcus-agent
+    slot: billing-api
+    agent: codex
+    attached: false
+    attached_min_ago: 25             # fresh
+    windows: 2
+    cpu_pct: 3.1
+    rss_mib: 408
+    path: /srv/work/billing-api
+    cmd: codex
+    age_min: 180
+
+  - user: nadia-agent
+    slot: alert-runbook
+    agent: claude
+    attached: false
+    attached_min_ago: 1600           # ~27h → yellow
+    windows: 1
+    cpu_pct: 0.4
+    rss_mib: 296
+    path: /srv/work/runbooks
+    cmd: claude
+    age_min: 1800
+
+  - user: liam-agent
+    slot: ledger-export
+    agent: claude
+    attached: false
+    attached_min_ago: 10080          # 7d → red (forgotten)
+    windows: 1
+    cpu_pct: 0.0
+    rss_mib: 168
+    path: /srv/work/ledger
+    cmd: claude
+    age_min: 14_400
+
+hosts: []
