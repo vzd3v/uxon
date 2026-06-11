@@ -187,13 +187,19 @@ local cross-user case so the dry-run output reflects reachability.
 `uxon kill-all --host`. Per-session kill is the only destructive
 operation that crosses hosts.
 
-## `uxon kill-all [--force] [--dry-run]`
+## `uxon kill-all [--force] [--dry-run] [--json]`
 
 Alias: `uxon --killall`.
 
 Kills every `uxon-*` (and configured legacy-prefix) session for
 the current launch user. Requires interactive confirmation (typing
 `kill-all`) or `--force`.
+
+**`--json`** emits a wire-schema envelope (`kind: "kill-all"`) with
+the launch user, socket path, and a per-session result list
+(`killed` / `failed` / `would-kill` under `--dry-run`). Like
+`kill`, `--json` is non-interactive and refuses to run without
+`--force` or `--dry-run`.
 
 This **only** kills sessions for the current launch user. The
 "kill all sessions for every reachable user on this host"
@@ -240,13 +246,18 @@ into observability pipelines.
 
 Use this first whenever behaviour is unexpected.
 
-## `uxon version`
+## `uxon version [--json]`
 
 Aliases: `uxon -V`, `uxon --version`.
 
 Prints `__version__` from the installed `uxon` package and the short
 git commit (with a `-dirty` suffix when the checkout has uncommitted
 changes; the commit/dirty info is only available in dev checkouts).
+
+**`--json`** emits the same data as a wire-schema envelope
+(`kind: "version"`) — see
+[`reference/wire-schema.md`](wire-schema.md). The subcommand stays
+a no-op probe either way: it emits no audit event.
 
 ---
 

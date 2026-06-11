@@ -41,7 +41,7 @@ The TUI's ⚙ Settings screen rewrites repo config in place via a
 | `default_git_remote_profile` | string | `""` | Profile picked by `--git-remote default` and the TUI default. |
 | `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=<ssh_control_persist_seconds>s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
 | `ssh_control_persist_seconds` | int | `300` | `ControlPersist` lifetime (seconds) for the multiplex master. Must be `> 0`; to disable multiplexing entirely set `ssh_multiplex = "off"` rather than zeroing this out. Ignored when `ssh_multiplex = "off"` and per-host when `command_template` is set. |
-| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. |
+| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. Not exposed on the TUI's ⚙ Settings screen — edit `config.toml` directly. |
 
 ## `[agents]` table
 

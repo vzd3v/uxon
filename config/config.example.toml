@@ -127,6 +127,46 @@ default_args = []
 # blocks like in the solo-on-multiple-hosts section.
 
 
+# ─── Worktrees (uxon-managed, any agent) ──────────────────────────
+# docs/guides/customise/worktrees.md
+#
+# `uxon run/new -w <branch>` creates and owns the worktree itself.
+# ``worktree_root`` empty (default) places worktrees under
+# `<repo>/.uxon/worktrees/<branch-slug>/` (auto-excluded via
+# .git/info/exclude). When set, uxon uses
+# `<worktree_root>/<repo-slug>/<branch-slug>/` — must be writable
+# by the launch user and inside ``allowed_roots``.
+# ``worktree_base`` picks the base ref for a NEW branch: ``local``
+# (default) branches off local origin/HEAD (else HEAD) with no
+# network; ``remote`` runs `git fetch origin` first (needs network
+# + credentials).
+#
+# worktree_root = ""
+# worktree_base = "local"
+
+
+# ─── GitHub repo creation on `uxon new` ───────────────────────────
+# docs/guides/customise/configure-github-on-new-project.md
+#
+# Off by default. ``git_create_enabled = true`` lets the new-project
+# flow offer repo creation, restricted to the profile whitelist
+# below — no owner outside the array is reachable. ``auth = "gh"``
+# shells out to `gh repo create` under ``creds_user``; ``"token"``
+# calls the REST API with a fine-grained PAT read from
+# ``token_file`` (required for token auth; never logged).
+#
+# git_create_enabled        = true
+# default_git_remote_profile = "work"
+#
+# [[git_remote_profiles]]
+# name       = "work"
+# host       = "github.com"
+# owner      = "my-org"
+# auth       = "gh"            # or "token" + token_file
+# creds_user = "vz"            # defaults to launch user
+# visibility = "private"
+
+
 # ─── Dashboard columns + view (TUI) ───────────────────────────────
 # docs/guides/customise/customise-dashboard.md
 #
@@ -191,6 +231,22 @@ default_args = []
 # ssh_control_persist_seconds  = 300
 
 
+# ─── Refresh cadence + fetch concurrency ──────────────────────────
+# docs/guides/customise/tune-refresh-cadence.md
+#
+# ``tui_refresh_interval_seconds`` paces the local tmux poll;
+# ``tui_ssh_refresh_interval_seconds`` paces SSH-driven streams
+# (per-peer pollers; a peer's ``interval`` overrides it).
+# ``fetch_concurrency`` caps concurrent SSH fetch workers
+# fleet-wide so a large fleet recovering from an outage doesn't
+# exhaust file descriptors. Not on the TUI settings screen — edit
+# here.
+#
+# tui_refresh_interval_seconds     = 2.0
+# tui_ssh_refresh_interval_seconds = 10.0
+# fetch_concurrency                = 16
+
+
 # ─── uxon-managed tmux options ────────────────────────────────────
 # docs/reference/configuration.md ([tmux] managed options)
 #
@@ -226,3 +282,17 @@ default_args = []
 #
 # [tmux.append_server_options]   # set -as
 # terminal-features = "xterm*:extkeys"
+
+
+# ─── Audit channel ────────────────────────────────────────────────
+# docs/reference/audit-events.md · docs/privacy.md
+#
+# ON BY DEFAULT. Every uxon invocation emits structured events to
+# journald (preferred) or /dev/log (fallback). ``enabled = false``
+# is the only kill-switch — there is no environment-variable
+# override. ``syslog_facility`` applies only on the /dev/log
+# fallback path (journald carries its own metadata).
+#
+# [audit]
+# enabled         = true
+# syslog_facility = "user"

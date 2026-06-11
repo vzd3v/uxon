@@ -6,7 +6,7 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [3.5.0] — 2026-06-10
+## [3.5.0] — 2026-06-11
 
 ### Added
 - Attach-vs-new prompt on every launch action ("New session in current folder", "Create new project", "Open existing project"). When a compatible session for the target directory + agent already exists, uxon asks whether to **attach** to it or **start a new one alongside**, instead of silently auto-attaching. The old auto-attach ignored the operator's selected permission mode; the explicit choice always honours it.
@@ -260,3 +260,12 @@ First release on PyPI as
 [`uxon`](https://pypi.org/project/uxon/). Install via
 `uv tool install uxon`, `pipx install uxon`, or
 `pip install --user uxon`.
+
+[3.5.0]: https://github.com/vzd3v/uxon/compare/v3.4.0...v3.5.0
+[3.4.0]: https://github.com/vzd3v/uxon/compare/v3.3.0...v3.4.0
+[3.3.0]: https://github.com/vzd3v/uxon/compare/v3.2.2...v3.3.0
+[3.2.2]: https://github.com/vzd3v/uxon/compare/v3.2.1...v3.2.2
+[3.2.1]: https://github.com/vzd3v/uxon/compare/v3.2.0...v3.2.1
+[3.2.0]: https://github.com/vzd3v/uxon/compare/v3.1.0...v3.2.0
+[3.1.0]: https://github.com/vzd3v/uxon/compare/v3.0.0...v3.1.0
+[3.0.0]: https://github.com/vzd3v/uxon/releases/tag/v3.0.0
