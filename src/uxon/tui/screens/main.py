@@ -388,14 +388,18 @@ class MainScreen(Screen):
             )
             settings_row.display = has_super
             yield settings_row
+            # Visible whenever has_super (dimmed at 0 sessions) so the
+            # partial-reachability hint in its detail never disappears —
+            # 0 visible sessions is exactly when "a colleague may be
+            # unreachable" matters most.
             kill_global_row = ActionRow(
                 kind="kill-all-global",
                 label=main_render.kill_all_global_label(total_sessions),
                 detail=self._kill_all_global_detail(),
-                enabled=True,
+                enabled=total_sessions > 0,
                 id="action-kill-all-global",
             )
-            kill_global_row.display = has_super and total_sessions > 0
+            kill_global_row.display = has_super
             yield kill_global_row
             # Multi-host: remote rows fold into the unified dashboard
             # above. The HOST column is auto-prepended when the

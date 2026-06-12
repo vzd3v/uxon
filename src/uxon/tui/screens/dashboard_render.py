@@ -343,15 +343,18 @@ class DashboardRender:
         if kill_row is not None:
             label = main_render.kill_all_global_label(total_sessions)
             detail = host._kill_all_global_detail()
-            kill_display = has_super and total_sessions > 0
             if self._changed("kill_global_label", label):
                 kill_row.label = label
             if self._changed("kill_global_detail", detail):
                 kill_row.detail = detail
             if self._changed("kill_global_text", (label, detail)):
                 kill_row._render_text()
-            if self._changed("kill_global_display", kill_display):
-                kill_row.display = kill_display
+            # Visible whenever has_super, merely dimmed at 0 sessions —
+            # keeps the partial-reachability hint on screen (see compose).
+            if self._changed("kill_global_enabled", total_sessions > 0):
+                kill_row.set_enabled(total_sessions > 0)
+            if self._changed("kill_global_display", has_super):
+                kill_row.display = has_super
 
     def apply_ctx_refresh(self) -> bool:
         """Re-render the action rows + status bars after a ctx swap.

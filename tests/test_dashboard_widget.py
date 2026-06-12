@@ -11,8 +11,9 @@ Pinned contracts:
 * ``set_rows`` lands the rows in the given order; ``row_count == len``.
 * ``pin_cursor_to(key)`` follows the logical row across a reorder, and clamps
   to the nearest surviving sibling when the key is gone.
-* Edge-release: ``↑`` on row 0 hands focus to the leftmost ActionRow in
-  ``#top-actions``; ``↓`` on the last row hands focus to the next sibling.
+* Edge-release: ``↑`` on row 0 hands focus to the widget directly above
+  (the last action row); ``↓`` on the last row hands focus to the next
+  sibling.
 * Enter / click post ``RowSelected`` carrying the cursor row; ``←/→`` post
   ``HostNavigate`` carrying the direction.
 * ``render_line`` only builds the visible viewport (out-of-range lines are
