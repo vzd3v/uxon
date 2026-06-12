@@ -15,19 +15,14 @@ SCENARIOS="$DIR/scenarios"
 # always writable by the running user.
 BUILD="${XDG_CACHE_HOME:-$HOME/.cache}/uxon-demo/build"
 
-# `uv run` insists on managing uv.lock / .venv *inside the project*, so
-# launching from source only works when those writes will succeed for
-# the current user. On a shared host the repo is owned by one operator
-# and read-only to everyone else (ACLs / group perms), so a teammate
-# running the demo as their own account hits EACCES on uv.lock. Gate
-# the source-tree path on real writability; the installed binary ships
-# the demo hook since 3.5.0, so it's a fine fallback.
-repo_launchable_from_source() {
+# Launching from source needs only read+exec on the project .venv.
+# Creating that venv (uv sync) is the one write-requiring step.
+can_sync_venv() {
   local root="$1"
   command -v uv >/dev/null 2>&1 || return 1
   [[ -f "$root/pyproject.toml" ]] || return 1
   [[ -w "$root" ]] || return 1
-  # uv re-locks on run: lockfile must be absent or writable.
+  # uv sync re-locks: lockfile must be absent or writable.
   [[ ! -e "$root/uv.lock" || -w "$root/uv.lock" ]]
 }
 
@@ -86,34 +81,34 @@ case "$cmd" in
     mkdir -p "$BUILD"
     uv run --quiet --script "$DIR/render.py" "$src" "$BUILD"
 
+    repo_root="$(cd "$DIR/.." && pwd)"
+    venv_uxon="$repo_root/.venv/bin/uxon"
+
     case "$cmd" in
       render)
         echo "Rendered $name to $BUILD"
         echo
         echo "Launch with:"
-        echo "  UXON_DEMO_HOSTS=$BUILD uxon"
+        echo "  UXON_DEMO_HOSTS=$BUILD $venv_uxon"
         ;;
       env)
         printf 'export UXON_DEMO_HOSTS=%q\n' "$BUILD"
         ;;
       run)
         export UXON_DEMO_HOSTS="$BUILD"
-        repo_root="$(cd "$DIR/.." && pwd)"
-        # Prefer the in-repo source tree (via `uv run`) so demo changes
-        # are testable before a release — but only when this user can
-        # actually write the repo (see repo_launchable_from_source).
-        # Otherwise use the installed `uxon`, which carries the demo
-        # hook since 3.5.0. This avoids the EACCES-on-uv.lock failure
-        # when the demo is launched as a non-owner on a shared host.
-        if repo_launchable_from_source "$repo_root"; then
-          cd "$repo_root" && exec uv run --quiet uxon
-        elif command -v uxon >/dev/null 2>&1; then
-          exec uxon
-        else
-          echo "no installed 'uxon' on PATH and repo not launchable from source: $repo_root" >&2
-          echo "install uxon, or run as a user who can write the repo (uv needs uv.lock/.venv)." >&2
-          exit 1
+        # Always the source tree — never a uxon from $PATH.
+        if [[ -x "$venv_uxon" ]]; then
+          exec "$venv_uxon"
         fi
+        if can_sync_venv "$repo_root"; then
+          echo "uxon-demo: $repo_root/.venv missing — creating with uv sync" >&2
+          (cd "$repo_root" && uv sync --quiet)
+          exec "$venv_uxon"
+        fi
+        echo "uxon-demo: cannot launch from source: $repo_root/.venv is missing" >&2
+        echo "and $(id -un) cannot create it (repo not writable)." >&2
+        echo "Ask the repo owner to run once:  cd $repo_root && uv sync" >&2
+        exit 1
         ;;
     esac
     ;;
