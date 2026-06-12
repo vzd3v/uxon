@@ -2,11 +2,13 @@
 
 Two states, default collapsed:
 
-* **Collapsed** — one line: ``N hosts · M sess`` + capped alert tokens
-  + a right-aligned ``h · hosts`` expand affordance. Goes to a warning
-  colour only when there is a real alert (``unreachable`` or memory
-  pressure) — never for ``pending…`` / ``(cached)`` (see
-  :func:`uxon.tui.dashboard.buckets.select_fleet_summary`).
+* **Collapsed** — one line: ``N hosts · M sess`` + capped alert tokens.
+  Goes to a warning colour only when there is a real alert
+  (``unreachable`` or memory pressure) — never for ``pending…`` /
+  ``(cached)`` (see
+  :func:`uxon.tui.dashboard.buckets.select_fleet_summary`). The expand
+  gesture is the screen's ``h`` binding (advertised in the footer) or
+  a click on the bar — no inline affordance text.
 * **Expanded** — one compact line per host (full detail; the only place
   ``up`` lives), reusing :func:`host_status_bar._render`.
 
@@ -72,10 +74,6 @@ class FleetStatusBar(Widget):
         color: $warning;
         text-style: bold;
     }
-    FleetStatusBar #fleet-affordance {
-        width: auto;
-        color: $text-muted;
-    }
     FleetStatusBar #fleet-expanded {
         height: auto;
     }
@@ -103,12 +101,11 @@ class FleetStatusBar(Widget):
     def compose(self) -> ComposeResult:
         with Horizontal(id="fleet-collapsed"):
             yield Static("", id="fleet-counts")
-            yield Static("h · hosts", id="fleet-affordance")
         yield Vertical(id="fleet-expanded")
 
     def on_click(self) -> None:
-        # Clicking the bar (incl. the "h · hosts" affordance) toggles it.
-        # Keyboard toggling is the screen's ``h`` binding.
+        # Clicking anywhere on the bar toggles it. Keyboard toggling is
+        # the screen's ``h`` binding (advertised in the footer).
         self.post_message(self.Toggled())
 
     def update_fleet(

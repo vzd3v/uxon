@@ -28,17 +28,21 @@ No second machine, no real `ssh` config, no peer install: any host with
 
 # Render only — print the export line for shell use.
 ./demo/uxon-demo render team-n
-UXON_DEMO_HOSTS=demo/build uxon
+UXON_DEMO_HOSTS=~/.cache/uxon-demo/build .venv/bin/uxon
 
 # eval form for one-liner setup.
-eval "$(./demo/uxon-demo env team-n)"; uxon
+eval "$(./demo/uxon-demo env team-n)"; .venv/bin/uxon
 
 # Wipe the render cache.
 ./demo/uxon-demo clean
 ```
 
+`run` execs the repo's `.venv/bin/uxon` — always the source tree, never
+a `uxon` from `$PATH`. Launching needs only read access to the repo;
+the venv itself is created once by the repo owner (`uv sync`).
+
 Requirements: `uv` (auto-installs `pyyaml` for the renderer in a one-shot
-script venv) and `uxon` on `$PATH` (or `uv run uxon` from the repo).
+script venv) and the repo `.venv` (`uv sync`, once).
 
 The render output lives under `${XDG_CACHE_HOME:-$HOME/.cache}/uxon-demo/build/`
 (per-user, never committed). On a shared dev box each OS user gets
@@ -49,7 +53,7 @@ their own copy and there's no permission collision.
 1. `demo/uxon-demo` reads a scenario YAML and invokes `demo/render.py`.
 2. `render.py` writes one `<host>.json` wire envelope per host to
    `$XDG_CACHE_HOME/uxon-demo/build/` — same schema as `uxon list --json` emits on a peer.
-3. With `UXON_DEMO_HOSTS=demo/build` set:
+3. With `UXON_DEMO_HOSTS` pointed at that build directory:
    * `uxon._demo.synthesize_remote_hosts` creates one synthetic
      `RemoteHost` per `<host>.json` envelope (alias prefixed with
      `demo:`). Files starting with `_` are reserved and skipped.

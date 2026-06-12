@@ -1,7 +1,7 @@
 """Pure render helpers for :class:`uxon.tui.screens.main.MainScreen`.
 
-Free functions that build the screen's string content (section headers,
-action-row detail/caption text) from explicit, already-resolved inputs.
+Free functions that build the screen's string content (action-row
+label/detail text) from explicit, already-resolved inputs.
 
 This module imports **no Textual** on purpose: the branchy "what text to
 show" logic is fast-testable here, while the thin Textual-mutation shell
@@ -15,23 +15,26 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
-def superuser_header(
+def kill_all_global_detail(
     reachable_users: Iterable[str],
     scope_skipped_users: Iterable[str],
 ) -> str:
-    """Header for the "Other users' sessions" / superuser block.
+    """Detail line for the "Kill ALL reachable users" action row.
 
-    When the per-target probe filtered any candidates (caller's sudoers
-    rule covers some users in ``session_users`` but not all), append a
-    ``(N/M users reachable)`` hint so the operator notices a colleague is
-    missing rather than silently absent.
+    Lists the reachable target users. When the per-target probe filtered
+    any candidates (caller's sudoers rule covers some users in
+    ``session_users`` but not all), append a ``N/M users reachable``
+    hint so the operator notices a colleague is missing rather than
+    silently absent.
     """
     reachable = sorted(reachable_users)
+    if not reachable:
+        return ""
     skipped = list(scope_skipped_users)
     total = len(reachable) + len(skipped)
-    if skipped and total:
-        return f"── superuser ── ({len(reachable)}/{total} users reachable)"
-    return "── superuser ──"
+    if skipped:
+        return f"({', '.join(reachable)} + self · {len(reachable)}/{total} users reachable)"
+    return f"({', '.join(reachable)} + self)"
 
 
 def cwd_detail(
@@ -58,16 +61,6 @@ def open_detail(*, loading: bool, new_project_root: str) -> str:
     if loading:
         return f"({new_project_root}/… — loading)"
     return f"({new_project_root}/…)"
-
-
-def top_actions_caption(*, cwd_short: str, new_project_root: str) -> str:
-    """Single-line caption rendered under the top action buttons.
-
-    Rebuilt on every ctx swap so the cwd / project-root detail stays
-    current. Lives outside the bordered buttons because at 1/3 width per
-    button there isn't room for both the label and the path.
-    """
-    return f"1: {cwd_short}   2 & 3: {new_project_root}/…"
 
 
 def kill_all_global_label(total_sessions: int) -> str:

@@ -83,10 +83,16 @@ class SessionListView(ScrollView):
     """
 
     DEFAULT_CSS = """
+    /* Hug the content: height tracks ``virtual_size`` (header + rows,
+       via ScrollView.get_content_height) so the widgets below sit
+       directly under the last row instead of being pushed to the
+       bottom of the screen. ``max-height: 1fr`` caps growth at the
+       remaining space — overflow scrolls inside the widget. */
     SessionListView {
         width: 1fr;
-        height: 1fr;
-        min-height: 3;
+        height: auto;
+        max-height: 1fr;
+        min-height: 2;
     }
     """
 
@@ -356,24 +362,10 @@ class SessionListView(ScrollView):
             row_count=self.row_count,
         )
         if self._cursor_row <= 0:
-            # At the top edge — hand focus up. The base contract walks
-            # the focus chain backwards, which lands on the *last*
-            # ActionRow in #top-actions (rightmost). Operators expect ↑
-            # to land on the leftmost button (action-cwd), matching how
-            # the row reads left-to-right. Walk #top-actions explicitly
-            # when present; fall back to the base contract otherwise.
-            from .action_row import ACTION_GROUP_CONTAINER_ID, ActionRow
-
-            group = None
-            try:
-                group = self.screen.query_one(f"#{ACTION_GROUP_CONTAINER_ID}")
-            except Exception:
-                group = None
-            if group is not None:
-                for child in group.children:
-                    if isinstance(child, ActionRow):
-                        child.focus()
-                        return
+            # At the top edge — hand focus up the chain. The action
+            # rows above are a vertical stack, so the previous focus
+            # stop *is* the row directly above the table; spatial
+            # navigation and the focus chain agree.
             self.app.action_focus_previous()
             return
         self.move_cursor(row=self._cursor_row - 1)

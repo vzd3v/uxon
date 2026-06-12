@@ -983,7 +983,7 @@ class ResolvedControlPathTests(unittest.TestCase):
         def _runner(*_args: Any, **_kwargs: Any) -> Any:
             return mock.Mock(
                 returncode=0,
-                stdout="user remdepl\ncontrolpath /home/u/.cache/uxon/ssh-abc123\nport 22\n",
+                stdout="user erin\ncontrolpath /home/u/.cache/uxon/ssh-abc123\nport 22\n",
             )
 
         path = _resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner)
@@ -1003,7 +1003,7 @@ class ResolvedControlPathTests(unittest.TestCase):
 
     def test_returns_none_when_output_missing_controlpath(self) -> None:
         def _runner(*_args: Any, **_kwargs: Any) -> Any:
-            return mock.Mock(returncode=0, stdout="user remdepl\nport 22\n")
+            return mock.Mock(returncode=0, stdout="user erin\nport 22\n")
 
         self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
 

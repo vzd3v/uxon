@@ -15,6 +15,17 @@ SCENARIOS="$DIR/scenarios"
 # always writable by the running user.
 BUILD="${XDG_CACHE_HOME:-$HOME/.cache}/uxon-demo/build"
 
+# Launching from source needs only read+exec on the project .venv.
+# Creating that venv (uv sync) is the one write-requiring step.
+can_sync_venv() {
+  local root="$1"
+  command -v uv >/dev/null 2>&1 || return 1
+  [[ -f "$root/pyproject.toml" ]] || return 1
+  [[ -w "$root" ]] || return 1
+  # uv sync re-locks: lockfile must be absent or writable.
+  [[ ! -e "$root/uv.lock" || -w "$root/uv.lock" ]]
+}
+
 usage() {
   cat <<EOF
 uxon-demo — render YAML scenarios and launch the TUI against them.
@@ -30,9 +41,10 @@ Examples:
   $(basename "$0") run team-n              # the headline demo: cross-team, multi-host.
   $(basename "$0") run solo-1              # single dev on a single host.
 
-The TUI's local section reflects whatever real tmux sessions the
-current user owns. For clean screenshots run on a host with no
-uxon-prefixed sessions (or 'tmux kill-server' first).
+In demo mode the local section comes entirely from the scenario's
+'_local.json' envelope — tmux is never invoked, so your own real
+sessions never leak into the screenshot. A scenario with no 'local:'
+block shows an empty local section.
 EOF
 }
 
@@ -69,27 +81,34 @@ case "$cmd" in
     mkdir -p "$BUILD"
     uv run --quiet --script "$DIR/render.py" "$src" "$BUILD"
 
+    repo_root="$(cd "$DIR/.." && pwd)"
+    venv_uxon="$repo_root/.venv/bin/uxon"
+
     case "$cmd" in
       render)
         echo "Rendered $name to $BUILD"
         echo
         echo "Launch with:"
-        echo "  UXON_DEMO_HOSTS=$BUILD uxon"
+        echo "  UXON_DEMO_HOSTS=$BUILD $venv_uxon"
         ;;
       env)
         printf 'export UXON_DEMO_HOSTS=%q\n' "$BUILD"
         ;;
       run)
         export UXON_DEMO_HOSTS="$BUILD"
-        # Prefer the in-repo source tree (via `uv run`) over a
-        # system-installed `uxon`: the demo hook only exists in the
-        # local source until a release ships. Falls back to the
-        # `$PATH` binary when `uv` is unavailable.
-        if command -v uv >/dev/null 2>&1 && [[ -f "$DIR/../pyproject.toml" ]]; then
-          cd "$DIR/.." && exec uv run --quiet uxon
-        else
-          exec uxon
+        # Always the source tree — never a uxon from $PATH.
+        if [[ -x "$venv_uxon" ]]; then
+          exec "$venv_uxon"
         fi
+        if can_sync_venv "$repo_root"; then
+          echo "uxon-demo: $repo_root/.venv missing — creating with uv sync" >&2
+          (cd "$repo_root" && uv sync --quiet)
+          exec "$venv_uxon"
+        fi
+        echo "uxon-demo: cannot launch from source: $repo_root/.venv is missing" >&2
+        echo "and $(id -un) cannot create it (repo not writable)." >&2
+        echo "Ask the repo owner to run once:  cd $repo_root && uv sync" >&2
+        exit 1
         ;;
     esac
     ;;

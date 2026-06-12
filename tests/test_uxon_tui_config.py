@@ -42,8 +42,8 @@ def _mk_ctx(**overrides) -> TuiContext:
         new_project_root="/srv/work",
         existing_projects=[],
         cwd_writable=True,
-        current_user="devagent",
-        launch_user="devagent",
+        current_user="dana_agent",
+        launch_user="dana_agent",
         enabled_agents=("claude", "codex"),
         default_agent="claude",
         tui_refresh_interval_seconds=2.5,
@@ -86,8 +86,8 @@ class FromContextRoundTripTests(unittest.TestCase):
         ctx.refresh_sources = [spec]
         cfg = TuiConfig.from_context(ctx)
 
-        self.assertEqual(cfg.current_user, "devagent")
-        self.assertEqual(cfg.launch_user, "devagent")
+        self.assertEqual(cfg.current_user, "dana_agent")
+        self.assertEqual(cfg.launch_user, "dana_agent")
         self.assertEqual(cfg.enabled_agents, ("claude", "codex"))
         self.assertEqual(cfg.default_agent, "claude")
         self.assertEqual(cfg.tui_refresh_interval_seconds, 2.5)

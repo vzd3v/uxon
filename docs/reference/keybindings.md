@@ -9,7 +9,7 @@ the visible subset.
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Navigate items |
-| `←` / `→` | Top action row: cycle the three buttons cyclically. Dashboard: in `by_host` advance the active host tab; in `flat` jump the cursor across `(host, own/other)` transitions cyclically. |
+| `←` / `→` | Dashboard: in `by_host` advance the active host tab; in `flat` jump the cursor across `(host, own/other)` transitions cyclically. |
 | `Enter` | Activate (launch / attach) |
 | `d` | Kill highlighted session (with confirmation) |
 | `D` (Shift+d) | Kill all *own* sessions (`kill-all` to confirm) |

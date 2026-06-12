@@ -13,7 +13,7 @@ def _profile(**over):
         "host": "github.com",
         "owner": "vzd3v",
         "auth": "token",
-        "creds_user": "remdepl",
+        "creds_user": "erin",
         "token_file": "/tmp/tok",
         "visibility": "private",
     }
@@ -67,22 +67,22 @@ def _fail_cat(stderr="Permission denied"):
 class ReadTokenTests(unittest.TestCase):
     def test_reads_and_strips(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET + "\n")])
-        got = tok.read_token("/tmp/t", "remdepl", "devagent", run=runner)
+        got = tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
         self.assertEqual(got, SECRET)
         self.assertEqual(
             runner.calls[0],
-            ["sudo", "-n", "-u", "remdepl", "--", "cat", "--", "/tmp/t"],
+            ["sudo", "-n", "-u", "erin", "--", "cat", "--", "/tmp/t"],
         )
 
     def test_empty_file_fails(self) -> None:
         runner = FakeRunner([_ok_cat("")])
         with self.assertRaisesRegex(gh.BackendError, "is empty"):
-            tok.read_token("/tmp/t", "remdepl", "devagent", run=runner)
+            tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
 
     def test_unreadable_file_fails_without_leaking_path(self) -> None:
         runner = FakeRunner([_fail_cat()])
         try:
-            tok.read_token("/tmp/t", "remdepl", "devagent", run=runner)
+            tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
         except gh.BackendError as exc:
             self.assertIn("cannot read", str(exc))
             self.assertIn("/tmp/t", str(exc))  # path itself is fine
@@ -102,7 +102,7 @@ class PreflightTokenTests(unittest.TestCase):
                 _resp(404),  # GET /repos/vzd3v/new-repo
             ]
         )
-        tok.preflight(_profile(), "new-repo", "remdepl", "devagent", run=runner, http=http)
+        tok.preflight(_profile(), "new-repo", "erin", "dana_agent", run=runner, http=http)
         self.assertEqual(len(http.calls), 2)
         self.assertEqual(http.tokens_seen, [SECRET, SECRET])
 
@@ -115,7 +115,7 @@ class PreflightTokenTests(unittest.TestCase):
                 _resp(404),  # repo doesn't exist
             ]
         )
-        tok.preflight(_profile(owner="acme"), "r", "remdepl", "devagent", run=runner, http=http)
+        tok.preflight(_profile(owner="acme"), "r", "erin", "dana_agent", run=runner, http=http)
 
     def test_owner_not_in_orgs_fails(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET)])
@@ -126,7 +126,7 @@ class PreflightTokenTests(unittest.TestCase):
             ]
         )
         with self.assertRaisesRegex(gh.BackendError, "cannot create repos under owner"):
-            tok.preflight(_profile(owner="acme"), "r", "remdepl", "devagent", run=runner, http=http)
+            tok.preflight(_profile(owner="acme"), "r", "erin", "dana_agent", run=runner, http=http)
 
     def test_existing_repo_fails(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET)])
@@ -137,7 +137,7 @@ class PreflightTokenTests(unittest.TestCase):
             ]
         )
         with self.assertRaisesRegex(gh.BackendError, "already exists"):
-            tok.preflight(_profile(), "r", "remdepl", "devagent", run=runner, http=http)
+            tok.preflight(_profile(), "r", "erin", "dana_agent", run=runner, http=http)
 
     def test_bad_token_rejected(self) -> None:
         runner = FakeRunner([_ok_cat("deadbeef")])
@@ -147,7 +147,7 @@ class PreflightTokenTests(unittest.TestCase):
             ]
         )
         try:
-            tok.preflight(_profile(), "r", "remdepl", "devagent", run=runner, http=http)
+            tok.preflight(_profile(), "r", "erin", "dana_agent", run=runner, http=http)
         except gh.BackendError as exc:
             self.assertIn("token rejected", str(exc))
             self.assertIn("Bad credentials", str(exc))
@@ -168,7 +168,7 @@ class CreateRemoteTokenTests(unittest.TestCase):
             ]
         )
         url = tok.create_remote(
-            _profile(), "r", "/tmp/r", "remdepl", "devagent", run=runner, http=http
+            _profile(), "r", "/tmp/r", "erin", "dana_agent", run=runner, http=http
         )
         self.assertEqual(url, "git@github.com:vzd3v/r.git")
         _, post_url, body = http.calls[1]
@@ -191,8 +191,8 @@ class CreateRemoteTokenTests(unittest.TestCase):
             _profile(owner="acme"),
             "r",
             "/tmp/r",
-            "remdepl",
-            "devagent",
+            "erin",
+            "dana_agent",
             run=runner,
             http=http,
         )
@@ -211,8 +211,8 @@ class CreateRemoteTokenTests(unittest.TestCase):
             _profile(visibility="public"),
             "r",
             "/tmp/r",
-            "remdepl",
-            "devagent",
+            "erin",
+            "dana_agent",
             run=runner,
             http=http,
         )
@@ -229,7 +229,7 @@ class CreateRemoteTokenTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(gh.BackendError, "failed to create"):
             tok.create_remote(
-                _profile(), "r", "/tmp/r", "remdepl", "devagent", run=runner, http=http
+                _profile(), "r", "/tmp/r", "erin", "dana_agent", run=runner, http=http
             )
 
     def test_dry_run_reads_no_token(self) -> None:
@@ -239,8 +239,8 @@ class CreateRemoteTokenTests(unittest.TestCase):
             _profile(),
             "r",
             "/tmp/r",
-            "remdepl",
-            "devagent",
+            "erin",
+            "dana_agent",
             dry_run=True,
             run=runner,
             http=http,

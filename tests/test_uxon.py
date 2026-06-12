@@ -122,7 +122,7 @@ class UxonTests(unittest.TestCase):
 
     def test_resolve_caller_user_prefers_current_non_root_user(self) -> None:
         with mock.patch("uxon.infra.identity.process_user", return_value="u-vz"):
-            with mock.patch.dict(os.environ, {"SUDO_USER": "remdepl"}, clear=False):
+            with mock.patch.dict(os.environ, {"SUDO_USER": "erin"}, clear=False):
                 self.assertEqual(identity.resolve_caller_user(), "u-vz")
 
     def test_parse_args_supports_version_flags(self) -> None:
@@ -175,38 +175,36 @@ class UxonTests(unittest.TestCase):
 
     def test_resolve_launch_user_fixed_mode_uses_runtime_user(self) -> None:
         cfg = self._make_config_explicit(
-            runtime_user="devagent", default_launch_mode="fixed", session_users=["devagent"]
+            runtime_user="dana_agent", default_launch_mode="fixed", session_users=["dana_agent"]
         )
-        self.assertEqual(identity.resolve_launch_user(cfg, "remdepl"), "devagent")
+        self.assertEqual(identity.resolve_launch_user(cfg, "erin"), "dana_agent")
 
     def test_resolve_launch_user_caller_mode_uses_caller(self) -> None:
         cfg = self._make_config_explicit(
-            runtime_user="devagent",
+            runtime_user="dana_agent",
             default_launch_mode="caller",
-            session_users=["devagent", "remdepl"],
+            session_users=["dana_agent", "erin"],
         )
-        self.assertEqual(identity.resolve_launch_user(cfg, "remdepl"), "remdepl")
+        self.assertEqual(identity.resolve_launch_user(cfg, "erin"), "erin")
 
     def test_resolve_launch_user_mapping_overrides_default(self) -> None:
         cfg = self._make_config_explicit(
-            runtime_user="devagent",
+            runtime_user="dana_agent",
             default_launch_mode="caller",
             enable_all_users_list=True,
-            launch_user_by_caller={"remdepl": "devagent"},
-            session_users=["devagent", "remdepl"],
+            launch_user_by_caller={"erin": "dana_agent"},
+            session_users=["dana_agent", "erin"],
         )
-        self.assertEqual(identity.resolve_launch_user(cfg, "remdepl"), "devagent")
+        self.assertEqual(identity.resolve_launch_user(cfg, "erin"), "dana_agent")
 
     def test_resolve_all_session_users_keeps_current_user_present(self) -> None:
         cfg = self._make_config_explicit(
-            runtime_user="devagent",
+            runtime_user="dana_agent",
             default_launch_mode="fixed",
             enable_all_users_list=True,
-            session_users=["devagent"],
+            session_users=["dana_agent"],
         )
-        self.assertEqual(
-            identity.resolve_all_session_users(cfg, "remdepl"), ["devagent", "remdepl"]
-        )
+        self.assertEqual(identity.resolve_all_session_users(cfg, "erin"), ["dana_agent", "erin"])
 
     def test_parse_args_supports_all_users_listing(self) -> None:
         parsed = parse_args(["list", "--all-users"])
@@ -252,10 +250,10 @@ class UxonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg(
                 textwrap.dedent("""
-                    runtime_user = "devagent"
+                    runtime_user = "dana_agent"
                     default_launch_mode = "caller"
                     enable_all_users_list = true
-                    session_users = ["devagent", "remdepl"]
+                    session_users = ["dana_agent", "erin"]
                     allowed_roots = ["/srv", "/tmp"]
                     session_prefix = "uxon-"
                     repeat_noninteractive_mode = "attach"
@@ -269,17 +267,17 @@ class UxonTests(unittest.TestCase):
                     default_args = ["--model", "sonnet"]
 
                     [launch_user_by_caller]
-                    remdepl = "devagent"
+                    erin = "dana_agent"
                 """).strip()
                 + "\n",
                 tmpdir,
             )
 
-        self.assertEqual(cfg.runtime_user, "devagent")
+        self.assertEqual(cfg.runtime_user, "dana_agent")
         self.assertEqual(cfg.default_launch_mode, "caller")
         self.assertTrue(cfg.enable_all_users_list)
-        self.assertEqual(cfg.session_users, ["devagent", "remdepl"])
-        self.assertEqual(cfg.launch_user_by_caller, {"remdepl": "devagent"})
+        self.assertEqual(cfg.session_users, ["dana_agent", "erin"])
+        self.assertEqual(cfg.launch_user_by_caller, {"erin": "dana_agent"})
         self.assertEqual(cfg.agent_default_args["claude"], ("--model", "sonnet"))
         self.assertEqual(cfg.enabled_agents, ("claude",))
         self.assertEqual(cfg.default_agent, "claude")
@@ -443,7 +441,7 @@ class UxonTests(unittest.TestCase):
                     host = "github.com"
                     owner = "vzd3v"
                     auth = "gh"
-                    creds_user = "remdepl"
+                    creds_user = "erin"
                     visibility = "private"
 
                     [[git_remote_profiles]]
@@ -451,8 +449,8 @@ class UxonTests(unittest.TestCase):
                     host = "github.com"
                     owner = "acme"
                     auth = "token"
-                    creds_user = "remdepl"
-                    token_file = "/home/remdepl/.secrets/acme.token"
+                    creds_user = "erin"
+                    token_file = "/home/erin/.secrets/acme.token"
                 """).strip()
                 + "\n",
                 tmpdir,
@@ -461,7 +459,7 @@ class UxonTests(unittest.TestCase):
         self.assertTrue(cfg.git_create_enabled)
         self.assertEqual(cfg.default_git_remote_profile, "vzd3v-gh")
         self.assertEqual([p.name for p in cfg.git_remote_profiles], ["vzd3v-gh", "acme-tok"])
-        self.assertEqual(cfg.git_remote_profiles[1].token_file, "/home/remdepl/.secrets/acme.token")
+        self.assertEqual(cfg.git_remote_profiles[1].token_file, "/home/erin/.secrets/acme.token")
 
     def test_load_config_rejects_default_pointing_to_missing_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -527,7 +525,7 @@ class UxonTests(unittest.TestCase):
                 + "\n",
                 tmpdir,
             )
-            ctx = context_builder.build_tui_context(cfg, "devagent", tmpdir, skeleton=True)
+            ctx = context_builder.build_tui_context(cfg, "dana_agent", tmpdir, skeleton=True)
         self.assertTrue(ctx.loading)
         names = [s.name for s in ctx.refresh_sources]
         self.assertIn("main_ctx_rebuild", names)
@@ -633,7 +631,7 @@ class UxonTests(unittest.TestCase):
             "host": "github.com",
             "owner": "vzd3v",
             "auth": "gh",
-            "creds_user": "remdepl",
+            "creds_user": "erin",
             "visibility": "private",
         }
         from uxon.domain import git_profiles as uxon_git_profiles
@@ -679,14 +677,14 @@ class UxonTests(unittest.TestCase):
             with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
                 with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0):
                     with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
-                        new_app.do_new(args, cfg, "devagent")
+                        new_app.do_new(args, cfg, "dana_agent")
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["name"], "prof-a")
         self.assertEqual(calls[0]["repo"], "demo")
         self.assertEqual(calls[0]["dir"], "/srv/repos/demo")
         self.assertTrue(calls[0]["dry_run"])
-        self.assertEqual(calls[0]["launch_user"], "devagent")
+        self.assertEqual(calls[0]["launch_user"], "dana_agent")
 
     def test_do_new_git_remote_rejects_disabled_feature(self) -> None:
         cfg = self.make_config(git_create_enabled=False)
@@ -699,7 +697,7 @@ class UxonTests(unittest.TestCase):
         )
         with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
             with self.assertRaisesRegex(SystemExit, "2"):
-                new_app.do_new(args, cfg, "devagent")
+                new_app.do_new(args, cfg, "dana_agent")
 
     def test_do_new_git_remote_with_worktree_fails(self) -> None:
         from uxon.domain import git_profiles as uxon_git_profiles
@@ -714,7 +712,7 @@ class UxonTests(unittest.TestCase):
                         "host": "github.com",
                         "owner": "vzd3v",
                         "auth": "gh",
-                        "creds_user": "remdepl",
+                        "creds_user": "erin",
                         "visibility": "private",
                     }
                 ]
@@ -732,7 +730,7 @@ class UxonTests(unittest.TestCase):
             m_os.path.isdir.return_value = True
             with mock.patch("uxon.infra.git.git_repo_root_as_user", return_value="/srv/repos/demo"):
                 with self.assertRaises(SystemExit):
-                    new_app.do_new(args, cfg, "devagent")
+                    new_app.do_new(args, cfg, "dana_agent")
 
     def test_parse_run_rejects_git_flags(self) -> None:
         with self.assertRaises(SystemExit):
@@ -992,7 +990,7 @@ class UxonTests(unittest.TestCase):
                                     ):
                                         with mock.patch("sys.stdout", output):
                                             rc = doctor_app.do_doctor(
-                                                cfg, "remdepl", "u-vz", "/srv/repos/demo"
+                                                cfg, "erin", "u-vz", "/srv/repos/demo"
                                             )
 
         self.assertEqual(rc, 0)
@@ -1796,13 +1794,13 @@ class NonintGitResolverTests(unittest.TestCase):
             mock.patch.object(git.subprocess, "run", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
-            root = git.git_repo_root_nonint_as_user("/srv/work/myapp/sub", "devagent")
+            root = git.git_repo_root_nonint_as_user("/srv/work/myapp/sub", "dana_agent")
         self.assertEqual(root, domain_authz.canonical("/srv/work/myapp"))
         # The resolver uses the non-interactive (``sudo -n``) prefix — assert
         # it is the leading prefix of the issued argv. (cli.py composes the
         # non-interactive flags as ``-niu``, so the prefix is checked as a
         # whole rather than for a standalone ``-n`` token.)
-        prefix = identity.nonint_command_prefix_for_user("devagent")
+        prefix = identity.nonint_command_prefix_for_user("dana_agent")
         self.assertEqual(seen["cmd"][: len(prefix)], prefix)
 
     def test_repo_root_nonint_none_on_failure(self) -> None:
@@ -1818,7 +1816,7 @@ class NonintGitResolverTests(unittest.TestCase):
             mock.patch.object(git.subprocess, "run", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
-            self.assertIsNone(git.git_repo_root_nonint_as_user("/tmp/x", "devagent"))
+            self.assertIsNone(git.git_repo_root_nonint_as_user("/tmp/x", "dana_agent"))
 
     def test_common_dir_normalises_to_primary_root(self) -> None:
         # git rev-parse --git-common-dir on a linked worktree returns the
@@ -1836,7 +1834,7 @@ class NonintGitResolverTests(unittest.TestCase):
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
             root = git.git_common_dir_root_as_user(
-                "/srv/work/myapp/.uxon/worktrees/feat", "devagent"
+                "/srv/work/myapp/.uxon/worktrees/feat", "dana_agent"
             )
         self.assertEqual(root, domain_authz.canonical("/srv/work/myapp"))
 
@@ -2287,7 +2285,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
         ):
             tui_planning._plan_tui_run_agent(
                 cfg,
-                "devagent",
+                "dana_agent",
                 "/srv/work/myapp/.uxon/worktrees/feature-auth",
                 "claude",
                 "default",
@@ -2313,7 +2311,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
             ),
         ):
             tui_planning._plan_tui_run_agent(
-                cfg, "devagent", "/srv/work/plain", "claude", "default"
+                cfg, "dana_agent", "/srv/work/plain", "claude", "default"
             )
         self.assertEqual(captured["stem"], "plain")
 
@@ -2321,7 +2319,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
 class ProbeWorktreeStemTests(unittest.TestCase):
     def _session(self, name: str, path: str):
         return domain_session.SessionInfo(
-            user="devagent",
+            user="dana_agent",
             name=name,
             attached="0",
             windows="1",
@@ -2341,7 +2339,7 @@ class ProbeWorktreeStemTests(unittest.TestCase):
         with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=sess):
             out = sessions_probe.probe_tui_compatible_sessions(
                 cfg,
-                "devagent",
+                "dana_agent",
                 wt,
                 "claude",
                 stem="myapp-feature-auth",
@@ -2355,7 +2353,7 @@ class ProbeWorktreeStemTests(unittest.TestCase):
         sess = [self._session("uxon-plain@claude", target)]
         cfg = config_loader.load_config("/tmp")
         with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=sess):
-            out = sessions_probe.probe_tui_compatible_sessions(cfg, "devagent", target, "claude")
+            out = sessions_probe.probe_tui_compatible_sessions(cfg, "dana_agent", target, "claude")
         self.assertEqual([s.name for s in out], ["uxon-plain@claude"])
 
 
@@ -2366,7 +2364,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
 
     def _session(self, name: str, path: str):
         return domain_session.SessionInfo(
-            user="devagent",
+            user="dana_agent",
             name=name,
             attached="0",
             windows="1",
@@ -2396,7 +2394,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
             ),
         ):
             req = tui_planning._plan_tui_run_agent(
-                cfg, "devagent", wt, "claude", "default", worktree=(repo, branch)
+                cfg, "dana_agent", wt, "claude", "default", worktree=(repo, branch)
             )
         self.assertEqual(req.label, "launch uxon-myapp-feature-auth@claude")
 
@@ -2405,7 +2403,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=live):
             found = sessions_probe.probe_tui_compatible_sessions(
                 cfg,
-                "devagent",
+                "dana_agent",
                 wt,
                 "claude",
                 stem=domain_session.session_stem_for_worktree(repo, branch),
@@ -2424,7 +2422,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=live):
             found = sessions_probe.probe_tui_compatible_sessions(
                 cfg,
-                "devagent",
+                "dana_agent",
                 wt_b,
                 "claude",
                 stem=domain_session.session_stem_for_worktree(repo_b, "feature"),
@@ -2483,7 +2481,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             mock.patch("uxon.infra.audit.audit", fake_audit),
         ):
             req = launch_app.plan_worktree_launch(
-                cfg, "devagent", repo, "feature/auth", "claude", "default"
+                cfg, "dana_agent", repo, "feature/auth", "claude", "default"
             )
         # session named with the worktree stem
         self.assertEqual(req.label, "launch uxon-myapp-feature-auth@claude")
@@ -2532,7 +2530,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit) as cm:
                 launch_app.plan_worktree_launch(
-                    cfg, "devagent", "/srv/work/myapp", "feature/auth", "claude", "default"
+                    cfg, "dana_agent", "/srv/work/myapp", "feature/auth", "claude", "default"
                 )
         msg = getattr(cm.exception, "uxon_msg", "")
         self.assertIn("allowed_roots", msg)
@@ -2571,7 +2569,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
             mock.patch("uxon.infra.audit.audit", lambda *a, **k: None),
         ):
             launch_app.plan_worktree_launch(
-                cfg, "devagent", "/srv/work/myapp", "existing", "claude", "default"
+                cfg, "dana_agent", "/srv/work/myapp", "existing", "claude", "default"
             )
         add = [c for c in calls if "worktree" in c and "add" in c]
         self.assertTrue(add)
@@ -2608,7 +2606,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         ):
             launch_app.plan_worktree_launch(
                 cfg,
-                "devagent",
+                "dana_agent",
                 "/srv/work/myapp",
                 "existing",
                 "claude",
@@ -2652,7 +2650,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit) as cm:
                 launch_app.plan_worktree_launch(
-                    cfg, "devagent", "/srv/work/myapp", "feature/auth", "claude", "default"
+                    cfg, "dana_agent", "/srv/work/myapp", "feature/auth", "claude", "default"
                 )
         # Friendly message, not the raw git fatal. fail() stashes the
         # human-readable text on the SystemExit as ``uxon_msg``.
@@ -2700,7 +2698,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         ):
             req = launch_app.plan_worktree_launch(
                 cfg,
-                "devagent",
+                "dana_agent",
                 "/srv/work/myapp",
                 "feature/auth",
                 "claude",
@@ -2742,7 +2740,7 @@ class CliWorktreeRoutingTests(unittest.TestCase):
             mock.patch.object(launch_app, "plan_worktree_launch", fake_plan),
         ):
             # dry_run=True → no execvp; do_run returns 0 after printing.
-            rc = run_app.do_run(args, cfg, "devagent")
+            rc = run_app.do_run(args, cfg, "dana_agent")
         self.assertEqual(rc, 0)
         self.assertEqual(captured["repo"], "/srv/work/myapp")
         self.assertEqual(captured["branch"], "feature/auth")
@@ -2761,9 +2759,9 @@ class ExcludeWriterTests(unittest.TestCase):
             _init_repo(d)
             # Launch user == process user so the sudo prefix collapses —
             # the CI runner has no fixed username to hard-code.
-            with mock.patch("uxon.infra.identity.process_user", return_value="devagent"):
-                git.write_uxon_exclude_entry(d, "devagent")
-                git.write_uxon_exclude_entry(d, "devagent")  # idempotent
+            with mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"):
+                git.write_uxon_exclude_entry(d, "dana_agent")
+                git.write_uxon_exclude_entry(d, "dana_agent")  # idempotent
             with open(os.path.join(d, ".git", "info", "exclude")) as fh:
                 text = fh.read()
         self.assertEqual(text.count(".uxon/"), 1)
@@ -2793,8 +2791,8 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
             dest = os.path.join(d, ".uxon", "worktrees", "feat")
             os.makedirs(dest)
             # Same process_user collapse as ExcludeWriterTests above.
-            with mock.patch("uxon.infra.identity.process_user", return_value="devagent"):
-                git.copy_worktreeinclude_matches(d, dest, "devagent")
+            with mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"):
+                git.copy_worktreeinclude_matches(d, dest, "dana_agent")
             self.assertTrue(os.path.exists(os.path.join(dest, ".env")))
             self.assertFalse(os.path.exists(os.path.join(dest, "debug.log")))
             self.assertFalse(os.path.exists(os.path.join(dest, "tracked.txt")))
@@ -2804,7 +2802,7 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
             _init_repo(d)
             dest = os.path.join(d, "dest")
             os.makedirs(dest)
-            git.copy_worktreeinclude_matches(d, dest, "devagent")  # no raise
+            git.copy_worktreeinclude_matches(d, dest, "dana_agent")  # no raise
             self.assertEqual(os.listdir(dest), [])
 
 
@@ -2835,10 +2833,10 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
                 "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/work/myapp"
             ),
             mock.patch.object(tui_bridge.subprocess, "run", fake_run),
-            mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
+            mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"),
         ):
             ctx = context_builder.build_tui_context(
-                cfg, "devagent", "/srv/work/myapp", skeleton=True
+                cfg, "dana_agent", "/srv/work/myapp", skeleton=True
             )
             rows = ctx.on_probe_worktrees("/srv/work/myapp")
         self.assertTrue(rows[0].is_primary)
@@ -2848,9 +2846,9 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
         cfg = config_loader.load_config("/tmp")
         with (
             mock.patch("uxon.infra.git.git_repo_root_nonint_as_user", return_value=None),
-            mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
+            mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"),
         ):
-            ctx = context_builder.build_tui_context(cfg, "devagent", "/tmp/plain", skeleton=True)
+            ctx = context_builder.build_tui_context(cfg, "dana_agent", "/tmp/plain", skeleton=True)
             self.assertEqual(ctx.on_probe_worktrees("/tmp/plain"), [])
 
     def test_probe_worktrees_git_failure_raises(self) -> None:
@@ -2879,10 +2877,10 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
                 "uxon.infra.git.git_common_dir_root_as_user", return_value="/srv/work/myapp"
             ),
             mock.patch.object(tui_bridge.subprocess, "run", fake_run),
-            mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
+            mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"),
         ):
             ctx = context_builder.build_tui_context(
-                cfg, "devagent", "/srv/work/myapp", skeleton=True
+                cfg, "dana_agent", "/srv/work/myapp", skeleton=True
             )
             with self.assertRaises(CallbackError) as caught:
                 ctx.on_probe_worktrees("/srv/work/myapp")
@@ -2894,7 +2892,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
         repo = "/srv/work/myapp"
         wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
         sess = domain_session.SessionInfo(
-            user="devagent",
+            user="dana_agent",
             name="uxon-myapp-feature-auth@claude",
             attached="1",
             windows="1",
@@ -2910,9 +2908,9 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[sess]),
             mock.patch("uxon.infra.git.git_repo_root_nonint_as_user", return_value=repo),
             mock.patch("uxon.infra.git.git_common_dir_root_as_user", return_value=repo),
-            mock.patch("uxon.infra.identity.process_user", return_value="devagent"),
+            mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"),
         ):
-            ctx = context_builder.build_tui_context(cfg, "devagent", repo, skeleton=True)
+            ctx = context_builder.build_tui_context(cfg, "dana_agent", repo, skeleton=True)
             out = ctx.on_probe_existing_worktree_sessions(wt, repo, "feature/auth", "claude")
         self.assertEqual(out, (("uxon-myapp-feature-auth@claude", True),))
 

@@ -82,61 +82,49 @@ def _session(name: str, user: str = "me"):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class TopActionRowCyclingTests(unittest.IsolatedAsyncioTestCase):
-    """←/→ cycles the three top buttons cyclically; ↓ leaves the group."""
+class TopActionStackNavigationTests(unittest.IsolatedAsyncioTestCase):
+    """↑/↓ walk the vertical action stack one row at a time."""
 
-    async def test_right_cycles_forward(self) -> None:
+    async def test_down_walks_the_stack(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets import ActionRow
 
         app = UxonApp(_mk_ctx(), probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            # Default focus is on the SearchBar input — blur to step
-            # into the action group via Tab.
-            await pilot.press("escape")
             await pilot.pause()
             app.screen.query_one("#action-cwd", ActionRow).focus()
             await pilot.pause()
             self.assertEqual(app.focused.id, "action-cwd")
-            await pilot.press("right")
+            await pilot.press("down")
             await pilot.pause()
             self.assertEqual(app.focused.id, "action-new")
-            await pilot.press("right")
+            await pilot.press("down")
             await pilot.pause()
             self.assertEqual(app.focused.id, "action-open")
-            # Cyclic: → from the last button wraps to the first.
-            await pilot.press("right")
+            # ↓ from the last row leaves the stack entirely.
+            await pilot.press("down")
             await pilot.pause()
-            self.assertEqual(app.focused.id, "action-cwd")
+            self.assertNotIn(
+                getattr(app.focused, "id", None),
+                {"action-cwd", "action-new", "action-open"},
+                msg="↓ from the last action row must leave the stack",
+            )
 
-    async def test_down_leaves_group(self) -> None:
-        """↓ from any button exits past the entire group in one step."""
+    async def test_up_walks_the_stack(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets import ActionRow
 
         app = UxonApp(_mk_ctx(), probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            await pilot.press("escape")
+            app.screen.query_one("#action-open", ActionRow).focus()
             await pilot.pause()
-            # Start on action-new (middle button) — the trickiest case
-            # because focus_next would land on action-open before
-            # leaving the group; the ↓ binding must skip past it.
-            app.screen.query_one("#action-new", ActionRow).focus()
+            await pilot.press("up")
             await pilot.pause()
-            await pilot.press("down")
+            self.assertEqual(app.focused.id, "action-new")
+            await pilot.press("up")
             await pilot.pause()
-            focused = app.focused
-            self.assertIsNotNone(focused)
-            # Must have left the action group entirely; landing on any
-            # other button (cwd / open) would mean ↓ degraded to the
-            # default focus_next.
-            self.assertNotIn(
-                getattr(focused, "id", None),
-                {"action-cwd", "action-new", "action-open"},
-                msg="↓ from middle button must skip past the entire group",
-            )
+            self.assertEqual(app.focused.id, "action-cwd")
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -179,17 +167,17 @@ class UpFromButtonsLandsOnLastRowTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class DownFromButtonsLandsOnFirstRowTests(unittest.IsolatedAsyncioTestCase):
-    """↓ from any top button forces the dashboard cursor to row 0.
+    """↓ from the last action row forces the dashboard cursor to row 0.
 
     Without the symmetric ``move_cursor(row=0)`` in
-    :meth:`ActionRow.action_leave_group`, the DataTable preserves its
-    prior ``cursor_row`` (e.g. wherever the operator left it before
-    going ↑ to the buttons). Pressing ↓ from a button then teleports
+    :meth:`ActionRow.action_leave`, the table preserves its prior
+    ``cursor_row`` (e.g. wherever the operator left it before going ↑
+    to the action stack). Pressing ↓ from the stack then teleports
     them back to that prior position rather than to the natural top of
     the list. This regression check pins ``cursor_row == 0`` after ↓.
     """
 
-    async def test_down_from_first_button_focuses_first_row(self) -> None:
+    async def test_down_from_last_action_row_focuses_first_row(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets import ActionRow
         from uxon.tui.widgets.session_list_view import SessionListView
@@ -207,7 +195,7 @@ class DownFromButtonsLandsOnFirstRowTests(unittest.IsolatedAsyncioTestCase):
             # Pre-position the cursor on the LAST row so that landing
             # on row 0 is observably different from "no-op preserve".
             table.move_cursor(row=table.row_count - 1)
-            screen.query_one("#action-cwd", ActionRow).focus()
+            screen.query_one("#action-open", ActionRow).focus()
             await pilot.pause()
             await pilot.press("down")
             await pilot.pause()
@@ -215,22 +203,20 @@ class DownFromButtonsLandsOnFirstRowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 table.cursor_row,
                 0,
-                msg="↓ from buttons must land on row 0, not preserve prior position",
+                msg="↓ from the stack must land on row 0, not preserve prior position",
             )
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class DashboardUpFocusFirstButtonTests(unittest.IsolatedAsyncioTestCase):
-    """↑ on the dashboard's top row must land on the first action button.
+class DashboardUpFocusRowAboveTests(unittest.IsolatedAsyncioTestCase):
+    """↑ on the dashboard's top row lands on the action row directly above.
 
-    Regression for the bug where ``app.action_focus_previous()`` walks
-    the focus chain backwards and lands on ``action-open`` (3rd / right-
-    most button), which doesn't match how operators read the row left
-    to right. :meth:`SessionListView.action_cursor_up` jumps to
-    ``#top-actions``'s first child instead.
+    The action rows are a vertical stack, so the previous focus-chain
+    stop *is* the nearest row above the table — spatial navigation and
+    the focus chain agree, no special-casing.
     """
 
-    async def test_up_from_top_row_focuses_first_button(self) -> None:
+    async def test_up_from_top_row_focuses_row_above(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets.session_list_view import SessionListView
 
@@ -250,8 +236,8 @@ class DashboardUpFocusFirstButtonTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(
                 app.focused.id,
-                "action-cwd",
-                msg="↑ from row 0 must focus the first ActionRow, not the last",
+                "action-open",
+                msg="↑ from row 0 must focus the action row directly above the table",
             )
 
 

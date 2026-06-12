@@ -144,7 +144,7 @@ def _mk_ctx(**overrides):
         new_project_root="/srv/work",
         existing_projects=[],
         cwd_writable=True,
-        current_user="devagent",
+        current_user="dana_agent",
         tui_render_debounce_ms=10,
         tui_render_max_latency_ms=50,
         on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
@@ -177,7 +177,7 @@ def _own_session(name: str, short: str, *, cpu: str = "1.0"):
         last_activity="1s",
         cmd="claude",
         path="/srv/work",
-        user="devagent",
+        user="dana_agent",
     )
 
 
@@ -454,8 +454,8 @@ class LayoutBudgetTests(unittest.IsolatedAsyncioTestCase):
 
         ctx = _mk_ctx(
             sessions=[
-                _own_session("devagent.a", "a", cpu="1.0"),
-                _own_session("devagent.b", "b", cpu="2.0"),
+                _own_session("dana_agent.a", "a", cpu="1.0"),
+                _own_session("dana_agent.b", "b", cpu="2.0"),
             ]
         )
         app = UxonApp(ctx, probe_agents=False)
@@ -471,8 +471,8 @@ class LayoutBudgetTests(unittest.IsolatedAsyncioTestCase):
 
             ctx2 = _mk_ctx(
                 sessions=[
-                    _own_session("devagent.a", "a", cpu="55.0"),
-                    _own_session("devagent.b", "b", cpu="2.0"),
+                    _own_session("dana_agent.a", "a", cpu="55.0"),
+                    _own_session("dana_agent.b", "b", cpu="2.0"),
                 ]
             )
             sink = _SinkCounter(only_screen=screen)
@@ -504,8 +504,8 @@ class LayoutBudgetTests(unittest.IsolatedAsyncioTestCase):
 
         ctx = _mk_ctx(
             sessions=[
-                _own_session("devagent.a", "a"),
-                _own_session("devagent.b", "b"),
+                _own_session("dana_agent.a", "a"),
+                _own_session("dana_agent.b", "b"),
             ]
         )
         app = UxonApp(ctx, probe_agents=False)
@@ -521,8 +521,8 @@ class LayoutBudgetTests(unittest.IsolatedAsyncioTestCase):
             # A value-identical ctx: every field equal to the prior landing.
             ctx_same = _mk_ctx(
                 sessions=[
-                    _own_session("devagent.a", "a"),
-                    _own_session("devagent.b", "b"),
+                    _own_session("dana_agent.a", "a"),
+                    _own_session("dana_agent.b", "b"),
                 ]
             )
             sink = _SinkCounter(only_screen=screen)
@@ -590,7 +590,9 @@ class LayoutBudgetTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.main import MainScreen
         from uxon.tui.widgets.session_list_view import SessionListView
 
-        ctx = _mk_ctx(sessions=[_own_session(f"devagent.s{i:02d}", f"s{i:02d}") for i in range(30)])
+        ctx = _mk_ctx(
+            sessions=[_own_session(f"dana_agent.s{i:02d}", f"s{i:02d}") for i in range(30)]
+        )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 24)) as pilot:
             await pilot.pause()
@@ -691,8 +693,8 @@ class LayoutBudgetTests(unittest.IsolatedAsyncioTestCase):
 
         ctx = _mk_ctx(
             sessions=[
-                _own_session("devagent.a", "a"),
-                _own_session("devagent.b", "b"),
+                _own_session("dana_agent.a", "a"),
+                _own_session("dana_agent.b", "b"),
             ]
         )
         app = UxonApp(ctx, probe_agents=False)
@@ -730,7 +732,7 @@ class LayoutBudgetTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets.gated_footer import GatedFooter
 
-        ctx = _mk_ctx(sessions=[_own_session("devagent.a", "a")])
+        ctx = _mk_ctx(sessions=[_own_session("dana_agent.a", "a")])
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()

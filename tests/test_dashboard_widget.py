@@ -11,8 +11,9 @@ Pinned contracts:
 * ``set_rows`` lands the rows in the given order; ``row_count == len``.
 * ``pin_cursor_to(key)`` follows the logical row across a reorder, and clamps
   to the nearest surviving sibling when the key is gone.
-* Edge-release: ``↑`` on row 0 hands focus to the leftmost ActionRow in
-  ``#top-actions``; ``↓`` on the last row hands focus to the next sibling.
+* Edge-release: ``↑`` on row 0 hands focus to the widget directly above
+  (the last action row); ``↓`` on the last row hands focus to the next
+  sibling.
 * Enter / click post ``RowSelected`` carrying the cursor row; ``←/→`` post
   ``HostNavigate`` carrying the direction.
 * ``render_line`` only builds the visible viewport (out-of-range lines are
@@ -164,12 +165,11 @@ class SessionListViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(view.row_count, 2)
             self.assertEqual(view.cursor_row, 1)
 
-    async def test_edge_release_up_lands_on_leftmost_action_row(self) -> None:
-        """``↑`` on row 0 focuses the leftmost ActionRow in #top-actions."""
+    async def test_edge_release_up_lands_on_action_row_above(self) -> None:
+        """``↑`` on row 0 focuses the action row directly above the list."""
         from textual.app import App, ComposeResult
-        from textual.containers import Horizontal
 
-        from uxon.tui.widgets.action_row import ACTION_GROUP_CONTAINER_ID, ActionRow
+        from uxon.tui.widgets.action_row import ActionRow
         from uxon.tui.widgets.session_list_view import SessionListView
 
         cols = _active_columns()
@@ -178,9 +178,8 @@ class SessionListViewTests(unittest.IsolatedAsyncioTestCase):
 
         class Host(App):
             def compose(self) -> ComposeResult:
-                with Horizontal(id=ACTION_GROUP_CONTAINER_ID):
-                    yield ActionRow(kind="cwd", label="Set cwd", id="action-cwd")
-                    yield ActionRow(kind="open", label="Open", id="action-open")
+                yield ActionRow(kind="cwd", label="Set cwd", id="action-cwd")
+                yield ActionRow(kind="open", label="Open", id="action-open")
                 yield SessionListView(cols, id="dash")
 
         app = Host()
@@ -196,7 +195,7 @@ class SessionListViewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             focused = app.focused
             assert focused is not None
-            self.assertEqual(focused.id, "action-cwd")
+            self.assertEqual(focused.id, "action-open")
 
     async def test_edge_release_down_hands_focus_to_next(self) -> None:
         """``↓`` on the last row hands focus off the list (focus_next)."""
