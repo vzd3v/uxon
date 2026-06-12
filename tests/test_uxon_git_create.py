@@ -14,7 +14,7 @@ def _gh_profile(**over):
         "host": "github.com",
         "owner": "vzd3v",
         "auth": "gh",
-        "creds_user": "remdepl",
+        "creds_user": "erin",
         "visibility": "private",
     }
     raw.update(over)
@@ -27,7 +27,7 @@ def _tok_profile(**over):
         "host": "github.com",
         "owner": "vzd3v",
         "auth": "token",
-        "creds_user": "remdepl",
+        "creds_user": "erin",
         "token_file": "/tmp/t",
         "visibility": "private",
     }
@@ -108,8 +108,8 @@ class GhHappyPathTests(unittest.TestCase):
             _gh_profile(),
             "demo",
             "/tmp/demo",
-            launch_user="devagent",
-            current_user="devagent",
+            launch_user="dana_agent",
+            current_user="dana_agent",
             run=runner,
         )
         self.assertEqual(result.ssh_url, "git@github.com:vzd3v/demo.git")
@@ -126,8 +126,8 @@ class GhHappyPathTests(unittest.TestCase):
                 _gh_profile(),
                 "demo",
                 "/tmp/demo",
-                launch_user="devagent",
-                current_user="devagent",
+                launch_user="dana_agent",
+                current_user="dana_agent",
                 run=runner,
             )
 
@@ -144,8 +144,8 @@ class GhHappyPathTests(unittest.TestCase):
                 _gh_profile(),
                 "demo",
                 "/tmp/demo",
-                launch_user="devagent",
-                current_user="devagent",
+                launch_user="dana_agent",
+                current_user="dana_agent",
                 run=runner,
             )
         self.assertEqual(ctx.exception.stage, "preflight")
@@ -184,8 +184,8 @@ class TokenHappyPathTests(unittest.TestCase):
             _tok_profile(),
             "demo",
             "/tmp/demo",
-            launch_user="devagent",
-            current_user="devagent",
+            launch_user="dana_agent",
+            current_user="dana_agent",
             run=runner,
             http=http,
         )
@@ -210,8 +210,8 @@ class DryRunTests(unittest.TestCase):
             _gh_profile(),
             "demo",
             "/tmp/demo",
-            launch_user="devagent",
-            current_user="devagent",
+            launch_user="dana_agent",
+            current_user="dana_agent",
             dry_run=True,
             run=runner,
         )
@@ -239,8 +239,8 @@ class DryRunTests(unittest.TestCase):
             _tok_profile(),
             "demo",
             "/tmp/demo",
-            launch_user="devagent",
-            current_user="devagent",
+            launch_user="dana_agent",
+            current_user="dana_agent",
             dry_run=True,
             run=runner,
             http=http,
@@ -253,11 +253,11 @@ class DryRunTests(unittest.TestCase):
 class ResolveCredsUserTests(unittest.TestCase):
     def test_falls_back_to_launch_user(self) -> None:
         p = _gh_profile(creds_user="")
-        self.assertEqual(orch.resolve_creds_user(p, "devagent"), "devagent")
+        self.assertEqual(orch.resolve_creds_user(p, "dana_agent"), "dana_agent")
 
     def test_keeps_explicit_creds_user(self) -> None:
-        p = _gh_profile(creds_user="remdepl")
-        self.assertEqual(orch.resolve_creds_user(p, "devagent"), "remdepl")
+        p = _gh_profile(creds_user="erin")
+        self.assertEqual(orch.resolve_creds_user(p, "dana_agent"), "erin")
 
 
 if __name__ == "__main__":

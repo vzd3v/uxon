@@ -36,7 +36,7 @@ def _mk_ctx(**overrides):
         new_project_root="/srv/work",
         existing_projects=[],
         cwd_writable=True,
-        current_user="devagent",
+        current_user="dana_agent",
         on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
             cmd=("/bin/true",), label="cwd"
         ),
@@ -178,14 +178,14 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.context import TuiSession
         from uxon.tui.dashboard.ui_state import set_view_mode
 
-        # Skeleton has a single-user dashboard (devagent's own row);
+        # Skeleton has a single-user dashboard (dana_agent's own row);
         # loaded ctx introduces a second user (alice), flipping the
         # cross_user latch False→True and forcing the recompose path.
         # Real :class:`TuiSession` instances are required because
         # ``apply_loaded_ctx`` now syncs ``state.main`` from the ctx
         # so the dashboard model walks the rows downstream.
         own = TuiSession(
-            name="devagent.foo",
+            name="dana_agent.foo",
             short="foo",
             attached=False,
             pid="1",
@@ -195,7 +195,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             last_activity="0s",
             cmd="claude",
             path="/srv",
-            user="devagent",
+            user="dana_agent",
         )
         skeleton = _mk_ctx(sessions=[own])
         loaded = _mk_ctx(
@@ -274,7 +274,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             kill_calls.append((user, name))
 
         session = TuiSession(
-            name="devagent.foo",
+            name="dana_agent.foo",
             short="foo",
             attached=False,
             pid="1",
@@ -284,7 +284,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             last_activity="1s",
             cmd="claude",
             path="/srv/work",
-            user="devagent",
+            user="dana_agent",
         )
 
         def fake_refresh():
@@ -295,14 +295,14 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             refresh_calls.append(1)
             return _mk_ctx(
                 sessions=[session],
-                current_user="devagent",
+                current_user="dana_agent",
                 on_kill=fake_kill,
                 on_refresh=fake_refresh,
             )
 
         ctx = _mk_ctx(
             sessions=[session],
-            current_user="devagent",
+            current_user="dana_agent",
             on_kill=fake_kill,
             on_refresh=fake_refresh,
         )
@@ -331,7 +331,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("q")
             await pilot.pause()
-        self.assertEqual(kill_calls, [("devagent", "devagent.foo")])
+        self.assertEqual(kill_calls, [("dana_agent", "dana_agent.foo")])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")

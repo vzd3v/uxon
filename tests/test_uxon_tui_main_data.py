@@ -41,7 +41,7 @@ def _mk_ctx(**overrides) -> TuiContext:
                 last_activity="now",
                 cmd="-",
                 path="/srv/work",
-                user="devagent",
+                user="dana_agent",
             )
         ],
         total_cpu="13",
@@ -53,7 +53,7 @@ def _mk_ctx(**overrides) -> TuiContext:
         existing_projects=[("proj-a", "1m"), ("proj-b", "5m")],
         server_status=ServerStatus(load="0.5"),
         cwd_writable=True,
-        current_user="devagent",
+        current_user="dana_agent",
         sudo_caps=SudoCapability(reachable_users=frozenset({"alice"})),
         scope_skipped_users=("bob",),
         other_sessions=[],

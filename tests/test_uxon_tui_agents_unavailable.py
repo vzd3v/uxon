@@ -26,7 +26,7 @@ def _mk_ctx(**overrides):
         new_project_root="/srv/work",
         existing_projects=[],
         cwd_writable=True,
-        current_user="devagent",
+        current_user="dana_agent",
         on_launch_cwd=lambda a, m, target_dir=None: LaunchRequest(cmd=("/bin/true",), label="cwd"),
         on_launch_new=lambda n, a, m, g: LaunchRequest(cmd=("/bin/true",), label="new"),
         on_launch_existing=lambda n, a, m: LaunchRequest(cmd=("/bin/true",), label="existing"),

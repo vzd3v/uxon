@@ -31,10 +31,10 @@ class ResolveSettingEntriesTests(unittest.TestCase):
         self.assertTrue(by_key["runtime_user"].editable)
 
     def test_repo_override(self) -> None:
-        entries = cs.resolve_setting_entries({"runtime_user": "devagent"}, {}, None, DEFAULTS)
+        entries = cs.resolve_setting_entries({"runtime_user": "dana_agent"}, {}, None, DEFAULTS)
         by_key = {e.spec.key: e for e in entries}
         self.assertEqual(by_key["runtime_user"].source, "repo")
-        self.assertEqual(by_key["runtime_user"].value, "devagent")
+        self.assertEqual(by_key["runtime_user"].value, "dana_agent")
         self.assertTrue(by_key["runtime_user"].editable)
 
     def test_project_override_is_readonly(self) -> None:
@@ -53,10 +53,10 @@ class ResolveSettingEntriesTests(unittest.TestCase):
 class RenderRepoConfigTomlTests(unittest.TestCase):
     def test_round_trip_simple(self) -> None:
         data = {
-            "runtime_user": "devagent",
+            "runtime_user": "dana_agent",
             "default_launch_mode": "fixed",
             "enable_all_users_list": True,
-            "session_users": ["devagent", "remdepl"],
+            "session_users": ["dana_agent", "erin"],
             "allowed_roots": ["/srv"],
             "session_prefix": "cc-",
             "default_claude_args": [],
@@ -79,20 +79,20 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
         ):
             self.assertEqual(parsed[key], data[key])
         self.assertTrue(parsed["enable_all_users_list"])
-        self.assertEqual(parsed["session_users"], ["devagent", "remdepl"])
+        self.assertEqual(parsed["session_users"], ["dana_agent", "erin"])
         self.assertEqual(parsed["launch_user_by_caller"], {})
 
     def test_table_with_entries(self) -> None:
         data = {
             "runtime_user": "a",
-            "launch_user_by_caller": {"caller1": "devagent", "caller2": "remdepl"},
+            "launch_user_by_caller": {"caller1": "dana_agent", "caller2": "erin"},
         }
         content = ct.render_repo_config_toml(
             data, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         parsed = tomllib.loads(content)
         self.assertEqual(
-            parsed["launch_user_by_caller"], {"caller1": "devagent", "caller2": "remdepl"}
+            parsed["launch_user_by_caller"], {"caller1": "dana_agent", "caller2": "erin"}
         )
 
     def test_escapes_quotes_in_strings(self) -> None:
@@ -141,18 +141,18 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
     def test_preserves_comments_and_unrelated_keys(self) -> None:
         original = (
             "# top comment\n"
-            'runtime_user = "devagent"  # inline comment\n'
+            'runtime_user = "dana_agent"  # inline comment\n'
             "\n"
             "# section about session_prefix\n"
             'session_prefix = "cc-"\n'
             "\n"
             "[launch_user_by_caller]\n"
             "# who launches what\n"
-            'alice = "devagent"\n'
+            'alice = "dana_agent"\n'
         )
         new = ct.update_repo_config_text(
             original,
-            {"runtime_user": "remdepl"},
+            {"runtime_user": "erin"},
             schema_keys=cs.SCHEMA_KEYS,
             table_keys=cs.TABLE_KEYS,
         )
@@ -160,12 +160,12 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
         self.assertIn("# inline comment", new)
         self.assertIn("# section about session_prefix", new)
         self.assertIn("# who launches what", new)
-        self.assertIn('runtime_user = "remdepl"', new)
+        self.assertIn('runtime_user = "erin"', new)
         # Untouched keys round-trip.
         parsed = tomllib.loads(new)
-        self.assertEqual(parsed["runtime_user"], "remdepl")
+        self.assertEqual(parsed["runtime_user"], "erin")
         self.assertEqual(parsed["session_prefix"], "cc-")
-        self.assertEqual(parsed["launch_user_by_caller"], {"alice": "devagent"})
+        self.assertEqual(parsed["launch_user_by_caller"], {"alice": "dana_agent"})
 
     def test_updates_table_preserving_header_comment(self) -> None:
         original = (
@@ -173,17 +173,17 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
             "\n"
             "# per-caller overrides live here\n"
             "[launch_user_by_caller]\n"
-            'alice = "devagent"\n'
+            'alice = "dana_agent"\n'
         )
         new = ct.update_repo_config_text(
             original,
-            {"launch_user_by_caller": {"bob": "remdepl"}},
+            {"launch_user_by_caller": {"bob": "erin"}},
             schema_keys=cs.SCHEMA_KEYS,
             table_keys=cs.TABLE_KEYS,
         )
         self.assertIn("# per-caller overrides live here", new)
         parsed = tomllib.loads(new)
-        self.assertEqual(parsed["launch_user_by_caller"], {"bob": "remdepl"})
+        self.assertEqual(parsed["launch_user_by_caller"], {"bob": "erin"})
 
     def test_unknown_key_raises(self) -> None:
         with self.assertRaises(KeyError):

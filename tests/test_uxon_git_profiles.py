@@ -9,7 +9,7 @@ def _gh(**overrides):
         "host": "github.com",
         "owner": "vzd3v",
         "auth": "gh",
-        "creds_user": "remdepl",
+        "creds_user": "erin",
         "visibility": "private",
     }
     base.update(overrides)
@@ -22,7 +22,7 @@ def _tok(**overrides):
         "host": "github.com",
         "owner": "acme",
         "auth": "token",
-        "creds_user": "remdepl",
+        "creds_user": "erin",
         "token_file": "/tmp/t",
         "visibility": "private",
     }

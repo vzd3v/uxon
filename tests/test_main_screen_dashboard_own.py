@@ -45,7 +45,7 @@ def _mk_ctx(**overrides):
         new_project_root="/srv/work",
         existing_projects=[],
         cwd_writable=True,
-        current_user="devagent",
+        current_user="dana_agent",
         on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
             cmd=("/bin/true",), label="cwd"
         ),
@@ -62,7 +62,7 @@ def _mk_ctx(**overrides):
     return ctx
 
 
-def _own_session(name: str = "devagent.foo", short: str = "foo"):
+def _own_session(name: str = "dana_agent.foo", short: str = "foo"):
     from uxon.tui.context import TuiSession
 
     return TuiSession(
@@ -76,7 +76,7 @@ def _own_session(name: str = "devagent.foo", short: str = "foo"):
         last_activity="1s",
         cmd="claude",
         path="/srv/work",
-        user="devagent",
+        user="dana_agent",
     )
 
 
@@ -153,7 +153,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             self.assertEqual(widget.row_count, 1)
             self.assertEqual(len(app.screen._dashboard_rows), 1)
-            self.assertEqual(app.screen._dashboard_rows[0].name, "devagent.foo")
+            self.assertEqual(app.screen._dashboard_rows[0].name, "dana_agent.foo")
             # Empty-note hidden once a row lands.
             from textual.widgets import Static
 
@@ -193,7 +193,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("y")
             await pilot.pause()
-        self.assertEqual(kill_calls, [("devagent", "devagent.foo")])
+        self.assertEqual(kill_calls, [("dana_agent", "dana_agent.foo")])
 
     async def test_enter_on_dashboard_dispatches_on_attach(self) -> None:
         """Enter on a focused dashboard row calls ``ctx.on_attach(user, name)``.
@@ -227,9 +227,9 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
-        self.assertEqual(attach_calls, [("devagent", "devagent.foo")])
+        self.assertEqual(attach_calls, [("dana_agent", "dana_agent.foo")])
         self.assertEqual(len(launch_requests), 1)
-        self.assertEqual(launch_requests[0].label, "attach devagent.foo")
+        self.assertEqual(launch_requests[0].label, "attach dana_agent.foo")
 
     async def test_action_kill_dispatches_remote_for_remote_dashboard_row(self) -> None:
         """``action_kill`` dispatches via ``ctx.on_remote_kill`` when the
@@ -266,8 +266,8 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             # Inject a synthetic remote row.
             synthetic_remote_row = SessionRow(
                 host="peer1",
-                user="devagent",
-                name="devagent.remote",
+                user="dana_agent",
+                name="dana_agent.remote",
                 short="remote",
                 agent="claude",
                 attached=False,
@@ -291,7 +291,7 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("y")
             await pilot.pause()
         self.assertEqual(local_kill_calls, [])
-        self.assertEqual(remote_kill_calls, [("peer1", "devagent", "devagent.remote")])
+        self.assertEqual(remote_kill_calls, [("peer1", "dana_agent", "dana_agent.remote")])
 
     async def test_cursor_pinned_across_no_op_refresh(self) -> None:
         """A no-op refresh tick leaves the cursor on the same row.
@@ -303,8 +303,8 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.app import UxonApp
         from uxon.tui.widgets.session_list_view import SessionListView
 
-        sessions = [_own_session(name="devagent.a", short="a")]
-        sessions.append(_own_session(name="devagent.b", short="b"))
+        sessions = [_own_session(name="dana_agent.a", short="a")]
+        sessions.append(_own_session(name="dana_agent.b", short="b"))
         ctx = _mk_ctx(sessions=sessions)
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
@@ -378,7 +378,7 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             self.assertEqual(widget.row_count, 2)
             users = sorted(r.user for r in app.screen._dashboard_rows)
-            self.assertEqual(users, ["alice", "devagent"])
+            self.assertEqual(users, ["alice", "dana_agent"])
             # The legacy ``#sessions-other`` widget must NOT exist —
             # all rows live in the unified dashboard now.
             self.assertEqual(len(app.screen.query("#sessions-other")), 0)
@@ -479,13 +479,13 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
         self.assertEqual(kill_calls, [("alice", "alice.bar")])
         # Prompt must reference the OTHER user (alice), not the
-        # current user (devagent). Pin both halves so a regression
+        # current user (dana_agent). Pin both halves so a regression
         # that reverses the substitution fails fast.
         self.assertEqual(len(modal_prompts), 1)
         prompt = modal_prompts[0]
         self.assertIn("alice", prompt)
         self.assertIn("alice.bar", prompt)
-        self.assertNotIn("devagent", prompt)
+        self.assertNotIn("dana_agent", prompt)
 
     async def test_user_column_present_when_cross_user_true(self) -> None:
         """Construction with ``other_sessions`` non-empty includes the USER column."""
@@ -580,8 +580,8 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             old_widget.focus()
             old_widget.move_cursor(row=0)
             await pilot.pause()
-            # Sanity: the only own row is devagent.foo.
-            self.assertEqual(old_screen._dashboard_rows[0].name, "devagent.foo")
+            # Sanity: the only own row is dana_agent.foo.
+            self.assertEqual(old_screen._dashboard_rows[0].name, "dana_agent.foo")
             # Apply a fresh ctx with the other-user session — flips
             # the layout signature → forces recompose.
             new_ctx = _mk_ctx(
@@ -596,15 +596,15 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(app.screen, MainScreen)
             # USER column is now active.
             self.assertIn("user", tuple(c.id for c in app.screen._active_columns))
-            # Cursor is pinned to the devagent.foo row by key, not
+            # Cursor is pinned to the dana_agent.foo row by key, not
             # index — even if the sort places alice.bar above it.
             new_widget = app.screen.query_one("#sessions-dashboard", SessionListView)
             self.assertIs(app.screen.focused, new_widget)
             cursor_idx = new_widget.cursor_row
             assert cursor_idx is not None
             cursor_row = app.screen._dashboard_rows[cursor_idx]
-            self.assertEqual(cursor_row.name, "devagent.foo")
-            self.assertEqual(cursor_row.user, "devagent")
+            self.assertEqual(cursor_row.name, "dana_agent.foo")
+            self.assertEqual(cursor_row.user, "dana_agent")
 
     async def test_user_column_stays_after_other_sessions_disappear(self) -> None:
         """Cross-user latch is monotonic: once mounted, the USER column

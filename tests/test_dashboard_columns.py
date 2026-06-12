@@ -231,8 +231,8 @@ class NameFormatterTests(unittest.TestCase):
         # is the prefix-stripped form ``<stem>@<agent>``. The AGENT
         # column carries the agent already, so NAME drops it.
         col = _by_id("name")
-        text = col.format(_row(short="vz_devagent_cli_tool@claude", agent="claude"))
-        self.assertEqual(text.plain, "○ vz_devagent_cli_tool")
+        text = col.format(_row(short="billing-api@claude", agent="claude"))
+        self.assertEqual(text.plain, "○ billing-api")
 
     def test_preserves_disambiguator_index(self) -> None:
         # ``-N`` comes after ``@<agent>`` in the session name. Two

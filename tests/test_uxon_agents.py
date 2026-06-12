@@ -119,12 +119,12 @@ class ProbeOneTests(unittest.TestCase):
 
         with mock.patch("uxon.infra.agents.subprocess.run", side_effect=fake_run):
             with mock.patch("uxon.infra.agents._current_user", return_value="root"):
-                uxon_agents._probe_one("claude", launch_user="devagent")
+                uxon_agents._probe_one("claude", launch_user="dana_agent")
 
         self.assertEqual(len(captured), 1)
         # -iu loads the target user's login env (matches command_prefix_for_user
         # in uxon.cli) so PATH picks up npm-global / nvm / ~/.local/bin.
-        self.assertEqual(captured[0][:4], ["sudo", "-niu", "devagent", "--"])
+        self.assertEqual(captured[0][:4], ["sudo", "-niu", "dana_agent", "--"])
         self.assertIn("claude", captured[0])
 
 
