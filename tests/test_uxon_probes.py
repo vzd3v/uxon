@@ -6,6 +6,7 @@ import subprocess
 import unittest
 from unittest import mock
 
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG
 from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.infra import probes
 
@@ -178,7 +179,7 @@ class ProbeHostTests(unittest.TestCase):
                 "cursor-agent": None,
             }
             with mock.patch("uxon.infra.probes._current_user", return_value="devuser"):
-                report = probes.probe_host("devuser")
+                report = probes.probe_host("devuser", DEFAULT_AGENT_CATALOG)
 
         self.assertEqual(report.launch_user, "devuser")
         self.assertEqual(report.tmux.path, "/usr/bin/tmux")
@@ -195,7 +196,7 @@ class ProbeHostTests(unittest.TestCase):
                 "cursor-agent": "/home/otheruser/.cursor/cursor-agent",
             }
             with mock.patch("uxon.infra.probes._current_user", return_value="devuser"):
-                report = probes.probe_host("otheruser")
+                report = probes.probe_host("otheruser", DEFAULT_AGENT_CATALOG)
 
         self.assertEqual(report.launch_user, "otheruser")
         self.assertEqual(report.tmux.path, "/usr/bin/tmux")
@@ -204,18 +205,14 @@ class ProbeHostTests(unittest.TestCase):
         self.assertEqual(report.agents["cursor"].path, "/home/otheruser/.cursor/cursor-agent")
 
     def test_install_hints_present(self) -> None:
-        """Verify that install hints are set for all binaries."""
+        """tmux hint comes from probes; agent hints come from the catalog."""
         bs_tmux = BinaryStatus("tmux", None, probes._INSTALL_HINTS["tmux"])
         self.assertIn("apt", bs_tmux.install_hint)
         self.assertIn("dnf", bs_tmux.install_hint)
 
-        bs_claude = BinaryStatus("claude", None, probes._INSTALL_HINTS["claude"])
-        self.assertIn("npm", bs_claude.install_hint)
-        self.assertIn("claude-code", bs_claude.install_hint)
+        self.assertIn("claude-code", DEFAULT_AGENT_CATALOG["claude"].install_hint)
 
-        bs_codex = BinaryStatus("codex", None, probes._INSTALL_HINTS["codex"])
-        self.assertIn("npm", bs_codex.install_hint)
-        self.assertIn("codex", bs_codex.install_hint)
+        self.assertIn("npm", DEFAULT_AGENT_CATALOG["codex"].install_hint)
+        self.assertIn("codex", DEFAULT_AGENT_CATALOG["codex"].install_hint)
 
-        bs_cursor = BinaryStatus("cursor-agent", None, probes._INSTALL_HINTS["cursor-agent"])
-        self.assertIn("curl", bs_cursor.install_hint)
+        self.assertIn("curl", DEFAULT_AGENT_CATALOG["cursor"].install_hint)

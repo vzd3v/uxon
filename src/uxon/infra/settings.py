@@ -37,8 +37,6 @@ class SettingSpec:
     choices: tuple[str, ...] | None = None  # for "enum"
 
 
-VALID_AGENT_IDS: tuple[str, ...] = ("claude", "codex", "cursor")
-
 SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec("runtime_user", "string", "Launch user when default_launch_mode='fixed'."),
     SettingSpec(
@@ -62,19 +60,17 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "array",
         "Additional prefixes recognised for list/attach/kill (never used to create new sessions).",
     ),
-    SettingSpec("agents.enabled", "array", "Enabled agents (subset of claude/codex/cursor)."),
+    SettingSpec("agents.enabled", "array", "Enabled agents (subset of the configured catalog)."),
+    # ``choices`` is left empty here: ``SETTINGS_SPECS`` is built at import,
+    # before any config is loaded, so the catalog ids are populated at
+    # Settings-screen build time (see :func:`settings_specs_for`). The
+    # per-agent argv / mode catalog is config-file-only — ``SettingSpec`` /
+    # ``settings_toml`` cannot model array-of-tables or dynamic per-agent keys.
     SettingSpec(
         "agents.default",
         "enum",
         "Default agent when --agent is not passed.",
-        choices=("claude", "codex", "cursor"),
-    ),
-    SettingSpec(
-        "agents.claude.default_args", "array", "Flags prepended to every claude invocation."
-    ),
-    SettingSpec("agents.codex.default_args", "array", "Flags prepended to every codex invocation."),
-    SettingSpec(
-        "agents.cursor.default_args", "array", "Flags prepended to every cursor-agent invocation."
+        choices=(),
     ),
     SettingSpec("new_project_root", "string", "Base directory for 'uxon new <name>'."),
     SettingSpec(
@@ -195,15 +191,38 @@ class SettingEntry:
     editable: bool  # False when source is project-level — TUI never writes .uxon.toml
 
 
+def settings_specs_for(agent_ids: tuple[str, ...]) -> tuple[SettingSpec, ...]:
+    """Return ``SETTINGS_SPECS`` with the dynamic ``agents.default`` ``choices``
+    bound to ``agent_ids`` (the resolved catalog ids for the current config).
+
+    ``SETTINGS_SPECS`` is built at import, before any config is loaded, so the
+    static ``agents.default`` spec carries an empty ``choices``; this fills it
+    in at Settings-screen build time. Empty ``agent_ids`` leaves the spec as-is.
+    """
+    if not agent_ids:
+        return SETTINGS_SPECS
+    return tuple(
+        SettingSpec(s.key, s.kind, s.description, choices=tuple(agent_ids))
+        if s.key == "agents.default"
+        else s
+        for s in SETTINGS_SPECS
+    )
+
+
 def resolve_setting_entries(
     repo_data: dict,
     project_data: dict,
     project_path: Path | None,
     defaults: dict,
+    agent_ids: tuple[str, ...] = (),
 ) -> list[SettingEntry]:
-    """Merge the three layers and return one entry per schema key with source info."""
+    """Merge the three layers and return one entry per schema key with source info.
+
+    ``agent_ids`` (when supplied) binds the dynamic ``agents.default`` enum
+    choices to the resolved catalog ids — see :func:`settings_specs_for`.
+    """
     out: list[SettingEntry] = []
-    for spec in SETTINGS_SPECS:
+    for spec in settings_specs_for(agent_ids):
         key = spec.key
         is_dotted = "." in key
         if is_dotted:

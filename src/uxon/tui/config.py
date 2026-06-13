@@ -62,6 +62,9 @@ class TuiConfig:
     # ── Multi-agent ──────────────────────────────────────────────────
     enabled_agents: tuple[str, ...]
     default_agent: str
+    # Merged agent catalog (``cfg.agents``); the TUI mode helpers and the
+    # launch/unavailable screens read it as data.
+    agents: dict[str, Any]
 
     # ── Cadence knobs ────────────────────────────────────────────────
     tui_refresh_interval_seconds: float
@@ -126,6 +129,7 @@ class TuiConfig:
             launch_user=ctx.launch_user,
             enabled_agents=tuple(ctx.enabled_agents),
             default_agent=ctx.default_agent,
+            agents=dict(ctx.agents),
             tui_refresh_interval_seconds=float(ctx.tui_refresh_interval_seconds),
             tui_ssh_refresh_interval_seconds=float(ctx.tui_ssh_refresh_interval_seconds),
             tui_render_debounce_ms=int(ctx.tui_render_debounce_ms),

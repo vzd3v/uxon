@@ -11,7 +11,6 @@ Kept free of ``uxon.tui`` / ``textual`` imports so module-load of
 from __future__ import annotations
 
 from uxon.domain.args import SUBCOMMANDS, USAGE, ParsedArgs
-from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.errors import fail
 from uxon.infra import identity
 
@@ -96,11 +95,10 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
         elif token == "--agent":
             i += 1
             if i >= len(argv):
-                fail("--agent requires an id (claude|codex|cursor)")
-            value = argv[i]
-            if value not in VALID_AGENT_IDS:
-                fail(f"--agent must be one of {VALID_AGENT_IDS}, got {value!r}")
-            parsed.agent = value
+                fail("--agent requires an id")
+            # No catalog in scope at parse time — the id is validated against
+            # the merged catalog in ``resolve_agent_id`` (which has ``cfg``).
+            parsed.agent = argv[i]
         elif token == "--git-remote":
             if action != "new":
                 fail(f"{token} is only supported with 'new' / '-n'")

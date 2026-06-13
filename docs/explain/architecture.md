@@ -249,7 +249,7 @@ import-linter contracts):
   (`tests/test_uxon_tui_bindings.py`) refuses any PR that adds one.
 - **One launch builder.** `_build_tmux_launch_request` in
   `src/uxon/infra/tmux.py` is the single place that builds agent
-  command lines (it consults `uxon.infra.agents.CATALOG`). Don't
+  command lines (it consults the merged `cfg.agents` catalog). Don't
   add direct `claude` / `codex` / `cursor-agent` exec calls
   anywhere else.
 - **One worktree-creation site.** Both the CLI `-w` flag and the

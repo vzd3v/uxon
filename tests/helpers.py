@@ -25,7 +25,6 @@ def make_config(**overrides: object) -> Config:
         "legacy_session_prefixes": (),
         "enabled_agents": ("claude",),
         "default_agent": "claude",
-        "agent_default_args": {"claude": (), "codex": (), "cursor": ()},
         "new_project_root": "/srv/repos",
         "repeat_noninteractive_mode": "fail",
         "tmux_socket_template": "/tmp/uxon-{user}.sock",

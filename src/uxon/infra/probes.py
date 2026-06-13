@@ -13,8 +13,12 @@ import shlex
 import subprocess
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from uxon.domain.host_report import BinaryStatus, HostReport
+
+if TYPE_CHECKING:
+    from uxon.domain.agents import AgentSpec
 
 # ── Probe implementation ─────────────────────────────────────────────
 
@@ -136,54 +140,40 @@ def _tmux_install_hint() -> str:
     return "sudo apt install tmux  # Debian/Ubuntu\nsudo dnf install tmux  # Fedora/RHEL"
 
 
-def _claude_install_hint() -> str:
-    """Return a ready-to-paste install command for claude."""
-    return "npm install -g @anthropic-ai/claude-code"
-
-
-def _codex_install_hint() -> str:
-    """Return a ready-to-paste install command for codex."""
-    return "npm install -g @openai/codex"
-
-
-def _cursor_install_hint() -> str:
-    """Return a ready-to-paste install command for cursor-agent."""
-    return "curl https://cursor.com/install -fsSL | bash"
-
-
+# tmux is infra, not an agent — its hint stays here. Per-agent install hints
+# are now read from the merged catalog (``AgentSpec.install_hint``), so there
+# is no second hardcoded agent-hint source to drift (C1).
 _INSTALL_HINTS = {
     "tmux": _tmux_install_hint(),
-    "claude": _claude_install_hint(),
-    "codex": _codex_install_hint(),
-    "cursor-agent": _cursor_install_hint(),
 }
 
 
 # ── Main probe API ───────────────────────────────────────────────────
 
 
-def probe_host(launch_user: str) -> HostReport:
-    """Probe tmux + every ``CATALOG`` agent on the host for ``launch_user``.
+def probe_host(launch_user: str, catalog: dict[str, AgentSpec]) -> HostReport:
+    """Probe tmux + every agent in ``catalog`` on the host for ``launch_user``.
+
+    ``catalog`` is the merged agent catalog (``cfg.agents``); passing it
+    explicitly keeps the dependency visible and avoids threading a
+    ``TuiConfig`` shape into infra.
 
     Returns a :class:`HostReport` with:
       - ``tmux``: :class:`BinaryStatus` for tmux
       - ``agents``: dict[agent_id -> BinaryStatus] for every agent in
-        :data:`uxon.infra.agents.CATALOG`. Entries with ``path=None`` are not
-        installed (used for "missing" status in auto-mode this just
-        omits them; in strict-whitelist mode the consumer surfaces
-        them as "missing").
+        ``catalog``. Entries with ``path=None`` are not installed (auto-mode
+        just omits them; strict-whitelist mode surfaces them as "missing").
+        Each agent's ``install_hint`` is read from its catalog entry.
       - ``launch_user``: the user for which the probe was run
 
     The probe uses ``sh -lc 'command -v X'`` via sudo if ``launch_user``
     differs from the current user, or directly if it's the same user.
     This matches the login-shell semantics used by the launch builder.
     """
-    from uxon.infra import agents as uxon_agents
+    all_agent_ids = list(catalog.keys())
+    all_agent_names = [catalog[aid].binary for aid in all_agent_ids]
 
-    all_agent_names = [s.binary for s in uxon_agents.CATALOG.values()]
-    all_agent_ids = list(uxon_agents.CATALOG.keys())
-
-    # Single round-trip probe: tmux + every CATALOG agent.
+    # Single round-trip probe: tmux + every catalogued agent.
     probe_names = ["tmux", *all_agent_names]
     if launch_user == _current_user():
         paths = _resolve_paths_local(probe_names)
@@ -198,11 +188,11 @@ def probe_host(launch_user: str) -> HostReport:
 
     agents: dict[str, BinaryStatus] = {}
     for aid in all_agent_ids:
-        binary_name = uxon_agents.CATALOG[aid].binary
+        spec = catalog[aid]
         agents[aid] = BinaryStatus(
             name=aid,
-            path=paths.get(binary_name),
-            install_hint=_INSTALL_HINTS.get(binary_name, ""),
+            path=paths.get(spec.binary),
+            install_hint=spec.install_hint,
         )
 
     return HostReport(

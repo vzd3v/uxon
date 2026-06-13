@@ -65,6 +65,7 @@ except ImportError:  # pragma: no cover
 _CHILD_SCRIPT = r"""
 import sys, os
 from uxon import tui as uxon_tui
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG
 from uxon.domain.sudo import SudoCapability
 
 ctx = uxon_tui.TuiContext(
@@ -78,6 +79,7 @@ ctx = uxon_tui.TuiContext(
     existing_projects=[],
     cwd_writable=True,
     current_user="u-den",
+    agents=DEFAULT_AGENT_CATALOG,
     sudo_caps=SudoCapability(
         reachable_users=frozenset({"_synthetic_"}), can_root=True
     ),
@@ -203,6 +205,7 @@ class PtyTuiIntegrationTests(unittest.TestCase):
 _DRAIN_CHILD_SCRIPT = r"""
 import sys, os
 from uxon import tui as uxon_tui
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG
 from uxon.infra import agents as uxon_agents
 from uxon.infra import probes as uxon_probes
 from uxon.tui.context import LaunchRequest
@@ -252,6 +255,7 @@ ctx = uxon_tui.TuiContext(
     existing_projects=[],
     cwd_writable=True,
     current_user="u-den",
+    agents=DEFAULT_AGENT_CATALOG,
     on_launch_cwd=fake_launch_cwd,
     on_launch_new=fake_launch_new,
     on_refresh=lambda: ctx,

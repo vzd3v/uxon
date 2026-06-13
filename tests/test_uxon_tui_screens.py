@@ -23,6 +23,7 @@ def _textual_available() -> bool:
 
 
 def _mk_ctx(**overrides):
+    from uxon.domain.agents import DEFAULT_AGENT_CATALOG
     from uxon.tui.context import LaunchRequest, TuiContext
     from uxon.tui.refresh import SourceSpec
 
@@ -37,6 +38,7 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="dana_agent",
+        agents=DEFAULT_AGENT_CATALOG,
         on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
             cmd=("/bin/true",), label="cwd"
         ),

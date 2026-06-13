@@ -113,6 +113,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             enabled_agents=tuple(cfg.enabled_agents),
             default_agent=cfg.default_agent,
             availability=self._availability_now(),
+            catalog_ids=tuple(cfg.agents),
         )
         self._visible_agents = list(opts.visible_agents)
         self._single_agent = opts.single_agent
@@ -235,17 +236,15 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         workspace_list.index = 0
 
     async def _rebuild_mode_list(self, agent_id: str) -> None:
-        from uxon.infra import agents as uxon_agents
-
         mode_list = self.query_one("#mode-list", ListView)
         # clear() and extend() are async — must be awaited, otherwise the
         # removal of the previous agent's modes can race with mounting the
         # new ones and the list ends up showing stale entries (e.g. claude's
         # "auto" remains visible after switching to cursor).
         await mode_list.clear()
-        if agent_id not in uxon_agents.CATALOG:
+        spec = self.cfg.agents.get(agent_id)
+        if spec is None:
             return
-        spec = uxon_agents.CATALOG[agent_id]
         items = [
             ListItem(Static(f"{idx} {mode.label}"), id=f"mode-{mode.id}")
             for idx, mode in enumerate(spec.permission_modes, start=1)
@@ -291,6 +290,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             current_agent=self._current_agent,
             availability=self._availability_now(),
             mode_index=(self.query_one("#mode-list", ListView).index or 0),
+            agents=self.cfg.agents,
         )
         if decision.action == "ignore":
             return
@@ -346,6 +346,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             availability=avail,
             current_agent=self._current_agent,
             active_panel=self._active_panel,
+            catalog_ids=tuple(self.cfg.agents),
         )
         visible = list(update.visible_agents)
         self._visible_agents = visible

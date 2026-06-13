@@ -34,6 +34,19 @@ from uxon.infra import config_loader, git, identity, sessions_probe, tmux, versi
 UXON_PATH = Path(uxon_cli.__file__).resolve()
 
 
+def _catalog_with_default_args(agent_id: str, default_args: tuple[str, ...]):
+    """Default catalog with one agent's ``default_args`` overridden — used by
+    launch-argv tests that assert per-agent default args flow into the command.
+    """
+    import dataclasses
+
+    from uxon.domain.agents import DEFAULT_AGENT_CATALOG
+
+    out = dict(DEFAULT_AGENT_CATALOG)
+    out[agent_id] = dataclasses.replace(out[agent_id], default_args=default_args)
+    return out
+
+
 class _StubsChain:
     """Tiny helper to combine multiple ``mock.patch`` context managers into
     one ``with`` statement for readability in tests."""
@@ -80,7 +93,6 @@ class UxonTests(unittest.TestCase):
             legacy_session_prefixes=(),
             enabled_agents=("claude",),
             default_agent="claude",
-            agent_default_args={"claude": (), "codex": (), "cursor": ()},
             new_project_root="/srv/repos",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
@@ -157,9 +169,6 @@ class UxonTests(unittest.TestCase):
             legacy_session_prefixes=kw.get("legacy_session_prefixes", ()),
             enabled_agents=kw.get("enabled_agents", ("claude",)),
             default_agent=kw.get("default_agent", "claude"),
-            agent_default_args=kw.get(
-                "agent_default_args", {"claude": (), "codex": (), "cursor": ()}
-            ),
             new_project_root=kw.get("new_project_root", "/srv/agentdev"),
             repeat_noninteractive_mode=kw.get("repeat_noninteractive_mode", "fail"),
             tmux_socket_template=kw.get("tmux_socket_template", "/tmp/uxon-{user}.sock"),
@@ -171,6 +180,7 @@ class UxonTests(unittest.TestCase):
             tmux_options=kw.get("tmux_options", {}),
             tmux_server_options=kw.get("tmux_server_options", {}),
             tmux_append_server_options=kw.get("tmux_append_server_options", {}),
+            **({"agents": kw["agents"]} if "agents" in kw else {}),
         )
 
     def test_resolve_launch_user_fixed_mode_uses_runtime_user(self) -> None:
@@ -278,7 +288,7 @@ class UxonTests(unittest.TestCase):
         self.assertTrue(cfg.enable_all_users_list)
         self.assertEqual(cfg.session_users, ["dana_agent", "erin"])
         self.assertEqual(cfg.launch_user_by_caller, {"erin": "dana_agent"})
-        self.assertEqual(cfg.agent_default_args["claude"], ("--model", "sonnet"))
+        self.assertEqual(cfg.agents["claude"].default_args, ("--model", "sonnet"))
         self.assertEqual(cfg.enabled_agents, ("claude",))
         self.assertEqual(cfg.default_agent, "claude")
         self.assertEqual(cfg.repeat_noninteractive_mode, "attach")
@@ -537,7 +547,7 @@ class UxonTests(unittest.TestCase):
             cfg = self._write_and_load_cfg("", tmpdir)
         self.assertEqual(cfg.enabled_agents, ())
         self.assertEqual(cfg.default_agent, "")
-        self.assertEqual(cfg.agent_default_args["claude"], ())
+        self.assertEqual(cfg.agents["claude"].default_args, ())
 
     def test_load_config_empty_enabled_is_auto_mode(self) -> None:
         """``enabled = []`` is equivalent to absent — auto-mode."""
@@ -572,7 +582,7 @@ class UxonTests(unittest.TestCase):
             )
         self.assertEqual(cfg.enabled_agents, ("claude", "cursor"))
         self.assertEqual(cfg.default_agent, "cursor")
-        self.assertEqual(cfg.agent_default_args["claude"], ("--verbose",))
+        self.assertEqual(cfg.agents["claude"].default_args, ("--verbose",))
 
     def test_load_config_rejects_legacy_flat_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1074,9 +1084,7 @@ class UxonTests(unittest.TestCase):
         self.assertIn("attach", req.label)
 
     def test_build_tmux_launch_request_includes_claude_and_mkdir(self) -> None:
-        cfg = self.make_config(
-            agent_default_args={"claude": ("--model", "sonnet"), "codex": (), "cursor": ()}
-        )
+        cfg = self.make_config(agents=_catalog_with_default_args("claude", ("--model", "sonnet")))
         args = ParsedArgs(action="run", permission_mode="yolo", agent_args=["--foo"])
         with self._stub_socket_path():
             req = tmux._build_tmux_launch_request(
@@ -1085,7 +1093,7 @@ class UxonTests(unittest.TestCase):
         self.assertIn("new-session", req.cmd)
         self.assertIn("-As", req.cmd)
         self.assertIn("uxon-demo@claude", req.cmd)
-        # agent_default_args + yolo flag + caller's agent_args all flow through
+        # per-agent default_args + yolo flag + caller's agent_args all flow through
         self.assertIn("claude", req.cmd)
         self.assertIn("--model", req.cmd)
         self.assertIn("sonnet", req.cmd)
@@ -1351,9 +1359,7 @@ class UxonTests(unittest.TestCase):
         self.assertIn("switch-client", req.label)
 
     def test_build_tmux_launch_request_uses_switch_client_when_nested(self) -> None:
-        cfg = self.make_config(
-            agent_default_args={"claude": ("--model", "sonnet"), "codex": (), "cursor": ()}
-        )
+        cfg = self.make_config(agents=_catalog_with_default_args("claude", ("--model", "sonnet")))
         args = ParsedArgs(action="run", permission_mode="yolo", agent_args=["--foo"])
         stubs = _StubsChain(
             mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-test.sock"),
@@ -1862,7 +1868,6 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
             legacy_session_prefixes=(),
             enabled_agents=("claude",),
             default_agent="claude",
-            agent_default_args={"claude": (), "codex": (), "cursor": ()},
             new_project_root="/srv/work",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
@@ -2189,7 +2194,6 @@ class CliPreflightTests(unittest.TestCase):
             legacy_session_prefixes=(),
             enabled_agents=("claude",),
             default_agent="claude",
-            agent_default_args={"claude": (), "codex": (), "cursor": ()},
             new_project_root="/srv/repos",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",

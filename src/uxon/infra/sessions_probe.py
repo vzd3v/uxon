@@ -142,8 +142,9 @@ def collect_sessions_for_user(
         if _parsed is None:
             continue  # dual-prefix filter matched but parser disagreed — skip
         _, _agent, _, _legacy = _parsed
-        if _agent not in ("claude", "codex", "cursor"):
-            _agent = "unknown"
+        # Preserve whatever the session-name parser extracted — the catalog
+        # is config-driven, so a custom agent id (e.g. ``aider``) must reach
+        # ``SessionInfo.agent`` intact, not be collapsed to ``"unknown"``.
         sessions.append(
             SessionInfo(
                 user=user,

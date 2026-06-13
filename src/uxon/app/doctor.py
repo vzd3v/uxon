@@ -21,7 +21,6 @@ from typing import Any
 import uxon.app.listing as listing_app
 import uxon.app.repeat as repeat_app
 from uxon.domain.config import Config
-from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.domain.session import SessionInfo
 from uxon.infra import config_loader, identity, sessions_probe, tmux, version_probe
 
@@ -76,7 +75,7 @@ def doctor_issues(
     elif all(path is None for path in agent_paths.values()):
         issues.append(
             f"no agent binary is resolvable for {launch_user} (auto-mode); "
-            f"install one of {VALID_AGENT_IDS}"
+            f"install one of {tuple(cfg.agents)}"
         )
     if legacy_sessions and not current_sessions:
         issues.append(
@@ -109,12 +108,12 @@ def do_doctor(
     _, config_sources = config_loader.resolve_config_layers(cwd)
     socket_path = tmux.tmux_socket_path(cfg, launch_user)
     # Single-round-trip probe for tmux + every catalogued agent.
-    report = uxon_probes.probe_host(launch_user)
+    report = uxon_probes.probe_host(launch_user, cfg.agents)
     tmux_path = report.tmux.path
-    # Doctor shows every CATALOG agent regardless of strict/auto mode —
+    # Doctor shows every catalogued agent regardless of strict/auto mode —
     # the operator wants to see the full landscape ("is X installed?")
     # not just the configured whitelist.
-    doctor_agent_ids: tuple[str, ...] = tuple(uxon_agents.CATALOG)
+    doctor_agent_ids: tuple[str, ...] = tuple(cfg.agents)
     agent_paths: dict[str, str | None] = {
         aid: report.agents[aid].path for aid in doctor_agent_ids if aid in report.agents
     }
@@ -128,9 +127,14 @@ def do_doctor(
     def _probe(aid: str) -> tuple[str, uxon_agents.AgentAvailability]:
         if not agent_paths.get(aid):
             return aid, uxon_agents.AgentAvailability(status="missing", error="not on PATH")
+        spec = cfg.agents[aid]
+        if not spec.version_args:
+            # ``version_args = []`` → operator opted out of the version line.
+            return aid, uxon_agents.AgentAvailability(status="ok", path=agent_paths.get(aid))
         return aid, uxon_agents._probe_one(
-            uxon_agents.CATALOG[aid].binary,
+            spec.binary,
             launch_user,
+            version_args=spec.version_args,
             timeout_override=2.0,
         )
 
@@ -238,7 +242,7 @@ def do_doctor(
     )
     # Per-agent status block.
     for aid in doctor_agent_ids:
-        spec = uxon_agents.CATALOG[aid]
+        spec = cfg.agents[aid]
         path = agent_paths.get(aid) or "-"
         avail = availability.get(aid)
         if avail and avail.status == "ok":

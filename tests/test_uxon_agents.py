@@ -6,66 +6,68 @@ import subprocess
 import unittest
 from unittest import mock
 
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG, permission_mode_for
 from uxon.infra import agents as uxon_agents
 
 
 class CatalogTests(unittest.TestCase):
     def test_catalog_has_three_agents(self) -> None:
-        self.assertEqual(set(uxon_agents.CATALOG), {"claude", "codex", "cursor"})
+        self.assertEqual(set(DEFAULT_AGENT_CATALOG), {"claude", "codex", "cursor"})
 
     def test_every_agent_has_yolo_and_normal(self) -> None:
-        for agent in uxon_agents.CATALOG.values():
+        for agent in DEFAULT_AGENT_CATALOG.values():
             ids = [m.id for m in agent.permission_modes]
             self.assertIn("normal", ids, agent.id)
             self.assertIn("yolo", ids, agent.id)
             self.assertEqual(ids[0], "normal", agent.id)  # normal first
 
+    def test_yolo_modes_marked_dangerous(self) -> None:
+        for agent in DEFAULT_AGENT_CATALOG.values():
+            yolo = permission_mode_for(agent, "yolo")
+            self.assertTrue(yolo.dangerous, agent.id)
+
     def test_cursor_has_no_auto(self) -> None:
-        cursor = uxon_agents.CATALOG["cursor"]
+        cursor = DEFAULT_AGENT_CATALOG["cursor"]
         self.assertNotIn("auto", [m.id for m in cursor.permission_modes])
 
     def test_claude_and_codex_have_auto(self) -> None:
         for aid in ("claude", "codex"):
-            ids = [m.id for m in uxon_agents.CATALOG[aid].permission_modes]
+            ids = [m.id for m in DEFAULT_AGENT_CATALOG[aid].permission_modes]
             self.assertIn("auto", ids, aid)
 
     def test_mode_ids_unique_within_agent(self) -> None:
-        for agent in uxon_agents.CATALOG.values():
+        for agent in DEFAULT_AGENT_CATALOG.values():
             ids = [m.id for m in agent.permission_modes]
             self.assertEqual(len(ids), len(set(ids)), agent.id)
 
-    def test_session_suffix_matches_id(self) -> None:
-        for agent in uxon_agents.CATALOG.values():
-            self.assertEqual(agent.session_suffix, f"@{agent.id}")
-
     def test_yolo_flags(self) -> None:
         self.assertEqual(
-            uxon_agents.permission_mode_for(uxon_agents.CATALOG["claude"], "yolo").flags,
+            permission_mode_for(DEFAULT_AGENT_CATALOG["claude"], "yolo").flags,
             ("--dangerously-skip-permissions",),
         )
         self.assertEqual(
-            uxon_agents.permission_mode_for(uxon_agents.CATALOG["codex"], "yolo").flags,
+            permission_mode_for(DEFAULT_AGENT_CATALOG["codex"], "yolo").flags,
             ("--dangerously-bypass-approvals-and-sandbox",),
         )
         self.assertEqual(
-            uxon_agents.permission_mode_for(uxon_agents.CATALOG["cursor"], "yolo").flags,
+            permission_mode_for(DEFAULT_AGENT_CATALOG["cursor"], "yolo").flags,
             ("--yolo",),
         )
 
     def test_auto_flags(self) -> None:
         self.assertEqual(
-            uxon_agents.permission_mode_for(uxon_agents.CATALOG["claude"], "auto").flags,
+            permission_mode_for(DEFAULT_AGENT_CATALOG["claude"], "auto").flags,
             ("--permission-mode", "auto"),
         )
         self.assertEqual(
-            uxon_agents.permission_mode_for(uxon_agents.CATALOG["codex"], "auto").flags,
+            permission_mode_for(DEFAULT_AGENT_CATALOG["codex"], "auto").flags,
             ("--full-auto",),
         )
-        self.assertIsNone(uxon_agents.permission_mode_for(uxon_agents.CATALOG["cursor"], "auto"))
+        self.assertIsNone(permission_mode_for(DEFAULT_AGENT_CATALOG["cursor"], "auto"))
 
     def test_normal_has_no_flags(self) -> None:
-        for agent in uxon_agents.CATALOG.values():
-            mode = uxon_agents.permission_mode_for(agent, "normal")
+        for agent in DEFAULT_AGENT_CATALOG.values():
+            mode = permission_mode_for(agent, "normal")
             self.assertEqual(mode.flags, ())
 
 

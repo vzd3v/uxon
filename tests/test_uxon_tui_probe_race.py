@@ -140,7 +140,7 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
             tmux = _BinaryStatus("tmux", "/usr/bin/tmux")
 
         original_probe = uxon_probes.probe_host
-        uxon_probes.probe_host = lambda _user: _Report()  # type: ignore[assignment]
+        uxon_probes.probe_host = lambda _user, _catalog: _Report()  # type: ignore[assignment]
 
         try:
             ctx = _mk_ctx()

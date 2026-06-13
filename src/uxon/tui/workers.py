@@ -219,7 +219,7 @@ class WorkerCoordinator:
         from the thread.
 
         Uses ``probes.probe_host`` so one ``sh -lc`` round-trip covers
-        every CATALOG agent.
+        every catalogued agent (``self._cfg.agents``).
         """
         import time as _time
 
@@ -230,7 +230,7 @@ class WorkerCoordinator:
 
         t0 = _time.monotonic()
         try:
-            report = uxon_probes.probe_host(target_user)
+            report = uxon_probes.probe_host(target_user, self._cfg.agents)
         except Exception as exc:  # pragma: no cover — defensive
             self._post_message(
                 _HostReportUpdated(
@@ -256,7 +256,8 @@ class WorkerCoordinator:
                         path=status.path,
                     )
                 else:
-                    binary = uxon_agents.CATALOG[aid].binary if aid in uxon_agents.CATALOG else aid
+                    spec = self._cfg.agents.get(aid)
+                    binary = spec.binary if spec is not None else aid
                     availability[aid] = uxon_agents.AgentAvailability(
                         status="missing",
                         error=f"{binary} not found on PATH",

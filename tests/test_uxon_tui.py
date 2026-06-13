@@ -13,6 +13,7 @@ from __future__ import annotations
 import unittest
 
 from uxon import tui as uxon_tui
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG as _CATALOG
 from uxon.tui.context import (
     _ACTION_KINDS,
     ACTION_COUNT,
@@ -52,6 +53,8 @@ from uxon.tui.state import (
     update_launch_options_after_availability,
     visible_agent_ids,
 )
+
+_CATALOG_IDS = tuple(_CATALOG)
 
 
 def _ctx(**overrides) -> uxon_tui.TuiContext:
@@ -298,6 +301,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
                 "claude": self._avail("ok"),
                 "codex": self._avail("pending"),
             },
+            catalog_ids=_CATALOG_IDS,
         )
         self.assertEqual(visible, ("claude", "codex", "cursor"))
 
@@ -309,6 +313,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
                 "codex": self._avail("timeout"),
                 "cursor": self._avail("ok"),
             },
+            catalog_ids=_CATALOG_IDS,
         )
         self.assertEqual(visible, ("cursor",))
 
@@ -355,14 +360,14 @@ class LaunchOptionsStateTests(unittest.TestCase):
 
     def test_mode_item_ids_match_catalog_order(self) -> None:
         self.assertEqual(
-            mode_item_ids("cursor"),
+            mode_item_ids(_CATALOG, "cursor"),
             ("mode-normal", "mode-yolo"),
         )
 
     def test_launch_mode_id_uses_selected_mode_or_normal_fallback(self) -> None:
-        self.assertEqual(launch_mode_id("cursor", 1), "yolo")
-        self.assertEqual(launch_mode_id("cursor", 99), "normal")
-        self.assertEqual(launch_mode_id("nosuch", 0), None)
+        self.assertEqual(launch_mode_id(_CATALOG, "cursor", 1), "yolo")
+        self.assertEqual(launch_mode_id(_CATALOG, "cursor", 99), "normal")
+        self.assertEqual(launch_mode_id(_CATALOG, "nosuch", 0), None)
 
     def test_launch_update_all_missing_dismisses(self) -> None:
         update = update_launch_options_after_availability(
@@ -424,6 +429,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
             current_agent="claude",
             availability={"claude": self._avail("pending")},
             mode_index=0,
+            agents=_CATALOG,
         )
         self.assertEqual(decision, LaunchCommitDecision("ignore"))
 
@@ -434,6 +440,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
                 current_agent="claude",
                 availability={"claude": self._avail("ok")},
                 mode_index=0,
+                agents=_CATALOG,
             ),
             LaunchCommitDecision("switch-to-mode"),
         )
@@ -443,6 +450,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
                 current_agent="cursor",
                 availability={},
                 mode_index=1,
+                agents=_CATALOG,
             ),
             LaunchCommitDecision("commit", "yolo"),
         )

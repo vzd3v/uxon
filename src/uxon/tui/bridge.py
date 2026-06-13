@@ -383,7 +383,9 @@ class TuiBridge:
         from uxon.infra import settings as uxon_settings
 
         repo_data, proj_data, proj_cfg = uxon_settings.load_settings_sources(self.cwd)
-        return uxon_settings.resolve_setting_entries(repo_data, proj_data, proj_cfg, DEFAULT_CONFIG)
+        return uxon_settings.resolve_setting_entries(
+            repo_data, proj_data, proj_cfg, DEFAULT_CONFIG, agent_ids=tuple(self.cfg.agents)
+        )
 
     def on_setting_save(self, key: str, value: object) -> None:
         from uxon.infra import settings as uxon_settings

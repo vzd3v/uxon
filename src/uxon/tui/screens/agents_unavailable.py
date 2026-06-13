@@ -5,14 +5,15 @@ and finds zero usable agents. In strict-whitelist mode the constructor
 receives the configured ``enabled_agents`` tuple and the body lists
 each with its install hint. In auto-mode the tuple is empty (no
 configured whitelist) and the body falls back to listing every
-``CATALOG`` agent — the operator just needs to install one.
+catalogued agent (the threaded ``agents`` catalog) — the operator just
+needs to install one.
 
 Pure informational — dismiss returns ``None``.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -41,21 +42,26 @@ class AgentsUnavailableScreen(CardModal[None]):
         Binding("q", "dismiss_screen", "Close", show=False),
     )
 
-    def __init__(self, enabled_agents: tuple[str, ...], *, error: str = "") -> None:
+    def __init__(
+        self,
+        enabled_agents: tuple[str, ...],
+        *,
+        agents: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
         super().__init__()
         self._enabled_agents = tuple(enabled_agents)
+        self._agents: dict[str, Any] = dict(agents or {})
         self._error = error
         # Exposed for tests: plain-text body so assertions don't depend
         # on textual's Rich renderable internals.
         self.body_text: str = self._render_body()
 
     def _render_body(self) -> str:
-        from uxon.infra import agents as uxon_agents
-
-        ids: tuple[str, ...] = self._enabled_agents or tuple(uxon_agents.CATALOG)
+        ids: tuple[str, ...] = self._enabled_agents or tuple(self._agents)
         lines: list[str] = []
         for aid in ids:
-            spec = uxon_agents.CATALOG.get(aid)
+            spec = self._agents.get(aid)
             if spec is None:
                 lines.append(f"  • {aid}: unknown agent id")
             else:

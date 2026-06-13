@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from uxon.domain.agents import AgentSpec, default_agent_catalog
 from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.errors import fail
 
@@ -63,9 +64,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "agents": {
         "enabled": [],
         "default": "",
-        "claude": {"default_args": []},
-        "codex": {"default_args": []},
-        "cursor": {"default_args": []},
     },
     "new_project_root": str(Path.home() / "projects"),
     "repeat_noninteractive_mode": "fail",
@@ -141,7 +139,6 @@ class Config:
     legacy_session_prefixes: tuple[str, ...]
     enabled_agents: tuple[str, ...]
     default_agent: str
-    agent_default_args: dict[str, tuple[str, ...]]
     new_project_root: str
     repeat_noninteractive_mode: str
     tmux_socket_template: str
@@ -158,6 +155,11 @@ class Config:
     fetch_concurrency: int = 16
     audit_enabled: bool = True
     audit_syslog_facility: str = "user"
+    # Merged agent catalog (shipped ``DEFAULT_AGENT_CATALOG`` ⊕ operator
+    # ``[agents.<id>]`` tables), built once in ``load_config``. Replaces the
+    # old ``agent_default_args`` map — binaries, default_args, install hints,
+    # version probe args, and permission modes all live here as data.
+    agents: dict[str, AgentSpec] = field(default_factory=default_agent_catalog)
     # ``None`` is the load-time signal "use REGISTRY defaults". An empty
     # tuple would mean "operator explicitly cleared the column list" —
     # that's not a state we want to expose distinctly, so absent / ``[]``

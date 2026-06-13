@@ -34,7 +34,6 @@ class DoctorParallelProbeTests(unittest.TestCase):
             legacy_session_prefixes=(),
             enabled_agents=("claude", "codex", "cursor"),
             default_agent="claude",
-            agent_default_args={},
             new_project_root="/tmp",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
@@ -76,7 +75,9 @@ class DoctorParallelProbeTests(unittest.TestCase):
         barrier = threading.Barrier(3, timeout=2.0)
         call_args: list[dict] = []
 
-        def fake_probe_one(binary, launch_user, *, timeout_override=None):
+        def fake_probe_one(
+            binary, launch_user, *, version_args=("--version",), timeout_override=None
+        ):
             call_args.append({"binary": binary, "timeout_override": timeout_override})
             barrier.wait()
             return uxon_agents.AgentAvailability(status="ok", version=f"{binary}-1.0")
@@ -104,7 +105,9 @@ class DoctorParallelProbeTests(unittest.TestCase):
 
         called: list[str] = []
 
-        def fake_probe_one(binary, launch_user, *, timeout_override=None):
+        def fake_probe_one(
+            binary, launch_user, *, version_args=("--version",), timeout_override=None
+        ):
             called.append(binary)
             return uxon_agents.AgentAvailability(status="ok", version="x")
 
@@ -194,7 +197,6 @@ class DoctorRemoteFlagTests(unittest.TestCase):
             legacy_session_prefixes=(),
             enabled_agents=("claude",),
             default_agent="claude",
-            agent_default_args={},
             new_project_root="/tmp",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
@@ -401,7 +403,6 @@ class DoctorAuditLineTests(unittest.TestCase):
             legacy_session_prefixes=(),
             enabled_agents=("claude",),
             default_agent="claude",
-            agent_default_args={},
             new_project_root="/tmp",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",

@@ -1,6 +1,8 @@
-"""Agent catalog: declarative data for claude / codex / cursor-agent.
+"""Impure agent probe: the per-binary ``--version`` detail for ``do_doctor``.
 
-Pure data + small helpers. No textual, no TUI, no cli imports.
+The pure catalog data (``PermissionMode`` / ``AgentSpec`` / the shipped
+``DEFAULT_AGENT_CATALOG`` / ``permission_mode_for``) lives in
+:mod:`uxon.domain.agents`; this module keeps only the subprocess probe.
 ``_probe_one`` uses subprocess locally but never at module scope; it is
 only called by ``do_doctor`` to fetch the per-agent ``--version`` line
 shown for present binaries (the host-wide "is this installed" probe
@@ -13,70 +15,6 @@ import os
 import pwd
 import subprocess
 from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class PermissionMode:
-    id: str  # "normal" | "auto" | "yolo"
-    label: str  # user-facing in TUI
-    flags: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class AgentSpec:
-    id: str  # "claude" | "codex" | "cursor"
-    binary: str  # executable name on PATH
-    session_suffix: str  # "@<id>"
-    permission_modes: tuple[PermissionMode, ...]
-    install_hint: str  # shown by doctor
-
-
-CATALOG: dict[str, AgentSpec] = {
-    "claude": AgentSpec(
-        id="claude",
-        binary="claude",
-        session_suffix="@claude",
-        permission_modes=(
-            PermissionMode("normal", "normal", ()),
-            PermissionMode("auto", "auto", ("--permission-mode", "auto")),
-            PermissionMode("yolo", "yolo (--dsp)", ("--dangerously-skip-permissions",)),
-        ),
-        install_hint="see https://docs.claude.com/claude-code",
-    ),
-    "codex": AgentSpec(
-        id="codex",
-        binary="codex",
-        session_suffix="@codex",
-        permission_modes=(
-            PermissionMode("normal", "normal", ()),
-            PermissionMode("auto", "auto (--full-auto)", ("--full-auto",)),
-            PermissionMode(
-                "yolo",
-                "yolo (--dangerously-bypass-approvals-and-sandbox)",
-                ("--dangerously-bypass-approvals-and-sandbox",),
-            ),
-        ),
-        install_hint="install: npm i -g @openai/codex",
-    ),
-    "cursor": AgentSpec(
-        id="cursor",
-        binary="cursor-agent",
-        session_suffix="@cursor",
-        permission_modes=(
-            PermissionMode("normal", "normal", ()),
-            PermissionMode("yolo", "yolo (--yolo)", ("--yolo",)),
-        ),
-        install_hint="install: curl https://cursor.com/install -fsSL | bash",
-    ),
-}
-
-
-def permission_mode_for(agent: AgentSpec, mode_id: str) -> PermissionMode | None:
-    for mode in agent.permission_modes:
-        if mode.id == mode_id:
-            return mode
-    return None
-
 
 # ── Availability probe ───────────────────────────────────────────────
 
@@ -102,10 +40,11 @@ def _probe_one(
     binary: str,
     launch_user: str | None,
     *,
+    version_args: tuple[str, ...] = ("--version",),
     timeout_override: float | None = None,
 ) -> AgentAvailability:
-    """Run ``<binary> --version`` (under sudo if launch_user differs from caller)
-    and return a status-tagged :class:`AgentAvailability`.
+    """Run ``<binary> <version_args>`` (under sudo if launch_user differs from
+    caller) and return a status-tagged :class:`AgentAvailability`.
 
     Used by ``do_doctor`` to render the version line for binaries that
     ``uxon.infra.probes.probe_host`` already confirmed are present. The
@@ -113,11 +52,16 @@ def _probe_one(
     once the host-wide probe replaced it everywhere except the doctor's
     per-binary version detail.
 
+    ``version_args`` comes from the agent's catalog entry (default
+    ``("--version",)``); the doctor caller skips the probe entirely when
+    an agent configures an empty ``version_args``.
+
     ``timeout_override`` lets the doctor caller (which probes in parallel)
     use a tighter 2 s deadline; the TUI host-probe path keeps the 10 s
     default since it is async and off the event loop.
     """
     timeout = PROBE_TIMEOUT_SEC if timeout_override is None else timeout_override
+    ver = list(version_args)
     if launch_user and launch_user != _current_user():
         # Match the login-env semantics that ``command_prefix_for_user``
         # in ``uxon.cli`` uses for the actual launch (``sudo -iu``). The
@@ -127,9 +71,9 @@ def _probe_one(
         # Without ``-i``, sudo's ``secure_path`` hides them and the
         # probe reports "missing" for agents that the launch can
         # actually run.
-        cmd = ["sudo", "-niu", launch_user, "--", binary, "--version"]
+        cmd = ["sudo", "-niu", launch_user, "--", binary, *ver]
     else:
-        cmd = [binary, "--version"]
+        cmd = [binary, *ver]
     try:
         cp = subprocess.run(
             cmd,

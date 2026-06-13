@@ -291,22 +291,6 @@ class NestedAgentKeysTests(unittest.TestCase):
             "default_args = []\n"
         )
 
-    def test_round_trip_nested_agent_keys(self) -> None:
-        src = self._src()
-        new = ct.update_repo_config_text(
-            src,
-            {"agents.claude.default_args": ["--verbose"]},
-            schema_keys=cs.SCHEMA_KEYS,
-            table_keys=cs.TABLE_KEYS,
-        )
-        parsed = tomllib.loads(new)
-        self.assertEqual(parsed["agents"]["claude"]["default_args"], ["--verbose"])
-        # Comment survived
-        self.assertIn("# top comment", new)
-        # Other keys survived
-        self.assertEqual(parsed["agents"]["enabled"], ["claude"])
-        self.assertEqual(parsed["agents"]["default"], "claude")
-
     def test_round_trip_agents_default(self) -> None:
         src = self._src()
         new = ct.update_repo_config_text(

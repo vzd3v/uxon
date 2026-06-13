@@ -116,6 +116,11 @@ class TuiContext:
     # fall back to the first available agent.
     enabled_agents: tuple[str, ...] = ()
     default_agent: str = ""
+    # Merged agent catalog (``cfg.agents``), threaded so the TUI's mode
+    # helpers and screens read it as data instead of the old module-level
+    # literal. ``default_factory=dict`` keeps bare-``TuiContext`` test
+    # fixtures constructing (the field sits in the defaulted block).
+    agents: dict[str, Any] = field(default_factory=dict)
     launch_user: str = ""
     # Static seed for agent availability (agent_id → AgentAvailability,
     # status: "pending"|"ok"|"missing"|"timeout"). The live value lives

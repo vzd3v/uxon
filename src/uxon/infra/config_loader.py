@@ -9,9 +9,11 @@ git-profile / remote-host / demo adapters.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Literal
 
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG, AgentSpec, PermissionMode
 from uxon.domain.authz import canonical, is_under
 from uxon.domain.config import (
     DEFAULT_CONFIG,
@@ -20,9 +22,13 @@ from uxon.domain.config import (
     validate_repeat_mode,
     validate_worktree_base,
 )
-from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.errors import fail
 from uxon.infra import demo, events, version_probe
+
+# Agent ids must match the session-name scanner charset (``session.py``)
+# and be tmux-safe (no ``:``/``.``). Validated on the merged catalog so a
+# custom operator-declared id is rejected here, not at launch.
+_AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 try:
     import tomllib
@@ -94,28 +100,220 @@ def repo_config_path() -> Path:
     return version_probe.repo_root() / "config" / "config.toml"
 
 
+# Project-layer (``.uxon.toml``) keys that survive the deny-by-default
+# allowlist. ``agents``/``container`` are descended into leaf-by-leaf
+# (only the listed leaves are merged onto the running config); ``tui`` is
+# allowed whole. Everything else — ``allowed_roots``,
+# ``launch_user_by_caller``, ``local_host``, every ``[agents.<id>]`` argv
+# sub-table, every operator-only ``[container]`` key — is dropped.
+#
+# This is the security spine: a ``.uxon.toml`` discovered by walking up from
+# ``cwd`` is *untrusted* (a cloned repo can carry one), so it may never inject
+# argv or policy that ``uxon`` then executes under ``sudo -iu``. The operator
+# ``config/config.toml`` layer is unaffected — it keeps full power.
+_PROJECT_AGENTS_LEAVES = ("default", "enabled")
+# ``container.*`` project leaves land in P3 together with their validators;
+# until then ``[container]`` is dropped wholesale from the project layer.
+_PROJECT_CONTAINER_LEAVES: tuple[str, ...] = ()
+
+
+def project_allowlist(project: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite an untrusted ``.uxon.toml`` dict to only its allowlisted keys.
+
+    Built as a **fresh empty dict** — never a copy of ``project`` with keys
+    deleted — so any unlisted top-level key (``allowed_roots``,
+    ``launch_user_by_caller``, ``local_host``, raw ``[agents.<id>]`` argv,
+    operator-only ``[container]`` keys) is absent by construction.
+
+    ``agents``/``container`` are leaf-granular: their allowed leaves are
+    merged onto ``base[...]`` (the running default ⊕ operator config) so
+    operator-defined ``[agents.<id>]`` sub-tables survive while the
+    project's ``[agents.<id>]`` argv is dropped. A non-dict value for any of
+    these tables (a malformed ``agents = "x"``) is treated as absent and
+    dropped — never iterated — so it cannot raise mid-merge.
+
+    ``tui`` is pure UI data and allowed whole.
+    """
+    filtered: dict[str, Any] = {}
+
+    def _merge_leaves(table_key: str, leaves: tuple[str, ...]) -> None:
+        sub = project.get(table_key)
+        if not isinstance(sub, dict):
+            if table_key in project:
+                events.debug("config", reason="project_layer_dropped_nondict", key=table_key)
+            return
+        base_sub = base.get(table_key)
+        running = dict(base_sub) if isinstance(base_sub, dict) else {}
+        kept = {k: v for k, v in sub.items() if k in leaves}
+        for dropped in (k for k in sub if k not in leaves):
+            events.debug("config", reason="project_layer_dropped_key", key=f"{table_key}.{dropped}")
+        if kept:
+            filtered[table_key] = {**running, **kept}
+
+    _merge_leaves("agents", _PROJECT_AGENTS_LEAVES)
+    _merge_leaves("container", _PROJECT_CONTAINER_LEAVES)
+    tui = project.get("tui")
+    if isinstance(tui, dict):
+        filtered["tui"] = tui
+    elif "tui" in project:
+        events.debug("config", reason="project_layer_dropped_nondict", key="tui")
+    for dropped in (k for k in project if k not in ("agents", "container", "tui")):
+        events.debug("config", reason="project_layer_dropped_key", key=dropped)
+    return filtered
+
+
 def resolve_config_layers(cwd: str) -> tuple[dict[str, Any], list[Path]]:
     merged = dict(DEFAULT_CONFIG)
     sources: list[Path] = []
     repo_cfg = repo_config_path()
     if repo_cfg.exists():
         sources.append(repo_cfg)
+    # Operator layer: full power, merged verbatim.
     merged = merge_config(merged, load_toml(repo_cfg))
     seed_allowed = [canonical(p) for p in merged.get("allowed_roots", [])]
     proj_cfg = find_project_config(cwd, seed_allowed)
     if proj_cfg is not None:
         sources.append(proj_cfg)
-        merged = merge_config(merged, load_toml(proj_cfg))
+        # Project layer: untrusted — filter through the deny-by-default
+        # allowlist BEFORE merging (rewrite the override, never post-process
+        # ``merged``), so unlisted keys never reach the running config.
+        filtered = project_allowlist(load_toml(proj_cfg), merged)
+        merged = merge_config(merged, filtered)
     return merged, sources
+
+
+def _parse_modes(aid: str, raw_modes: Any) -> tuple[PermissionMode, ...]:
+    """Parse a ``[[agents.<id>.mode]]`` array-of-tables into PermissionModes.
+
+    First entry is the default mode. Each table: required ``id``, optional
+    ``label`` (defaults to ``id``), optional ``flags`` (list of strings),
+    optional ``dangerous`` (bool). REPLACE-not-merge: the caller only calls
+    this when at least one mode table is present.
+    """
+    if not isinstance(raw_modes, list) or not all(isinstance(m, dict) for m in raw_modes):
+        fail(f"'agents.{aid}.mode' must be an array of tables")
+    modes: list[PermissionMode] = []
+    for m in raw_modes:
+        mid = m.get("id")
+        if not isinstance(mid, str) or not mid:
+            fail(f"'agents.{aid}.mode' entry requires a non-empty string 'id'")
+        label = m.get("label", "")
+        if not isinstance(label, str):
+            fail(f"'agents.{aid}.mode.{mid}.label' must be a string")
+        flags_raw = m.get("flags", [])
+        if not isinstance(flags_raw, list) or not all(isinstance(f, str) for f in flags_raw):
+            fail(f"'agents.{aid}.mode.{mid}.flags' must be a list of strings")
+        modes.append(
+            PermissionMode(
+                id=mid,
+                label=label,
+                flags=tuple(flags_raw),
+                dangerous=bool(m.get("dangerous", False)),
+            )
+        )
+    if not modes:
+        fail(f"'agents.{aid}' supplies an empty mode list; omit it to inherit defaults")
+    return tuple(modes)
+
+
+def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
+    """Merge operator ``[agents.<id>]`` tables over ``DEFAULT_AGENT_CATALOG``.
+
+    Iterates the UNION of default-catalog ids and config-supplied ids (so a
+    custom agent is not dropped). Per-agent scalar/list fields merge
+    field-by-field over the default for that id; a custom id with no default
+    gets ``binary`` = id, ``version_args = ("--version",)``,
+    ``default_args = ()``, ``install_hint = ""``. The ``[[mode]]`` list is
+    REPLACE-not-merge: any supplied mode table wholly replaces that id's
+    default modes; none supplied inherits the defaults.
+
+    The validators here run on the *expanded/merged* id set so a hostile or
+    typo'd custom id fails ``load_config`` naming the offender (AC-A6).
+    """
+    config_ids = [
+        k for k, v in agents_tbl.items() if k not in ("enabled", "default") and isinstance(v, dict)
+    ]
+    # Non-dict ``[agents.<id>]`` (e.g. ``claude = 5``) is a config error.
+    for k, v in agents_tbl.items():
+        if k in ("enabled", "default"):
+            continue
+        if not isinstance(v, dict):
+            fail(f"'agents.{k}' must be a TOML table")
+    union_ids: list[str] = list(DEFAULT_AGENT_CATALOG)
+    for aid in config_ids:
+        if aid not in union_ids:
+            union_ids.append(aid)
+
+    catalog: dict[str, AgentSpec] = {}
+    for aid in union_ids:
+        if not _AGENT_ID_RE.match(aid) or ":" in aid or "." in aid:
+            fail(
+                f"invalid agent id {aid!r}: must match [a-z][a-z0-9_]* and "
+                "contain no ':' or '.' (tmux-safe)"
+            )
+        default_spec = DEFAULT_AGENT_CATALOG.get(aid)
+        sub = agents_tbl.get(aid, {})
+        if not isinstance(sub, dict):
+            fail(f"'agents.{aid}' must be a TOML table")
+
+        binary = sub.get("binary")
+        if binary is None:
+            binary = default_spec.binary if default_spec else aid
+        elif not isinstance(binary, str) or not binary:
+            fail(f"'agents.{aid}.binary' must be a non-empty string")
+
+        if "version_args" in sub:
+            va_raw = sub["version_args"]
+            if not isinstance(va_raw, list) or not all(isinstance(x, str) for x in va_raw):
+                fail(f"'agents.{aid}.version_args' must be a list of strings")
+            version_args = tuple(va_raw)
+        else:
+            version_args = default_spec.version_args if default_spec else ("--version",)
+
+        if "install_hint" in sub:
+            hint = sub["install_hint"]
+            if not isinstance(hint, str):
+                fail(f"'agents.{aid}.install_hint' must be a string")
+            install_hint = hint
+        else:
+            install_hint = default_spec.install_hint if default_spec else ""
+
+        if "default_args" in sub:
+            da_raw = sub["default_args"]
+            if not isinstance(da_raw, list) or not all(isinstance(x, str) for x in da_raw):
+                fail(f"'agents.{aid}.default_args' must be a list of strings")
+            default_args = tuple(da_raw)
+        else:
+            default_args = default_spec.default_args if default_spec else ()
+
+        # REPLACE-not-merge: any supplied [[mode]] wholly replaces defaults.
+        if "mode" in sub:
+            modes = _parse_modes(aid, sub["mode"])
+        elif default_spec is not None:
+            modes = default_spec.permission_modes
+        else:
+            fail(
+                f"custom agent {aid!r} declares no [[agents.{aid}.mode]] tables; "
+                "a new agent must define at least one permission mode"
+            )
+
+        catalog[aid] = AgentSpec(
+            id=aid,
+            binary=binary,
+            permission_modes=modes,
+            install_hint=install_hint,
+            version_args=version_args,
+            default_args=default_args,
+        )
+    return catalog
 
 
 def load_config(cwd: str) -> Config:
     from uxon.domain import git_profiles as uxon_git_profiles
 
     merged, _ = resolve_config_layers(cwd)
-    # Load raw repo data (before merge with defaults) so the removed
-    # flat ``default_claude_args`` key surfaces an error instead of being
-    # masked by DEFAULT_CONFIG's nested ``[agents.claude]`` block.
+    # Load raw repo data (before merge with defaults) so the removed flat
+    # ``default_claude_args`` key surfaces an error instead of being masked.
     _raw_repo = load_toml(repo_config_path())
     runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
     default_launch_mode = str(
@@ -165,34 +363,28 @@ def load_config(cwd: str) -> Config:
     agents_tbl = merged.get("agents", {})
     if not isinstance(agents_tbl, dict):
         fail("'agents' must be a TOML table")
-    # ``enabled`` empty/absent = auto-mode (every installed CATALOG
+    # Merged catalog (defaults ⊕ operator config). The valid-id set is
+    # derived dynamically from its keys — there is no static VALID_AGENT_IDS.
+    agents = build_agent_catalog(agents_tbl)
+    valid_agent_ids = tuple(agents)
+    # ``enabled`` empty/absent = auto-mode (every installed catalogued
     # agent is launchable). Non-empty list = strict whitelist.
     enabled_raw = agents_tbl.get("enabled", [])
     if not isinstance(enabled_raw, list):
         fail("'agents.enabled' must be a list (use [] for auto-mode)")
     enabled = tuple(str(x) for x in enabled_raw)
     for aid in enabled:
-        if aid not in VALID_AGENT_IDS:
-            fail(f"unknown agent id in agents.enabled: {aid!r} (expected one of {VALID_AGENT_IDS})")
+        if aid not in agents:
+            fail(f"unknown agent id in agents.enabled: {aid!r} (expected one of {valid_agent_ids})")
     default_agent = str(agents_tbl.get("default", ""))
     if default_agent:
-        if default_agent not in VALID_AGENT_IDS:
+        if default_agent not in agents:
             fail(
                 f"unknown agent id in agents.default: {default_agent!r} "
-                f"(expected one of {VALID_AGENT_IDS})"
+                f"(expected one of {valid_agent_ids})"
             )
         if enabled and default_agent not in enabled:
             fail(f"agents.default={default_agent!r} is not in agents.enabled={list(enabled)}")
-
-    agent_default_args: dict[str, tuple[str, ...]] = {}
-    for aid in VALID_AGENT_IDS:
-        sub = agents_tbl.get(aid, {})
-        if not isinstance(sub, dict):
-            fail(f"'agents.{aid}' must be a TOML table")
-        args = sub.get("default_args", [])
-        if not isinstance(args, list):
-            fail(f"'agents.{aid}.default_args' must be a list")
-        agent_default_args[aid] = tuple(str(x) for x in args)
 
     new_project_root = canonical(
         str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"]))
@@ -408,7 +600,7 @@ def load_config(cwd: str) -> Config:
         legacy_session_prefixes=legacy_session_prefixes,
         enabled_agents=enabled,
         default_agent=default_agent,
-        agent_default_args=agent_default_args,
+        agents=agents,
         new_project_root=new_project_root,
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,

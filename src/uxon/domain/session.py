@@ -38,7 +38,7 @@ class SessionInfo:
     active_path: str
     cpu_pct: float = 0.0
     rss_kib: int = 0
-    agent: str = "claude"  # "claude" | "codex" | "cursor" | "unknown"
+    agent: str = "claude"  # agent id as parsed from the session name (catalog-driven)
     legacy: bool = False  # True iff name uses a non-current (legacy) prefix
 
 
@@ -59,7 +59,7 @@ class TuiSession:
     user: str
     # Multi-agent fields (default to backward-compatible values).
     stem: str = ""  # bare project stem, e.g. "myproject"
-    agent: str = "claude"  # agent id, e.g. "claude", "codex", "cursor"
+    agent: str = "claude"  # agent id as parsed from the session name (catalog-driven)
     legacy: bool = False  # True when parsed from old cc-<stem> naming
     # Raw ISO 8601 timestamps preserved alongside the pre-formatted
     # display strings so dashboard sort by ``new`` / ``last`` ranks

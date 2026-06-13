@@ -30,12 +30,16 @@ def effective_agents(
     *,
     configured: tuple[str, ...],
     available_ids: tuple[str, ...],
+    catalog_ids: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Return the agent ids the user can actually launch.
 
     - ``configured`` non-empty → strict whitelist; return as-is.
-    - ``configured`` empty → auto-mode; return every CATALOG id that
-      ``available_ids`` reports as installed for ``launch_user``.
+    - ``configured`` empty → auto-mode; return every ``catalog_ids`` entry
+      that ``available_ids`` reports as installed for ``launch_user``.
+
+    ``catalog_ids`` is the merged-catalog id order (``cfg.agents`` keys),
+    threaded in so this pure helper never reaches a module-level literal.
 
     Empty/absent ``[agents].enabled`` in repo config and ``[]`` are
     treated identically — both mean "auto-detect from what is
@@ -44,9 +48,7 @@ def effective_agents(
     """
     if configured:
         return configured
-    from uxon.infra import agents as uxon_agents
-
-    return tuple(aid for aid in uxon_agents.CATALOG if aid in available_ids)
+    return tuple(aid for aid in catalog_ids if aid in available_ids)
 
 
 def should_show_agents_unavailable(
@@ -168,6 +170,7 @@ def visible_agent_ids(
     *,
     enabled_agents: tuple[str, ...],
     availability: Mapping[str, Any],
+    catalog_ids: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Agent ids the LaunchOptions screen should expose.
 
@@ -176,10 +179,11 @@ def visible_agent_ids(
     entries stay visible so the row renders as "(checking…)" rather
     than vanishing mid-probe.
 
-    Auto-mode (``enabled_agents`` empty): every ``CATALOG`` id that
-    has resolved to ``ok`` in ``availability``. No "missing" rows —
-    the auto-mode probe never inserts un-installed entries, so a
-    missing/timeout entry would have to be a stale strict-mode hangover.
+    Auto-mode (``enabled_agents`` empty): every ``catalog_ids`` entry
+    (merged-catalog order) that has resolved to ``ok`` in ``availability``.
+    No "missing" rows — the auto-mode probe never inserts un-installed
+    entries, so a missing/timeout entry would have to be a stale
+    strict-mode hangover.
     """
     if enabled_agents:
         return tuple(
@@ -188,11 +192,9 @@ def visible_agent_ids(
             if availability.get(aid) is None
             or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
         )
-    from uxon.infra import agents as uxon_agents
-
     return tuple(
         aid
-        for aid in uxon_agents.CATALOG
+        for aid in catalog_ids
         if aid in availability and getattr(availability[aid], "status", None) == "ok"
     )
 
@@ -204,10 +206,12 @@ def update_launch_options_after_availability(
     availability: Mapping[str, Any],
     current_agent: str,
     active_panel: str,
+    catalog_ids: tuple[str, ...] = (),
 ) -> LaunchOptionsUpdate:
     visible = visible_agent_ids(
         enabled_agents=enabled_agents,
         availability=availability,
+        catalog_ids=catalog_ids,
     )
     if not visible:
         return LaunchOptionsUpdate(
@@ -238,10 +242,12 @@ def launch_options_state(
     enabled_agents: tuple[str, ...],
     default_agent: str,
     availability: Mapping[str, Any],
+    catalog_ids: tuple[str, ...] = (),
 ) -> LaunchOptionsState:
     visible = visible_agent_ids(
         enabled_agents=enabled_agents,
         availability=availability,
+        catalog_ids=catalog_ids,
     )
     single = len(visible) <= 1
     current = (
@@ -277,22 +283,22 @@ def agent_list_label(index: int, agent_id: str, availability_obj: Any | None) ->
     return label
 
 
-def mode_item_ids(agent_id: str) -> tuple[str, ...]:
-    from uxon.infra import agents as uxon_agents
-
-    if agent_id not in uxon_agents.CATALOG:
+def mode_item_ids(agents: Mapping[str, Any], agent_id: str) -> tuple[str, ...]:
+    spec = agents.get(agent_id)
+    if spec is None:
         return ()
-    return tuple(f"mode-{mode.id}" for mode in uxon_agents.CATALOG[agent_id].permission_modes)
+    return tuple(f"mode-{mode.id}" for mode in spec.permission_modes)
 
 
-def launch_mode_id(agent_id: str, mode_index: int) -> str | None:
-    from uxon.infra import agents as uxon_agents
-
-    if agent_id not in uxon_agents.CATALOG:
+def launch_mode_id(agents: Mapping[str, Any], agent_id: str, mode_index: int) -> str | None:
+    spec = agents.get(agent_id)
+    if spec is None:
         return None
-    modes = uxon_agents.CATALOG[agent_id].permission_modes
+    modes = spec.permission_modes
     if 0 <= mode_index < len(modes):
         return modes[mode_index].id
+    # Out-of-range index falls back to "normal" (the shipped default mode).
+    # The catalog-aware first-mode flip is P2; behaviour is unchanged here.
     return "normal"
 
 
@@ -302,12 +308,13 @@ def launch_commit_decision(
     current_agent: str,
     availability: Mapping[str, Any],
     mode_index: int,
+    agents: Mapping[str, Any],
 ) -> LaunchCommitDecision:
     if active_panel == "agent":
         if agent_is_pending(current_agent, availability):
             return LaunchCommitDecision("ignore")
         return LaunchCommitDecision("switch-to-mode")
-    mode_id = launch_mode_id(current_agent, mode_index)
+    mode_id = launch_mode_id(agents, current_agent, mode_index)
     if mode_id is None:
         return LaunchCommitDecision("dismiss")
     return LaunchCommitDecision("commit", mode_id)

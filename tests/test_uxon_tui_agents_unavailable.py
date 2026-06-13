@@ -38,10 +38,12 @@ def _mk_ctx(**overrides):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class AgentsUnavailableScreenTests(unittest.TestCase):
     def test_lists_each_enabled_agent_with_install_hint(self) -> None:
+        from uxon.domain.agents import DEFAULT_AGENT_CATALOG
         from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
         screen = AgentsUnavailableScreen(
             enabled_agents=("claude", "codex", "cursor"),
+            agents=DEFAULT_AGENT_CATALOG,
         )
         text = screen.body_text
         self.assertIn("claude", text)

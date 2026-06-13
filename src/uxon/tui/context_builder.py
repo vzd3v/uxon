@@ -431,6 +431,7 @@ def build_tui_context(
         other_sessions=tui_other,
         enabled_agents=cfg.enabled_agents,
         default_agent=cfg.default_agent,
+        agents=dict(cfg.agents),
         launch_user=launch_user,
         agent_availability=agent_availability,
         on_attach=on_attach,

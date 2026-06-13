@@ -76,8 +76,9 @@ class SessionRecord(TypedDict):
       stripped, mirroring the human table. For ``legacy=True``
       records the current prefix does not match, so ``short_id``
       equals ``name``.
-    - ``agent``: ``"claude"|"codex"|"cursor"|"unknown"`` — what the
-      session-name parser recognised the agent slot as.
+    - ``agent``: the agent id the session-name parser extracted from the
+      ``@<agent>`` slot (catalog-driven — any valid-charset id, e.g.
+      ``aider``; not collapsed to a fixed set).
     - ``attached``: ``True`` iff a tmux client is currently attached.
     - ``windows``: tmux window count, as reported by
       ``#{session_windows}``. Kept as a string because tmux emits it

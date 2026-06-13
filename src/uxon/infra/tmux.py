@@ -4,9 +4,9 @@ options ``set`` chain, and the agent + tmux launch/attach command builders.
 
 ``_build_tmux_launch_request`` is the single place where an agent command
 line is assembled (see AGENTS.md hard rules) — do not add any other
-agent-exec call site. It consults :data:`uxon.infra.agents.CATALOG` via a
-lazy in-function import so ``agents`` does not enter ``cli``'s eager import
-graph (the startup-latency invariant).
+agent-exec call site. It reads the agent's spec from the merged catalog
+``cfg.agents`` (built from :data:`uxon.domain.agents.DEFAULT_AGENT_CATALOG`
+⊕ operator config in ``load_config``).
 """
 
 from __future__ import annotations
@@ -221,7 +221,7 @@ def _build_tmux_launch_request(
     The agent is expected to be resolved before this is called —
     install-gating is owned by ``resolve_agent_id`` (run from
     the action handlers and TUI callbacks). This function only
-    enforces that the picked id is in ``CATALOG``; if ``args.agent``
+    enforces that the picked id is in ``cfg.agents``; if ``args.agent``
     is unset it falls back to ``cfg.default_agent`` as a last-ditch
     policy hook for callers that legitimately skip resolution
     (dry-run tests, etc.).
@@ -232,22 +232,19 @@ def _build_tmux_launch_request(
     via ``-c <worktree_path>`` — it never delegates to the agent's native
     ``-w`` flag, so this parameter does not affect ``final_cmd`` (§2.1).
     """
-    from uxon.infra import agents as uxon_agents
+    from uxon.domain.agents import permission_mode_for
 
     agent_id = args.agent or cfg.default_agent
     if not agent_id:
         fail("internal: no agent resolved before _build_tmux_launch_request")
-    if agent_id not in uxon_agents.CATALOG:
+    if agent_id not in cfg.agents:
         fail(f"unknown agent id {agent_id!r}")
-    spec = uxon_agents.CATALOG[agent_id]
-    mode_obj = uxon_agents.permission_mode_for(spec, args.permission_mode)
+    spec = cfg.agents[agent_id]
+    mode_obj = permission_mode_for(spec, args.permission_mode)
     if mode_obj is None:
         fail(f"{agent_id} has no '{args.permission_mode}' permission mode")
     final_cmd = (
-        [spec.binary]
-        + list(cfg.agent_default_args.get(agent_id, ()))
-        + list(args.agent_args)
-        + list(mode_obj.flags)
+        [spec.binary] + list(spec.default_args) + list(args.agent_args) + list(mode_obj.flags)
     )
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)

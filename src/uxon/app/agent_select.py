@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from uxon.domain.config import Config
-from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.errors import fail
 
 if TYPE_CHECKING:
@@ -36,7 +35,7 @@ def resolve_agent_id(
     2. ``cfg.default_agent`` if set.
     3. ``cfg.enabled_agents[0]`` (strict mode).
     4. Auto-mode (empty whitelist, no default): the first installed
-       ``CATALOG`` agent.
+       catalogued agent (``cfg.agents`` order).
 
     Whatever the policy picks, this function probes the host once
     (or reuses ``report``) and verifies the binary is actually
@@ -46,8 +45,8 @@ def resolve_agent_id(
     that already probed (TUI, doctor) — pass it to avoid the
     double round-trip.
     """
-    if requested and requested not in VALID_AGENT_IDS:
-        fail(f"--agent must be one of {VALID_AGENT_IDS}, got {requested!r}")
+    if requested and requested not in cfg.agents:
+        fail(f"--agent must be one of {tuple(cfg.agents)}, got {requested!r}")
     if requested and cfg.enabled_agents and requested not in cfg.enabled_agents:
         fail(f"agent {requested!r} is not in agents.enabled={list(cfg.enabled_agents)}")
 
@@ -60,11 +59,10 @@ def resolve_agent_id(
     else:
         candidate, source = None, "auto"
 
-    from uxon.infra import agents as uxon_agents
     from uxon.infra import probes as uxon_probes
 
     if report is None:
-        report = uxon_probes.probe_host(launch_user)
+        report = uxon_probes.probe_host(launch_user, cfg.agents)
 
     if candidate is not None:
         status = report.agents.get(candidate)
@@ -77,13 +75,13 @@ def resolve_agent_id(
             )
         return candidate
 
-    for aid in uxon_agents.CATALOG:
+    for aid in cfg.agents:
         status = report.agents.get(aid)
         if status is not None and status.path is not None:
             return aid
     fail(
         f"no agent binary found on PATH for {launch_user!r}. "
-        f"Install one of {VALID_AGENT_IDS} or set agents.enabled / "
+        f"Install one of {tuple(cfg.agents)} or set agents.enabled / "
         "agents.default in the repo config.",
         1,
     )
