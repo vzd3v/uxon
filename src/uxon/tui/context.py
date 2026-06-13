@@ -19,6 +19,7 @@ from uxon.domain.status import LinkHealthStatus, ServerStatus
 from uxon.domain.sudo import SudoCapability
 
 if TYPE_CHECKING:
+    from uxon.app.launch import ContainerGate
     from uxon.infra.probes import HostStatsResult
 
 
@@ -76,6 +77,11 @@ class TuiContext:
     ssh_multiplex: str = "auto"
     ssh_control_persist_seconds: int = 300
     fetch_concurrency: int = 16
+    # Pre-rendered one-line kill-path caveat when ``[container].enabled``
+    # (Security MEDIUM-2), else ``None``. Computed once from the real
+    # ``Config`` in ``context_builder`` so the kill-flow notify callbacks can
+    # append it without reaching back into the loader. Carries zero internals.
+    container_kill_caveat: str | None = None
 
     # True until the first real refresh lands. The TUI distinguishes this
     # from a loaded-but-empty state — skeleton ctx renders "Loading…" in
@@ -180,6 +186,12 @@ class TuiContext:
     on_launch_existing: Callable[[str, str, str], LaunchRequest] = lambda name, agent_id, mode_id: (
         LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
+    # Container readiness gate (P3): probes the per-(launch_user, dir)
+    # container for ``target_dir`` and returns a ``ContainerGate`` (or None to
+    # launch straight through). The TUI runs this off the loop BEFORE a commit
+    # so it can show a confirm affordance when a stopped/absent container needs
+    # a start/create and ``on_missing_mode == "prompt"``. Disabled by default.
+    on_container_gate: Callable[[str], ContainerGate | None] = lambda target_dir: None
     # Probe callback: returns (session_name, attached) pairs for the
     # launch_user's sessions compatible with (target_dir, agent_id). The
     # TUI calls this after the operator picks agent+mode in

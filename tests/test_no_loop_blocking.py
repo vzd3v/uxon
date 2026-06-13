@@ -324,6 +324,61 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             await self._settle(pilot)
             self.assertEqual(rec, [False], msg="on_launch_cwd commit ran on the event loop")
 
+    async def test_container_probe_runs_off_loop(self) -> None:
+        """The container probe/start shell-outs must run off the loop too.
+
+        ``[container].enabled`` gates the launch on ``on_container_gate``,
+        which shells out via the bounded-timeout probe. Like the launch
+        commit, it runs on the off-loop worker — a hung ``docker inspect``
+        must never freeze the UI. Here the launch callback stands in for that
+        work and records the thread the container probe would run on (the real
+        ``subprocess.run`` boundary is the guard).
+        """
+        import getpass
+
+        from uxon.infra import container as container_infra
+        from uxon.infra.agents import AgentAvailability
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import LaunchRequest
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        rec: list[bool] = []
+
+        def on_launch_cwd(agent_id, mode_id, target_dir=None):
+            # Drive the REAL container probe shell-out (the new off-loop work)
+            # and record the thread it runs on. ``subprocess.run`` is the
+            # guarded boundary; ``["true"]`` exits 0 fast. Probe as the current
+            # user so the same-user fast path (no sudo) keeps the test hermetic.
+            rec.append(_on_loop())
+            container_infra._probe_exit_ok(["true"], getpass.getuser())
+            return LaunchRequest(cmd=("/bin/true",), label="cwd")
+
+        ctx = _mk_ctx(
+            on_launch_cwd=on_launch_cwd,
+            on_probe_existing_sessions=lambda d, a: (),
+            enabled_agents=["claude"],
+            agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app.kick_refresh()
+            await self._settle(pilot)
+            app.request_launch = lambda req: None  # type: ignore[assignment, method-assign]
+            app.screen._launch_flow.launch_cwd()
+            opts = None
+            for _ in range(10):
+                await pilot.pause()
+                opts = next(
+                    (s for s in app.screen_stack if isinstance(s, LaunchOptionsScreen)), None
+                )
+                if opts is not None:
+                    break
+            self.assertIsNotNone(opts, msg="LaunchOptionsScreen was not reached")
+            opts.dismiss(("claude", "normal"))
+            await self._settle(pilot)
+            self.assertEqual(rec, [False], msg="container probe ran on the event loop")
+
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class LoopStaysResponsiveTests(unittest.IsolatedAsyncioTestCase):

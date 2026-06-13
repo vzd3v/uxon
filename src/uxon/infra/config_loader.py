@@ -22,6 +22,11 @@ from uxon.domain.config import (
     validate_repeat_mode,
     validate_worktree_base,
 )
+from uxon.domain.container import (
+    ContainerConfig,
+    validate_container_name,
+    validate_path_map,
+)
 from uxon.errors import fail
 from uxon.infra import demo, events, version_probe
 
@@ -112,9 +117,14 @@ def repo_config_path() -> Path:
 # argv or policy that ``uxon`` then executes under ``sudo -iu``. The operator
 # ``config/config.toml`` layer is unaffected — it keeps full power.
 _PROJECT_AGENTS_LEAVES = ("default", "enabled")
-# ``container.*`` project leaves land in P3 together with their validators;
-# until then ``[container]`` is dropped wholesale from the project layer.
-_PROJECT_CONTAINER_LEAVES: tuple[str, ...] = ()
+# Project-allowed ``[container]`` leaves: pure data only. ``name``/``path_map``
+# never become argv that uxon couldn't already see — the name is re-validated
+# against the safe charset and ``path_map`` against the absolute/``..``-free
+# rules in ``load_config`` (so a kept project leaf is never trusted
+# unvalidated). Every executed/policy key (``exec_template``,
+# ``create_template``, ``on_missing``, ``enabled``, …) stays operator-only and
+# is dropped from the project layer.
+_PROJECT_CONTAINER_LEAVES: tuple[str, ...] = ("name", "path_map")
 
 
 def project_allowlist(project: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
@@ -306,6 +316,97 @@ def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
             default_args=default_args,
         )
     return catalog
+
+
+def _argv_list(tbl: dict[str, Any], key: str) -> tuple[str, ...]:
+    """Read an operator ``[container]`` argv template (list of strings).
+
+    Templates are argv **lists**, never shell strings — a non-list (or a
+    list with a non-string element) is rejected so a `"docker exec …"`
+    string can't slip through as one opaque token.
+    """
+    raw = tbl.get(key, [])
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        fail(f"'container.{key}' must be a list of strings (an argv list, not a shell string)")
+    return tuple(raw)
+
+
+def build_container_config(container_tbl: dict[str, Any]) -> ContainerConfig:
+    """Parse + validate the merged ``[container]`` table into ContainerConfig.
+
+    ``enabled``/templates/policy are operator-only (the project layer already
+    dropped them in ``project_allowlist``). ``name``/``path_map`` may come
+    from the project layer, so they are re-validated here against the safe
+    charset / absolute-``..``-free rules (AC-B8) — a kept project leaf is
+    never trusted unvalidated. When ``enabled = false`` no template is
+    required and validation is skipped beyond the data leaves.
+    """
+    enabled = bool(container_tbl.get("enabled", False))
+
+    on_missing = str(container_tbl.get("on_missing", "off"))
+    if on_missing not in ("off", "start", "create"):
+        fail(f"container.on_missing must be 'off', 'start', or 'create'; got {on_missing!r}")
+    on_missing_mode = str(container_tbl.get("on_missing_mode", "prompt"))
+    if on_missing_mode not in ("prompt", "auto"):
+        fail(f"container.on_missing_mode must be 'prompt' or 'auto'; got {on_missing_mode!r}")
+
+    name_template = str(container_tbl.get("name_template", ""))
+    exec_template = _argv_list(container_tbl, "exec_template")
+    is_running_cmd = _argv_list(container_tbl, "is_running_cmd")
+    exists_cmd = _argv_list(container_tbl, "exists_cmd")
+    start_template = _argv_list(container_tbl, "start_template")
+    create_template = _argv_list(container_tbl, "create_template")
+
+    # Project-layer data leaves (re-validated even though deny-by-default
+    # admitted only these two keys).
+    name_raw = container_tbl.get("name", "")
+    if not isinstance(name_raw, str):
+        fail("container.name must be a string")
+    name = name_raw
+    if name:
+        # Validate the literal override here; a template-derived name is
+        # re-validated post-expansion at resolve time (both go through the
+        # same charset check).
+        validate_container_name(name)
+
+    path_map_raw = container_tbl.get("path_map", {})
+    if not isinstance(path_map_raw, dict):
+        fail("container.path_map must be a TOML table of host_prefix -> container_prefix")
+    path_map = validate_path_map({str(k): str(v) for k, v in path_map_raw.items()})
+
+    if enabled:
+        if not exec_template:
+            fail("container.enabled = true requires a non-empty container.exec_template")
+        if not name and not name_template:
+            fail("container.enabled = true requires container.name_template (or .uxon.toml name)")
+        if on_missing in ("start", "create") and not is_running_cmd:
+            fail(
+                f"container.on_missing = {on_missing!r} requires container.is_running_cmd "
+                "and container.exists_cmd to probe the container state"
+            )
+        if on_missing in ("start", "create") and not exists_cmd:
+            fail(
+                f"container.on_missing = {on_missing!r} requires container.exists_cmd "
+                "to detect an absent vs stopped container"
+            )
+        if on_missing in ("start", "create") and not start_template:
+            fail(f"container.on_missing = {on_missing!r} requires container.start_template")
+        if on_missing == "create" and not create_template:
+            fail("container.on_missing = 'create' requires container.create_template")
+
+    return ContainerConfig(
+        enabled=enabled,
+        name_template=name_template,
+        exec_template=exec_template,
+        is_running_cmd=is_running_cmd,
+        exists_cmd=exists_cmd,
+        start_template=start_template,
+        create_template=create_template,
+        on_missing=on_missing,  # type: ignore[arg-type]
+        on_missing_mode=on_missing_mode,  # type: ignore[arg-type]
+        name=name,
+        path_map=path_map,
+    )
 
 
 def load_config(cwd: str) -> Config:
@@ -589,6 +690,11 @@ def load_config(cwd: str) -> Config:
             f"exist in git_remote_profiles"
         )
 
+    container_tbl = merged.get("container", DEFAULT_CONFIG["container"])
+    if not isinstance(container_tbl, dict):
+        fail("'container' must be a TOML table")
+    container = build_container_config(container_tbl)
+
     return Config(
         runtime_user=runtime_user,
         default_launch_mode=default_launch_mode,
@@ -626,4 +732,5 @@ def load_config(cwd: str) -> Config:
         tmux_options=tmux_scope_tables["options"],
         tmux_server_options=tmux_scope_tables["server_options"],
         tmux_append_server_options=tmux_scope_tables["append_server_options"],
+        container=container,
     )

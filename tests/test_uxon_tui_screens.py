@@ -337,6 +337,72 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
+    """AC-B4 — the TUI confirm affordance for a stopped/absent container.
+
+    With ``on_missing_mode = "prompt"`` a needed start/create must show a
+    ``ConfirmYesNo`` before the prepare runs; on confirm the prepare fires
+    and the launch proceeds.
+    """
+
+    async def _settle(self, pilot) -> None:
+        for _ in range(12):
+            await pilot.pause()
+
+    async def test_prompt_then_confirm_runs_prepare_and_launches(self) -> None:
+        from uxon.app.launch import ContainerGate
+        from uxon.infra.agents import AgentAvailability
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.confirm import ConfirmYesNo
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+
+        prepared: list[bool] = []
+        launched: list[str] = []
+
+        gate = ContainerGate(
+            needs_prepare=True,
+            needs_prompt=True,
+            message="Container 'proj-work' is stopped — start and launch?",
+            fail_message="",
+            prepare=lambda: prepared.append(True),
+        )
+
+        ctx = _mk_ctx(
+            on_container_gate=lambda target_dir: gate,
+            on_probe_existing_sessions=lambda d, a: (),
+            enabled_agents=["claude"],
+            agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await self._settle(pilot)
+            app.request_launch = lambda req: launched.append(req.label)  # type: ignore[assignment, method-assign]
+            app.screen._launch_flow.launch_cwd()
+            opts = None
+            for _ in range(10):
+                await pilot.pause()
+                opts = next(
+                    (s for s in app.screen_stack if isinstance(s, LaunchOptionsScreen)), None
+                )
+                if opts is not None:
+                    break
+            self.assertIsNotNone(opts, msg="LaunchOptionsScreen was not reached")
+            opts.dismiss(("claude", "normal"))
+            await self._settle(pilot)
+            # The container gate must have pushed the confirm BEFORE launching.
+            confirm = next((s for s in app.screen_stack if isinstance(s, ConfirmYesNo)), None)
+            self.assertIsNotNone(
+                confirm, msg="ConfirmYesNo was not shown for the stopped container"
+            )
+            self.assertEqual(prepared, [], msg="prepare ran before the operator confirmed")
+            self.assertEqual(launched, [], msg="launch committed before confirm")
+            await pilot.press("y")
+            await self._settle(pilot)
+        self.assertEqual(prepared, [True], msg="prepare did not run after confirm")
+        self.assertEqual(launched, ["cwd"], msg="launch did not proceed after prepare")
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class WorkerGateTests(unittest.TestCase):
     """Regression coverage for the worker-handle in-flight gate.
 

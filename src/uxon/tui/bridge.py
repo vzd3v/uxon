@@ -433,6 +433,9 @@ class TuiBridge:
         req = tui_planning._plan_tui_run_agent(
             self.cfg, self.launch_user, target, agent_id, mode_id
         )
+        # Container readiness is NOT handled here: the TUI runs the probe +
+        # (prompt-confirmed) start/create through ``LaunchFlow`` BEFORE this
+        # commit so ``on_missing_mode = "prompt"`` can show an affordance.
         # ``_plan_tui_run_agent`` only ever yields a launch (never an
         # attach), so this path is unconditional ``session.new``.
         from uxon.infra import audit as _audit
@@ -456,6 +459,12 @@ class TuiBridge:
         # owned by ``on_attach`` (which emits its own ``session.attach``
         # event when the operator picks "attach" in SessionChoiceScreen).
         project = canonical(os.path.join(self.cfg.new_project_root, name))
+        # New-project creates the dir inside the planner above, so the
+        # container can only be readied AFTER it exists — too late for a
+        # pre-launch prompt. Like the worktree-create path, this uses the
+        # headless auto-if-permitted policy. Follow-up: hoist the prompt once
+        # the dir is created before the commit.
+        launch_app.ensure_container_ready(self.cfg, project, self.launch_user)
         from uxon.infra import audit as _audit
 
         _audit.audit(
@@ -475,6 +484,8 @@ class TuiBridge:
         # Same as ``on_launch_new``: TUI owns attach decisions; this path
         # always emits ``session.new``.
         project = canonical(os.path.join(self.cfg.new_project_root, name))
+        # Container readiness handled by ``LaunchFlow`` before this commit
+        # (prompt affordance) — see ``on_launch_cwd``.
         from uxon.infra import audit as _audit
 
         _audit.audit(
@@ -582,6 +593,15 @@ class TuiBridge:
             compatibility_root=worktree_path,
         )
         return tuple((s.name, s.attached == "1") for s in matches)
+
+    def on_container_gate(self, target_dir: str):
+        """Probe the container for ``target_dir``; return the TUI gate or None.
+
+        Shells out as the launch user under a bounded timeout — MUST run off
+        the event loop (the caller dispatches it via ``run_off_loop``). None
+        means "launch straight through" (disabled, or already running).
+        """
+        return launch_app.decide_container_gate(self.cfg, target_dir, self.launch_user)
 
     def on_probe_cwd_writable(self) -> bool:
         return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, self.cwd)

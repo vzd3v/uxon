@@ -77,6 +77,47 @@ def normalize_agent_args(value: Any) -> list[str]:
 
 VALID_AGENT_IDS = ("claude", "codex", "cursor")
 
+# [container] argv-list keys (rendered as TOML arrays) and the scalar keys.
+CONTAINER_ARGV_KEYS = (
+    "exec_template",
+    "is_running_cmd",
+    "exists_cmd",
+    "start_template",
+    "create_template",
+)
+
+
+def render_container(container: Any, lines: list[str]) -> None:
+    """Append a ``[container]`` block to ``lines`` when present.
+
+    Argv-list keys render as TOML string arrays (the security invariant —
+    a command is a list of tokens, never a shell string); scalars render
+    inline. ``path_map`` becomes a ``[container.path_map]`` table. Absent
+    keys are simply omitted (the loader supplies the disabled defaults).
+    """
+    if container is None:
+        return
+    if not isinstance(container, dict):
+        raise ValueError("'container' must be an object")
+    lines.append("[container]")
+    if "enabled" in container:
+        lines.append(f"enabled = {toml_bool(bool(container['enabled']))}")
+    for key in ("name", "name_template", "on_missing", "on_missing_mode"):
+        if container.get(key):
+            lines.append(f"{key} = {toml_string(str(container[key]))}")
+    for key in CONTAINER_ARGV_KEYS:
+        if key in container:
+            rendered = toml_string_list(normalize_string_list(container[key]))
+            lines.append(f"{key} = " + rendered[0])
+            lines.extend(rendered[1:])
+    lines.append("")
+    path_map = normalize_mapping(container.get("path_map", {}))
+    if path_map:
+        lines.append("[container.path_map]")
+        for host_prefix in sorted(path_map):
+            lines.append(f"{toml_string(host_prefix)} = {toml_string(path_map[host_prefix])}")
+        lines.append("")
+
 
 def render_config(payload: dict[str, Any]) -> str:
     runtime_user = str(payload.get("runtime_user", "")).strip()
@@ -154,6 +195,7 @@ def render_config(payload: dict[str, Any]) -> str:
     for caller in sorted(launch_user_by_caller):
         lines.append(f"{toml_string(caller)} = {toml_string(launch_user_by_caller[caller])}")
     lines.append("")
+    render_container(payload.get("container"), lines)
     return "\n".join(lines)
 
 

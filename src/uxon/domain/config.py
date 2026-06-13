@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from uxon.domain.agents import AgentSpec, default_agent_catalog
+from uxon.domain.container import ContainerConfig
 from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.errors import fail
 
@@ -124,6 +125,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "server_options": dict(RECOMMENDED_TMUX_OPTIONS["server_options"]),
         "append_server_options": dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"]),
     },
+    # Container-agnostic agent launch (off by default). When
+    # ``enabled = true`` uxon prefixes the agent command with the operator's
+    # opaque ``exec_template`` so the agent runs inside a container; every
+    # other key is an argv/policy operator-only value. ``.uxon.toml`` may set
+    # only ``name`` / ``path_map`` (data). See ``domain/container.py``.
+    "container": {
+        "enabled": False,
+        "name_template": "",
+        "exec_template": [],
+        "is_running_cmd": [],
+        "exists_cmd": [],
+        "start_template": [],
+        "create_template": [],
+        "on_missing": "off",
+        "on_missing_mode": "prompt",
+    },
 }
 
 
@@ -185,6 +202,10 @@ class Config:
     tmux_append_server_options: dict = field(
         default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"])
     )
+    # Container-agnostic launch (off by default). Parsed + validated once in
+    # ``load_config``; the disabled default is byte-for-byte the pre-container
+    # behaviour (no exec wrap).
+    container: ContainerConfig = field(default_factory=ContainerConfig)
 
 
 def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

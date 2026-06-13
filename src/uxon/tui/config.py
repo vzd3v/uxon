@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from uxon.app.launch import ContainerGate
     from uxon.domain.agents import AgentSpec
     from uxon.domain.launch_request import LaunchRequest
     from uxon.infra.remote_hosts import RemoteHost
@@ -98,6 +99,7 @@ class TuiConfig:
     on_launch_cwd: Callable[..., LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
+    on_container_gate: Callable[[str], ContainerGate | None]
     on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]]
     on_probe_worktrees: Callable[[str], list]
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest]
@@ -110,6 +112,12 @@ class TuiConfig:
     on_setting_remove: Callable[[str], None]
     on_setting_save_mapping: Callable[[str, dict], None]
     get_git_remote_profile_rows: Callable[[], list]
+
+    # ── Container ────────────────────────────────────────────────────
+    # Pre-rendered kill-path caveat when ``[container].enabled`` (else
+    # ``None``); appended at the kill-flow notify sites. Defaulted (last
+    # field) so bare ``TuiConfig`` fixtures keep constructing.
+    container_kill_caveat: str | None = None
 
     @classmethod
     def from_context(cls, ctx: TuiContext) -> TuiConfig:
@@ -144,6 +152,7 @@ class TuiConfig:
             git_remote_profile_options=tuple(
                 (name, desc) for (name, desc) in ctx.git_remote_profile_options
             ),
+            container_kill_caveat=ctx.container_kill_caveat,
             on_attach=ctx.on_attach,
             on_kill=ctx.on_kill,
             on_kill_all=ctx.on_kill_all,
@@ -157,6 +166,7 @@ class TuiConfig:
             on_launch_cwd=ctx.on_launch_cwd,
             on_launch_new=ctx.on_launch_new,
             on_launch_existing=ctx.on_launch_existing,
+            on_container_gate=ctx.on_container_gate,
             on_probe_existing_sessions=ctx.on_probe_existing_sessions,
             on_probe_worktrees=ctx.on_probe_worktrees,
             on_create_worktree=ctx.on_create_worktree,

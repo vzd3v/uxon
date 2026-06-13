@@ -16,5 +16,17 @@
     "codex":  { "default_args": [] },
     "cursor": { "default_args": [] }
   },
-  "launch_user_by_caller": {}
+  "launch_user_by_caller": {},
+  "container": {
+    "enabled": false,
+    "name_template": "uxon-{user}-{project_slug}",
+    "exec_template": ["docker", "exec", "-w", "{dir}", "-i", "{name}"],
+    "is_running_cmd": ["docker", "top", "{name}"],
+    "exists_cmd": ["docker", "container", "inspect", "{name}"],
+    "on_missing": "off",
+    "on_missing_mode": "prompt",
+    "start_template": ["docker", "start", "{name}"],
+    "create_template": ["docker", "run", "-d", "--name", "{name}", "-w", "{dir}", "my-image"],
+    "path_map": { "/srv/projects": "/work" }
+  }
 }

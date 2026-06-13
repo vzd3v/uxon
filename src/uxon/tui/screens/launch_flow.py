@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from .confirm import ConfirmYesNo
 from .git_profile import GitProfileScreen
 from .launch_options import LaunchOptionsScreen
 from .new_project import NewProjectScreen
@@ -41,6 +42,70 @@ class LaunchFlow:
 
     def __init__(self, host: MainScreen) -> None:
         self.host = host
+
+    def commit_with_container_gate(self, target_dir: str, do_commit) -> None:
+        """Probe the container for ``target_dir``, then run ``do_commit``.
+
+        The single TUI seam for ``[container]`` readiness. ``do_commit`` is the
+        zero-arg closure that actually launches (each entry point's existing
+        ``run_off_loop(on_launch_*)`` block). Order, all off the event loop
+        (§ blocking invariant):
+
+        1. ``on_container_gate`` probes the container (as the launch user) and
+           returns a ``ContainerGate`` (or ``None`` → launch straight through:
+           disabled, or already running).
+        2. ``fail_message`` (state outside ``on_missing`` policy) → notify and
+           abort — uxon never exceeds the capability gate.
+        3. A needed start/create: when ``needs_prompt`` (``on_missing_mode ==
+           "prompt"``) push a ``ConfirmYesNo`` with the pre-built message and
+           run the prepare only on confirm; otherwise (``auto``) run it
+           straight. Then ``do_commit``.
+
+        The capability decision already happened inside the gate
+        (``decide_container_action`` never exceeds ``on_missing``), so the
+        prepare here can only do what policy permits — the prompt is consent,
+        not authorization.
+        """
+        host = self.host
+        gate_fn = host.cfg.on_container_gate
+
+        def run_prepare_then_commit(gate) -> None:
+            # The prepare shells out (start/create) — strictly off the loop.
+            host.app.run_off_loop(  # type: ignore[attr-defined]
+                gate.prepare,
+                on_success=lambda _: do_commit(),
+                on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                label="container_prepare",
+            )
+
+        def on_gate(gate) -> None:
+            if gate is None:
+                do_commit()
+                return
+            if gate.fail_message:
+                host.app.notify(gate.fail_message, severity="error", timeout=8)
+                return
+            if not gate.needs_prepare:
+                do_commit()
+                return
+            if not gate.needs_prompt:
+                run_prepare_then_commit(gate)
+                return
+
+            def after_confirm(ok: bool | None) -> None:
+                if ok:
+                    run_prepare_then_commit(gate)
+
+            host.app.push_screen(ConfirmYesNo(gate.message), after_confirm)
+
+        host.app.run_off_loop(  # type: ignore[attr-defined]
+            lambda: gate_fn(target_dir),
+            on_success=on_gate,
+            on_error=lambda exc: host.app.notify(
+                f"Container probe failed: {exc}", severity="error", timeout=6
+            ),
+            label="container_gate",
+        )
 
     def run_intent(self, intent: MainIntent | None) -> None:
         """Route a resolved :class:`MainIntent` to the right entry point.
@@ -230,12 +295,18 @@ class LaunchFlow:
             # Launches into an existing worktree — the planner shells out to
             # tmux (`collect_sessions`), so it runs off the loop (§ invariant).
             fn = host.cfg.on_launch_existing_worktree
-            host.app.run_off_loop(  # type: ignore[attr-defined]
-                lambda: fn(repo_root, branch, path, agent_id, mode_id),
-                on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
-                on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
-                label="launch_existing_worktree",
-            )
+
+            def do_commit() -> None:
+                host.app.run_off_loop(  # type: ignore[attr-defined]
+                    lambda: fn(repo_root, branch, path, agent_id, mode_id),
+                    on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                    on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                    label="launch_existing_worktree",
+                )
+
+            # The worktree dir already exists, so its container resolves up
+            # front — prompt affordance applies (unlike new-worktree create).
+            self.commit_with_container_gate(path, do_commit)
 
         def commit_new_worktree(agent_id: str, mode_id: str, repo_root: str, branch: str) -> None:
             # Creates a git worktree (`git worktree add`, possibly `git fetch`)
@@ -374,12 +445,18 @@ class LaunchFlow:
             # The planner probes tmux (`collect_sessions`) before building the
             # request — off the loop so the launch never freezes the UI.
             fn = host.cfg.on_launch_cwd
-            host.app.run_off_loop(  # type: ignore[attr-defined]
-                lambda: fn(agent_id, mode_id, target_dir),
-                on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
-                on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
-                label="launch_cwd",
-            )
+
+            def do_commit() -> None:
+                host.app.run_off_loop(  # type: ignore[attr-defined]
+                    lambda: fn(agent_id, mode_id, target_dir),
+                    on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                    on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                    label="launch_cwd",
+                )
+
+            # Container readiness (probe → prompt/auto start/create) precedes
+            # the launch; ``None`` target resolves to the started-in folder.
+            self.commit_with_container_gate(target_dir or host.cfg.cwd, do_commit)
 
         def on_probed(value: bool) -> None:
             # The cross-user / sudo probe may not have landed yet; when the
@@ -478,29 +555,35 @@ class LaunchFlow:
             if not name:
                 return
 
-            target_dir = os.path.join(host.cfg.new_project_root, name)
+            project_dir = os.path.join(host.cfg.new_project_root, name)
 
             def commit_primary(agent_id: str, mode_id: str, target_dir: str | None = None) -> None:
                 # ``target_dir`` (the primary ``repo_root`` from the WORKSPACE
                 # choice) is accepted for a uniform ``commit_primary`` signature
                 # but intentionally unused here: a named project launches by
                 # name, not path, so the primary tree is already its
-                # ``new_project_root/<name>`` root. The named-project-is-a-linked-
-                # worktree case is out of scope (the backlog item is cwd-only).
-                # The planner probes tmux before building the request —
-                # off the loop (§ invariant).
+                # ``new_project_root/<name>`` root (``project_dir``). The
+                # named-project-is-a-linked-worktree case is out of scope (the
+                # backlog item is cwd-only). The planner probes tmux before
+                # building the request — off the loop (§ invariant).
                 fn = host.cfg.on_launch_existing
-                host.app.run_off_loop(  # type: ignore[attr-defined]
-                    lambda: fn(name, agent_id, mode_id),
-                    on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
-                    on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
-                    label="launch_existing",
-                )
+
+                def do_commit() -> None:
+                    host.app.run_off_loop(  # type: ignore[attr-defined]
+                        lambda: fn(name, agent_id, mode_id),
+                        on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
+                        on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                        label="launch_existing",
+                    )
+
+                # The named project already exists on disk → container resolves
+                # up front → prompt affordance applies.
+                self.commit_with_container_gate(project_dir, do_commit)
 
             # Same worktree-aware flow as launch-cwd: a git project shows the
             # WORKSPACE column, a non-git one degrades to agent/mode only (§3).
             self.begin_launch_in_folder(
-                target_dir=target_dir,
+                target_dir=project_dir,
                 target_label=name,
                 commit_primary=commit_primary,
             )

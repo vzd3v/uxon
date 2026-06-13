@@ -69,6 +69,71 @@ Per-agent permission-mode flags are fixed by the agent binary and
 not configurable here — see [`reference/cli.md`](cli.md) under
 `uxon run`.
 
+## `[container]` table
+
+**Off by default.** When enabled, uxon wraps the agent command in an
+operator-supplied runtime exec prefix so the agent process runs inside
+a container (`docker` / `podman` / `nerdctl` / …). uxon models **no**
+runtime semantics — every command below is an argv **list** you supply
+verbatim, never a shell string. The argv-list shape is the security
+invariant: `"{name}"` is one token, so a hostile container name can
+never inject extra arguments.
+
+Every container command (probes, start, create) runs **as the launch
+user** — the same identity the agent execs under — and the start/create
+run in the **host** project directory. For rootless docker/podman the
+daemon is per-user, so this keeps the probe and the agent on the same
+daemon and a compose file resolves where it lives on the host.
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `container.enabled` | bool | `false` | Master switch. Default (or absent) leaves the launch argv byte-identical to a non-container launch. |
+| `container.exec_template` | array | `[]` | Argv prefix prepended to the agent command when enabled. Placeholders: `{name}` (resolved container name), `{dir}` (container-side working directory). Required when enabled. |
+| `container.name_template` | string | `""` | Template for the container name. Placeholders: `{user}`, `{project_slug}`, `{dir}`. Required when enabled unless a project `.uxon.toml` supplies `container.name`. |
+| `container.name` | string | `""` | Explicit container name; overrides `name_template`. Settable from a project `.uxon.toml` (see Layers). |
+| `container.path_map` | table | `{}` | Maps a host directory prefix to its container-side path; longest matching host prefix wins, no match → host path verbatim. Settable from a project `.uxon.toml`. |
+| `container.is_running_cmd` | array | `[]` | Probe argv; **exit 0 ⇒ the container is RUNNING** (exec directly). Must distinguish running from merely existing: `docker inspect` exits 0 for a stopped container too, so use `docker top {name}` (non-zero unless running). Placeholders: `{name}`, `{dir}`. |
+| `container.exists_cmd` | array | `[]` | Probe argv (run only when not running); exit 0 ⇒ the container exists but is stopped (needs a start), non-zero ⇒ absent (needs a create). e.g. `docker container inspect {name}`. |
+| `container.on_missing` | `"off"` / `"start"` / `"create"` | `"off"` | Capability gate when the container is not running. `off` execs only (a stopped/absent container fails with an actionable message); `start` may also start a stopped container; `create` may also create an absent one. |
+| `container.on_missing_mode` | `"prompt"` / `"auto"` | `"prompt"` | How a permitted start/create is triggered. `auto` runs the template without asking; `prompt` shows a TUI confirm before running it. The CLI is non-interactive, so it always acts auto-if-permitted. |
+| `container.start_template` | array | `[]` | Argv that starts a stopped container. Required when `on_missing` is `start` or `create`. |
+| `container.create_template` | array | `[]` | Argv that creates an absent container. Required when `on_missing` is `create`. |
+
+The container is resolved deterministically per **(launch user,
+project directory)** — the same container is reused across sessions,
+never one per session. uxon **never** stops or removes a container; it
+only execs, and (when `on_missing` permits) starts or creates one.
+
+**Not-ready flow.** uxon runs `is_running_cmd`; if it isn't running it
+runs `exists_cmd` to tell *stopped* from *absent*, then applies
+`on_missing`. Within the TUI, `on_missing_mode = "prompt"` shows a
+confirm ("Container `<name>` is stopped — start and launch?") before any
+start/create; `auto` runs it straight. One exception: the
+**new-project** and **new-worktree** launches create the project
+directory as part of the launch, so the container can only be readied
+*after* that — those two paths use auto-if-permitted (no prompt) even in
+the TUI.
+
+**Trust boundary.** From an untrusted project `.uxon.toml`, only
+`container.name` and `container.path_map` are honoured. Every executed
+or policy key (`exec_template`, `start_template`, `create_template`,
+`on_missing`, `name_template`, …) is operator-only and is dropped from
+the project layer. The resolved name is validated after expansion
+(`[A-Za-z0-9][A-Za-z0-9_.-]*`, ≤128 chars, no leading `-`/`.`/`_`);
+`path_map` keys/values and the post-map `{dir}` must be absolute,
+normalized, and `..`-free.
+
+**File-only.** The nested `[container]` structures (argv-list
+templates, `[container.path_map]`) are edited in `config.toml`
+directly — they are not exposed on the TUI ⚙ Settings screen.
+
+**Kill caveat.** `tmux kill-session` reaps uxon's client-side exec
+process, but whether the in-container agent stops on disconnect is
+runtime-dependent (podman in particular may orphan it). When
+`[container]` is enabled, every surface that reports a kill appends a
+one-line reminder to confirm with your runtime and stop the container
+if it is still running.
+
 ## `[tui.table]` table
 
 | Key | Type | Default | Purpose |
@@ -220,6 +285,11 @@ python3 install/render_uxon_config.py \
 JSON-to-TOML flow — they reference `creds_user` and `token_file`
 that infra shouldn't hard-code across hosts. Hand-edit them in
 `config.toml`.
+
+A `"container"` object in the JSON payload renders to the
+`[container]` TOML block (argv-list keys become TOML arrays,
+`path_map` becomes a `[container.path_map]` table); see the example
+payload for the disabled-by-default shape.
 
 For the multi-host operating model see
 [`explain/multi-host-philosophy.md`](../explain/multi-host-philosophy.md).

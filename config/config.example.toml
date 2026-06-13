@@ -296,3 +296,57 @@ default_args = []
 # [audit]
 # enabled         = true
 # syslog_facility = "user"
+
+
+# ─── Container-agnostic launch ────────────────────────────────────
+# docs/reference/configuration.md ([container])
+#
+# OFF BY DEFAULT. When enabled, uxon wraps the agent command in your
+# runtime's exec prefix so the agent process runs inside a container
+# (docker / podman / nerdctl / …). uxon models NO runtime semantics:
+# every command below is an argv LIST you supply verbatim — never a
+# shell string. ``{name}`` is the resolved container name; ``{dir}``
+# is the container-side working directory (after ``path_map``);
+# ``name_template`` also accepts ``{user}`` and ``{project_slug}``.
+# Every command runs AS THE LAUNCH USER — for rootless docker/podman
+# the probe and the agent then hit the same per-user daemon.
+#
+# The container is chosen deterministically per (launch user, project
+# directory) — the SAME container is reused across sessions, never one
+# per session. A project ``.uxon.toml`` may override only ``name`` and
+# ``path_map`` (data); every key below is operator-only.
+#
+# ``on_missing`` gates what uxon may do when the container is not
+# running: ``off`` (default) execs only — a stopped/absent container
+# fails with an actionable message; ``start`` also starts a stopped
+# one; ``create`` also creates an absent one. uxon NEVER stops or
+# removes a container. ``on_missing_mode`` is ``prompt`` (the TUI shows
+# a confirm before any start/create) or ``auto`` (act without asking,
+# when permitted). The CLI is non-interactive and always acts
+# auto-if-permitted.
+#
+# Probe semantics matter: ``is_running_cmd`` must exit 0 ONLY when the
+# container is RUNNING. ``docker inspect`` exits 0 for a STOPPED
+# container too, so use ``docker top`` (exits non-zero unless running).
+# ``exists_cmd`` exits 0 when the container exists (running or stopped).
+#
+# Heads-up: ``tmux kill-session`` reaps uxon's client-side exec
+# process, but whether the in-container agent stops on disconnect is
+# runtime-dependent — confirm with your runtime if needed.
+#
+# [container]
+# enabled         = true
+# exec_template   = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
+# name_template   = "uxon-{user}-{project_slug}"
+# is_running_cmd  = ["docker", "top", "{name}"]
+# exists_cmd      = ["docker", "container", "inspect", "{name}"]
+# on_missing      = "off"          # off | start | create
+# on_missing_mode = "prompt"       # prompt | auto
+# start_template  = ["docker", "start", "{name}"]
+# create_template = ["docker", "run", "-d", "--name", "{name}", "-w", "{dir}", "my-image"]
+#
+# Translate the host working directory to a container path (longest
+# matching host prefix wins; no match → host path verbatim):
+#
+# [container.path_map]
+# "/srv/projects" = "/work"

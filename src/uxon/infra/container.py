@@ -1,0 +1,207 @@
+# SPDX-License-Identifier: MIT
+"""Container probe / start / create shell-outs (the impure half).
+
+The pure schema, name/path resolution, and the policy decision live in
+:mod:`uxon.domain.container` and the resolution helpers in
+:mod:`uxon.infra.tmux`. This module only shells out — the two exit-code
+probes (``is_running_cmd`` / ``exists_cmd``) and the ``start``/``create``
+templates — each under its **own bounded timeout** so a hung
+``docker inspect`` against a wedged daemon can never block a uxon launch.
+
+This timeout is deliberately **separate from** the 0.5 s passwordless-sudo
+detector (``detect_passwordless_sudo``) — a container daemon stall and a
+sudo grant are unrelated, and folding the two would either make the sudo
+probe slow or the container probe too tight.
+
+Every shell-out runs **as the launch user** — the same identity the agent
+execs under at ``_build_tmux_launch_request`` (wrapped in
+``command_prefix_for_user``). This matters for rootless docker/podman,
+where the daemon is per-user: probing as the privileged uxon process while
+the agent execs in the launch user's daemon would mismatch (probe one
+daemon, exec another) and a ``create``/``start`` could hit a rootful
+daemon, defeating the rootless sandbox. Probes use the non-interactive
+prefix (``sudo -n`` — background work, no TTY); ``start``/``create`` use
+the interactive prefix (launch time, login env) and run in the HOST
+project directory so a compose file resolves.
+
+Under the TUI these calls MUST run off the event loop (``app.run_off_loop``)
+per the no-blocking hard rule — the orchestrator here only shells out, so
+the caller owns the thread.
+"""
+
+from __future__ import annotations
+
+import shlex
+import subprocess
+from dataclasses import dataclass
+
+from uxon.domain.config import Config
+from uxon.domain.container import Action, decide_container_action, render_template
+from uxon.errors import fail
+from uxon.infra import events
+from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
+
+# Bounded timeout (seconds) for every container shell-out. A daemon that
+# can't answer ``inspect`` in this window is treated as a hard error rather
+# than blocking the launch. Not tunable via config yet (one knob, sane
+# default) — separate from the sudo detector's 0.5 s by design.
+CONTAINER_CMD_TIMEOUT_SEC = 10.0
+
+
+@dataclass(frozen=True)
+class ContainerPlan:
+    """The resolved container state + what uxon must do before exec.
+
+    ``action`` is the policy verdict (``exec`` / ``start`` / ``create`` /
+    ``fail``). ``prepare_cmd`` is the rendered ``start``/``create`` argv to
+    run before launch (empty for ``exec``/``fail``). ``message`` is a
+    user-facing, internals-free description for the affordance/error.
+    """
+
+    name: str
+    action: Action
+    reason: str
+    prepare_cmd: tuple[str, ...]
+    message: str
+
+
+def _as_user_in_dir(prefix: list[str], cmd: list[str], host_dir: str | None) -> list[str]:
+    """Prepend the as-user ``prefix`` to ``cmd``, optionally cd'd to ``host_dir``.
+
+    The launch user's prefix is ``sudo -iu`` (login shell), which resets cwd
+    to the target's ``$HOME`` — so a plain ``subprocess(cwd=…)`` would be
+    overridden cross-user. Mirror the git helpers' ``sh -c`` wrapping to cd
+    into the HOST project dir first (``exec "$@"`` keeps the operator argv a
+    list of tokens — never re-parsed by the shell, preserving the argv-list
+    security invariant). ``host_dir is None`` (probes) skips the cd.
+    """
+    if host_dir is None:
+        return prefix + cmd
+    script = f'cd {shlex.quote(host_dir)} && exec "$@"'
+    return prefix + ["sh", "-c", script, "uxon-container", *cmd]
+
+
+def _probe_exit_ok(cmd: list[str], launch_user: str) -> bool:
+    """Run an exit-code probe as ``launch_user``; True iff it exits 0 in time.
+
+    Runs under the non-interactive (``sudo -n``) prefix so a missing NOPASSWD
+    grant fails fast rather than blocking on a hidden prompt (no TTY here). A
+    timeout or an unusable runtime binary is a hard ``fail`` (no traceback) —
+    we cannot tell ``not running`` from ``daemon wedged``, and silently
+    treating a wedged daemon as ``absent`` would mislead the policy.
+    """
+    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+    try:
+        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        fail(
+            f"container runtime did not respond within {CONTAINER_CMD_TIMEOUT_SEC:.0f}s "
+            f"({cmd[0]}); is the daemon reachable?"
+        )
+    except OSError:
+        # FileNotFoundError (no binary) or PermissionError (present but not
+        # executable) — both mean the runtime isn't usable here.
+        fail(f"container runtime {cmd[0]!r} not found or not executable for the launch user")
+    return cp.returncode == 0
+
+
+def _run_prepare(cmd: list[str], host_dir: str, launch_user: str) -> None:
+    """Run a ``start``/``create`` template as ``launch_user`` in the HOST dir.
+
+    ``create_template`` (e.g. ``docker compose up -d``) must run in the HOST
+    project directory — that is where the compose file lives; the container
+    path from ``path_map`` does not exist on the host. The ``{dir}`` token
+    *inside* the rendered argv stays container-side; only the process cwd is
+    the host dir. Uses the interactive (``sudo -i``) prefix so the runtime
+    sees the launch user's login env. Failure is a hard ``fail`` carrying the
+    runtime's stderr (operator-supplied command output — no uxon internals).
+    """
+    full = _as_user_in_dir(command_prefix_for_user(launch_user), cmd, host_dir)
+    try:
+        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        fail(f"container {cmd[0]} did not complete within {CONTAINER_CMD_TIMEOUT_SEC:.0f}s")
+    except OSError:
+        fail(f"container runtime {cmd[0]!r} not found or not executable for the launch user")
+    if cp.returncode != 0:
+        detail = (cp.stderr or cp.stdout or "").strip()
+        fail(detail or f"container command failed: {cmd[0]}")
+
+
+def plan_container_launch(cfg: Config, target_dir: str, launch_user: str) -> ContainerPlan:
+    """Probe the container and decide the not-ready action (no side effects).
+
+    Resolves + validates the name ONCE (reused for probe + start/create +
+    exec, so it can't drift mid-sequence — the probe is advisory, never
+    atomic with exec). Runs ``is_running_cmd`` then, if not running,
+    ``exists_cmd``; feeds the results to the pure ``decide_container_action``
+    gated by ``on_missing``. Returns the verdict; the caller runs
+    ``prepare_cmd`` (auto/prompt-confirmed) before launch.
+    """
+    from uxon.infra.tmux import resolve_container
+
+    name, dir_token = resolve_container(cfg, target_dir, launch_user)
+    c = cfg.container
+
+    def _render(template: tuple[str, ...], what: str) -> list[str]:
+        return render_template(template, name=name, dir_token=dir_token, what=what)
+
+    running = (
+        _probe_exit_ok(_render(c.is_running_cmd, "is_running_cmd"), launch_user)
+        if c.is_running_cmd
+        else False
+    )
+    if running:
+        exists = True
+    elif c.exists_cmd:
+        exists = _probe_exit_ok(_render(c.exists_cmd, "exists_cmd"), launch_user)
+    else:
+        exists = False
+
+    action, reason = decide_container_action(
+        running=running, exists=exists, on_missing=c.on_missing
+    )
+    events.debug(
+        "container", reason="probe", name=name, running=running, exists=exists, action=action
+    )
+
+    prepare: tuple[str, ...] = ()
+    if action == "start":
+        prepare = tuple(_render(c.start_template, "start_template"))
+        message = f"Container {name!r} is stopped — start and launch?"
+    elif action == "create":
+        prepare = tuple(_render(c.create_template, "create_template"))
+        message = f"Container {name!r} does not exist — create and launch?"
+    elif action == "fail":
+        if reason == "stopped":
+            message = (
+                f"Container {name!r} is stopped and on_missing = {c.on_missing!r} "
+                "does not permit starting it"
+            )
+        else:
+            message = (
+                f"Container {name!r} does not exist and on_missing = {c.on_missing!r} "
+                "does not permit creating it"
+            )
+    else:  # exec
+        message = f"Container {name!r} is running"
+
+    return ContainerPlan(
+        name=name, action=action, reason=reason, prepare_cmd=prepare, message=message
+    )
+
+
+def run_prepare(plan: ContainerPlan, target_dir: str, launch_user: str) -> None:
+    """Execute a plan's ``start``/``create`` command (after the policy/prompt).
+
+    No-op for ``exec``. ``fail`` raises with the plan's message. uxon NEVER
+    tears down a user's container — there is no stop/rm path here. ``target_dir``
+    is the HOST project dir; the prepare runs there as ``launch_user``.
+    """
+    if plan.action == "exec":
+        return
+    if plan.action == "fail":
+        fail(plan.message)
+    # cwd is the HOST project dir (where a compose file lives); the rendered
+    # argv already carries the container-side ``{dir}`` token where needed.
+    _run_prepare(list(plan.prepare_cmd), target_dir, launch_user)

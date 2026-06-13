@@ -16,6 +16,22 @@ from uxon.errors import eprint, fail
 from uxon.infra import identity, process, sessions_probe, tmux
 
 
+def _print_killed(name: str, cfg: Config) -> None:
+    """Print the kill-success line plus the container caveat when enabled.
+
+    Centralizes the ``[container].enabled`` reminder (Security MEDIUM-2) so a
+    killed tmux session whose agent ran in a long-lived container doesn't read
+    as fully contained. The caveat carries zero internals (``<runtime>`` is a
+    config value).
+    """
+    from uxon.domain.container import kill_caveat
+
+    print(f"killed: {name}")
+    caveat = kill_caveat(cfg.container)
+    if caveat is not None:
+        print(f"note: {caveat}")
+
+
 def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
     """Common confirmation gate for cross-user / cross-host kills.
 
@@ -327,7 +343,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 },
             )
         else:
-            print(f"killed: {target.name}")
+            _print_killed(target.name, cfg)
         return 0
 
     # Self-only path: unchanged from the pre-3.4.0 behaviour.
@@ -395,7 +411,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             },
         )
     else:
-        print(f"killed: {target.name}")
+        _print_killed(target.name, cfg)
     return 0
 
 
@@ -451,6 +467,16 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         if not args.json_output:
             print(f"killed: {s.name}" if ok else f"failed: {s.name}")
         results.append({"name": s.name, "action": "killed" if ok else "failed"})
+    if not args.json_output and not args.dry_run:
+        # Container caveat (Security MEDIUM-2): killing the tmux sessions does
+        # not guarantee the in-container agents died. Emit once for the bulk
+        # operation — this is exactly where an operator believes a fleet of
+        # yolo agents is dead.
+        from uxon.domain.container import kill_caveat
+
+        caveat = kill_caveat(cfg.container)
+        if caveat is not None and any(r["action"] == "killed" for r in results):
+            print(f"note: {caveat}")
     if args.json_output:
         listing_app._emit_json(
             "kill-all",

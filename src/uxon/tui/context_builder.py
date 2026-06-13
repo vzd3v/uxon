@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from uxon.domain.config import Config
+from uxon.domain.container import kill_caveat as container_kill_caveat
 from uxon.domain.format import compact_time, fmt_epoch, format_cpu_pct, format_rss_kib
 from uxon.domain.session import SessionInfo, to_tui_session
 from uxon.infra import (
@@ -205,6 +206,7 @@ def build_tui_context(
     on_launch_cwd = _wrap_tui_callback(bridge.on_launch_cwd, _CbErr)
     on_launch_new = _wrap_tui_callback(bridge.on_launch_new, _CbErr)
     on_launch_existing = _wrap_tui_callback(bridge.on_launch_existing, _CbErr)
+    on_container_gate = _wrap_tui_callback(bridge.on_container_gate, _CbErr)
     on_probe_existing_sessions = _wrap_tui_callback(bridge.on_probe_existing_sessions, _CbErr)
     on_probe_worktrees = _wrap_tui_callback(bridge.on_probe_worktrees, _CbErr)
     on_create_worktree = _wrap_tui_callback(bridge.on_create_worktree, _CbErr)
@@ -424,6 +426,7 @@ def build_tui_context(
         ssh_multiplex=cfg.ssh_multiplex,
         ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         fetch_concurrency=cfg.fetch_concurrency,
+        container_kill_caveat=container_kill_caveat(cfg.container),
         cwd_writable=cwd_writable,
         current_user=launch_user,
         sudo_caps=sudo_caps,
@@ -447,6 +450,7 @@ def build_tui_context(
         on_launch_cwd=on_launch_cwd,
         on_launch_new=on_launch_new,
         on_launch_existing=on_launch_existing,
+        on_container_gate=on_container_gate,
         on_probe_existing_sessions=on_probe_existing_sessions,
         on_probe_worktrees=on_probe_worktrees,
         on_create_worktree=on_create_worktree,

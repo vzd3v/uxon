@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import os
 import shlex
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import is_under_allowed_roots
@@ -86,6 +88,105 @@ def is_worktree_target_allowed(cfg: Config, launch_user: str, worktree_path: str
     if not identity.probe_cwd_writable(launch_user, probe_dir):
         return False
     return is_under_allowed_roots(cfg, worktree_path)
+
+
+def plan_container(cfg: Config, target_dir: str, launch_user: str):
+    """Probe the container and return the not-ready plan (no side effects).
+
+    Returns ``None`` when ``[container]`` is disabled. Otherwise returns a
+    ``ContainerPlan`` whose ``action`` is the capability-gated verdict
+    (``exec`` / ``start`` / ``create`` / ``fail``). The probe shells out as
+    the launch user under a bounded timeout, so the caller MUST run this off
+    the event loop in the TUI. The TUI inspects the plan to decide whether to
+    prompt before running the prepare; the CLI runs it auto-if-permitted.
+    """
+    if not cfg.container.enabled:
+        return None
+    from uxon.infra import container as container_infra
+
+    return container_infra.plan_container_launch(cfg, target_dir, launch_user)
+
+
+def ensure_container_ready(cfg: Config, target_dir: str, launch_user: str) -> None:
+    """Probe + (auto) start/create the project's container before launch.
+
+    No-op when ``[container]`` is disabled. Headless (CLI) policy: a missing
+    capability (``on_missing`` doesn't permit the needed start/create) errors
+    with an actionable message; within capability, the start/create runs
+    automatically — there is no interactive affordance off the TUI, so
+    ``prompt`` degrades to auto-if-permitted (B.3). The probe + start/create
+    shell out as the launch user under their own bounded timeout (separate
+    from the sudo detector). uxon NEVER tears down a user's container.
+
+    The TUI does NOT call this — it splits :func:`plan_container` (off-loop
+    probe) from the prepare so it can show a confirm affordance when
+    ``on_missing_mode == "prompt"`` before any side effect.
+    """
+    from uxon.infra import container as container_infra
+
+    plan = plan_container(cfg, target_dir, launch_user)
+    if plan is None:
+        return
+    # ``run_prepare`` is a no-op for ``exec``, ``fail``s for an out-of-policy
+    # state, and runs the start/create template otherwise.
+    container_infra.run_prepare(plan, target_dir, launch_user)
+
+
+@dataclass(frozen=True)
+class ContainerGate:
+    """TUI-facing container decision (the bridge hands this to ``LaunchFlow``).
+
+    Keeps the infra ``ContainerPlan`` opaque to the TUI screen: it reads only
+    these three booleans + ``message``. ``needs_prepare`` is true when a
+    start/create is required before launch; ``needs_prompt`` is true only when
+    that prepare must be confirmed (``on_missing_mode == "prompt"``);
+    ``fail_message`` is non-empty when the state is out of policy (the launch
+    must abort with that message). ``prepare`` runs the side effect.
+    """
+
+    needs_prepare: bool
+    needs_prompt: bool
+    message: str
+    fail_message: str
+    prepare: Callable[[], None]
+
+
+def decide_container_gate(cfg: Config, target_dir: str, launch_user: str) -> ContainerGate | None:
+    """Probe the container and return the TUI gate (no side effects yet).
+
+    ``None`` when ``[container]`` is disabled or the container is already
+    running (``exec``) — the TUI launches straight through. Otherwise the
+    caller inspects the flags: ``fail_message`` → abort; else if
+    ``needs_prepare`` run ``prepare`` (gated by ``needs_prompt``) before the
+    launch. The capability gate is already applied inside ``plan_container``
+    (``decide_container_action`` never exceeds ``on_missing``), so ``prepare``
+    can never start/create beyond policy. The probe runs off the event loop in
+    the caller's worker.
+    """
+    plan = plan_container(cfg, target_dir, launch_user)
+    if plan is None or plan.action == "exec":
+        return None
+    if plan.action == "fail":
+        return ContainerGate(
+            needs_prepare=False,
+            needs_prompt=False,
+            message=plan.message,
+            fail_message=plan.message,
+            prepare=lambda: None,
+        )
+
+    def _prepare() -> None:
+        from uxon.infra import container as container_infra
+
+        container_infra.run_prepare(plan, target_dir, launch_user)
+
+    return ContainerGate(
+        needs_prepare=True,
+        needs_prompt=cfg.container.on_missing_mode == "prompt",
+        message=plan.message,
+        fail_message="",
+        prepare=_prepare,
+    )
 
 
 def plan_worktree_launch(
@@ -223,6 +324,13 @@ def plan_worktree_launch(
         )
 
     git.copy_worktreeinclude_matches(repo_root, worktree_path, launch_user)
+
+    # Container readiness for the worktree tree. The worktree dir only exists
+    # after the add above, so its name/{dir} can't be resolved earlier — the
+    # TUI's pre-launch prompt affordance (which needs the path up front) does
+    # not cover this path, so it uses the headless auto-if-permitted policy.
+    # Follow-up: surface the prompt here once the path is threaded out.
+    ensure_container_ready(cfg, worktree_path, launch_user)
 
     _audit.audit(
         "worktree.create",

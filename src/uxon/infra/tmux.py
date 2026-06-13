@@ -18,8 +18,13 @@ from pathlib import Path
 from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import canonical
 from uxon.domain.config import Config
+from uxon.domain.container import (
+    apply_path_map,
+    render_exec_prefix,
+    resolve_container_name,
+)
 from uxon.domain.launch_request import LaunchRequest
-from uxon.domain.session import SessionInfo
+from uxon.domain.session import SessionInfo, slugify
 from uxon.errors import fail
 from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
 
@@ -162,6 +167,37 @@ def _tmux_set_chain(cfg: Config, *, server_running: bool = False) -> list[str]:
     return chain
 
 
+def resolve_container(cfg: Config, target_dir: str, launch_user: str) -> tuple[str, str]:
+    """Resolve the (validated name, container-side {dir}) for ``target_dir``.
+
+    Deterministic in (launch_user, target dir) — never per-session — so every
+    session for a user in one project execs into the same container. The
+    ``{project_slug}`` placeholder derives from the host directory basename
+    (attacker-controllable), so the resolved name is re-validated against the
+    safe charset (AC-B8). ``{dir}`` is the host path with ``path_map``
+    longest-prefix applied (container-side); no map → host path verbatim.
+    ``allowed_roots`` and the writable-probe keep running on the HOST path.
+    """
+    dir_token = apply_path_map(target_dir, cfg.container.path_map)
+    project_slug = slugify(os.path.basename(os.path.normpath(target_dir)))
+    name = resolve_container_name(
+        cfg.container, user=launch_user, project_slug=project_slug, dir_token=dir_token
+    )
+    return name, dir_token
+
+
+def container_exec_prefix(cfg: Config, target_dir: str, launch_user: str) -> list[str]:
+    """Return the rendered container exec prefix, or ``[]`` when disabled.
+
+    ``[]`` (disabled) keeps ``final_cmd`` byte-for-byte identical to the
+    pre-container build (AC-B6).
+    """
+    if not cfg.container.enabled:
+        return []
+    name, dir_token = resolve_container(cfg, target_dir, launch_user)
+    return render_exec_prefix(cfg.container.exec_template, name=name, dir_token=dir_token)
+
+
 def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
     """Return the LaunchRequest for attaching to an existing session.
 
@@ -247,8 +283,19 @@ def _build_tmux_launch_request(
     if mode_obj is None:
         valid = ", ".join(m.id for m in spec.permission_modes)
         fail(f"unknown --mode {mode_id!r} for agent {agent_id!r}; valid modes: {valid}")
+    # Container exec wrap (off by default): when enabled, the operator's
+    # opaque ``exec_template`` prefixes the agent command so it runs inside a
+    # container. ``[]`` otherwise → byte-for-byte the pre-container argv. The
+    # not-ready probe/start/create policy is orchestrated separately (the
+    # caller runs it off the loop before launch); this single exec-site only
+    # composes the resolved prefix into ``final_cmd``.
+    exec_prefix = container_exec_prefix(cfg, target_dir, launch_user)
     final_cmd = (
-        [spec.binary] + list(spec.default_args) + list(args.agent_args) + list(mode_obj.flags)
+        exec_prefix
+        + [spec.binary]
+        + list(spec.default_args)
+        + list(args.agent_args)
+        + list(mode_obj.flags)
     )
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
