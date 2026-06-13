@@ -35,19 +35,16 @@ flagged in each section.
 - With a TTY: opens the interactive TUI.
 - Without a TTY: prints usage and exits with code `2`.
 
-## `uxon run [-w <branch>] [--dry-run] [--agent <id>] [--auto] [--dsp] [agent-flags...]`
+## `uxon run [-w <branch>] [--dry-run] [--agent <id>] [--mode <id>] [agent-flags...]`
 
 Start an agent in the **current working directory**.
 
 | Flag | Effect |
 |------|--------|
-| `--agent claude\|codex\|cursor` | Pick the agent. Default: `agents.default` from config. |
-| `--auto` | Agent's "auto" permission mode. `claude` → `--permission-mode auto`. `codex` → `--full-auto`. **Not supported by `cursor`** (error). |
-| `--dsp` | Agent's "yolo" permission mode. Short for `--dangerously-skip-permissions` (both forms accepted). `claude` → `--dangerously-skip-permissions`. `codex` → `--dangerously-bypass-approvals-and-sandbox`. `cursor` → `--yolo`. Legacy aliases: `--dap`, `-dap`, `-dsp`. |
+| `--agent <id>` | Pick the agent. `<id>` is any agent in the resolved catalog (`claude` / `codex` / `cursor` ship by default; operators add more in config). Default: `agents.default` from config. |
+| `--mode <id>` | Select a permission mode from the chosen agent's catalog. Omitting it picks the agent's first (default) mode. An unknown id fails listing the agent's valid modes. See [`--mode`](#--mode-id). |
 | `-w <branch>` | Create a git worktree for `<branch>` in `cwd`'s repo and launch any agent there. Fails if the worktree already exists. See [Worktrees](#worktrees--w-branch). |
 | `--dry-run` | Print the `tmux` command instead of executing. |
-
-`--auto` and `--dsp` are mutually exclusive.
 
 When `allowed_roots` is non-empty (strict-whitelist mode), the
 current directory must sit under one of the listed paths. When
@@ -75,7 +72,7 @@ be a git repo) and launches in a worktree for `<branch>`. See
 | `--git-visibility private\|public` | Override the profile's visibility default for this one call. |
 | `--no-git` | Explicit "don't touch git" (same as omitting `--git-remote`). |
 
-All flags from `run` (`--agent`, `--auto`, `--dsp`, `--dry-run`,
+All flags from `run` (`--agent`, `--mode`, `--dry-run`,
 forwarded agent flags) also apply.
 
 ## `uxon list [--all-users] [--host <name> | --all-hosts] [--json]`
@@ -294,7 +291,7 @@ socket.
   [`worktree_base`](configuration.md#top-level-keys).
 - The session name includes both repo and branch slugs, so multiple
   branches of the same repo coexist cleanly.
-- Forwarded agent flags apply (e.g. `uxon run -w feat --agent codex --dsp`).
+- Forwarded agent flags apply (e.g. `uxon run -w feat --agent codex --mode yolo`).
 
 See the how-to: [Work in a git worktree](../guides/customise/worktrees.md)
 and [why uxon manages worktrees](../explain/worktrees.md).
@@ -313,13 +310,22 @@ the old value in `legacy_session_prefixes` so existing sessions
 remain reachable via `list` / `attach` / `kill`. `uxon` never
 *creates* sessions under a legacy prefix.
 
-## `--dsp` (dangerously-skip-permissions)
+## `--mode <id>`
 
-`--dsp` is the canonical short form for the agent's "skip
-permission prompts" mode. The TUI asks explicitly before every
-launch; the CLI requires the flag.
+`--mode <id>` selects a permission mode from the chosen agent's
+catalog. Mode ids are free-form and defined per agent in config;
+the shipped agents carry:
 
-Legacy aliases accepted for back-compat: `--dap`, `-dap`, `-dsp`.
+| Agent | Modes (first = default) | Effect of each |
+|-------|-------------------------|----------------|
+| `claude` | `normal`, `auto`, `yolo` | `auto` → `--permission-mode auto`; `yolo` → `--dangerously-skip-permissions`. |
+| `codex` | `normal`, `auto`, `yolo` | `auto` → `--full-auto`; `yolo` → `--dangerously-bypass-approvals-and-sandbox`. |
+| `cursor` | `normal`, `yolo` | `yolo` → `--yolo`. |
+
+Omitting `--mode` picks the agent's **first** catalogued mode (the
+default). An unknown id fails listing the agent's valid modes. The
+TUI offers the same modes as a list and asks explicitly before
+every launch.
 
 ## Environment variables
 

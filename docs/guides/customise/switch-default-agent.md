@@ -41,18 +41,13 @@ These flags are prepended to every agent invocation. CLI flags
 passed through `uxon run -- ...` are appended after these, so
 explicit invocations override config defaults.
 
-## Permission-mode flags
+## Permission mode
 
-`--auto` and `--dsp` (yolo) are universal `uxon` flags that
-translate to per-agent equivalents:
-
-| Agent | `--auto` | `--dsp` |
-|---|---|---|
-| `claude` | `--permission-mode auto` | `--dangerously-skip-permissions` |
-| `codex` | `--full-auto` | `--dangerously-bypass-approvals-and-sandbox` |
-| `cursor` | (not supported, error) | `--yolo` |
-
-`--auto` and `--dsp` are mutually exclusive.
+`--mode <id>` selects a permission mode from the chosen agent's
+catalog (e.g. `--mode auto`, `--mode yolo`). Omitting it picks the
+agent's first (default) mode; an unknown id fails listing the valid
+modes. The per-agent mode ids and the flags they translate to live
+in [`../../reference/cli.md`](../../reference/cli.md#--mode-id).
 
 ## Worktree mode
 
@@ -85,5 +80,5 @@ leaving the agent list silently empty.
 ## Reference
 
 - [`../../reference/configuration.md`](../../reference/configuration.md) — `[agents]` table.
-- [`../../reference/cli.md`](../../reference/cli.md) — `--agent`, `--auto`, `--dsp`.
+- [`../../reference/cli.md`](../../reference/cli.md) — `--agent`, `--mode`.
 - README's [Supported agents](../../../README.md#supported-agents) — install commands per agent.

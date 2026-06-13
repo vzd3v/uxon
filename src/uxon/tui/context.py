@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from uxon.domain.agents import AgentSpec
 from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
@@ -120,7 +121,7 @@ class TuiContext:
     # helpers and screens read it as data instead of the old module-level
     # literal. ``default_factory=dict`` keeps bare-``TuiContext`` test
     # fixtures constructing (the field sits in the defaulted block).
-    agents: dict[str, Any] = field(default_factory=dict)
+    agents: dict[str, AgentSpec] = field(default_factory=dict)
     launch_user: str = ""
     # Static seed for agent availability (agent_id → AgentAvailability,
     # status: "pending"|"ok"|"missing"|"timeout"). The live value lives

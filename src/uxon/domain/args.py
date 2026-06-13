@@ -15,8 +15,8 @@ from uxon.domain.host_report import HostReport
 
 USAGE = """Usage:
   uxon                              (interactive session picker if TTY, else this help)
-  uxon [run] [-w <branch>] [--dry-run] [--dsp] [claude-flags...]
-  uxon new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp]
+  uxon [run] [-w <branch>] [--dry-run] [--mode <id>] [claude-flags...]
+  uxon new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--mode <id>]
                  [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
                  [claude-flags...]
   uxon doctor
@@ -29,7 +29,7 @@ USAGE = """Usage:
   uxon -l [--all-users]
   uxon -a <id>
   uxon -k <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]
-  uxon -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--dsp]
+  uxon -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--mode <id>]
                 [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
                 [claude-flags...]
 
@@ -41,7 +41,8 @@ Notes:
   - Use '--attach-existing' or '--new-session' to bypass that prompt explicitly.
   - Non-interactive repeat handling can be pinned via UXON_REPEAT_NONINTERACTIVE_POLICY or config.
   - Unknown flags in run/new are passed to 'claude'.
-  - --dsp is short for --dangerously-skip-permissions (legacy synonyms: --dap, -dap, -dsp).
+  - --mode <id> selects a permission mode from the chosen agent's catalog
+    (unset picks the agent's first mode); an unknown id fails listing valid modes.
   - ID accepts: session name (with/without configured session_prefix), unique prefix, or active pane PID.
   - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
   - Session IDs are human-readable: <prefix><stem>@<agent>, <prefix><stem>@<agent>-2 (default prefix is 'uxon-').
@@ -65,7 +66,7 @@ class ParsedArgs:
     force: bool = False
     all_users: bool = False
     agent: str | None = None  # None = use cfg.default_agent
-    permission_mode: str = "normal"  # "normal" | "auto" | "yolo"
+    permission_mode: str | None = None  # None = use the agent's first (default) mode
     agent_args: list[str] = field(default_factory=list)
     git_remote: str | None = None  # profile name, or "default", or None
     no_git: bool = False  # explicit "do not touch git" (redundant if --git-remote absent)

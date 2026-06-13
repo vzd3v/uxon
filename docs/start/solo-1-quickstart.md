@@ -65,7 +65,7 @@ default = "claude"
 Pair your shell user (say `vz`) with a low-privilege agent
 account (`vz_agent`). The agent runs as `vz_agent` via
 `sudo -iu`; your shell user stays the trust boundary that holds
-your dotfiles, SSH keys, and credentials. A yolo-mode (`--dsp`)
+your dotfiles, SSH keys, and credentials. A yolo-mode (`--mode yolo`)
 run blasts `vz_agent`'s files, not yours.
 
 One-time host setup:

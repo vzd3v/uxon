@@ -10,7 +10,7 @@ sessions on it.
 - One sortable dashboard listing every agent session on the host
   (yours).
 - Optional confinement of agents to a low-privilege OS account
-  (`<user>_agent`), so a yolo-mode (`--dsp`) run can damage only
+  (`<user>_agent`), so a yolo-mode (`--mode yolo`) run can damage only
   what that account can write to — not your `$HOME`, SSH keys,
   or credentials.
 

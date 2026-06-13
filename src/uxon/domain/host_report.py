@@ -15,7 +15,7 @@ from dataclasses import dataclass
 class BinaryStatus:
     """Status of a single binary on the host."""
 
-    name: str  # "tmux" | "claude" | "codex" | "cursor-agent"
+    name: str  # "tmux" or an open-ended agent id from the merged catalog
     path: str | None  # resolved absolute path or None
     install_hint: str  # ready-to-paste shell command(s)
 

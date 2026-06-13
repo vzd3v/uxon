@@ -94,7 +94,7 @@ def plan_worktree_launch(
     repo_root: str,
     branch_name: str,
     agent_id: str,
-    mode_id: str,
+    mode_id: str | None,
     *,
     agent_args: list[str] | None = None,
     dry_run: bool = False,

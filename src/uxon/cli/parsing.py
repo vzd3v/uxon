@@ -83,15 +83,15 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
             if parsed.repeat_mode == "attach":
                 fail("cannot combine --new-session with --attach-existing")
             parsed.repeat_mode = "new"
-        elif token in ("--dsp", "--dangerously-skip-permissions", "--dap", "-dap", "-dsp"):
-            # --dsp is the canonical short form; --dap, -dap, -dsp are legacy synonyms
-            if parsed.permission_mode == "auto":
-                fail("--dsp and --auto are mutually exclusive")
-            parsed.permission_mode = "yolo"
-        elif token == "--auto":
-            if parsed.permission_mode == "yolo":
-                fail("--dsp and --auto are mutually exclusive")
-            parsed.permission_mode = "auto"
+        elif token == "--mode":
+            i += 1
+            if i >= len(argv):
+                fail("--mode requires an id")
+            # No catalog in scope at parse time — the id is validated against
+            # the chosen agent's modes in ``_build_tmux_launch_request`` (which
+            # has ``cfg``/``spec``), where an unknown id fails listing the
+            # agent's valid modes.
+            parsed.permission_mode = argv[i]
         elif token == "--agent":
             i += 1
             if i >= len(argv):

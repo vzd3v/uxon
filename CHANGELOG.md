@@ -6,6 +6,12 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- The agent catalog is now config-driven. The set of agents — their binaries, default args, install hints, and permission modes — can be customised per agent in `config.toml` via `[agents.<id>]` tables, and brand-new agents are supported (declare a `binary` and at least one `[[agents.<id>.mode]]`). The shipped `claude` / `codex` / `cursor` presets are unchanged when no override is given.
+- Permission modes are open-ended. Each agent declares its own ordered list of modes (first = default), and `uxon run --mode <id>` / `uxon new --mode <id>` selects one. Omitting `--mode` uses the agent's first mode; an unknown id fails listing the agent's valid modes.
+
 ## [3.6.0] — 2026-06-12
 
 ### Changed

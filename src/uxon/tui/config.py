@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from uxon.domain.agents import AgentSpec
     from uxon.domain.launch_request import LaunchRequest
     from uxon.infra.remote_hosts import RemoteHost
     from uxon.tui.refresh import SourceSpec
@@ -64,7 +65,7 @@ class TuiConfig:
     default_agent: str
     # Merged agent catalog (``cfg.agents``); the TUI mode helpers and the
     # launch/unavailable screens read it as data.
-    agents: dict[str, Any]
+    agents: dict[str, AgentSpec]
 
     # ── Cadence knobs ────────────────────────────────────────────────
     tui_refresh_interval_seconds: float

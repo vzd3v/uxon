@@ -297,9 +297,10 @@ def launch_mode_id(agents: Mapping[str, Any], agent_id: str, mode_index: int) ->
     modes = spec.permission_modes
     if 0 <= mode_index < len(modes):
         return modes[mode_index].id
-    # Out-of-range index falls back to "normal" (the shipped default mode).
-    # The catalog-aware first-mode flip is P2; behaviour is unchanged here.
-    return "normal"
+    if not modes:
+        return None
+    # Out-of-range index falls back to the agent's first (default) mode.
+    return modes[0].id
 
 
 def launch_commit_decision(

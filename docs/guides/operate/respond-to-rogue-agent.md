@@ -1,6 +1,6 @@
 # Respond to a rogue agent
 
-A `--dsp` ("yolo") session is destroying files, eating CPU, or
+A yolo-mode (`--mode yolo`) session is destroying files, eating CPU, or
 making API calls you can't afford. Stop it, preserve enough
 state to understand what happened, then revoke whatever it had
 access to. Order matters: stop fast, forensics second, recovery
@@ -192,14 +192,15 @@ Include:
 - the scrollback capture path;
 - which credentials were rotated;
 - which files were touched / restored;
-- whether the agent was running with `--dsp` (yolo).
+- whether the agent was running in yolo mode (`--mode yolo`).
 
-If the agent was running with `--dsp`, consider whether your
-team's policy on `--dsp` is right for the current threat shape —
+If the agent was running in yolo mode, consider whether your
+team's policy on yolo mode is right for the current threat shape —
 the per-launch confirmation is a UI gesture, not a host-wide
-deny. (Host-level `--dsp` deny isn't currently a `uxon` config
+deny. (Host-level yolo deny isn't currently a `uxon` config
 knob; if your team needs it, file a feature request and audit
-`flags`-contains-`--dsp` in the meantime.)
+the launched process for `--dangerously-skip-permissions` in the
+meantime.)
 
 ## Common mistakes
 

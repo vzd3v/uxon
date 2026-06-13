@@ -240,9 +240,13 @@ def _build_tmux_launch_request(
     if agent_id not in cfg.agents:
         fail(f"unknown agent id {agent_id!r}")
     spec = cfg.agents[agent_id]
-    mode_obj = permission_mode_for(spec, args.permission_mode)
+    # Open modes: an unset ``--mode`` resolves to the agent's first (default)
+    # mode; only an explicitly-requested unknown id reaches the fail path.
+    mode_id = args.permission_mode or spec.permission_modes[0].id
+    mode_obj = permission_mode_for(spec, mode_id)
     if mode_obj is None:
-        fail(f"{agent_id} has no '{args.permission_mode}' permission mode")
+        valid = ", ".join(m.id for m in spec.permission_modes)
+        fail(f"unknown --mode {mode_id!r} for agent {agent_id!r}; valid modes: {valid}")
     final_cmd = (
         [spec.binary] + list(spec.default_args) + list(args.agent_args) + list(mode_obj.flags)
     )

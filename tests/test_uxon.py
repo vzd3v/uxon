@@ -1675,16 +1675,23 @@ class UxonTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg(toml, tmpdir)
 
-    # ── Task 5: --agent / --auto / permission_mode ───────────────────
+    # ── Task 5: --agent / --mode / permission_mode ───────────────────
 
-    def test_parse_dsp_and_auto_mutually_exclusive(self) -> None:
-        with self.assertRaises(SystemExit):
-            parse_run_like(["--dsp", "--auto"], "run")
-        with self.assertRaises(SystemExit):
-            parse_run_like(["--auto", "--dsp"], "run")
+    def test_parse_mode_flag(self) -> None:
+        p = parse_run_like(["--mode", "yolo"], "run")
+        self.assertEqual(p.permission_mode, "yolo")
+
+    def test_parse_legacy_aliases_are_not_uxon_flags(self) -> None:
+        # The old shorthand (`--dsp`/`--auto`/…) was removed: uxon no
+        # longer interprets it as a mode. It now falls through to the
+        # forwarded agent args, leaving ``permission_mode`` unset.
+        for alias in ("--dsp", "--dap", "-dap", "-dsp", "--auto"):
+            p = parse_run_like([alias], "run")
+            self.assertIsNone(p.permission_mode)
+            self.assertEqual(p.agent_args, [alias])
 
     def test_parse_agent_flag(self) -> None:
-        p = parse_run_like(["--agent", "codex", "--dsp"], "run")
+        p = parse_run_like(["--agent", "codex", "--mode", "yolo"], "run")
         self.assertEqual(p.agent, "codex")
         self.assertEqual(p.permission_mode, "yolo")
 
@@ -1749,11 +1756,12 @@ class UxonTests(unittest.TestCase):
             )
         self.assertTrue(req.cmd)
 
-    def test_auto_with_cursor_default_fails_at_launch(self) -> None:
-        # Full-stack check: parser accepts --auto without knowing the resolved agent;
-        # launch builder must reject it when the resolved agent has no auto mode.
+    def test_mode_auto_with_cursor_default_fails_at_launch(self) -> None:
+        # Full-stack check: parser accepts --mode without knowing the resolved
+        # agent; the launch builder rejects an id the resolved agent lacks,
+        # listing the agent's valid modes.
         cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
-        parsed = parse_run_like(["--auto"], "run")
+        parsed = parse_run_like(["--mode", "auto"], "run")
         self.assertEqual(parsed.permission_mode, "auto")
         self.assertIsNone(parsed.agent)  # not explicitly set
         with self._stub_socket_path():

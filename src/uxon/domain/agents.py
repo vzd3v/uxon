@@ -57,7 +57,10 @@ DEFAULT_AGENT_CATALOG: dict[str, AgentSpec] = {
             PermissionMode("normal"),
             PermissionMode("auto", "auto", ("--permission-mode", "auto")),
             PermissionMode(
-                "yolo", "yolo (--dsp)", ("--dangerously-skip-permissions",), dangerous=True
+                "yolo",
+                "yolo (--dangerously-skip-permissions)",
+                ("--dangerously-skip-permissions",),
+                dangerous=True,
             ),
         ),
         install_hint="see https://docs.claude.com/claude-code",

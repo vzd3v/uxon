@@ -4,7 +4,7 @@
 # ── Recommended workflow ──────────────────────────────────────────
 # Pair each shell user with a low-privilege OS account that owns
 # the agent's runtime — e.g. `vz` (you) + `vz_agent`. The agent
-# runs as `<user>_agent` via `sudo -iu`. With `--dsp` ("yolo"), the
+# runs as `<user>_agent` via `sudo -iu`. With `--mode yolo`, the
 # blast radius of a runaway tool is `<user>_agent`'s sandbox, not
 # your home directory or your team's filesystem. In team setups
 # this also gives the operator supervision without impersonation —

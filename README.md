@@ -131,7 +131,7 @@ Full keybinding list:
 
 ## Supported agents
 
-| Agent id | Binary | `--auto` mode | `--dsp` (yolo) | Install |
+| Agent id | Binary | `--mode auto` | `--mode yolo` | Install |
 |----------|--------|---------------|----------------|---------|
 | `claude` | `claude` | `--permission-mode auto` | `--dangerously-skip-permissions` | [Anthropic docs](https://docs.claude.com/claude-code) |
 | `codex`  | `codex` | `--full-auto` | `--dangerously-bypass-approvals-and-sandbox` | `npm i -g @openai/codex` |
@@ -146,7 +146,7 @@ default = "claude"
 ```
 
 `-w <branch>` (worktree) works with any agent; uxon manages the worktree
-itself. `--auto` is unavailable for cursor.
+itself. `cursor` has no `auto` mode.
 
 `uxon doctor` probes each enabled agent and prints its path,
 version, and status. The TUI auto-detects newly-installed

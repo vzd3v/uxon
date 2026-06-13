@@ -42,7 +42,7 @@ peer's developers can tolerate a 5-minute drain.
 
 ### Step 2 — Drain the canary's live sessions (optional)
 
-Heavy `--dsp` runs can lose work on host restart if the agent
+Heavy yolo-mode (`--mode yolo`) runs can lose work on host restart if the agent
 binary upgrade pulls a different glibc-incompatible build. For
 production-critical sessions:
 

@@ -16,7 +16,7 @@ dotfiles, SSH keys, credentials.
 
 In both directions:
 
-- **Caller → agent.** A yolo run (`--dsp`) blasts only what
+- **Caller → agent.** A yolo run (`--mode yolo`) blasts only what
   `<user>_agent` can write to. The developer's `~/.ssh`,
   `~/.gnupg`, `~/.config/gh`, `~/.aws` are not in reach.
 - **Agent → caller.** `<user>_agent` is a separate OS user with
