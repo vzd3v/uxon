@@ -61,6 +61,10 @@ def _operator_container_table(rt: Runtime) -> dict[str, object]:
         "exec_template": [rt.binary, "exec", "-i", "-w", "{dir}", "{name}"],
         "is_running_cmd": [rt.binary, "top", "{name}"],
         "exists_cmd": [rt.binary, "container", "inspect", "{name}"],
+        # on_missing="create" still requires a start_template (a created
+        # container can later be stopped and need restarting), even though
+        # this run only ever takes the create path. Both delegate to compose.
+        "start_template": [rt.binary, "compose", "start"],
         "create_template": [rt.binary, "compose", "up", "-d"],
         "on_missing": "create",
         "on_missing_mode": "auto",

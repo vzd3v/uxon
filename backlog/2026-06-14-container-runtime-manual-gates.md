@@ -1,17 +1,20 @@
 where: tests/integration/container/
 
-why: Two container behaviours can only be confirmed against a real
-docker/podman daemon, which the development environment that landed the
-harness did not have reachable — so they remain unobserved here.
+why: Two container behaviours can only be confirmed against a per-user
+container daemon. The only runtime reachable where the harness landed was
+a rootful production daemon hosting unrelated live containers, which was
+deliberately not exercised; no rootless docker or podman was available. So
+both checks remain unobserved — deferred by decision, not by missing code.
 
-done when: the `pytest -m container` suite has been run once on a host
-with a working rootless docker AND once with podman, and both observed to
-pass (or a podman limitation documented with its mitigation).
+done when: the `pytest -m container` suite has been run on a box with a
+rootless docker daemon AND on one with podman (the recommended posture for
+this workflow — not a shared rootful production daemon), and both observed
+to pass (or a podman limitation documented with its mitigation).
 
 ## What is unobserved
 
 The harness under `tests/integration/container/` encodes both checks, but
-verifying them requires a reachable runtime:
+verifying them requires a reachable per-user runtime:
 
 1. **In-container exec.** Launching with `[container]` enabled runs the
    agent command *inside* the container — proven by the marker file the
@@ -24,7 +27,8 @@ verifying them requires a reachable runtime:
 
 ## Procedure (per runtime)
 
-On a host with a working rootless docker or podman daemon:
+On a host with a working rootless docker or podman daemon (a per-user
+daemon, not a shared rootful production one):
 
 ```
 pip install -e ".[dev]"
