@@ -56,7 +56,7 @@ pipelines or assertion-based health checks in CI.
 **Verify after onboarding a developer:**
 
 ```bash
-sudo -niu alice uxon doctor       # caller=alice, launch=alice_agent
+sudo -niu nadia uxon doctor       # caller=nadia, launch=nadia-agent
 ```
 
 **Spot-check the fleet from cron:**

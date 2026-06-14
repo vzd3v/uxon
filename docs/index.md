@@ -46,7 +46,7 @@ kinds of pages, four different purposes:
 - [SECURITY.md](../SECURITY.md) — threat model + disclosure
   policy. Read once if you operate a team host; it lays out the
   three honest caveats around `tmux` read-write attach,
-  SSH-agent forwarding, and secrets persisted to `<user>_agent`
+  SSH-agent forwarding, and secrets persisted to `<user>-agent`
   homes.
 - [CHANGELOG.md](../CHANGELOG.md) — what changed between releases.
 - [privacy.md](privacy.md) — what `uxon`'s audit channel records

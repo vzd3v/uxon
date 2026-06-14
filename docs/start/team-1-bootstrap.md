@@ -8,7 +8,7 @@ adding a developer afterwards is the
 ## What you'll learn
 
 - The recommended per-caller paired-account setup
-  (`alice` + `alice_agent`).
+  (`nadia` + `nadia-agent`).
 - Minimum sudoers grants for developers and for the lead.
 - How the TUI's superuser block (cross-user dashboard) appears
   once `session_users` and passwordless sudo align.
@@ -55,23 +55,23 @@ see [`guides/harden/lay-out-shared-projects.md`](../guides/harden/lay-out-shared
 For each developer (template):
 
 ```bash
-sudo useradd -m -s /bin/bash alice          # the developer
-sudo useradd -m -s /bin/bash alice_agent    # the paired agent account
+sudo useradd -m -s /bin/bash nadia          # the developer
+sudo useradd -m -s /bin/bash nadia-agent    # the paired agent account
 
-# alice -> alice_agent (the developer can sudo into their own agent):
-echo 'alice ALL=(alice_agent) NOPASSWD: ALL' \
-  | sudo tee /etc/sudoers.d/uxon-alice-agent
-sudo chmod 440 /etc/sudoers.d/uxon-alice-agent
+# nadia -> nadia-agent (the developer can sudo into their own agent):
+echo 'nadia ALL=(nadia-agent) NOPASSWD: ALL' \
+  | sudo tee /etc/sudoers.d/uxon-nadia-agent
+sudo chmod 440 /etc/sudoers.d/uxon-nadia-agent
 
-# alice_agent gets a writable subdir of the project root:
-sudo install -d -o alice_agent -g devs -m 2775 /srv/projects/alice
+# nadia-agent gets a writable subdir of the project root:
+sudo install -d -o nadia-agent -g devs -m 2775 /srv/projects/nadia
 ```
 
-The grant lets `alice` become **`alice_agent`**, not the other
-way round. `alice_agent` cannot impersonate `alice`.
+The grant lets `nadia` become **`nadia-agent`**, not the other
+way round. `nadia-agent` cannot impersonate `nadia`.
 
-Install the agent binary for each `<user>_agent` — typically by
-`sudo -iu alice_agent` and running the agent's own installer
+Install the agent binary for each `<user>-agent` — typically by
+`sudo -iu nadia-agent` and running the agent's own installer
 there. The TUI auto-detects newly-installed agents and offers
 one-keypress enable.
 
@@ -80,7 +80,7 @@ one-keypress enable.
 For the team lead (and any other supervisor account):
 
 ```bash
-echo 'lead ALL=(alice_agent,bob_agent,carol_agent) NOPASSWD: ALL' \
+echo 'lead ALL=(nadia-agent,liam-agent,ethan-agent) NOPASSWD: ALL' \
   | sudo tee /etc/sudoers.d/uxon-lead-supervisor
 sudo chmod 440 /etc/sudoers.d/uxon-lead-supervisor
 ```
@@ -93,7 +93,7 @@ become the developer. Detailed property and three honest caveats:
 If you want lead-as-root supervision (sees every reachable user
 in `session_users`), use the broader grant
 `lead ALL=(ALL) NOPASSWD: ALL` — but understand that this also
-lets the lead `sudo -iu alice` and become the developer
+lets the lead `sudo -iu nadia` and become the developer
 (weakening the supervision-without-impersonation property). In
 most teams the per-target grant is the right default.
 
@@ -101,16 +101,16 @@ most teams the per-target grant is the right default.
 
 ```toml
 default_launch_mode   = "fixed"
-runtime_user          = "team_agent"      # fallback for unmapped callers
-session_users         = ["alice_agent", "bob_agent", "carol_agent"]
+runtime_user          = "team-agent"      # fallback for unmapped callers
+session_users         = ["nadia-agent", "liam-agent", "ethan-agent"]
 enable_all_users_list = true
 allowed_roots         = ["/srv/projects"]
 new_project_root      = "/srv/projects"
 
 [launch_user_by_caller]
-alice = "alice_agent"
-bob   = "bob_agent"
-carol = "carol_agent"
+nadia = "nadia-agent"
+liam   = "liam-agent"
+ethan = "ethan-agent"
 
 [agents]
 enabled = ["claude"]
@@ -126,20 +126,20 @@ to launch for callers that aren't in `[launch_user_by_caller]`.
 As a developer:
 
 ```bash
-ssh alice@host
-uxon doctor                # caller=alice, launch=alice_agent
-uxon                       # TUI opens, shows alice's own sessions
+ssh nadia@host
+uxon doctor                # caller=nadia, launch=nadia-agent
+uxon                       # TUI opens, shows nadia's own sessions
 # Launch one to verify:
-uxon run                   # in some /srv/projects/alice/repo
+uxon run                   # in some /srv/projects/nadia/repo
 ```
 
 As the lead:
 
 ```bash
 ssh lead@host
-uxon doctor                # caller=lead, launch=lead (lead has no _agent)
+uxon doctor                # caller=lead, launch=lead (lead has no -agent)
 uxon                       # TUI shows superuser block; (3/3 reachable)
-# Press Enter on Alice's session row -> attaches via sudo -niu alice_agent.
+# Press Enter on Nadia's session row -> attaches via sudo -niu nadia-agent.
 ```
 
 If only some `session_users` are reachable, the section header
@@ -171,18 +171,18 @@ The walkthrough above is **mode (a)** — one paired account per
 developer. Two alternatives:
 
 **Mode (b) — shared low-priv account.** All agents run as
-`team_agent`, regardless of who logged in. Useful when agents
+`team-agent`, regardless of who logged in. Useful when agents
 need shared workspace / cache across developers.
 
 ```toml
 default_launch_mode = "fixed"
-runtime_user        = "team_agent"
-session_users       = ["team_agent"]
+runtime_user        = "team-agent"
+session_users       = ["team-agent"]
 allowed_roots       = ["/srv/projects"]
 new_project_root    = "/srv/projects"
 ```
 
-Plus passwordless `sudo -iu team_agent` for every caller. Note:
+Plus passwordless `sudo -iu team-agent` for every caller. Note:
 every developer's agent shares one `~/.claude/`, one
 `~/.gitconfig`, one session pool — a runaway agent affects
 everybody.
@@ -192,7 +192,7 @@ weakest sandbox. Each agent has the same trust as its caller.
 
 ```toml
 default_launch_mode   = "caller"
-session_users         = ["alice", "bob", "carol"]
+session_users         = ["nadia", "liam", "ethan"]
 enable_all_users_list = true
 ```
 

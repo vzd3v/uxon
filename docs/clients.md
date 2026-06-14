@@ -70,7 +70,7 @@ SSH-aware tool.
 ```
 Host dev-ai-1
     HostName    1.2.3.4
-    User        vasily
+    User        wes
     Port        22
     IdentityFile ~/.ssh/id_ed25519_sk
     # Multiplex repeat connections — saves handshake round trips
@@ -81,7 +81,7 @@ Host dev-ai-1
 
 Host dev-ai-2
     HostName    5.6.7.8
-    User        vasily
+    User        wes
     Port        22
     IdentityFile ~/.ssh/id_ed25519_sk
 ```

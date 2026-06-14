@@ -10,7 +10,7 @@ sessions on it.
 - One sortable dashboard listing every agent session on the host
   (yours).
 - Optional confinement of agents to a low-privilege OS account
-  (`<user>_agent`), so a yolo-mode (`--mode yolo`) run can damage only
+  (`<user>-agent`), so a yolo-mode (`--mode yolo`) run can damage only
   what that account can write to — not your `$HOME`, SSH keys,
   or credentials.
 
@@ -20,7 +20,7 @@ sessions on it.
    Per-user `uv tool install uxon` is fine for solo.
 2. **First session** — [`start/solo-1-quickstart.md`](../start/solo-1-quickstart.md)
    walks the simplest setup ("agent runs as you") in 10 minutes.
-3. **Recommended hardening** — set up the paired `<user>_agent`
+3. **Recommended hardening** — set up the paired `<user>-agent`
    account so yolo-mode is sandboxed; see
    [`start/solo-1-quickstart.md` § Recommended](../start/solo-1-quickstart.md#recommended-paired-account).
 

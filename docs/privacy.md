@@ -21,7 +21,7 @@ Every event carries:
 
 - Your shell username (`caller_user`) and UID (`caller_uid`).
 - The agent account that ran the gesture (`launch_user`,
-  e.g. `alice_agent` if you're `alice`).
+  e.g. `nadia-agent` if you're `nadia`).
 - A timestamp, the host's hostname, and the `uxon` version.
 - The subcommand (`run`, `attach`, `kill`, …) and a
   **sanitised** flag list — secret-shaped flags
@@ -80,7 +80,7 @@ For team setups, the audit channel exists for three reasons:
 3. **Attribution under supervision.** When the team lead can
    attach to your agent's session, the audit trail records
    that attach as the lead's gesture (`caller_user=lead`,
-   `target_user=alice_agent`) — not yours. You're never
+   `target_user=nadia-agent`) — not yours. You're never
    credited (or blamed) for the lead's actions.
 
 ## Disabling

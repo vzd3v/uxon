@@ -119,7 +119,7 @@ If `$TMUX` names the **same** socket as `uxon` for the launch user,
 
 **`--user <name>`** attaches to a session belonging to a different
 launch user on the same host. `<name>` is the OS account that owns
-the tmux socket (typically `<dev>_agent` in the recommended
+the tmux socket (typically `<dev>-agent` in the recommended
 paired-account setup). Requires per-target NOPASSWD
 (`sudo -niu <name>`) — the same gating the TUI applies to its
 superuser block. Probed once for the single target; an unreachable
@@ -153,7 +153,7 @@ session owned by the current launch user on the local box.
 
 **`--user <name>`** kills a session belonging to a different launch
 user on the same host. `<name>` is a **launch user** — the OS
-account that owns the tmux socket (typically `<dev>_agent` in the
+account that owns the tmux socket (typically `<dev>-agent` in the
 recommended paired-account setup), not the developer's shell user.
 The grant `<caller> ALL=(<name>) NOPASSWD: ALL` lets the caller
 sudo into `<name>`, but does not give them any access to the

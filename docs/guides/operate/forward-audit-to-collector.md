@@ -150,7 +150,7 @@ Once events are forwarded, the typical queries become:
 ```bash
 # Everything one operator did today across the fleet:
 journalctl --directory=/var/log/journal/remote/ \
-  SYSLOG_IDENTIFIER=uxon CALLER_USER=alice --since today
+  SYSLOG_IDENTIFIER=uxon CALLER_USER=nadia --since today
 
 # Cross-host correlation pair:
 journalctl --directory=/var/log/journal/remote/ \
@@ -178,7 +178,7 @@ LogQL examples (Loki / Grafana):
 {job="uxon"}
 
 # One operator's gestures across the fleet:
-{job="uxon"} | json | CALLER_USER="alice"
+{job="uxon"} | json | CALLER_USER="nadia"
 
 # Cross-host correlation pair:
 {job="uxon"} | json | CORRELATION_ID="8f3c2d4e-..."

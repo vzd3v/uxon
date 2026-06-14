@@ -9,7 +9,7 @@ third.
 ## Solo·1 without a paired account — short branch
 
 If you're solo and the agent runs as your own shell user (no
-`<user>_agent`), the OS-user containment isn't there. The
+`<user>-agent`), the OS-user containment isn't there. The
 recipe collapses to:
 
 1. `Ctrl-c` inside the agent's pane (or detach with `Ctrl-b d`
@@ -27,7 +27,7 @@ recipe collapses to:
    sourced from `.envrc`.
 
 The rest of this page assumes a team setup with paired
-accounts. After the next quiet moment, set up a `<user>_agent`
+accounts. After the next quiet moment, set up a `<user>-agent`
 — [`start/solo-1-quickstart.md`](../../start/solo-1-quickstart.md#recommended-paired-account)
 shows the 5-line one-time setup that prevents this branch from
 existing again.
@@ -45,7 +45,7 @@ existing again.
    another shell on the same host:
    ```bash
    # Find the agent's PID inside the pane:
-   sudo -niu <user>_agent tmux -S /tmp/uxon-<user>_agent.sock \
+   sudo -niu <user>-agent tmux -S /tmp/uxon-<user>-agent.sock \
         list-panes -t <session> -F '#{pane_pid}'
    # Suspend everything in that process tree:
    sudo kill -STOP -- -<pid>           # negative = process group
@@ -71,7 +71,7 @@ Before killing the suspended session, grab evidence:
 **Pane scrollback:**
 
 ```bash
-sudo -niu <user>_agent tmux -S /tmp/uxon-<user>_agent.sock \
+sudo -niu <user>-agent tmux -S /tmp/uxon-<user>-agent.sock \
      capture-pane -t <session> -pS -32768 \
   > /tmp/rogue-scrollback-$(date +%s).log
 ```
@@ -89,7 +89,7 @@ sudo lsof -p <pid> | head -50
 **Recent filesystem changes by the offending agent account:**
 
 ```bash
-sudo find / -newer /tmp/onset-marker -user <user>_agent 2>/dev/null \
+sudo find / -newer /tmp/onset-marker -user <user>-agent 2>/dev/null \
   | head -200
 ```
 
@@ -101,7 +101,7 @@ noticed; otherwise use a `find -mtime -1` filter.)
 ```bash
 journalctl SYSLOG_IDENTIFIER=uxon \
   --since "1 hour ago" \
-  | grep -E "(session=$SESSION|launch_user=${USER}_agent)"
+  | grep -E "(session=$SESSION|launch_user=${USER}-agent)"
 ```
 
 If you have central forwarding (see
@@ -115,7 +115,7 @@ Once you have what you need:
 
 ```bash
 sudo kill -CONT -- -<pid>            # un-suspend so kill is graceful
-sudo -niu <user>_agent uxon kill <session> --force
+sudo -niu <user>-agent uxon kill <session> --force
 # or, in the TUI: d on the row, type kill, Enter.
 ```
 
@@ -124,7 +124,7 @@ already-running child processes the agent forked outside its
 pane (background `npm install`, `docker compose up`, etc.) are
 **not** reaped automatically — these belong to the user's
 session manager, not `tmux`. Look them up with `pgrep -u
-<user>_agent` and kill explicitly.
+<user>-agent` and kill explicitly.
 
 ## Container path: also stop the container
 
@@ -143,9 +143,9 @@ So for any containerised session, do not trust the kill alone — stop
 the container too:
 
 ```bash
-sudo -niu <user>_agent docker stop <container-name>   # or: podman stop
+sudo -niu <user>-agent docker stop <container-name>   # or: podman stop
 # confirm nothing is left inside:
-sudo -niu <user>_agent docker top <container-name>    # errors once stopped
+sudo -niu <user>-agent docker top <container-name>    # errors once stopped
 ```
 
 Until reaping is confirmed for your specific runtime, treat the

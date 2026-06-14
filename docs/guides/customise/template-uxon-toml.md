@@ -24,7 +24,7 @@ differ from the host's defaults. Common cases:
 ## Pin a specific agent
 
 ```toml
-# /srv/projects/alice/cursor-project/.uxon.toml
+# /srv/projects/nadia/cursor-project/.uxon.toml
 [agents]
 default = "cursor"
 ```
@@ -68,7 +68,7 @@ Inside a project subdir:
 ```bash
 uxon doctor
 # prints:
-#   project config: /srv/projects/alice/myproj/.uxon.toml
+#   project config: /srv/projects/nadia/myproj/.uxon.toml
 ```
 
 If `uxon doctor` shows no project config when you have a

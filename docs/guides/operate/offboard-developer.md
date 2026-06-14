@@ -8,8 +8,8 @@ sessions first, then revoke access, then garbage-collect.
 ## Prerequisites
 
 - Root or sudo on every host the developer had access to.
-- The developer's shell user (`alice`) and paired agent account
-  (`alice_agent`) names.
+- The developer's shell user (`nadia`) and paired agent account
+  (`nadia-agent`) names.
 - A few minutes of downtime is acceptable for live sessions
   (they'll be killed in step 1).
 
@@ -18,9 +18,9 @@ sessions first, then revoke access, then garbage-collect.
 Per host:
 
 ```bash
-sudo -niu alice_agent uxon list           # see what's running
-sudo -niu alice_agent uxon kill-all --force
-# or, from the lead's TUI: select alice_agent's rows, press d.
+sudo -niu nadia-agent uxon list           # see what's running
+sudo -niu nadia-agent uxon kill-all --force
+# or, from the lead's TUI: select nadia-agent's rows, press d.
 ```
 
 `kill-all-reachable` from the TUI works too if you want one
@@ -34,11 +34,11 @@ the trail is preserved.
 ## Step 2 — Revoke shell access
 
 ```bash
-sudo passwd -l alice                      # lock the password
-sudo usermod -s /sbin/nologin alice       # belt-and-braces
+sudo passwd -l nadia                      # lock the password
+sudo usermod -s /sbin/nologin nadia       # belt-and-braces
 
 # Remove the SSH authorized_keys (don't leave a backdoor):
-sudo rm /home/alice/.ssh/authorized_keys
+sudo rm /home/nadia/.ssh/authorized_keys
 ```
 
 If the developer was using SSH certificates, revoke at the CA
@@ -47,48 +47,48 @@ on `uxon`.
 
 ## Step 3 — Revoke uxon-side reach
 
-Remove the sudoers fragment that lets `alice` sudo into her
+Remove the sudoers fragment that lets `nadia` sudo into her
 agent account:
 
 ```bash
-sudo rm /etc/sudoers.d/uxon-alice-agent
+sudo rm /etc/sudoers.d/uxon-nadia-agent
 sudo visudo -c                            # verify nothing else broke
 ```
 
 Update `config/config.toml`:
 
 ```diff
-- session_users = ["alice_agent", "bob_agent", "carol_agent"]
-+ session_users = ["bob_agent", "carol_agent"]
+- session_users = ["nadia-agent", "liam-agent", "ethan-agent"]
++ session_users = ["liam-agent", "ethan-agent"]
 
   [launch_user_by_caller]
-- alice = "alice_agent"
-  bob   = "bob_agent"
-  carol = "carol_agent"
+- nadia = "nadia-agent"
+  liam   = "liam-agent"
+  ethan = "ethan-agent"
 ```
 
-Update the lead's grant to drop `alice_agent`:
+Update the lead's grant to drop `nadia-agent`:
 
 ```bash
 sudo $EDITOR /etc/sudoers.d/uxon-lead-supervisor
-# remove alice_agent from the (...) list
+# remove nadia-agent from the (...) list
 sudo visudo -c -f /etc/sudoers.d/uxon-lead-supervisor
 ```
 
 The TUI's superuser block re-probes `session_users` once per
 launch — leads quit (`q`) and re-launch to pick up the new set.
 
-## Step 4 — Decide what to do with `alice_agent`
+## Step 4 — Decide what to do with `nadia-agent`
 
 You have three options. Pick one deliberately.
 
 **(a) Keep the account, freeze it.** Useful if the project tree
-under `/srv/projects/alice/` is shared with the team and you
+under `/srv/projects/nadia/` is shared with the team and you
 want it preserved in place.
 
 ```bash
-sudo passwd -l alice_agent
-sudo usermod -s /sbin/nologin alice_agent
+sudo passwd -l nadia-agent
+sudo usermod -s /sbin/nologin nadia-agent
 # Files stay; nobody can sudo in (the grant is gone).
 ```
 
@@ -96,19 +96,19 @@ sudo usermod -s /sbin/nologin alice_agent
 another developer or a team account.
 
 ```bash
-sudo chown -R bob_agent:devs /srv/projects/alice
-sudo mv /srv/projects/alice /srv/projects/alice-handed-to-bob
-# Then delete alice_agent (option c).
+sudo chown -R liam-agent:devs /srv/projects/nadia
+sudo mv /srv/projects/nadia /srv/projects/nadia-handed-to-liam
+# Then delete nadia-agent (option c).
 ```
 
 **(c) Delete the account and the home.**
 
 ```bash
-sudo userdel -r alice_agent              # removes home dir
-sudo rm -rf /srv/projects/alice          # iff you don't need it
+sudo userdel -r nadia-agent              # removes home dir
+sudo rm -rf /srv/projects/nadia          # iff you don't need it
 ```
 
-`userdel -r` removes `/home/alice_agent` including:
+`userdel -r` removes `/home/nadia-agent` including:
 
 - cached `~/.claude/` tokens (revoke these out of band — see
   step 5);
@@ -118,7 +118,7 @@ sudo rm -rf /srv/projects/alice          # iff you don't need it
 
 ## Step 5 — Revoke external credentials
 
-Anything `alice` or `alice_agent` was given but `uxon` doesn't
+Anything `nadia` or `nadia-agent` was given but `uxon` doesn't
 own:
 
 - `gh auth` tokens — log into GitHub, revoke from `Settings →
@@ -129,7 +129,7 @@ own:
 - `~/.aws/credentials`, `~/.config/gcloud/`, … — revoke at the
   cloud provider.
 - Any `token_file` referenced from a `[[git_remote_profiles]]`
-  block where `creds_user = "alice"` — re-issue under a new
+  block where `creds_user = "nadia"` — re-issue under a new
   `creds_user` and update the profile.
 
 This step is the same on every host. See
@@ -138,11 +138,11 @@ playbook.
 
 ## Step 6 — Delete the shell account
 
-If you decided in step 4 to delete `alice_agent`, also delete
+If you decided in step 4 to delete `nadia-agent`, also delete
 the shell account now:
 
 ```bash
-sudo userdel -r alice
+sudo userdel -r nadia
 ```
 
 ## Step 7 — Repeat per host (team·N)
@@ -160,45 +160,45 @@ role and run it across the fleet.
 Per host:
 
 ```bash
-sudo -niu alice_agent uxon list 2>&1 | head -1
+sudo -niu nadia-agent uxon list 2>&1 | head -1
 # Expected: account locked / nologin / non-zero exit.
 
-grep -E '^alice |^alice_agent ' /etc/passwd
+grep -E '^nadia |^nadia-agent ' /etc/passwd
 # Expected: no matches.
 
-ls /etc/sudoers.d/ | grep alice
+ls /etc/sudoers.d/ | grep nadia
 # Expected: nothing.
 
-ls /home/ | grep alice
+ls /home/ | grep nadia
 # Expected: nothing (or only handed-over directories).
 
-journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=alice --since today
+journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=nadia --since today
 # Expected: only the kill events from step 1; no later activity.
 ```
 
 ## Audit footprint
 
-The audit trail under `caller_user=alice` is preserved (journald
+The audit trail under `caller_user=nadia` is preserved (journald
 holds it according to the host's retention policy). For
 compliance-shaped teams, freeze the journal export or ship it to
 your central collector before deleting the account.
 
 ## Common mistakes
 
-- **Deleting `alice_agent` while live sessions are open.** The
-  `tmux` socket at `/tmp/uxon-alice_agent.sock` lives on; the
+- **Deleting `nadia-agent` while live sessions are open.** The
+  `tmux` socket at `/tmp/uxon-nadia-agent.sock` lives on; the
   agent's child processes inherit a deleted UID. Reap first,
   then delete.
-- **Leaving `alice_agent` in `session_users` after the sudoers
+- **Leaving `nadia-agent` in `session_users` after the sudoers
   fragment is gone.** The TUI shows the user as unreachable
   (`(N/M users reachable)` on the section header) — cosmetic but
   confusing. Drop both in the same change.
 - **Forgetting external credential revocation.** Removing the OS
   user does not invalidate tokens stored in `~/.claude/` that
-  `alice_agent` used; those tokens authenticate to providers
+  `nadia-agent` used; those tokens authenticate to providers
   outside the host. Revoke at the provider.
-- **Leaving `gh auth` cached under a `creds_user = "alice"` git
-  profile.** New developers will silently push under Alice's
+- **Leaving `gh auth` cached under a `creds_user = "nadia"` git
+  profile.** New developers will silently push under Nadia's
   GitHub identity. Audit `[[git_remote_profiles]]` whenever
   `creds_user` is a person.
 
@@ -208,4 +208,4 @@ your central collector before deleting the account.
 - [`rotate-credentials.md`](rotate-credentials.md) — the same
   step 5, expanded.
 - [`back-up-and-restore.md`](back-up-and-restore.md) — what to
-  preserve before deleting `/home/alice_agent`.
+  preserve before deleting `/home/nadia-agent`.

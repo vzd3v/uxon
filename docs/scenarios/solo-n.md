@@ -22,7 +22,7 @@ aggregates the others over SSH and shows everything in one TUI.
 1. **Install on every host** — [`start/install.md`](../start/install.md).
    Use the same flavour and version on every box.
 2. **Bring up the first host** — same as
-   [`scenarios/solo-1.md`](solo-1.md) (a `<user>_agent` paired
+   [`scenarios/solo-1.md`](solo-1.md) (a `<user>-agent` paired
    account is recommended even on a solo box, because you'll want
    it on every host eventually).
 3. **Add the second host** — [`start/add-second-host.md`](../start/add-second-host.md)

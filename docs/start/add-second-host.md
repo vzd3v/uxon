@@ -34,10 +34,10 @@ ssh user / port / identity in its own config.
 In the aggregator's `~/.ssh/config`:
 
 ```
-Host vz-prod1
+Host gpu-box
     HostName     10.0.0.42
-    User         vasily          # solo·N: your shell user, paired with vasily_agent on the peer
-                                 # team·N: an operator-class user with sudo to *_agent on the peer
+    User         wes             # solo·N: your shell user, paired with wes-agent on the peer
+                                 # team·N: an operator-class user with sudo to *-agent on the peer
     IdentityFile ~/.ssh/id_ed25519_uxon
     Port         22
     # Reuse one TCP connection — saves handshake round trips for the periodic poller:
@@ -62,9 +62,9 @@ In the aggregator's `config/config.toml`:
 
 ```toml
 [[remote_hosts]]
-name        = "vz-prod1"
-ssh_alias   = "vz-prod1"
-description = "primary EU"   # optional, shown in TUI tooltips
+name        = "gpu-box"
+ssh_alias   = "gpu-box"
+description = "leased GPU box"   # optional, shown in TUI tooltips
 remote_uxon = "uxon"         # optional, default "uxon"
 ```
 
@@ -86,7 +86,7 @@ uxon doctor --remote
 # probe peers — `--remote` is the explicit operator gesture.
 
 uxon list --all-hosts        # local block + one block per peer
-uxon list --host vz-prod1    # one peer
+uxon list --host gpu-box    # one peer
 uxon                         # TUI: HOST column appears automatically
 ```
 

@@ -1,7 +1,7 @@
 # Isolation model: OS users, composing with containers
 
 `uxon` runs agents as dedicated low-privilege Linux users
-(`<user>_agent`) via `sudo -iu`. This is `uxon`'s isolation
+(`<user>-agent`) via `sudo -iu`. This is `uxon`'s isolation
 default — but it is **orthogonal to whether the agent process is
 also containerised**, not an alternative to it. This page explains
 the OS-user model, why it is the default, how it composes with a
@@ -18,17 +18,17 @@ is "OS users, and optionally a container on top".
 
 The recommended pattern across all four scenarios is the same:
 each shell user is paired with a low-privilege OS account that
-owns the agent's runtime — `vz` (you) + `vz_agent`, or `alice` +
-`alice_agent`. The agent runs as `<user>_agent` via `sudo -iu`;
+owns the agent's runtime — `wes` (you) + `wes-agent`, or `marcus` +
+`marcus-agent`. The agent runs as `<user>-agent` via `sudo -iu`;
 the developer's shell user stays the trust boundary that holds
 dotfiles, SSH keys, credentials.
 
 In both directions:
 
 - **Caller → agent.** A yolo run (`--mode yolo`) blasts only what
-  `<user>_agent` can write to. The developer's `~/.ssh`,
+  `<user>-agent` can write to. The developer's `~/.ssh`,
   `~/.gnupg`, `~/.config/gh`, `~/.aws` are not in reach.
-- **Agent → caller.** `<user>_agent` is a separate OS user with
+- **Agent → caller.** `<user>-agent` is a separate OS user with
   its own home, so the agent has no implicit access to the
   developer's files. Anything the developer wants the agent to
   see (the project tree, an SSH-agent socket, a credentials
@@ -36,7 +36,7 @@ In both directions:
   step itself.
 
 `uxon` does **not** add a sandbox of its own. Isolation between
-`<user>_agent` and the rest of the host is whatever ordinary
+`<user>-agent` and the rest of the host is whatever ordinary
 Unix UID separation provides — file permissions, process
 ownership, per-user `tmux` sockets. `uxon` does not configure
 cgroups, AppArmor, seccomp, or kernel namespaces.
@@ -72,7 +72,7 @@ credential-exposure caveats elsewhere — in places it widens them:
   Making `~/.claude`, `~/.gitconfig`, `~/.aws/`, or an SSH-agent
   socket usable inside the container means bind-mounting it in, so
   the secrets are reachable inside exactly as they were from
-  `<user>_agent`'s home.
+  `<user>-agent`'s home.
 - **`uxon`'s writable-probe checks the host path.** Under UID
   mapping the container-side writability of that path can diverge,
   so the probe is a convenience hint with no security meaning
@@ -101,7 +101,7 @@ up is
   user's processes can attach.
 - Per-user home, per-user `~/.claude/` config / cache, per-user
   `~/.gitconfig`. A team-shared launch user (`runtime_user =
-  "team_agent"`, mode (b) in
+  "team-agent"`, mode (b) in
   [`start/team-1-bootstrap.md`](../start/team-1-bootstrap.md))
   collapses these into one shared home and shares the blast
   radius across developers — useful when agents legitimately
@@ -113,7 +113,7 @@ up is
 `uxon` never elevates beyond what `sudoers` already grants.
 Detailed threat-model writeup, including caveats around
 `tmux attach -r`, `ForwardAgent yes`, and secrets persisted to
-`<user>_agent`'s home directory, is in
+`<user>-agent`'s home directory, is in
 [`SECURITY.md`](../../SECURITY.md).
 
 ## Related

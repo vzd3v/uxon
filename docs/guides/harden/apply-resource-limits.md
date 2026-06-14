@@ -51,12 +51,12 @@ sudo systemctl restart 'user@*.service'
 Verify:
 
 ```bash
-systemctl status user-$(id -u alice_agent).slice
+systemctl status user-$(id -u nadia-agent).slice
 # look for Memory.high / Memory.max / CPUWeight values.
 ```
 
-This applies to **every** user uniformly. For per-`*_agent`
-overrides — say, give `alice_agent` more RAM because she works
+This applies to **every** user uniformly. For per-`*-agent`
+overrides — say, give `nadia-agent` more RAM because she works
 on a memory-heavy project — drop in
 `/etc/systemd/system/user-<uid>.slice.d/override.conf`:
 
@@ -66,7 +66,7 @@ MemoryHigh=16G
 MemoryMax=20G
 ```
 
-Use `id -u alice_agent` to find the UID.
+Use `id -u nadia-agent` to find the UID.
 
 ## Recipe — `pam_limits` (file-descriptor and process count)
 
@@ -83,16 +83,16 @@ sudo tee /etc/security/limits.d/50-uxon-agents.conf <<'EOF'
 EOF
 ```
 
-Then make `*_agent` accounts members of an `uxon_agents` group:
+Then make `*-agent` accounts members of an `uxon_agents` group:
 
 ```bash
 sudo groupadd -r uxon_agents
-sudo usermod -aG uxon_agents alice_agent
-sudo usermod -aG uxon_agents bob_agent
+sudo usermod -aG uxon_agents nadia-agent
+sudo usermod -aG uxon_agents liam-agent
 ```
 
 `pam_limits` is applied at PAM session start (i.e. at
-`sudo -iu <user>_agent` time). Existing sessions don't pick up
+`sudo -iu <user>-agent` time). Existing sessions don't pick up
 limit changes; new sessions do.
 
 ## What to size
@@ -102,8 +102,8 @@ without heavy local services:
 
 | Limit | Suggested |
 |---|---|
-| `MemoryHigh=` | 6–8 GB per `<user>_agent` |
-| `MemoryMax=` | 10–12 GB per `<user>_agent` |
+| `MemoryHigh=` | 6–8 GB per `<user>-agent` |
+| `MemoryMax=` | 10–12 GB per `<user>-agent` |
 | `CPUWeight=` | 50 (vs. default 100 for interactive users) |
 | `TasksMax=` | 2048 |
 | `nofile` (soft / hard) | 4096 / 16384 |
@@ -144,9 +144,9 @@ the interaction.
 Synthetic load test once limits are in place:
 
 ```bash
-sudo -niu alice_agent bash -c 'stress-ng --vm 4 --vm-bytes 4G --timeout 60s'
+sudo -niu nadia-agent bash -c 'stress-ng --vm 4 --vm-bytes 4G --timeout 60s'
 # In another shell:
-systemctl status user-$(id -u alice_agent).slice
+systemctl status user-$(id -u nadia-agent).slice
 # Expect: memory.high reached, processes throttled rather than OOM'd
 # unless they exceed MemoryMax.
 ```

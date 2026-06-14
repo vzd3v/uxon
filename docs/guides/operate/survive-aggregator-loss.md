@@ -165,7 +165,7 @@ ssh -v <alias> uxon list --all-users --json | head -3
 
 If a peer's session set looks "lighter" than expected, check
 `enable_all_users_list` on the peer — the new aggregator's SSH
-user might lack passwordless sudo to some `*_agent`. The
+user might lack passwordless sudo to some `*-agent`. The
 `(own only)` badge in the TUI's HOST column is the signal.
 
 ## Common mistakes

@@ -42,12 +42,12 @@ schema is part of the public contract.
   "kind": "list",
   "data": {
     "all_users": true,
-    "scope_users": ["alice_agent", "bob_agent"],
-    "scope_skipped": ["carol_agent"],
+    "scope_users": ["nadia-agent", "liam-agent"],
+    "scope_skipped": ["ethan-agent"],
     "session_prefix": "uxon-",
     "sessions": [
       {
-        "user": "alice_agent",
+        "user": "nadia-agent",
         "name": "uxon-myproj@claude",
         "short_id": "myproj@claude",
         "agent": "claude",
@@ -86,8 +86,8 @@ schema is part of the public contract.
 {
   "kind": "doctor",
   "data": {
-    "caller_user": "alice",
-    "launch_user": "alice_agent",
+    "caller_user": "nadia",
+    "launch_user": "nadia-agent",
     "config_paths": {"repo": "...", "project": "..."},
     "allowed_roots": ["/srv/projects"],
     "new_project_root": "/srv/projects",
@@ -134,8 +134,8 @@ Local kill (own user):
   "kind": "kill",
   "data": {
     "target": "uxon-myproj@claude",
-    "user": "alice_agent",
-    "socket": "/tmp/uxon-alice_agent.sock",
+    "user": "nadia-agent",
+    "socket": "/tmp/uxon-nadia-agent.sock",
     "action": "killed",
     "dry_run": false
   }
@@ -146,7 +146,7 @@ A cross-user kill (`--user <name>` where the target differs from
 the caller's launch user) adds two fields:
 
 ```json
-    "target_user": "bob_agent",
+    "target_user": "liam-agent",
     "reachable": true
 ```
 
@@ -182,8 +182,8 @@ result** of the call rather than the audit-record shape.
 {
   "kind": "kill-all",
   "data": {
-    "user": "alice_agent",
-    "socket": "/tmp/uxon-alice_agent.sock",
+    "user": "nadia-agent",
+    "socket": "/tmp/uxon-nadia-agent.sock",
     "dry_run": false,
     "sessions": [
       {"name": "uxon-foo@claude",  "action": "killed"},

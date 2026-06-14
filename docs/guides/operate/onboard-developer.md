@@ -11,36 +11,36 @@ see [`start/team-1-bootstrap.md`](../../start/team-1-bootstrap.md).
 - Root or sudo on the host(s).
 - The host already running `uxon` per
   [`start/team-1-bootstrap.md`](../../start/team-1-bootstrap.md).
-- Decided which `<user>_agent` name to use (convention:
-  `<shellname>_agent`).
+- Decided which `<user>-agent` name to use (convention:
+  `<shellname>-agent`).
 
 ## Step 1 — Create the accounts
 
 ```bash
-NEW=alice
+NEW=maya
 sudo useradd -m -s /bin/bash "$NEW"
-sudo useradd -m -s /bin/bash "${NEW}_agent"
+sudo useradd -m -s /bin/bash "${NEW}-agent"
 ```
 
 If your team uses an LDAP / IPA / SSO directory for shell
 accounts, replace `useradd` with the equivalent provisioning
-step. The `*_agent` account stays a local Linux user — it's not
+step. The `*-agent` account stays a local Linux user — it's not
 meant to log in interactively.
 
 ## Step 2 — Sudoers grant
 
 ```bash
-echo "$NEW ALL=(${NEW}_agent) NOPASSWD: ALL" | \
+echo "$NEW ALL=(${NEW}-agent) NOPASSWD: ALL" | \
   sudo tee "/etc/sudoers.d/uxon-${NEW}-agent"
 sudo chmod 440 "/etc/sudoers.d/uxon-${NEW}-agent"
 sudo visudo -c -f "/etc/sudoers.d/uxon-${NEW}-agent"   # syntax check
 ```
 
-The grant lets `alice` become **`alice_agent`**, not the other
+The grant lets `maya` become **`maya-agent`**, not the other
 way round. `NOPASSWD: ALL` is the recommended shape — the grant
 bounds the *agent*'s blast radius (yolo runs cannot touch
-`~alice`), not the developer; a command whitelist would not
-reduce alice's attack surface (she already has a shell) and
+`~maya`), not the developer; a command whitelist would not
+reduce maya's attack surface (she already has a shell) and
 would break every time an agent binary or wrapper changed. See
 [`SECURITY.md`](../../../SECURITY.md) threat model #1 for the
 full reasoning.
@@ -48,7 +48,7 @@ full reasoning.
 ## Step 3 — Project workspace
 
 ```bash
-sudo install -d -o "${NEW}_agent" -g devs -m 2775 "/srv/projects/$NEW"
+sudo install -d -o "${NEW}-agent" -g devs -m 2775 "/srv/projects/$NEW"
 ```
 
 Setgid (`2775`) so files inside inherit the `devs` group, which
@@ -61,13 +61,13 @@ ACL schemes see
 Edit `config/config.toml` on the host:
 
 ```toml
-session_users = ["alice_agent", "bob_agent", "carol_agent", "dave_agent"]
+session_users = ["nadia-agent", "liam-agent", "ethan-agent", "maya-agent"]
 
 [launch_user_by_caller]
-alice = "alice_agent"
-bob   = "bob_agent"
-carol = "carol_agent"
-dave  = "dave_agent"      # add the new mapping
+nadia = "nadia-agent"
+liam  = "liam-agent"
+ethan = "ethan-agent"
+maya  = "maya-agent"      # add the new mapping
 ```
 
 The TUI's superuser block re-probes `session_users` once per
@@ -80,8 +80,8 @@ Widen the lead's grant to include the new agent account:
 
 ```bash
 sudo $EDITOR /etc/sudoers.d/uxon-lead-supervisor
-# was:  lead ALL=(alice_agent,bob_agent,carol_agent) NOPASSWD: ALL
-# now:  lead ALL=(alice_agent,bob_agent,carol_agent,dave_agent) NOPASSWD: ALL
+# was:  lead ALL=(nadia-agent,liam-agent,ethan-agent) NOPASSWD: ALL
+# now:  lead ALL=(nadia-agent,liam-agent,ethan-agent,maya-agent) NOPASSWD: ALL
 
 sudo visudo -c -f /etc/sudoers.d/uxon-lead-supervisor
 ```
@@ -91,11 +91,11 @@ getting long — see `man sudoers`. The same grant on every
 team-`N` host means the lead's reach is consistent across the
 fleet.
 
-## Step 6 — Install agents for `*_agent`
+## Step 6 — Install agents for `*-agent`
 
 ```bash
-sudo -iu dave_agent
-# inside dave_agent's shell:
+sudo -iu maya-agent
+# inside maya-agent's shell:
 curl -fsSL https://... | bash       # claude / codex / cursor installer
 exit
 ```
@@ -107,7 +107,7 @@ and offers a one-keypress enable in the agent banner.
 
 Give the new developer:
 
-- the host(s) they have access to (`ssh dave@host1`, etc.);
+- the host(s) they have access to (`ssh maya@host1`, etc.);
 - a pointer to [`scenarios/team-1.md`](../../scenarios/team-1.md)
   and [`privacy.md`](../../privacy.md) so they know what `uxon`
   records about them.
@@ -116,18 +116,18 @@ Their first run is just `uxon` — the TUI walks the rest.
 
 ## Step 8 — Verify
 
-As `dave`:
+As `maya`:
 
 ```bash
-ssh dave@host
-uxon doctor             # caller=dave, launch=dave_agent, sockets+sessions ok
+ssh maya@host
+uxon doctor             # caller=maya, launch=maya-agent, sockets+sessions ok
 uxon                    # TUI opens; "New session in current folder" works
 ```
 
 As the lead:
 
 ```bash
-uxon                    # superuser block now lists dave_agent
+uxon                    # superuser block now lists maya-agent
                         # section header: (4/4 users reachable)
 ```
 
@@ -145,10 +145,10 @@ every host.
 ## Audit footprint
 
 Every step the new developer takes is recorded in the audit
-channel under `caller_user=dave`. To review their activity later:
+channel under `caller_user=maya`. To review their activity later:
 
 ```bash
-journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=dave --since today
+journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=maya --since today
 ```
 
 For fleet-wide queries see
@@ -160,7 +160,7 @@ For fleet-wide queries see
   `/etc/sudoers.d/` with wrong permissions are silently ignored.
 - **Putting the developer's shell user in `session_users`** when
   using mode (a) (paired-account). `session_users` lists the
-  *launch users* (the `*_agent` accounts), not the shell users.
+  *launch users* (the `*-agent` accounts), not the shell users.
 - **Forgetting `[launch_user_by_caller]`** — the new developer
   ends up running as `runtime_user` (the fallback) instead of
   their own paired account.

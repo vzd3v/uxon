@@ -20,13 +20,13 @@ else may need to see, attach to, or stop. Four shapes of
 deployment, one tool:
 
 - **One developer, one host.** Persistent TUI over `tmux`;
-  agents optionally sandboxed in a low-priv `<user>_agent`
+  agents optionally sandboxed in a low-priv `<user>-agent`
   account so a yolo run can't trash your `$HOME`.
 - **One developer, several hosts.** Aggregate everything into
   one TUI with a `HOST` column; locals first, then peers
   grouped by host.
 - **A team sharing one host.** Each developer runs as their
-  paired `<user>_agent`. The lead's TUI sees everyone via
+  paired `<user>-agent`. The lead's TUI sees everyone via
   `sudo`. Cross-user supervision without impersonation —
   the lead never becomes the developer.
 - **A team across several hosts.** Same supervision property

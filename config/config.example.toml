@@ -3,9 +3,9 @@
 #
 # ── Recommended workflow ──────────────────────────────────────────
 # Pair each shell user with a low-privilege OS account that owns
-# the agent's runtime — e.g. `vz` (you) + `vz_agent`. The agent
-# runs as `<user>_agent` via `sudo -iu`. With `--mode yolo`, the
-# blast radius of a runaway tool is `<user>_agent`'s sandbox, not
+# the agent's runtime — e.g. `wes` (you) + `wes-agent`. The agent
+# runs as `<user>-agent` via `sudo -iu`. With `--mode yolo`, the
+# blast radius of a runaway tool is `<user>-agent`'s sandbox, not
 # your home directory or your team's filesystem. In team setups
 # this also gives the operator supervision without impersonation —
 # see docs/explain/supervision-without-impersonation.md.
@@ -53,18 +53,18 @@ default_args = []
 # docs/scenarios/solo-1.md
 #
 # One-time host setup:
-#   sudo useradd -m -s /bin/bash vz_agent
-#   echo 'vz ALL=(vz_agent) NOPASSWD: ALL' \
-#     | sudo tee /etc/sudoers.d/uxon-vz-agent
-#   sudo chmod 440 /etc/sudoers.d/uxon-vz-agent
-#   sudo install -d -o vz_agent -g vz_agent /srv/projects
+#   sudo useradd -m -s /bin/bash wes-agent
+#   echo 'wes ALL=(wes-agent) NOPASSWD: ALL' \
+#     | sudo tee /etc/sudoers.d/uxon-wes-agent
+#   sudo chmod 440 /etc/sudoers.d/uxon-wes-agent
+#   sudo install -d -o wes-agent -g wes-agent /srv/projects
 #
 # Then replace the active "default_launch_mode = caller" line above
 # with the block below:
 #
 # default_launch_mode = "fixed"
-# runtime_user        = "vz_agent"
-# session_users       = ["vz_agent"]
+# runtime_user        = "wes-agent"
+# session_users       = ["wes-agent"]
 # allowed_roots       = ["/srv/projects"]
 # new_project_root    = "/srv/projects"
 
@@ -77,9 +77,9 @@ default_args = []
 # ProxyJump etc. live in ~/.ssh/config — uxon does not duplicate them.
 #
 # [[remote_hosts]]
-# name        = "vz-prod1"
-# ssh_alias   = "vz-prod1"
-# description = "primary EU"   # optional, shown in TUI tooltips
+# name        = "gpu-box"
+# ssh_alias   = "gpu-box"
+# description = "leased GPU box"   # optional, shown in TUI tooltips
 # remote_uxon = "uxon"         # optional, default "uxon"
 
 
@@ -89,26 +89,26 @@ default_args = []
 # Pick ONE of (a) / (b) / (c) below.
 #
 # (a) Recommended: per-caller paired sandbox.
-#     One <user>_agent per developer.
+#     One <user>-agent per developer.
 #
 # default_launch_mode   = "fixed"
-# runtime_user          = "team_agent"   # fallback for unmapped callers
-# session_users         = ["alice_agent", "bob_agent", "carol_agent"]
+# runtime_user          = "team-agent"   # fallback for unmapped callers
+# session_users         = ["nadia-agent", "liam-agent", "ethan-agent"]
 # enable_all_users_list = true
 # allowed_roots         = ["/srv/projects"]
 # new_project_root      = "/srv/projects"
 #
 # [launch_user_by_caller]
-# alice = "alice_agent"
-# bob   = "bob_agent"
-# carol = "carol_agent"
+# nadia  = "nadia-agent"
+# liam   = "liam-agent"
+# ethan  = "ethan-agent"
 #
 # (b) Shared sandbox user (one OS account for all agents).
 #     Useful when the agent needs shared workspace/state across devs.
 #
 # default_launch_mode = "fixed"
-# runtime_user        = "team_agent"
-# session_users       = ["team_agent"]
+# runtime_user        = "team-agent"
+# session_users       = ["team-agent"]
 # allowed_roots       = ["/srv/projects"]
 # new_project_root    = "/srv/projects"
 #
@@ -116,7 +116,7 @@ default_args = []
 #     Simplest; agent inherits the caller's trust boundary.
 #
 # default_launch_mode   = "caller"
-# session_users         = ["alice", "bob", "carol"]
+# session_users         = ["nadia", "liam", "ethan"]
 # enable_all_users_list = true
 
 
@@ -163,7 +163,7 @@ default_args = []
 # host       = "github.com"
 # owner      = "my-org"
 # auth       = "gh"            # or "token" + token_file
-# creds_user = "vz"            # defaults to launch user
+# creds_user = "wes"           # defaults to launch user
 # visibility = "private"
 
 

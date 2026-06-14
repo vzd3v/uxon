@@ -78,7 +78,7 @@ To rotate:
    flow, an `.env` file in the project tree, a `direnv` setup).
 3. Revoke the old key at the provider.
 
-This is **per `<user>_agent` account, per host** — there is no
+This is **per `<user>-agent` account, per host** — there is no
 central rotation `uxon` can drive. For a team box with
 3 developers × 5 hosts, plan for a 15-minute pass per provider.
 

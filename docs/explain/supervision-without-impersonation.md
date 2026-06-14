@@ -7,25 +7,25 @@ because the team and team-N scenarios depend on it.
 ## The shape
 
 In the paired-account team setup, every developer's agent runs
-as a separate low-privilege OS account: `alice` (shell user) +
-`alice_agent` (agent runtime), `bob` + `bob_agent`, and so on.
+as a separate low-privilege OS account: `nadia` (shell user) +
+`nadia-agent` (agent runtime), `liam` + `liam-agent`, and so on.
 
 A team-lead grant of the form
 
 ```
-lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL
+lead ALL=(nadia-agent,liam-agent) NOPASSWD: ALL
 ```
 
 lets the lead:
 
-- attach to Alice's and Bob's running agent sessions
+- attach to Nadia's and Liam's running agent sessions
   (`uxon attach`, `Enter` in the TUI on a row in their `USER`
   block);
 - reap a stuck or runaway session (`uxon kill`, `d` in the TUI);
-- run the TUI's `kill-all-reachable` action across `alice_agent`,
-  `bob_agent`, and any other agent accounts the lead can reach.
+- run the TUI's `kill-all-reachable` action across `nadia-agent`,
+  `liam-agent`, and any other agent accounts the lead can reach.
 
-It does **not** let the lead `sudo -iu alice` or `sudo -iu bob` —
+It does **not** let the lead `sudo -iu nadia` or `sudo -iu liam` —
 the grant targets the agent accounts only. The lead never becomes
 the developer.
 
@@ -45,8 +45,8 @@ everything tied to the developer's identity:
 - any long-lived secret an operator might pull out of `$HOME` if
   they could become the developer for a moment.
 
-The grant `ALL=(alice_agent)` is enough to supervise a runaway
-agent. `ALL=(alice)` would also let the lead read the developer's
+The grant `ALL=(nadia-agent)` is enough to supervise a runaway
+agent. `ALL=(nadia)` would also let the lead read the developer's
 SSH agent socket and act as them. The team setup picks the first
 deliberately.
 
@@ -65,7 +65,7 @@ in a refactor:
 
 2. **`ForwardAgent yes` widens the boundary.** If the developer
    ran the agent with SSH-agent forwarding into the
-   `<user>_agent` account, the agent's process holds a live
+   `<user>-agent` account, the agent's process holds a live
    handle to the developer's SSH agent socket. An operator
    attached to that pane can use that socket to sign as the
    developer (without the private key ever being copied). The
@@ -74,8 +74,8 @@ in a refactor:
    already holds. Forward only for the duration of operations
    that need it.
 
-3. **Secrets stored inside the `<user>_agent` account are
-   reachable by anyone who can `sudo -iu <user>_agent`.**
+3. **Secrets stored inside the `<user>-agent` account are
+   reachable by anyone who can `sudo -iu <user>-agent`.**
    Long-lived `OPENAI_API_KEY`, `~/.aws/credentials` copied
    in for convenience, session tokens cached under
    `~/.claude/`, `.env` files in the project tree — all of

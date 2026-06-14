@@ -3,7 +3,7 @@
 Get `uxon` managing your agent sessions on one Linux box, in
 about 10 minutes. Two flavours below: the simplest setup (agent
 runs as you), and the recommended paired-account setup (agent
-runs as a sandboxed `<user>_agent`).
+runs as a sandboxed `<user>-agent`).
 
 ## What you'll learn
 
@@ -62,49 +62,49 @@ default = "claude"
 
 ## Recommended: paired account <a id="recommended-paired-account"></a>
 
-Pair your shell user (say `vz`) with a low-privilege agent
-account (`vz_agent`). The agent runs as `vz_agent` via
+Pair your shell user (say `wes`) with a low-privilege agent
+account (`wes-agent`). The agent runs as `wes-agent` via
 `sudo -iu`; your shell user stays the trust boundary that holds
 your dotfiles, SSH keys, and credentials. A yolo-mode (`--mode yolo`)
-run blasts `vz_agent`'s files, not yours.
+run blasts `wes-agent`'s files, not yours.
 
 One-time host setup:
 
 ```bash
-sudo useradd -m -s /bin/bash vz_agent
+sudo useradd -m -s /bin/bash wes-agent
 
 # Allow your shell user to sudo into the agent account without a password:
-echo 'vz ALL=(vz_agent) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/uxon-vz-agent
-sudo chmod 440 /etc/sudoers.d/uxon-vz-agent
+echo 'wes ALL=(wes-agent) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/uxon-wes-agent
+sudo chmod 440 /etc/sudoers.d/uxon-wes-agent
 
-# Give vz_agent a workspace it owns:
-sudo install -d -o vz_agent -g vz_agent /srv/projects
+# Give wes-agent a workspace it owns:
+sudo install -d -o wes-agent -g wes-agent /srv/projects
 ```
 
 `config/config.toml`:
 
 ```toml
 default_launch_mode = "fixed"
-runtime_user        = "vz_agent"
-session_users       = ["vz_agent"]
+runtime_user        = "wes-agent"
+session_users       = ["wes-agent"]
 allowed_roots       = ["/srv/projects"]
 new_project_root    = "/srv/projects"
 ```
 
-Install the agent binary for `vz_agent` (claude / codex / cursor)
-— `sudo -iu vz_agent` and run the agent's installer there. Then:
+Install the agent binary for `wes-agent` (claude / codex / cursor)
+— `sudo -iu wes-agent` and run the agent's installer there. Then:
 
 ```bash
 uxon                          # the TUI launches into the new setup
 ```
 
-You'll see your sessions running as `vz_agent`. The TUI's
+You'll see your sessions running as `wes-agent`. The TUI's
 superuser block doesn't appear in solo because there's only one
 launch user.
 
 If the agent needs your SSH keys (e.g. to push to private repos),
 forward them explicitly: `ssh -A` from your laptop, and ensure
-`vz_agent` can read your `SSH_AUTH_SOCK` (group ACL, or set up
+`wes-agent` can read your `SSH_AUTH_SOCK` (group ACL, or set up
 the agent forwarding inside the `sudo -iu` step).
 
 ## Daily flow

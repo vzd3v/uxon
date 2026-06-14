@@ -1,11 +1,11 @@
 {
-  "runtime_user": "agent",
+  "runtime_user": "wes-agent",
   "default_launch_mode": "fixed",
   "enable_all_users_list": false,
   "session_prefix": "uxon-",
   "legacy_session_prefixes": [],
   "allowed_roots": ["/srv/projects"],
-  "session_users": ["agent"],
+  "session_users": ["wes-agent"],
   "new_project_root": "/srv/projects",
   "repeat_noninteractive_mode": "fail",
   "tmux_socket_template": "/tmp/uxon-{user}.sock",

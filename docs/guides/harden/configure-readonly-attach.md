@@ -29,10 +29,10 @@ The TUI's `Enter` on a cross-user row dispatches the read-write
 attach. Bypass that and use `tmux` directly:
 
 ```bash
-SOCK=/tmp/uxon-alice_agent.sock
+SOCK=/tmp/uxon-nadia-agent.sock
 SESSION=uxon-myproj@claude
 
-sudo -niu alice_agent tmux -S "$SOCK" attach -r -t "$SESSION"
+sudo -niu nadia-agent tmux -S "$SOCK" attach -r -t "$SESSION"
 ```
 
 `-r` (read-only) is documented in `man tmux`. To detach: same as
@@ -42,7 +42,7 @@ If your `tmux` socket path differs from the default, find it via
 `uxon doctor` (`tmux socket: ...` line) or list it:
 
 ```bash
-sudo -niu alice_agent ls -la /tmp/uxon-alice_agent.sock
+sudo -niu nadia-agent ls -la /tmp/uxon-nadia-agent.sock
 ```
 
 ## Wrapper alias
@@ -69,7 +69,7 @@ session ids:
 ```bash
 uxon list --all-users
 # pick a row...
-uxon-watch alice_agent uxon-myproj@claude
+uxon-watch nadia-agent uxon-myproj@claude
 ```
 
 ## Wrapper script for a more reliable invocation
@@ -87,7 +87,7 @@ ssh -t "$host" "sudo -niu '$user' tmux -S /tmp/uxon-${user}.sock attach -r -t '$
 
 ```bash
 sudo install -m 0750 -o root -g devs uxon-watch /usr/local/bin/uxon-watch
-uxon-watch dev-prod-1 alice_agent uxon-myproj@claude
+uxon-watch dev-prod-1 nadia-agent uxon-myproj@claude
 ```
 
 The SSH side requires `-t` to allocate a TTY (so `tmux` works);
@@ -144,8 +144,8 @@ uxon-watch() {
 - **Dropping `sudo -niu <user>`.** Without it, the lead's
   `tmux` looks at the wrong socket and finds nothing.
 - **Running the read-only attach as the developer's shell user
-  (`alice`) instead of the agent account (`alice_agent`).**
-  Wrong socket. The session is on `alice_agent`'s socket.
+  (`nadia`) instead of the agent account (`nadia-agent`).**
+  Wrong socket. The session is on `nadia-agent`'s socket.
 - **Forgetting that `-r` is per-attach, not per-session.**
   Another operator can attach read-write to the same session.
   If you need a guaranteed-read-only posture, wrap the entry

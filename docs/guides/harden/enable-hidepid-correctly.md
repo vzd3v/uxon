@@ -1,7 +1,7 @@
 # Enable `hidepid=2` correctly
 
 `hidepid=2` mounted on `/proc` blocks every cross-user
-`/proc/<pid>` read — `<user>_agent` can no longer see what
+`/proc/<pid>` read — `<user>-agent` can no longer see what
 processes other agents are running, what files they have open,
 or how much CPU they're consuming. SECURITY.md recommends it for
 team hosts where you want to harden the OS-user boundary.
@@ -23,14 +23,14 @@ to zeros / blanks. This page covers the right plumbing.
 After remount with `hidepid=2`:
 
 ```bash
-sudo -niu alice_agent ps aux
-# Shows only alice_agent's own processes.
+sudo -niu nadia-agent ps aux
+# Shows only nadia-agent's own processes.
 
-sudo -niu alice_agent cat /proc/<bob_agent's pid>/stat
+sudo -niu nadia-agent cat /proc/<liam-agent's pid>/stat
 # Permission denied.
 ```
 
-The aggregator (root + the lead's `*_agent`-supervisor
+The aggregator (root + the lead's `*-agent`-supervisor
 account) needs an exception. That's what the `gid=` mount
 option provides: members of a designated group keep the old
 visibility.
@@ -61,11 +61,11 @@ proc  /proc  proc  defaults,hidepid=2,gid=procadm  0  0
 Reboot or remount; verify:
 
 ```bash
-sudo -niu lead cat /proc/$(pgrep -u alice_agent -n)/stat
+sudo -niu lead cat /proc/$(pgrep -u nadia-agent -n)/stat
 # Should succeed (lead is in procadm).
 
-sudo -niu carol_agent cat /proc/$(pgrep -u alice_agent -n)/stat
-# Permission denied (carol_agent is NOT in procadm).
+sudo -niu ethan-agent cat /proc/$(pgrep -u nadia-agent -n)/stat
+# Permission denied (ethan-agent is NOT in procadm).
 ```
 
 ## How this affects `uxon`'s dashboard
@@ -73,12 +73,12 @@ sudo -niu carol_agent cat /proc/$(pgrep -u alice_agent -n)/stat
 The TUI's `cpu`, `ram` columns are populated by reading
 `/proc/<pid>/stat` for each pane PID. Per row:
 
-- **Own row** (current launch user is `alice_agent`, row is
-  `alice_agent`): no impact, same-UID reads always work.
-- **Cross-user row** (current launch user is `lead`, row is
-  `alice_agent`): works **iff `lead` is in `procadm`**. Without
+- **Own row** (current launch user is `nadia-agent`, row is
+  `nadia-agent`): no impact, same-UID reads always work.
+- **Cross-user row** (current launch user is `marcus`, row is
+  `nadia-agent`): works **iff `marcus` is in `procadm`**. Without
   that, the columns show zeros.
-- **Remote row** (peer is `vz-prod1`): the peer's `uxon list
+- **Remote row** (peer is `gpu-box`): the peer's `uxon list
   --json` runs as the SSH user on the peer, and that user
   needs `procadm` on the peer. The aggregator side just
   forwards the JSON — it doesn't read `/proc` for remote rows.
@@ -105,8 +105,8 @@ audit history aren't affected.
 ## What `hidepid=2` does *not* prevent
 
 - **Cross-user file reads** scoped by ordinary file
-  permissions. If `/srv/projects/alice/secret.txt` is mode
-  `644`, `bob_agent` reads it regardless of `hidepid`. That's
+  permissions. If `/srv/projects/nadia/secret.txt` is mode
+  `644`, `liam-agent` reads it regardless of `hidepid`. That's
   filesystem-ACL territory — see
   [`lay-out-shared-projects.md`](lay-out-shared-projects.md).
 - **Network namespace introspection.** Each agent still sees
@@ -118,16 +118,16 @@ audit history aren't affected.
 ## Verification
 
 ```bash
-# As bob_agent — should see only own processes:
-sudo -niu bob_agent ps aux | wc -l
-# (small number, just bob_agent's tree)
+# As liam-agent — should see only own processes:
+sudo -niu liam-agent ps aux | wc -l
+# (small number, just liam-agent's tree)
 
-sudo -niu bob_agent ps -ef --user alice_agent
-# Empty — bob_agent can't see alice_agent's PIDs.
+sudo -niu liam-agent ps -ef --user nadia-agent
+# Empty — liam-agent can't see nadia-agent's PIDs.
 
 # As lead (in procadm) — should see everyone:
-ps -ef --user alice_agent
-# alice_agent's processes listed.
+ps -ef --user nadia-agent
+# nadia-agent's processes listed.
 
 # Dashboard sanity:
 uxon                 # As lead. Other-user CPU/RAM columns populated.

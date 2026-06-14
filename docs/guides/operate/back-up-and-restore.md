@@ -9,15 +9,15 @@ small explicit backup policy.
 
 | Path | Owner | Worth backing up? | Why |
 |---|---|---|---|
-| `/srv/projects/<user>/...` (or `~/projects/...`) | `<user>_agent` | **Yes** | Active developer work, often uncommitted between agent runs. |
-| `~/.gitconfig` (each `<user>_agent`) | `<user>_agent` | Yes | Identity for git commits made by the agent. |
-| `~/.claude/` (each `<user>_agent`) | `<user>_agent` | Optional | Cached agent config + history. Restorable via re-login. |
+| `/srv/projects/<user>/...` (or `~/projects/...`) | `<user>-agent` | **Yes** | Active developer work, often uncommitted between agent runs. |
+| `~/.gitconfig` (each `<user>-agent`) | `<user>-agent` | Yes | Identity for git commits made by the agent. |
+| `~/.claude/` (each `<user>-agent`) | `<user>-agent` | Optional | Cached agent config + history. Restorable via re-login. |
 | `config/config.toml` (host's `uxon` config) | root or admin | **Yes** | Drives the whole host. Render from JSON if you have one. |
 | `/etc/sudoers.d/uxon-*` | root | **Yes** | Per-developer grants. Easy to forget when restoring. |
 | `~/.local/state/uxon/` (any user) | per-user | No | Dismissed-banner state, debug logs, metrics. Recreated. |
 | `~/.local/state/uxon/remote/<peer>.json` (aggregator) | aggregator user | No | Cache fallback. Refetched on next poll. |
 | journald log files (`/var/log/journal/`) | systemd | Per retention policy | Audit channel sink — see [`forward-audit-to-collector.md`](forward-audit-to-collector.md) for fleet-wide audit retention. |
-| `/etc/passwd`, `/etc/shadow`, `/etc/group` | root | Yes (system-level) | The `*_agent` accounts. |
+| `/etc/passwd`, `/etc/shadow`, `/etc/group` | root | Yes (system-level) | The `*-agent` accounts. |
 
 ## What `uxon` itself does *not* require backing up
 
@@ -47,7 +47,7 @@ including project trees).
 
 ## Encrypted-at-rest reminder
 
-`/srv/projects/<user>_agent/` may contain `.env` files,
+`/srv/projects/<user>-agent/` may contain `.env` files,
 `~/.claude/` cached tokens, agent-generated session state, and
 any secrets the developer copied into the project tree by hand.
 The backup target must be at least as protected as the source.
@@ -68,7 +68,7 @@ After a fresh OS install:
 #   sudo getent group  > /backup/getent-group-$(date +%F).txt
 #   sudo cp /etc/sudoers.d/uxon-* /backup/sudoers/
 #
-# On restore, walk the passwd snapshot and useradd each *_agent
+# On restore, walk the passwd snapshot and useradd each *-agent
 # account with matching UID. Don't restore /etc/shadow raw —
 # regenerate passwords or rely on SSH-key-only auth.
 
@@ -87,7 +87,7 @@ sudo visudo -c                                  # syntax check
 # 5. Verify.
 uxon doctor
 # Per developer:
-sudo -niu alice_agent uxon list
+sudo -niu nadia-agent uxon list
 ```
 
 For team·N, repeat per host. There is no central state to
@@ -95,13 +95,13 @@ restore — each host stands up independently.
 
 ## Restore: a single developer's tree
 
-When `alice_agent`'s files were corrupted (e.g. yolo run
+When `nadia-agent`'s files were corrupted (e.g. yolo run
 trashed a project):
 
 ```bash
 sudo tar xzf /backup/srv-projects-LATEST.tar.gz \
-  -C / srv/projects/alice/specific-project
-sudo chown -R alice_agent:devs /srv/projects/alice/specific-project
+  -C / srv/projects/nadia/specific-project
+sudo chown -R nadia-agent:devs /srv/projects/nadia/specific-project
 ```
 
 If the corruption was inside a git repo, `git reflog` /
@@ -128,7 +128,7 @@ sudo tar tzf /backup/srv-projects-2026-04-01.tar.gz | head -3
 # Restore to a scratch dir, run a smoke command (git status, ls -la, etc.).
 sudo mkdir -p /tmp/restore-test
 sudo tar xzf /backup/srv-projects-2026-04-01.tar.gz \
-  -C /tmp/restore-test srv/projects/alice
+  -C /tmp/restore-test srv/projects/nadia
 sudo find /tmp/restore-test -newer /tmp -type f | head
 ```
 
@@ -161,6 +161,6 @@ queries can look. For team·N fleets see
 - [`onboard-developer.md`](onboard-developer.md) — what creates
   the state worth backing up.
 - [`offboard-developer.md`](offboard-developer.md) — what to
-  preserve before deleting a `<user>_agent` home.
+  preserve before deleting a `<user>-agent` home.
 - [`survive-aggregator-loss.md`](survive-aggregator-loss.md) —
   aggregator-specific recovery.

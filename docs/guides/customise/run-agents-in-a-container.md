@@ -3,7 +3,7 @@
 You want the agent process inside a container (project deps pinned,
 a stronger escape boundary than UID separation alone) while keeping
 `uxon`'s paired-account model. The two compose — the container runs
-*as* `<user>_agent`. There are two ways to wire it; pick one.
+*as* `<user>-agent`. There are two ways to wire it; pick one.
 
 > Read [`../../explain/isolation-model.md`](../../explain/isolation-model.md)
 > and [`SECURITY.md`](../../../SECURITY.md) first if you have not — a
