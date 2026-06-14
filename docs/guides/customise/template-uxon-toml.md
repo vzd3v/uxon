@@ -15,8 +15,6 @@ differ from the host's defaults. Common cases:
 
 - **Pin a specific agent for this project.** "This codebase has
   cursor-specific tooling; always launch with cursor here."
-- **Pin a model.** "All work in this repo runs on
-  claude-sonnet-4-6, even if the host default is opus."
 - **Repo-specific yolo policy** — for projects where you
   routinely accept the broader blast radius (a sandboxed test
   repo, a doc-only repo).
@@ -34,19 +32,15 @@ default = "cursor"
 `uxon run` from inside that directory tree uses cursor as the
 default agent without `--agent`.
 
-## Pin model / args per agent
-
-```toml
-# .uxon.toml
-[agents.claude]
-default_args = ["--model", "claude-sonnet-4-6", "--max-tokens", "8192"]
-
-[agents.codex]
-default_args = ["--reasoning-effort", "high"]
-```
-
-These are prepended to every invocation when launching from
-this project tree.
+A `.uxon.toml` can only **select** among the operator's agents
+(`agents.default`, `agents.enabled`); it cannot set per-agent
+binaries or argv (`[agents.<id>]` sub-tables are dropped from the
+project layer). Pin model or default flags per agent in the host
+`config.toml` instead — see
+[`switch-default-agent.md`](switch-default-agent.md#per-agent-default-flags).
+The exact set of keys a `.uxon.toml` may set is the project-layer
+allowlist in
+[`../../reference/configuration.md`](../../reference/configuration.md#layers).
 
 ## Project-specific dashboard layout
 

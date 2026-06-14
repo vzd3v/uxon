@@ -41,6 +41,10 @@ These flags are prepended to every agent invocation. CLI flags
 passed through `uxon run -- ...` are appended after these, so
 explicit invocations override config defaults.
 
+To change an agent's binary, version probe, permission modes, or to
+declare a brand-new agent, see the full per-agent catalog schema in
+[`../../reference/configuration.md`](../../reference/configuration.md#per-agent-catalog-agentsid).
+
 ## Permission mode
 
 `--mode <id>` selects a permission mode from the chosen agent's

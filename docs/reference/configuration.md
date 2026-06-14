@@ -18,6 +18,26 @@ to set a key — see the [scenario hubs](../scenarios/solo-1.md), the
 The TUI's ⚙ Settings screen rewrites repo config in place via a
 `tomlkit` round-trip, preserving comments and formatting.
 
+**Project-layer allowlist (`.uxon.toml`).** A `.uxon.toml` is
+discovered by walking up from `cwd`, so a cloned repo can carry one —
+it is **untrusted** and may never inject argv or policy that `uxon`
+runs under `sudo -iu`. The project layer is therefore filtered
+deny-by-default: only these keys survive, everything else is dropped
+(logged at debug, never a hard error):
+
+| Project key | Effect |
+|---|---|
+| `agents.default`, `agents.enabled` | Select among the **operator-defined** agents (pure selection, no argv). |
+| `tui.*` | Dashboard layout (pure UI data). |
+| `container.name`, `container.path_map` | Container identity + path mapping (data; re-validated). See [`[container]`](#container-table). |
+
+Every other key — `allowed_roots`, `launch_user_by_caller`,
+`local_host`, any `[agents.<id>]` argv sub-table, and every
+operator-only `[container]` key — is dropped from the project layer.
+The repo `config/config.toml` layer is unaffected and keeps full
+power. (So `allowed_roots` is **host-wide** — a `.uxon.toml` cannot
+widen it.)
+
 ## Top-level keys
 
 | Key | Type | Default | Purpose |
@@ -49,7 +69,6 @@ The TUI's ⚙ Settings screen rewrites repo config in place via a
 |-----|------|---------|---------|
 | `agents.enabled` | array | `[]` | Strict whitelist of agent ids when non-empty (`claude`, `codex`, `cursor`); empty or absent flips uxon into **auto-mode** where every installed CATALOG agent is launchable for the launch user. |
 | `agents.default` | string | `""` | Default agent when `--agent` is not passed. Optional; if unset uxon picks the first entry of `agents.enabled` (strict mode) or the first installed agent (auto-mode). Must be in `agents.enabled` when both are set. |
-| `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of that agent. |
 
 Auto-mode vs strict whitelist:
 
@@ -65,9 +84,70 @@ semantically identical — both mean auto. There is no explicit
 "disable" mode; if you want uxon to refuse to launch anything,
 uninstall the agent binaries.
 
-Per-agent permission-mode flags are fixed by the agent binary and
-not configurable here — see [`reference/cli.md`](cli.md) under
-`uxon run`.
+### Per-agent catalog (`[agents.<id>]`)
+
+Each `[agents.<id>]` table customises one agent in the catalog, or
+declares a brand-new one. The shipped presets are `claude`, `codex`,
+`cursor`; supplying a table for a new id adds it (the id must match
+`[a-z][a-z0-9_]*` and contain no `:` / `.` — it becomes the
+`@<id>` session suffix).
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `agents.<id>.binary` | string | the agent `<id>` | Executable name resolved on the launch user's `PATH`. |
+| `agents.<id>.version_args` | array | `["--version"]` | Argv passed by `uxon doctor` to read the version. `[]` ⇒ doctor shows no version line for this agent. |
+| `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of this agent. |
+| `agents.<id>.install_hint` | string | `""` | Message shown by `doctor` / the agent picker when the binary is missing. |
+
+Permission modes are an array-of-tables — **order is significant,
+the first entry is the default mode** (used when `--mode` is
+omitted). `--mode <id>` selects one by `id`; the mode ids and the
+flags they map to per shipped agent are in
+[`reference/cli.md`](cli.md#--mode-id).
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `[[agents.<id>.mode]]` | array-of-tables | — | One entry per permission mode; first = default. |
+| `agents.<id>.mode.id` | string | — | Required. Mode id selected by `--mode`. |
+| `agents.<id>.mode.label` | string | the mode `id` | User-facing label (TUI / audit). |
+| `agents.<id>.mode.flags` | array | `[]` | Argv appended for this mode (empty for a plain/normal mode). |
+| `agents.<id>.mode.dangerous` | bool | `false` | Semantic signal (audit + TUI emphasis); does not change the flags. |
+
+**Merge rules.** Scalar/list fields (`binary`, `version_args`,
+`default_args`, `install_hint`) merge **field-by-field** over the
+shipped default for that id — omit a field to keep the default. The
+mode list is **replace-not-merge**: supplying any `[[agents.<id>.mode]]`
+table wholly replaces that id's default modes (you cannot append a
+single mode); supplying none inherits the defaults. A brand-new id
+(no shipped default) gets `binary = <id>`, `version_args =
+["--version"]`, `default_args = []`, `install_hint = ""`, and **must**
+declare at least one `[[agents.<id>.mode]]` or load fails.
+
+```toml
+[agents.claude]
+default_args = ["--model", "claude-sonnet-4-6"]
+
+# A custom agent: declares a binary and at least one mode.
+[agents.myagent]
+binary       = "my-agent"
+install_hint = "install: pipx install my-agent"
+
+[[agents.myagent.mode]]
+id    = "normal"          # first entry → the default mode
+
+[[agents.myagent.mode]]
+id        = "yolo"
+label     = "yolo (unrestricted)"
+flags     = ["--auto-approve"]
+dangerous = true
+```
+
+**File-only.** The `[agents.<id>]` catalog (per-agent scalar fields
+and the `[[agents.<id>.mode]]` array-of-tables) is edited in the
+config file directly — like the [`[container]`](#container-table)
+templates, it is **not** exposed on the TUI ⚙ Settings screen, which
+covers scalar keys only. The catalog is canonical here; guides link
+to this section rather than re-document it.
 
 ## `[container]` table
 

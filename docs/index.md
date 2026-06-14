@@ -25,7 +25,8 @@ kinds of pages, four different purposes:
 - **[guides/](guides/) — how-to recipes.** "I have a working
   setup, now I want to *do* something." Operate (onboard,
   incident, upgrade), harden, customise, debug — including
-  [tuning dashboard render performance](guides/debug/render-performance.md).
+  [running agents in a container](guides/customise/run-agents-in-a-container.md)
+  and [tuning dashboard render performance](guides/debug/render-performance.md).
 - **[reference/](reference/) — reference.** Every command, every
   flag, every config key, every audit event. Look up, don't read.
 - **[explain/](explain/) — explanation.** Why uxon's model looks

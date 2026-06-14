@@ -126,6 +126,32 @@ pane (background `npm install`, `docker compose up`, etc.) are
 session manager, not `tmux`. Look them up with `pgrep -u
 <user>_agent` and kill explicitly.
 
+## Container path: also stop the container
+
+If the session ran inside a container (the `[container]` feature, or
+a PATH wrapper that `docker exec`s — see
+[`../customise/run-agents-in-a-container.md`](../customise/run-agents-in-a-container.md)),
+`tmux kill-session` reaps only the **client-side** `docker exec`
+process. **Whether the in-container agent dies on that disconnect is
+runtime-dependent and is not verified for this release** — a runtime
+that orphans it leaves a `--dangerously-skip-permissions` agent
+running with full authority, **invisible to `uxon list` / the TUI /
+the audit trail**, possibly mid-write. That is a containment failure,
+not just a leaked process.
+
+So for any containerised session, do not trust the kill alone — stop
+the container too:
+
+```bash
+sudo -niu <user>_agent docker stop <container-name>   # or: podman stop
+# confirm nothing is left inside:
+sudo -niu <user>_agent docker top <container-name>    # errors once stopped
+```
+
+Until reaping is confirmed for your specific runtime, treat the
+container path as **requiring** this explicit stop. `uxon` does not
+tear down a user's project container for you.
+
 ## Revoke whatever it had access to
 
 The agent may have had ambient credentials. Assume compromised:
@@ -223,4 +249,6 @@ meantime.)
   revoke-and-reissue procedure.
 - [`forward-audit-to-collector.md`](forward-audit-to-collector.md)
   — why central audit pays off in incident response.
+- [`../customise/run-agents-in-a-container.md`](../customise/run-agents-in-a-container.md)
+  — the container path and its kill caveat.
 - [`SECURITY.md`](../../../SECURITY.md) — threat-model recap.

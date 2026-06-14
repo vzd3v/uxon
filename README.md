@@ -152,6 +152,10 @@ itself. `cursor` has no `auto` mode.
 version, and status. The TUI auto-detects newly-installed
 agents and offers a one-keypress enable.
 
+Agents can optionally run **inside a container** (off by default),
+composed on top of the paired account — see
+[`docs/guides/customise/run-agents-in-a-container.md`](docs/guides/customise/run-agents-in-a-container.md).
+
 ## Versioning
 
 `uxon` follows [SemVer](https://semver.org/). `uxon --version`

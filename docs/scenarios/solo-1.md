@@ -36,6 +36,8 @@ sessions on it.
   [`guides/customise/tune-refresh-cadence.md`](../guides/customise/tune-refresh-cadence.md)
 - **Work in a git worktree** —
   [`guides/customise/worktrees.md`](../guides/customise/worktrees.md)
+- **Run the agent in a container** —
+  [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md)
 
 ## Reference
 
@@ -46,7 +48,7 @@ sessions on it.
 ## Worth understanding
 
 - [`explain/isolation-model.md`](../explain/isolation-model.md)
-  — why OS users instead of containers.
+  — the OS-user model, and how a container composes on top of it.
 - [`explain/audit-channel-design.md`](../explain/audit-channel-design.md)
   — what `uxon` records and why (also relevant for solo, since the
   channel is on by default; you can disable it via `audit.enabled

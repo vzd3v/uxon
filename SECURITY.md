@@ -20,8 +20,14 @@ public issues for security reports.
 
 ## Threat model
 
-uxon is a privileged orchestrator on a shared host. The trust
-boundaries are:
+uxon is a privileged orchestrator that pairs each developer with a
+low-privilege launch user and runs the agent under it via
+`sudo -iu`, across one or more Linux hosts. It is **orthogonal to how
+the agent process itself is isolated**: OS-user pairing is the
+default, and it composes with a containerised agent rather than
+competing with one (see
+[Why OS users, and where containers fit](#why-os-users-and-where-containers-fit)).
+The trust boundaries are:
 
 1. **Caller → launch user.** uxon uses `sudo -iu <user>` to fork
    `tmux` and the agent binary as a different OS user. Authorisation
@@ -125,9 +131,12 @@ boundaries are:
   that defeats the paired-account model, is the operator's
   responsibility.
 - **Container / VM isolation between users.** uxon is a thin
-  wrapper over `tmux` + `sudo` + `ssh`. It does not configure
-  cgroups, AppArmor, seccomp, kernel namespaces, or per-UID
-  network policies.
+  wrapper over `tmux` + `sudo` + `ssh`. It can prepend an
+  operator-supplied container exec prefix (`[container]`), but it
+  models no runtime semantics and does not configure cgroups,
+  AppArmor, seccomp, kernel namespaces, or per-UID network policies
+  — the container definition is the operator's to harden (see
+  [Why OS users, and where containers fit](#why-os-users-and-where-containers-fit)).
 - **tmux configuration.** uxon can apply a small set of tmux `set`
   options (mouse, OSC-52 passthrough, extended keys,
   terminal-features) to the sessions it launches, layered on top of
@@ -144,34 +153,30 @@ boundaries are:
   the host's own `sudo` trail covers cross-user invocations, but
   uxon is not a replacement for an enterprise audit pipeline.
 
-## Why OS users instead of containers
+## Why OS users, and where containers fit
 
-`uxon` uses dedicated low-privilege Linux users (`<user>_agent`)
-and `sudo -iu` rather than spinning up a container per agent
-session. Docker / Podman are stronger isolation primitives, but on
-a shared development host they add four kinds of operational cost:
+`uxon` pairs each developer with a dedicated low-privilege Linux
+user (`<user>_agent`) and runs the agent under it via `sudo -iu`.
+That OS-user pairing is `uxon`'s isolation default — but it is
+**orthogonal to whether the agent also runs in a container**, not an
+alternative to it. The two compose: you can run a containerised
+agent *as* `<user>_agent`, and the pairing keeps the sandbox intact
+(see
+[`docs/guides/customise/run-agents-in-a-container.md`](docs/guides/customise/run-agents-in-a-container.md)).
 
-- **Bind-mount UID mapping.** With naive `docker run` defaults,
-  files created in the container come back owned by `root` (or
-  whatever UID was baked in) on the host, breaking save-and-edit.
-  Rootless Podman with the `:U` mount option, and rootless Docker
-  via `subuid` / `subgid`, close this — at the cost of per-host
-  setup that is itself non-trivial.
-- **Networking.** Anything the agent talks to on `localhost` (a
-  local DB, a model proxy, an internal service, an
-  `mDNS` / `.local` host) needs `host.docker.internal`,
-  `--network=host`, or explicit port plumbing. SSH-agent
-  forwarding needs socket bind-mounts and breaks across
-  reconnects.
-- **Auth duplication.** `~/.claude`, `~/.gitconfig`, `~/.aws/`,
-  `known_hosts`, SSH keys — each has to be passed through, or the
-  container becomes a second place to re-auth every agent.
-- **Per-image maintenance.** Tool updates → image rebuilds → push
-  or share. For a team that just wants "Claude Code with the
-  project's deps", this is extra operational work.
+What OS-user pairing provides is ordinary Linux UID separation: the
+agent cannot read files outside its UID's reach, cannot signal
+another UID's processes, cannot read another user's `~/.ssh/`. That
+is enough when the host's threat model is "developers on this team,
+plus their agents running yolo by accident". It is not enough when
+you do not trust the developers logging into the box — for that, run
+`uxon` itself inside a VM (or container) per team and keep the
+OS-user model inside it. The layers compose.
 
-OS-user isolation removes those four at the cost of relying on
-Linux user separation rather than container primitives:
+### What you keep on the same kernel
+
+OS-user separation alone does not narrow these, whether or not the
+agent is containerised with shared namespaces:
 
 - **Same kernel.** A kernel-level escape from inside the agent
   binary reaches the host. Containers narrow this surface via
@@ -179,21 +184,64 @@ Linux user separation rather than container primitives:
 - **Same network namespace.** The agent can reach `127.0.0.1`
   services on the host and scan the LAN. `iptables` / `nftables`
   rules per UID can mitigate, but uxon does not configure them.
+  A container run with `--network=host` keeps this exposure.
 - **Same `/proc`.** Without `hidepid=2` mounted on `/proc`, every
   user can see every other user's command lines and environments
   (not their memory).
+- **Bind-mount UID mapping.** With naive `docker run` defaults,
+  files created in the container come back owned by `root` (or
+  whatever UID was baked in) on the host, breaking save-and-edit.
+  Rootless Podman with the `:U` mount option, and rootless Docker
+  via `subuid` / `subgid`, close this — at the cost of per-host
+  setup that is itself non-trivial.
 
-The isolation `<user>_agent` actually provides is what regular
-Linux UID separation provides: the agent cannot read files outside
-its UID's reach, cannot signal another UID's processes, cannot
-read another user's `~/.ssh/`. That is enough when the host's
-threat model is "developers on this team, plus their agents
-running yolo by accident". It is not enough when you do not trust
-the developers logging into the box.
+### Containerising does not relocate the credential exposures
 
-If you need stronger isolation than that, run uxon itself inside a
-VM (or container) per team and keep the OS-user model inside it.
-The layers compose.
+Wrapping the agent in a container does **not** move the
+home-secrets, `ForwardAgent`, or `allowed_roots` exposures
+elsewhere — in several ways it widens them:
+
+- **Bind-mounting auth dirs preserves or widens secrets reach.** To
+  make `~/.claude`, `~/.gitconfig`, `~/.aws/`, or an SSH-agent
+  socket usable inside the container you bind-mount them in. Those
+  same secrets are then reachable from inside the container exactly
+  as they were from `<user>_agent`'s home — the four sudo/attach
+  caveats above still apply, and a broader mount widens the reach.
+- **The host writable-probe is a UX hint, not a container-side
+  control.** uxon's `allowed_roots` / write-access check inspects
+  the **host** path. Under UID mapping the container-side
+  writability of that path can diverge, so the probe carries **no
+  security meaning inside the container** — treat it as a
+  convenience hint, not an enforcement boundary.
+
+### The docker-group caveat (root-equivalence)
+
+For `<launch_user>` to drive `docker exec / inspect / start /
+compose` against a **rootful** daemon it needs docker-group
+membership (or rootful-socket access), which is **root-equivalent on
+the host** (`docker run -v /:/host …` reads and writes anything).
+That negates the paired-account isolation the rest of this document
+relies on: a yolo agent in a docker-group account can escalate to
+host root via the daemon.
+
+**Run rootless, and the templates do not change.** Under rootless
+docker the `docker` CLI and `docker compose` are byte-for-byte the
+same invocations — only the daemon/socket differ (run as the user,
+socket under `$XDG_RUNTIME_DIR`, not root-owned). Rootless podman
+differs only in the binary name. So the recommended posture
+(rootless, daemon-as-user) costs zero template divergence and keeps
+the `<user>_agent` sandbox intact. Keep the `subuid` / `subgid` and
+"files come back owned by root" caveats above in mind — they are
+more relevant, not less, once containers are actually used.
+
+**Rootless is necessary but not sufficient.** The sandbox holds only
+if the container *definition* does not itself re-grant host access.
+A `--privileged` container, host namespaces (`--network=host` /
+`--pid=host`), broad bind mounts (`-v /:/host`), or mounting the
+runtime socket all undo it. uxon cannot enforce this — the
+operator-supplied `create_template` is opaque by design — so a safe
+container definition is an operator responsibility, not a property
+uxon guarantees.
 
 ## Hardening recommendations
 

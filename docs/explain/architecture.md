@@ -305,11 +305,19 @@ Two layers, merged in order (later wins):
    is itself inside an `allowed_roots` entry. The TUI never writes
    project config.
 
-The single source of truth for known keys is
+The single source of truth for known **scalar** keys is
 `src/uxon/infra/settings.py::SETTINGS_SPECS`. Add a key there in
 the same commit as the matching `DEFAULT_CONFIG` / `Config`
 changes in `src/uxon/domain/config.py` and the `load_config`
 read path in `src/uxon/infra/config_loader.py`.
+
+The nested structures — the agent catalog (`[agents.<id>]`
+array-of-modes) and the `[container]` argv-list templates — are
+**file-only**: `SettingSpec` cannot model array-of-tables or dynamic
+keys, so they are edited in the config file directly and are not on
+the ⚙ Settings screen. Their canonical reference is
+[`reference/configuration.md`](../reference/configuration.md), not
+`SETTINGS_SPECS`.
 
 ## Security boundaries
 

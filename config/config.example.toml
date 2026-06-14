@@ -343,7 +343,9 @@ default_args = []
 # on_missing      = "off"          # off | start | create
 # on_missing_mode = "prompt"       # prompt | auto
 # start_template  = ["docker", "start", "{name}"]
-# create_template = ["docker", "run", "-d", "--name", "{name}", "-w", "{dir}", "my-image"]
+# # Define the container in a compose.yml next to the project and let
+# # uxon bring it up — create_template runs in the host project dir:
+# create_template = ["docker", "compose", "up", "-d"]
 #
 # Translate the host working directory to a container path (longest
 # matching host prefix wins; no match → host path verbatim):

@@ -61,6 +61,9 @@ outside its corner.
   reviews.
 - [`guides/harden/enable-hidepid-correctly.md`](../guides/harden/enable-hidepid-correctly.md)
   — `/proc/<pid>` visibility caveats with the dashboard.
+- [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md)
+  — run the agent in a (rootless) container on top of the paired
+  account for a stronger escape boundary.
 
 ## Reference
 
@@ -70,7 +73,7 @@ outside its corner.
 
 ## Worth understanding once
 
-- [`explain/isolation-model.md`](../explain/isolation-model.md) — why OS users, not containers.
+- [`explain/isolation-model.md`](../explain/isolation-model.md) — the OS-user model, and how a container composes on top of it.
 - [`explain/supervision-without-impersonation.md`](../explain/supervision-without-impersonation.md) — the property at the heart of the team setup, and its three honest caveats.
 - [`explain/audit-channel-design.md`](../explain/audit-channel-design.md) — what's recorded and why journald.
 - [`explain/sizing-a-host.md`](../explain/sizing-a-host.md) — RAM/CPU/disk planning for N developers.
