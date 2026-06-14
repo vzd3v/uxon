@@ -1,0 +1,205 @@
+# SPDX-License-Identifier: MIT
+"""Real-runtime container launch: in-container exec + kill-reaping.
+
+Opt-in, marker-gated, and parametrized over docker and podman. Proves
+the two properties a mocked subprocess boundary cannot:
+
+* **In-container exec** — the agent command runs *inside* the container,
+  evidenced by a marker file that only the in-container stub can create.
+* **Kill-reaping** — ending the tmux session leaves no in-container agent
+  process behind (``<runtime> top`` shows it gone). A kill that orphaned
+  the agent would be a real regression, not just a tidiness issue.
+
+The suite drives uxon's actual launch path: the project-layer config
+merge (the unique container name comes from a ``.uxon.toml``), the
+readiness probe + create step, and the single exec-site command builder.
+It never builds an image — a stock base plus a bind-mounted stub agent
+stands in for a real one.
+
+Skipped entirely when no runtime is reachable, so a host without docker
+or podman (or with an unreachable daemon) runs them as clean skips.
+"""
+
+from __future__ import annotations
+
+import getpass
+import subprocess
+import time
+from pathlib import Path
+from unittest import mock
+
+import pytest
+from conftest import (  # type: ignore[import-not-found]
+    AGENT_SENTINEL,
+    BASE_IMAGE,
+    COMPOSE_TEMPLATE,
+    PROBE_TIMEOUT_SEC,
+    Runtime,
+    write_project,
+)
+from helpers import make_config  # type: ignore[import-not-found]
+
+from uxon.domain.args import ParsedArgs
+from uxon.domain.config import Config
+
+pytestmark = pytest.mark.container
+
+
+def _operator_container_table(rt: Runtime) -> dict[str, object]:
+    """The operator ``[container]`` table for ``rt`` (argv templates only).
+
+    Mirrors what ``config/config.toml`` would carry: the exec wrap, the
+    state probes, and a ``create_template`` delegating to ``compose`` —
+    all opaque operator argv. The project ``.uxon.toml`` supplies only the
+    name (merged in by :func:`_load_container`).
+    """
+    return {
+        "enabled": True,
+        # name comes from the project .uxon.toml; a name_template is still
+        # required by validation, so give a harmless fallback.
+        "name_template": "uxon-it-{project_slug}",
+        "exec_template": [rt.binary, "exec", "-i", "-w", "{dir}", "{name}"],
+        "is_running_cmd": [rt.binary, "top", "{name}"],
+        "exists_cmd": [rt.binary, "container", "inspect", "{name}"],
+        "create_template": [rt.binary, "compose", "up", "-d"],
+        "on_missing": "create",
+        "on_missing_mode": "auto",
+    }
+
+
+def _load_container(rt: Runtime, project_dir: Path):
+    """Build a validated ContainerConfig the way the loader does.
+
+    Merges the operator table with the project ``.uxon.toml`` through the
+    real deny-by-default allowlist, so the unique name genuinely flows
+    from the project file (and is re-validated) rather than being injected
+    directly — exercising the production trust split.
+    """
+    from uxon.infra import config_loader
+
+    operator = {"container": _operator_container_table(rt)}
+    project = config_loader.load_toml(project_dir / ".uxon.toml")
+    # The allowlist merges the project's surviving leaves (here, ``name``)
+    # onto the operator table; only that merged table is trusted to build.
+    filtered = config_loader.project_allowlist(project, operator)
+    container_tbl = filtered.get("container", operator["container"])
+    return config_loader.build_container_config(container_tbl)  # type: ignore[arg-type]
+
+
+def _cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
+    container = _load_container(rt, project_dir)
+    return make_config(
+        allowed_roots=[str(project_dir)],
+        # Per-test socket under tmp_path so this never touches a real uxon
+        # server and teardown is total.
+        tmux_socket_template=str(socket_path),
+        container=container,
+    )
+
+
+def _in_container_pids(rt: Runtime, name: str) -> str:
+    """``<runtime> top`` output, or '' if the container is gone."""
+    cp = subprocess.run(
+        [rt.binary, "top", name],
+        capture_output=True,
+        text=True,
+        timeout=PROBE_TIMEOUT_SEC,
+        check=False,
+    )
+    return cp.stdout if cp.returncode == 0 else ""
+
+
+def _kill_tmux(socket_path: Path, session: str) -> None:
+    subprocess.run(
+        ["tmux", "-S", str(socket_path), "kill-session", "-t", session],
+        capture_output=True,
+        text=True,
+        timeout=PROBE_TIMEOUT_SEC,
+        check=False,
+    )
+
+
+def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_path: Path) -> None:
+    """End-to-end: create → exec inside container → kill reaps the agent.
+
+    Asserts (a) the marker file the stub touches appears, proving the
+    command ran inside the container, and (b) after ``tmux kill-session``
+    the in-container agent process is gone.
+    """
+    from uxon.app import launch as launch_app
+    from uxon.infra import tmux
+
+    launch_user = getpass.getuser()
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    socket_path = tmp_path / "uxon.sock"
+
+    stub_path = write_project(project_dir, runtime.container_name)
+    # The compose file is the create_template's input — stock base + the
+    # bind mounts; no build.
+    (project_dir / "compose.yml").write_text(
+        COMPOSE_TEMPLATE.format(
+            image=BASE_IMAGE,
+            name=runtime.container_name,
+            project_dir=project_dir,
+            stub_path=stub_path,
+        )
+    )
+
+    cfg = _cfg(runtime, project_dir, socket_path)
+
+    # 1. Readiness: container is absent → on_missing="create" runs the
+    #    compose create_template (the real ensure_container_ready path).
+    launch_app.ensure_container_ready(cfg, str(project_dir), launch_user)
+
+    # 2. Build the real launch request (the single exec-site wrap) and run
+    #    it as a detached tmux session — the same argv the CLI would exec,
+    #    minus the process-replacing execvp. Force the classic (new-session)
+    #    flow so the request shape is deterministic even when this runs
+    #    inside an outer tmux client.
+    args = ParsedArgs(action="run", agent="claude", permission_mode="normal")
+    with mock.patch("uxon.infra.tmux.tmux_nesting_mode", return_value="execvp"):
+        req = tmux._build_tmux_launch_request(
+            str(project_dir), "uxon-it@claude", args, cfg, None, launch_user
+        )
+    for pre in req.prelaunch:
+        subprocess.run(list(pre), check=True, timeout=PROBE_TIMEOUT_SEC)
+    # Detach (-d) so the test process is not replaced; same argv otherwise.
+    cmd = list(req.cmd)
+    new_session_idx = cmd.index("new-session")
+    cmd.insert(new_session_idx + 1, "-d")
+    subprocess.run(cmd, check=True, timeout=PROBE_TIMEOUT_SEC)
+
+    try:
+        # 3. AC-C2: the stub ran inside the container — the marker appears
+        #    on the bind-mounted /work (host-side project dir).
+        marker = project_dir / ".agent-ran"
+        deadline = time.monotonic() + PROBE_TIMEOUT_SEC
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert marker.exists(), "stub agent did not run inside the container"
+
+        # 4. AC-B5: killing the tmux session reaps the in-container agent.
+        #    The container itself stays up (PID 1 idles on ``tail``), so the
+        #    agent's ``sleep`` is the unambiguous signal of an orphan.
+        before = _in_container_pids(runtime, runtime.container_name)
+        assert AGENT_SENTINEL in before, "expected the idle agent process before kill"
+        _kill_tmux(socket_path, "uxon-it@claude")
+
+        deadline = time.monotonic() + PROBE_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            if AGENT_SENTINEL not in _in_container_pids(runtime, runtime.container_name):
+                break
+            time.sleep(0.2)
+        after = _in_container_pids(runtime, runtime.container_name)
+        assert AGENT_SENTINEL not in after, (
+            "kill-session left the in-container agent running (not reaped)"
+        )
+    finally:
+        _kill_tmux(socket_path, "uxon-it@claude")
+        subprocess.run(
+            ["tmux", "-S", str(socket_path), "kill-server"],
+            capture_output=True,
+            timeout=PROBE_TIMEOUT_SEC,
+            check=False,
+        )

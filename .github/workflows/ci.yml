@@ -6,6 +6,29 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   checks:
     uses: ./.github/workflows/_checks.yml
+
+  # Opt-in real-runtime container suite. Kept OUT of the reusable check
+  # suite (the merge gate) so the gate stays fast and never depends on a
+  # container daemon. This job is informational: `continue-on-error` means
+  # a failure here never blocks a merge, and it is not part of the required
+  # `checks` set. Anyone with rootless docker/podman can run the same suite
+  # locally with `pytest -m container`.
+  container-runtime:
+    name: container runtime (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 -m pip install -e ".[dev]"
+      # ubuntu-latest ships a working docker daemon; the suite self-skips
+      # any runtime whose binary is absent or whose daemon is unreachable.
+      - run: pytest -m container -rs

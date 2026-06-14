@@ -125,7 +125,13 @@ reportMissingImports = "warning"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Deselect the opt-in real-runtime container suite by default: it needs a
+# working docker/podman daemon and must never run in the fast merge gate or
+# a plain ``pytest tests/``. Run it explicitly with ``pytest -m container``.
+addopts = "-q -m 'not container'"
+markers = [
+    "container: opt-in tests that need a working docker/podman runtime (deselected by default)",
+]
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:textual.*",
