@@ -22,13 +22,18 @@ from unittest import mock
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.container import (
+    CONTAINER_NAME_ENV,
     ContainerConfig,
     apply_path_map,
+    container_pidfile,
     decide_container_action,
+    is_valid_container_name,
     kill_caveat,
+    render_stop_template,
     resolve_container_name,
     validate_container_name,
     validate_path_map,
+    wrap_agent_for_teardown,
 )
 
 
@@ -194,6 +199,39 @@ class ExecWrapTests(unittest.TestCase):
         # -w token is the container-side path, not the host path.
         self.assertIn("/work", cmd)
         self.assertNotIn("/srv/projects/myapp", cmd[cmd.index("docker") :])
+
+    def test_stop_template_stashes_name_and_wraps_agent(self) -> None:
+        # Teardown opt-in (AC-B5): the new-session argv stashes the resolved
+        # name in the session env and the agent is wrapped so it records its
+        # in-container PID, while the exec prefix is unchanged.
+        c = ContainerConfig(
+            enabled=True,
+            name_template="proj-{project_slug}",
+            exec_template=_EXEC,
+            stop_template=("docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile})"),
+        )
+        cmd = list(self._build(_cfg(c)).cmd)
+        # ``-e UXON_CONTAINER=proj-myapp`` rides the new-session argv.
+        self.assertIn("-e", cmd)
+        self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
+        # The agent is wrapped: exec prefix, then ``sh -c '…' uxon-agent claude …``.
+        tail = cmd[cmd.index("docker") :]
+        self.assertEqual(
+            tail[:6], ["docker", "exec", "-it", "-w", "/srv/projects/myapp", "proj-myapp"]
+        )
+        self.assertEqual(tail[6:8], ["sh", "-c"])
+        self.assertIn("echo $$ >", tail[8])
+        # The agent argv survives intact after the ``uxon-agent`` $0 sentinel.
+        self.assertEqual(
+            tail[tail.index("uxon-agent") + 1 :], ["claude", "--dangerously-skip-permissions"]
+        )
+
+    def test_enabled_without_stop_template_has_no_teardown_wiring(self) -> None:
+        # Enabled but no stop_template: no session env, no agent wrapper.
+        c = ContainerConfig(enabled=True, name_template="proj-{project_slug}", exec_template=_EXEC)
+        cmd = list(self._build(_cfg(c)).cmd)
+        self.assertNotIn(CONTAINER_NAME_ENV, " ".join(cmd))
+        self.assertNotIn("sh", cmd[cmd.index("docker") :])
 
 
 class NameSafetyTests(unittest.TestCase):
@@ -499,6 +537,59 @@ class KillCaveatTests(unittest.TestCase):
         # Zero internals: no usernames, host paths, or session names.
         for leaked in ("dana", "/srv", "uxon-", "@claude"):
             self.assertNotIn(leaked, caveat)
+
+    def test_stop_template_set_suppresses_caveat(self) -> None:
+        # AC-B5: with teardown configured the agent is reaped, so no caveat.
+        c = ContainerConfig(
+            enabled=True,
+            exec_template=("docker", "exec", "{name}"),
+            stop_template=("docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile})"),
+        )
+        self.assertIsNone(kill_caveat(c))
+
+
+class TeardownPrimitiveTests(unittest.TestCase):
+    """AC-B5 pure-domain teardown primitives (pidfile, wrap, render, name)."""
+
+    def test_pidfile_is_deterministic_per_session_and_sanitized(self) -> None:
+        # Same session → same path; different sessions → different paths.
+        self.assertEqual(container_pidfile("uxon-app@claude"), container_pidfile("uxon-app@claude"))
+        self.assertNotEqual(
+            container_pidfile("uxon-app@claude-2"), container_pidfile("uxon-app@claude")
+        )
+        # Worktree/index variants of one container resolve to distinct files.
+        self.assertNotEqual(
+            container_pidfile("uxon-app@codex"), container_pidfile("uxon-app@claude")
+        )
+        # Unsafe characters collapse to ``_`` (path safe to embed in sh -c).
+        pf = container_pidfile("uxon-a b/c@claude")
+        self.assertTrue(pf.startswith("/tmp/uxon-"))
+        self.assertNotIn(" ", pf)
+        self.assertNotIn("/", pf[len("/tmp/") :])
+
+    def test_wrap_records_pid_then_execs_agent(self) -> None:
+        wrapped = wrap_agent_for_teardown(["claude", "--flag"], pidfile="/tmp/uxon-s.pid")
+        self.assertEqual(wrapped[:2], ["sh", "-c"])
+        self.assertIn("echo $$ > /tmp/uxon-s.pid", wrapped[2])
+        self.assertIn('exec "$@"', wrapped[2])
+        # $0 sentinel then the agent argv, untouched and still a token list.
+        self.assertEqual(wrapped[3:], ["uxon-agent", "claude", "--flag"])
+
+    def test_render_stop_template_fills_per_token(self) -> None:
+        out = render_stop_template(
+            ("docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile})"),
+            name="proj-app",
+            pidfile="/tmp/uxon-s.pid",
+        )
+        self.assertEqual(
+            out, ["docker", "exec", "proj-app", "sh", "-c", "kill $(cat /tmp/uxon-s.pid)"]
+        )
+
+    def test_is_valid_container_name_matches_charset(self) -> None:
+        self.assertTrue(is_valid_container_name("proj-app_1.2"))
+        # Non-raising rejects (kill path degrades to skip-teardown, never aborts).
+        for bad in ("", "-leading", ".dot", "_under", "bad name", "a" * 129):
+            self.assertFalse(is_valid_container_name(bad))
 
 
 class CliKillCaveatTests(unittest.TestCase):

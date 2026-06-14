@@ -128,6 +128,33 @@ def _run_prepare(cmd: list[str], host_dir: str, launch_user: str) -> None:
         fail(detail or f"container command failed: {cmd[0]}")
 
 
+def run_teardown(stop_cmd: list[str], launch_user: str) -> tuple[bool, str]:
+    """Run a rendered ``stop_template`` as ``launch_user`` — best-effort.
+
+    The mirror of the exec wrap: ``uxon kill`` terminates the in-container
+    agent process uxon started, by the per-session PID the launch wrapper
+    recorded. Runs as the launch user (same per-user rootless daemon the
+    agent execs under), non-interactive prefix (the kill path has no TTY),
+    bounded timeout. Returns ``(ok, detail)`` and NEVER raises — a teardown
+    failure must not abort the ``tmux kill-session`` that follows it; the
+    caller surfaces ``detail`` as a note and proceeds.
+
+    This terminates the agent *process*, never the container: uxon still does
+    not stop or remove a container (that is the operator's resource); it only
+    cleans up the process it launched.
+    """
+    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), stop_cmd, None)
+    try:
+        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        return False, f"container teardown did not complete within {CONTAINER_CMD_TIMEOUT_SEC:.0f}s"
+    except OSError:
+        return False, f"container runtime {stop_cmd[0]!r} not found or not executable"
+    if cp.returncode != 0:
+        return False, (cp.stderr or cp.stdout or "").strip() or "container teardown failed"
+    return True, ""
+
+
 def plan_container_launch(cfg: Config, target_dir: str, launch_user: str) -> ContainerPlan:
     """Probe the container and decide the not-ready action (no side effects).
 
@@ -194,9 +221,11 @@ def plan_container_launch(cfg: Config, target_dir: str, launch_user: str) -> Con
 def run_prepare(plan: ContainerPlan, target_dir: str, launch_user: str) -> None:
     """Execute a plan's ``start``/``create`` command (after the policy/prompt).
 
-    No-op for ``exec``. ``fail`` raises with the plan's message. uxon NEVER
-    tears down a user's container — there is no stop/rm path here. ``target_dir``
-    is the HOST project dir; the prepare runs there as ``launch_user``.
+    No-op for ``exec``. ``fail`` raises with the plan's message. uxon never
+    stops or removes the container itself — there is no stop/rm path here;
+    :func:`run_teardown` (the kill path) only terminates the agent *process*.
+    ``target_dir`` is the HOST project dir; the prepare runs there as
+    ``launch_user``.
     """
     if plan.action == "exec":
         return

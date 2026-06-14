@@ -356,6 +356,7 @@ def build_container_config(container_tbl: dict[str, Any]) -> ContainerConfig:
     exists_cmd = _argv_list(container_tbl, "exists_cmd")
     start_template = _argv_list(container_tbl, "start_template")
     create_template = _argv_list(container_tbl, "create_template")
+    stop_template = _argv_list(container_tbl, "stop_template")
 
     # Project-layer data leaves (re-validated even though deny-by-default
     # admitted only these two keys).
@@ -402,6 +403,7 @@ def build_container_config(container_tbl: dict[str, Any]) -> ContainerConfig:
         exists_cmd=exists_cmd,
         start_template=start_template,
         create_template=create_template,
+        stop_template=stop_template,
         on_missing=on_missing,  # type: ignore[arg-type]
         on_missing_mode=on_missing_mode,  # type: ignore[arg-type]
         name=name,

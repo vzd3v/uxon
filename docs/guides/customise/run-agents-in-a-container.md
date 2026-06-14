@@ -33,10 +33,12 @@ Mechanically: `uxon` builds the same launch command it always does
 and runs `claude`; the shell resolves `claude` to this wrapper; the
 wrapper hands off to `docker exec` in the already-running container.
 `uxon` is unaware of the container — it sees a normal agent process.
-Because of that, `uxon` cannot ready a stopped container for you, and
-the kill caveat below applies in full. Install it on your own host
-and run a session to confirm the wrapper resolves before relying on
-it.
+Because of that, `uxon` cannot ready a stopped container for you, and —
+since `uxon` does not build the exec here — the `stop_template` teardown
+cannot apply either, so the agent orphans on kill (the omit-`stop_template`
+case under [Teardown](#teardown--reap-the-agent-on-kill)).
+Install the wrapper on your own host and run a session to confirm it
+resolves before relying on it.
 
 This is the right recipe when you want containerisation for **one**
 agent on **one** account without touching shared config.
@@ -66,6 +68,7 @@ exists_cmd      = ["docker", "container", "inspect", "{name}"]
 on_missing      = "create"          # off | start | create
 on_missing_mode = "prompt"          # prompt | auto
 start_template  = ["docker", "start", "{name}"]
+stop_template   = ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
 create_template = ["docker", "compose", "up", "-d"]
 
 [container.path_map]
@@ -107,17 +110,29 @@ operator-only. The boundary and the validation rules are documented
 in
 [`../../reference/configuration.md`](../../reference/configuration.md#container-table).
 
-## Kill caveat (both recipes)
+## Teardown — reap the agent on kill
 
-`uxon` kills a session with `tmux kill-session`, which reaps the
-client-side exec process. **Whether the in-container agent stops on
-disconnect is runtime-dependent and has not been verified for this
-release.** A runtime that orphans the in-container process leaves a
-`--dangerously-skip-permissions` agent running, invisible to
-`uxon list` / the TUI / the audit trail — a containment failure. Until
-you have confirmed reaping for your own runtime, treat the container
-path as requiring an explicit "also stop the container" step when
-responding to a rogue agent — see
+`tmux kill-session` only severs `uxon`'s client-side exec; the
+in-container agent does **not** die on that disconnect under docker or
+podman — it orphans. An orphaned `--dangerously-skip-permissions` agent
+keeps running, invisible to `uxon list` / the TUI / the audit trail — a
+containment failure. The `stop_template` above closes this:
+
+- **At launch** `uxon` wraps the agent so it records its in-container
+  PID into a per-session pidfile (`{pidfile}`, a path `uxon` supplies).
+  One pidfile per session, so a single shared container hosting many
+  sessions (indexed re-runs, worktrees, different agents) is handled
+  precisely — never a blunt `pkill`.
+- **On kill** `uxon` kills the session, then runs `stop_template` to
+  terminate exactly that PID. The container itself is left running
+  (it is a shared resource; `uxon` never stops or removes it).
+
+Teardown is **best-effort**: if it fails (no `sh` in the image, daemon
+unreachable, …) `uxon` prints a note and the kill still completes. If
+you **omit** `stop_template`, the agent orphans as before and `uxon`
+appends a reminder at every kill; in that case treat the container path
+as requiring an explicit "also stop the container" step when responding
+to a rogue agent — see
 [`../operate/respond-to-rogue-agent.md`](../operate/respond-to-rogue-agent.md#container-path-also-stop-the-container).
 
 ## Reference

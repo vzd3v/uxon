@@ -111,6 +111,11 @@ class TuiBridge:
             "-t",
             target.name,
         ]
+        # Capture teardown before the kill, reap the orphaned in-container
+        # agent after kill-session — the same best-effort path as CLI do_kill.
+        from uxon.app.kill import prepare_container_teardown, run_container_teardown
+
+        stop_cmd = prepare_container_teardown(self.cfg, user, target.name)
         try:
             process.run_cmd(full, check=True)
         except subprocess.CalledProcessError as exc:
@@ -124,6 +129,8 @@ class TuiBridge:
                 rc=exc.returncode,
             )
             raise
+        if stop_cmd:
+            run_container_teardown(stop_cmd, user, target.name)
         _audit.audit(
             "session.kill",
             session=target.name,
@@ -136,6 +143,7 @@ class TuiBridge:
         # TUI 'D' / kill-all-mine. Mirrors ``on_kill_all_reachable``'s
         # audit shape (``target_users``, ``killed_count``, ``dry_run``)
         # for the single-user case.
+        from uxon.app.kill import prepare_container_teardown, run_container_teardown
         from uxon.infra import audit as _audit
 
         fresh = sessions_probe.collect_sessions([self.launch_user], self.cfg)
@@ -146,9 +154,12 @@ class TuiBridge:
                 "-t",
                 s.name,
             ]
+            stop_cmd = prepare_container_teardown(self.cfg, self.launch_user, s.name)
             cp = process.run_cmd(full, check=False)
             if cp.returncode == 0:
                 killed_count += 1
+                if stop_cmd:
+                    run_container_teardown(stop_cmd, self.launch_user, s.name)
         _audit.audit(
             "session.kill_all",
             outcome="ok" if killed_count == len(fresh) else "error",
@@ -320,6 +331,8 @@ class TuiBridge:
         # empty ``reachable_users`` collapses to "kill all my own
         # sessions", which is the same behaviour the legacy
         # ``kill-all-global`` had when sudo was unavailable.
+        from uxon.app.kill import prepare_container_teardown, run_container_teardown
+
         reachable = self.sudo_caps.reachable_users if self.sudo_caps else frozenset()
         users = sorted({self.launch_user, *reachable})
         killed_count = 0
@@ -332,10 +345,13 @@ class TuiBridge:
                     "-t",
                     s.name,
                 ]
+                stop_cmd = prepare_container_teardown(self.cfg, u, s.name)
                 cp = process.run_cmd(full, check=False)
                 attempted += 1
                 if cp.returncode == 0:
                     killed_count += 1
+                    if stop_cmd:
+                        run_container_teardown(stop_cmd, u, s.name)
         # Operationally the most-significant kill_all path: cross-user
         # bulk kill from the TUI.  Audit emit covers the whole sweep,
         # not per-session — matches the spec's `target_users` /

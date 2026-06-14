@@ -178,11 +178,14 @@ daemon and a compose file resolves where it lives on the host.
 | `container.on_missing_mode` | `"prompt"` / `"auto"` | `"prompt"` | How a permitted start/create is triggered. `auto` runs the template without asking; `prompt` shows a TUI confirm before running it. The CLI is non-interactive, so it always acts auto-if-permitted. |
 | `container.start_template` | array | `[]` | Argv that starts a stopped container. Required when `on_missing` is `start` or `create`. |
 | `container.create_template` | array | `[]` | Argv that creates an absent container. Required when `on_missing` is `create`. |
+| `container.stop_template` | array | `[]` | Argv run on **kill** to terminate this session's in-container agent. Placeholders: `{name}` and `{pidfile}` (uxon-supplied path where the launch wrapper recorded the agent's in-container PID, unique per session). Optional; when set, uxon wraps the agent at launch to record its PID and reaps it on kill (the container is left running). Needs `sh` in the image. |
 
 The container is resolved deterministically per **(launch user,
 project directory)** — the same container is reused across sessions,
-never one per session. uxon **never** stops or removes a container; it
-only execs, and (when `on_missing` permits) starts or creates one.
+never one per session. uxon **never** stops or removes the container
+*itself*; it only execs, (when `on_missing` permits) starts or creates
+one, and — when `stop_template` is set — terminates the agent *process*
+it launched.
 
 **Not-ready flow.** uxon runs `is_running_cmd`; if it isn't running it
 runs `exists_cmd` to tell *stopped* from *absent*, then applies
@@ -207,12 +210,19 @@ normalized, and `..`-free.
 templates, `[container.path_map]`) are edited in `config.toml`
 directly — they are not exposed on the TUI ⚙ Settings screen.
 
-**Kill caveat.** `tmux kill-session` reaps uxon's client-side exec
-process, but whether the in-container agent stops on disconnect is
-runtime-dependent (podman in particular may orphan it). When
-`[container]` is enabled, every surface that reports a kill appends a
-one-line reminder to confirm with your runtime and stop the container
-if it is still running.
+**Teardown.** `tmux kill-session` only severs uxon's client-side exec;
+the in-container agent does **not** die on that disconnect under docker
+or podman — it orphans. Set `stop_template` to reap it: at launch uxon
+wraps the agent so it records its in-container PID into the per-session
+`{pidfile}`, and on kill it runs `stop_template` to terminate exactly
+that PID (precise even when one shared container hosts many sessions —
+indexed re-runs, worktrees, different agents), leaving the container
+running. Order is kill-then-reap: the session is killed first, then the
+orphaned process is terminated, so the kill never races tmux's own
+pane-exit teardown. Teardown is best-effort — a failure prints a note
+and never blocks the kill. If `stop_template` is **omitted**, the agent
+orphans and every surface that reports a kill appends a one-line
+reminder to stop it yourself or configure `stop_template`.
 
 ## `[tui.table]` table
 

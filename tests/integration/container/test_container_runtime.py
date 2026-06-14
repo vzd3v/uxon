@@ -45,7 +45,7 @@ from uxon.domain.config import Config
 pytestmark = pytest.mark.container
 
 
-def _operator_container_table(rt: Runtime) -> dict[str, object]:
+def _operator_container_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
     """The operator ``[container]`` table for ``rt`` (argv templates only).
 
     Mirrors what ``config/config.toml`` would carry: the exec wrap, the
@@ -58,7 +58,25 @@ def _operator_container_table(rt: Runtime) -> dict[str, object]:
         # name comes from the project .uxon.toml; a name_template is still
         # required by validation, so give a harmless fallback.
         "name_template": "uxon-it-{project_slug}",
+        # The compose file bind-mounts the host project dir at /work, so the
+        # exec wrap's ``{dir}`` (``-w``) must resolve to the CONTAINER path,
+        # not the host one — otherwise ``<runtime> exec -w <host-path>`` fails
+        # with "chdir ... no such file or directory" before the agent runs.
+        # This is the path translation a real container operator configures.
+        "path_map": {str(project_dir): "/work"},
         "exec_template": [rt.binary, "exec", "-i", "-w", "{dir}", "{name}"],
+        # Teardown mirror of the exec wrap: on kill, terminate exactly this
+        # session's in-container PID (recorded by the launch wrapper into
+        # ``{pidfile}``) and clean the file up. ``2>/dev/null`` + a trailing
+        # ``rm -f`` keep the exit status 0 even when the agent is already gone.
+        "stop_template": [
+            rt.binary,
+            "exec",
+            "{name}",
+            "sh",
+            "-c",
+            "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}",
+        ],
         "is_running_cmd": [rt.binary, "top", "{name}"],
         "exists_cmd": [rt.binary, "container", "inspect", "{name}"],
         # on_missing="create" still requires a start_template (a created
@@ -81,7 +99,7 @@ def _load_container(rt: Runtime, project_dir: Path):
     """
     from uxon.infra import config_loader
 
-    operator = {"container": _operator_container_table(rt)}
+    operator = {"container": _operator_container_table(rt, project_dir)}
     project = config_loader.load_toml(project_dir / ".uxon.toml")
     # The allowlist merges the project's surviving leaves (here, ``name``)
     # onto the operator table; only that merged table is trusted to build.
@@ -130,6 +148,7 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
     command ran inside the container, and (b) after ``tmux kill-session``
     the in-container agent process is gone.
     """
+    from uxon.app import kill as kill_app
     from uxon.app import launch as launch_app
     from uxon.infra import tmux
 
@@ -183,12 +202,18 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
             time.sleep(0.2)
         assert marker.exists(), "stub agent did not run inside the container"
 
-        # 4. AC-B5: killing the tmux session reaps the in-container agent.
-        #    The container itself stays up (PID 1 idles on ``tail``), so the
-        #    agent's ``sleep`` is the unambiguous signal of an orphan.
+        # 4. AC-B5: uxon's kill path reaps the in-container agent. Raw
+        #    ``tmux kill-session`` only severs the client-side ``exec`` and
+        #    orphans the agent under docker/podman; uxon's stop_template
+        #    teardown (driven here through the real ``do_kill``) terminates
+        #    the recorded in-container PID. The container itself stays up
+        #    (PID 1 idles on ``tail``), so the agent's ``sleep`` is the
+        #    unambiguous signal of an orphan.
         before = _in_container_pids(runtime, runtime.container_name)
         assert AGENT_SENTINEL in before, "expected the idle agent process before kill"
-        _kill_tmux(socket_path, "uxon-it@claude")
+
+        kill_args = ParsedArgs(action="kill", target_id="uxon-it@claude", force=True)
+        kill_app.do_kill(kill_args, cfg, launch_user)
 
         deadline = time.monotonic() + PROBE_TIMEOUT_SEC
         while time.monotonic() < deadline:
@@ -197,7 +222,7 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
             time.sleep(0.2)
         after = _in_container_pids(runtime, runtime.container_name)
         assert AGENT_SENTINEL not in after, (
-            "kill-session left the in-container agent running (not reaped)"
+            "uxon kill left the in-container agent running (stop_template did not reap it)"
         )
     finally:
         _kill_tmux(socket_path, "uxon-it@claude")

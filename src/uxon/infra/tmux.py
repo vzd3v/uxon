@@ -19,13 +19,17 @@ from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.container import (
+    CONTAINER_NAME_ENV,
     apply_path_map,
+    container_pidfile,
     render_exec_prefix,
     resolve_container_name,
+    wrap_agent_for_teardown,
 )
 from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import SessionInfo, slugify
 from uxon.errors import fail
+from uxon.infra import process
 from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
 
 
@@ -186,16 +190,23 @@ def resolve_container(cfg: Config, target_dir: str, launch_user: str) -> tuple[s
     return name, dir_token
 
 
-def container_exec_prefix(cfg: Config, target_dir: str, launch_user: str) -> list[str]:
-    """Return the rendered container exec prefix, or ``[]`` when disabled.
+def read_session_env(cfg: Config, user: str, session: str, var: str) -> str | None:
+    """Read one session-environment variable from a live tmux ``session``.
 
-    ``[]`` (disabled) keeps ``final_cmd`` byte-for-byte identical to the
-    pre-container build (AC-B6).
+    Used by the kill path to recover the container name uxon stashed at
+    launch (``new-session -e``). Runs under the non-interactive sudo prefix
+    (the kill path has no TTY). Returns the value, or None when the variable
+    is unset, the session is gone, or tmux errors — every "can't read it"
+    case degrades to "skip teardown", never an abort of the kill.
     """
-    if not cfg.container.enabled:
-        return []
-    name, dir_token = resolve_container(cfg, target_dir, launch_user)
-    return render_exec_prefix(cfg.container.exec_template, name=name, dir_token=dir_token)
+    base = tmux_base(user, tmux_socket_path(cfg, user), nonint=True)
+    cp = process.run_cmd(base + ["show-environment", "-t", session, var], check=False)
+    if cp.returncode != 0:
+        return None
+    # tmux prints ``VAR=value`` when set, or ``-VAR`` when explicitly unset.
+    line = cp.stdout.strip()
+    prefix = f"{var}="
+    return line[len(prefix) :] if line.startswith(prefix) else None
 
 
 def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
@@ -283,20 +294,35 @@ def _build_tmux_launch_request(
     if mode_obj is None:
         valid = ", ".join(m.id for m in spec.permission_modes)
         fail(f"unknown --mode {mode_id!r} for agent {agent_id!r}; valid modes: {valid}")
+    agent_argv = (
+        [spec.binary] + list(spec.default_args) + list(args.agent_args) + list(mode_obj.flags)
+    )
     # Container exec wrap (off by default): when enabled, the operator's
     # opaque ``exec_template`` prefixes the agent command so it runs inside a
-    # container. ``[]`` otherwise → byte-for-byte the pre-container argv. The
+    # container. Disabled → ``exec_prefix``/``session_env`` stay empty and
+    # ``final_cmd`` is byte-for-byte the pre-container argv (AC-B6). The
     # not-ready probe/start/create policy is orchestrated separately (the
     # caller runs it off the loop before launch); this single exec-site only
     # composes the resolved prefix into ``final_cmd``.
-    exec_prefix = container_exec_prefix(cfg, target_dir, launch_user)
-    final_cmd = (
-        exec_prefix
-        + [spec.binary]
-        + list(spec.default_args)
-        + list(args.agent_args)
-        + list(mode_obj.flags)
-    )
+    exec_prefix: list[str] = []
+    session_env: list[str] = []
+    if cfg.container.enabled:
+        name, dir_token = resolve_container(cfg, target_dir, launch_user)
+        exec_prefix = render_exec_prefix(
+            cfg.container.exec_template, name=name, dir_token=dir_token
+        )
+        if cfg.container.stop_template:
+            # Teardown opt-in (mirror of the launch): record the agent's
+            # in-container PID so ``uxon kill`` terminates exactly this
+            # session's process — the container is shared across arbitrarily
+            # many sessions, so a per-session handle is the only correct
+            # target. The resolved name rides the tmux session environment
+            # (``-e``): it is the one fact the kill path cannot recompute,
+            # since ``sudo -i`` resets the pane cwd and loses the launch dir.
+            pidfile = container_pidfile(session)
+            agent_argv = wrap_agent_for_teardown(agent_argv, pidfile=pidfile)
+            session_env = ["-e", f"{CONTAINER_NAME_ENV}={name}"]
+    final_cmd = exec_prefix + agent_argv
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
     ensure_socket_parent = tuple(
@@ -319,7 +345,11 @@ def _build_tmux_launch_request(
         # and then switch the current client over to it. The set chain
         # rides the detached-create entry, before its ``new-session`` (AC3).
         create = tuple(
-            base + set_chain + ["new-session", "-dA", "-s", session, "-c", target_dir] + final_cmd
+            base
+            + set_chain
+            + ["new-session", "-dA", "-s", session, "-c", target_dir]
+            + session_env
+            + final_cmd
         )
         switch = tuple(base + ["switch-client", "-t", session])
         return LaunchRequest(
@@ -327,7 +357,13 @@ def _build_tmux_launch_request(
             prelaunch=(ensure_socket_parent, create),
             label=f"switch-client {session} (nested)",
         )
-    full = tuple(base + set_chain + ["new-session", "-As", session, "-c", target_dir] + final_cmd)
+    full = tuple(
+        base
+        + set_chain
+        + ["new-session", "-As", session, "-c", target_dir]
+        + session_env
+        + final_cmd
+    )
     return LaunchRequest(cmd=full, prelaunch=(ensure_socket_parent,), label=f"launch {session}")
 
 
@@ -342,8 +378,6 @@ def launch_in_tmux(
     server_running: bool = False,
 ) -> int:
     import shlex
-
-    from uxon.infra.process import run_cmd
 
     req = _build_tmux_launch_request(
         target_dir, session, args, cfg, branch, launch_user, server_running=server_running
@@ -360,7 +394,7 @@ def launch_in_tmux(
         print(f"exec {shlex.join(req.cmd)}")
         return 0
     for pre in req.prelaunch:
-        run_cmd(list(pre))
+        process.run_cmd(list(pre))
     os.execvp(req.cmd[0], list(req.cmd))
     return 0
 

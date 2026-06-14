@@ -26,6 +26,7 @@
     "on_missing": "off",
     "on_missing_mode": "prompt",
     "start_template": ["docker", "start", "{name}"],
+    "stop_template": ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"],
     "create_template": ["docker", "compose", "up", "-d"],
     "path_map": { "/srv/projects": "/work" }
   }

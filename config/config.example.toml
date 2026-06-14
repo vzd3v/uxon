@@ -320,19 +320,26 @@ default_args = []
 # running: ``off`` (default) execs only — a stopped/absent container
 # fails with an actionable message; ``start`` also starts a stopped
 # one; ``create`` also creates an absent one. uxon NEVER stops or
-# removes a container. ``on_missing_mode`` is ``prompt`` (the TUI shows
-# a confirm before any start/create) or ``auto`` (act without asking,
-# when permitted). The CLI is non-interactive and always acts
-# auto-if-permitted.
+# removes the container itself — only ``stop_template`` (below)
+# terminates the agent *process*. ``on_missing_mode`` is ``prompt``
+# (the TUI shows a confirm before any start/create) or ``auto`` (act
+# without asking, when permitted). The CLI is non-interactive and
+# always acts auto-if-permitted.
 #
 # Probe semantics matter: ``is_running_cmd`` must exit 0 ONLY when the
 # container is RUNNING. ``docker inspect`` exits 0 for a STOPPED
 # container too, so use ``docker top`` (exits non-zero unless running).
 # ``exists_cmd`` exits 0 when the container exists (running or stopped).
 #
-# Heads-up: ``tmux kill-session`` reaps uxon's client-side exec
-# process, but whether the in-container agent stops on disconnect is
-# runtime-dependent — confirm with your runtime if needed.
+# Teardown (``stop_template``) is the mirror of the exec wrap. ``tmux
+# kill-session`` only severs uxon's client-side exec; the in-container
+# agent orphans under docker AND podman. So at launch uxon wraps the
+# agent to record its in-container PID in ``{pidfile}`` (one per
+# session — the container is shared across many sessions), and on
+# ``uxon kill`` it runs ``stop_template`` to terminate exactly that PID
+# and leave the shared container running. Requires ``sh`` in the image.
+# Omit ``stop_template`` to keep the old behaviour (agent orphans; uxon
+# prints a reminder at every kill).
 #
 # [container]
 # enabled         = true
@@ -343,6 +350,9 @@ default_args = []
 # on_missing      = "off"          # off | start | create
 # on_missing_mode = "prompt"       # prompt | auto
 # start_template  = ["docker", "start", "{name}"]
+# # Reap this session's agent on kill ({pidfile} is uxon-supplied,
+# # unique per session); the container itself is left running:
+# stop_template   = ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
 # # Define the container in a compose.yml next to the project and let
 # # uxon bring it up — create_template runs in the host project dir:
 # create_template = ["docker", "compose", "up", "-d"]

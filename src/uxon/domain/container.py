@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -29,6 +30,24 @@ from uxon.errors import fail
 
 OnMissing = Literal["off", "start", "create"]
 OnMissingMode = Literal["prompt", "auto"]
+
+# Session-environment variable carrying the resolved container name from
+# launch to kill. Set on the tmux session via ``new-session -e`` and read
+# back with ``show-environment -t <session>`` when tearing the agent down.
+# The name (operator-chosen, not a secret) is the one fact the kill path
+# cannot recompute: ``sudo -i`` resets the pane cwd to the agent's home, so
+# the launch directory — and thus the {project_slug}-derived name — is not
+# reliably recoverable from the live session.
+CONTAINER_NAME_ENV = "UXON_CONTAINER"
+
+# Where the launch wrapper drops the agent's in-container PID. ``/tmp`` is
+# writable in essentially every base image; the teardown reads it back from
+# inside the container (same PID namespace as the recorded pid).
+_CONTAINER_PIDFILE_DIR = "/tmp"
+# Filename-safe charset for the session-derived pidfile name; anything else
+# is collapsed to ``_`` so the path is safe to embed in the operator's
+# ``sh -c`` stop_template without quoting surprises.
+_PIDFILE_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._@-]")
 
 # Container name charset (mirrors the docker/podman name rule and AC-A6 for
 # agent ids): a leading word char, then word/dot/dash. Rejecting a leading
@@ -48,9 +67,13 @@ class ContainerConfig:
     """Operator container schema (off by default).
 
     Templates are argv **lists**. ``name_template``/``name`` placeholders:
-    ``{user}``, ``{project_slug}``, ``{dir}``. Template placeholders:
+    ``{user}``, ``{project_slug}``, ``{dir}``. ``exec_template`` placeholders:
     ``{name}`` (resolved container name) and ``{dir}`` (container-side path
-    after ``path_map``).
+    after ``path_map``). ``stop_template`` placeholders: ``{name}`` and
+    ``{pidfile}`` (the in-container PID file uxon's launch wrapper records,
+    keyed per session) — the mirror of the launch path that lets ``uxon
+    kill`` terminate the exact agent process it started, leaving the shared
+    container itself untouched.
     """
 
     enabled: bool = False
@@ -60,6 +83,7 @@ class ContainerConfig:
     exists_cmd: tuple[str, ...] = ()
     start_template: tuple[str, ...] = ()
     create_template: tuple[str, ...] = ()
+    stop_template: tuple[str, ...] = ()
     on_missing: OnMissing = "off"
     on_missing_mode: OnMissingMode = "prompt"
     # Project-layer (``.uxon.toml``) data-only overrides.
@@ -150,6 +174,60 @@ def _safe_format(template: str, what: str, **values: str) -> str:
     raise AssertionError("unreachable")
 
 
+def is_valid_container_name(name: str) -> bool:
+    """Non-raising form of :func:`validate_container_name`.
+
+    The kill path reads the container name back from the live session
+    environment and must not abort the destructive ``kill-session`` on a
+    malformed value — it degrades to "skip teardown" instead. This keeps the
+    same charset invariant without the ``fail`` (SystemExit) of the launch-
+    time validator.
+    """
+    return bool(name) and len(name) <= _NAME_MAX_LEN and bool(_NAME_RE.match(name))
+
+
+def container_pidfile(session: str) -> str:
+    """Deterministic in-container PID-file path for a tmux ``session``.
+
+    The launch wrapper writes the agent's in-container PID here; the kill
+    teardown reads it back. Keyed by the (server-unique) session name — never
+    the container or agent — so each of the arbitrarily many sessions sharing
+    one container (indexed re-runs, worktrees, different agents) targets
+    exactly its own process. The session is sanitized to a filename-safe
+    charset so the path is safe to embed in the operator's ``sh -c``
+    stop_template.
+    """
+    safe = _PIDFILE_UNSAFE_RE.sub("_", session)
+    return f"{_CONTAINER_PIDFILE_DIR}/uxon-{safe}.pid"
+
+
+def wrap_agent_for_teardown(agent_argv: list[str], *, pidfile: str) -> list[str]:
+    """Wrap the agent argv so it records its in-container PID for the kill.
+
+    ``sh -c 'echo $$ > <pidfile>; exec "$@"'`` runs *inside* the container
+    (after the operator exec prefix): ``$$`` is the shell's PID and ``exec``
+    replaces that shell with the agent, so the agent inherits the same PID and
+    the file holds its real in-container PID. ``exec "$@"`` keeps the agent
+    argv a list of tokens — never re-parsed by the shell — preserving the
+    argv-list injection invariant. Same idiom as
+    ``infra.container._as_user_in_dir``. Applied only when a ``stop_template``
+    is configured (the operator opted into teardown, which needs ``sh`` in the
+    image).
+    """
+    script = f'echo $$ > {shlex.quote(pidfile)}; exec "$@"'
+    return ["sh", "-c", script, "uxon-agent", *agent_argv]
+
+
+def render_stop_template(template: tuple[str, ...], *, name: str, pidfile: str) -> list[str]:
+    """Render the ``stop_template`` argv with ``{name}``/``{pidfile}`` filled.
+
+    Per-token formatting keeps the argv-list shape (each ``{name}`` is one
+    token). ``name`` is the validated resolved name read back from the
+    session; ``pidfile`` the deterministic per-session path.
+    """
+    return [_safe_format(tok, "stop_template", name=name, pidfile=pidfile) for tok in template]
+
+
 def validate_container_name(name: str) -> str:
     """Validate the RESOLVED container name (after expansion, any source).
 
@@ -209,25 +287,28 @@ Action = Literal["exec", "start", "create", "fail"]
 
 
 def kill_caveat(cfg: ContainerConfig) -> str | None:
-    """One-line kill-path caveat when container launch is enabled, else None.
+    """One-line kill-path caveat, or None when no reminder is warranted.
 
-    ``tmux kill-session`` reaps the client-side ``<runtime> exec`` process,
-    but whether the in-container agent dies on disconnect is runtime/version
-    dependent (podman in particular may orphan it). So at every surface that
-    tells the user a kill happened, append this reminder to confirm with the
-    runtime and stop the container if needed.
+    ``tmux kill-session`` reaps only the client-side ``<runtime> exec``
+    process; the in-container agent does NOT die on that disconnect under
+    docker or podman — it orphans. When a ``stop_template`` is configured,
+    uxon's kill path runs it to terminate the recorded in-container PID, so
+    the agent is genuinely reaped and no caveat is needed (None). When it is
+    NOT configured, the orphan risk stands, so every surface that reports a
+    kill appends this reminder.
 
     Carries ZERO agent/host internals: ``<runtime>`` is the operator's
     ``exec_template`` binary (a config value, e.g. ``docker``/``podman``);
     the container name is operator-chosen too. No usernames, host paths, or
     session names leak here.
     """
-    if not cfg.enabled:
+    if not cfg.enabled or cfg.stop_template:
         return None
     runtime = cfg.exec_template[0] if cfg.exec_template else "docker"
     return (
-        f"if the agent runs in a container, confirm with `{runtime} top <container>` "
-        "and stop the container if it is still running"
+        f"the in-container agent is NOT reaped by the kill; confirm with "
+        f"`{runtime} top <container>` and stop it, or set [container].stop_template "
+        "so uxon terminates it for you"
     )
 
 
