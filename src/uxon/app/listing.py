@@ -492,11 +492,21 @@ def print_list(
         )
         marker = "*" if s.attached == "1" else " "
         pid_s = str(s.active_pid) if s.active_pid is not None else "-"
-        cpu_s = format_cpu_pct(s.cpu_pct)
-        ram_s = format_rss_kib(s.rss_kib)
+        # A containerized session whose container is down shows a distinct
+        # "down" marker in cpu/ram rather than a silent idle 0/— (AC-P1.8).
+        if s.container_down:
+            cpu_s = "down"
+            ram_s = "down"
+        else:
+            cpu_s = format_cpu_pct(s.cpu_pct)
+            ram_s = format_rss_kib(s.rss_kib)
         start_s = compact_time(s.created)
         last_s = compact_time(s.last_attached)
-        cmd_s = s.active_cmd or "-"
+        # For a containerized session the active pane command is the runtime
+        # client (``docker``/``sh``), not the agent — show the resolved agent
+        # id (AC-P1.4). Gated on the ``UXON_CONTAINER`` marker; non-container
+        # sessions unchanged.
+        cmd_s = (s.agent if s.container else s.active_cmd) or "-"
         path_s = s.active_path or "-"
         rows.append(
             {

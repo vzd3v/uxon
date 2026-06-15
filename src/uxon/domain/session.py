@@ -40,6 +40,19 @@ class SessionInfo:
     rss_kib: int = 0
     agent: str = "claude"  # agent id as parsed from the session name (catalog-driven)
     legacy: bool = False  # True iff name uses a non-current (legacy) prefix
+    # Container telemetry markers, read from the session env via the existing
+    # ``list-sessions -F`` batch (``#{E:VAR}`` expands to "" for an unset var,
+    # i.e. a non-container session). ``container`` is the bare container name
+    # (the ``UXON_CONTAINER`` marker — non-empty iff the session is
+    # containerized); ``container_cgroup`` is the host-side cgroup path
+    # (``UXON_CONTAINER_CGROUP``) telemetry reads to enumerate in-container PIDs.
+    # Both default to "" so a non-container session is byte-for-byte unchanged.
+    container: str = ""
+    container_cgroup: str = ""
+    # True iff this session is containerized but its container is not running
+    # (empty/absent ``cgroup.procs`` confirmed by ``is_running_cmd``). Renders a
+    # distinct "container down" indicator rather than a silent idle 0/— (AC-P1.8).
+    container_down: bool = False
 
 
 @dataclass
@@ -67,6 +80,10 @@ class TuiSession:
     # convention for "missing".
     created_iso: str = ""
     last_attached_iso: str = ""
+    # True when the session is containerized but its container is not running —
+    # the dashboard renders a distinct "container down" indicator in the
+    # cpu/ram cells rather than a silent idle 0/— (AC-P1.8).
+    container_down: bool = False
 
 
 def session_stem_for_path(target_dir: str) -> str:
@@ -249,7 +266,11 @@ def to_tui_session(
         ram=format_rss_kib(s.rss_kib),
         created=compact_time(s.created),
         last_activity=compact_time(s.last_attached),
-        cmd=s.active_cmd or "-",
+        # For a containerized session the active pane command is the runtime
+        # client (``docker``/``sh``), not the agent — substitute the resolved
+        # agent id (AC-P1.4) so search-by-cmd matches the agent. Gated on the
+        # ``UXON_CONTAINER`` marker; non-container sessions are unchanged.
+        cmd=(agent if s.container else s.active_cmd) or "-",
         path=s.active_path or "-",
         user=s.user,
         stem=stem,
@@ -257,4 +278,5 @@ def to_tui_session(
         legacy=legacy,
         created_iso=s.created,
         last_attached_iso=s.last_attached,
+        container_down=s.container_down,
     )

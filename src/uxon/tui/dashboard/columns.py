@@ -78,13 +78,24 @@ def assign_block_colors(
     return out
 
 
+# Distinct "container down" marker for the CPU/RAM cells (AC-P1.8): a
+# containerized session whose container is stopped/absent renders this instead
+# of a silent idle 0/—, so an operator can tell a down container from a healthy
+# idle agent at a glance.
+CONTAINER_DOWN_CELL = "down"
+
+
 def format_cpu(row: SessionRow) -> Text:
     """Format CPU% with the >50/>10 colour thresholds.
 
     The missing/zero distinction is collapsed at the adapter boundary
     (``from_tui_session``), so this always renders the numeric value;
-    an idle row shows as ``"0.0"``.
+    an idle row shows as ``"0.0"``. A containerized session whose container is
+    down renders a distinct dim marker rather than a misleading ``0.0``
+    (AC-P1.8).
     """
+    if row.container_down:
+        return Text(CONTAINER_DOWN_CELL, style="dim italic")
     raw = f"{row.cpu_pct:.1f}" if row.cpu_pct < 100 else f"{row.cpu_pct:.0f}"
     if row.cpu_pct > 50:
         return Text(raw, style="bold red")
@@ -94,7 +105,13 @@ def format_cpu(row: SessionRow) -> Text:
 
 
 def format_ram(row: SessionRow) -> str:
-    """Format ``rss_kib`` to the same compact unit shape ``cli`` uses."""
+    """Format ``rss_kib`` to the same compact unit shape ``cli`` uses.
+
+    A containerized session whose container is down renders the distinct
+    down-marker rather than ``-`` (AC-P1.8) — same signal as the CPU cell.
+    """
+    if row.container_down:
+        return CONTAINER_DOWN_CELL
     rss_kib = row.rss_kib
     if rss_kib <= 0:
         return "-"

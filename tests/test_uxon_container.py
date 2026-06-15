@@ -750,5 +750,272 @@ class CliKillCaveatTests(unittest.TestCase):
         self.assertEqual(out.count("docker top"), 1)
 
 
+class ContainerUsageResolverTests(unittest.TestCase):
+    """Pure host-side telemetry resolvers (host-free, fed fabricated input)."""
+
+    def test_parse_cgroup_procs_dedupes_and_skips_noise(self) -> None:
+        from uxon.domain.container_usage import parse_cgroup_procs
+
+        # One PID per line; blanks + non-numeric skipped; first-seen dedupe.
+        self.assertEqual(parse_cgroup_procs("12\n34\n\n12\nfoo\n56\n"), [12, 34, 56])
+        self.assertEqual(parse_cgroup_procs(""), [])
+
+    def test_parse_environ_session_extracts_marker(self) -> None:
+        from uxon.domain.container_usage import parse_environ_session
+
+        blob = "PATH=/bin\0UXON_SESSION=uxon-proj@claude\0HOME=/root\0"
+        self.assertEqual(parse_environ_session(blob), "uxon-proj@claude")
+        # Absent marker → "" (a non-uxon process sharing the container).
+        self.assertEqual(parse_environ_session("PATH=/bin\0TERM=xterm\0"), "")
+
+    def test_parse_sudo_environ_lines_maps_pid_to_session(self) -> None:
+        from uxon.domain.container_usage import parse_sudo_environ_lines
+
+        out = parse_sudo_environ_lines("10 uxon-a@claude\n11 uxon-b@claude\nbad\n12 \n")
+        self.assertEqual(out, {10: "uxon-a@claude", 11: "uxon-b@claude", 12: ""})
+
+    def test_sum_usage_clamps_and_skips_missing(self) -> None:
+        from uxon.domain.container_usage import sum_usage_for_pids
+
+        # pid → (ppid, rss_kib, cpu_pct). 99 is absent (exited); -5 clamped.
+        proc_rows = {1: (0, 100, 5.0), 2: (1, 200, 10.0), 3: (1, -5, -1.0)}
+        rss, cpu = sum_usage_for_pids([1, 2, 3, 99], proc_rows)
+        self.assertEqual(rss, 300)
+        self.assertEqual(cpu, 15.0)
+
+    def test_per_session_split_isolates_runaway(self) -> None:
+        """AC-P1.6: a busy PID in session A never sums into session B."""
+        from uxon.domain.container_usage import per_session_usage
+
+        cgroup_pids = [1, 2, 3, 4]
+        # 1,2 → session A (one a runaway); 3 → session B; 4 unmarked (init).
+        pid_to_session = {1: "uxon-a@claude", 2: "uxon-a@claude", 3: "uxon-b@claude", 4: ""}
+        proc_rows = {
+            1: (0, 1000, 95.0),  # runaway agent in A
+            2: (1, 50, 1.0),  # A child (reparented descendant in the cgroup)
+            3: (0, 200, 2.0),  # idle agent in B
+            4: (0, 10, 0.0),  # container init, unmarked
+        }
+        usage = per_session_usage(cgroup_pids, pid_to_session, proc_rows)
+        self.assertEqual(usage["uxon-a@claude"], (1050, 96.0))
+        self.assertEqual(usage["uxon-b@claude"], (200, 2.0))
+        # The runaway in A did not leak into B.
+        self.assertLess(usage["uxon-b@claude"][1], 50)
+
+    def test_per_session_split_degrades_to_empty_on_missing_markers(self) -> None:
+        from uxon.domain.container_usage import group_pids_by_session, per_session_usage
+
+        # No PID carries a marker (environ unreadable) → no per-session group.
+        self.assertEqual(group_pids_by_session([1, 2], {1: "", 2: ""}), {})
+        self.assertEqual(per_session_usage([1, 2], {}, {1: (0, 5, 1.0)}), {})
+
+
+class TelemetryEnrichTests(unittest.TestCase):
+    """``enrich_session_usage`` container wiring + the AC-P0.4 off-invariant."""
+
+    _PS = "111 1 4096 3.0\n222 111 2048 1.0\n900 1 8192 50.0\n901 1 1024 60.0\n"
+
+    def _ps_completed(self):
+        return mock.Mock(returncode=0, stdout=self._PS)
+
+    def _session(self, name, **kw):
+        from helpers import make_session
+
+        s = make_session(name)
+        for k, v in kw.items():
+            setattr(s, k, v)
+        return s
+
+    def test_non_container_session_uses_pane_walk_and_touches_nothing(self) -> None:
+        """AC-P0.4: a no-marker session adds no subprocess / /proc / sudo read."""
+        from pathlib import Path
+
+        from uxon.infra import sessions_probe
+
+        s = self._session("uxon-plain@claude", pane_pids=(111,))
+        with (
+            mock.patch("uxon.infra.sessions_probe.subprocess.run") as run,
+            mock.patch.object(Path, "read_text") as read_text,
+        ):
+            run.return_value = self._ps_completed()
+            sessions_probe.enrich_session_usage([s])
+        # Exactly one subprocess (the single ps); no /proc read; the walk
+        # summed pane 111 + child 222.
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][:2], ["ps", "-eo"])
+        read_text.assert_not_called()
+        self.assertEqual(s.rss_kib, 4096 + 2048)
+        self.assertEqual(s.cpu_pct, 4.0)
+
+    def test_single_container_session_sums_cgroup_no_environ(self) -> None:
+        """One session per container: cgroup.procs IS its set — no sudo read."""
+        from uxon.infra import sessions_probe
+
+        s = self._session(
+            "uxon-c@claude", container="cbox", container_cgroup="/system.slice/docker-c.scope"
+        )
+
+        def fake_run(cmd, *a, **k):
+            return self._ps_completed()  # only the ps table
+
+        with (
+            mock.patch("uxon.infra.sessions_probe.subprocess.run", side_effect=fake_run) as run,
+            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
+        ):
+            sessions_probe.enrich_session_usage([s])
+        # No sudo environ batch (single session) — only the ps call.
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(s.rss_kib, 8192 + 1024)
+        self.assertEqual(s.cpu_pct, 110.0)
+
+    def test_shared_container_splits_per_session_when_privileged(self) -> None:
+        """AC-P1.6: ≥2 sessions share a cgroup → split by UXON_SESSION."""
+        from uxon.infra import sessions_probe
+
+        a = self._session("uxon-a@claude", container="cbox", container_cgroup="/c.scope")
+        b = self._session("uxon-b@claude", container="cbox", container_cgroup="/c.scope")
+        with (
+            mock.patch(
+                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
+            ),
+            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
+            mock.patch(
+                "uxon.infra.sessions_probe._read_pid_sessions",
+                return_value={900: "uxon-a@claude", 901: "uxon-b@claude"},
+            ),
+        ):
+            sessions_probe.enrich_session_usage([a, b])
+        self.assertEqual((a.rss_kib, a.cpu_pct), (8192, 50.0))
+        self.assertEqual((b.rss_kib, b.cpu_pct), (1024, 60.0))
+
+    def test_shared_container_degrades_to_shared_total_without_privilege(self) -> None:
+        from uxon.infra import sessions_probe
+
+        a = self._session("uxon-a@claude", container="cbox", container_cgroup="/c.scope")
+        b = self._session("uxon-b@claude", container="cbox", container_cgroup="/c.scope")
+        with (
+            mock.patch(
+                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
+            ),
+            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
+            mock.patch("uxon.infra.sessions_probe._read_pid_sessions", return_value=None),
+        ):
+            sessions_probe.enrich_session_usage([a, b])
+        # Both show the summed total (the documented degrade), not zero.
+        shared = (8192 + 1024, 110.0)
+        self.assertEqual((a.rss_kib, a.cpu_pct), shared)
+        self.assertEqual((b.rss_kib, b.cpu_pct), shared)
+
+    def test_empty_cgroup_marks_container_down_when_probe_says_stopped(self) -> None:
+        """AC-P1.8: empty cgroup + is_running_cmd non-zero → container_down."""
+        from uxon.infra import sessions_probe
+
+        cfg = ContainerConfig(
+            enabled=True,
+            exec_template=("docker", "exec", "{name}"),
+            is_running_cmd=("docker", "top", "{name}"),
+        )
+        s = self._session("uxon-c@claude", container="cbox", container_cgroup="/c.scope")
+        with (
+            mock.patch(
+                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
+            ),
+            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
+            mock.patch("uxon.infra.container.probe_container_running", return_value=False),
+        ):
+            sessions_probe.enrich_session_usage([s], container_cfg=cfg, launch_user="u-vz")
+        self.assertTrue(s.container_down)
+        self.assertEqual(s.cpu_pct, 0.0)
+        self.assertEqual(s.rss_kib, 0)
+
+    def test_empty_cgroup_running_container_degrades_to_zero_not_down(self) -> None:
+        from uxon.infra import sessions_probe
+
+        cfg = ContainerConfig(
+            enabled=True,
+            exec_template=("docker", "exec", "{name}"),
+            is_running_cmd=("docker", "top", "{name}"),
+        )
+        s = self._session("uxon-c@claude", container="cbox", container_cgroup="/c.scope")
+        with (
+            mock.patch(
+                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
+            ),
+            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
+            mock.patch("uxon.infra.container.probe_container_running", return_value=True),
+        ):
+            sessions_probe.enrich_session_usage([s], container_cfg=cfg, launch_user="u-vz")
+        # Running but empty cgroup (race / unresolved path) → 0/—, not "down".
+        self.assertFalse(s.container_down)
+        self.assertEqual(s.cpu_pct, 0.0)
+
+
+class ContainerRenderTests(unittest.TestCase):
+    """``cmd`` shows the agent id (AC-P1.4); the down indicator (AC-P1.8)."""
+
+    def _session(self, **kw):
+        from helpers import make_session
+
+        s = make_session("uxon-proj@claude")
+        for k, v in kw.items():
+            setattr(s, k, v)
+        return s
+
+    def test_tui_cmd_shows_agent_for_container_session(self) -> None:
+        from uxon.domain.session import to_tui_session
+
+        s = self._session(container="cbox", active_cmd="docker", agent="claude")
+        tui = to_tui_session(s, "uxon-")
+        self.assertEqual(tui.cmd, "claude")  # not "docker"
+
+    def test_tui_cmd_unchanged_for_non_container_session(self) -> None:
+        from uxon.domain.session import to_tui_session
+
+        s = self._session(container="", active_cmd="vim", agent="claude")
+        self.assertEqual(to_tui_session(s, "uxon-").cmd, "vim")
+
+    def test_list_shows_down_and_agent_for_container_down_session(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        from helpers import make_config
+
+        from uxon.app.listing import print_list
+
+        s = self._session(
+            container="cbox", container_down=True, active_cmd="docker", agent="claude"
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_list(make_config(), [s], ["u-vz"])
+        out = buf.getvalue()
+        self.assertIn("down", out)  # distinct down indicator, not a silent "-"
+        self.assertIn("claude", out)  # cmd shows the agent id
+
+    def test_dashboard_cpu_cell_renders_down_marker(self) -> None:
+        from uxon.tui.dashboard.columns import CONTAINER_DOWN_CELL, format_cpu, format_ram
+        from uxon.tui.dashboard.row import SessionRow
+
+        row = SessionRow(
+            host=None,
+            user="u",
+            name="uxon-x@claude",
+            short="x@claude",
+            agent="claude",
+            attached=False,
+            legacy=False,
+            pid=1,
+            cpu_pct=0.0,
+            rss_kib=0,
+            created_epoch=None,
+            last_attached_epoch=None,
+            cmd="claude",
+            path="/srv",
+            container_down=True,
+        )
+        self.assertEqual(format_cpu(row).plain, CONTAINER_DOWN_CELL)
+        self.assertEqual(format_ram(row), CONTAINER_DOWN_CELL)
+
+
 if __name__ == "__main__":
     unittest.main()

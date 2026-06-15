@@ -97,6 +97,36 @@ columns = ["name", "path", "last"]
   are attached to but not typing in ages the same way. The
   thresholds are fixed and not configurable.
 
+## Container sessions
+
+When an agent runs inside a container, the dashboard and `uxon list`
+report it at parity with a host-level agent:
+
+- **CPU and RAM are the in-container agent's own.** The figures
+  reflect the agent's process subtree inside the container, not the
+  near-idle runtime client on the host — so the **>50% runaway-red**
+  CPU cell fires for a container session exactly as it does for a
+  host-level one.
+- **Per-session, even when several share one container.** Two or more
+  sessions in the same container each show only their own usage; a
+  runaway in one reddens that row alone, never a calm neighbour.
+  *(Privilege requirement: splitting a shared container by session
+  reads each in-container process's environment, which needs a
+  privileged `/proc/<pid>/environ` read — uxon issues one batched
+  read per container. Without that grant, the sessions sharing a
+  container all show the **summed container total** instead of their
+  individual share — still correct in aggregate, just not split.)*
+- **`cmd` shows the agent id** (e.g. `claude`), not the runtime
+  client (`docker`/`sh`), so search-by-`cmd` matches the agent.
+- **A stopped container shows a distinct `down` marker** in the CPU
+  and RAM cells, not a silent `0`/`-` that looks like a healthy idle
+  agent.
+
+Across hosts, a container session on a remote peer shows its
+corrected figures too — the peer computes them before sending. One
+caveat: a peer still running an **older uxon** emits the old
+near-idle numbers for its container sessions until it is upgraded.
+
 The fleet status bar sits below the table in both views. Press
 `h` to toggle it between collapsed (`N hosts · M sess` plus
 unreachable / high-memory alerts) and an expanded per-host

@@ -10,6 +10,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Container sessions now stash launch-time telemetry markers on the tmux session so monitoring and teardown can find the in-container agent. A new optional `container.resolve_cmd` (an operator-supplied argv that prints the container's id, init PID, and start time) lets uxon record the container's identity and host-side cgroup at launch; leave it unset to opt out. The markers are absent entirely when `[container]` is disabled.
+- Container telemetry parity. `uxon list` and the dashboard now report a container session's **in-container** CPU and RAM (the agent's own process subtree, read from the container's cgroup) instead of the near-idle host-side runtime client — so the `>50%` runaway-red CPU cell fires for container sessions, and the `cmd` column shows the resolved agent id rather than `docker`/`sh`. Sessions sharing one container are split per-session where a privileged `/proc/<pid>/environ` read is available (otherwise they show the shared container total). A stopped container renders a distinct `down` indicator rather than a silent idle `0`/`-`. Remote peers compute these figures before sending them, so multi-host rows are correct too (an un-upgraded peer still emits the old idle numbers until upgraded). When `[container]` is disabled, the monitoring path is byte-for-byte unchanged — no added work.
 
 ## [3.7.0] — 2026-06-14
 

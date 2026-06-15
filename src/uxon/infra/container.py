@@ -36,7 +36,12 @@ import subprocess
 from dataclasses import dataclass
 
 from uxon.domain.config import Config
-from uxon.domain.container import Action, decide_container_action, render_template
+from uxon.domain.container import (
+    Action,
+    ContainerConfig,
+    decide_container_action,
+    render_template,
+)
 from uxon.errors import fail
 from uxon.infra import events
 from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
@@ -227,6 +232,41 @@ def run_teardown(stop_cmd: list[str], launch_user: str) -> tuple[bool, str]:
     if cp.returncode != 0:
         return False, (cp.stderr or cp.stdout or "").strip() or "container teardown failed"
     return True, ""
+
+
+def probe_container_running(
+    container_cfg: ContainerConfig | None, name: str, launch_user: str
+) -> bool:
+    """Non-raising liveness probe: True iff the container ``name`` is running.
+
+    The telemetry "container down" path (AC-P1.8) needs to confirm a stopped
+    container WITHOUT the hard ``fail`` of :func:`_probe_exit_ok` — a refresh
+    must never abort. So this renders the operator's ``is_running_cmd`` for
+    ``name`` and runs it under the bounded non-interactive prefix, returning a
+    plain bool: exit 0 → running; any non-zero, timeout, OSError, or render
+    error → **True** (conservative: do not assert "down" on a probe we could
+    not cleanly run — only a clean non-zero exit means stopped).
+
+    ``container_cfg`` is a :class:`uxon.domain.container.ContainerConfig`. Caller
+    bounds this to once per distinct container per refresh (AC-P1.5) and only
+    when the cgroup is empty.
+    """
+    if container_cfg is None or not container_cfg.is_running_cmd:
+        return True
+    try:
+        cmd = render_template(
+            container_cfg.is_running_cmd, name=name, dir_token="/", what="is_running_cmd"
+        )
+    except SystemExit:
+        # ``render_template`` ``fail``s on a bad placeholder — never abort a
+        # telemetry refresh over it; treat as "cannot confirm down".
+        return True
+    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+    try:
+        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except (subprocess.TimeoutExpired, OSError):
+        return True
+    return cp.returncode == 0
 
 
 def plan_container_launch(cfg: Config, target_dir: str, launch_user: str) -> ContainerPlan:

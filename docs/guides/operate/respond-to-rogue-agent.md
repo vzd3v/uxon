@@ -37,10 +37,15 @@ existing again.
 1. **Identify** the offending session in the TUI. Sort is a
    fixed contract (locals first, then `[[remote_hosts]]` order,
    within-block by last-attach desc) — a runaway under heavy CPU
-   stands out by the red `CPU` cell. `s` (or `/`) summons the
-   search bar to narrow by `user` / `name` / `host` / `path` /
-   `cmd` if you already have a lead. Note the `USER`, `HOST`,
-   `NAME`, and the `cmd` / `path`.
+   stands out by the red `CPU` cell. This now fires for
+   **container sessions** too: their CPU/RAM reflect the
+   in-container agent, so a containerized runaway reddens its row
+   like any other (and a stopped container shows a distinct `down`
+   marker rather than a misleading idle `0`). `s` (or `/`) summons
+   the search bar to narrow by `user` / `name` / `host` / `path` /
+   `cmd` if you already have a lead — for a container session
+   `cmd` matches the agent id. Note the `USER`, `HOST`, `NAME`,
+   and the `cmd` / `path`.
 2. **Suspend** before killing if you want to inspect state. From
    another shell on the same host:
    ```bash
@@ -135,8 +140,15 @@ a PATH wrapper that `docker exec`s — see
 process; the in-container agent does **not** die on that disconnect
 under docker or podman — it orphans, leaving a
 `--dangerously-skip-permissions` agent running with full authority,
-**invisible to `uxon list` / the TUI / the audit trail**, possibly
+no longer tied to a session you can kill from `uxon`, possibly
 mid-write. That is a containment failure, not just a leaked process.
+
+While a container session is live, `uxon list` and the TUI **do**
+show it at parity with a host-level agent — the CPU/RAM figures are
+the in-container agent's own, so a containerized runaway reddens its
+row and a stopped container shows a distinct `down` marker. The
+orphan above is the agent that has already outlived its session, not
+the live one.
 
 `uxon` closes this when `[container].stop_template` is configured: the
 kill reaps the agent process by the per-session PID the launch wrapper

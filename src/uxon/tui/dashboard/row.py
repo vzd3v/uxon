@@ -46,6 +46,11 @@ class SessionRow:
     last_attached_epoch: float | None
     cmd: str
     path: str
+    # True iff this row's containerized session has a stopped/absent container
+    # (AC-P1.8). Drives the distinct "container down" CPU/RAM rendering instead
+    # of a silent idle 0/—. Defaults False so a peer running an older wire
+    # schema (no such field) renders as a normal row.
+    container_down: bool = False
 
     @property
     def key(self) -> str:
@@ -162,6 +167,10 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         ),
         cmd=s.cmd,
         path=s.path,
+        # Additive field with a default — read defensively so an older /
+        # partial source object (no such attribute) renders as a normal row,
+        # the same forward-compat stance ``from_wire_record`` takes.
+        container_down=bool(getattr(s, "container_down", False)),
     )
 
 
@@ -190,4 +199,9 @@ def from_wire_record(host: str, rec: dict[str, Any]) -> SessionRow:
         last_attached_epoch=_parse_iso_to_epoch(str(rec.get("last_attached", "") or "")),
         cmd=str(rec.get("active_cmd", "") or ""),
         path=str(rec.get("active_path", "") or ""),
+        # Read defensively: the current wire schema does not carry this field,
+        # so a peer's container-down state shows as a normal idle row remotely
+        # (an acceptable cross-host limitation — the field is forward-compat
+        # only). ``False`` when absent.
+        container_down=bool(rec.get("container_down", False)),
     )

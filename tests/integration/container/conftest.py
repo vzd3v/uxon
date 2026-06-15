@@ -133,6 +133,21 @@ touch /work/.agent-ran
 exec sleep 300
 """
 
+# A stand-in agent for the telemetry suite that selects idle vs busy from its
+# first argv token (the agent args uxon threads through after the binary). A
+# ``busy`` agent spins so its per-session CPU is unmistakably non-idle; any
+# other arg idles. The ``$$`` (the exec'd PID) is what the cgroup attribution +
+# the UXON_SESSION environ split must see — proving per-session isolation.
+STUB_AGENT_SELECTABLE = """\
+#!/bin/sh
+# Telemetry stand-in: spin (busy) or idle, selected by the first agent arg.
+touch /work/.agent-ran
+if [ "$1" = "busy" ]; then
+  while :; do :; done
+fi
+exec sleep 300
+"""
+
 # Stock base + bind mount only — no build. Exercises the
 # create_template = ["<runtime>", "compose", "up", "-d"] path. PID 1 idles
 # on ``tail`` (not ``sleep``) so the agent's ``sleep`` is unambiguous in
