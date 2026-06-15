@@ -82,6 +82,10 @@ class TuiContext:
     # ``Config`` in ``context_builder`` so the kill-flow notify callbacks can
     # append it without reaching back into the loader. Carries zero internals.
     container_kill_caveat: str | None = None
+    # True when ``[container].enabled`` — suppresses the host-presence
+    # "agents unavailable" launch gate (AC-P2.2): the agent is provisioned in
+    # the operator's container, so host absence is not a launch blocker.
+    container_enabled: bool = False
 
     # True until the first real refresh lands. The TUI distinguishes this
     # from a loaded-but-empty state — skeleton ctx renders "Loading…" in

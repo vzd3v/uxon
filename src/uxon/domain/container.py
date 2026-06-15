@@ -177,6 +177,29 @@ def apply_path_map(host_dir: str, path_map: tuple[tuple[str, str], ...]) -> str:
     return mapped_n
 
 
+def path_map_under_prefix(host_dir: str, path_map: tuple[tuple[str, str], ...]) -> bool:
+    """True iff ``host_dir`` falls under (or equals) some ``path_map`` host prefix.
+
+    Pure predicate mirroring :func:`apply_path_map`'s matching rule (exact
+    match or ``prefix/`` segment match, normalized). Used by the worktree
+    launch gate (AC-P4.1): when a non-empty ``path_map`` is configured but the
+    computed worktree path is under none of its host prefixes, the container
+    would have no mount backing that path — uxon fails fast with a clear
+    message instead of deferring to an opaque runtime error.
+
+    An **empty** ``path_map`` is the "host path verbatim" carve-out and is the
+    caller's responsibility to skip — this predicate returns ``False`` for it
+    (nothing covers the path), so the caller must guard on a non-empty map.
+    """
+    host_n = os.path.normpath(host_dir)
+    for host_prefix, _container_prefix in path_map:
+        if host_n == host_prefix:
+            return True
+        if host_n.startswith(host_prefix.rstrip("/") + "/"):
+            return True
+    return False
+
+
 def _safe_format(template: str, what: str, **values: str) -> str:
     """``str.format`` with a clear message on a bad/unknown placeholder.
 

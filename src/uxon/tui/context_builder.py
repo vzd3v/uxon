@@ -427,6 +427,7 @@ def build_tui_context(
         ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         fetch_concurrency=cfg.fetch_concurrency,
         container_kill_caveat=container_kill_caveat(cfg.container),
+        container_enabled=cfg.container.enabled,
         cwd_writable=cwd_writable,
         current_user=launch_user,
         sudo_caps=sudo_caps,

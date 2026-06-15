@@ -53,6 +53,7 @@ journald additionally stamps its own metadata for free (`_PID`,
 | `denied`    | A policy / ACL gate refused the operation (sudo unreachable, `enable_all_users_list = false`, …). |
 | `error`     | The operation failed for a reason other than policy (subprocess non-zero, exception, ssh fail).   |
 | `not_found` | The named target did not exist (session id unknown, peer alias unknown).                          |
+| `stale`     | A `container.teardown` was skipped because the container had restarted since launch — the recorded in-container PID no longer names the agent, so uxon did not run the stop command (it would have killed an unrelated process). |
 
 **State-changing events emit on both success and failure.**  A refused
 or errored attach / kill / launch is more interesting to an auditor
@@ -72,6 +73,8 @@ sweep of everything that didn't go through.
 | `session.ended`      | A wrapped subprocess (TUI launch) returned.                                                              | `session`, `rc`, `wall_seconds`, `error` (string ≤256 chars; only on `outcome=error`)                                       | `ok`, `error`                    |
 | `session.kill`       | Local `uxon kill` or TUI `d` on a local row.                                                             | `session`, `target_user`, `force` (bool), `dry_run`, `rc` (int; only on `outcome=error`)                                    | `ok`, `denied`, `error`, `not_found` |
 | `session.kill_all`   | `uxon kill-all` or TUI `D`.                                                                              | `target_users` (list), `killed_count` (int), `dry_run`                                                                       | `ok`, `error`                    |
+| `container.prepare`  | uxon started or created the agent's container before launch (only when `[container]` is enabled and a start/create was needed; a running container is a no-op and emits nothing). | `action` (`start` \| `create`), `name` (operator-chosen container name), `error` (string ≤256 chars; only on `outcome=error`) | `ok`, `error`                    |
+| `container.teardown` | uxon ran the `stop_template` to reap the in-container agent on kill (only when `[container]` is enabled and `stop_template` is set). | `name` (container name), `session`, `target_user`, `error` (string ≤256 chars; only on `outcome=error`)                      | `ok`, `error`, `stale`           |
 | `attach.remote.out`  | Local TUI/CLI dispatching a peer attach over SSH (caller side of the wire).                              | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `correlation_id`                                                  | `ok`, `error`                    |
 | `attach.remote.in`   | Peer's own `uxon attach` invoked over SSH (peer side of the wire).  Replaces `session.attach` on peer.   | `target_user`, `target_session`, `correlation_id`                                                                            | `ok`, `denied`, `error`, `not_found` |
 | `kill.remote.out`    | Local `uxon kill --host` / TUI `d` on a remote row (caller side).                                         | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `force`, `dry_run`, `correlation_id`, `rc` (int) + `error` (string ≤256 chars) on `outcome=error` | `ok`, `error`                    |

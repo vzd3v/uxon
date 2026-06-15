@@ -101,6 +101,21 @@ container *definition* re-grants host access, and `uxon` cannot
 prevent that — the `create_template` is opaque to it. Harden the
 definition yourself.
 
+### The agent need not be installed on the host
+
+With `[container]` enabled the agent is provisioned **inside** the
+container (its image or `create_template`), so `uxon` does **not**
+require the agent binary on the host PATH and does **not** fail the
+launch when it is absent — host presence is the operator's
+responsibility for the container's contents, exactly as it already is
+for the agent binary itself. (Recipe 1's PATH wrapper is no longer
+needed for native `[container]` use.) `uxon` still resolves *which*
+agent to launch by the normal precedence; because it can't auto-detect
+an agent from the host in this mode, an **auto** setup (no `--agent`,
+empty `agents.enabled`, no `agents.default`) must name an agent
+explicitly — pass `--agent <id>` or set `agents.default`. `uxon doctor`
+notes a host-absent agent as expected here, not a fault.
+
 ### A project `.uxon.toml` may only name the container
 
 From an untrusted project `.uxon.toml`, only `container.name` and
@@ -115,8 +130,11 @@ in
 `tmux kill-session` only severs `uxon`'s client-side exec; the
 in-container agent does **not** die on that disconnect under docker or
 podman — it orphans. An orphaned `--dangerously-skip-permissions` agent
-keeps running, invisible to `uxon list` / the TUI / the audit trail — a
-containment failure. The `stop_template` above closes this:
+keeps running and consuming resources. (It is still **visible** — `uxon
+list` and the dashboard report a container session's real in-container
+CPU/RAM, and the kill itself is audited — but a still-running agent
+after a kill is a containment failure regardless.) The `stop_template`
+above closes this:
 
 - **At launch** `uxon` wraps the agent so it records its in-container
   PID into a per-session pidfile (`{pidfile}`, a path `uxon` supplies).
@@ -125,7 +143,10 @@ containment failure. The `stop_template` above closes this:
   precisely — never a blunt `pkill`.
 - **On kill** `uxon` kills the session, then runs `stop_template` to
   terminate exactly that PID. The container itself is left running
-  (it is a shared resource; `uxon` never stops or removes it).
+  (it is a shared resource; `uxon` never stops or removes it). If the
+  container restarted since launch, `uxon` recognises that the recorded
+  PID is no longer the agent and **skips** the stop command (audited as
+  `outcome=stale`) rather than killing an unrelated process.
 
 Teardown is **best-effort**: if it fails (no `sh` in the image, daemon
 unreachable, …) `uxon` prints a note and the kill still completes. If

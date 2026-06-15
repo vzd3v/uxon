@@ -17,6 +17,7 @@ import os
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import is_under_allowed_roots
@@ -26,6 +27,9 @@ from uxon.domain.session import allocate_session_name, session_stem_for_worktree
 from uxon.errors import eprint, fail
 from uxon.infra import git, identity, process, sessions_probe, tmux
 from uxon.infra.worktrees import compute_worktree_path
+
+if TYPE_CHECKING:
+    from uxon.infra.container import ContainerPlan
 
 
 def is_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> bool:
@@ -107,6 +111,43 @@ def plan_container(cfg: Config, target_dir: str, launch_user: str):
     return container_infra.plan_container_launch(cfg, target_dir, launch_user)
 
 
+def _run_prepare_audited(plan: ContainerPlan, target_dir: str, launch_user: str) -> None:
+    """Run a container ``ContainerPlan`` prepare, emitting ``container.prepare``.
+
+    The single shared call site for both the headless (CLI) and TUI prepare,
+    so every container start/create is audited uniformly (AC-P3.1). Emits only
+    when ``run_prepare`` **acts** — i.e. ``action`` is ``start`` or ``create``.
+    ``exec`` is a no-op (a running container) and ``fail`` is an out-of-policy
+    verdict where uxon never touches the runtime — neither is a state change,
+    so neither emits. For a ``start``/``create`` ``run_prepare`` raises
+    ``fail()`` (SystemExit) on a runtime failure; this wraps-and-reraises with
+    ``outcome=error`` first, mirroring ``session.new`` in ``app/run.py``.
+
+    The event carries the operator-chosen container ``name`` and the ``action``
+    only — zero secrets, zero host internals (AC-P3.3).
+    """
+    from uxon.infra import audit as _audit
+    from uxon.infra import container as container_infra
+
+    if plan.action not in ("start", "create"):
+        # ``exec`` is a no-op; ``fail`` raises the policy message without ever
+        # touching the runtime — neither is an audited state change.
+        container_infra.run_prepare(plan, target_dir, launch_user)
+        return
+    try:
+        container_infra.run_prepare(plan, target_dir, launch_user)
+    except BaseException as exc:
+        _audit.audit(
+            "container.prepare",
+            outcome="error",
+            action=plan.action,
+            name=plan.name,
+            error=str(getattr(exc, "uxon_msg", exc))[:256],
+        )
+        raise
+    _audit.audit("container.prepare", action=plan.action, name=plan.name)
+
+
 def ensure_container_ready(cfg: Config, target_dir: str, launch_user: str) -> None:
     """Probe + (auto) start/create the project's container before launch.
 
@@ -122,14 +163,13 @@ def ensure_container_ready(cfg: Config, target_dir: str, launch_user: str) -> No
     probe) from the prepare so it can show a confirm affordance when
     ``on_missing_mode == "prompt"`` before any side effect.
     """
-    from uxon.infra import container as container_infra
-
     plan = plan_container(cfg, target_dir, launch_user)
     if plan is None:
         return
     # ``run_prepare`` is a no-op for ``exec``, ``fail``s for an out-of-policy
-    # state, and runs the start/create template otherwise.
-    container_infra.run_prepare(plan, target_dir, launch_user)
+    # state, and runs the start/create template otherwise. The audited wrapper
+    # emits ``container.prepare`` (start/create + outcome).
+    _run_prepare_audited(plan, target_dir, launch_user)
 
 
 @dataclass(frozen=True)
@@ -176,9 +216,9 @@ def decide_container_gate(cfg: Config, target_dir: str, launch_user: str) -> Con
         )
 
     def _prepare() -> None:
-        from uxon.infra import container as container_infra
-
-        container_infra.run_prepare(plan, target_dir, launch_user)
+        # Audited prepare — emits ``container.prepare`` (start/create + outcome)
+        # at the single shared call site, identical to the headless path.
+        _run_prepare_audited(plan, target_dir, launch_user)
 
     return ContainerGate(
         needs_prepare=True,
@@ -237,6 +277,25 @@ def plan_worktree_launch(
         fail(
             f"got: {worktree_path} — set worktree_root to a path inside allowed_roots "
             "(and writable by the launch user) to relocate worktrees"
+        )
+
+    # Container path-map coverage gate (AC-P4.1): when [container] is enabled
+    # with a non-empty path_map but the computed worktree path falls under no
+    # host prefix, the container has no mount backing it — the agent would hit
+    # an opaque runtime error inside the container. Fail fast naming the path
+    # (and the fix) BEFORE any git work. Empty path_map = host-path-verbatim,
+    # the legitimate bind-at-same-path case — never fails. Disabled → skipped.
+    from uxon.domain.container import path_map_under_prefix
+
+    if (
+        cfg.container.enabled
+        and cfg.container.path_map
+        and not path_map_under_prefix(worktree_path, cfg.container.path_map)
+    ):
+        fail(
+            f"worktree path {worktree_path} is not under any [container.path_map] "
+            "host prefix, so the container has no mount backing it. Add a path_map "
+            "entry covering it, or set worktree_root to a path that is already mapped."
         )
 
     prefix = identity.command_prefix_for_user(launch_user)
@@ -328,8 +387,11 @@ def plan_worktree_launch(
     # Container readiness for the worktree tree. The worktree dir only exists
     # after the add above, so its name/{dir} can't be resolved earlier — the
     # TUI's pre-launch prompt affordance (which needs the path up front) does
-    # not cover this path, so it uses the headless auto-if-permitted policy.
-    # Follow-up: surface the prompt here once the path is threaded out.
+    # not cover this path, so it uses the headless auto-if-permitted policy
+    # (documented in reference/configuration.md). The CLI is non-interactive,
+    # so auto-if-permitted is correct there; the TUI worktree-prompt parity is
+    # a tracked gap (backlog/2026-06-15-tui-worktree-container-prompt.md).
+    # Follow-up: TUI worktree-launch container prompt parity (AC-P4.2).
     ensure_container_ready(cfg, worktree_path, launch_user)
 
     _audit.audit(

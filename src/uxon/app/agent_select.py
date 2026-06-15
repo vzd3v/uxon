@@ -44,6 +44,16 @@ def resolve_agent_id(
     failure. ``report`` is the optional escape-hatch for callers
     that already probed (TUI, doctor) — pass it to avoid the
     double round-trip.
+
+    When ``cfg.container.enabled``, the agent runs inside the operator's
+    container, so host presence is irrelevant: agent **resolution** still
+    runs by the normal precedence (the launch request needs the resolved
+    ``spec.binary``), but the host-presence **gate** is suppressed — a
+    host-absent binary no longer fails the launch. The host probe still
+    *runs* (so doctor/version surfaces see the real host landscape). In that
+    mode auto-pick has no host signal to choose from, so auto-mode (no
+    ``--agent``, empty ``agents.enabled``, no ``agents.default``) requires an
+    explicit agent rather than silently misbehaving.
     """
     if requested and requested not in cfg.agents:
         fail(f"--agent must be one of {tuple(cfg.agents)}, got {requested!r}")
@@ -59,12 +69,30 @@ def resolve_agent_id(
     else:
         candidate, source = None, "auto"
 
+    container_enabled = cfg.container.enabled
+
+    # Container mode + auto: the suppressed host gate (below) leaves the
+    # auto-fallback loop no host signal to pick from, so require an explicit
+    # agent BEFORE the probe/fallback. Off-path (no container) is unchanged.
+    if container_enabled and candidate is None:
+        fail(
+            "container mode is enabled but no agent is selected; the agent runs "
+            "inside the container so uxon cannot auto-detect one from the host. "
+            "Pass --agent <id> or set agents.default / agents.enabled in the repo config.",
+            1,
+        )
+
     from uxon.infra import probes as uxon_probes
 
     if report is None:
         report = uxon_probes.probe_host(launch_user, cfg.agents)
 
     if candidate is not None:
+        # Under container mode the agent is provisioned in the container, not
+        # on the host — keep RESOLUTION but suppress the host-presence GATE
+        # (the probe above still ran, for doctor/version visibility).
+        if container_enabled:
+            return candidate
         status = report.agents.get(candidate)
         if status is None or status.path is None:
             hint = status.install_hint if status is not None else ""

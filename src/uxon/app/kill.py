@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import Any
 
 import uxon.app.listing as listing_app
@@ -14,6 +15,25 @@ from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.errors import eprint, fail
 from uxon.infra import identity, process, sessions_probe, tmux
+
+
+@dataclass(frozen=True)
+class ContainerTeardown:
+    """A prepared container teardown for one session (the kill-path mirror of launch).
+
+    Captured while the session is still alive (its env holds the resolved
+    container name + the launch-time identity markers). ``stop_cmd`` is the
+    rendered ``stop_template`` argv; ``name`` the operator-chosen container
+    name (for the audit event); ``launch_epoch`` the container start-epoch
+    stashed at launch (``UXON_CONTAINER_EPOCH``, empty when ``resolve_cmd`` is
+    unset). The PID-recycle guard (AC-P3.5) compares ``launch_epoch`` against
+    the live epoch in :func:`run_container_teardown` — re-resolved there, after
+    ``kill-session``, so the comparison sits as close to the kill as possible.
+    """
+
+    stop_cmd: list[str]
+    name: str
+    launch_epoch: str = ""
 
 
 def _print_killed(name: str, cfg: Config) -> None:
@@ -34,8 +54,8 @@ def _print_killed(name: str, cfg: Config) -> None:
 
 def prepare_container_teardown(
     cfg: Config, target_user: str, session_name: str
-) -> list[str] | None:
-    """Render the in-container stop command for ``session_name``, or None.
+) -> ContainerTeardown | None:
+    """Prepare the in-container teardown for ``session_name``, or None.
 
     The mirror of the launch wrap: when ``[container].stop_template`` is set,
     the launch recorded the agent's in-container PID and stashed the resolved
@@ -45,8 +65,16 @@ def prepare_container_teardown(
     shared across arbitrarily many sessions, so a per-session PID is the only
     correct target).
 
-    MUST run while the session is still alive (the name lives in its env). The
-    caller runs the returned argv via :func:`run_container_teardown` AFTER
+    **PID-recycle guard (AC-P3.5):** this captures the launch-time start-epoch
+    (``UXON_CONTAINER_EPOCH``, set only when ``resolve_cmd`` is configured) off
+    the still-live session env onto the returned teardown. The actual
+    restarted-since-launch comparison happens in :func:`run_container_teardown`,
+    which re-resolves the *live* epoch immediately before the kill (after
+    ``kill-session``) — keeping the check as close to the kill as possible
+    rather than sampling it here, a whole ``kill-session`` round-trip earlier.
+
+    MUST run while the session is still alive (the name + markers live in its
+    env). The caller runs the result via :func:`run_container_teardown` AFTER
     ``kill-session`` — killing the agent closes its pane, so reaping first
     would race tmux's own session teardown and leave ``kill-session`` with no
     server to talk to. Kill the session first, then reap the orphan the
@@ -61,6 +89,7 @@ def prepare_container_teardown(
         return None
     try:
         from uxon.domain.container import (
+            CONTAINER_EPOCH_ENV,
             CONTAINER_NAME_ENV,
             container_pidfile,
             is_valid_container_name,
@@ -73,7 +102,12 @@ def prepare_container_teardown(
             # var is malformed — nothing safe to target.
             return None
         pidfile = container_pidfile(session_name)
-        return render_stop_template(c.stop_template, name=name, pidfile=pidfile)
+        stop_cmd = render_stop_template(c.stop_template, name=name, pidfile=pidfile)
+        # PID-recycle guard input: stash the launch-time epoch off the live
+        # session env now; run_container_teardown re-resolves the live epoch
+        # just before the kill and compares (AC-P3.5).
+        launch_epoch = tmux.read_session_env(cfg, target_user, session_name, CONTAINER_EPOCH_ENV)
+        return ContainerTeardown(stop_cmd=stop_cmd, name=name, launch_epoch=launch_epoch or "")
     except SystemExit as exc:  # render_stop_template fail() — never abort the kill
         msg = getattr(exc, "uxon_msg", exc)
         eprint(f"uxon: container teardown for {session_name} skipped: {msg}")
@@ -83,17 +117,61 @@ def prepare_container_teardown(
         return None
 
 
-def run_container_teardown(stop_cmd: list[str], target_user: str, session_name: str) -> None:
-    """Run a prepared stop command (best-effort) — after ``kill-session``.
+def run_container_teardown(
+    cfg: Config, teardown: ContainerTeardown, target_user: str, session_name: str
+) -> None:
+    """Run a prepared teardown (best-effort) — after ``kill-session``.
 
-    Reaps the in-container agent the severed ``exec`` orphaned. Never raises;
-    a failure is surfaced as a note and the kill is already done.
+    The single shared teardown-call site: every kill path (CLI self/cross-user,
+    kill-all, and the three TUI bridge paths) routes through here so the
+    ``container.teardown`` audit event (AC-P3.2) is emitted uniformly with
+    ``name``, ``session``, and ``outcome`` (``ok`` / ``error`` / ``stale``).
+    Carries zero secrets — the container name is operator-chosen (AC-P3.3).
+
+    **PID-recycle guard (AC-P3.5):** when the launch stashed a start-epoch, the
+    live epoch is re-resolved *here* — immediately before the kill, after
+    ``kill-session`` — and a confirmed mismatch means the container restarted
+    since launch (the recorded in-container PID now names an unrelated
+    process). The stop command is then **not** run and the event records
+    ``outcome=stale``. The guard fires only on a *confirmed* restart: when the
+    epoch can't be re-resolved (no ``resolve_cmd``, container gone, probe
+    fails) the kill proceeds. A residual window remains between this re-resolve
+    and the kill itself — fully closing it would need an epoch-conditional
+    ``stop_template`` (an operator-template concern), but re-resolving here
+    rather than at capture time shrinks it to a single resolve→kill round-trip.
+    Otherwise reaps the in-container agent the severed ``exec`` orphaned. Never
+    raises; a failure is surfaced as a note and the kill is already done.
     """
+    from uxon.infra import audit as _audit
     from uxon.infra import container as container_infra
 
-    ok, detail = container_infra.run_teardown(stop_cmd, target_user)
+    if teardown.launch_epoch:
+        live_epoch = container_infra.current_container_epoch(cfg, teardown.name, target_user)
+        if live_epoch and live_epoch != teardown.launch_epoch:
+            eprint(
+                f"uxon: container teardown for {session_name} skipped: the container "
+                "restarted since launch (the recorded process is no longer the agent)"
+            )
+            _audit.audit(
+                "container.teardown",
+                outcome="stale",
+                name=teardown.name,
+                session=session_name,
+                target_user=target_user,
+            )
+            return
+
+    ok, detail = container_infra.run_teardown(teardown.stop_cmd, target_user)
     if not ok:
         eprint(f"uxon: container teardown for {session_name} did not complete: {detail}")
+    _audit.audit(
+        "container.teardown",
+        outcome="ok" if ok else "error",
+        name=teardown.name,
+        session=session_name,
+        target_user=target_user,
+        **({"error": detail[:256]} if not ok and detail else {}),
+    )
 
 
 def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
@@ -376,7 +454,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         # Capture the teardown command while the session is still alive (its
         # env holds the container name); run it AFTER kill-session reaps the
         # orphaned in-container agent. Best-effort, never blocks the kill.
-        stop_cmd = prepare_container_teardown(cfg, target_user, target.name)
+        teardown = prepare_container_teardown(cfg, target_user, target.name)
         try:
             process.run_cmd(full, check=True)
         except subprocess.CalledProcessError as exc:
@@ -390,8 +468,8 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 rc=exc.returncode,
             )
             raise
-        if stop_cmd:
-            run_container_teardown(stop_cmd, target_user, target.name)
+        if teardown:
+            run_container_teardown(cfg, teardown, target_user, target.name)
         _audit.audit(
             _kill_event,
             session=target.name,
@@ -451,7 +529,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         return 0
     # Capture teardown before the kill (session env holds the name); reap the
     # orphaned in-container agent after kill-session. Best-effort.
-    stop_cmd = prepare_container_teardown(cfg, launch_user, target.name)
+    teardown = prepare_container_teardown(cfg, launch_user, target.name)
     try:
         process.run_cmd(full, check=True)
     except subprocess.CalledProcessError as exc:
@@ -465,8 +543,8 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             rc=exc.returncode,
         )
         raise
-    if stop_cmd:
-        run_container_teardown(stop_cmd, launch_user, target.name)
+    if teardown:
+        run_container_teardown(cfg, teardown, launch_user, target.name)
     _audit.audit(
         _kill_event,
         session=target.name,
@@ -538,11 +616,11 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             results.append({"name": s.name, "action": "would-kill"})
             continue
         # Capture teardown before the kill, reap the orphan after it.
-        stop_cmd = prepare_container_teardown(cfg, launch_user, s.name)
+        teardown = prepare_container_teardown(cfg, launch_user, s.name)
         cp = process.run_cmd(full, check=False)
         ok = cp.returncode == 0
-        if ok and stop_cmd:
-            run_container_teardown(stop_cmd, launch_user, s.name)
+        if ok and teardown:
+            run_container_teardown(cfg, teardown, launch_user, s.name)
         if not args.json_output:
             print(f"killed: {s.name}" if ok else f"failed: {s.name}")
         results.append({"name": s.name, "action": "killed" if ok else "failed"})

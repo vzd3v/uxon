@@ -623,22 +623,30 @@ class UxonApp(App):
 
         availability = self.state.agent_availability.value or {}
         configured = self.cfg.enabled_agents
+        # Container mode provisions the agent inside the operator's container,
+        # so a host-absent binary is not a launch blocker — suppress the
+        # "agents unavailable" modal entirely (AC-P2.2). Off-path unchanged.
+        container_enabled = self.cfg.container_enabled
         if configured:
             current_all_missing = compute_all_missing(
                 enabled_agents=configured,
                 availability=availability,
+                container_enabled=container_enabled,
             )
             modal_arg: tuple[str, ...] = tuple(configured)
         else:
             # Auto-mode: "all missing" iff the probe landed and found
             # zero installed agents.
-            current_all_missing = self._host_probe_landed and not availability
+            current_all_missing = (
+                not container_enabled and self._host_probe_landed and not availability
+            )
             modal_arg = ()
         # An errored probe is independently fatal — neither mode can
         # know what is installed, so surface the diagnostic via the
         # same modal rather than leaving the user with a silent empty
-        # list. Overrides the per-mode predicates above.
-        if self._host_probe_error:
+        # list. Overrides the per-mode predicates above — except under
+        # container mode, where host presence is irrelevant (AC-P2.2).
+        if self._host_probe_error and not container_enabled:
             current_all_missing = True
         modal_on_stack = any(isinstance(s, AgentsUnavailableScreen) for s in self.screen_stack)
         push = should_push_agents_unavailable(

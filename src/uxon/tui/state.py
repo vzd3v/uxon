@@ -56,8 +56,22 @@ def should_show_agents_unavailable(
     enabled_agents: tuple[str, ...],
     availability: Mapping[str, Any],
     already_shown: bool,
+    container_enabled: bool = False,
 ) -> bool:
-    """Return True when the app should show the all-agents-unavailable modal."""
+    """Return True when the app should show the all-agents-unavailable modal.
+
+    Not the live launch gate — the app drives the modal via the transition
+    gate (:func:`should_push_agents_unavailable` over :func:`compute_all_missing`).
+    This latch-based predicate is retained for its tests and for parity with the
+    spec's named surface; its ``container_enabled`` branch mirrors the live gate.
+
+    Under ``container_enabled`` the agent is provisioned in the operator's
+    container, so a host-absent binary is not a launch blocker — the
+    "agents unavailable" block is suppressed (AC-P2.2). Off-path (no
+    container) the predicate is unchanged.
+    """
+    if container_enabled:
+        return False
     if already_shown:
         return False
     if not enabled_agents:
@@ -80,6 +94,7 @@ def compute_all_missing(
     *,
     enabled_agents: tuple[str, ...],
     availability: Mapping[str, Any],
+    container_enabled: bool = False,
 ) -> bool:
     """Return True when every enabled agent has a resolved missing/timeout status.
 
@@ -87,7 +102,13 @@ def compute_all_missing(
     transition-based push gate (``should_push_agents_unavailable``)
     needs the raw "is this state all-missing now" predicate,
     decoupled from the previously-shown latch.
+
+    Under ``container_enabled`` the host-presence gate is suppressed
+    (AC-P2.2): the agent runs in the container, so host absence never
+    flags the launch as unavailable. Off-path it is unchanged.
     """
+    if container_enabled:
+        return False
     if not enabled_agents:
         return False
     resolved = all(

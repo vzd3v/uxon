@@ -1017,5 +1017,285 @@ class ContainerRenderTests(unittest.TestCase):
         self.assertEqual(format_ram(row), CONTAINER_DOWN_CELL)
 
 
+class ContainerGatingTests(unittest.TestCase):
+    """AC-P2 — container mode keeps agent RESOLUTION, suppresses the host GATE."""
+
+    @staticmethod
+    def _report(claude_path):
+        rep = mock.MagicMock()
+        claude = mock.MagicMock()
+        claude.path = claude_path
+        claude.install_hint = "npm i -g claude"
+        rep.agents = {"claude": claude}
+        return rep
+
+    def test_host_absent_binary_does_not_fail_under_container(self) -> None:
+        # AC-P2.1: explicit agent + container.enabled + host-absent binary →
+        # resolves anyway (no host-presence gate).
+        from uxon.app import agent_select
+
+        c = ContainerConfig(enabled=True, name_template="p-{project_slug}", exec_template=_EXEC)
+        cfg = _cfg(c)
+        agent = agent_select.resolve_agent_id(
+            cfg, "dana", "claude", report=self._report(claude_path=None)
+        )
+        self.assertEqual(agent, "claude")
+
+    def test_host_absent_binary_fails_when_disabled(self) -> None:
+        # AC-P2.5: off-path is byte-for-byte unchanged — host gate still fires.
+        from uxon.app import agent_select
+
+        c = ContainerConfig(enabled=False)
+        cfg = _cfg(c)
+        with self.assertRaises(SystemExit):
+            agent_select.resolve_agent_id(
+                cfg, "dana", "claude", report=self._report(claude_path=None)
+            )
+
+    def test_auto_mode_requires_explicit_agent_under_container(self) -> None:
+        # AC-P2.4: container + auto (no --agent, empty enabled, no default) →
+        # fail with the explicit-agent message BEFORE the fallback loop.
+        from uxon.app import agent_select
+
+        c = ContainerConfig(enabled=True, name_template="p-{project_slug}", exec_template=_EXEC)
+        cfg = _cfg(c, enabled_agents=(), default_agent="")
+        # Report would never be consulted — the short-circuit fires first.
+        with self.assertRaises(SystemExit) as ctx:
+            agent_select.resolve_agent_id(cfg, "dana", None, report=self._report("/x/claude"))
+        self.assertIn("container mode", str(getattr(ctx.exception, "uxon_msg", ctx.exception)))
+
+    def test_tui_predicates_suppressed_under_container(self) -> None:
+        # AC-P2.2: both launch-gate predicates return False under container mode
+        # even when every enabled agent resolved missing.
+        from uxon.tui.state import compute_all_missing, should_show_agents_unavailable
+
+        missing = {"claude": mock.MagicMock(status="missing")}
+        self.assertTrue(compute_all_missing(enabled_agents=("claude",), availability=missing))
+        self.assertFalse(
+            compute_all_missing(
+                enabled_agents=("claude",), availability=missing, container_enabled=True
+            )
+        )
+        self.assertFalse(
+            should_show_agents_unavailable(
+                enabled_agents=("claude",),
+                availability=missing,
+                already_shown=False,
+                container_enabled=True,
+            )
+        )
+
+
+class ContainerTeardownAuditTests(unittest.TestCase):
+    """AC-P3.2 / AC-P3.5 — teardown audit emit + PID-recycle stale guard."""
+
+    def _cfg_with_stop(self, resolve_cmd=()):
+        c = ContainerConfig(
+            enabled=True,
+            name_template="proj-{project_slug}",
+            exec_template=_EXEC,
+            stop_template=("docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile})"),
+            resolve_cmd=resolve_cmd,
+        )
+        return _cfg(c)
+
+    def test_prepare_captures_launch_epoch(self) -> None:
+        # AC-P3.5: prepare stashes the launch-time epoch off the live session
+        # env; the live comparison is deferred to run_container_teardown.
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+
+        def _fake_env(_cfg, _user, _session, var):
+            return {
+                "UXON_CONTAINER": "proj-myapp",
+                "UXON_CONTAINER_EPOCH": "1000",
+            }.get(var)
+
+        with mock.patch("uxon.infra.tmux.read_session_env", side_effect=_fake_env):
+            teardown = kill_app.prepare_container_teardown(cfg, "dana", "uxon-x@claude")
+        assert teardown is not None
+        self.assertEqual(teardown.name, "proj-myapp")
+        self.assertEqual(teardown.launch_epoch, "1000")
+
+    def test_stale_teardown_emits_stale_and_skips_kill(self) -> None:
+        # AC-P3.2/P3.5: live epoch != stashed epoch → emit outcome=stale and do
+        # NOT run the stop command (the recorded PID would be a recycled one).
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        teardown = kill_app.ContainerTeardown(
+            stop_cmd=["docker", "exec", "c", "true"], name="proj-myapp", launch_epoch="1000"
+        )
+        with (
+            mock.patch("uxon.infra.container.current_container_epoch", return_value="2000"),
+            mock.patch("uxon.infra.container.run_teardown") as run_td,
+            mock.patch("uxon.infra.audit.audit") as audit,
+        ):
+            kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
+        run_td.assert_not_called()
+        audit.assert_called_once()
+        self.assertEqual(audit.call_args.args[0], "container.teardown")
+        self.assertEqual(audit.call_args.kwargs["outcome"], "stale")
+        self.assertEqual(audit.call_args.kwargs["name"], "proj-myapp")
+
+    def test_matching_epoch_teardown_runs_and_emits_ok(self) -> None:
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        teardown = kill_app.ContainerTeardown(
+            stop_cmd=["docker", "exec", "c", "true"], name="proj-myapp", launch_epoch="1000"
+        )
+        with (
+            mock.patch("uxon.infra.container.current_container_epoch", return_value="1000"),
+            mock.patch("uxon.infra.container.run_teardown", return_value=(True, "")) as run_td,
+            mock.patch("uxon.infra.audit.audit") as audit,
+        ):
+            kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
+        run_td.assert_called_once()
+        self.assertEqual(audit.call_args.kwargs["outcome"], "ok")
+
+    def test_unconfirmable_epoch_proceeds_with_kill(self) -> None:
+        # Degrade-never-block: live epoch unresolvable (None) → kill proceeds.
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        teardown = kill_app.ContainerTeardown(
+            stop_cmd=["docker", "exec", "c", "true"], name="proj-myapp", launch_epoch="1000"
+        )
+        with (
+            mock.patch("uxon.infra.container.current_container_epoch", return_value=None),
+            mock.patch("uxon.infra.container.run_teardown", return_value=(True, "")) as run_td,
+            mock.patch("uxon.infra.audit.audit") as audit,
+        ):
+            kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
+        run_td.assert_called_once()
+        self.assertEqual(audit.call_args.kwargs["outcome"], "ok")
+
+
+class WorktreePathMapGateTests(unittest.TestCase):
+    """AC-P4.1 — unmapped worktree path fails fast; empty path_map carve-out."""
+
+    def test_path_map_under_prefix_predicate(self) -> None:
+        from uxon.domain.container import path_map_under_prefix
+
+        pm = validate_path_map({"/srv/projects": "/work"})
+        self.assertTrue(path_map_under_prefix("/srv/projects/myapp", pm))
+        self.assertTrue(path_map_under_prefix("/srv/projects", pm))
+        self.assertFalse(path_map_under_prefix("/srv/other", pm))
+        # Empty map covers nothing — the caller guards on non-empty separately.
+        self.assertFalse(path_map_under_prefix("/srv/projects/myapp", ()))
+
+    def test_unmapped_worktree_path_fails(self) -> None:
+        from uxon.app import launch as launch_app
+
+        c = ContainerConfig(
+            enabled=True,
+            name_template="p-{project_slug}",
+            exec_template=_EXEC,
+            path_map=validate_path_map({"/srv/mapped": "/work"}),
+        )
+        cfg = _cfg(c)
+        with (
+            mock.patch(
+                "uxon.infra.worktrees.compute_worktree_path",
+                return_value="/srv/projects/myapp/.uxon/worktrees/feat",
+            ),
+            mock.patch("uxon.app.launch.is_worktree_target_allowed", return_value=True),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                launch_app.plan_worktree_launch(
+                    cfg, "dana", "/srv/projects/myapp", "feat", "claude", None
+                )
+        msg = str(getattr(ctx.exception, "uxon_msg", ctx.exception))
+        self.assertIn("path_map", msg)
+        self.assertIn("/srv/projects/myapp/.uxon/worktrees/feat", msg)
+
+    def test_empty_path_map_does_not_fail(self) -> None:
+        # Empty path_map = host-path verbatim — must NOT trip the gate. We only
+        # assert the gate is not the failure point: stub the git/launch steps so
+        # the function returns without touching a real repo.
+        from uxon.app import launch as launch_app
+
+        c = ContainerConfig(enabled=True, name_template="p-{project_slug}", exec_template=_EXEC)
+        cfg = _cfg(c)
+        sentinel = object()
+        with (
+            mock.patch(
+                "uxon.infra.worktrees.compute_worktree_path",
+                return_value="/srv/projects/myapp/.uxon/worktrees/feat",
+            ),
+            mock.patch("uxon.app.launch.is_worktree_target_allowed", return_value=True),
+            mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
+            mock.patch("uxon.infra.git._local_base_ref_as_user", return_value="HEAD"),
+            mock.patch("uxon.infra.identity.command_prefix_for_user", return_value=[]),
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch("uxon.infra.tmux._build_tmux_launch_request", return_value=sentinel),
+        ):
+            req = launch_app.plan_worktree_launch(
+                cfg, "dana", "/srv/projects/myapp", "feat", "claude", None, dry_run=True
+            )
+        self.assertIs(req, sentinel)
+
+
+class DoctorContainerSectionTests(unittest.TestCase):
+    """AC-P5 — doctor container section: probes, expected-absence note, warnings."""
+
+    def test_section_warns_on_unset_stop_template(self) -> None:
+        from uxon.app.doctor import _doctor_container_section
+
+        c = ContainerConfig(
+            enabled=True,
+            name_template="proj-{project_slug}",
+            exec_template=_EXEC,
+            is_running_cmd=("docker", "inspect", "{name}"),
+            exists_cmd=("docker", "inspect", "{name}"),
+        )
+        cfg = _cfg(c)
+        with mock.patch("uxon.infra.container.probe_container_state", return_value=("yes", "yes")):
+            section = _doctor_container_section(cfg, "/srv/projects/myapp", "dana")
+        self.assertTrue(section["enabled"])
+        self.assertEqual(section["resolved_name"], "proj-myapp")
+        self.assertEqual(section["is_running"], "yes")
+        self.assertTrue(section["host_agent_absence_expected"])
+        self.assertTrue(any("stop_template" in w for w in section["warnings"]))
+
+    def test_section_warns_on_definition_under_mount(self) -> None:
+        # AC-P5.4: create_template path token under a path_map host prefix.
+        from uxon.app.doctor import _doctor_container_section
+
+        c = ContainerConfig(
+            enabled=True,
+            name_template="proj-{project_slug}",
+            exec_template=_EXEC,
+            stop_template=("docker", "exec", "{name}", "true"),
+            create_template=("docker", "compose", "-f", "/srv/projects/myapp/compose.yml", "up"),
+            path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
+        )
+        cfg = _cfg(c)
+        with mock.patch("uxon.infra.container.probe_container_state", return_value=("no", "no")):
+            section = _doctor_container_section(cfg, "/srv/projects/myapp", "dana")
+        self.assertTrue(
+            any("agent-writable bind mount" in w for w in section["warnings"]),
+            section["warnings"],
+        )
+
+    def test_section_clean_when_hardened(self) -> None:
+        from uxon.app.doctor import _doctor_container_section
+
+        c = ContainerConfig(
+            enabled=True,
+            name_template="proj-{project_slug}",
+            exec_template=_EXEC,
+            stop_template=("docker", "exec", "{name}", "true"),
+            create_template=("docker", "compose", "-f", "/operator/compose.yml", "up"),
+            path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
+        )
+        cfg = _cfg(c)
+        with mock.patch("uxon.infra.container.probe_container_state", return_value=("yes", "yes")):
+            section = _doctor_container_section(cfg, "/srv/projects/myapp", "dana")
+        self.assertEqual(section["warnings"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

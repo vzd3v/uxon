@@ -269,6 +269,75 @@ def probe_container_running(
     return cp.returncode == 0
 
 
+def current_container_epoch(cfg: Config, name: str, launch_user: str) -> str | None:
+    """Re-resolve the running container ``name``'s start-epoch host-side → epoch or None.
+
+    The teardown PID-recycle guard (AC-P3.5) compares this live epoch against
+    the one stashed at launch (``UXON_CONTAINER_EPOCH``): a different epoch
+    means the container restarted, so the recorded in-container PID now names
+    an unrelated process and the kill must be skipped.
+
+    Renders the operator's ``resolve_cmd`` against the already-known ``name``
+    (no ``target_dir`` needed — the kill path reads the name from the session
+    env). Returns None when ``resolve_cmd`` is unset, the container is
+    gone/unresolvable, or anything fails — the caller treats None as "cannot
+    confirm a restart" and proceeds with the kill (degrade, never block).
+    """
+    c = cfg.container
+    if not c.resolve_cmd:
+        return None
+    try:
+        cmd = render_template(c.resolve_cmd, name=name, dir_token="/", what="resolve_cmd")
+    except SystemExit:
+        return None
+    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+    try:
+        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if cp.returncode != 0:
+        return None
+    parsed = parse_resolve_output(cp.stdout)
+    if parsed is None:
+        return None
+    _cid, _init_pid, epoch = parsed
+    return epoch
+
+
+def probe_container_state(
+    container_cfg: ContainerConfig | None, name: str, launch_user: str
+) -> tuple[str, str]:
+    """Non-raising doctor probe → ``(running, exists)`` as human labels.
+
+    Runs the operator's ``is_running_cmd`` / ``exists_cmd`` for ``name`` under
+    the bounded non-interactive prefix and maps the outcome to a label:
+    ``"yes"`` / ``"no"`` on a clean exit, ``"?"`` when the probe could not be
+    run cleanly (timeout, missing binary, render error, or the template is
+    unset). Never raises — ``uxon doctor`` must not abort on a wedged daemon.
+    Bounded to one call each (doctor probes a single representative target).
+    """
+
+    def _probe(cmd_template: tuple[str, ...], what: str) -> str:
+        if container_cfg is None or not cmd_template:
+            return "?"
+        try:
+            cmd = render_template(cmd_template, name=name, dir_token="/", what=what)
+        except SystemExit:
+            return "?"
+        full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+        try:
+            cp = subprocess.run(
+                full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return "?"
+        return "yes" if cp.returncode == 0 else "no"
+
+    running = _probe(container_cfg.is_running_cmd if container_cfg else (), "is_running_cmd")
+    exists = _probe(container_cfg.exists_cmd if container_cfg else (), "exists_cmd")
+    return running, exists
+
+
 def plan_container_launch(cfg: Config, target_dir: str, launch_user: str) -> ContainerPlan:
     """Probe the container and decide the not-ready action (no side effects).
 

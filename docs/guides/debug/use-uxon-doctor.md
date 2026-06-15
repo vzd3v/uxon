@@ -79,6 +79,41 @@ journalctl SYSLOG_IDENTIFIER=uxon --since "10 minutes ago" -o json \
   > /tmp/uxon-recent-audit.jsonl
 ```
 
+## Container diagnostics
+
+When `[container]` is enabled, `uxon doctor` adds a container section
+for the current directory's target:
+
+```
+container: enabled
+- name_template=proj-{project_slug}
+- resolved_name=proj-myapp
+- is_running=yes  exists=yes
+- host agent binaries absent from PATH are EXPECTED (provisioned in the container)
+- no container warnings
+```
+
+It resolves the container name, runs your `exists_cmd` / `is_running_cmd`
+once against that representative target (best-effort — a wedged daemon
+shows `?`, never an abort), and surfaces these warnings:
+
+- **`stop_template` unset** — the in-container agent is not reaped on
+  kill (it orphans); set `[container].stop_template` so uxon terminates
+  it for you.
+- **`path_map` doesn't cover the current directory** — launches from
+  here may hit a path the container has no mount for.
+- **`create_template` definition under a mapped path** — the container
+  definition (compose / Dockerfile) resolves to a path inside the
+  agent-writable bind mount, so a misbehaving agent could edit it to
+  escape the container. Move it to an operator-owned path outside the
+  mount.
+
+A missing agent binary on the host PATH is **not** flagged as a fault
+under container mode — the agent is provisioned inside the container,
+not on the host. The container section is absent entirely when
+`[container]` is disabled. Also available under `uxon doctor --json`
+as `data.container`.
+
 ## What it does *not* do
 
 - Doesn't change state. Read-only by contract.
