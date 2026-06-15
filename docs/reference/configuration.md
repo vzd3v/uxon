@@ -211,6 +211,17 @@ normalized, and `..`-free.
 templates, `[container.path_map]`) are edited in `config.toml`
 directly — they are not exposed on the TUI ⚙ Settings screen.
 
+**Auth provisioning — operator-owned, no passthrough.** uxon does not
+install the agent and does **not** forward host credentials into the
+container; there is deliberately **no** `env_passthrough` or
+credential-forwarding key. Auth is provisioned *into* the container by
+the operator — via the image or `create_template` — using file-based
+secrets and short-lived, narrowly-scoped tokens. Forwarding host
+environment variables (`-e NAME`) would push secrets into
+`/proc/<pid>/environ` inside the container, the exact exposure the
+hardening guide warns against. See
+[Provision auth safely](../guides/harden/harden-a-container.md#provision-auth-safely).
+
 **Launch-time markers (internal mechanics).** For an enabled container
 session, uxon stashes a few variables so it can later attribute
 monitoring statistics and reap the right process. They are set
