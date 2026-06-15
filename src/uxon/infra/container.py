@@ -455,12 +455,16 @@ def resolve_container_identity(cfg: Config, target_dir: str, launch_user: str) -
     c = cfg.container
     if not c.resolve_cmd:
         return EMPTY_IDENTITY
-    name, dir_token = resolve_container(cfg, target_dir, launch_user)
-    cmd = render_template(c.resolve_cmd, name=name, dir_token=dir_token, what="resolve_cmd")
-    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
     try:
+        # Name resolution and template render both fail() (SystemExit) on a
+        # misconfigured name/resolve template; degrade rather than abort the
+        # launch — identity is telemetry-only and opt-in (matches the sibling
+        # resolvers current_container_epoch / probe_container_state).
+        name, dir_token = resolve_container(cfg, target_dir, launch_user)
+        cmd = render_template(c.resolve_cmd, name=name, dir_token=dir_token, what="resolve_cmd")
+        full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
         cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError, SystemExit):
         return EMPTY_IDENTITY
     if cp.returncode != 0:
         return EMPTY_IDENTITY

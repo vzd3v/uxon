@@ -519,7 +519,28 @@ class AsUserShellOutTests(unittest.TestCase):
 
 
 class IdentityParseTests(unittest.TestCase):
-    """Phase 1 identity resolution — pure parsers degrade, never raise."""
+    """Phase 1 identity resolution — parsers and the resolver degrade, never raise."""
+
+    def test_resolve_identity_degrades_on_bad_template(self) -> None:
+        # AC-P1.3 / AC-P3.5 degrade-never-block: a misconfigured resolve_cmd
+        # template must yield EMPTY_IDENTITY, never abort the launch with the
+        # render_template SystemExit (it sits on the launch hot path).
+        from uxon.infra import container as container_infra
+        from uxon.infra.container import EMPTY_IDENTITY
+
+        cfg = _cfg(
+            ContainerConfig(
+                enabled=True,
+                name_template="proj-{project_slug}",
+                exec_template=_EXEC,
+                # Single-brace ``{.Id}`` is an invalid format token (the
+                # documented form doubles braces) → render_template fail()s.
+                resolve_cmd=("docker", "inspect", "--format", "{.Id}", "{name}"),
+            )
+        )
+        with mock.patch("uxon.infra.tmux.resolve_container", return_value=("proj-x", "/work")):
+            ident = container_infra.resolve_container_identity(cfg, "/srv/projects/myapp", "dana")
+        self.assertIs(ident, EMPTY_IDENTITY)
 
     def test_parse_resolve_output_first_line_three_tokens(self) -> None:
         from uxon.infra.container import parse_resolve_output

@@ -183,6 +183,10 @@ def _enrich_container_sessions(
             continue
         usage = per_session_usage(cgroup_pids, pid_to_session, proc_rows)
         for session in group:
+            # A session with no marker-carrying PID (e.g. processes that
+            # predate the UXON_SESSION marker) shows 0 here — the read
+            # succeeded, so this is an honest per-session split, not the
+            # wholesale-failure shared-total degrade above.
             rss_kib, cpu_pct = usage.get(session.name, (0, 0.0))
             session.rss_kib = rss_kib
             session.cpu_pct = cpu_pct
