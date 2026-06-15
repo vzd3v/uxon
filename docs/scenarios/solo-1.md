@@ -37,7 +37,9 @@ sessions on it.
 - **Work in a git worktree** —
   [`guides/customise/worktrees.md`](../guides/customise/worktrees.md)
 - **Run the agent in a container** —
-  [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md)
+  [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md),
+  hardened per
+  [`guides/harden/harden-a-container.md`](../guides/harden/harden-a-container.md)
 
 ## Reference
 

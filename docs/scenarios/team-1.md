@@ -64,6 +64,9 @@ outside its corner.
 - [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md)
   — run the agent in a (rootless) container on top of the paired
   account for a stronger escape boundary.
+- [`guides/harden/harden-a-container.md`](../guides/harden/harden-a-container.md)
+  — lock that container down: hardened template, default-deny egress,
+  file-based secrets, and the agent-writable-definition footgun.
 
 ## Reference
 

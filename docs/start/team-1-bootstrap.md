@@ -210,6 +210,10 @@ For any of the three modes:
   [`guides/operate/onboard-developer.md`](../guides/operate/onboard-developer.md).
 - Apply per-UID resource limits so one runaway can't OOM the
   rest: [`guides/harden/apply-resource-limits.md`](../guides/harden/apply-resource-limits.md).
+- Optionally run agents in a (rootless) container on top of the
+  paired account:
+  [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md),
+  hardened per [`guides/harden/harden-a-container.md`](../guides/harden/harden-a-container.md).
 - Add a second host:
   [`start/add-second-host.md`](add-second-host.md).
 - Operate: [`scenarios/team-1.md`](../scenarios/team-1.md) lists

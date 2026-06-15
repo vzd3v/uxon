@@ -141,5 +141,9 @@ Full CLI reference: [`reference/cli.md`](../reference/cli.md).
 - Switch default agent or auto-create GitHub repos:
   [`scenarios/solo-1.md`](../scenarios/solo-1.md) "Likely
   customisations".
+- Optionally run the agent in a container:
+  [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md)
+  (and [`guides/harden/harden-a-container.md`](../guides/harden/harden-a-container.md)
+  to lock it down).
 - Understand the model:
   [`explain/isolation-model.md`](../explain/isolation-model.md).

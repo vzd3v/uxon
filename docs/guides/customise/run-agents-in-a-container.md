@@ -53,10 +53,11 @@ in
 [`../../reference/configuration.md`](../../reference/configuration.md#container-table);
 this guide only shows a working shape.
 
-Define the container with a `compose.yml` next to the project (or a
-devcontainer) rather than a long `docker run` line — that keeps the
-container *definition* in one reviewed file and lets `create_template`
-stay a one-liner:
+Define the container with a `compose.yml` (or a devcontainer) rather
+than a long `docker run` line — that keeps the container *definition*
+in one reviewed file and lets `create_template` stay a one-liner. Keep
+that file on an **operator-owned path outside the bind-mounted repo**
+and reference it with an explicit `-f`:
 
 ```toml
 [container]
@@ -69,17 +70,21 @@ on_missing      = "create"          # off | start | create
 on_missing_mode = "prompt"          # prompt | auto
 start_template  = ["docker", "start", "{name}"]
 stop_template   = ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
-create_template = ["docker", "compose", "up", "-d"]
+create_template = ["docker", "compose", "-f", "/operator/uxon/compose.yml", "up", "-d"]
 
 [container.path_map]
 "/srv/projects" = "/work"
 ```
 
-`create_template` runs in the **host** project directory, so a
-`compose.yml` there is found without an explicit `-f`. `is_running_cmd`
-must exit non-zero unless the container is *running* — `docker top`
-does this; `docker inspect` does not (it exits 0 for a stopped
-container too), which is why `exists_cmd` is the inspect call.
+The definition must **not** live inside the bind-mounted repo: a file
+the agent can write is a file a yolo or prompt-injected agent can edit
+to grant itself host access at the next rebuild. Keep it operator-owned
+and outside the mount — the full rationale and the rest of the
+lockdown are in
+[`../harden/harden-a-container.md`](../harden/harden-a-container.md#the-container-definition-must-not-be-agent-writable).
+`is_running_cmd` must exit non-zero unless the container is *running* —
+`docker top` does this; `docker inspect` does not (it exits 0 for a
+stopped container too), which is why `exists_cmd` is the inspect call.
 
 ### Rootless by default; podman is one string
 
@@ -99,7 +104,10 @@ sufficient: a `--privileged`, host-namespace (`--network=host` /
 `--pid=host`), broad-bind (`-v /:/host`), or socket-mounting
 container *definition* re-grants host access, and `uxon` cannot
 prevent that — the `create_template` is opaque to it. Harden the
-definition yourself.
+definition yourself:
+[`../harden/harden-a-container.md`](../harden/harden-a-container.md)
+covers a hardened template, default-deny egress, file-based secrets,
+and the rest.
 
 ### The agent need not be installed on the host
 
@@ -124,6 +132,19 @@ From an untrusted project `.uxon.toml`, only `container.name` and
 operator-only. The boundary and the validation rules are documented
 in
 [`../../reference/configuration.md`](../../reference/configuration.md#container-table).
+
+## Observability
+
+A container session is **not** a blind spot. `uxon list` and the
+dashboard report the agent's real **in-container** CPU and RAM (read
+from the container's cgroup, not the near-idle host-side exec client),
+the `cmd` column shows the resolved agent id rather than `docker`/`sh`,
+and a stopped container renders a distinct `down` indicator instead of
+a silent idle `0`/`-`. The lifecycle is audited too —
+`container.prepare` when `uxon` starts/creates the container and
+`container.teardown` when it reaps the agent. See
+[`customise-dashboard.md`](customise-dashboard.md) and
+[`../../reference/audit-events.md`](../../reference/audit-events.md).
 
 ## Teardown — reap the agent on kill
 

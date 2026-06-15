@@ -89,7 +89,29 @@ The full writeup of these — with the rootful-vs-rootless framing and
 the operator caveat on container definitions — is in
 [`SECURITY.md`](../../SECURITY.md). The how-to for actually wiring it
 up is
-[`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md).
+[`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md),
+and the lockdown reference is
+[`guides/harden/harden-a-container.md`](../guides/harden/harden-a-container.md).
+
+## What a hardened container does and does not buy you
+
+A **hardened rootless** container (capabilities dropped, no-new-privileges,
+read-only root, default-deny egress, pinned image, an operator-owned
+definition the agent cannot edit) is **defense-in-depth**: it makes
+running a yolo agent on a *trusted* repo tolerable by raising the cost
+of an escape. It is **not** a guarantee against a *malicious* repo or a
+prompt-injected agent — it shares the host kernel, and a kernel bug or
+a misconfiguration (a re-granting container definition, a forgotten
+socket mount) still escapes. Treat it as raising the bar, not closing
+the door.
+
+For **genuinely untrusted code** — where the repo or the agent is the
+adversary, not just careless — a shared-kernel container is not enough.
+The boundary you want is a stronger-than-shared-kernel sandbox: gVisor,
+Kata Containers, or a microVM (Firecracker), one per tenant, with the
+OS-user model kept inside it. That tier is **out of `uxon`'s scope** —
+it is your runtime choice — but it is the honest answer when you cannot
+trust what runs.
 
 ## What you keep on the same kernel
 
