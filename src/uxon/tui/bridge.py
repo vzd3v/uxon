@@ -478,8 +478,9 @@ class TuiBridge:
         # New-project creates the dir inside the planner above, so the
         # container can only be readied AFTER it exists — too late for a
         # pre-launch prompt. Like the worktree-create path, this uses the
-        # headless auto-if-permitted policy. Follow-up: hoist the prompt once
-        # the dir is created before the commit.
+        # headless auto-if-permitted policy; the TUI new-project prompt parity
+        # is a tracked gap (backlog/2026-06-15-tui-new-project-container-prompt.md).
+        # Follow-up: TUI new-project container prompt parity.
         launch_app.ensure_container_ready(self.cfg, project, self.launch_user)
         from uxon.infra import audit as _audit
 

@@ -391,7 +391,7 @@ def plan_worktree_launch(
     # (documented in reference/configuration.md). The CLI is non-interactive,
     # so auto-if-permitted is correct there; the TUI worktree-prompt parity is
     # a tracked gap (backlog/2026-06-15-tui-worktree-container-prompt.md).
-    # Follow-up: TUI worktree-launch container prompt parity (AC-P4.2).
+    # Follow-up: TUI worktree-launch container prompt parity.
     ensure_container_ready(cfg, worktree_path, launch_user)
 
     _audit.audit(
