@@ -19,12 +19,15 @@ from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.container import (
+    CONTAINER_CGROUP_ENV,
+    CONTAINER_EPOCH_ENV,
+    CONTAINER_ID_ENV,
     CONTAINER_NAME_ENV,
     apply_path_map,
     container_pidfile,
     render_exec_prefix,
     resolve_container_name,
-    wrap_agent_for_teardown,
+    wrap_agent_for_container,
 )
 from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import SessionInfo, slugify
@@ -307,21 +310,35 @@ def _build_tmux_launch_request(
     exec_prefix: list[str] = []
     session_env: list[str] = []
     if cfg.container.enabled:
+        from uxon.infra.container import resolve_container_identity
+
         name, dir_token = resolve_container(cfg, target_dir, launch_user)
         exec_prefix = render_exec_prefix(
             cfg.container.exec_template, name=name, dir_token=dir_token
         )
-        if cfg.container.stop_template:
-            # Teardown opt-in (mirror of the launch): record the agent's
-            # in-container PID so ``uxon kill`` terminates exactly this
-            # session's process — the container is shared across arbitrarily
-            # many sessions, so a per-session handle is the only correct
-            # target. The resolved name rides the tmux session environment
-            # (``-e``): it is the one fact the kill path cannot recompute,
-            # since ``sudo -i`` resets the pane cwd and loses the launch dir.
-            pidfile = container_pidfile(session)
-            agent_argv = wrap_agent_for_teardown(agent_argv, pidfile=pidfile)
-            session_env = ["-e", f"{CONTAINER_NAME_ENV}={name}"]
+        # Launch-time telemetry markers (hoisted to the ``enabled`` guard so
+        # EVERY enabled session carries them, regardless of teardown opt-in).
+        # ``UXON_CONTAINER``'s value stays the BARE name — the kill path reads
+        # it verbatim and re-validates with ``is_valid_container_name``. The
+        # container identity (id / host-side cgroup path / start-epoch) rides
+        # SEPARATE vars, each appended only when resolution yields a non-empty
+        # value (absent var = the documented degrade; AC-P1.3 / AC-P3.5).
+        session_env = ["-e", f"{CONTAINER_NAME_ENV}={name}"]
+        identity = resolve_container_identity(cfg, target_dir, launch_user)
+        for var, value in (
+            (CONTAINER_ID_ENV, identity.id),
+            (CONTAINER_CGROUP_ENV, identity.cgroup),
+            (CONTAINER_EPOCH_ENV, identity.epoch),
+        ):
+            if value:
+                session_env += ["-e", f"{var}={value}"]
+        # Wrap the agent for every enabled session so it exports
+        # ``UXON_SESSION`` into its in-container environ (telemetry attribution).
+        # The pidfile write stays gated on ``stop_template`` (teardown opt-in):
+        # the kill path then terminates exactly this session's recorded
+        # in-container PID, leaving the shared container running.
+        pidfile = container_pidfile(session) if cfg.container.stop_template else None
+        agent_argv = wrap_agent_for_container(agent_argv, session=session, pidfile=pidfile)
     final_cmd = exec_prefix + agent_argv
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)

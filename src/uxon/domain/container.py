@@ -40,6 +40,22 @@ OnMissingMode = Literal["prompt", "auto"]
 # reliably recoverable from the live session.
 CONTAINER_NAME_ENV = "UXON_CONTAINER"
 
+# Companion session-environment markers stashed alongside ``UXON_CONTAINER`` at
+# launch (separate vars — never overloaded into the name, which the kill path
+# reads verbatim and validates). They carry the launch-time container identity
+# (id), the resolved host-side cgroup path, and the container's start-epoch,
+# used by telemetry (cgroup → in-container host PIDs) and the teardown
+# PID-recycle guard. Each is set only when resolution yields a non-empty value;
+# an absent var is the documented degrade (telemetry/teardown skip the feature).
+CONTAINER_ID_ENV = "UXON_CONTAINER_ID"
+CONTAINER_CGROUP_ENV = "UXON_CONTAINER_CGROUP"
+CONTAINER_EPOCH_ENV = "UXON_CONTAINER_EPOCH"
+
+# Agent-process environment marker exported by the launch wrapper (NOT a tmux
+# session-env var): it lands in the in-container agent's ``/proc/self/environ``
+# so host-side telemetry can attribute each in-container PID to its session.
+SESSION_ENV = "UXON_SESSION"
+
 # Where the launch wrapper drops the agent's in-container PID. ``/tmp`` is
 # writable in essentially every base image; the teardown reads it back from
 # inside the container (same PID namespace as the recorded pid).
@@ -84,6 +100,12 @@ class ContainerConfig:
     start_template: tuple[str, ...] = ()
     create_template: tuple[str, ...] = ()
     stop_template: tuple[str, ...] = ()
+    # Optional operator-supplied opaque argv that prints the container's host
+    # ``<id> <init_pid> <start_epoch>`` on stdout, used to anchor telemetry +
+    # the teardown PID-recycle guard. Off by default — empty means no shell-out
+    # and the identity markers degrade to absent. Placeholders: ``{name}``,
+    # ``{dir}``. Operator-only (not in the project allowlist).
+    resolve_cmd: tuple[str, ...] = ()
     on_missing: OnMissing = "off"
     on_missing_mode: OnMissingMode = "prompt"
     # Project-layer (``.uxon.toml``) data-only overrides.
@@ -201,20 +223,33 @@ def container_pidfile(session: str) -> str:
     return f"{_CONTAINER_PIDFILE_DIR}/uxon-{safe}.pid"
 
 
-def wrap_agent_for_teardown(agent_argv: list[str], *, pidfile: str) -> list[str]:
-    """Wrap the agent argv so it records its in-container PID for the kill.
+def wrap_agent_for_container(
+    agent_argv: list[str], *, session: str, pidfile: str | None
+) -> list[str]:
+    """Wrap the agent argv for an in-container launch.
 
-    ``sh -c 'echo $$ > <pidfile>; exec "$@"'`` runs *inside* the container
-    (after the operator exec prefix): ``$$`` is the shell's PID and ``exec``
-    replaces that shell with the agent, so the agent inherits the same PID and
-    the file holds its real in-container PID. ``exec "$@"`` keeps the agent
-    argv a list of tokens — never re-parsed by the shell — preserving the
-    argv-list injection invariant. Same idiom as
-    ``infra.container._as_user_in_dir``. Applied only when a ``stop_template``
-    is configured (the operator opted into teardown, which needs ``sh`` in the
-    image).
+    Applied to **every** ``container.enabled`` session (regardless of
+    ``stop_template``). The wrapper runs *inside* the container, after the
+    operator exec prefix:
+
+    - It **always** exports ``UXON_SESSION=<session>`` so the marker lands in
+      the in-container agent's ``/proc/self/environ`` — host-side telemetry
+      reads it back to attribute each in-container PID to its session.
+    - When a ``pidfile`` is supplied (the operator opted into teardown via
+      ``stop_template``), it **also** records the agent's in-container PID with
+      ``echo $$ > <pidfile>``: ``$$`` is the shell's PID and ``exec`` replaces
+      that shell with the agent, so the agent inherits the same PID and the
+      file holds its real in-container PID.
+
+    ``exec "$@"`` keeps the agent argv a list of tokens — never re-parsed by
+    the shell — preserving the argv-list injection invariant. Same idiom as
+    ``infra.container._as_user_in_dir``. Needs ``sh`` in the image.
     """
-    script = f'echo $$ > {shlex.quote(pidfile)}; exec "$@"'
+    parts = [f"export {SESSION_ENV}={shlex.quote(session)};"]
+    if pidfile is not None:
+        parts.append(f"echo $$ > {shlex.quote(pidfile)};")
+    parts.append('exec "$@"')
+    script = " ".join(parts)
     return ["sh", "-c", script, "uxon-agent", *agent_argv]
 
 

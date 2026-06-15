@@ -49,6 +49,80 @@ CONTAINER_CMD_TIMEOUT_SEC = 10.0
 
 
 @dataclass(frozen=True)
+class ContainerIdentity:
+    """Launch-time anchor for a container's host-side identity.
+
+    All three fields are empty strings on the degrade path (``resolve_cmd``
+    unset, or any piece unresolvable) — telemetry and the teardown
+    PID-recycle guard treat empty as "feature unavailable", never an error.
+
+    - ``id`` — the runtime's container id (for the Phase-3 audit event and the
+      recycle guard).
+    - ``cgroup`` — the exact host-side cgroup path, read from
+      ``/proc/<init_pid>/cgroup`` (runtime-layout-agnostic; no hardcoded
+      docker/systemd path), used to enumerate the in-container host PIDs.
+    - ``epoch`` — the container's start-epoch, the PID-recycle guard anchor.
+    """
+
+    id: str = ""
+    cgroup: str = ""
+    epoch: str = ""
+
+
+EMPTY_IDENTITY = ContainerIdentity()
+
+
+def parse_resolve_output(stdout: str) -> tuple[str, str, str] | None:
+    """Parse ``resolve_cmd`` stdout → ``(id, init_pid, epoch)`` or None.
+
+    Contract: the first non-empty line is whitespace-separated
+    ``<id> <init_pid> <start_epoch>``. Defensive — any shape that does not
+    yield three tokens with a numeric ``init_pid`` returns None (degrade),
+    never raises.
+    """
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            return None
+        cid, init_pid, epoch = parts[0], parts[1], parts[2]
+        if not cid or not init_pid.isdigit() or not epoch:
+            return None
+        return cid, init_pid, epoch
+    return None
+
+
+def parse_proc_cgroup(content: str) -> str:
+    """Extract the cgroup path from ``/proc/<pid>/cgroup`` content → path or "".
+
+    Each line is ``<hierarchy-id>:<controllers>:<path>``. cgroup v2 uses the
+    single ``0::<path>`` line; v1 has one line per controller. Prefer the v2
+    line; otherwise fall back to the first line carrying a usable path.
+    Returns "" when nothing parses (degrade).
+    """
+    fallback = ""
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # ``split(":", 2)`` keeps a path containing ``:`` intact.
+        fields = line.split(":", 2)
+        if len(fields) != 3:
+            continue
+        hid, controllers, path = fields
+        if not path:
+            continue
+        if hid == "0" and controllers == "":
+            # cgroup v2 unified hierarchy — the authoritative line.
+            return path
+        if not fallback:
+            fallback = path
+    return fallback
+
+
+@dataclass(frozen=True)
 class ContainerPlan:
     """The resolved container state + what uxon must do before exec.
 
@@ -234,3 +308,56 @@ def run_prepare(plan: ContainerPlan, target_dir: str, launch_user: str) -> None:
     # cwd is the HOST project dir (where a compose file lives); the rendered
     # argv already carries the container-side ``{dir}`` token where needed.
     _run_prepare(list(plan.prepare_cmd), target_dir, launch_user)
+
+
+def _read_proc_cgroup(init_pid: str) -> str:
+    """Read host-side ``/proc/<init_pid>/cgroup`` and parse out the path → "".
+
+    The init-PID's cgroup is the container's exact cgroup (kernel's view, no
+    runtime-layout assumptions). The file is world-readable; uxon reads it
+    directly (it is already privileged). Any read/parse failure → "" (degrade).
+    """
+    from pathlib import Path
+
+    try:
+        content = Path(f"/proc/{init_pid}/cgroup").read_text()
+    except OSError:
+        return ""
+    return parse_proc_cgroup(content)
+
+
+def resolve_container_identity(cfg: Config, target_dir: str, launch_user: str) -> ContainerIdentity:
+    """Resolve a container's launch-time identity (id + cgroup + start-epoch).
+
+    Mechanism locked by ``docs/decisions/2026-06-15-container-identity-resolution.md``:
+    an optional operator-supplied opaque ``resolve_cmd`` prints the container's
+    host ``<id> <init_pid> <start_epoch>``; uxon reads the exact cgroup path
+    from the init-PID's world-readable ``/proc/<init_pid>/cgroup`` (no hardcoded
+    runtime layout). Used by Phase-2 telemetry and the Phase-3 teardown guard.
+
+    ``resolve_cmd`` unset → :data:`EMPTY_IDENTITY` with **no** shell-out (keeps
+    unit tests hermetic). Any runtime/parse failure also degrades to
+    :data:`EMPTY_IDENTITY` — this never raises and never blocks the launch
+    (AC-P1.3 / AC-P3.5). The container is already ensured-running before the
+    launch request is built, so ``resolve_cmd`` has a live container to inspect.
+    """
+    from uxon.infra.tmux import resolve_container
+
+    c = cfg.container
+    if not c.resolve_cmd:
+        return EMPTY_IDENTITY
+    name, dir_token = resolve_container(cfg, target_dir, launch_user)
+    cmd = render_template(c.resolve_cmd, name=name, dir_token=dir_token, what="resolve_cmd")
+    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+    try:
+        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except (subprocess.TimeoutExpired, OSError):
+        return EMPTY_IDENTITY
+    if cp.returncode != 0:
+        return EMPTY_IDENTITY
+    parsed = parse_resolve_output(cp.stdout)
+    if parsed is None:
+        return EMPTY_IDENTITY
+    cid, init_pid, epoch = parsed
+    cgroup = _read_proc_cgroup(init_pid)
+    return ContainerIdentity(id=cid, cgroup=cgroup, epoch=epoch)

@@ -138,6 +138,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "exists_cmd": [],
         "start_template": [],
         "create_template": [],
+        "resolve_cmd": [],
         "on_missing": "off",
         "on_missing_mode": "prompt",
     },

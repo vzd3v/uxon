@@ -179,6 +179,7 @@ daemon and a compose file resolves where it lives on the host.
 | `container.start_template` | array | `[]` | Argv that starts a stopped container. Required when `on_missing` is `start` or `create`. |
 | `container.create_template` | array | `[]` | Argv that creates an absent container. Required when `on_missing` is `create`. |
 | `container.stop_template` | array | `[]` | Argv run on **kill** to terminate this session's in-container agent. Placeholders: `{name}` and `{pidfile}` (uxon-supplied path where the launch wrapper recorded the agent's in-container PID, unique per session). Optional; when set, uxon wraps the agent at launch to record its PID and reaps it on kill (the container is left running). Needs `sh` in the image. |
+| `container.resolve_cmd` | array | `[]` | Optional argv that prints the container's host **identity** on stdout so uxon can attribute monitoring stats and guard teardown against PID recycling. Placeholders: `{name}`, `{dir}`. **Expected stdout:** the first non-empty line, whitespace-separated `<id> <init_pid> <start_epoch>` (e.g. `["docker", "inspect", "--format", "{{.Id}} {{.State.Pid}} {{.State.StartedAt}}", "{name}"]`). Off by default; any runtime or parse failure is ignored (the markers below are simply absent). |
 
 The container is resolved deterministically per **(launch user,
 project directory)** — the same container is reused across sessions,
@@ -209,6 +210,22 @@ normalized, and `..`-free.
 **File-only.** The nested `[container]` structures (argv-list
 templates, `[container.path_map]`) are edited in `config.toml`
 directly — they are not exposed on the TUI ⚙ Settings screen.
+
+**Launch-time markers (internal mechanics).** For an enabled container
+session, uxon stashes a few variables so it can later attribute
+monitoring statistics and reap the right process. They are set
+automatically — you do not configure them — and never appear when
+`[container]` is disabled:
+
+- `UXON_CONTAINER` (tmux session environment) — the resolved bare
+  container name.
+- `UXON_CONTAINER_ID` / `UXON_CONTAINER_CGROUP` / `UXON_CONTAINER_EPOCH`
+  (tmux session environment) — the container's identity, host-side
+  cgroup path, and start time. Present only when `resolve_cmd` is set
+  and resolves; absent otherwise.
+- `UXON_SESSION` (the in-container agent process environment) — the
+  session name, exported by the launch wrapper so host-side monitoring
+  can map an in-container process back to its session.
 
 **Teardown.** `tmux kill-session` only severs uxon's client-side exec;
 the in-container agent does **not** die on that disconnect under docker

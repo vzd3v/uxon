@@ -6,6 +6,11 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Container sessions now stash launch-time telemetry markers on the tmux session so monitoring and teardown can find the in-container agent. A new optional `container.resolve_cmd` (an operator-supplied argv that prints the container's id, init PID, and start time) lets uxon record the container's identity and host-side cgroup at launch; leave it unset to opt out. The markers are absent entirely when `[container]` is disabled.
+
 ## [3.7.0] — 2026-06-14
 
 ### Added

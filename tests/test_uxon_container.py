@@ -22,7 +22,11 @@ from unittest import mock
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.container import (
+    CONTAINER_CGROUP_ENV,
+    CONTAINER_EPOCH_ENV,
+    CONTAINER_ID_ENV,
     CONTAINER_NAME_ENV,
+    SESSION_ENV,
     ContainerConfig,
     apply_path_map,
     container_pidfile,
@@ -33,7 +37,7 @@ from uxon.domain.container import (
     resolve_container_name,
     validate_container_name,
     validate_path_map,
-    wrap_agent_for_teardown,
+    wrap_agent_for_container,
 )
 
 
@@ -164,27 +168,32 @@ class ExecWrapTests(unittest.TestCase):
         self.assertIn("claude", disabled.cmd)
         idx = disabled.cmd.index("claude")
         self.assertNotIn("docker", disabled.cmd[:idx])
+        # AC-P0.1 off-invariant: none of the new hoisted markers / wrapper
+        # appear when disabled — no ``-e UXON_*``, no ``sh -c`` wrapper.
+        cmd = list(disabled.cmd)
+        joined = " ".join(cmd)
+        self.assertNotIn("UXON_CONTAINER", joined)
+        self.assertNotIn("UXON_SESSION", joined)
+        self.assertNotIn("-e", cmd)
+        self.assertNotIn("sh", cmd)
+        self.assertEqual(cmd[idx:], ["claude", "--dangerously-skip-permissions"])
 
     def test_enabled_prepends_exec_template(self) -> None:
         c = ContainerConfig(enabled=True, name_template="proj-{project_slug}", exec_template=_EXEC)
         req = self._build(_cfg(c))
-        # exec_template(resolved) + [binary] + ... + mode_flags, in order.
+        # exec_template(resolved) + the per-session wrapper + agent argv, in
+        # order. After the hoist, EVERY enabled session is wrapped (to export
+        # UXON_SESSION), so the resolved exec prefix is the leading 6 tokens.
         cmd = list(req.cmd)
-        # The agent command tail must be: docker exec -it -w /srv/projects/myapp
-        # proj-myapp claude --dangerously-skip-permissions
         agent_tail = cmd[cmd.index("docker") :]
         self.assertEqual(
-            agent_tail,
-            [
-                "docker",
-                "exec",
-                "-it",
-                "-w",
-                "/srv/projects/myapp",
-                "proj-myapp",
-                "claude",
-                "--dangerously-skip-permissions",
-            ],
+            agent_tail[:6],
+            ["docker", "exec", "-it", "-w", "/srv/projects/myapp", "proj-myapp"],
+        )
+        # The agent argv survives intact after the ``uxon-agent`` $0 sentinel.
+        self.assertEqual(
+            agent_tail[agent_tail.index("uxon-agent") + 1 :],
+            ["claude", "--dangerously-skip-permissions"],
         )
 
     def test_enabled_with_path_map_uses_container_dir(self) -> None:
@@ -202,8 +211,9 @@ class ExecWrapTests(unittest.TestCase):
 
     def test_stop_template_stashes_name_and_wraps_agent(self) -> None:
         # Teardown opt-in (AC-B5): the new-session argv stashes the resolved
-        # name in the session env and the agent is wrapped so it records its
-        # in-container PID, while the exec prefix is unchanged.
+        # name in the session env and the agent is wrapped so it exports the
+        # per-session marker AND records its in-container PID, while the exec
+        # prefix is unchanged.
         c = ContainerConfig(
             enabled=True,
             name_template="proj-{project_slug}",
@@ -220,18 +230,59 @@ class ExecWrapTests(unittest.TestCase):
             tail[:6], ["docker", "exec", "-it", "-w", "/srv/projects/myapp", "proj-myapp"]
         )
         self.assertEqual(tail[6:8], ["sh", "-c"])
+        # The export marker is present on the teardown path too (hoist), plus
+        # the pidfile write that this path opted into.
+        self.assertIn(f"export {SESSION_ENV}=", tail[8])
         self.assertIn("echo $$ >", tail[8])
         # The agent argv survives intact after the ``uxon-agent`` $0 sentinel.
         self.assertEqual(
             tail[tail.index("uxon-agent") + 1 :], ["claude", "--dangerously-skip-permissions"]
         )
 
-    def test_enabled_without_stop_template_has_no_teardown_wiring(self) -> None:
-        # Enabled but no stop_template: no session env, no agent wrapper.
+    def test_enabled_without_stop_template_carries_marker_but_no_pidfile(self) -> None:
+        # After the hoist: enabled + no stop_template (+ no resolve_cmd, the
+        # default) still carries ``-e UXON_CONTAINER=<bare name>`` and wraps the
+        # agent to export ``UXON_SESSION``, but does NOT write a pidfile, and the
+        # identity vars are ABSENT (resolve_cmd unset → degrade path).
         c = ContainerConfig(enabled=True, name_template="proj-{project_slug}", exec_template=_EXEC)
         cmd = list(self._build(_cfg(c)).cmd)
-        self.assertNotIn(CONTAINER_NAME_ENV, " ".join(cmd))
-        self.assertNotIn("sh", cmd[cmd.index("docker") :])
+        # Bare-name marker rides the session env.
+        self.assertIn("-e", cmd)
+        self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
+        # Identity vars absent without resolve_cmd (degrade).
+        joined = " ".join(cmd)
+        self.assertNotIn(CONTAINER_ID_ENV, joined)
+        self.assertNotIn(CONTAINER_CGROUP_ENV, joined)
+        self.assertNotIn(CONTAINER_EPOCH_ENV, joined)
+        # The agent IS wrapped to export the per-session marker, with NO pidfile.
+        tail = cmd[cmd.index("docker") :]
+        self.assertEqual(tail[6:8], ["sh", "-c"])
+        self.assertIn(f"export {SESSION_ENV}=", tail[8])
+        self.assertNotIn("echo $$", tail[8])
+        self.assertEqual(
+            tail[tail.index("uxon-agent") + 1 :], ["claude", "--dangerously-skip-permissions"]
+        )
+
+    def test_resolved_identity_rides_separate_session_env_vars(self) -> None:
+        # When resolve_cmd resolves a non-empty identity, the id / cgroup /
+        # epoch ride SEPARATE ``-e`` vars; ``UXON_CONTAINER`` keeps the bare name.
+        from uxon.infra.container import ContainerIdentity
+
+        c = ContainerConfig(
+            enabled=True,
+            name_template="proj-{project_slug}",
+            exec_template=_EXEC,
+            resolve_cmd=("inspect", "{name}"),
+        )
+        ident = ContainerIdentity(
+            id="abc123", cgroup="/sys/fs/cgroup/x.scope", epoch="2026-06-15T00:00:00Z"
+        )
+        with mock.patch("uxon.infra.container.resolve_container_identity", return_value=ident):
+            cmd = list(self._build(_cfg(c)).cmd)
+        self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
+        self.assertIn(f"{CONTAINER_ID_ENV}=abc123", cmd)
+        self.assertIn(f"{CONTAINER_CGROUP_ENV}=/sys/fs/cgroup/x.scope", cmd)
+        self.assertIn(f"{CONTAINER_EPOCH_ENV}=2026-06-15T00:00:00Z", cmd)
 
 
 class NameSafetyTests(unittest.TestCase):
@@ -467,6 +518,39 @@ class AsUserShellOutTests(unittest.TestCase):
             container_infra._probe_exit_ok(["docker", "top", "box"], "dana")
 
 
+class IdentityParseTests(unittest.TestCase):
+    """Phase 1 identity resolution — pure parsers degrade, never raise."""
+
+    def test_parse_resolve_output_first_line_three_tokens(self) -> None:
+        from uxon.infra.container import parse_resolve_output
+
+        self.assertEqual(
+            parse_resolve_output("\n  abc123 4242 2026-06-15T00:00:00Z \nextra\n"),
+            ("abc123", "4242", "2026-06-15T00:00:00Z"),
+        )
+
+    def test_parse_resolve_output_degrades_on_bad_shape(self) -> None:
+        from uxon.infra.container import parse_resolve_output
+
+        for bad in ("", "   ", "only-two tokens", "abc notapid 123"):
+            self.assertIsNone(parse_resolve_output(bad))
+
+    def test_parse_proc_cgroup_v2_prefers_unified_line(self) -> None:
+        from uxon.infra.container import parse_proc_cgroup
+
+        v2 = "0::/system.slice/docker-abc.scope\n"
+        self.assertEqual(parse_proc_cgroup(v2), "/system.slice/docker-abc.scope")
+        # Path containing ``:`` survives the bounded split.
+        self.assertEqual(parse_proc_cgroup("0::/a:b/c"), "/a:b/c")
+
+    def test_parse_proc_cgroup_v1_falls_back_to_a_controller_line(self) -> None:
+        from uxon.infra.container import parse_proc_cgroup
+
+        v1 = "12:pids:/docker/abc\n11:memory:/docker/abc\n"
+        self.assertEqual(parse_proc_cgroup(v1), "/docker/abc")
+        self.assertEqual(parse_proc_cgroup("garbage\n\n"), "")
+
+
 class ContainerGateTests(unittest.TestCase):
     """HIGH (AC-B4) — TUI prompt-vs-auto decision (pure, probe mocked)."""
 
@@ -567,13 +651,24 @@ class TeardownPrimitiveTests(unittest.TestCase):
         self.assertNotIn(" ", pf)
         self.assertNotIn("/", pf[len("/tmp/") :])
 
-    def test_wrap_records_pid_then_execs_agent(self) -> None:
-        wrapped = wrap_agent_for_teardown(["claude", "--flag"], pidfile="/tmp/uxon-s.pid")
+    def test_wrap_exports_session_and_optionally_records_pid(self) -> None:
+        # With a pidfile (teardown opted in): export the per-session marker AND
+        # record the in-container PID, then exec the agent.
+        wrapped = wrap_agent_for_container(
+            ["claude", "--flag"], session="uxon-app@claude", pidfile="/tmp/uxon-s.pid"
+        )
         self.assertEqual(wrapped[:2], ["sh", "-c"])
+        self.assertIn(f"export {SESSION_ENV}=uxon-app@claude", wrapped[2])
         self.assertIn("echo $$ > /tmp/uxon-s.pid", wrapped[2])
         self.assertIn('exec "$@"', wrapped[2])
         # $0 sentinel then the agent argv, untouched and still a token list.
         self.assertEqual(wrapped[3:], ["uxon-agent", "claude", "--flag"])
+        # Without a pidfile (no teardown): export only, no PID record.
+        bare = wrap_agent_for_container(["claude"], session="uxon-app@claude", pidfile=None)
+        self.assertIn(f"export {SESSION_ENV}=uxon-app@claude", bare[2])
+        self.assertNotIn("echo $$", bare[2])
+        self.assertIn('exec "$@"', bare[2])
+        self.assertEqual(bare[3:], ["uxon-agent", "claude"])
 
     def test_render_stop_template_fills_per_token(self) -> None:
         out = render_stop_template(
