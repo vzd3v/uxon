@@ -49,6 +49,14 @@ def run(ctx: TuiContext) -> int:
 
     install_subprocess_guard()
 
+    # Lowest in-process keystroke witness: log every stdin read (payload,
+    # byte count, gap since the previous read) so a swallowed key is a
+    # provable gap in the log instead of unobservable silence. Installs
+    # only under ``UXON_DEBUG=keys``; no-op (and zero cost) otherwise.
+    from .keylog import install_stdin_tap
+
+    install_stdin_tap()
+
     from .app import UxonApp
 
     caller_user = os.environ.get("SUDO_USER") or os.environ.get("USER", "")

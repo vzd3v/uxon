@@ -97,6 +97,48 @@ def assert_off_event_loop(what: str = "blocking call") -> None:
     )
 
 
+def _detach_from_controlling_tty(kwargs: dict) -> None:
+    """Stop a non-interactive child from flushing uxon's keystrokes.
+
+    Second swallow mechanism (distinct from the on-loop block above, and
+    proven with a kernel-level capture: et wrote the keys into uxon's pts,
+    but a worker's subprocess discarded them before ``os.read``):
+
+    A worker's ``tmux`` / ``ssh`` / ``sudo`` (``Defaults use_pty``) / ``git``
+    child *inherits uxon's controlling terminal*. Such tools switch the
+    terminal to raw mode and, on entry or on restore-at-exit, **flush its
+    input queue** (``tcflush(TCIFLUSH)`` / ``tcsetattr(..., TCSAFLUSH)``).
+    Any keystroke the user typed while the child ran — already sitting in
+    the kernel pty buffer, not yet read by Textual's input thread — is
+    silently dropped. That is the intermittent "a chunk of what I typed
+    vanished" bug; it never reproduces under tmux/claude-code because there
+    the pty belongs to tmux, isolated from these children.
+
+    The fix: give the child its **own session** (``start_new_session`` →
+    ``setsid``), so it has *no* controlling terminal and physically cannot
+    open ``/dev/tty`` to flush uxon's input; and point its stdin at
+    ``/dev/null`` so it cannot read pending keystrokes either.
+
+    Scope: applied only when the child **captures its output**
+    (``stdout``/``stderr`` set) — i.e. a non-interactive probe/query. The
+    interactive launch/attach path (``subprocess.call(cmd)`` with inherited
+    std streams) genuinely needs the controlling tty and is left untouched.
+    All ``setdefault`` so an explicit caller choice always wins.
+    """
+    captures_output = (
+        kwargs.get("stdout") is not None or kwargs.get("stderr") is not None
+    )
+    if not captures_output:
+        return
+    # Respect a caller that already manages the child's session — e.g. a
+    # ``preexec_fn`` that calls ``os.setsid`` (forcing ``start_new_session``
+    # too would setsid twice → EPERM in the child), or an explicit
+    # ``start_new_session`` / ``stdin``. Only fill in what's missing.
+    if "start_new_session" not in kwargs and kwargs.get("preexec_fn") is None:
+        kwargs["start_new_session"] = True
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
+
+
 def guard_installed() -> bool:
     """True iff the subprocess guard is currently installed."""
     return getattr(subprocess.Popen.__init__, _GUARD_MARKER, False)
@@ -117,6 +159,7 @@ def install_subprocess_guard() -> None:
 
         def guarded_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
             assert_off_event_loop("subprocess spawn")
+            _detach_from_controlling_tty(kwargs)
             original_init(self, *args, **kwargs)
 
         setattr(guarded_init, _GUARD_MARKER, True)
