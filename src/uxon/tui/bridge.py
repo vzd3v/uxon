@@ -38,6 +38,7 @@ from uxon.infra import (
     sessions_probe,
     tmux,
 )
+from uxon.infra.run import run_query
 
 if TYPE_CHECKING:
     from uxon.domain.launch_request import LaunchRequest
@@ -306,10 +307,8 @@ class TuiBridge:
             )
 
         try:
-            cp = subprocess.run(
+            cp = run_query(
                 ssh_argv,
-                capture_output=True,
-                text=True,
                 timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
             )
         except subprocess.TimeoutExpired:
@@ -555,11 +554,9 @@ class TuiBridge:
         primary = git.git_common_dir_root_as_user(cwd_arg, self.launch_user)
         if primary:
             repo_root = primary
-        cp = subprocess.run(
+        cp = run_query(
             identity.nonint_command_prefix_for_user(self.launch_user)
             + ["git", "-C", repo_root, "worktree", "list", "--porcelain"],
-            text=True,
-            capture_output=True,
         )
         if cp.returncode != 0:
             raise WorktreeProbeError((cp.stderr or "").strip() or "git worktree list failed")

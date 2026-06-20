@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
@@ -68,6 +67,9 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         ssh_multiplex="off",
         ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
     )
+    # Lane B — interactive terminal handoff: ``execvp`` replaces this image
+    # with the ssh client, which keeps the controlling terminal. Bypasses
+    # ``Popen``/the loop guard by construction.
     # Audit must fire *before* ``os.execvp`` (Bug 7) — once the process
     # image is replaced the cached socket is gone.  ``audit()`` is a
     # non-blocking ``socket.send``, so the kernel buffers the datagram
@@ -172,6 +174,9 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             print(f"session={shlex.quote(target.name)}")
             print(f"exec {shlex.join(full)}")
             return 0
+        # Lane B — interactive terminal handoff: ``execvp`` replaces this
+        # image with ``tmux attach``, which keeps the controlling terminal.
+        # Bypasses ``Popen``/the loop guard by construction.
         # Audit before ``os.execvp`` (Bug 7) — once the image is
         # replaced our cached socket is gone.
         _audit.audit(
@@ -216,9 +221,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     )
     # Same-user audit fires once before ``attach_session``'s execvp.
     # Emitting from ``do_attach`` (not ``attach_session``) keeps the
-    # call exactly once per CLI invocation; the helper is also used by
-    # the TUI's ``attach_session_blocking`` and we don't want to double
-    # up there.
+    # call exactly once per CLI invocation.
     _audit.audit(
         _attach_event,
         **{_session_field: target.name},
@@ -268,15 +271,10 @@ def attach_session(
         print(f"session={shlex.quote(target.name)}")
         print(f"exec {shlex.join(req.cmd)}")
         return 0
+    # Lane B — interactive terminal handoff. ``execvp`` replaces this
+    # process image with ``tmux attach``; the TUI is gone and the child
+    # inherits the real controlling terminal (an interactive attach needs
+    # one). This bypasses ``subprocess``/``Popen`` entirely, so it is
+    # outside the loop guard and the no-raw-spawn test by construction.
     os.execvp(req.cmd[0], list(req.cmd))
     return 0
-
-
-def attach_session_blocking(target: SessionInfo, cfg: Config, launch_user: str) -> int:
-    """Fork-and-wait variant of :func:`attach_session` for the TUI path."""
-    req = tmux._build_tmux_attach_request(target, cfg, launch_user)
-    for pre in req.prelaunch:
-        rc = subprocess.call(list(pre))
-        if rc != 0:
-            return rc
-    return subprocess.call(list(req.cmd))

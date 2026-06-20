@@ -15,6 +15,7 @@ from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.errors import eprint, fail
 from uxon.infra import identity, process, sessions_probe, tmux
+from uxon.infra.run import run_query
 
 
 @dataclass(frozen=True)
@@ -246,7 +247,7 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     if args.json_output:
         remote_cmd_parts.append("--json")
     # Correlation-id append must precede the join.  ``_do_kill_remote``
-    # uses ``subprocess.run`` (not ``os.execvp``), so there is no Bug 7
+    # uses ``run_query`` (not ``os.execvp``), so there is no Bug 7
     # process-replacement concern here — the audit emit is correct
     # anywhere before the run.
     import uuid as _uuid
@@ -312,10 +313,8 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
         )
 
     try:
-        cp = subprocess.run(
+        cp = run_query(
             ssh_argv,
-            capture_output=True,
-            text=True,
             timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired:

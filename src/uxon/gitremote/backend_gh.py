@@ -12,10 +12,10 @@ execution without monkey-patching ``subprocess`` globally.
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 
 from uxon.domain.git_profiles import GitRemoteProfile
+from uxon.infra.run import run_query
 
 
 class BackendError(RuntimeError):
@@ -37,7 +37,7 @@ class RunResult:
 
 def default_run(cmd: list[str], *, timeout: int = 20) -> RunResult:
     """Real subprocess runner. Tests override via the ``run`` parameter."""
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    proc = run_query(cmd, timeout=timeout)
     return RunResult(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
 

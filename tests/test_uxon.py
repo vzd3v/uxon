@@ -1105,45 +1105,6 @@ class UxonTests(unittest.TestCase):
         self.assertIn("mkdir", pre)
         self.assertIn("-p", pre)
 
-    def test_attach_session_blocking_uses_subprocess_not_execvp(self) -> None:
-        cfg = self.make_config()
-        target = self.make_session("uxon-demo", "/srv/repos/demo")
-        with self._stub_socket_path():
-            with mock.patch.object(attach_app.subprocess, "call", return_value=0) as call:
-                with mock.patch.object(attach_app.os, "execvp") as execvp:
-                    rc = attach_app.attach_session_blocking(target, cfg, "u-vz")
-        self.assertEqual(rc, 0)
-        call.assert_called_once()
-        execvp.assert_not_called()
-
-    def test_launch_in_tmux_blocking_runs_prelaunch_then_cmd(self) -> None:
-        cfg = self.make_config()
-        args = ParsedArgs(action="run", agent_args=[])
-        with self._stub_socket_path():
-            with mock.patch("subprocess.call", side_effect=[0, 0]) as call:
-                with mock.patch.object(tmux.os, "execvp") as execvp:
-                    rc = tmux.launch_in_tmux_blocking(
-                        "/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz"
-                    )
-        self.assertEqual(rc, 0)
-        self.assertEqual(call.call_count, 2)
-        first_cmd = call.call_args_list[0][0][0]
-        second_cmd = call.call_args_list[1][0][0]
-        self.assertIn("mkdir", first_cmd)
-        self.assertIn("new-session", second_cmd)
-        execvp.assert_not_called()
-
-    def test_launch_in_tmux_blocking_aborts_on_prelaunch_failure(self) -> None:
-        cfg = self.make_config()
-        args = ParsedArgs(action="run", agent_args=[])
-        with self._stub_socket_path():
-            with mock.patch("subprocess.call", side_effect=[7]) as call:
-                rc = tmux.launch_in_tmux_blocking(
-                    "/srv/repos/demo", "uxon-demo", args, cfg, None, "u-vz"
-                )
-        self.assertEqual(rc, 7)
-        call.assert_called_once()  # main cmd never ran
-
     def test_attach_session_cli_still_calls_execvp(self) -> None:
         cfg = self.make_config()
         target = self.make_session("uxon-demo", "/srv/repos/demo")

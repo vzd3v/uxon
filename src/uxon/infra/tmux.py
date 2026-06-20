@@ -412,28 +412,8 @@ def launch_in_tmux(
         return 0
     for pre in req.prelaunch:
         process.run_cmd(list(pre))
+    # Lane B — interactive terminal handoff: ``execvp`` replaces this image
+    # with the tmux client, which keeps the controlling terminal. Bypasses
+    # ``Popen``/the loop guard by construction.
     os.execvp(req.cmd[0], list(req.cmd))
     return 0
-
-
-def launch_in_tmux_blocking(
-    target_dir: str,
-    session: str,
-    args: ParsedArgs,
-    cfg: Config,
-    branch: str | None,
-    launch_user: str,
-    *,
-    server_running: bool = False,
-) -> int:
-    """Fork-and-wait variant of :func:`launch_in_tmux` for the TUI path."""
-    import subprocess
-
-    req = _build_tmux_launch_request(
-        target_dir, session, args, cfg, branch, launch_user, server_running=server_running
-    )
-    for pre in req.prelaunch:
-        rc = subprocess.call(list(pre))
-        if rc != 0:
-            return rc
-    return subprocess.call(list(req.cmd))

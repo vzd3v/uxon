@@ -23,10 +23,11 @@ import uxon.app.repeat as repeat_app
 from uxon.domain.config import Config
 from uxon.domain.session import SessionInfo
 from uxon.infra import config_loader, identity, sessions_probe, tmux, version_probe
+from uxon.infra.run import run_query
 
 
 def user_can_write_dir(path: str, target_user: str) -> bool:
-    cp = subprocess.run(
+    cp = run_query(
         identity.command_prefix_for_user(target_user)
         + [
             "python3",
@@ -34,8 +35,6 @@ def user_can_write_dir(path: str, target_user: str) -> bool:
             "import os, sys; raise SystemExit(0 if os.access(sys.argv[1], os.W_OK | os.X_OK) else 1)",
             path,
         ],
-        text=True,
-        capture_output=True,
     )
     return cp.returncode == 0
 
@@ -484,11 +483,8 @@ def _probe_git_profile(profile, creds_user: str, current_user: str) -> str:
     """Non-destructive probe for ``uxon doctor``. Doesn't touch GitHub."""
     # sudo reachability under creds_user
     if creds_user and creds_user != current_user:
-        probe = subprocess.run(
+        probe = run_query(
             ["sudo", "-n", "-u", creds_user, "--", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=0.5,
         )
         if probe.returncode != 0:
@@ -498,29 +494,22 @@ def _probe_git_profile(profile, creds_user: str, current_user: str) -> str:
         ["sudo", "-n", "-u", creds_user, "--"] if creds_user and creds_user != current_user else []
     )
     if profile.auth == "gh":
-        which = subprocess.run(
+        which = run_query(
             prefix + ["sh", "-c", "command -v gh"],
-            capture_output=True,
-            text=True,
             timeout=2,
         )
         if which.returncode != 0 or not which.stdout.strip():
             return f"warn:gh not found under {creds_user}"
-        status = subprocess.run(
+        status = run_query(
             prefix + ["gh", "auth", "status", "--hostname", profile.host],
-            capture_output=True,
-            text=True,
             timeout=5,
         )
         if status.returncode != 0:
             return f"warn:gh not logged in to {profile.host}"
         return "ok"
     if profile.auth == "token":
-        res = subprocess.run(
+        res = run_query(
             prefix + ["test", "-r", profile.token_file],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=2,
         )
         if res.returncode != 0:
@@ -552,11 +541,8 @@ def detect_root_nopasswd() -> bool:
     if os.geteuid() == 0:
         return True
     try:
-        cp = subprocess.run(
+        cp = run_query(
             ["sudo", "-n", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=0.5,
         )
     except (subprocess.TimeoutExpired, OSError):

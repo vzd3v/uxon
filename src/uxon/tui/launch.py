@@ -14,6 +14,7 @@ import time as _time
 from typing import Any
 
 from uxon.domain.launch_request import LaunchRequest
+from uxon.infra import loop_guard
 
 #: Threshold below which an rc=0 launch is treated as a silent fast-exit.
 FAST_EXIT_THRESHOLD_SEC = 1.0
@@ -26,11 +27,18 @@ def _run_launch_request(req: LaunchRequest) -> tuple[int, str, float]:
     then runs the main ``cmd``. Returns ``(rc, stage, wall_seconds)``.
     """
     t0 = _time.monotonic()
-    for pre in req.prelaunch:
-        rc = subprocess.call(list(pre))
-        if rc != 0:
-            return rc, "prelaunch", _time.monotonic() - t0
-    rc = subprocess.call(list(req.cmd))
+    # Lane B — the interactive launch/attach handoff. This runs after
+    # ``App.exit()``, with the Textual input-reader thread already joined, so no
+    # concurrent reader exists and this child may keep the real controlling
+    # terminal (an interactive ``tmux attach`` requires one). ``handoff_spawn()``
+    # marks the spawn sanctioned for the loop guard — it is the single tty-
+    # inheriting spawn the policy allows.
+    with loop_guard.handoff_spawn():
+        for pre in req.prelaunch:
+            rc = subprocess.call(list(pre))
+            if rc != 0:
+                return rc, "prelaunch", _time.monotonic() - t0
+        rc = subprocess.call(list(req.cmd))
     return rc, "cmd", _time.monotonic() - t0
 
 

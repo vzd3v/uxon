@@ -57,6 +57,9 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             return 0
         for pre in req.prelaunch:
             process.run_cmd(list(pre))
+        # Lane B — interactive terminal handoff: ``execvp`` replaces this
+        # image with the agent/tmux client, which keeps the controlling
+        # terminal. Bypasses ``Popen``/the loop guard by construction.
         os.execvp(req.cmd[0], list(req.cmd))
         return 0
     target_dir = cwd
