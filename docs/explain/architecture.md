@@ -125,7 +125,15 @@ Sub-modules under `src/uxon/tui/`:
 - `refresh.py` — pluggable refresh-source registry (`SourceSpec`,
   `SourceResult`, `run_source`). One source per stream — local
   tmux, each `[[remote_hosts]]` peer — runs in its own worker
-  group so a slow peer never stalls the others.
+  group so a slow peer never stalls the others. The external-tool
+  spawns these probes make all route through `infra.run.run_query`,
+  which sets `start_new_session=True` — the child has no controlling
+  terminal and so cannot flush the operator's buffered keystrokes.
+  A wedged probe is its own session leader: it is orphaned only until
+  its own `timeout=` fires (on both clean teardown and a crash) and
+  never holds the terminal. The interactive `attach`/launch handoff is
+  the one path that keeps the terminal — it runs after `App.exit()`
+  with no reader alive (see § Data flow).
 - `screens/` — one module per screen and per multi-step flow:
   `main`, `confirm`, `launch_options`, `launch_flow`, `kill_flow`,
   `session_choice` (the attach-vs-new prompt), `worktree_branch`
