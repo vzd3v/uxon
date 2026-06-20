@@ -36,6 +36,8 @@ import os
 import subprocess
 from collections.abc import Mapping, Sequence
 
+from uxon.infra import loop_guard
+
 __all__ = ["run_query"]
 
 
@@ -63,15 +65,19 @@ def run_query(
     # wires up the pipe itself); otherwise point stdin at /dev/null so the child
     # can never read — and thereby steal — the user's pending keystrokes.
     stdin = None if input is not None else subprocess.DEVNULL
-    return subprocess.run(
-        list(argv),
-        stdin=stdin,
-        input=input,
-        capture_output=True,
-        start_new_session=True,
-        timeout=timeout,
-        text=text,
-        env=dict(env) if env is not None else None,
-        cwd=cwd,
-        check=check,
-    )
+    # Mark this spawn sanctioned (Lane A) so the loop guard's raw-spawn detector
+    # recognises it instead of flagging it as a bypass. The marker is set and the
+    # child spawned in the same frame — no cross-thread leak.
+    with loop_guard.sanctioned_spawn():
+        return subprocess.run(
+            list(argv),
+            stdin=stdin,
+            input=input,
+            capture_output=True,
+            start_new_session=True,
+            timeout=timeout,
+            text=text,
+            env=dict(env) if env is not None else None,
+            cwd=cwd,
+            check=check,
+        )
