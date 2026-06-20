@@ -45,6 +45,7 @@ from uxon.domain.container import (
 from uxon.errors import fail
 from uxon.infra import events
 from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
+from uxon.infra.run import run_query
 
 # Bounded timeout (seconds) for every container shell-out. A daemon that
 # can't answer ``inspect`` in this window is treated as a hard error rather
@@ -171,7 +172,7 @@ def _probe_exit_ok(cmd: list[str], launch_user: str) -> bool:
     """
     full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
     try:
-        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
         fail(
             f"container runtime did not respond within {CONTAINER_CMD_TIMEOUT_SEC:.0f}s "
@@ -197,7 +198,7 @@ def _run_prepare(cmd: list[str], host_dir: str, launch_user: str) -> None:
     """
     full = _as_user_in_dir(command_prefix_for_user(launch_user), cmd, host_dir)
     try:
-        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
         fail(f"container {cmd[0]} did not complete within {CONTAINER_CMD_TIMEOUT_SEC:.0f}s")
     except OSError:
@@ -224,7 +225,7 @@ def run_teardown(stop_cmd: list[str], launch_user: str) -> tuple[bool, str]:
     """
     full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), stop_cmd, None)
     try:
-        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
         return False, f"container teardown did not complete within {CONTAINER_CMD_TIMEOUT_SEC:.0f}s"
     except OSError:
@@ -263,7 +264,7 @@ def probe_container_running(
         return True
     full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
     try:
-        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
     except (subprocess.TimeoutExpired, OSError):
         return True
     return cp.returncode == 0
@@ -292,7 +293,7 @@ def current_container_epoch(cfg: Config, name: str, launch_user: str) -> str | N
         return None
     full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
     try:
-        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
     except (subprocess.TimeoutExpired, OSError):
         return None
     if cp.returncode != 0:
@@ -326,9 +327,7 @@ def probe_container_state(
             return "?"
         full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
         try:
-            cp = subprocess.run(
-                full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC
-            )
+            cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
         except (subprocess.TimeoutExpired, OSError):
             return "?"
         return "yes" if cp.returncode == 0 else "no"
@@ -463,7 +462,7 @@ def resolve_container_identity(cfg: Config, target_dir: str, launch_user: str) -
         name, dir_token = resolve_container(cfg, target_dir, launch_user)
         cmd = render_template(c.resolve_cmd, name=name, dir_token=dir_token, what="resolve_cmd")
         full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
-        cp = subprocess.run(full, capture_output=True, text=True, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
     except (subprocess.TimeoutExpired, OSError, SystemExit):
         return EMPTY_IDENTITY
     if cp.returncode != 0:

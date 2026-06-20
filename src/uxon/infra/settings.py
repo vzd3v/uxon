@@ -16,7 +16,6 @@ minimal TOML is emitted from scratch.
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +23,7 @@ from typing import Any
 from uxon.domain.authz import canonical
 from uxon.domain.config import DEFAULT_CONFIG
 from uxon.infra import config_loader
+from uxon.infra.run import run_query
 from uxon.infra.settings_toml import set_dotted, update_repo_config_text
 
 # ── Schema ───────────────────────────────────────────────────────────
@@ -282,10 +282,10 @@ def write_repo_config_toml(content: str, path: Path | str) -> None:
     # Fall back to ``sudo tee`` with content piped on stdin — avoids any
     # shell interpolation of the destination path (which is otherwise
     # attacker-influenced via repo checkout layout).
-    result = subprocess.run(
+    result = run_query(
         ["sudo", "tee", "--", str(path)],
         input=content.encode("utf-8"),
-        capture_output=True,
+        text=False,
     )
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()

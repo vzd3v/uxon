@@ -16,6 +16,7 @@ import sys
 
 from uxon.domain.config import Config
 from uxon.infra.config_loader import normalize_user_list
+from uxon.infra.run import run_query
 
 
 def process_user() -> str:
@@ -101,11 +102,8 @@ def probe_cwd_writable(target_user: str, target_dir: str) -> bool:
         return os.access(target_dir, os.W_OK | os.X_OK)
     cmd = command_prefix_for_user(target_user) + ["test", "-w", target_dir]
     try:
-        cp = subprocess.run(
+        cp = run_query(
             cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):

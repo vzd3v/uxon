@@ -14,7 +14,6 @@ import subprocess
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 from uxon.domain.wire_schema import RemoteSnapshot
 from uxon.infra.remote.cache import read_cached_snapshot, write_cached_snapshot
@@ -22,11 +21,12 @@ from uxon.infra.remote.envelope import ALL_USERS_DISABLED_MARKER, parse_envelope
 from uxon.infra.remote.master_recovery import recover_wedged_master
 from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
 from uxon.infra.remote_hosts import RemoteHost
+from uxon.infra.run import run_query
 
 # Reasonable defaults: a peer that doesn't answer in 5 s is treated as
 # down. ssh's TCP-level ConnectTimeout caps the connect phase only;
-# the wall-clock budget for the whole fetch is enforced by
-# ``subprocess.run(timeout=...)``.
+# the wall-clock budget for the whole fetch is enforced by the
+# ``run_query(timeout=...)`` spawn that runs the ssh slave.
 DEFAULT_CONNECT_TIMEOUT_SEC = 5
 DEFAULT_TOTAL_TIMEOUT_SEC = 10
 
@@ -73,7 +73,6 @@ def fetch_remote_snapshot(
     ssh_multiplex: str = "auto",
     ssh_control_persist_seconds: int = 300,
     override_state_dir: Path | None = None,
-    _runner: Any = subprocess.run,
 ) -> RemoteSnapshot:
     """Fetch one host's session list. Always returns a snapshot.
 
@@ -85,8 +84,9 @@ def fetch_remote_snapshot(
       - Successful fetch: cache rewritten, fresh snapshot returned
         with ``from_cache=False``.
 
-    ``_runner`` exists for tests — production callers leave it at
-    its default. ``override_state_dir`` is also a test seam.
+    The ssh spawn goes through :func:`uxon.infra.run.run_query`; tests
+    stub it by patching that function. ``override_state_dir`` is a test
+    seam.
     """
     fetched_at = time.time()
 
@@ -141,7 +141,7 @@ def fetch_remote_snapshot(
             ssh_control_persist_seconds=ssh_control_persist_seconds,
         )
         try:
-            cp = _runner(argv, capture_output=True, text=True, timeout=eff_total)
+            cp = run_query(argv, timeout=eff_total)
         except subprocess.TimeoutExpired:
             # Slave hung — almost always wedged ControlMaster (the
             # subprocess timeout already killed our slave; siblings
@@ -149,7 +149,7 @@ def fetch_remote_snapshot(
             # wedge). Cleanup is a no-op for non-multiplexed paths
             # and operator-supplied command_template hosts.
             if ssh_multiplex != "off":
-                recover_wedged_master(host, _runner=_runner)
+                recover_wedged_master(host)
             return f"ssh timeout after {eff_total}s", None, ""
         except FileNotFoundError:
             return "ssh not installed on local host", None, ""

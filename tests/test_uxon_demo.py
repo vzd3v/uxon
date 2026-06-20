@@ -200,8 +200,14 @@ class FetchRemoteSnapshotDemoHookTests(unittest.TestCase):
                 description="",
                 remote_uxon="uxon",
             )
-            with mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: str(d)}, clear=False):
-                snap = fetch_remote_snapshot(host, _runner=self._runner_must_not_run)
+            with (
+                mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: str(d)}, clear=False),
+                mock.patch(
+                    "uxon.infra.remote.collector.run_query",
+                    side_effect=self._runner_must_not_run,
+                ),
+            ):
+                snap = fetch_remote_snapshot(host)
         self.assertIsNone(snap.error)
         self.assertEqual(len(snap.sessions), 1)
 
@@ -215,11 +221,17 @@ class FetchRemoteSnapshotDemoHookTests(unittest.TestCase):
         # ``mock.patch.dict`` with a pop in the patched block guarantees
         # the env var is restored after the test even if it was set in
         # the caller's environment.
-        with mock.patch.dict("os.environ", {}, clear=False):
+        with (
+            mock.patch.dict("os.environ", {}, clear=False),
+            mock.patch(
+                "uxon.infra.remote.collector.run_query",
+                side_effect=self._runner_must_not_run,
+            ),
+        ):
             import os
 
             os.environ.pop(uxon_demo.DEMO_ENV_VAR, None)
-            snap = fetch_remote_snapshot(host, _runner=self._runner_must_not_run)
+            snap = fetch_remote_snapshot(host)
         self.assertIsNotNone(snap.error)
         assert snap.error is not None
         self.assertIn(uxon_demo.DEMO_ENV_VAR, snap.error)
@@ -244,8 +256,14 @@ class FetchRemoteSnapshotDemoHookTests(unittest.TestCase):
             raise FileNotFoundError("ssh")
 
         with TemporaryDirectory() as tmp:
-            with mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: tmp}, clear=False):
-                fetch_remote_snapshot(host, _runner=fake_runner)
+            with (
+                mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: tmp}, clear=False),
+                mock.patch(
+                    "uxon.infra.remote.collector.run_query",
+                    side_effect=fake_runner,
+                ),
+            ):
+                fetch_remote_snapshot(host)
         self.assertTrue(ran["called"], "ssh runner was not invoked for non-demo host")
 
 

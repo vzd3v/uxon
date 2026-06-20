@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from uxon.infra.remote.ssh_argv import _ssh_control_dir
+from uxon.infra.run import run_query
 
 if TYPE_CHECKING:
     from uxon.infra.remote_hosts import RemoteHost
@@ -30,8 +31,6 @@ _RECOVER_STEP_TIMEOUT_SEC = 2
 def _resolved_control_path(
     ssh_alias: str,
     control_dir: str,
-    *,
-    _runner: Any = None,
 ) -> str | None:
     """Resolve ``%C`` in our default ControlPath template for ``ssh_alias``.
 
@@ -39,21 +38,13 @@ def _resolved_control_path(
     config without opening a connection. Returns the absolute socket path
     or ``None`` on any subprocess failure / timeout / parse miss.
 
-    ``_runner`` is the ``subprocess.run``-compatible seam used by tests;
-    a ``None`` default is resolved to the module-level ``subprocess.run``
-    at call time so a test that patches ``subprocess.run`` at the module
-    level (e.g. via ``mock.patch.object(...subprocess, "run", ...)``)
-    propagates into this seam too. Capturing ``subprocess.run`` as a
-    direct default would freeze the original reference at def-time and
-    bypass any later patch.
+    The ssh spawn goes through :func:`uxon.infra.run.run_query` (the single
+    sanctioned spawn + test seam); tests stub it by patching that function.
     """
-    runner = subprocess.run if _runner is None else _runner
     template = f"{control_dir}/ssh-%C"
     try:
-        cp = runner(
+        cp = run_query(
             ["ssh", "-G", "-o", f"ControlPath={template}", ssh_alias],
-            capture_output=True,
-            text=True,
             timeout=_RECOVER_STEP_TIMEOUT_SEC,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -110,7 +101,6 @@ def _find_master_pid_by_path(control_path: str) -> int | None:
 def recover_wedged_master(
     host: RemoteHost,
     *,
-    _runner: Any = None,
     _resolve: Any = None,
     _find_pid: Any = None,
     _kill: Any = None,
@@ -134,16 +124,15 @@ def recover_wedged_master(
     Never raises — failure of any step is acceptable, the next tick's
     breaker half-open will get another chance.
 
-    All shell-out points and the kill primitive are dependency-injected
-    so tests don't need to fork real ``ssh`` or scan a real ``/proc``.
+    The ssh spawns go through :func:`uxon.infra.run.run_query` (stubbed in
+    tests by patching that function); the ``/proc`` scan and the kill
+    primitive remain dependency-injected so tests don't need a real
+    ``/proc`` or to fork a real kill.
     """
     if host.command_template:
         return
-    # Resolve seams at call time (not at def time) so module-level
-    # patches of ``subprocess.run`` / ``os.kill`` propagate into both
-    # the production callers (which don't pass kwargs) and any test
-    # that patches the module attribute rather than injecting kwargs.
-    runner = subprocess.run if _runner is None else _runner
+    # Resolve the non-subprocess seams at call time so a test can inject
+    # the ``/proc`` scan and the kill primitive without forking anything.
     resolve = _resolved_control_path if _resolve is None else _resolve
     find_pid = _find_master_pid_by_path if _find_pid is None else _find_pid
     kill = os.kill if _kill is None else _kill
@@ -151,11 +140,11 @@ def recover_wedged_master(
     control_dir = _ssh_control_dir()
     template = f"{control_dir}/ssh-%C"
 
-    # Step 1: graceful exit through the control socket.
+    # Step 1: graceful exit through the control socket. Output is ignored;
+    # run_query captures it anyway.
     try:
-        runner(
+        run_query(
             ["ssh", "-O", "exit", "-o", f"ControlPath={template}", host.ssh_alias],
-            capture_output=True,
             timeout=_RECOVER_STEP_TIMEOUT_SEC,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -168,7 +157,7 @@ def recover_wedged_master(
     # check so a socket that appeared between Step 1 and Step 2 (a
     # concurrent fetch on the same host raced past us) is left alone
     # rather than killed-and-unlinked from under the new master.
-    resolved = resolve(host.ssh_alias, control_dir, _runner=runner)
+    resolved = resolve(host.ssh_alias, control_dir)
     if resolved is None:
         return
     socket_path = Path(resolved)

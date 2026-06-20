@@ -1805,7 +1805,7 @@ class NonintGitResolverTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(git.subprocess, "run", fake_run),
+            mock.patch("uxon.infra.git.run_query", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
             root = git.git_repo_root_nonint_as_user("/srv/work/myapp/sub", "dana_agent")
@@ -1827,7 +1827,7 @@ class NonintGitResolverTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(git.subprocess, "run", fake_run),
+            mock.patch("uxon.infra.git.run_query", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
             self.assertIsNone(git.git_repo_root_nonint_as_user("/tmp/x", "dana_agent"))
@@ -1844,7 +1844,7 @@ class NonintGitResolverTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch.object(git.subprocess, "run", fake_run),
+            mock.patch("uxon.infra.git.run_query", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
             root = git.git_common_dir_root_as_user(

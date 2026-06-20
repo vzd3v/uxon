@@ -40,6 +40,7 @@ from uxon.infra import demo, tmux
 from uxon.infra.config_loader import normalize_user_list
 from uxon.infra.container import CONTAINER_CMD_TIMEOUT_SEC
 from uxon.infra.process import run_cmd
+from uxon.infra.run import run_query
 
 
 def enrich_session_usage(
@@ -67,7 +68,7 @@ def enrich_session_usage(
     if not sessions:
         return
 
-    cp = subprocess.run(["ps", "-eo", "pid=,ppid=,rss=,%cpu="], text=True, capture_output=True)
+    cp = run_query(["ps", "-eo", "pid=,ppid=,rss=,%cpu="])
     if cp.returncode != 0:
         return
 
@@ -260,10 +261,8 @@ def _read_pid_sessions(pids: list[int]) -> dict[int, str] | None:
         "done"
     )
     try:
-        cp = subprocess.run(
+        cp = run_query(
             ["sudo", "-n", "sh", "-c", script],
-            text=True,
-            capture_output=True,
             timeout=CONTAINER_CMD_TIMEOUT_SEC,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -312,7 +311,7 @@ def collect_sessions_for_user(
     # missing NOPASSWD grant returns non-zero immediately rather than
     # blocking on a hidden password prompt.
     base = tmux.tmux_base(user, socket_path, nonint=True)
-    probe = subprocess.run(base + ["list-sessions"], text=True, capture_output=True)
+    probe = run_query(base + ["list-sessions"])
     if probe.returncode != 0:
         return []
 

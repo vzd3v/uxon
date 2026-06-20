@@ -21,6 +21,7 @@ from uxon.domain.format import (
     _pct,
 )
 from uxon.domain.status import LinkHealthStatus, ServerStatus
+from uxon.infra.run import run_query
 
 
 def read_server_status(disk_path: str) -> ServerStatus:
@@ -81,10 +82,8 @@ def read_ssh_link_health_status() -> LinkHealthStatus | None:
         return None
     peer_ip, peer_port, local_ip, local_port = parts
     try:
-        cp = subprocess.run(
+        cp = run_query(
             ["ss", "-tin"],
-            text=True,
-            capture_output=True,
             timeout=1.5,
         )
     except (OSError, subprocess.TimeoutExpired):

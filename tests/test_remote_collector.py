@@ -6,8 +6,9 @@ every documented failure mode produces a :class:`RemoteSnapshot`
 success, the cache is consulted only on a failed fetch, and the
 ssh argv is constructed with the documented hardening options.
 
-Pure tests — no real SSH, no real subprocess. The ``_runner`` seam
-on :func:`fetch_remote_snapshot` lets us simulate any subprocess
+Pure tests — no real SSH, no real subprocess. Spawns go through the
+single sanctioned ``run_query`` primitive (:mod:`uxon.infra.run`); tests
+patch it (in the consuming module's namespace) to simulate any subprocess
 outcome without spawning a child.
 """
 
@@ -527,6 +528,18 @@ class CacheRoundTripTests(unittest.TestCase):
             self.assertEqual(files, ["x.json"])
 
 
+def _patch_run_query(runner: Any) -> Any:
+    """Patch the spawn seam used by the collector / master-recovery modules.
+
+    ``run_query`` is the single sanctioned spawn primitive
+    (:mod:`uxon.infra.run`); the collector imports it by name, so the
+    effective patch target is the consuming module's namespace. Tests pass a
+    ``runner(argv, **kwargs)`` callable returning a ``CompletedProcess``-shaped
+    object (or raising), exactly as the old ``_runner`` seam did.
+    """
+    return mock.patch("uxon.infra.remote.collector.run_query", side_effect=runner)
+
+
 class FetchRemoteSnapshotTests(unittest.TestCase):
     def _runner_returning(self, *, returncode: int, stdout: str = "", stderr: str = ""):
         def _runner(*_args: Any, **_kwargs: Any) -> Any:
@@ -538,11 +551,11 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             sessions = [{"name": "uxon-x@claude"}]
             runner = self._runner_returning(returncode=0, stdout=_good_envelope(sessions))
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
+            with _patch_run_query(runner):
+                snap = fetch_remote_snapshot(
+                    _host(),
+                    override_state_dir=Path(tmp),
+                )
             self.assertIsNone(snap.error)
             self.assertFalse(snap.from_cache)
             self.assertEqual(snap.sessions, sessions)
@@ -563,11 +576,11 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
             write_cached_snapshot(seed, override_dir=Path(tmp))
 
             runner = self._runner_returning(returncode=255, stderr="ssh: connect: timed out")
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
+            with _patch_run_query(runner):
+                snap = fetch_remote_snapshot(
+                    _host(),
+                    override_state_dir=Path(tmp),
+                )
             self.assertTrue(snap.from_cache)
             self.assertEqual(snap.sessions, [{"name": "cached@claude"}])
             assert snap.error is not None
@@ -578,11 +591,11 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
     def test_ssh_nonzero_exit_no_cache_returns_empty(self) -> None:
         with TemporaryDirectory() as tmp:
             runner = self._runner_returning(returncode=255, stderr="boom")
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
+            with _patch_run_query(runner):
+                snap = fetch_remote_snapshot(
+                    _host(),
+                    override_state_dir=Path(tmp),
+                )
             self.assertFalse(snap.from_cache)
             self.assertEqual(snap.sessions, [])
             assert snap.error is not None
@@ -591,11 +604,10 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def _raise_timeout(*_args: Any, **_kwargs: Any) -> Any:
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=10)
 
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory() as tmp, _patch_run_query(_raise_timeout):
             snap = fetch_remote_snapshot(
                 _host(),
                 override_state_dir=Path(tmp),
-                _runner=_raise_timeout,
             )
             assert snap.error is not None
             self.assertIn("timeout", snap.error)
@@ -605,11 +617,10 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def _raise_fnf(*_args: Any, **_kwargs: Any) -> Any:
             raise FileNotFoundError(2, "No such file or directory: 'ssh'")
 
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory() as tmp, _patch_run_query(_raise_fnf):
             snap = fetch_remote_snapshot(
                 _host(),
                 override_state_dir=Path(tmp),
-                _runner=_raise_fnf,
             )
             assert snap.error is not None
             self.assertIn("ssh not installed", snap.error)
@@ -627,11 +638,11 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
             )
             write_cached_snapshot(seed, override_dir=Path(tmp))
             runner = self._runner_returning(returncode=0, stdout="not json")
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
+            with _patch_run_query(runner):
+                snap = fetch_remote_snapshot(
+                    _host(),
+                    override_state_dir=Path(tmp),
+                )
             self.assertTrue(snap.from_cache)
             self.assertEqual(snap.sessions, [{"name": "cached"}])
             assert snap.error is not None
@@ -643,12 +654,11 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def _raise_kbd(*_args: Any, **_kwargs: Any) -> Any:
             raise KeyboardInterrupt
 
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory() as tmp, _patch_run_query(_raise_kbd):
             with self.assertRaises(KeyboardInterrupt):
                 fetch_remote_snapshot(
                     _host(),
                     override_state_dir=Path(tmp),
-                    _runner=_raise_kbd,
                 )
 
     def test_cache_write_failure_does_not_taint_fresh_snapshot(self) -> None:
@@ -659,14 +669,16 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             sessions = [{"name": "uxon-x@claude"}]
             runner = self._runner_returning(returncode=0, stdout=_good_envelope(sessions))
-            with mock.patch(
-                "uxon.infra.remote.collector.write_cached_snapshot",
-                side_effect=OSError("simulated"),
+            with (
+                _patch_run_query(runner),
+                mock.patch(
+                    "uxon.infra.remote.collector.write_cached_snapshot",
+                    side_effect=OSError("simulated"),
+                ),
             ):
                 snap = fetch_remote_snapshot(
                     _host(),
                     override_state_dir=Path(tmp),
-                    _runner=runner,
                 )
             self.assertIsNone(snap.error)
             self.assertFalse(snap.from_cache)
@@ -690,12 +702,12 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
                 cp.stderr = ""
                 return cp
 
-            fetch_remote_snapshot(
-                _host(connect_timeout=2.0),
-                connect_timeout=10,
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
+            with _patch_run_query(runner):
+                fetch_remote_snapshot(
+                    _host(connect_timeout=2.0),
+                    connect_timeout=10,
+                    override_state_dir=Path(tmp),
+                )
             argv = captured[0]
             self.assertIn("ConnectTimeout=2", argv)
 
@@ -717,11 +729,11 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
                 cp.stderr = ""
                 return cp
 
-            fetch_remote_snapshot(
-                _host(connect_timeout=0.5),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
+            with _patch_run_query(runner):
+                fetch_remote_snapshot(
+                    _host(connect_timeout=0.5),
+                    override_state_dir=Path(tmp),
+                )
             self.assertIn("ConnectTimeout=1", captured[0])
             self.assertNotIn("ConnectTimeout=0", captured[0])
 
@@ -737,12 +749,11 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
             cp.stderr = ""
             return cp
 
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory() as tmp, _patch_run_query(runner):
             fetch_remote_snapshot(
                 _host(total_timeout=8.0),
                 total_timeout=30,
                 override_state_dir=Path(tmp),
-                _runner=runner,
             )
         self.assertEqual(captured["timeout"], 8)
 
@@ -813,11 +824,11 @@ class CacheScopeRoundtripTests(unittest.TestCase):
 
             # Simulate live failure — non-zero exit, no payload.
             failing = self._runner_returning(returncode=255, stderr="connect: timed out")
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=failing,
-            )
+            with _patch_run_query(failing):
+                snap = fetch_remote_snapshot(
+                    _host(),
+                    override_state_dir=Path(tmp),
+                )
             self.assertTrue(snap.from_cache)
             self.assertIsNotNone(snap.error)
             # Critical: cached flags survive the failure-with-cache path.
@@ -828,11 +839,11 @@ class CacheScopeRoundtripTests(unittest.TestCase):
         """No cache file; returned snapshot has scope_skipped=[] (no info)."""
         with TemporaryDirectory() as tmp:
             failing = self._runner_returning(returncode=255, stderr="connect: timed out")
-            snap = fetch_remote_snapshot(
-                _host(name="never-cached"),
-                override_state_dir=Path(tmp),
-                _runner=failing,
-            )
+            with _patch_run_query(failing):
+                snap = fetch_remote_snapshot(
+                    _host(name="never-cached"),
+                    override_state_dir=Path(tmp),
+                )
             self.assertFalse(snap.from_cache)
             self.assertIsNotNone(snap.error)
             self.assertEqual(snap.scope_skipped, [])
@@ -986,26 +997,30 @@ class ResolvedControlPathTests(unittest.TestCase):
                 stdout="user erin\ncontrolpath /home/u/.cache/uxon/ssh-abc123\nport 22\n",
             )
 
-        path = _resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner)
+        with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=_runner):
+            path = _resolved_control_path("box-b", "/home/u/.cache/uxon")
         self.assertEqual(path, "/home/u/.cache/uxon/ssh-abc123")
 
     def test_returns_none_on_nonzero_rc(self) -> None:
         def _runner(*_args: Any, **_kwargs: Any) -> Any:
             return mock.Mock(returncode=255, stdout="")
 
-        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
+        with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=_runner):
+            self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon"))
 
     def test_returns_none_on_timeout(self) -> None:
         def _runner(*_args: Any, **_kwargs: Any) -> Any:
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=2)
 
-        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
+        with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=_runner):
+            self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon"))
 
     def test_returns_none_when_output_missing_controlpath(self) -> None:
         def _runner(*_args: Any, **_kwargs: Any) -> Any:
             return mock.Mock(returncode=0, stdout="user erin\nport 22\n")
 
-        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
+        with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=_runner):
+            self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon"))
 
 
 class RecoverWedgedMasterTests(unittest.TestCase):
@@ -1030,7 +1045,8 @@ class RecoverWedgedMasterTests(unittest.TestCase):
     def test_skips_when_host_uses_command_template(self) -> None:
         calls, runner = self._capture_runner()
         host = _host(command_template=["docker", "exec", "uxon-c", "{remote_command}"])
-        recover_wedged_master(host, _runner=runner)
+        with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=runner):
+            recover_wedged_master(host)
         self.assertEqual(calls, [])
 
     def test_runs_graceful_then_kills_then_unlinks(self) -> None:
@@ -1052,13 +1068,13 @@ class RecoverWedgedMasterTests(unittest.TestCase):
             def _kill(pid: int, sig: int) -> None:
                 killed.append((pid, sig))
 
-            recover_wedged_master(
-                _host(),
-                _runner=_runner,
-                _resolve=lambda alias, ctl_dir, _runner: str(socket),
-                _find_pid=lambda path: 4242,
-                _kill=_kill,
-            )
+            with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=_runner):
+                recover_wedged_master(
+                    _host(),
+                    _resolve=lambda alias, ctl_dir: str(socket),
+                    _find_pid=lambda path: 4242,
+                    _kill=_kill,
+                )
             # Graceful ``ssh -O exit`` ran first.
             self.assertEqual(calls[0][:3], ["ssh", "-O", "exit"])
             # Master was hard-killed.
@@ -1069,13 +1085,13 @@ class RecoverWedgedMasterTests(unittest.TestCase):
     def test_skips_kill_when_path_unresolved(self) -> None:
         _, runner = self._capture_runner()
         killed: list[tuple[int, int]] = []
-        recover_wedged_master(
-            _host(),
-            _runner=runner,
-            _resolve=lambda *a, **kw: None,
-            _find_pid=lambda _path: 999,
-            _kill=lambda pid, sig: killed.append((pid, sig)),
-        )
+        with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=runner):
+            recover_wedged_master(
+                _host(),
+                _resolve=lambda *a, **kw: None,
+                _find_pid=lambda _path: 999,
+                _kill=lambda pid, sig: killed.append((pid, sig)),
+            )
         self.assertEqual(killed, [])
 
     def test_skips_kill_when_socket_already_gone(self) -> None:
@@ -1084,13 +1100,13 @@ class RecoverWedgedMasterTests(unittest.TestCase):
             # File deliberately not created — graceful ssh -O exit removed it.
             _, runner = self._capture_runner()
             killed: list[tuple[int, int]] = []
-            recover_wedged_master(
-                _host(),
-                _runner=runner,
-                _resolve=lambda *a, **kw: str(ghost),
-                _find_pid=lambda _path: 999,
-                _kill=lambda pid, sig: killed.append((pid, sig)),
-            )
+            with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=runner):
+                recover_wedged_master(
+                    _host(),
+                    _resolve=lambda *a, **kw: str(ghost),
+                    _find_pid=lambda _path: 999,
+                    _kill=lambda pid, sig: killed.append((pid, sig)),
+                )
             self.assertEqual(killed, [])
 
     def test_skips_kill_when_pid_not_found(self) -> None:
@@ -1099,13 +1115,13 @@ class RecoverWedgedMasterTests(unittest.TestCase):
             socket.touch()
             _, runner = self._capture_runner()
             killed: list[tuple[int, int]] = []
-            recover_wedged_master(
-                _host(),
-                _runner=runner,
-                _resolve=lambda *a, **kw: str(socket),
-                _find_pid=lambda _path: None,
-                _kill=lambda pid, sig: killed.append((pid, sig)),
-            )
+            with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=runner):
+                recover_wedged_master(
+                    _host(),
+                    _resolve=lambda *a, **kw: str(socket),
+                    _find_pid=lambda _path: None,
+                    _kill=lambda pid, sig: killed.append((pid, sig)),
+                )
             self.assertEqual(killed, [])
             # Socket still gets unlinked even when no pid found —
             # otherwise next ssh would slave-loop on the stale socket.
@@ -1116,13 +1132,13 @@ class RecoverWedgedMasterTests(unittest.TestCase):
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=2)
 
         # Must not propagate even when every shell-out times out.
-        recover_wedged_master(
-            _host(),
-            _runner=_boom,
-            _resolve=lambda *a, **kw: None,
-            _find_pid=lambda _p: None,
-            _kill=lambda *a: None,
-        )
+        with mock.patch("uxon.infra.remote.master_recovery.run_query", side_effect=_boom):
+            recover_wedged_master(
+                _host(),
+                _resolve=lambda *a, **kw: None,
+                _find_pid=lambda _p: None,
+                _kill=lambda *a: None,
+            )
 
 
 class FetchTimeoutRecoveryTests(unittest.TestCase):
@@ -1138,11 +1154,12 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
     def test_timeout_triggers_recovery_when_multiplex_on(self) -> None:
         recovered: list[RemoteHost] = []
 
-        def _fake_recover(host: RemoteHost, *, _runner: Any) -> None:
+        def _fake_recover(host: RemoteHost) -> None:
             recovered.append(host)
 
         with (
             TemporaryDirectory() as tmp,
+            _patch_run_query(self._timeout_runner()),
             mock.patch(
                 "uxon.infra.remote.collector.recover_wedged_master",
                 side_effect=_fake_recover,
@@ -1152,7 +1169,6 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
                 _host(),
                 override_state_dir=Path(tmp),
                 ssh_multiplex="auto",
-                _runner=self._timeout_runner(),
             )
             assert snap.error is not None
             self.assertIn("timeout", snap.error)
@@ -1161,11 +1177,12 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
     def test_timeout_skips_recovery_when_multiplex_off(self) -> None:
         recovered: list[RemoteHost] = []
 
-        def _fake_recover(host: RemoteHost, *, _runner: Any) -> None:
+        def _fake_recover(host: RemoteHost) -> None:
             recovered.append(host)
 
         with (
             TemporaryDirectory() as tmp,
+            _patch_run_query(self._timeout_runner()),
             mock.patch(
                 "uxon.infra.remote.collector.recover_wedged_master",
                 side_effect=_fake_recover,
@@ -1175,7 +1192,6 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
                 _host(),
                 override_state_dir=Path(tmp),
                 ssh_multiplex="off",
-                _runner=self._timeout_runner(),
             )
             self.assertEqual(recovered, [])
 

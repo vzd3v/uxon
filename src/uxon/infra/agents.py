@@ -16,6 +16,8 @@ import pwd
 import subprocess
 from dataclasses import dataclass
 
+from uxon.infra.run import run_query
+
 # ── Availability probe ───────────────────────────────────────────────
 
 
@@ -75,10 +77,8 @@ def _probe_one(
     else:
         cmd = [binary, *ver]
     try:
-        cp = subprocess.run(
+        cp = run_query(
             cmd,
-            capture_output=True,
-            text=True,
             timeout=timeout,
         )
     except FileNotFoundError as exc:

@@ -9,11 +9,11 @@ these readers with it.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from uxon.domain.version import format_version as _format_version_str
+from uxon.infra.run import run_query
 
 
 def repo_root() -> Path:
@@ -39,10 +39,8 @@ def read_repo_version() -> str:
 
 def read_git_commit_short() -> str | None:
     root = str(repo_root())
-    cp = subprocess.run(
+    cp = run_query(
         ["git", "-c", f"safe.directory={root}", "-C", root, "rev-parse", "--short", "HEAD"],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode != 0:
         return None
@@ -52,14 +50,12 @@ def read_git_commit_short() -> str | None:
 
 def repo_is_dirty() -> bool:
     root = str(repo_root())
-    refresh = subprocess.run(
+    refresh = run_query(
         ["git", "-c", f"safe.directory={root}", "-C", root, "update-index", "-q", "--refresh"],
-        text=True,
-        capture_output=True,
     )
     if refresh.returncode != 0:
         return False
-    cp = subprocess.run(
+    cp = run_query(
         [
             "git",
             "-c",
@@ -70,8 +66,6 @@ def repo_is_dirty() -> bool:
             "--porcelain",
             "--untracked-files=no",
         ],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode != 0:
         return False

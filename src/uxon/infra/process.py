@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 """Subprocess adapter: run an external command and translate failure.
 
-Thin wrapper over :func:`subprocess.run` that converts a non-zero exit
-into the uxon ``fail() -> SystemExit`` convention. Lives in the infra
-layer because it shells out; pure callers never touch it.
+Thin wrapper over :func:`uxon.infra.run.run_query` (the single sanctioned
+background-spawn primitive) that converts a non-zero exit into the uxon
+``fail() -> SystemExit`` convention. Lives in the infra layer because it
+shells out; pure callers never touch it.
 """
 
 from __future__ import annotations
@@ -12,10 +13,14 @@ import shlex
 import subprocess
 
 from uxon.errors import fail
+from uxon.infra.run import run_query
 
 
 def run_cmd(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    cp = subprocess.run(cmd, text=True, capture_output=True)
+    # Always spawn with ``check=False`` and translate here: ``run_cmd``'s
+    # ``fail() -> SystemExit`` contract is what its callers expect, not the
+    # ``CalledProcessError`` that ``run_query(check=True)`` would raise.
+    cp = run_query(cmd)
     if check and cp.returncode != 0:
         stderr = (cp.stderr or cp.stdout).strip()
         fail(stderr or f"command failed: {shlex.join(cmd)}", 1)

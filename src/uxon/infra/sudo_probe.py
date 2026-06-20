@@ -38,6 +38,7 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
 from uxon.domain.sudo import SudoCapability
+from uxon.infra.run import run_query
 
 __all__ = ["SudoCapability", "probe_sudo_capability"]
 
@@ -65,11 +66,8 @@ def _probe_one_user(target: str) -> tuple[str, bool]:
     defend against) cannot be mistaken for a flag.
     """
     try:
-        cp = subprocess.run(
+        cp = run_query(
             ["sudo", "-niu", target, "--", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=PROBE_TIMEOUT_SEC,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -87,11 +85,8 @@ def _probe_root() -> bool:
     if os.geteuid() == 0:
         return True
     try:
-        cp = subprocess.run(
+        cp = run_query(
             ["sudo", "-n", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=PROBE_TIMEOUT_SEC,
         )
     except (subprocess.TimeoutExpired, OSError):

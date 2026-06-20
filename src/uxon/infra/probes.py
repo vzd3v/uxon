@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from uxon.domain.host_report import BinaryStatus, HostReport
+from uxon.infra.run import run_query
 
 if TYPE_CHECKING:
     from uxon.domain.agents import AgentSpec
@@ -45,10 +46,8 @@ def _resolve_paths_local(names: list[str]) -> dict[str, str | None]:
     script = "\n".join(lines)
 
     try:
-        cp = subprocess.run(
+        cp = run_query(
             ["sh", "-lc", script],
-            capture_output=True,
-            text=True,
             timeout=PROBE_TIMEOUT_SEC,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -105,10 +104,8 @@ def _resolve_paths_remote(
     script = "\n".join(lines)
 
     try:
-        cp = subprocess.run(
+        cp = run_query(
             ["sudo", "-n", "-H", "-u", launch_user, "--", "sh", "-lc", script],
-            capture_output=True,
-            text=True,
             timeout=PROBE_TIMEOUT_SEC,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):

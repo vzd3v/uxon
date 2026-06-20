@@ -261,9 +261,10 @@ class WriteRepoConfigTomlTests(unittest.TestCase):
     def test_falls_back_to_sudo_tee_on_permission_error(self) -> None:
         target = Path("/tmp/ccw_test_dummy_config.toml")
 
-        # First call (tmp.replace) raises PermissionError; sudo path writes.
+        # First call (tmp.replace) raises PermissionError; sudo path writes
+        # through the single sanctioned spawn primitive ``run_query``.
         real_run = mock.Mock(return_value=mock.Mock(returncode=0, stderr=b""))
-        with mock.patch.object(cs, "subprocess", run=real_run):
+        with mock.patch("uxon.infra.settings.run_query", real_run):
             with mock.patch.object(Path, "replace", side_effect=PermissionError):
                 with mock.patch.object(Path, "write_text"):
                     cs.write_repo_config_toml("data", target)
@@ -273,8 +274,9 @@ class WriteRepoConfigTomlTests(unittest.TestCase):
         # separate argv element.
         self.assertEqual(cmd[:3], ["sudo", "tee", "--"])
         self.assertEqual(cmd[3], str(target))
-        # Content goes via stdin, not the command line.
+        # Content goes via stdin (bytes), not the command line.
         self.assertEqual(real_run.call_args.kwargs["input"], b"data")
+        self.assertFalse(real_run.call_args.kwargs["text"])
 
 
 class NestedAgentKeysTests(unittest.TestCase):

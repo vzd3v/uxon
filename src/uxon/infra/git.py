@@ -10,19 +10,17 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 
 from uxon.domain.authz import canonical
 from uxon.errors import fail
 from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
 from uxon.infra.process import run_cmd
+from uxon.infra.run import run_query
 
 
 def git_repo_root(cwd: str) -> str | None:
-    cp = subprocess.run(
+    cp = run_query(
         ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode != 0:
         return None
@@ -33,10 +31,8 @@ def git_repo_root(cwd: str) -> str | None:
 
 
 def git_repo_root_as_user(cwd: str, target_user: str) -> str | None:
-    cp = subprocess.run(
+    cp = run_query(
         command_prefix_for_user(target_user) + ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode != 0:
         return None
@@ -53,11 +49,9 @@ def git_repo_root_nonint_as_user(cwd: str, target_user: str) -> str | None:
     NOPASSWD grant fails fast instead of blocking on a hidden password
     prompt — required for the fullscreen TUI's worktree probe (§4.2).
     """
-    cp = subprocess.run(
+    cp = run_query(
         nonint_command_prefix_for_user(target_user)
         + ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode != 0:
         return None
@@ -77,11 +71,9 @@ def git_common_dir_root_as_user(cwd: str, target_user: str) -> str | None:
     launched from inside another worktree (§8 worktree-from-worktree).
     Non-interactive prefix, same rationale as the resolver above.
     """
-    cp = subprocess.run(
+    cp = run_query(
         nonint_command_prefix_for_user(target_user)
         + ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode != 0:
         return None
@@ -107,10 +99,8 @@ def write_uxon_exclude_entry(repo_root: str, launch_user: str) -> None:
     prefix = command_prefix_for_user(launch_user)
     exclude_path = os.path.join(repo_root, ".git", "info", "exclude")
     # Read current contents (tolerate absent file).
-    cp = subprocess.run(
+    cp = run_query(
         prefix + ["sh", "-c", f"cat {shlex.quote(exclude_path)} 2>/dev/null || true"],
-        text=True,
-        capture_output=True,
     )
     current = cp.stdout or ""
     if any(line.strip() == _UXON_EXCLUDE_LINE for line in current.splitlines()):
@@ -128,13 +118,11 @@ def write_uxon_exclude_entry(repo_root: str, launch_user: str) -> None:
         f'cat > "$tmp" && mv -f "$tmp" {shlex.quote(exclude_path)}'
     )
     # run_cmd() does not forward stdin, so feed the new contents directly
-    # via subprocess.run (same capture/text conventions as run_cmd) and
-    # fail() with the captured stderr on a non-zero exit.
-    cp = subprocess.run(
+    # via run_query (which captures stdout/stderr like run_cmd) and fail()
+    # with the captured stderr on a non-zero exit.
+    cp = run_query(
         prefix + ["sh", "-c", script],
-        text=True,
         input=new_contents,
-        capture_output=True,
     )
     if cp.returncode != 0:
         fail((cp.stderr or "").strip() or "failed to write .git/info/exclude")
@@ -156,10 +144,8 @@ def copy_worktreeinclude_matches(repo_root: str, dest: str, launch_user: str) ->
         return
 
     def _ls(extra: list[str]) -> set[str]:
-        cp = subprocess.run(
+        cp = run_query(
             prefix + ["git", "-C", repo_root, "ls-files", "-o", "-i"] + extra,
-            text=True,
-            capture_output=True,
         )
         if cp.returncode != 0:
             return set()
@@ -175,11 +161,9 @@ def copy_worktreeinclude_matches(repo_root: str, dest: str, launch_user: str) ->
 
 
 def _branch_exists_as_user(repo_root: str, branch: str, launch_user: str) -> bool:
-    cp = subprocess.run(
+    cp = run_query(
         nonint_command_prefix_for_user(launch_user)
         + ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
-        text=True,
-        capture_output=True,
     )
     return cp.returncode == 0
 
@@ -190,11 +174,9 @@ def _local_base_ref_as_user(repo_root: str, launch_user: str) -> str:
     No network — origin/HEAD is consulted only if a local remote-tracking
     symref exists (``worktree_base = "local"`` contract, §4.5).
     """
-    cp = subprocess.run(
+    cp = run_query(
         nonint_command_prefix_for_user(launch_user)
         + ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet", "origin/HEAD"],
-        text=True,
-        capture_output=True,
     )
     return "origin/HEAD" if cp.returncode == 0 else "HEAD"
 
@@ -213,11 +195,9 @@ def _remote_base_ref_as_user(repo_root: str, launch_user: str) -> str:
     """
     prefix = command_prefix_for_user(launch_user)
     run_cmd(prefix + ["git", "-C", repo_root, "remote", "set-head", "origin", "-a"], check=False)
-    cp = subprocess.run(
+    cp = run_query(
         nonint_command_prefix_for_user(launch_user)
         + ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet", "origin/HEAD"],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode == 0:
         return "origin/HEAD"
