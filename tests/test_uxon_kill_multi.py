@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import io
 import json
-import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -232,16 +231,23 @@ class KillUserLocalTests(unittest.TestCase):
         self.assertEqual(parsed.audit_correlation_id, "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f")
 
     def test_run_cmd_failure_emits_session_kill_outcome_error(self) -> None:
-        # Regression for the failure-path emit added in commit bd9ba0c:
-        # if ``tmux kill-session`` returns non-zero (sudo blockage,
-        # tmux server gone, busy session), ``run_cmd(check=True)``
-        # raises CalledProcessError. ``do_kill`` must emit
-        # ``session.kill outcome=error`` with the captured rc *before*
-        # re-raising — spec line 208.
+        # When ``tmux kill-session`` exits non-zero (sudo blockage, tmux
+        # server gone, busy session), ``do_kill`` must emit
+        # ``session.kill outcome=error`` with the command's real rc *before*
+        # the failure propagates.
+        #
+        # Contract note: the kill spawn returns a non-zero
+        # ``CompletedProcess`` — it does NOT raise. ``run_cmd(check=True)``
+        # would fail via ``fail() -> SystemExit`` (never CalledProcessError),
+        # so the failure path runs the command with ``check=False`` and
+        # translates the rc itself. The earlier version of this test stubbed
+        # ``run_cmd`` to raise ``CalledProcessError`` — an exception the real
+        # ``run_cmd`` never produces — which masked a dead ``except`` that
+        # silently dropped the error audit.
         cfg = _make_config()
         target = _make_session("uxon-demo@claude")
         args = ParsedArgs(action="kill", target_id="demo@claude", user="u-vz")
-        boom = subprocess.CalledProcessError(returncode=2, cmd=["tmux", "kill-session"])
+        nonzero = mock.Mock(returncode=2, stdout="", stderr="tmux: no server running")
         recorded: list[tuple[str, dict]] = []
 
         def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
@@ -250,10 +256,10 @@ class KillUserLocalTests(unittest.TestCase):
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
             mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
-            mock.patch("uxon.infra.process.run_cmd", side_effect=boom),
+            mock.patch("uxon.infra.process.run_cmd", return_value=nonzero),
             mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
         ):
-            with self.assertRaises(subprocess.CalledProcessError):
+            with self.assertRaises(SystemExit):
                 kill_app.do_kill(args, cfg, "u-vz")
 
         kill_emits = [e for e in recorded if e[0] == "session.kill"]

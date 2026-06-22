@@ -93,7 +93,7 @@ class TuiBridge:
 
     def on_kill(self, user: str, name: str) -> None:
         # TUI 'k' on a local row runs ``tmux kill-session`` directly
-        # via ``process.run_cmd`` — emit ``session.kill`` after success so the
+        # via ``run_kill_session`` — emit ``session.kill`` after success so the
         # operation is auditable (mirrors do_kill same-user pattern).
         from uxon.infra import audit as _audit
 
@@ -114,22 +114,21 @@ class TuiBridge:
         ]
         # Capture teardown before the kill, reap the orphaned in-container
         # agent after kill-session — the same best-effort path as CLI do_kill.
-        from uxon.app.kill import prepare_container_teardown, run_container_teardown
+        from uxon.app.kill import (
+            prepare_container_teardown,
+            run_container_teardown,
+            run_kill_session,
+        )
 
         teardown = prepare_container_teardown(self.cfg, user, target.name)
-        try:
-            process.run_cmd(full, check=True)
-        except subprocess.CalledProcessError as exc:
-            _audit.audit(
-                "session.kill",
-                outcome="error",
-                session=target.name,
-                target_user=user,
-                force=True,
-                dry_run=False,
-                rc=exc.returncode,
-            )
-            raise
+        run_kill_session(
+            full,
+            audit_event="session.kill",
+            session=target.name,
+            target_user=user,
+            force=True,
+            dry_run=False,
+        )
         if teardown:
             run_container_teardown(self.cfg, teardown, user, target.name)
         _audit.audit(

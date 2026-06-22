@@ -175,6 +175,42 @@ def run_container_teardown(
     )
 
 
+def run_kill_session(
+    full: list[str],
+    *,
+    audit_event: str,
+    session: str,
+    target_user: str,
+    force: bool,
+    dry_run: bool,
+) -> None:
+    """Run a ``kill-session`` command; on a non-zero exit emit the failure audit
+    (with the command's real rc) before the failure propagates.
+
+    The single shared kill-spawn site (CLI self / cross-user / kill-all and the
+    TUI bridge). ``run_cmd(check=True)`` cannot be used here: its failure path
+    is ``fail() -> SystemExit``, never ``CalledProcessError``, so an
+    ``except subprocess.CalledProcessError`` around it is dead and the error
+    audit is skipped. We run with ``check=False`` and translate explicitly so
+    the ``<event> outcome=error`` record fires before ``fail()``.
+    """
+    from uxon.infra import audit as _audit
+
+    cp = process.run_cmd(full, check=False)
+    if cp.returncode != 0:
+        _audit.audit(
+            audit_event,
+            outcome="error",
+            session=session,
+            target_user=target_user,
+            force=force,
+            dry_run=dry_run,
+            rc=cp.returncode,
+        )
+        stderr = (cp.stderr or cp.stdout or "").strip()
+        fail(stderr or f"kill-session failed (rc={cp.returncode})", 1)
+
+
 def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
     """Common confirmation gate for cross-user / cross-host kills.
 
@@ -454,19 +490,14 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         # env holds the container name); run it AFTER kill-session reaps the
         # orphaned in-container agent. Best-effort, never blocks the kill.
         teardown = prepare_container_teardown(cfg, target_user, target.name)
-        try:
-            process.run_cmd(full, check=True)
-        except subprocess.CalledProcessError as exc:
-            _audit.audit(
-                _kill_event,
-                outcome="error",
-                session=target.name,
-                target_user=target_user,
-                force=args.force,
-                dry_run=args.dry_run,
-                rc=exc.returncode,
-            )
-            raise
+        run_kill_session(
+            full,
+            audit_event=_kill_event,
+            session=target.name,
+            target_user=target_user,
+            force=args.force,
+            dry_run=args.dry_run,
+        )
         if teardown:
             run_container_teardown(cfg, teardown, target_user, target.name)
         _audit.audit(
@@ -529,19 +560,14 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # Capture teardown before the kill (session env holds the name); reap the
     # orphaned in-container agent after kill-session. Best-effort.
     teardown = prepare_container_teardown(cfg, launch_user, target.name)
-    try:
-        process.run_cmd(full, check=True)
-    except subprocess.CalledProcessError as exc:
-        _audit.audit(
-            _kill_event,
-            outcome="error",
-            session=target.name,
-            target_user=launch_user,
-            force=args.force,
-            dry_run=args.dry_run,
-            rc=exc.returncode,
-        )
-        raise
+    run_kill_session(
+        full,
+        audit_event=_kill_event,
+        session=target.name,
+        target_user=launch_user,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
     if teardown:
         run_container_teardown(cfg, teardown, launch_user, target.name)
     _audit.audit(
