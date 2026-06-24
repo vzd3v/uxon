@@ -37,7 +37,7 @@ def format_version() -> str:
     return version_probe.format_version()
 
 
-def do_interactive(cfg: Config, launch_user: str) -> int:
+def do_interactive(cfg: Config, caller_user: str, launch_user: str) -> int:
     try:
         from uxon import tui as uxon_tui
     except ImportError:
@@ -58,7 +58,7 @@ def do_interactive(cfg: Config, launch_user: str) -> int:
     cwd = canonical(os.getcwd())
     # Hand the TUI a skeleton ctx so the first frame paints immediately;
     # the real ctx is loaded by a worker once the app is mounted.
-    ctx = build_tui_context(cfg, launch_user, cwd, skeleton=True)
+    ctx = build_tui_context(cfg, caller_user, launch_user, cwd, skeleton=True)
     return uxon_tui.run(ctx)
 
 
@@ -100,11 +100,11 @@ def main(argv: list[str] | None = None) -> int:
     caller_user = identity.resolve_caller_user()
     launch_user = identity.resolve_launch_user(cfg, caller_user)
 
-    # CLI preflight: probe for tmux and required agents on actions that
-    # actually shell out to tmux. ``interactive`` is excluded so the TUI
-    # mount stays fast — the TUI runs its own async probe in the
-    # background and surfaces the same hints in line.
-    if args.action in {"run", "new", "attach", "list", "kill", "kill-all"}:
+    # CLI preflight: non-launch actions still use the caller-derived launch
+    # user. ``run`` and ``new`` resolve launch profiles first, because a
+    # profile may pin a different launch user and path policy must fail before
+    # tmux/agent probes.
+    if args.action in {"attach", "list", "kill", "kill-all"}:
         from uxon.infra import probes as uxon_probes
 
         report = uxon_probes.probe_host(launch_user, cfg.agents)
@@ -112,15 +112,11 @@ def main(argv: list[str] | None = None) -> int:
             from uxon.errors import fail
 
             fail(f"tmux is not installed.\n{report.tmux.install_hint}", 1)
-        # Stash the report on ``args`` so downstream ``resolve_agent_id``
-        # reuses it instead of paying a second sudo round-trip. Agent
-        # install-gating is owned by ``resolve_agent_id`` — it now
-        # validates the picked candidate (including ``--agent`` and
-        # ``agents.default``) against this same report.
+        # Stash the report on ``args`` for use-cases that can reuse it.
         args.host_report = report
 
     if args.action == "interactive":
-        return do_interactive(cfg, launch_user)
+        return do_interactive(cfg, caller_user, launch_user)
     if args.action == "version":
         if args.json_output:
             listing_app._emit_json("version", version_probe._version_data())

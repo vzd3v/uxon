@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from uxon.app.launch import ContainerGate
     from uxon.infra.probes import HostStatsResult
 
+ExistingSessionChoice = tuple[str, bool] | tuple[str, str, bool]
+
 
 # ── Errors ───────────────────────────────────────────────────────────
 
@@ -119,7 +121,7 @@ class TuiContext:
     scope_skipped_users: tuple[str, ...] = ()
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
 
-    # Multi-agent fields (Task 7+).
+    # Multi-agent fields.
     # ``enabled_agents`` is a strict whitelist when non-empty; an empty
     # tuple (matching an absent or ``[]`` ``[agents].enabled`` in repo
     # config) flips uxon into auto-mode where every installed CATALOG
@@ -190,22 +192,24 @@ class TuiContext:
     on_launch_existing: Callable[[str, str, str], LaunchRequest] = lambda name, agent_id, mode_id: (
         LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
-    # Container readiness gate (P3): probes the per-(launch_user, dir)
-    # container for ``target_dir`` and returns a ``ContainerGate`` (or None to
-    # launch straight through). The TUI runs this off the loop BEFORE a commit
-    # so it can show a confirm affordance when a stopped/absent container needs
-    # a start/create and ``on_missing_mode == "prompt"``. Disabled by default.
-    on_container_gate: Callable[[str], ContainerGate | None] = lambda target_dir: None
+    # Container readiness gate: resolves the selected profile for ``target_dir``
+    # and probes that profile's launch user's container. The TUI runs this off
+    # the loop BEFORE a commit so it can show a confirm affordance when a
+    # stopped/absent container needs a start/create and ``on_missing_mode ==
+    # "prompt"``. Disabled by default.
+    on_container_gate: Callable[[str, str, str], ContainerGate | None] = (
+        lambda target_dir, profile_id, mode_id: None
+    )
     # Probe callback: returns (session_name, attached) pairs for the
-    # launch_user's sessions compatible with (target_dir, agent_id). The
-    # TUI calls this after the operator picks agent+mode in
+    # selected profile's sessions compatible with (target_dir, profile_id).
+    # The TUI calls this after the operator picks profile+mode in
     # ``LaunchOptionsScreen`` and before committing to ``on_launch_*``;
     # a non-empty result triggers ``SessionChoiceScreen`` so the operator
     # can attach to an existing session or knowingly start a parallel one.
     # ``target_dir`` is an absolute, canonicalised path (either ``ctx.cwd``
     # or ``<new_project_root>/<name>``).
-    on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]] = (
-        lambda target_dir, agent_id: ()
+    on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]] = (
+        lambda target_dir, profile_id, mode_id: ()
     )
 
     # ── Worktree callbacks (3.5.0) ───────────────────────────────────
@@ -237,8 +241,8 @@ class TuiContext:
     # Worktree-aware attach-vs-new probe (§2.5, §3): derives the
     # repo-qualified stem and uses the worktree path as compatibility root.
     on_probe_existing_worktree_sessions: Callable[
-        [str, str, str, str], tuple[tuple[str, bool], ...]
-    ] = lambda worktree_path, repo_root, branch, agent_id: ()
+        [str, str, str, str, str], tuple[ExistingSessionChoice, ...]
+    ] = lambda worktree_path, repo_root, branch, agent_id, mode_id: ()
 
     # Git remote on new project — display only. The TUI never edits these.
     git_create_enabled: bool = False

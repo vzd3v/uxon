@@ -43,7 +43,9 @@ class LaunchFlow:
     def __init__(self, host: MainScreen) -> None:
         self.host = host
 
-    def commit_with_container_gate(self, target_dir: str, do_commit) -> None:
+    def commit_with_container_gate(
+        self, target_dir: str, profile_id: str, mode_id: str, do_commit
+    ) -> None:
         """Probe the container for ``target_dir``, then run ``do_commit``.
 
         The single TUI seam for ``[container]`` readiness. ``do_commit`` is the
@@ -51,9 +53,9 @@ class LaunchFlow:
         ``run_off_loop(on_launch_*)`` block). Order, all off the event loop
         (§ blocking invariant):
 
-        1. ``on_container_gate`` probes the container (as the launch user) and
-           returns a ``ContainerGate`` (or ``None`` → launch straight through:
-           disabled, or already running).
+        1. ``on_container_gate`` resolves the selected profile, probes its
+           launch user's container, and returns a ``ContainerGate`` (or
+           ``None`` → launch straight through: disabled, or already running).
         2. ``fail_message`` (state outside ``on_missing`` policy) → notify and
            abort — uxon never exceeds the capability gate.
         3. A needed start/create: when ``needs_prompt`` (``on_missing_mode ==
@@ -99,7 +101,7 @@ class LaunchFlow:
             host.app.push_screen(ConfirmYesNo(gate.message), after_confirm)
 
         host.app.run_off_loop(  # type: ignore[attr-defined]
-            lambda: gate_fn(target_dir),
+            lambda: gate_fn(target_dir, profile_id, mode_id),
             on_success=on_gate,
             on_error=lambda exc: host.app.notify(
                 f"Container probe failed: {exc}", severity="error", timeout=6
@@ -182,6 +184,7 @@ class LaunchFlow:
         target_dir: str,
         target_label: str,
         agent_id: str,
+        mode_id: str,
         on_new,
         probe=None,
     ) -> None:
@@ -208,7 +211,7 @@ class LaunchFlow:
         # that used to freeze "new project" on the event loop. Run it in a
         # worker; the on-loop continuation prompts or commits (§ invariant).
         _probe = host.cfg.on_probe_existing_sessions
-        probe_fn = probe if probe is not None else (lambda: _probe(target_dir, agent_id))
+        probe_fn = probe if probe is not None else (lambda: _probe(target_dir, agent_id, mode_id))
 
         def on_probed(existing) -> None:
             if not existing:
@@ -220,13 +223,13 @@ class LaunchFlow:
             def after_choice(result):
                 if result is None:
                     return
-                action, name = result
+                action, name, user = result
                 if action == "attach" and name:
                     # Route through the Screen's thin delegator so a test that
                     # overrides ``_attach_session`` on a stub host still sees
                     # the call (and audit/LaunchRequest construction stays in
                     # one place).
-                    host._attach_session(launch_user, name)
+                    host._attach_session(user or launch_user, name)
                 elif action == "new":
                     on_new()
 
@@ -257,23 +260,11 @@ class LaunchFlow:
     ) -> None:
         """Worktree-aware launch into an existing folder (cwd or named project).
 
-        Shared by ``_launch_cwd`` and ``_launch_existing``. Order: gate that
-        ``launch_user`` may launch in ``target_dir`` (write access + inside
-        ``allowed_roots``) → probe ``target_dir`` for git worktrees off the
-        event loop (§4.2) → push the launch-options screen. When the folder is
-        a git repo the screen shows the WORKSPACE column (primary tree +
-        existing worktrees + ``+ New worktree…``); a non-git folder degrades to
-        the plain agent/mode screen (§3 degradation).
-
-        The launchability gate is the same predicate for both entry points,
-        which matters now that any of them can create a worktree on disk.
-        ``launchable`` is a pre-resolved value (``cwd`` passes its reactive
-        slot; "open existing" passes ``None``); when ``None`` the gate's
-        ``sudo`` probe runs in the SAME off-loop worker as the worktree probe
-        (never on the event loop, cross-user ``sudo -iu`` would otherwise
-        freeze the UI) and ``on_probed(value)`` lets the caller persist the
-        result (cwd updates its slot + dashboard row — a cwd-only concern
-        kept out of here).
+        Shared by ``_launch_cwd`` and ``_launch_existing``. Profile-specific
+        launchability and workspace discovery happen after the operator picks a
+        profile, inside the commit planner. Before that choice this screen uses
+        the plain profile/mode picker so pinned launch-user profiles cannot be
+        denied by probes run under the startup user.
 
         ``commit_primary(agent_id, mode_id, target_dir=None)`` is the
         folder-specific launch (``on_launch_cwd`` vs ``on_launch_existing``)
@@ -283,9 +274,8 @@ class LaunchFlow:
         primary tree even when the TUI was started in a linked worktree or a
         subdirectory of the repo); the non-git / 2-tuple path passes ``None``
         to launch the folder as-is.
-        Worktree create / attach is generic given the probed ``repo_root`` +
-        branch, so it lives here once rather than being
-        duplicated per entry point.
+        Worktree create / attach is available only when profile-aware workspace
+        choices are supplied to the launch-options screen.
         """
         host = self.host
 
@@ -306,7 +296,7 @@ class LaunchFlow:
 
             # The worktree dir already exists, so its container resolves up
             # front — prompt affordance applies (unlike new-worktree create).
-            self.commit_with_container_gate(path, do_commit)
+            self.commit_with_container_gate(path, agent_id, mode_id, do_commit)
 
         def commit_new_worktree(agent_id: str, mode_id: str, repo_root: str, branch: str) -> None:
             # Creates a git worktree (`git worktree add`, possibly `git fetch`)
@@ -336,6 +326,7 @@ class LaunchFlow:
                     target_dir=primary_root,
                     target_label=target_label,
                     agent_id=agent_id,
+                    mode_id=mode_id,
                     on_new=lambda: commit_primary(agent_id, mode_id, primary_root),
                 )
                 return
@@ -348,11 +339,12 @@ class LaunchFlow:
                     target_dir=path,
                     target_label=branch,
                     agent_id=agent_id,
+                    mode_id=mode_id,
                     on_new=lambda: commit_existing_worktree(
                         agent_id, mode_id, repo_root, path, branch
                     ),
                     probe=lambda: host.cfg.on_probe_existing_worktree_sessions(
-                        path, repo_root, branch, agent_id
+                        path, repo_root, branch, agent_id, mode_id
                     ),
                 )
                 return
@@ -380,6 +372,7 @@ class LaunchFlow:
                 target_dir=target_dir,
                 target_label=target_label,
                 agent_id=agent_id,
+                mode_id=mode_id,
                 on_new=lambda: commit_primary(agent_id, mode_id),
             )
 
@@ -423,20 +416,14 @@ class LaunchFlow:
                 return
             push_with_workspaces(workspaces, error)
 
-        # Pre-resolved False (cwd's populated slot) gates inline — no I/O, no
-        # fresh probe to persist. Otherwise the launchability ``sudo`` probe
-        # rides the same off-loop worker as the worktree probe; a pre-resolved
-        # True skips it (probe_launchable=None → resolved=None).
-        if launchable is False:
-            deny()
-            return
-        host.app.probe_workspaces_then(  # type: ignore[attr-defined]
-            target_dir,
-            on_probed_workspaces,
-            probe_launchable=(
-                None if launchable is True else lambda: host.cfg.on_probe_dir_launchable(target_dir)
-            ),
-        )
+        # Profile-specific launchability and worktree availability cannot be
+        # probed until the operator picks a profile. The commit planner performs
+        # the authoritative gate after that choice; until the profile-aware TUI
+        # path is available, show the plain profile/mode picker without a
+        # pre-selection filesystem probe.
+        if on_probed is not None and launchable is not None:
+            on_probed(bool(launchable))
+        push_with_workspaces([], None)
 
     def launch_cwd(self) -> None:
         host = self.host
@@ -456,7 +443,9 @@ class LaunchFlow:
 
             # Container readiness (probe → prompt/auto start/create) precedes
             # the launch; ``None`` target resolves to the started-in folder.
-            self.commit_with_container_gate(target_dir or host.cfg.cwd, do_commit)
+            self.commit_with_container_gate(
+                target_dir or host.cfg.cwd, agent_id, mode_id, do_commit
+            )
 
         def on_probed(value: bool) -> None:
             # The cross-user / sudo probe may not have landed yet; when the
@@ -506,6 +495,7 @@ class LaunchFlow:
                     target_dir=os.path.join(host.cfg.new_project_root, name),
                     target_label=name,
                     agent_id=agent_id,
+                    mode_id=mode_id,
                     on_new=commit_new,
                 )
 
@@ -578,7 +568,7 @@ class LaunchFlow:
 
                 # The named project already exists on disk → container resolves
                 # up front → prompt affordance applies.
-                self.commit_with_container_gate(project_dir, do_commit)
+                self.commit_with_container_gate(project_dir, agent_id, mode_id, do_commit)
 
             # Same worktree-aware flow as launch-cwd: a git project shows the
             # WORKSPACE column, a non-git one degrades to agent/mode only (§3).

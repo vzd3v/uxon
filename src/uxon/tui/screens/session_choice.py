@@ -19,8 +19,8 @@ by keyboard (no focus cycling on a list card; a priority Enter binding
 stole the gesture).
 
 Dismiss values:
-  - ``("attach", session_name)`` — attach to the highlighted session.
-  - ``("new", None)`` — start a new (parallel) session.
+  - ``("attach", session_name, user)`` — attach to the highlighted session.
+  - ``("new", None, None)`` — start a new (parallel) session.
   - ``None`` — cancel; abort the launch action.
 """
 
@@ -46,7 +46,8 @@ def _row_label(name: str, attached: bool) -> str:
 _NEW_ROW_LABEL = "+ Start new session alongside"
 
 
-SessionChoiceResult = tuple[str, str | None] | None
+SessionChoiceRow = tuple[str, bool] | tuple[str, str, bool]
+SessionChoiceResult = tuple[str, str | None, str | None] | None
 
 
 class SessionChoiceScreen(CardModal[SessionChoiceResult]):
@@ -106,13 +107,15 @@ class SessionChoiceScreen(CardModal[SessionChoiceResult]):
     def __init__(
         self,
         target_label: str,
-        existing: tuple[tuple[str, bool], ...],
+        existing: tuple[SessionChoiceRow, ...],
     ) -> None:
         super().__init__()
         # ``target_label`` is the short, user-facing description of what's
         # being opened (cwd path, or project name). Display-only.
         self.target_label = target_label
-        self.existing = tuple(existing)
+        self.existing = tuple(
+            (row[0], row[1], row[2]) if len(row) == 3 else ("", row[0], row[1]) for row in existing
+        )
 
     def compose(self) -> ComposeResult:
         with self.card():
@@ -125,7 +128,7 @@ class SessionChoiceScreen(CardModal[SessionChoiceResult]):
             yield Static(self.target_label, classes="desc")
             items = [
                 ListItem(Label(_row_label(name, attached)), id=f"sess-{idx}")
-                for idx, (name, attached) in enumerate(self.existing)
+                for idx, (_user, name, attached) in enumerate(self.existing)
             ]
             # Trailing action row — the new-alongside choice, mirroring
             # LaunchOptionsScreen's "+ New worktree…" sentinel row.
@@ -145,13 +148,14 @@ class SessionChoiceScreen(CardModal[SessionChoiceResult]):
         lv = self.query_one("#session-list", ListView)
         idx = lv.index if lv.index is not None else 0
         if 0 <= idx < len(self.existing):
-            self.dismiss(("attach", self.existing[idx][0]))
+            user, name, _attached = self.existing[idx]
+            self.dismiss(("attach", name, user or None))
             return
         # The trailing row (or any out-of-range index) → start new.
-        self.dismiss(("new", None))
+        self.dismiss(("new", None, None))
 
     def action_new_alongside(self) -> None:
-        self.dismiss(("new", None))
+        self.dismiss(("new", None, None))
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         # Mouse click on a row → confirm it. Keyboard Enter is taken by the

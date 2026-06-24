@@ -9,11 +9,14 @@ matching the existing ``harness`` package convention.
 
 from __future__ import annotations
 
+from uxon.domain.agents import default_agent_catalog
 from uxon.domain.config import Config
+from uxon.domain.launch_profiles import LaunchConfig, builtin_launch_profiles
 from uxon.domain.session import SessionInfo
 
 
 def make_config(**overrides: object) -> Config:
+    agents = default_agent_catalog()
     base: dict[str, object] = {
         "runtime_user": "",
         "default_launch_mode": "caller",
@@ -32,6 +35,8 @@ def make_config(**overrides: object) -> Config:
         "git_create_enabled": False,
         "default_git_remote_profile": "",
         "git_remote_profiles": [],
+        "agents": agents,
+        "launch": LaunchConfig(default_profile="claude", profiles=builtin_launch_profiles(agents)),
     }
     base.update(overrides)
     return Config(**base)  # type: ignore[arg-type]

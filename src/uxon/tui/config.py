@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from uxon.infra.remote_hosts import RemoteHost
     from uxon.tui.refresh import SourceSpec
 
-    from .context import TuiContext
+    from .context import ExistingSessionChoice, TuiContext
 
 
 @dataclass(frozen=True)
@@ -99,13 +99,13 @@ class TuiConfig:
     on_launch_cwd: Callable[..., LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
-    on_container_gate: Callable[[str], ContainerGate | None]
-    on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]]
+    on_container_gate: Callable[[str, str, str], ContainerGate | None]
+    on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]]
     on_probe_worktrees: Callable[[str], list]
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest]
     on_probe_existing_worktree_sessions: Callable[
-        [str, str, str, str], tuple[tuple[str, bool], ...]
+        [str, str, str, str, str], tuple[ExistingSessionChoice, ...]
     ]
     get_settings_entries: Callable[[], list]
     on_setting_save: Callable[[str, Any], None]

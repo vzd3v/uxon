@@ -96,9 +96,12 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
             i += 1
             if i >= len(argv):
                 fail("--agent requires an id")
-            # No catalog in scope at parse time — the id is validated against
-            # the merged catalog in ``resolve_agent_id`` (which has ``cfg``).
-            parsed.agent = argv[i]
+            fail("--agent is no longer a uxon selector; use --profile <id> instead")
+        elif token == "--profile":
+            i += 1
+            if i >= len(argv):
+                fail("--profile requires an id")
+            parsed.profile = argv[i]
         elif token == "--git-remote":
             if action != "new":
                 fail(f"{token} is only supported with 'new' / '-n'")

@@ -19,6 +19,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
+import uxon.app.launch_profile as launch_profile_app
+from uxon.domain.agents import default_agent_catalog
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.container import (
@@ -39,10 +41,19 @@ from uxon.domain.container import (
     validate_path_map,
     wrap_agent_for_container,
 )
+from uxon.domain.host_report import BinaryStatus, HostReport
+from uxon.domain.launch_profiles import (
+    LaunchConfig,
+    LaunchProfile,
+    ResolvedLaunchProfile,
+    builtin_launch_profiles,
+)
 
 
 def _cfg(container: ContainerConfig, **overrides) -> Config:
     """Minimal Config carrying a ContainerConfig (other fields are inert here)."""
+    agents = default_agent_catalog()
+    launch = LaunchConfig(default_profile="claude", profiles=builtin_launch_profiles(agents))
     base = dict(
         runtime_user="",
         default_launch_mode="caller",
@@ -65,10 +76,22 @@ def _cfg(container: ContainerConfig, **overrides) -> Config:
         tmux_options={},
         tmux_server_options={},
         tmux_append_server_options={},
+        agents=agents,
+        launch=launch,
         container=container,
     )
     base.update(overrides)
     return Config(**base)
+
+
+def _resolved(cfg: Config, launch_user: str, *, profile_id: str = "claude", mode: str = "yolo"):
+    profile = cfg.launch.profiles[profile_id]
+    return ResolvedLaunchProfile(
+        profile=profile,
+        agent=cfg.agents[profile.agent],
+        launch_user=launch_user,
+        mode_id=mode,
+    )
 
 
 _EXEC = ("docker", "exec", "-it", "-w", "{dir}", "{name}")
@@ -150,12 +173,18 @@ class ExecWrapTests(unittest.TestCase):
         # ``tmux_socket_path`` resolves the launch user via ``pwd.getpwnam``, so
         # use a real OS account (the test runner's own user).
         launch_user = getpass.getuser()
-        args = ParsedArgs(action="run", agent="claude", permission_mode="yolo")
+        args = ParsedArgs(action="run", profile="claude", permission_mode="yolo")
+        resolved = _resolved(cfg, launch_user)
         # ``tmux_nesting_mode`` reads $TMUX; force the classic (execvp) path so
         # the request is deterministic regardless of the test runner's tmux.
         with mock.patch("uxon.infra.tmux.tmux_nesting_mode", return_value="execvp"):
             return tmux._build_tmux_launch_request(
-                target_dir, "uxon-myapp@claude", args, cfg, None, launch_user
+                target_dir,
+                "uxon-myapp@claude",
+                args,
+                cfg,
+                None,
+                resolved_profile=resolved,
             )
 
     def test_disabled_is_byte_for_byte_identical(self) -> None:
@@ -1042,48 +1071,78 @@ class ContainerGatingTests(unittest.TestCase):
     """AC-P2 — container mode keeps agent RESOLUTION, suppresses the host GATE."""
 
     @staticmethod
-    def _report(claude_path):
-        rep = mock.MagicMock()
-        claude = mock.MagicMock()
-        claude.path = claude_path
-        claude.install_hint = "npm i -g claude"
-        rep.agents = {"claude": claude}
-        return rep
+    def _report(claude_path, *, launch_user: str = "dana"):
+        return HostReport(
+            tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
+            agents={"claude": BinaryStatus("claude", claude_path, "npm i -g claude")},
+            launch_user=launch_user,
+        )
+
+    @staticmethod
+    def _container_launch() -> LaunchConfig:
+        agents = default_agent_catalog()
+        profiles = builtin_launch_profiles(agents)
+        profiles["claude_box"] = LaunchProfile(
+            id="claude_box",
+            agent="claude",
+            container_profile="box",
+        )
+        return LaunchConfig(
+            enabled_profiles=("claude_box",),
+            default_profile="claude_box",
+            profiles=profiles,
+        )
 
     def test_host_absent_binary_does_not_fail_under_container(self) -> None:
-        # AC-P2.1: explicit agent + container.enabled + host-absent binary →
+        # AC-P2.1: explicit container profile + host-absent binary →
         # resolves anyway (no host-presence gate).
-        from uxon.app import agent_select
-
         c = ContainerConfig(enabled=True, name_template="p-{project_slug}", exec_template=_EXEC)
-        cfg = _cfg(c)
-        agent = agent_select.resolve_agent_id(
-            cfg, "dana", "claude", report=self._report(claude_path=None)
+        cfg = _cfg(c, launch=self._container_launch())
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            "dana",
+            "claude_box",
+            "/srv/projects/myapp",
+            "normal",
+            report=self._report(claude_path=None),
         )
-        self.assertEqual(agent, "claude")
+        self.assertEqual(resolved.profile.id, "claude_box")
 
     def test_host_absent_binary_fails_when_disabled(self) -> None:
         # AC-P2.5: off-path is byte-for-byte unchanged — host gate still fires.
-        from uxon.app import agent_select
-
         c = ContainerConfig(enabled=False)
         cfg = _cfg(c)
         with self.assertRaises(SystemExit):
-            agent_select.resolve_agent_id(
-                cfg, "dana", "claude", report=self._report(claude_path=None)
+            launch_profile_app.resolve_launch_profile(
+                cfg,
+                "dana",
+                "claude",
+                "/srv/projects/myapp",
+                "normal",
+                report=self._report(claude_path=None),
             )
 
-    def test_auto_mode_requires_explicit_agent_under_container(self) -> None:
-        # AC-P2.4: container + auto (no --agent, empty enabled, no default) →
-        # fail with the explicit-agent message BEFORE the fallback loop.
-        from uxon.app import agent_select
-
+    def test_auto_mode_ignores_operator_container_profile(self) -> None:
+        # Auto-mode considers shipped OS-user-only profiles only; an operator
+        # container profile is not auto-enabled.
         c = ContainerConfig(enabled=True, name_template="p-{project_slug}", exec_template=_EXEC)
-        cfg = _cfg(c, enabled_agents=(), default_agent="")
-        # Report would never be consulted — the short-circuit fires first.
-        with self.assertRaises(SystemExit) as ctx:
-            agent_select.resolve_agent_id(cfg, "dana", None, report=self._report("/x/claude"))
-        self.assertIn("container mode", str(getattr(ctx.exception, "uxon_msg", ctx.exception)))
+        agents = default_agent_catalog()
+        profiles = builtin_launch_profiles(agents)
+        profiles["claude_box"] = LaunchProfile(
+            id="claude_box",
+            agent="claude",
+            container_profile="box",
+        )
+        cfg = _cfg(c, launch=LaunchConfig(profiles=profiles))
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            "dana",
+            None,
+            "/srv/projects/myapp",
+            "normal",
+            report=self._report("/x/claude"),
+        )
+        self.assertEqual(resolved.profile.id, "claude")
 
     def test_tui_predicates_suppressed_under_container(self) -> None:
         # AC-P2.2: both launch-gate predicates return False under container mode
@@ -1226,7 +1285,12 @@ class WorktreePathMapGateTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit) as ctx:
                 launch_app.plan_worktree_launch(
-                    cfg, "dana", "/srv/projects/myapp", "feat", "claude", None
+                    cfg,
+                    "dana",
+                    _resolved(cfg, "dana", mode="normal"),
+                    "/srv/projects/myapp",
+                    "feat",
+                    requested_profile="claude",
                 )
         msg = str(getattr(ctx.exception, "uxon_msg", ctx.exception))
         self.assertIn("path_map", msg)
@@ -1254,7 +1318,13 @@ class WorktreePathMapGateTests(unittest.TestCase):
             mock.patch("uxon.infra.tmux._build_tmux_launch_request", return_value=sentinel),
         ):
             req = launch_app.plan_worktree_launch(
-                cfg, "dana", "/srv/projects/myapp", "feat", "claude", None, dry_run=True
+                cfg,
+                "dana",
+                _resolved(cfg, "dana", mode="normal"),
+                "/srv/projects/myapp",
+                "feat",
+                requested_profile="claude",
+                dry_run=True,
             )
         self.assertIs(req, sentinel)
 

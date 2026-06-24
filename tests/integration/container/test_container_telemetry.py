@@ -44,6 +44,7 @@ from helpers import make_config  # type: ignore[import-not-found]
 
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
+from uxon.domain.launch_profiles import ResolvedLaunchProfile
 
 pytestmark = pytest.mark.container
 
@@ -115,10 +116,23 @@ def _launch(cfg: Config, project_dir: Path, session: str, launch_user: str, agen
     """Drive the real launch request for ``session`` as a detached tmux session."""
     from uxon.infra import tmux
 
-    args = ParsedArgs(action="run", agent="claude", permission_mode="normal", agent_args=agent_args)
+    args = ParsedArgs(
+        action="run", profile="claude", permission_mode="normal", agent_args=agent_args
+    )
+    resolved = ResolvedLaunchProfile(
+        profile=cfg.launch.profiles["claude"],
+        agent=cfg.agents["claude"],
+        launch_user=launch_user,
+        mode_id="normal",
+    )
     with mock.patch("uxon.infra.tmux.tmux_nesting_mode", return_value="execvp"):
         req = tmux._build_tmux_launch_request(
-            str(project_dir), session, args, cfg, None, launch_user
+            str(project_dir),
+            session,
+            args,
+            cfg,
+            None,
+            resolved_profile=resolved,
         )
     for pre in req.prelaunch:
         subprocess.run(list(pre), check=True, timeout=PROBE_TIMEOUT_SEC)

@@ -29,6 +29,7 @@ from uxon.domain.container import (
     resolve_container_name,
     wrap_agent_for_container,
 )
+from uxon.domain.launch_profiles import ResolvedLaunchProfile
 from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import SessionInfo, slugify
 from uxon.errors import fail
@@ -243,9 +244,10 @@ def _build_tmux_launch_request(
     args: ParsedArgs,
     cfg: Config,
     branch: str | None,
-    launch_user: str,
     *,
+    resolved_profile: ResolvedLaunchProfile | None = None,
     server_running: bool = False,
+    include_container_identity: bool = True,
 ):
     """Assemble the agent + tmux argv plus the socket-parent mkdir.
 
@@ -268,13 +270,11 @@ def _build_tmux_launch_request(
     a precise fix would cost a dedicated ``list-sessions`` liveness call per
     launch, deliberately not added.
 
-    The agent is expected to be resolved before this is called —
-    install-gating is owned by ``resolve_agent_id`` (run from
-    the action handlers and TUI callbacks). This function only
-    enforces that the picked id is in ``cfg.agents``; if ``args.agent``
-    is unset it falls back to ``cfg.default_agent`` as a last-ditch
-    policy hook for callers that legitimately skip resolution
-    (dry-run tests, etc.).
+    The launch profile is expected to be resolved before this is called.
+    Install-gating is owned by ``app.launch_profile.resolve_launch_profile``.
+    ``resolved_profile`` carries the selected profile, agent, and mode; the
+    old config-derived agent fallback is intentionally not used by new launch
+    paths.
 
     ``branch`` is informational only (still printed by the dry-run path
     in ``launch_in_tmux``): uxon launches a worktree by creating it
@@ -284,19 +284,17 @@ def _build_tmux_launch_request(
     """
     from uxon.domain.agents import permission_mode_for
 
-    agent_id = args.agent or cfg.default_agent
-    if not agent_id:
-        fail("internal: no agent resolved before _build_tmux_launch_request")
-    if agent_id not in cfg.agents:
-        fail(f"unknown agent id {agent_id!r}")
-    spec = cfg.agents[agent_id]
+    if resolved_profile is None:
+        fail("internal: launch profile must be resolved before _build_tmux_launch_request")
+    launch_user = resolved_profile.launch_user
+    spec = resolved_profile.agent
+    mode_id = resolved_profile.mode_id
     # Open modes: an unset ``--mode`` resolves to the agent's first (default)
     # mode; only an explicitly-requested unknown id reaches the fail path.
-    mode_id = args.permission_mode or spec.permission_modes[0].id
     mode_obj = permission_mode_for(spec, mode_id)
     if mode_obj is None:
         valid = ", ".join(m.id for m in spec.permission_modes)
-        fail(f"unknown --mode {mode_id!r} for agent {agent_id!r}; valid modes: {valid}")
+        fail(f"unknown --mode {mode_id!r} for agent {spec.id!r}; valid modes: {valid}")
     agent_argv = (
         [spec.binary] + list(spec.default_args) + list(args.agent_args) + list(mode_obj.flags)
     )
@@ -324,14 +322,15 @@ def _build_tmux_launch_request(
         # SEPARATE vars, each appended only when resolution yields a non-empty
         # value (absent var = the documented degrade; AC-P1.3 / AC-P3.5).
         session_env = ["-e", f"{CONTAINER_NAME_ENV}={name}"]
-        identity = resolve_container_identity(cfg, target_dir, launch_user)
-        for var, value in (
-            (CONTAINER_ID_ENV, identity.id),
-            (CONTAINER_CGROUP_ENV, identity.cgroup),
-            (CONTAINER_EPOCH_ENV, identity.epoch),
-        ):
-            if value:
-                session_env += ["-e", f"{var}={value}"]
+        if include_container_identity:
+            identity = resolve_container_identity(cfg, target_dir, launch_user)
+            for var, value in (
+                (CONTAINER_ID_ENV, identity.id),
+                (CONTAINER_CGROUP_ENV, identity.cgroup),
+                (CONTAINER_EPOCH_ENV, identity.epoch),
+            ):
+                if value:
+                    session_env += ["-e", f"{var}={value}"]
         # Wrap the agent for every enabled session so it exports
         # ``UXON_SESSION`` into its in-container environ (telemetry attribution).
         # The pidfile write stays gated on ``stop_template`` (teardown opt-in):
@@ -390,14 +389,24 @@ def launch_in_tmux(
     args: ParsedArgs,
     cfg: Config,
     branch: str | None,
-    launch_user: str,
     *,
+    resolved_profile: ResolvedLaunchProfile | None = None,
     server_running: bool = False,
 ) -> int:
     import shlex
 
+    if resolved_profile is None:
+        fail("internal: launch profile must be resolved before launch_in_tmux")
+    launch_user = resolved_profile.launch_user
+
     req = _build_tmux_launch_request(
-        target_dir, session, args, cfg, branch, launch_user, server_running=server_running
+        target_dir,
+        session,
+        args,
+        cfg,
+        branch,
+        resolved_profile=resolved_profile,
+        server_running=server_running,
     )
     if args.dry_run:
         print(f"launch_user={shlex.quote(launch_user)}")

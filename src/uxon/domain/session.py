@@ -38,7 +38,8 @@ class SessionInfo:
     active_path: str
     cpu_pct: float = 0.0
     rss_kib: int = 0
-    agent: str = "claude"  # agent id as parsed from the session name (catalog-driven)
+    agent: str = "claude"  # underlying agent id when known
+    profile: str = ""  # launch profile id parsed from the session name
     legacy: bool = False  # True iff name uses a non-current (legacy) prefix
     # Container telemetry markers, read from the session env via the existing
     # ``list-sessions -F`` batch (``#{E:VAR}`` expands to "" for an unset var,
@@ -72,7 +73,8 @@ class TuiSession:
     user: str
     # Multi-agent fields (default to backward-compatible values).
     stem: str = ""  # bare project stem, e.g. "myproject"
-    agent: str = "claude"  # agent id as parsed from the session name (catalog-driven)
+    agent: str = "claude"  # underlying agent id when known
+    profile: str = ""  # launch profile id parsed from the session name
     legacy: bool = False  # True when parsed from old cc-<stem> naming
     # Raw ISO 8601 timestamps preserved alongside the pre-formatted
     # display strings so dashboard sort by ``new`` / ``last`` ranks
@@ -102,7 +104,7 @@ def session_stem_for_worktree(repo_root: str, branch: str) -> str:
 
 def _modern_re(prefix: str) -> re.Pattern[str]:
     return re.compile(
-        rf"^{re.escape(prefix)}(?P<stem>.+?)@(?P<agent>[a-z][a-z0-9_]*)(?:-(?P<index>\d+))?$"
+        rf"^{re.escape(prefix)}(?P<stem>.+?)@(?P<profile>[a-z][a-z0-9_]*)(?:-(?P<index>\d+))?$"
     )
 
 
@@ -112,22 +114,22 @@ def parse_session_name(
     prefix: str = "uxon-",
     legacy_prefixes: tuple[str, ...] = (),
 ) -> tuple[str, str, int, bool] | None:
-    """Return (stem, agent, index, legacy) or None if the name is not ours.
+    """Return (stem, profile, index, legacy) or None if the name is not ours.
 
     Recognises the current ``prefix`` plus any ``legacy_prefixes`` in the
-    ``<prefix><stem>@<agent>[-N]`` shape. ``legacy=True`` is returned for
+    ``<prefix><stem>@<profile>[-N]`` shape. ``legacy=True`` is returned for
     names matched via a non-current prefix.
     """
     for p in (prefix, *legacy_prefixes):
         m = _modern_re(p).match(name)
         if m:
             idx = int(m.group("index")) if m.group("index") else 1
-            return m.group("stem"), m.group("agent"), idx, p != prefix
+            return m.group("stem"), m.group("profile"), idx, p != prefix
     return None
 
 
-def candidate_session_name(stem: str, index: int, agent: str, *, prefix: str = "uxon-") -> str:
-    base = f"{prefix}{stem}@{agent}"
+def candidate_session_name(stem: str, index: int, profile: str, *, prefix: str = "uxon-") -> str:
+    base = f"{prefix}{stem}@{profile}"
     if index <= 1:
         return base
     return f"{base}-{index}"
@@ -136,7 +138,7 @@ def candidate_session_name(stem: str, index: int, agent: str, *, prefix: str = "
 def parse_plain_session_index(
     name: str,
     stem: str,
-    agent: str,
+    profile: str,
     *,
     prefix: str = "uxon-",
     legacy_prefixes: tuple[str, ...] = (),
@@ -144,15 +146,15 @@ def parse_plain_session_index(
     parsed = parse_session_name(name, prefix=prefix, legacy_prefixes=legacy_prefixes)
     if parsed is None:
         return None
-    p_stem, p_agent, p_index, _legacy = parsed
-    if p_stem != stem or p_agent != agent:
+    p_stem, p_profile, p_index, _legacy = parsed
+    if p_stem != stem or p_profile != profile:
         return None
     return p_index
 
 
 def compatible_indexed_sessions(
     stem: str,
-    agent: str,
+    profile: str,
     compatibility_root: str,
     sessions: list[SessionInfo],
     *,
@@ -162,7 +164,7 @@ def compatible_indexed_sessions(
     matches: list[SessionInfo] = []
     for session in sessions:
         idx = parse_plain_session_index(
-            session.name, stem, agent, prefix=prefix, legacy_prefixes=legacy_prefixes
+            session.name, stem, profile, prefix=prefix, legacy_prefixes=legacy_prefixes
         )
         if idx is None:
             continue
@@ -179,14 +181,14 @@ def compatible_indexed_sessions(
 def choose_attach_session(
     existing: list[SessionInfo],
     stem: str,
-    agent: str,
+    profile: str,
     *,
     prefix: str = "uxon-",
     legacy_prefixes: tuple[str, ...] = (),
 ) -> SessionInfo:
     if not existing:
         raise ValueError("expected at least one existing session")
-    base_name = candidate_session_name(stem, 1, agent, prefix=prefix)
+    base_name = candidate_session_name(stem, 1, profile, prefix=prefix)
     attached = [s for s in existing if s.attached == "1"]
     for bucket in (attached, existing):
         for session in bucket:
@@ -196,7 +198,7 @@ def choose_attach_session(
         existing,
         key=lambda session: (
             parse_plain_session_index(
-                session.name, stem, agent, prefix=prefix, legacy_prefixes=legacy_prefixes
+                session.name, stem, profile, prefix=prefix, legacy_prefixes=legacy_prefixes
             )
             or 9999
         ),
@@ -205,13 +207,13 @@ def choose_attach_session(
 
 def allocate_session_name(
     stem: str,
-    agent: str,
+    profile: str,
     compatibility_root: str,
     sessions: list[SessionInfo],
     *,
     prefix: str = "uxon-",
 ) -> str:
-    exact_base = candidate_session_name(stem, 1, agent, prefix=prefix)
+    exact_base = candidate_session_name(stem, 1, profile, prefix=prefix)
     exact_base_hits = [s for s in sessions if s.name == exact_base]
     if exact_base_hits and not session_path_compatible(
         exact_base_hits[0].active_path, compatibility_root
@@ -224,7 +226,7 @@ def allocate_session_name(
 
     index = 1
     while True:
-        candidate = candidate_session_name(stem, index, agent, prefix=prefix)
+        candidate = candidate_session_name(stem, index, profile, prefix=prefix)
         existing = [s for s in sessions if s.name == candidate]
         if not existing:
             return candidate
@@ -254,9 +256,10 @@ def to_tui_session(
             break
     parsed = parse_session_name(s.name, prefix=prefix, legacy_prefixes=legacy_prefixes)
     if parsed is not None:
-        stem, agent, _idx, legacy = parsed
+        stem, profile, _idx, legacy = parsed
     else:
-        stem, agent, legacy = s.name, "unknown", False
+        stem, profile, legacy = s.name, "unknown", False
+    agent = s.agent or profile
     return TuiSession(
         name=s.name,
         short=short,
@@ -275,6 +278,7 @@ def to_tui_session(
         user=s.user,
         stem=stem,
         agent=agent,
+        profile=profile,
         legacy=legacy,
         created_iso=s.created,
         last_attached_iso=s.last_attached,

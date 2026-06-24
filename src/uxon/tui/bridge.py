@@ -2,8 +2,8 @@
 """TUI bridge: the live callback set wired into a TuiContext.
 
 :class:`TuiBridge` replaces the former ``cli._build_tui_context`` god-closure.
-The stable inputs (``cfg`` / ``launch_user`` / ``cwd``) are instance attributes;
-every former nested ``on_*`` closure is now a method that delegates to the
+The stable inputs (``cfg`` / ``caller_user`` / ``launch_user`` / ``cwd``) are
+instance attributes; every former nested ``on_*`` closure is now a method that delegates to the
 ``app.*`` use-cases and ``infra.*`` adapters. Per-build state (the probed
 ``sudo_caps``, the fleet fetch semaphore, the per-host circuit breakers) is
 constructed in :func:`uxon.tui.context_builder.build_tui_context` and stashed on
@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import uxon.app.attach as attach_app
 import uxon.app.launch as launch_app
+import uxon.app.launch_profile as launch_profile_app
 import uxon.app.tui_planning as tui_planning
 from uxon.domain.authz import canonical
 from uxon.domain.config import Config
@@ -57,8 +58,9 @@ class TuiBridge:
     ``TuiContext`` (a fresh bridge is built on every refresh).
     """
 
-    def __init__(self, cfg: Config, launch_user: str, cwd: str) -> None:
+    def __init__(self, cfg: Config, caller_user: str, launch_user: str, cwd: str) -> None:
         self.cfg = cfg
+        self.caller_user = caller_user
         self.launch_user = launch_user
         self.cwd = cwd
         # Per-build state, set by build_tui_context. Empty placeholders
@@ -382,6 +384,7 @@ class TuiBridge:
         fresh_cfg = config_loader.load_config(self.cwd)
         return build_tui_context(
             fresh_cfg,
+            self.caller_user,
             self.launch_user,
             self.cwd,
             sudo_caps_override=self.captured_sudo_caps,
@@ -445,7 +448,7 @@ class TuiBridge:
         # ``worktree=`` argument is threaded here.
         target = target_dir or self.cwd
         req = tui_planning._plan_tui_run_agent(
-            self.cfg, self.launch_user, target, agent_id, mode_id
+            self.cfg, self.caller_user, self.launch_user, target, agent_id, mode_id
         )
         # Container readiness is NOT handled here: the TUI runs the probe +
         # (prompt-confirmed) start/create through ``LaunchFlow`` BEFORE this
@@ -466,20 +469,13 @@ class TuiBridge:
 
     def on_launch_new(self, name: str, agent_id: str, mode_id: str, git_profile: str):
         req = tui_planning._plan_tui_create_new_agent(
-            self.cfg, self.launch_user, name, agent_id, mode_id, git_profile
+            self.cfg, self.caller_user, self.launch_user, name, agent_id, mode_id, git_profile
         )
         # The TUI planner no longer auto-attaches — every launch request
         # routed here is a fresh ``session.new``. The attach path is
         # owned by ``on_attach`` (which emits its own ``session.attach``
         # event when the operator picks "attach" in SessionChoiceScreen).
         project = canonical(os.path.join(self.cfg.new_project_root, name))
-        # New-project creates the dir inside the planner above, so the
-        # container can only be readied AFTER it exists — too late for a
-        # pre-launch prompt. Like the worktree-create path, this uses the
-        # headless auto-if-permitted policy; the TUI new-project prompt parity
-        # is a tracked gap (backlog/2026-06-15-tui-new-project-container-prompt.md).
-        # Follow-up: TUI new-project container prompt parity.
-        launch_app.ensure_container_ready(self.cfg, project, self.launch_user)
         from uxon.infra import audit as _audit
 
         _audit.audit(
@@ -494,7 +490,7 @@ class TuiBridge:
 
     def on_launch_existing(self, name: str, agent_id: str, mode_id: str):
         req = tui_planning._plan_tui_open_existing_agent(
-            self.cfg, self.launch_user, name, agent_id, mode_id
+            self.cfg, self.caller_user, self.launch_user, name, agent_id, mode_id
         )
         # Same as ``on_launch_new``: TUI owns attach decisions; this path
         # always emits ``session.new``.
@@ -514,10 +510,10 @@ class TuiBridge:
         return req
 
     def on_probe_existing_sessions(
-        self, target_dir: str, agent_id: str
-    ) -> tuple[tuple[str, bool], ...]:
-        """TUI probe: return (name, attached) pairs for launch_user's
-        compatible sessions under ``target_dir`` + ``agent_id``.
+        self, target_dir: str, agent_id: str, mode_id: str
+    ) -> tuple[tuple[str, str, bool], ...]:
+        """TUI probe: return (name, attached) pairs for the profile's
+        compatible sessions under ``target_dir``.
 
         Called by the TUI between LaunchOptionsScreen (agent + mode pick)
         and the actual ``on_launch_*`` commit. An empty tuple means the
@@ -525,18 +521,25 @@ class TuiBridge:
         SessionChoiceScreen modal to let the operator pick attach vs
         new-alongside.
         """
-        matches = sessions_probe.probe_tui_compatible_sessions(
-            self.cfg, self.launch_user, target_dir, agent_id
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            agent_id,
+            target_dir,
+            mode_id,
+            target_may_not_exist=False,
         )
-        return tuple((s.name, s.attached == "1") for s in matches)
+        matches = sessions_probe.probe_tui_compatible_sessions(
+            self.cfg, resolved.launch_user, target_dir, resolved.profile.id
+        )
+        return tuple((s.user, s.name, s.attached == "1") for s in matches)
 
     def on_probe_worktrees(self, cwd_arg: str) -> list:
         """Workspaces for ``cwd_arg``'s repo (folders only).
 
-        Resolves ``cwd`` → primary repo root with the NON-interactive
-        resolvers (Task 5) so the fullscreen TUI never blocks on a hidden
-        ``sudo`` prompt, then lists worktrees under the same
-        ``identity.nonint_command_prefix_for_user`` and parses with Task 2.
+        Resolves ``cwd`` → primary repo root with non-interactive resolvers
+        so the fullscreen TUI never blocks on a hidden ``sudo`` prompt, then
+        lists worktrees under the same ``identity.nonint_command_prefix_for_user``.
 
         Two empty-ish outcomes are kept distinct so the WORKSPACE column can
         tell them apart: a folder that is **not a git repo** returns ``[]``
@@ -565,8 +568,26 @@ class TuiBridge:
         # plan_worktree_launch emits its own worktree.create + session.new
         # audit events. The TUI has no agent passthrough args (agent_args
         # defaults to None).
+        from uxon.infra.worktrees import compute_worktree_path
+
+        worktree_path = compute_worktree_path(
+            repo_root=repo_root, branch=branch, worktree_root=self.cfg.worktree_root
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            agent_id,
+            worktree_path,
+            mode_id,
+            target_may_not_exist=True,
+        )
         return launch_app.plan_worktree_launch(
-            self.cfg, self.launch_user, repo_root, branch, agent_id, mode_id
+            self.cfg,
+            self.caller_user,
+            resolved,
+            repo_root,
+            branch,
+            requested_profile=agent_id,
         )
 
     def on_launch_existing_worktree(
@@ -576,6 +597,7 @@ class TuiBridge:
         # (§2.5) — never re-creates the worktree.
         req = tui_planning._plan_tui_run_agent(
             self.cfg,
+            self.caller_user,
             self.launch_user,
             worktree_path,
             agent_id,
@@ -595,26 +617,42 @@ class TuiBridge:
         return req
 
     def on_probe_existing_worktree_sessions(
-        self, worktree_path: str, repo_root: str, branch: str, agent_id: str
-    ) -> tuple[tuple[str, bool], ...]:
+        self, worktree_path: str, repo_root: str, branch: str, agent_id: str, mode_id: str
+    ) -> tuple[tuple[str, str, bool], ...]:
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            agent_id,
+            worktree_path,
+            mode_id,
+            target_may_not_exist=False,
+        )
         matches = sessions_probe.probe_tui_compatible_sessions(
             self.cfg,
-            self.launch_user,
+            resolved.launch_user,
             worktree_path,
-            agent_id,
+            resolved.profile.id,
             stem=session_stem_for_worktree(repo_root, branch),
             compatibility_root=worktree_path,
         )
-        return tuple((s.name, s.attached == "1") for s in matches)
+        return tuple((s.user, s.name, s.attached == "1") for s in matches)
 
-    def on_container_gate(self, target_dir: str):
+    def on_container_gate(self, target_dir: str, agent_id: str, mode_id: str):
         """Probe the container for ``target_dir``; return the TUI gate or None.
 
         Shells out as the launch user under a bounded timeout — MUST run off
         the event loop (the caller dispatches it via ``run_off_loop``). None
         means "launch straight through" (disabled, or already running).
         """
-        return launch_app.decide_container_gate(self.cfg, target_dir, self.launch_user)
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            agent_id,
+            target_dir,
+            mode_id,
+            target_may_not_exist=False,
+        )
+        return launch_app.decide_container_gate(self.cfg, target_dir, resolved.launch_user)
 
     def on_probe_cwd_writable(self) -> bool:
         return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, self.cwd)

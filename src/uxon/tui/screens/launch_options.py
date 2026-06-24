@@ -85,7 +85,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         self._state = state
         # The WORKSPACE column is folder-selection only (§3). The rows are
         # built from ``workspaces`` (filled by the launch-screen worker —
-        # Task 17). ``repo_root`` is the primary repo root the probe
+        # ``repo_root`` is the primary repo root the probe
         # resolved off the event loop; ``action_commit`` reads it for the
         # ``("primary", repo_root)`` choice without re-resolving on the loop.
         #

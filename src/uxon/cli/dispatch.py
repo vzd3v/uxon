@@ -37,7 +37,7 @@ def dispatch(args: ParsedArgs, cfg: Config, caller_user: str, launch_user: str) 
             probe_remote=args.all_hosts,
         )
     if args.action == "run":
-        return run_app.do_run(args, cfg, launch_user)
+        return run_app.do_run(args, cfg, caller_user)
     if args.action == "list":
         return listing_app.do_list(args, cfg, launch_user)
     if args.action == "attach":
@@ -47,6 +47,6 @@ def dispatch(args: ParsedArgs, cfg: Config, caller_user: str, launch_user: str) 
     if args.action == "kill-all":
         return kill_app.do_kill_all(args, cfg, launch_user)
     if args.action == "new":
-        return new_app.do_new(args, cfg, launch_user)
+        return new_app.do_new(args, cfg, caller_user)
     fail(f"unsupported action: {args.action}")
     return 2

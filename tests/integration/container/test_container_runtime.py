@@ -41,6 +41,7 @@ from helpers import make_config  # type: ignore[import-not-found]
 
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
+from uxon.domain.launch_profiles import ResolvedLaunchProfile
 
 pytestmark = pytest.mark.container
 
@@ -174,10 +175,21 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
     #    minus the process-replacing execvp. Force the classic (new-session)
     #    flow so the request shape is deterministic even when this runs
     #    inside an outer tmux client.
-    args = ParsedArgs(action="run", agent="claude", permission_mode="normal")
+    args = ParsedArgs(action="run", profile="claude", permission_mode="normal")
+    resolved = ResolvedLaunchProfile(
+        profile=cfg.launch.profiles["claude"],
+        agent=cfg.agents["claude"],
+        launch_user=launch_user,
+        mode_id="normal",
+    )
     with mock.patch("uxon.infra.tmux.tmux_nesting_mode", return_value="execvp"):
         req = tmux._build_tmux_launch_request(
-            str(project_dir), "uxon-it@claude", args, cfg, None, launch_user
+            str(project_dir),
+            "uxon-it@claude",
+            args,
+            cfg,
+            None,
+            resolved_profile=resolved,
         )
     for pre in req.prelaunch:
         subprocess.run(list(pre), check=True, timeout=PROBE_TIMEOUT_SEC)

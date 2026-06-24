@@ -119,7 +119,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
 
-        self.assertEqual(results, [("attach", "uxon-myproj@claude")])
+        self.assertEqual(results, [("attach", "uxon-myproj@claude", None)])
 
     async def test_new_alongside_returns_new_sentinel(self) -> None:
         from textual.app import App
@@ -141,7 +141,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("n")
             await pilot.pause()
 
-        self.assertEqual(results, [("new", None)])
+        self.assertEqual(results, [("new", None, None)])
 
     async def test_attach_non_first_session_row(self) -> None:
         """Navigating to a non-first session row attaches *that* session.
@@ -175,7 +175,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
 
-        self.assertEqual(results, [("attach", "uxon-myproj@claude-2")])
+        self.assertEqual(results, [("attach", "uxon-myproj@claude-2", None)])
 
     async def test_mouse_click_session_row_attaches(self) -> None:
         """Clicking a session row confirms it (the mouse-only path)."""
@@ -198,7 +198,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click("#sess-0")
             await pilot.pause()
 
-        self.assertEqual(results, [("attach", "uxon-myproj@claude")])
+        self.assertEqual(results, [("attach", "uxon-myproj@claude", None)])
 
     async def test_enter_on_trailing_row_starts_new(self) -> None:
         """The ``+ Start new session alongside`` row, picked with Enter."""
@@ -224,7 +224,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
 
-        self.assertEqual(results, [("new", None)])
+        self.assertEqual(results, [("new", None, None)])
 
     async def test_keyboard_works_when_pushed_from_dismiss_callback(self) -> None:
         """Regression: keyboard-dead modal when opened from another modal.
@@ -292,7 +292,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("n")  # keyboard must drive the modal
             await pilot.pause()
 
-        self.assertEqual(results, [("new", None)])
+        self.assertEqual(results, [("new", None, None)])
 
     async def test_escape_cancels(self) -> None:
         from textual.app import App
@@ -381,7 +381,7 @@ class MainScreenHelperTests(unittest.TestCase):
     """Direct-call tests for ``_maybe_show_session_choice``."""
 
     def test_no_existing_calls_on_new_directly(self) -> None:
-        ctx = _mk_ctx(on_probe_existing_sessions=lambda d, a: ())
+        ctx = _mk_ctx(on_probe_existing_sessions=lambda *a: ())
         stub = _StubScreen(ctx, attach_log=[])
         helper = _bind_helper(stub)
         called: list[str] = []
@@ -389,6 +389,7 @@ class MainScreenHelperTests(unittest.TestCase):
             target_dir="/srv/work",
             target_label="work",
             agent_id="claude",
+            mode_id="normal",
             on_new=lambda: called.append("new"),
         )
         self.assertEqual(called, ["new"])
@@ -396,7 +397,7 @@ class MainScreenHelperTests(unittest.TestCase):
 
     def test_existing_pushes_modal(self) -> None:
         ctx = _mk_ctx(
-            on_probe_existing_sessions=lambda d, a: (("uxon-work@claude", False),),
+            on_probe_existing_sessions=lambda *a: (("uxon-work@claude", False),),
         )
         stub = _StubScreen(ctx, attach_log=[])
         helper = _bind_helper(stub)
@@ -404,6 +405,7 @@ class MainScreenHelperTests(unittest.TestCase):
             target_dir="/srv/work",
             target_label="work",
             agent_id="claude",
+            mode_id="normal",
             on_new=lambda: None,
         )
         stub.app.push_screen.assert_called_once()
@@ -413,7 +415,7 @@ class MainScreenHelperTests(unittest.TestCase):
     def test_attach_branch_invokes_on_attach(self) -> None:
         attach_log: list[tuple[str, str]] = []
         ctx = _mk_ctx(
-            on_probe_existing_sessions=lambda d, a: (("uxon-work@claude", False),),
+            on_probe_existing_sessions=lambda *a: (("uxon-work@claude", False),),
         )
         stub = _StubScreen(ctx, attach_log=attach_log)
         helper = _bind_helper(stub)
@@ -422,16 +424,35 @@ class MainScreenHelperTests(unittest.TestCase):
             target_dir="/srv/work",
             target_label="work",
             agent_id="claude",
+            mode_id="normal",
             on_new=lambda: new_called.append("new"),
         )
         callback = stub.app.push_screen.call_args[0][1]
-        callback(("attach", "uxon-work@claude"))
+        callback(("attach", "uxon-work@claude", None))
         self.assertEqual(attach_log, [("dev", "uxon-work@claude")])
         self.assertEqual(new_called, [])
 
+    def test_attach_branch_uses_probe_user_when_present(self) -> None:
+        attach_log: list[tuple[str, str]] = []
+        ctx = _mk_ctx(
+            on_probe_existing_sessions=lambda *a: (("profile_user", "uxon-work@claude", False),),
+        )
+        stub = _StubScreen(ctx, attach_log=attach_log)
+        helper = _bind_helper(stub)
+        helper(
+            target_dir="/srv/work",
+            target_label="work",
+            agent_id="claude",
+            mode_id="normal",
+            on_new=lambda: None,
+        )
+        callback = stub.app.push_screen.call_args[0][1]
+        callback(("attach", "uxon-work@claude", "profile_user"))
+        self.assertEqual(attach_log, [("profile_user", "uxon-work@claude")])
+
     def test_new_branch_calls_on_new(self) -> None:
         ctx = _mk_ctx(
-            on_probe_existing_sessions=lambda d, a: (("uxon-work@claude", False),),
+            on_probe_existing_sessions=lambda *a: (("uxon-work@claude", False),),
         )
         stub = _StubScreen(ctx, attach_log=[])
         helper = _bind_helper(stub)
@@ -440,15 +461,16 @@ class MainScreenHelperTests(unittest.TestCase):
             target_dir="/srv/work",
             target_label="work",
             agent_id="claude",
+            mode_id="normal",
             on_new=lambda: new_called.append("new"),
         )
         callback = stub.app.push_screen.call_args[0][1]
-        callback(("new", None))
+        callback(("new", None, None))
         self.assertEqual(new_called, ["new"])
 
     def test_cancel_is_a_noop(self) -> None:
         ctx = _mk_ctx(
-            on_probe_existing_sessions=lambda d, a: (("uxon-work@claude", False),),
+            on_probe_existing_sessions=lambda *a: (("uxon-work@claude", False),),
         )
         stub = _StubScreen(ctx, attach_log=[])
         helper = _bind_helper(stub)
@@ -457,6 +479,7 @@ class MainScreenHelperTests(unittest.TestCase):
             target_dir="/srv/work",
             target_label="work",
             agent_id="claude",
+            mode_id="normal",
             on_new=lambda: new_called.append("new"),
         )
         callback = stub.app.push_screen.call_args[0][1]

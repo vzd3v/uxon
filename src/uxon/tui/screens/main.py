@@ -500,6 +500,7 @@ class MainScreen(Screen):
         target_dir: str,
         target_label: str,
         agent_id: str,
+        mode_id: str,
         on_new,
         probe=None,
     ) -> None:
@@ -507,6 +508,7 @@ class MainScreen(Screen):
             target_dir=target_dir,
             target_label=target_label,
             agent_id=agent_id,
+            mode_id=mode_id,
             on_new=on_new,
             probe=probe,
         )

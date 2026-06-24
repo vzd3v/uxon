@@ -364,10 +364,10 @@ def collect_sessions_for_user(
         _parsed = parse_session_name(name, prefix=session_prefix, legacy_prefixes=legacy_prefixes)
         if _parsed is None:
             continue  # dual-prefix filter matched but parser disagreed — skip
-        _, _agent, _, _legacy = _parsed
-        # Preserve whatever the session-name parser extracted — the catalog
-        # is config-driven, so a custom agent id (e.g. ``aider``) must reach
-        # ``SessionInfo.agent`` intact, not be collapsed to ``"unknown"``.
+        _, _profile, _, _legacy = _parsed
+        # P5 will read the underlying agent from the launch record. Until
+        # then, expose the suffix as both profile and agent for legacy list
+        # surfaces that only know about SessionInfo.agent.
         sessions.append(
             SessionInfo(
                 user=user,
@@ -380,7 +380,8 @@ def collect_sessions_for_user(
                 active_pid=active_pid,
                 active_cmd=active_cmd,
                 active_path=active_path,
-                agent=_agent,
+                agent=_profile,
+                profile=_profile,
                 legacy=_legacy,
                 container=container,
                 container_cgroup=container_cgroup,

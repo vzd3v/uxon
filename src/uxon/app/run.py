@@ -9,45 +9,93 @@ from __future__ import annotations
 import os
 import shlex
 
-import uxon.app.agent_select as agent_select
 import uxon.app.launch as launch_app
+import uxon.app.launch_profile as launch_profile_app
 from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.session import allocate_session_name, session_stem_for_path
 from uxon.errors import fail
 from uxon.infra import git, process, sessions_probe, tmux
+from uxon.infra.worktrees import compute_worktree_path
 
 
-def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     cwd = canonical(os.getcwd())
-    launch_app.ensure_launch_target_allowed(cfg, launch_user, cwd)
     branch = args.worktree_branch
     if branch:
+        seed_user = launch_profile_app.preflight_launch_user(cfg, caller_user, args.profile)
+        seed_repo_root = git.git_repo_root_nonint_as_user(cwd, seed_user)
+        if not seed_repo_root:
+            fail(f"run -w must be run inside a git repository readable by {seed_user}")
+        seed_primary = git.git_common_dir_root_as_user(cwd, seed_user)
+        if seed_primary:
+            seed_repo_root = seed_primary
+        worktree_path = compute_worktree_path(
+            repo_root=seed_repo_root, branch=branch, worktree_root=cfg.worktree_root
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            caller_user,
+            args.profile,
+            worktree_path,
+            args.permission_mode,
+            target_may_not_exist=True,
+            report=args.host_report,
+        )
+        launch_user = resolved.launch_user
         repo_root = git.git_repo_root_nonint_as_user(cwd, launch_user)
         if not repo_root:
             fail(f"run -w must be run inside a git repository readable by {launch_user}")
-        # Normalise to the PRIMARY working tree so a worktree-from-worktree
-        # anchors to the main repo, not a nested one (§8).
         primary = git.git_common_dir_root_as_user(cwd, launch_user)
         if primary:
             repo_root = primary
         launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        _agent = agent_select.resolve_agent_id(
-            cfg, launch_user, args.agent, report=args.host_report
+        final_worktree_path = compute_worktree_path(
+            repo_root=repo_root, branch=branch, worktree_root=cfg.worktree_root
         )
-        args.agent = _agent
+        if final_worktree_path != worktree_path:
+            resolved = launch_profile_app.resolve_launch_profile(
+                cfg,
+                caller_user,
+                args.profile,
+                final_worktree_path,
+                args.permission_mode,
+                target_may_not_exist=True,
+                report=args.host_report,
+            )
+            next_launch_user = resolved.launch_user
+            if next_launch_user != launch_user:
+                launch_user = next_launch_user
+                repo_root = git.git_repo_root_nonint_as_user(cwd, launch_user)
+                if not repo_root:
+                    fail(f"run -w must be run inside a git repository readable by {launch_user}")
+                primary = git.git_common_dir_root_as_user(cwd, launch_user)
+                if primary:
+                    repo_root = primary
+                launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
+                if (
+                    compute_worktree_path(
+                        repo_root=repo_root,
+                        branch=branch,
+                        worktree_root=cfg.worktree_root,
+                    )
+                    != final_worktree_path
+                ):
+                    fail("worktree target changed after resolving launch user")
+            else:
+                launch_user = next_launch_user
         # plan_worktree_launch gates the worktree path, runs git worktree
         # add, copies includes, emits worktree.create + session.new, and
         # returns the launch request. In dry-run it prints the git plan and
-        # does no side effects (Task 11).
+        # does no side effects.
         req = launch_app.plan_worktree_launch(
             cfg,
-            launch_user,
+            caller_user,
+            resolved,
             repo_root,
             branch,
-            _agent,
-            args.permission_mode,
+            requested_profile=args.profile,
             agent_args=args.agent_args,
             dry_run=args.dry_run,
         )
@@ -62,23 +110,33 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         # terminal. Bypasses ``Popen``/the loop guard by construction.
         os.execvp(req.cmd[0], list(req.cmd))
         return 0
+
+    resolved = launch_profile_app.resolve_launch_profile(
+        cfg,
+        caller_user,
+        args.profile,
+        cwd,
+        args.permission_mode,
+        report=args.host_report,
+    )
+    launch_user = resolved.launch_user
+    launch_app.ensure_launch_target_allowed(cfg, launch_user, cwd)
     target_dir = cwd
     session_stem = session_stem_for_path(target_dir)
     compatibility_root = target_dir
-    _agent = agent_select.resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
-    # Pin the resolved id back to ``args.agent`` so the downstream
-    # ``tmux._build_tmux_launch_request`` does not re-derive it from
-    # ``cfg.default_agent`` (which can disagree with auto-mode pick).
-    args.agent = _agent
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
     session = allocate_session_name(
-        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+        session_stem,
+        resolved.profile.id,
+        compatibility_root,
+        sessions,
+        prefix=cfg.session_prefix,
     )
     from uxon.infra import audit as _audit
 
     _audit.audit(
         "session.new",
-        agent=_agent,
+        agent=resolved.agent.id,
         project=target_dir,
         branch=branch or "",
         session=session,
@@ -89,13 +147,19 @@ def do_run(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         launch_app.ensure_container_ready(cfg, target_dir, launch_user)
     try:
         return tmux.launch_in_tmux(
-            target_dir, session, args, cfg, branch, launch_user, server_running=bool(sessions)
+            target_dir,
+            session,
+            args,
+            cfg,
+            branch,
+            resolved_profile=resolved,
+            server_running=bool(sessions),
         )
     except Exception as exc:
         _audit.audit(
             "session.new",
             outcome="error",
-            agent=_agent,
+            agent=resolved.agent.id,
             project=target_dir,
             branch=branch or "",
             session=session,

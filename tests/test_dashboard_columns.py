@@ -227,15 +227,15 @@ class NameFormatterTests(unittest.TestCase):
         self.assertEqual(text.plain, "● foo")
 
     def test_strips_agent_suffix(self) -> None:
-        # Sessions are named ``<prefix><stem>@<agent>``; ``row.short``
-        # is the prefix-stripped form ``<stem>@<agent>``. The AGENT
-        # column carries the agent already, so NAME drops it.
+        # Sessions are named ``<prefix><stem>@<profile>``; ``row.short``
+        # is the prefix-stripped form. The AGENT column carries the suffix
+        # already, so NAME drops it.
         col = _by_id("name")
         text = col.format(_row(short="billing-api@claude", agent="claude"))
         self.assertEqual(text.plain, "○ billing-api")
 
     def test_preserves_disambiguator_index(self) -> None:
-        # ``-N`` comes after ``@<agent>`` in the session name. Two
+        # ``-N`` comes after the suffix in the session name. Two
         # siblings at the same stem rely on this number to stay
         # visually distinct after the agent is stripped.
         col = _by_id("name")
@@ -243,7 +243,7 @@ class NameFormatterTests(unittest.TestCase):
         self.assertEqual(text.plain, "○ proj-2")
 
     def test_agent_substring_in_stem_is_safe(self) -> None:
-        # If a stem coincidentally contains ``@<agent>`` (unlikely but
+        # If a stem coincidentally contains a matching suffix token (unlikely but
         # not impossible when stems are derived from filesystem
         # paths), only the trailing suffix is stripped — not the
         # earlier substring match.

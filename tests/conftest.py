@@ -58,7 +58,7 @@ def _isolate_repo_config(tmp_path):
 def _stub_probe_host_by_default(request: pytest.FixtureRequest):
     """Default ``probes.probe_host`` to a fully-installed CATALOG.
 
-    ``resolve_agent_id`` install-gates the resolved agent against
+    Launch-profile resolution install-gates the resolved agent against
     ``probe_host``; without this stub every unit test that drives a
     launch path would have to mock the probe itself. Tests in
     ``tests/test_uxon_probes.py`` exercise the probe internals

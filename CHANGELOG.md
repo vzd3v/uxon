@@ -10,6 +10,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed (breaking)
 - Runtime selection moved from `agents.enabled` / `agents.default` and the old global `[container]` block to operator-owned launch profiles. Configure runnable choices under `[launch]` / `[launch.profiles.<id>]`, container runtimes under `[container.profiles.<id>]`, and profile-scoped git defaults under each launch profile. Project `.uxon.toml` files are no longer read.
+- `uxon run` and `uxon new` now select runnable lanes with `--profile <id>`; `--agent <id>` fails with a migration hint. New sessions use the launch-profile suffix (`<prefix><stem>@<profile>[-N]`).
 
 ### Added
 - Container sessions now stash launch-time telemetry markers on the tmux session so monitoring and teardown can find the in-container agent. A new optional container-profile `resolve_cmd` (an operator-supplied argv that prints the container's id, init PID, and start time) lets uxon record the container's identity and host-side cgroup at launch; leave it unset to opt out. The markers are absent when the selected launch profile has no container profile.

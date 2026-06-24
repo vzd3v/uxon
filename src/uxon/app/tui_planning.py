@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """TUI launch/new planning use-cases.
 
-These compose ``app.launch`` / ``app.new`` / ``app.agent_select`` and the
+These compose ``app.launch`` / ``app.new`` / ``app.launch_profile`` and the
 ``infra.*`` adapters into LaunchRequests for the TUI's launch flows. They
 import **zero** ``uxon.tui`` symbols — they were previously mis-placed in
 ``tui/bridge.py`` and belong in the use-case (``app/``) layer. The TUI
@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import os
 
-import uxon.app.agent_select as agent_select
 import uxon.app.launch as launch_app
+import uxon.app.launch_profile as launch_profile_app
 import uxon.app.new as new_app
 from uxon.domain.args import ParsedArgs
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.session import (
     allocate_session_name,
@@ -30,6 +29,7 @@ from uxon.infra import identity, process, sessions_probe, tmux
 
 def _plan_tui_run_agent(
     cfg: Config,
+    caller_user: str,
     launch_user: str,
     cwd: str,
     agent_id: str,
@@ -51,6 +51,10 @@ def _plan_tui_run_agent(
     path in that case; for a plain (primary / non-git) target ``worktree``
     is ``None`` and the basename stem is used unchanged.
     """
+    resolved = launch_profile_app.resolve_launch_profile(
+        cfg, caller_user, agent_id, cwd, mode_id, target_may_not_exist=False
+    )
+    launch_user = resolved.launch_user
     launch_app.ensure_launch_target_allowed(cfg, launch_user, cwd)
     target_dir = cwd
     if worktree is not None:
@@ -60,24 +64,34 @@ def _plan_tui_run_agent(
         session_stem = session_stem_for_path(target_dir)
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
     session = allocate_session_name(
-        session_stem, agent_id, target_dir, sessions, prefix=cfg.session_prefix
+        session_stem, resolved.profile.id, target_dir, sessions, prefix=cfg.session_prefix
     )
-    args = ParsedArgs(action="run", agent=agent_id, permission_mode=mode_id)
+    args = ParsedArgs(action="run", profile=resolved.profile.id, permission_mode=mode_id)
     return tmux._build_tmux_launch_request(
-        target_dir, session, args, cfg, None, launch_user, server_running=bool(sessions)
+        target_dir,
+        session,
+        args,
+        cfg,
+        None,
+        resolved_profile=resolved,
+        server_running=bool(sessions),
     )
+
+
+def _canonical_tui_project_dir(cfg: Config, name: str) -> str:
+    if "/" in name or name in (".", ".."):
+        fail(f"invalid name: {name}")
+    return launch_profile_app.canonical_intended_target(os.path.join(cfg.new_project_root, name))
 
 
 def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
-    """Shared validation + directory creation for both TUI project flows.
+    """Shared validation + directory creation for TUI project flows.
 
     Returns the canonical absolute path; raises via ``fail()`` if ``name``
     is malformed, the parent is not writable, or the path violates a
     non-empty ``allowed_roots`` whitelist.
     """
-    if "/" in name or name in (".", ".."):
-        fail(f"invalid name: {name}")
-    project_dir = canonical(os.path.join(cfg.new_project_root, name))
+    project_dir = _canonical_tui_project_dir(cfg, name)
     new_app.ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     process.run_cmd(identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", project_dir])
     return project_dir
@@ -85,10 +99,12 @@ def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
 
 def _plan_tui_existing_session_or_launch(
     cfg: Config,
+    caller_user: str,
     launch_user: str,
     project_dir: str,
     name: str,
     args: ParsedArgs,
+    resolved=None,
 ):
     """Allocate + launch a fresh session under ``project_dir``.
 
@@ -105,15 +121,22 @@ def _plan_tui_existing_session_or_launch(
     """
     session_stem = session_stem_for_path(project_dir)
     compatibility_root = project_dir
-    _agent = agent_select.resolve_agent_id(
-        cfg, launch_user, args.agent or None, report=args.host_report
-    )
-    args.agent = _agent
+    if resolved is None:
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            caller_user,
+            args.profile,
+            project_dir,
+            args.permission_mode,
+            git_remote_selector=args.git_remote,
+            report=args.host_report,
+        )
+    launch_user = resolved.launch_user
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
     # Path-safety side effect — raises via fail() on a path mismatch.
     compatible_indexed_sessions(
         session_stem,
-        _agent,
+        resolved.profile.id,
         compatibility_root,
         sessions,
         prefix=cfg.session_prefix,
@@ -123,15 +146,26 @@ def _plan_tui_existing_session_or_launch(
         cfg, launch_user, session_stem, compatibility_root
     )
     session = allocate_session_name(
-        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+        session_stem,
+        resolved.profile.id,
+        compatibility_root,
+        sessions,
+        prefix=cfg.session_prefix,
     )
     return tmux._build_tmux_launch_request(
-        project_dir, session, args, cfg, None, launch_user, server_running=bool(sessions)
+        project_dir,
+        session,
+        args,
+        cfg,
+        None,
+        resolved_profile=resolved,
+        server_running=bool(sessions),
     )
 
 
 def _plan_tui_create_new_agent(
     cfg: Config,
+    caller_user: str,
     launch_user: str,
     name: str,
     agent_id: str,
@@ -148,22 +182,50 @@ def _plan_tui_create_new_agent(
     :func:`_do_create_git_remote`. The "Open existing project" flow must
     never call this — see :func:`_plan_tui_open_existing_agent`.
     """
-    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
+    project_dir = _canonical_tui_project_dir(cfg, name)
     args = ParsedArgs(
         action="new",
         target_id=name,
-        agent=agent_id,
+        profile=agent_id,
         permission_mode=mode_id,
         git_remote=git_profile or None,
         repeat_mode="attach",
     )
+    resolved = launch_profile_app.resolve_launch_profile(
+        cfg,
+        caller_user,
+        args.profile,
+        project_dir,
+        mode_id,
+        git_remote_selector=args.git_remote,
+        target_may_not_exist=True,
+    )
+    launch_user = resolved.launch_user
+    new_app.ensure_new_project_target_allowed(cfg, launch_user, project_dir)
+    process.run_cmd(identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", project_dir])
+    resolved = launch_profile_app.revalidate_launch_profile(
+        cfg,
+        caller_user,
+        resolved,
+        project_dir,
+        requested_profile=args.profile,
+        mode_id=mode_id,
+        git_remote_selector=args.git_remote,
+    )
+    launch_user = resolved.launch_user
     if args.git_remote:
-        new_app._do_create_git_remote(args, cfg, launch_user, project_dir, name, None)
-    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
+        new_app._do_create_git_remote(
+            args, cfg, launch_user, project_dir, name, None, resolved.git_remote
+        )
+    launch_app.ensure_container_ready(cfg, project_dir, launch_user)
+    return _plan_tui_existing_session_or_launch(
+        cfg, caller_user, launch_user, project_dir, name, args, resolved=resolved
+    )
 
 
 def _plan_tui_open_existing_agent(
     cfg: Config,
+    caller_user: str,
     launch_user: str,
     name: str,
     agent_id: str,
@@ -176,13 +238,29 @@ def _plan_tui_open_existing_agent(
     project must not have any git side effect, regardless of
     ``git_create_enabled`` or profile configuration.
     """
-    project_dir = _resolve_tui_project_dir(cfg, launch_user, name)
+    if "/" in name or name in (".", ".."):
+        fail(f"invalid name: {name}")
+    project_dir = launch_profile_app.canonical_existing_target(
+        os.path.join(cfg.new_project_root, name)
+    )
     args = ParsedArgs(
         action="new",
         target_id=name,
-        agent=agent_id,
+        profile=agent_id,
         permission_mode=mode_id,
         git_remote=None,
         repeat_mode="attach",
     )
-    return _plan_tui_existing_session_or_launch(cfg, launch_user, project_dir, name, args)
+    resolved = launch_profile_app.resolve_launch_profile(
+        cfg,
+        caller_user,
+        args.profile,
+        project_dir,
+        args.permission_mode,
+        target_may_not_exist=False,
+    )
+    launch_user = resolved.launch_user
+    launch_app.ensure_launch_target_allowed(cfg, launch_user, project_dir)
+    return _plan_tui_existing_session_or_launch(
+        cfg, caller_user, launch_user, project_dir, name, args, resolved=resolved
+    )

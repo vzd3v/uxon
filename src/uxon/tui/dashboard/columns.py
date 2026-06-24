@@ -157,14 +157,14 @@ def _format_user(row: SessionRow) -> Text:
 
 
 def _strip_agent_suffix(short: str, agent: str) -> str:
-    """Drop the ``@<agent>`` token from a prefix-stripped session name.
+    """Drop the profile/agent suffix token from a prefix-stripped session name.
 
-    Session names follow ``<prefix><stem>@<agent>[-N]`` (see
-    :func:`uxon.cli.parse_session_name`). ``row.short`` is the
-    name with the prefix removed — i.e. ``<stem>@<agent>[-N]``.
-    The dashboard renders the agent in its own AGENT column, so
-    showing ``@<agent>`` in NAME is redundant. We strip the last
-    occurrence of ``@<agent>`` and preserve the trailing ``-N``
+    Session names follow ``<prefix><stem>@<profile>[-N]``. Until launch
+    records split profile from agent in list data, ``row.agent`` carries the
+    parsed suffix for this renderer. ``row.short`` is the name with the prefix
+    removed — i.e. ``<stem>@<profile>[-N]``. The dashboard renders the suffix
+    in its own AGENT column, so showing it in NAME is redundant. We strip the
+    last occurrence and preserve the trailing ``-N``
     disambiguator (so ``proj@claude-2`` becomes ``proj-2``, not
     ``proj`` — otherwise two siblings would collide visually).
 
@@ -184,8 +184,8 @@ def _strip_agent_suffix(short: str, agent: str) -> str:
 def _format_name(row: SessionRow) -> Text:
     """Emit ``●``/``○`` attach glyph + display name.
 
-    Display name strips the ``@<agent>`` suffix from ``row.short``
-    (the AGENT column carries that already) but keeps the ``-N``
+    Display name strips the suffix from ``row.short`` (the AGENT column carries
+    that already) but keeps the ``-N``
     disambiguator so siblings remain distinguishable. Block hue and
     zebra dim are layered by the widget at render time; this
     formatter stays pure data (no positional metadata) so the widget
@@ -260,8 +260,8 @@ def _sort_user(row: SessionRow) -> str:
 
 def _sort_name(row: SessionRow) -> str:
     # Sort by the same display label the operator sees in NAME, not
-    # by ``<stem>@<agent>``. Otherwise two same-stem siblings on
-    # different agents interleave with unrelated rows whose stem
+    # by ``<stem>@<profile>``. Otherwise two same-stem siblings on
+    # different profiles interleave with unrelated rows whose stem
     # happens to alphabetise between them.
     return _strip_agent_suffix(row.short or row.name, row.agent)
 

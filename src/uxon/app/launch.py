@@ -19,9 +19,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import uxon.app.launch_profile as launch_profile_app
 from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import is_under_allowed_roots
 from uxon.domain.config import Config
+from uxon.domain.launch_profiles import ResolvedLaunchProfile
 from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import allocate_session_name, session_stem_for_worktree
 from uxon.errors import eprint, fail
@@ -231,19 +233,20 @@ def decide_container_gate(cfg: Config, target_dir: str, launch_user: str) -> Con
 
 def plan_worktree_launch(
     cfg: Config,
-    launch_user: str,
+    caller_user: str,
+    resolved_profile: ResolvedLaunchProfile,
     repo_root: str,
     branch_name: str,
-    agent_id: str,
-    mode_id: str | None,
     *,
+    requested_profile: str | None = None,
+    git_remote_selector: str | None = None,
     agent_args: list[str] | None = None,
     dry_run: bool = False,
 ) -> LaunchRequest:
     """Create a uxon-managed worktree and return a launch request for it.
 
     Single create-and-launch planner for both the CLI ``-w`` flag (on a
-    "new" decision — the CLI keeps its own attach-vs-new guard, Task 12)
+    "new" decision — the CLI keeps its own attach-vs-new guard)
     and the TUI new-worktree path (§4.1). Gates the computed path via the
     not-yet-exists predicate (§2.3); when ``worktree_base == "remote"``
     fetches origin first, else stays local and network-free (§4.5). Adds
@@ -266,6 +269,7 @@ def plan_worktree_launch(
     worktree_path = compute_worktree_path(
         repo_root=repo_root, branch=branch_name, worktree_root=cfg.worktree_root
     )
+    launch_user = resolved_profile.launch_user
     # Gate the computed path BEFORE any git work or mkdir (§2.3, B1). An
     # out-of-roots worktree_root is the common failure — name the override
     # key in the error so the operator knows how to fix it. Runs in dry-run
@@ -334,21 +338,32 @@ def plan_worktree_launch(
 
     parent = os.path.dirname(worktree_path)
     session_stem = session_stem_for_worktree(repo_root, branch_name)
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    session = allocate_session_name(
-        session_stem, agent_id, worktree_path, sessions, prefix=cfg.session_prefix
-    )
     run_args = ParsedArgs(
         action="run",
-        agent=agent_id,
-        permission_mode=mode_id,
+        profile=resolved_profile.profile.id,
+        permission_mode=resolved_profile.mode_id,
         agent_args=list(agent_args or []),
-    )
-    req = tmux._build_tmux_launch_request(
-        worktree_path, session, run_args, cfg, None, launch_user, server_running=bool(sessions)
     )
 
     if dry_run:
+        sessions = sessions_probe.collect_sessions([launch_user], cfg)
+        session = allocate_session_name(
+            session_stem,
+            resolved_profile.profile.id,
+            worktree_path,
+            sessions,
+            prefix=cfg.session_prefix,
+        )
+        req = tmux._build_tmux_launch_request(
+            worktree_path,
+            session,
+            run_args,
+            cfg,
+            None,
+            resolved_profile=resolved_profile,
+            server_running=bool(sessions),
+            include_container_identity=False,
+        )
         # No side effects: print the git plan, skip add/copy/exclude/audit.
         print(f"worktree_path={shlex.quote(worktree_path)}")
         if base == "remote":
@@ -382,21 +397,47 @@ def plan_worktree_launch(
             f"(pick another branch name). git said: {stderr or 'no detail'}"
         )
 
+    resolved_profile = launch_profile_app.revalidate_launch_profile(
+        cfg,
+        caller_user,
+        resolved_profile,
+        worktree_path,
+        requested_profile=requested_profile,
+        mode_id=resolved_profile.mode_id,
+        git_remote_selector=git_remote_selector,
+    )
+    launch_user = resolved_profile.launch_user
+
     git.copy_worktreeinclude_matches(repo_root, worktree_path, launch_user)
 
     # Container readiness for the worktree tree. The worktree dir only exists
     # after the add above, so its name/{dir} can't be resolved earlier — the
     # TUI's pre-launch prompt affordance (which needs the path up front) does
     # not cover this path, so it uses the headless auto-if-permitted policy
-    # (documented in reference/configuration.md). The CLI is non-interactive,
-    # so auto-if-permitted is correct there; the TUI worktree-prompt parity is
-    # a tracked gap (backlog/2026-06-15-tui-worktree-container-prompt.md).
-    # Follow-up: TUI worktree-launch container prompt parity.
+    # documented for non-interactive worktree creation.
     ensure_container_ready(cfg, worktree_path, launch_user)
+
+    sessions = sessions_probe.collect_sessions([launch_user], cfg)
+    session = allocate_session_name(
+        session_stem,
+        resolved_profile.profile.id,
+        worktree_path,
+        sessions,
+        prefix=cfg.session_prefix,
+    )
+    req = tmux._build_tmux_launch_request(
+        worktree_path,
+        session,
+        run_args,
+        cfg,
+        None,
+        resolved_profile=resolved_profile,
+        server_running=bool(sessions),
+    )
 
     _audit.audit(
         "worktree.create",
-        agent=agent_id,
+        agent=resolved_profile.agent.id,
         project=repo_root,
         branch=branch_name,
         path=worktree_path,
@@ -407,7 +448,7 @@ def plan_worktree_launch(
     # worktree.create is the ADDITIONAL lifecycle event, not a replacement.
     _audit.audit(
         "session.new",
-        agent=agent_id,
+        agent=resolved_profile.agent.id,
         project=worktree_path,
         branch=branch_name,
         session=session,

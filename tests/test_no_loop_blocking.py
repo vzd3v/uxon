@@ -262,6 +262,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
                 target_dir="/srv/work/proj",
                 target_label="proj",
                 agent_id="claude",
+                mode_id="normal",
                 on_new=lambda: new_called.append(True),
                 probe=probe,
             )
@@ -299,7 +300,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
         # the options screen mount (an empty agent list won't render).
         ctx = _mk_ctx(
             on_launch_cwd=on_launch_cwd,
-            on_probe_existing_sessions=lambda d, a: (),
+            on_probe_existing_sessions=lambda *a: (),
             enabled_agents=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
         )
@@ -355,7 +356,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
 
         ctx = _mk_ctx(
             on_launch_cwd=on_launch_cwd,
-            on_probe_existing_sessions=lambda d, a: (),
+            on_probe_existing_sessions=lambda *a: (),
             enabled_agents=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
         )

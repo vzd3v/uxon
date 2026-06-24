@@ -67,6 +67,7 @@ def _list_existing_projects(root: str) -> list[tuple[str, str]]:
 
 def build_tui_context(
     cfg: Config,
+    caller_user: str,
     launch_user: str,
     cwd: str,
     *,
@@ -96,7 +97,7 @@ def build_tui_context(
         TuiContext,
     )
 
-    bridge = TuiBridge(cfg, launch_user, cwd)
+    bridge = TuiBridge(cfg, caller_user, launch_user, cwd)
 
     if skeleton:
         # Skeleton ctx skips the per-target probe — it's the fast first

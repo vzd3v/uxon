@@ -13,13 +13,14 @@ from __future__ import annotations
 import os
 import shlex
 
-import uxon.app.agent_select as agent_select
 import uxon.app.attach as attach_app
 import uxon.app.launch as launch_app
+import uxon.app.launch_profile as launch_profile_app
 import uxon.app.repeat as repeat_app
 from uxon.domain.args import ParsedArgs
-from uxon.domain.authz import canonical, is_under_allowed_roots
+from uxon.domain.authz import is_under_allowed_roots
 from uxon.domain.config import Config
+from uxon.domain.launch_profiles import GitRemotePolicy
 from uxon.domain.session import (
     allocate_session_name,
     choose_attach_session,
@@ -63,21 +64,48 @@ def ensure_new_project_target_allowed(cfg: Config, launch_user: str, project_dir
         fail(f"got: {project_dir}")
 
 
-def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
+def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     name = args.target_id
     if not name:
         fail("new requires a name")
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
-    project_dir = canonical(os.path.join(cfg.new_project_root, name))
-    ensure_new_project_target_allowed(cfg, launch_user, project_dir)
+    project_dir = launch_profile_app.canonical_intended_target(
+        os.path.join(cfg.new_project_root, name)
+    )
     branch = args.worktree_branch
     if branch:
+        if args.git_remote:
+            fail("new -w does not support --git-remote")
         if not os.path.isdir(project_dir):
             fail(
                 "new -w requires an existing project directory: "
                 f"{project_dir} (create it first with 'uxon -n {name}')"
             )
+        seed_user = launch_profile_app.preflight_launch_user(cfg, caller_user, args.profile)
+        seed_repo_root = git.git_repo_root_as_user(project_dir, seed_user)
+        if not seed_repo_root:
+            fail(
+                "new -w requires a git repository (checked as launch user "
+                f"{seed_user}) in {project_dir}"
+            )
+        seed_primary = git.git_common_dir_root_as_user(project_dir, seed_user)
+        if seed_primary:
+            seed_repo_root = seed_primary
+        compatibility_root = compute_worktree_path(
+            repo_root=seed_repo_root, branch=branch, worktree_root=cfg.worktree_root
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            caller_user,
+            args.profile,
+            compatibility_root,
+            args.permission_mode,
+            target_may_not_exist=True,
+            report=args.host_report,
+        )
+        launch_user = resolved.launch_user
+        ensure_new_project_target_allowed(cfg, launch_user, project_dir)
         repo_root = git.git_repo_root_as_user(project_dir, launch_user)
         if not repo_root:
             fail(
@@ -89,22 +117,55 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         if primary:
             repo_root = primary
         launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        _agent = agent_select.resolve_agent_id(
-            cfg, launch_user, args.agent, report=args.host_report
-        )
-        args.agent = _agent
         # uxon-managed worktree sessions live AT the worktree path (§2.5),
         # so both the stem and the compatibility root are derived from the
         # worktree, not the repo root.
         session_stem = session_stem_for_worktree(repo_root, branch)
-        compatibility_root = compute_worktree_path(
+        final_compatibility_root = compute_worktree_path(
             repo_root=repo_root, branch=branch, worktree_root=cfg.worktree_root
         )
+        if final_compatibility_root != compatibility_root:
+            resolved = launch_profile_app.resolve_launch_profile(
+                cfg,
+                caller_user,
+                args.profile,
+                final_compatibility_root,
+                args.permission_mode,
+                target_may_not_exist=True,
+                report=args.host_report,
+            )
+            next_launch_user = resolved.launch_user
+            if next_launch_user != launch_user:
+                launch_user = next_launch_user
+                ensure_new_project_target_allowed(cfg, launch_user, project_dir)
+                repo_root = git.git_repo_root_as_user(project_dir, launch_user)
+                if not repo_root:
+                    fail(
+                        "new -w requires a git repository (checked as launch user "
+                        f"{launch_user}) in {project_dir}"
+                    )
+                primary = git.git_common_dir_root_as_user(project_dir, launch_user)
+                if primary:
+                    repo_root = primary
+                launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
+                session_stem = session_stem_for_worktree(repo_root, branch)
+                if (
+                    compute_worktree_path(
+                        repo_root=repo_root,
+                        branch=branch,
+                        worktree_root=cfg.worktree_root,
+                    )
+                    != final_compatibility_root
+                ):
+                    fail("worktree target changed after resolving launch user")
+            else:
+                launch_user = next_launch_user
+            compatibility_root = final_compatibility_root
         target_desc = f"{repo_root} (worktree {branch})"
         sessions = sessions_probe.collect_sessions([launch_user], cfg)
         existing = compatible_indexed_sessions(
             session_stem,
-            _agent,
+            resolved.profile.id,
             compatibility_root,
             sessions,
             prefix=cfg.session_prefix,
@@ -114,7 +175,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             attach_target = choose_attach_session(
                 existing,
                 session_stem,
-                _agent,
+                resolved.profile.id,
                 prefix=cfg.session_prefix,
                 legacy_prefixes=cfg.legacy_session_prefixes,
             )
@@ -132,14 +193,14 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
         # No existing session, or decision == "new": create + launch via the
         # single worktree planner (gates the path, runs git worktree add,
-        # copies includes, emits worktree.create + session.new, Task 11).
+        # copies includes, emits worktree.create + session.new).
         req = launch_app.plan_worktree_launch(
             cfg,
-            launch_user,
+            caller_user,
+            resolved,
             repo_root,
             branch,
-            _agent,
-            args.permission_mode,
+            requested_profile=args.profile,
             agent_args=args.agent_args,
             dry_run=args.dry_run,
         )
@@ -155,26 +216,51 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         os.execvp(req.cmd[0], list(req.cmd))
         return 0
 
+    resolved = launch_profile_app.resolve_launch_profile(
+        cfg,
+        caller_user,
+        args.profile,
+        project_dir,
+        args.permission_mode,
+        git_remote_selector=args.git_remote,
+        target_may_not_exist=True,
+        report=args.host_report,
+    )
+    launch_user = resolved.launch_user
+    if args.git_remote and not cfg.git_create_enabled:
+        fail(
+            "git_create_enabled=false in config; either flip it on in "
+            "config/config.toml or drop --git-remote"
+        )
+    ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     target_dir = project_dir
     if args.dry_run:
         mkdir_cmd = identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir]
         print(f"mkdir= {shlex.join(mkdir_cmd)}")
     else:
         process.run_cmd(identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
+        resolved = launch_profile_app.revalidate_launch_profile(
+            cfg,
+            caller_user,
+            resolved,
+            target_dir,
+            requested_profile=args.profile,
+            mode_id=args.permission_mode,
+            git_remote_selector=args.git_remote,
+        )
+        launch_user = resolved.launch_user
     session_stem = session_stem_for_path(target_dir)
     compatibility_root = target_dir
     target_desc = target_dir
     if args.git_remote:
-        _do_create_git_remote(args, cfg, launch_user, project_dir, name, branch)
+        _do_create_git_remote(
+            args, cfg, launch_user, project_dir, name, branch, resolved.git_remote
+        )
 
-    _agent = agent_select.resolve_agent_id(cfg, launch_user, args.agent, report=args.host_report)
-    # See ``do_run``: pin resolved id back to args so the downstream
-    # assembler does not re-derive it from cfg.default_agent.
-    args.agent = _agent
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
     existing = compatible_indexed_sessions(
         session_stem,
-        _agent,
+        resolved.profile.id,
         compatibility_root,
         sessions,
         prefix=cfg.session_prefix,
@@ -184,7 +270,7 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         attach_target = choose_attach_session(
             existing,
             session_stem,
-            _agent,
+            resolved.profile.id,
             prefix=cfg.session_prefix,
             legacy_prefixes=cfg.legacy_session_prefixes,
         )
@@ -218,13 +304,17 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             cfg, launch_user, session_stem, compatibility_root
         )
     session = allocate_session_name(
-        session_stem, _agent, compatibility_root, sessions, prefix=cfg.session_prefix
+        session_stem,
+        resolved.profile.id,
+        compatibility_root,
+        sessions,
+        prefix=cfg.session_prefix,
     )
     from uxon.infra import audit as _audit
 
     _audit.audit(
         "session.new",
-        agent=_agent,
+        agent=resolved.agent.id,
         project=target_dir,
         branch=branch or "",
         session=session,
@@ -235,13 +325,19 @@ def do_new(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         launch_app.ensure_container_ready(cfg, target_dir, launch_user)
     try:
         return tmux.launch_in_tmux(
-            target_dir, session, args, cfg, branch, launch_user, server_running=bool(sessions)
+            target_dir,
+            session,
+            args,
+            cfg,
+            branch,
+            resolved_profile=resolved,
+            server_running=bool(sessions),
         )
     except Exception as exc:
         _audit.audit(
             "session.new",
             outcome="error",
-            agent=_agent,
+            agent=resolved.agent.id,
             project=target_dir,
             branch=branch or "",
             session=session,
@@ -258,6 +354,7 @@ def _do_create_git_remote(
     project_dir: str,
     repo_name: str,
     branch: str | None,
+    git_remote_policy: GitRemotePolicy,
 ) -> None:
     """Resolve the selected profile and drive the creation orchestrator.
 
@@ -288,10 +385,16 @@ def _do_create_git_remote(
         profile = uxon_git_profiles.resolve_profile_selector(
             cfg.git_remote_profiles,
             git_remote_selector,
-            cfg.default_git_remote_profile,
+            git_remote_policy.default_profile,
         )
     except uxon_git_profiles.ProfileError as exc:
         fail(str(exc))
+    if profile.name not in git_remote_policy.allowed_profiles:
+        valid = ", ".join(git_remote_policy.allowed_profiles) or "(none)"
+        fail(
+            f"git remote profile {profile.name!r} is not allowed for this launch profile; "
+            f"valid profiles: {valid}"
+        )
 
     if args.git_visibility:
         profile = uxon_git_profiles.GitRemoteProfile(

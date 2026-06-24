@@ -368,8 +368,8 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         ctx = _mk_ctx(
-            on_container_gate=lambda target_dir: gate,
-            on_probe_existing_sessions=lambda d, a: (),
+            on_container_gate=lambda *a: gate,
+            on_probe_existing_sessions=lambda *a: (),
             enabled_agents=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
         )
@@ -950,29 +950,26 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
         base.update(overrides)
         return _mk_ctx(**base)
 
-    async def test_probe_threads_workspaces_into_launch_screen(self) -> None:
+    async def test_launch_cwd_skips_pre_profile_workspace_probe(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
-        app = UxonApp(self._ctx(), probe_agents=False)
+        called: list[str] = []
+        app = UxonApp(
+            self._ctx(on_probe_worktrees=lambda cwd: called.append(cwd) or []),
+            probe_agents=False,
+        )
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             await pilot.press("enter")  # activate action-cwd (default focus)
             await pilot.pause()
-            await pilot.pause()  # let the probe worker land + push the screen
+            await pilot.pause()
             top = app.screen_stack[-1]
             self.assertIsInstance(top, LaunchOptionsScreen)
-            self.assertTrue(top._workspaces)
-            self.assertTrue(top._workspaces[0].is_primary)
-            self.assertEqual(top._repo_root, "/srv/work")
+            self.assertEqual(top._workspaces, [])
+            self.assertEqual(called, [])
 
-    async def test_probe_failure_threads_error_into_screen(self) -> None:
-        """A raising ``on_probe_worktrees`` (real git failure) is captured by
-        the worker and threaded to the screen as ``probe_error`` with empty
-        ``workspaces`` — the WORKSPACE column shows the error row end-to-end,
-        not a silently hidden column."""
-        from textual.widgets import ListView
-
+    async def test_pre_profile_workspace_probe_failure_is_not_run(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
@@ -986,24 +983,16 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("enter")  # activate action-cwd
             await pilot.pause()
-            await pilot.pause()  # let the probe worker land + push the screen
+            await pilot.pause()
             top = app.screen_stack[-1]
             self.assertIsInstance(top, LaunchOptionsScreen)
             self.assertEqual(top._workspaces, [])
-            self.assertIn("corrupt HEAD", top._probe_error or "")
-            labels = [
-                str(i.query_one("Static").content) for i in top.query("#workspace-list ListItem")
-            ]
-            self.assertEqual(len(labels), 1)
-            self.assertTrue(labels[0].startswith("git error:"), labels)
+            self.assertEqual(top._probe_error, None)
             self.assertNotIn("workspace", top._panel_order)
-            self.assertEqual(top.query_one("#workspace-list", ListView).index, None)
 
-    async def test_new_worktree_row_opens_branch_input(self) -> None:
-        from textual.widgets import ListView
-
+    async def test_new_worktree_row_hidden_before_profile_aware_probe(self) -> None:
         from uxon.tui.app import UxonApp
-        from uxon.tui.screens.worktree_branch import WorktreeBranchScreen
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         app = UxonApp(self._ctx(), probe_agents=False)
         async with app.run_test(size=(120, 40)) as pilot:
@@ -1012,27 +1001,16 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             screen = app.screen_stack[-1]
-            # Move to WORKSPACE column, select the "+ New worktree…" row.
-            await pilot.press("right")
-            await pilot.pause()
-            wl = screen.query_one("#workspace-list", ListView)
-            wl.index = len(screen._workspaces)  # the trailing "+ New worktree…"
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            self.assertIsInstance(app.screen_stack[-1], WorktreeBranchScreen)
+            self.assertIsInstance(screen, LaunchOptionsScreen)
+            self.assertNotIn("workspace", screen._panel_order)
 
-    async def test_worktree_session_guard_appears(self) -> None:
-        from textual.widgets import ListView
-
+    async def test_worktree_session_probe_not_run_before_workspace_choice(self) -> None:
         from uxon.tui.app import UxonApp
-        from uxon.tui.screens.session_choice import SessionChoiceScreen
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
-        # A compatible session exists in the worktree → guard must appear.
+        called: list[tuple] = []
         ctx = self._ctx(
-            on_probe_existing_worktree_sessions=lambda *a: (
-                ("uxon-work-feature-auth@claude", True),
-            )
+            on_probe_existing_worktree_sessions=lambda *a: called.append(a) or (),
         )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 40)) as pilot:
@@ -1041,14 +1019,8 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             screen = app.screen_stack[-1]
-            await pilot.press("right")  # to WORKSPACE
-            await pilot.pause()
-            wl = screen.query_one("#workspace-list", ListView)
-            wl.index = 1  # the feature/auth worktree row
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            self.assertIsInstance(app.screen_stack[-1], SessionChoiceScreen)
+            self.assertIsInstance(screen, LaunchOptionsScreen)
+            self.assertEqual(called, [])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -1084,12 +1056,16 @@ class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
         base.update(overrides)
         return _mk_ctx(**base)
 
-    async def test_existing_project_threads_workspaces(self) -> None:
+    async def test_existing_project_skips_pre_profile_workspace_probe(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
         from uxon.tui.screens.main import MainScreen
 
-        app = UxonApp(self._ctx(), probe_agents=False)
+        called: list[str] = []
+        app = UxonApp(
+            self._ctx(on_probe_worktrees=lambda cwd: called.append(cwd) or []),
+            probe_agents=False,
+        )
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             # Drive the launch-existing intent directly (avoids fragile
@@ -1102,17 +1078,12 @@ class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()  # let the probe worker land + push the screen
             top = app.screen_stack[-1]
             self.assertIsInstance(top, LaunchOptionsScreen)
-            self.assertTrue(top._workspaces)
-            self.assertTrue(top._workspaces[0].is_primary)
-            self.assertEqual(top._repo_root, "/srv/work/proj")
+            self.assertEqual(top._workspaces, [])
+            self.assertEqual(called, [])
 
-    async def test_unlaunchable_project_aborts_before_options(self) -> None:
-        # The launchability gate (write access + allowed_roots) runs for the
-        # existing-project flow too — an unlaunchable target toasts and never
-        # opens the launch-options screen (parity with launch-cwd).
+    async def test_unlaunchable_project_not_denied_before_profile_selection(self) -> None:
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
-        from uxon.tui.screens.main import MainScreen
 
         app = UxonApp(self._ctx(on_probe_dir_launchable=lambda d: False), probe_agents=False)
         async with app.run_test(size=(120, 40)) as pilot:
@@ -1123,8 +1094,7 @@ class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.pause()
             top = app.screen_stack[-1]
-            self.assertNotIsInstance(top, LaunchOptionsScreen)
-            self.assertIsInstance(top, MainScreen)
+            self.assertIsInstance(top, LaunchOptionsScreen)
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")

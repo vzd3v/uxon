@@ -269,7 +269,7 @@ class OnRemoteAttachCallbackTests(unittest.TestCase):
                 )
             ]
         )
-        bridge = tui_bridge.TuiBridge(cfg, "dana_agent", "/tmp")
+        bridge = tui_bridge.TuiBridge(cfg, "dana_agent", "dana_agent", "/tmp")
         req = bridge.on_remote_attach("box-b", "alice", "demo@claude")
         argv = list(req.cmd)
         self.assertEqual(argv[0], "ssh")
@@ -302,10 +302,10 @@ class OnLaunchCwdTargetDirTests(unittest.TestCase):
     def _capture_target(self, *, target_dir):
         cfg = _make_config()
         # The TUI was opened from inside a linked worktree.
-        bridge = tui_bridge.TuiBridge(cfg, "dana_agent", "/srv/work/myapp-wt")
+        bridge = tui_bridge.TuiBridge(cfg, "dana_agent", "dana_agent", "/srv/work/myapp-wt")
         captured = {}
 
-        def _fake_plan(cfg_, user_, cwd_, agent_, mode_):
+        def _fake_plan(cfg_, caller_user_, launch_user_, cwd_, agent_, mode_):
             captured["cwd"] = cwd_
             return LaunchRequest(cmd=("true",), label="uxon-myapp@claude")
 

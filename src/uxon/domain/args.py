@@ -15,8 +15,8 @@ from uxon.domain.host_report import HostReport
 
 USAGE = """Usage:
   uxon                              (interactive session picker if TTY, else this help)
-  uxon [run] [-w <branch>] [--dry-run] [--mode <id>] [claude-flags...]
-  uxon new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--mode <id>]
+  uxon [run] [-w <branch>] [--dry-run] [--profile <id>] [--mode <id>] [claude-flags...]
+  uxon new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--profile <id>] [--mode <id>]
                  [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
                  [claude-flags...]
   uxon doctor
@@ -29,7 +29,7 @@ USAGE = """Usage:
   uxon -l [--all-users]
   uxon -a <id>
   uxon -k <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]
-  uxon -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--mode <id>]
+  uxon -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--profile <id>] [--mode <id>]
                 [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
                 [claude-flags...]
 
@@ -40,16 +40,17 @@ Notes:
   - Repeating 'new' for the same plain project or worktree asks whether to attach or start a new parallel session.
   - Use '--attach-existing' or '--new-session' to bypass that prompt explicitly.
   - Non-interactive repeat handling can be pinned via UXON_REPEAT_NONINTERACTIVE_POLICY or config.
-  - Unknown flags in run/new are passed to 'claude'.
+  - Unknown flags in run/new are passed to the selected terminal agent.
+  - --profile <id> selects a launch profile. --agent is no longer a uxon selector.
   - --mode <id> selects a permission mode from the chosen agent's catalog
     (unset picks the agent's first mode); an unknown id fails listing valid modes.
   - ID accepts: session name (with/without configured session_prefix), unique prefix, or active pane PID.
   - 'list' shows sessions for the current effective launch user; '--all-users' shows configured session_users.
-  - Session IDs are human-readable: <prefix><stem>@<agent>, <prefix><stem>@<agent>-2 (default prefix is 'uxon-').
+  - Session IDs are human-readable: <prefix><stem>@<profile>, <prefix><stem>@<profile>-2 (default prefix is 'uxon-').
   - uxon uses a dedicated tmux socket per launch user by default.
-  - '--git-remote <profile>' creates a remote repo before launching claude,
+  - '--git-remote <profile>' creates a remote repo before launch,
     using the named profile from config.toml. 'default' picks
-    default_git_remote_profile. Without the flag, no git is touched.
+    the selected launch profile's default git-remote profile. Without the flag, no git is touched.
 """
 
 
@@ -65,7 +66,7 @@ class ParsedArgs:
     dry_run: bool = False
     force: bool = False
     all_users: bool = False
-    agent: str | None = None  # None = use cfg.default_agent
+    profile: str | None = None  # None = resolve from path/global/auto launch policy
     permission_mode: str | None = None  # None = use the agent's first (default) mode
     agent_args: list[str] = field(default_factory=list)
     git_remote: str | None = None  # profile name, or "default", or None
@@ -80,9 +81,7 @@ class ParsedArgs:
     # Stripped from argv by :func:`uxon.infra.audit.extract_correlation_id` before
     # the per-parser walk sees it; never surfaces in ``--help``.
     audit_correlation_id: str | None = None
-    # Populated by ``main()``'s preflight when it probes the host for
-    # tmux. Downstream ``resolve_agent_id`` reuses it to install-gate
-    # the picked agent without a second probe. ``None`` everywhere
-    # else (interactive/version paths, TUI-side ParsedArgs
-    # construction in ``_plan_tui_*_agent``).
+    # Populated by ``main()``'s non-launch preflight and by selected TUI
+    # paths. Launch profile resolution reuses it only when it was probed for
+    # the same effective launch user.
     host_report: HostReport | None = None
