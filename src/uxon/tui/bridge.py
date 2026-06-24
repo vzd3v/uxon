@@ -554,6 +554,38 @@ class TuiBridge:
         )
         return tuple((s.user, s.name, s.attached == "1") for s in matches)
 
+    def on_git_remote_options(
+        self, name: str, profile_id: str, mode_id: str
+    ) -> tuple[list[tuple[str, str]], str]:
+        """Effective git-remote choices for a new project/profile pair.
+
+        Runs off the event loop from ``LaunchFlow`` after the operator picks a
+        launch profile. Resolution applies path rules before the GitProfile
+        screen is shown, so the modal never offers a remote that the later
+        planner would reject.
+        """
+        target = launch_profile_app.canonical_intended_target(
+            os.path.join(self.cfg.new_project_root, name)
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            profile_id,
+            target,
+            mode_id,
+            target_may_not_exist=True,
+        )
+        allowed = set(resolved.git_remote.allowed_profiles)
+        options = [
+            (
+                p.name,
+                f"{p.host}/{p.owner}  via {p.creds_user or resolved.launch_user} [{p.auth}]",
+            )
+            for p in self.cfg.git_remote_profiles
+            if p.name in allowed
+        ]
+        return options, resolved.git_remote.default_profile
+
     def on_probe_worktrees(self, cwd_arg: str) -> list:
         """Workspaces for ``cwd_arg``'s repo (folders only).
 

@@ -622,10 +622,7 @@ class UxonApp(App):
             self.call_later(top._rebuild_agent_list)
 
         availability = self.state.agent_availability.value or {}
-        configured = self.cfg.enabled_agents
-        # Container mode provisions the agent inside the operator's container,
-        # so a host-absent binary is not a launch blocker — suppress the
-        # "agents unavailable" modal entirely (AC-P2.2). Off-path unchanged.
+        configured = self.cfg.enabled_profiles or self.cfg.enabled_agents
         container_enabled = self.cfg.container_enabled
         if configured:
             current_all_missing = compute_all_missing(
@@ -658,7 +655,10 @@ class UxonApp(App):
         if push:
             self.push_screen(
                 AgentsUnavailableScreen(
-                    modal_arg, agents=self.cfg.agents, error=self._host_probe_error
+                    modal_arg,
+                    agents=self.cfg.agents,
+                    launch_profiles=self.cfg.launch_profiles,
+                    error=self._host_probe_error,
                 )
             )
         if self._availability_resolved():
@@ -671,6 +671,7 @@ class UxonApp(App):
         Auto-mode: the host probe has landed at least once.
         """
         configured = self.cfg.enabled_agents
+        configured = self.cfg.enabled_profiles or configured
         if not configured:
             return self._host_probe_landed
         availability = self.state.agent_availability.value or {}

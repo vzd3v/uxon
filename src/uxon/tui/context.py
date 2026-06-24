@@ -25,6 +25,17 @@ if TYPE_CHECKING:
 ExistingSessionChoice = tuple[str, bool] | tuple[str, str, bool]
 
 
+@dataclass(frozen=True)
+class LaunchProfileOption:
+    """TUI-facing launch-profile row data."""
+
+    id: str
+    label: str
+    agent: str
+    launch_user: str
+    container_profile: str = ""
+
+
 # ── Errors ───────────────────────────────────────────────────────────
 
 
@@ -121,12 +132,15 @@ class TuiContext:
     scope_skipped_users: tuple[str, ...] = ()
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
 
-    # Multi-agent fields.
-    # ``enabled_agents`` is a strict whitelist when non-empty; an empty
-    # tuple (matching an absent or ``[]`` ``[agents].enabled`` in repo
-    # config) flips uxon into auto-mode where every installed CATALOG
-    # agent is launchable. ``default_agent`` may be ``""`` — consumers
-    # fall back to the first available agent.
+    # Launch-profile fields. These are the operator-facing runnable choices;
+    # agents remain the underlying binary/mode catalog.
+    enabled_profiles: tuple[str, ...] = ()
+    default_profile: str = ""
+    launch_profiles: dict[str, LaunchProfileOption] = field(default_factory=dict)
+    launch_auto_mode: bool = False
+
+    # Compatibility fields for older bare TuiContext fixtures. New TUI launch
+    # surfaces read the profile fields above.
     enabled_agents: tuple[str, ...] = ()
     default_agent: str = ""
     # Merged agent catalog (``cfg.agents``), threaded so the TUI's mode
@@ -210,6 +224,9 @@ class TuiContext:
     # or ``<new_project_root>/<name>``).
     on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]] = (
         lambda target_dir, profile_id, mode_id: ()
+    )
+    on_git_remote_options: Callable[[str, str, str], tuple[list[tuple[str, str]], str]] = (
+        lambda name, profile_id, mode_id: ([], "")
     )
 
     # ── Worktree callbacks (3.5.0) ───────────────────────────────────

@@ -32,6 +32,7 @@ from uxon.domain.config import Config
 from uxon.domain.launch_profiles import (
     GitRemotePolicy,
     LaunchConfig,
+    LaunchPathRule,
     ResolvedLaunchProfile,
     builtin_launch_profiles,
 )
@@ -1222,6 +1223,59 @@ class UxonTests(unittest.TestCase):
             profile="claude",
             agent="claude",
         )
+
+    def test_tui_git_remote_options_are_filtered_by_profile_and_path_rule(self) -> None:
+        from uxon.domain.git_profiles import GitRemoteProfile
+        from uxon.domain.host_report import BinaryStatus, HostReport
+
+        agents = _catalog_with_default_args("claude", ())
+        with tempfile.TemporaryDirectory() as td:
+            profiles = builtin_launch_profiles(agents)
+            profiles["claude"] = dataclasses.replace(
+                profiles["claude"],
+                git_remote=GitRemotePolicy(
+                    allowed_profiles=("work", "personal"),
+                    default_profile="work",
+                ),
+            )
+            cfg = self.make_config(
+                agents=agents,
+                new_project_root=td,
+                allowed_roots=[td],
+                git_create_enabled=True,
+                git_remote_profiles=[
+                    GitRemoteProfile("work", "github.com", "work", "gh", "", "", "private"),
+                    GitRemoteProfile("personal", "github.com", "me", "gh", "", "", "private"),
+                ],
+                launch=LaunchConfig(
+                    enabled_profiles=("claude",),
+                    default_profile="claude",
+                    profiles=profiles,
+                    path_rules=(
+                        LaunchPathRule(
+                            path_prefix=td,
+                            allowed_profiles=("claude",),
+                            default_profile="claude",
+                            allowed_git_remote_profiles=("personal",),
+                            default_git_remote_profile="personal",
+                        ),
+                    ),
+                ),
+            )
+
+            def fake_probe(_user, catalog):
+                return HostReport(
+                    tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
+                    agents={aid: BinaryStatus(aid, f"/usr/bin/{aid}", "") for aid in catalog},
+                    launch_user="u-vz",
+                )
+
+            bridge = tui_bridge.TuiBridge(cfg, "u-vz", "u-vz", td)
+            with mock.patch("uxon.infra.probes.probe_host", side_effect=fake_probe):
+                options, default_profile = bridge.on_git_remote_options("demo", "claude", "normal")
+
+        self.assertEqual(options, [("personal", "github.com/me  via u-vz [gh]")])
+        self.assertEqual(default_profile, "personal")
 
     def test_do_new_existing_worktree_session_uses_configured_noninteractive_new(self) -> None:
         # Same §2.5 worktree-path compatibility root; with the noninteractive

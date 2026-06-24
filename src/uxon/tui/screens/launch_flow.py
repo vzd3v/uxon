@@ -470,7 +470,7 @@ class LaunchFlow:
     def launch_new(self) -> None:
         host = self.host
 
-        def after_opts(name: str, git_profile: str):
+        def after_opts(name: str):
             # Built WITHOUT ``workspaces`` → only ever a 2-tuple at runtime
             # (B2). The annotation covers the screen's widened result type
             # so pyright accepts the callback; ``result[:2]`` is robust if a
@@ -480,7 +480,7 @@ class LaunchFlow:
                     return
                 agent_id, mode_id = result[0], result[1]
 
-                def commit_new() -> None:
+                def commit_new(git_profile: str) -> None:
                     # Creates the project dir (`mkdir -p`), optionally a git
                     # remote, and probes tmux — all subprocess, off the loop.
                     fn = host.cfg.on_launch_new
@@ -491,41 +491,46 @@ class LaunchFlow:
                         label="launch_new",
                     )
 
-                self.maybe_show_session_choice(
-                    target_dir=os.path.join(host.cfg.new_project_root, name),
-                    target_label=name,
-                    agent_id=agent_id,
-                    mode_id=mode_id,
-                    on_new=commit_new,
-                )
+                def choose_session(git_profile: str) -> None:
+                    self.maybe_show_session_choice(
+                        target_dir=os.path.join(host.cfg.new_project_root, name),
+                        target_label=name,
+                        agent_id=agent_id,
+                        mode_id=mode_id,
+                        on_new=lambda: commit_new(git_profile),
+                    )
+
+                def on_git_choice(git_profile: str | None) -> None:
+                    if git_profile is None:
+                        return
+                    choose_session(git_profile)
+
+                def on_options(payload: tuple[list[tuple[str, str]], str]) -> None:
+                    options, default_profile = payload
+                    if not options:
+                        choose_session("")
+                        return
+                    host.app.push_screen(
+                        GitProfileScreen(options, default_profile=default_profile),
+                        on_git_choice,
+                    )
+
+                if host.cfg.git_create_enabled:
+                    host.app.run_off_loop(  # type: ignore[attr-defined]
+                        lambda: host.cfg.on_git_remote_options(name, agent_id, mode_id),
+                        on_success=on_options,
+                        on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
+                        label="git_remote_options",
+                    )
+                else:
+                    choose_session("")
 
             return _on_opts
-
-        def after_git(name: str):
-            def _on_git(git_profile: str | None) -> None:
-                if git_profile is None:
-                    return  # user cancelled the whole chain
-                host.app.push_screen(
-                    LaunchOptionsScreen(host.cfg, host.state), after_opts(name, git_profile)
-                )
-
-            return _on_git
 
         def after_name(name: str | None) -> None:
             if not name:
                 return
-            if host.cfg.git_create_enabled and host.cfg.git_remote_profile_options:
-                host.app.push_screen(
-                    GitProfileScreen(
-                        host.cfg.git_remote_profile_options,
-                        default_profile=host.cfg.default_git_remote_profile,
-                    ),
-                    after_git(name),
-                )
-            else:
-                host.app.push_screen(
-                    LaunchOptionsScreen(host.cfg, host.state), after_opts(name, "")
-                )
+            host.app.push_screen(LaunchOptionsScreen(host.cfg, host.state), after_opts(name))
 
         host.app.push_screen(NewProjectScreen(host.cfg.new_project_root), after_name)
 

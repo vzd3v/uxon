@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from uxon.infra.remote_hosts import RemoteHost
     from uxon.tui.refresh import SourceSpec
 
-    from .context import ExistingSessionChoice, TuiContext
+    from .context import ExistingSessionChoice, LaunchProfileOption, TuiContext
 
 
 @dataclass(frozen=True)
@@ -61,11 +61,15 @@ class TuiConfig:
     current_user: str
     launch_user: str
 
-    # ── Multi-agent ──────────────────────────────────────────────────
+    # ── Launch profiles / agent catalog ──────────────────────────────
+    enabled_profiles: tuple[str, ...]
+    default_profile: str
+    launch_profiles: dict[str, LaunchProfileOption]
+    launch_auto_mode: bool
+
+    # Compatibility aliases for old fixtures; new launch UI reads profiles.
     enabled_agents: tuple[str, ...]
     default_agent: str
-    # Merged agent catalog (``cfg.agents``); the TUI mode helpers and the
-    # launch/unavailable screens read it as data.
     agents: dict[str, AgentSpec]
 
     # ── Cadence knobs ────────────────────────────────────────────────
@@ -101,6 +105,7 @@ class TuiConfig:
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
     on_container_gate: Callable[[str, str, str], ContainerGate | None]
     on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]]
+    on_git_remote_options: Callable[[str, str, str], tuple[list[tuple[str, str]], str]]
     on_probe_worktrees: Callable[[str], list]
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest]
@@ -139,6 +144,10 @@ class TuiConfig:
         return cls(
             current_user=ctx.current_user,
             launch_user=ctx.launch_user,
+            enabled_profiles=tuple(ctx.enabled_profiles),
+            default_profile=ctx.default_profile,
+            launch_profiles=dict(ctx.launch_profiles),
+            launch_auto_mode=ctx.launch_auto_mode,
             enabled_agents=tuple(ctx.enabled_agents),
             default_agent=ctx.default_agent,
             agents=dict(ctx.agents),
@@ -172,6 +181,7 @@ class TuiConfig:
             on_launch_existing=ctx.on_launch_existing,
             on_container_gate=ctx.on_container_gate,
             on_probe_existing_sessions=ctx.on_probe_existing_sessions,
+            on_git_remote_options=ctx.on_git_remote_options,
             on_probe_worktrees=ctx.on_probe_worktrees,
             on_create_worktree=ctx.on_create_worktree,
             on_launch_existing_worktree=ctx.on_launch_existing_worktree,

@@ -36,9 +36,9 @@ from textual.widgets import ListItem, ListView, Static
 
 from ..keymap import bindings_with_aliases
 from ..state import (
-    agent_list_label,
     launch_commit_decision,
     launch_options_state,
+    launch_profile_list_label,
     next_launch_panel,
     pick_visible_agent,
     update_launch_options_after_availability,
@@ -73,9 +73,8 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         probe_error: str | None = None,
     ) -> None:
         super().__init__()
-        # ``cfg`` is the static rebuild snapshot (carries
-        # ``enabled_agents`` / ``default_agent`` + the static
-        # availability seed); ``state`` is the App-owned live
+        # ``cfg`` is the static rebuild snapshot (carries launch profiles +
+        # the static availability seed); ``state`` is the App-owned live
         # :class:`TuiState`. Availability is read live from
         # ``state.agent_availability`` when present, falling back to the
         # ``cfg`` seed for unit tests that build a bare cfg without an
@@ -110,10 +109,11 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         # ``_rebuild_agent_list`` re-reads on every probe-result
         # dispatch so the modal reflects fresh data without a re-open.
         opts = launch_options_state(
-            enabled_agents=tuple(cfg.enabled_agents),
-            default_agent=cfg.default_agent,
+            enabled_agents=self._enabled_profiles(),
+            default_agent=self._default_profile(),
             availability=self._availability_now(),
-            catalog_ids=tuple(cfg.agents),
+            catalog_ids=self._catalog_profile_ids(),
+            auto_mode=self._launch_auto_mode(),
         )
         self._visible_agents = list(opts.visible_agents)
         self._single_agent = opts.single_agent
@@ -146,16 +146,39 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             return state.agent_availability.value
         return self.cfg.agent_availability
 
+    def _enabled_profiles(self) -> tuple[str, ...]:
+        return tuple(getattr(self.cfg, "enabled_profiles", ()) or self.cfg.enabled_agents)
+
+    def _default_profile(self) -> str:
+        return str(getattr(self.cfg, "default_profile", "") or self.cfg.default_agent)
+
+    def _launch_profiles(self) -> dict:
+        return dict(getattr(self.cfg, "launch_profiles", {}) or {})
+
+    def _launch_auto_mode(self) -> bool:
+        return bool(getattr(self.cfg, "launch_auto_mode", False)) or not self._enabled_profiles()
+
+    def _catalog_profile_ids(self) -> tuple[str, ...]:
+        profiles = self._enabled_profiles()
+        if profiles:
+            return profiles
+        return tuple(self.cfg.agents)
+
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="agent-panel"):
-                yield Static("Agent", classes="panel-title")
+                yield Static("Profile", classes="panel-title")
                 items = []
                 avail = self._availability_now()
+                profiles = self._launch_profiles()
                 for idx, aid in enumerate(self._visible_agents, start=1):
                     items.append(
                         ListItem(
-                            Static(agent_list_label(idx, aid, avail.get(aid))),
+                            Static(
+                                launch_profile_list_label(
+                                    idx, aid, profiles.get(aid), avail.get(aid)
+                                )
+                            ),
                             id=f"agent-{aid}",
                         )
                     )
@@ -242,7 +265,9 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         # new ones and the list ends up showing stale entries (e.g. claude's
         # "auto" remains visible after switching to cursor).
         await mode_list.clear()
-        spec = self.cfg.agents.get(agent_id)
+        profile = self._launch_profiles().get(agent_id)
+        agent_key = profile.agent if profile is not None else agent_id
+        spec = self.cfg.agents.get(agent_key)
         if spec is None:
             return
         items = [
@@ -291,6 +316,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             availability=self._availability_now(),
             mode_index=(self.query_one("#mode-list", ListView).index or 0),
             agents=self.cfg.agents,
+            launch_profiles=self._launch_profiles(),
         )
         if decision.action == "ignore":
             return
@@ -341,12 +367,13 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         """
         avail = self._availability_now()
         update = update_launch_options_after_availability(
-            enabled_agents=tuple(self.cfg.enabled_agents),
-            default_agent=self.cfg.default_agent,
+            enabled_agents=self._enabled_profiles(),
+            default_agent=self._default_profile(),
             availability=avail,
             current_agent=self._current_agent,
             active_panel=self._active_panel,
-            catalog_ids=tuple(self.cfg.agents),
+            catalog_ids=self._catalog_profile_ids(),
+            auto_mode=self._launch_auto_mode(),
         )
         visible = list(update.visible_agents)
         self._visible_agents = visible
@@ -362,10 +389,11 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         agent_list = self.query_one("#agent-list", ListView)
         await agent_list.clear()
         new_items = []
+        profiles = self._launch_profiles()
         for idx, aid in enumerate(visible, start=1):
             new_items.append(
                 ListItem(
-                    Static(agent_list_label(idx, aid, avail.get(aid))),
+                    Static(launch_profile_list_label(idx, aid, profiles.get(aid), avail.get(aid))),
                     id=f"agent-{aid}",
                 )
             )

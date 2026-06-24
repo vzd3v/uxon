@@ -47,11 +47,13 @@ class AgentsUnavailableScreen(CardModal[None]):
         enabled_agents: tuple[str, ...],
         *,
         agents: dict[str, Any] | None = None,
+        launch_profiles: dict[str, Any] | None = None,
         error: str = "",
     ) -> None:
         super().__init__()
         self._enabled_agents = tuple(enabled_agents)
         self._agents: dict[str, Any] = dict(agents or {})
+        self._launch_profiles: dict[str, Any] = dict(launch_profiles or {})
         self._error = error
         # Exposed for tests: plain-text body so assertions don't depend
         # on textual's Rich renderable internals.
@@ -61,9 +63,13 @@ class AgentsUnavailableScreen(CardModal[None]):
         ids: tuple[str, ...] = self._enabled_agents or tuple(self._agents)
         lines: list[str] = []
         for aid in ids:
-            spec = self._agents.get(aid)
+            profile = self._launch_profiles.get(aid)
+            agent_id = getattr(profile, "agent", aid)
+            spec = self._agents.get(agent_id)
             if spec is None:
                 lines.append(f"  • {aid}: unknown agent id")
+            elif profile is not None:
+                lines.append(f"  • {aid} ({agent_id}/{spec.binary}): {spec.install_hint}")
             else:
                 lines.append(f"  • {aid} ({spec.binary}): {spec.install_hint}")
         return "\n".join(lines)

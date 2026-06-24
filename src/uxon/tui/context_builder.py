@@ -94,6 +94,7 @@ def build_tui_context(
     from uxon.infra.sudo_probe import probe_sudo_capability
     from uxon.tui.context import (  # noqa: PLC0415
         CallbackError,
+        LaunchProfileOption,
         TuiContext,
     )
 
@@ -209,6 +210,7 @@ def build_tui_context(
     on_launch_existing = _wrap_tui_callback(bridge.on_launch_existing, _CbErr)
     on_container_gate = _wrap_tui_callback(bridge.on_container_gate, _CbErr)
     on_probe_existing_sessions = _wrap_tui_callback(bridge.on_probe_existing_sessions, _CbErr)
+    on_git_remote_options = _wrap_tui_callback(bridge.on_git_remote_options, _CbErr)
     on_probe_worktrees = _wrap_tui_callback(bridge.on_probe_worktrees, _CbErr)
     on_create_worktree = _wrap_tui_callback(bridge.on_create_worktree, _CbErr)
     on_launch_existing_worktree = _wrap_tui_callback(bridge.on_launch_existing_worktree, _CbErr)
@@ -242,10 +244,28 @@ def build_tui_context(
     else:
         cwd_writable = None
 
+    default_launch_user = identity.resolve_launch_user(cfg, caller_user)
+    enabled_profiles = cfg.launch.effective_enabled_profiles
+    launch_profile_options: dict[str, LaunchProfileOption] = {}
+    for profile_id in enabled_profiles:
+        profile = cfg.launch.profiles.get(profile_id)
+        if profile is None:
+            continue
+        profile_launch_user = profile.launch_user or default_launch_user
+        launch_profile_options[profile_id] = LaunchProfileOption(
+            id=profile.id,
+            label=profile.display_name or profile.id,
+            agent=profile.agent,
+            launch_user=profile_launch_user,
+            container_profile=profile.container_profile,
+        )
+
     from uxon.infra import agents as _uxon_agents
 
     agent_availability = {
-        aid: _uxon_agents.AgentAvailability(status="pending") for aid in cfg.enabled_agents
+        pid: _uxon_agents.AgentAvailability(status="pending")
+        for pid in enabled_profiles
+        if not cfg.launch.auto_mode
     }
 
     if skeleton:
@@ -434,6 +454,10 @@ def build_tui_context(
         sudo_caps=sudo_caps,
         scope_skipped_users=skipped_users,
         other_sessions=tui_other,
+        enabled_profiles=enabled_profiles,
+        default_profile=cfg.launch.default_profile,
+        launch_profiles=launch_profile_options,
+        launch_auto_mode=cfg.launch.auto_mode,
         enabled_agents=cfg.enabled_agents,
         default_agent=cfg.default_agent,
         agents=dict(cfg.agents),
@@ -454,6 +478,7 @@ def build_tui_context(
         on_launch_existing=on_launch_existing,
         on_container_gate=on_container_gate,
         on_probe_existing_sessions=on_probe_existing_sessions,
+        on_git_remote_options=on_git_remote_options,
         on_probe_worktrees=on_probe_worktrees,
         on_create_worktree=on_create_worktree,
         on_launch_existing_worktree=on_launch_existing_worktree,

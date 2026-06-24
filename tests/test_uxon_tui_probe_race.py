@@ -193,6 +193,126 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             uxon_probes.probe_host = original_probe  # type: ignore[assignment]
 
+    async def test_profile_availability_keeps_same_agent_different_users_separate(self) -> None:
+        from uxon.domain.agents import DEFAULT_AGENT_CATALOG
+        from uxon.domain.host_report import BinaryStatus, HostReport
+        from uxon.infra import agents as uxon_agents
+        from uxon.infra import probes as uxon_probes
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import LaunchProfileOption
+        from uxon.tui.messages import _HostReportUpdated
+
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def fake_probe(user, catalog):
+            calls.append((user, tuple(catalog)))
+            return HostReport(
+                tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
+                agents={aid: BinaryStatus(aid, f"/home/{user}/bin/{aid}", "") for aid in catalog},
+                launch_user=user,
+            )
+
+        original_probe = uxon_probes.probe_host
+        uxon_probes.probe_host = fake_probe  # type: ignore[assignment]
+        try:
+            ctx = _mk_ctx(
+                agents=DEFAULT_AGENT_CATALOG,
+                enabled_profiles=("ops", "dev"),
+                default_profile="ops",
+                launch_profiles={
+                    "ops": LaunchProfileOption(
+                        id="ops", label="Ops", agent="claude", launch_user="alice"
+                    ),
+                    "dev": LaunchProfileOption(
+                        id="dev", label="Dev", agent="claude", launch_user="bob"
+                    ),
+                },
+            )
+            app = UxonApp(ctx, probe_agents=False)
+            posted: list[_HostReportUpdated] = []
+            real_post = app.post_message
+
+            def capture_post(message):
+                if isinstance(message, _HostReportUpdated):
+                    posted.append(message)
+                return real_post(message)
+
+            app.post_message = capture_post  # type: ignore[assignment]
+            async with app.run_test(size=(80, 24)) as pilot:
+                app._worker_coord._probe_host_worker()
+                await pilot.pause()
+
+            self.assertEqual(calls, [("alice", ("claude",)), ("bob", ("claude",))])
+            self.assertEqual(
+                posted[-1].availability,
+                {
+                    "ops": uxon_agents.AgentAvailability(
+                        status="ok", path="/home/alice/bin/claude"
+                    ),
+                    "dev": uxon_agents.AgentAvailability(status="ok", path="/home/bob/bin/claude"),
+                },
+            )
+        finally:
+            uxon_probes.probe_host = original_probe  # type: ignore[assignment]
+
+    async def test_containerized_profile_does_not_require_host_agent_binary(self) -> None:
+        from uxon.domain.agents import DEFAULT_AGENT_CATALOG
+        from uxon.domain.host_report import BinaryStatus, HostReport
+        from uxon.infra import agents as uxon_agents
+        from uxon.infra import probes as uxon_probes
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import LaunchProfileOption
+        from uxon.tui.messages import _HostReportUpdated
+
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def fake_probe(user, catalog):
+            calls.append((user, tuple(catalog)))
+            return HostReport(
+                tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
+                agents={},
+                launch_user=user,
+            )
+
+        original_probe = uxon_probes.probe_host
+        uxon_probes.probe_host = fake_probe  # type: ignore[assignment]
+        try:
+            ctx = _mk_ctx(
+                agents=DEFAULT_AGENT_CATALOG,
+                enabled_profiles=("box",),
+                default_profile="box",
+                launch_profiles={
+                    "box": LaunchProfileOption(
+                        id="box",
+                        label="Box",
+                        agent="claude",
+                        launch_user="alice",
+                        container_profile="docker",
+                    ),
+                },
+            )
+            app = UxonApp(ctx, probe_agents=False)
+            posted: list[_HostReportUpdated] = []
+            real_post = app.post_message
+
+            def capture_post(message):
+                if isinstance(message, _HostReportUpdated):
+                    posted.append(message)
+                return real_post(message)
+
+            app.post_message = capture_post  # type: ignore[assignment]
+            async with app.run_test(size=(80, 24)) as pilot:
+                app._worker_coord._probe_host_worker()
+                await pilot.pause()
+
+            self.assertEqual(calls, [("alice", ())])
+            self.assertEqual(
+                posted[-1].availability,
+                {"box": uxon_agents.AgentAvailability(status="ok", path="container:docker")},
+            )
+        finally:
+            uxon_probes.probe_host = original_probe  # type: ignore[assignment]
+
 
 if __name__ == "__main__":
     unittest.main()

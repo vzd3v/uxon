@@ -23,6 +23,7 @@ from .context import (
 )
 
 if TYPE_CHECKING:
+    from .context import LaunchProfileOption
     from .dashboard.ui_state import MainScreenUiState
 
 
@@ -192,21 +193,20 @@ def visible_agent_ids(
     enabled_agents: tuple[str, ...],
     availability: Mapping[str, Any],
     catalog_ids: tuple[str, ...],
+    auto_mode: bool = False,
 ) -> tuple[str, ...]:
-    """Agent ids the LaunchOptions screen should expose.
+    """Profile ids the LaunchOptions screen should expose.
 
-    Strict mode (``enabled_agents`` non-empty): the configured list,
+    Strict mode (``enabled_agents`` non-empty): the configured profile list,
     minus any with a resolved ``missing``/``timeout`` status. Pending
     entries stay visible so the row renders as "(checking…)" rather
     than vanishing mid-probe.
 
-    Auto-mode (``enabled_agents`` empty): every ``catalog_ids`` entry
+    Auto-mode: every ``catalog_ids`` entry
     (merged-catalog order) that has resolved to ``ok`` in ``availability``.
-    No "missing" rows — the auto-mode probe never inserts un-installed
-    entries, so a missing/timeout entry would have to be a stale
-    strict-mode hangover.
+    No "missing" rows.
     """
-    if enabled_agents:
+    if enabled_agents and not auto_mode:
         return tuple(
             aid
             for aid in enabled_agents
@@ -228,11 +228,13 @@ def update_launch_options_after_availability(
     current_agent: str,
     active_panel: str,
     catalog_ids: tuple[str, ...] = (),
+    auto_mode: bool = False,
 ) -> LaunchOptionsUpdate:
     visible = visible_agent_ids(
         enabled_agents=enabled_agents,
         availability=availability,
         catalog_ids=catalog_ids,
+        auto_mode=auto_mode,
     )
     if not visible:
         return LaunchOptionsUpdate(
@@ -264,11 +266,13 @@ def launch_options_state(
     default_agent: str,
     availability: Mapping[str, Any],
     catalog_ids: tuple[str, ...] = (),
+    auto_mode: bool = False,
 ) -> LaunchOptionsState:
     visible = visible_agent_ids(
         enabled_agents=enabled_agents,
         availability=availability,
         catalog_ids=catalog_ids,
+        auto_mode=auto_mode,
     )
     single = len(visible) <= 1
     current = (
@@ -304,15 +308,57 @@ def agent_list_label(index: int, agent_id: str, availability_obj: Any | None) ->
     return label
 
 
-def mode_item_ids(agents: Mapping[str, Any], agent_id: str) -> tuple[str, ...]:
-    spec = agents.get(agent_id)
+def launch_profile_list_label(
+    index: int,
+    profile_id: str,
+    profile: LaunchProfileOption | None,
+    availability_obj: Any | None,
+) -> str:
+    if profile is None:
+        label = f"{index} {profile_id}"
+    else:
+        label = f"{index} {profile.label or profile.id}"
+        details = [profile.id, profile.agent, profile.launch_user]
+        if profile.container_profile:
+            details.append(f"container:{profile.container_profile}")
+        label += "  " + " · ".join(details)
+    if availability_obj is not None and getattr(availability_obj, "status", None) == "pending":
+        label += "  (checking…)"
+    return label
+
+
+def _agent_id_for_launch_choice(
+    agents: Mapping[str, Any],
+    launch_choice_id: str,
+    launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
+) -> str:
+    if launch_choice_id in agents:
+        return launch_choice_id
+    if launch_profiles is not None:
+        profile = launch_profiles.get(launch_choice_id)
+        if profile is not None:
+            return profile.agent
+    return launch_choice_id
+
+
+def mode_item_ids(
+    agents: Mapping[str, Any],
+    agent_id: str,
+    launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
+) -> tuple[str, ...]:
+    spec = agents.get(_agent_id_for_launch_choice(agents, agent_id, launch_profiles))
     if spec is None:
         return ()
     return tuple(f"mode-{mode.id}" for mode in spec.permission_modes)
 
 
-def launch_mode_id(agents: Mapping[str, Any], agent_id: str, mode_index: int) -> str | None:
-    spec = agents.get(agent_id)
+def launch_mode_id(
+    agents: Mapping[str, Any],
+    agent_id: str,
+    mode_index: int,
+    launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
+) -> str | None:
+    spec = agents.get(_agent_id_for_launch_choice(agents, agent_id, launch_profiles))
     if spec is None:
         return None
     modes = spec.permission_modes
@@ -331,12 +377,13 @@ def launch_commit_decision(
     availability: Mapping[str, Any],
     mode_index: int,
     agents: Mapping[str, Any],
+    launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
 ) -> LaunchCommitDecision:
     if active_panel == "agent":
         if agent_is_pending(current_agent, availability):
             return LaunchCommitDecision("ignore")
         return LaunchCommitDecision("switch-to-mode")
-    mode_id = launch_mode_id(agents, current_agent, mode_index)
+    mode_id = launch_mode_id(agents, current_agent, mode_index, launch_profiles)
     if mode_id is None:
         return LaunchCommitDecision("dismiss")
     return LaunchCommitDecision("commit", mode_id)

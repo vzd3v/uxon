@@ -226,11 +226,28 @@ class WorkerCoordinator:
         from uxon.infra import agents as uxon_agents
         from uxon.infra import probes as uxon_probes
 
-        target_user = self._cfg.launch_user or uxon_probes._current_user()
-
         t0 = _time.monotonic()
         try:
-            report = uxon_probes.probe_host(target_user, self._cfg.agents)
+            reports = {}
+            profiles = self._cfg.launch_profiles
+            if profiles:
+                by_user: dict[str, set[str]] = {}
+                for profile in profiles.values():
+                    agents = by_user.setdefault(profile.launch_user, set())
+                    if not profile.container_profile:
+                        agents.add(profile.agent)
+                for user, agent_ids in by_user.items():
+                    catalog = {
+                        aid: self._cfg.agents[aid]
+                        for aid in sorted(agent_ids)
+                        if aid in self._cfg.agents
+                    }
+                    reports[user] = uxon_probes.probe_host(user, catalog)
+            else:
+                # Compatibility path for old tests/fixtures that construct a
+                # TuiConfig without launch_profiles.
+                target_user = self._cfg.launch_user or uxon_probes._current_user()
+                reports[target_user] = uxon_probes.probe_host(target_user, self._cfg.agents)
         except Exception as exc:  # pragma: no cover — defensive
             self._post_message(
                 _HostReportUpdated(
@@ -240,35 +257,65 @@ class WorkerCoordinator:
             )
             return
 
-        # Strict-whitelist mode (``enabled_agents`` non-empty): surface
-        # exactly the enabled ids, marking absent binaries as "missing"
-        # so the unavailable-modal can fire. Auto-mode (empty config):
-        # surface only what is actually installed; un-installed
-        # CATALOG ids stay out of the availability map entirely.
-        configured = self._cfg.enabled_agents
+        # Strict profile mode: surface exactly the enabled profile ids,
+        # marking absent host binaries as missing. Auto-mode: surface only
+        # profiles that are actually launchable.
+        configured = self._cfg.enabled_profiles or self._cfg.enabled_agents
         availability: dict = {}
-        if configured:
-            for aid in configured:
-                status = report.agents.get(aid)
-                if status is not None and status.path is not None:
-                    availability[aid] = uxon_agents.AgentAvailability(
+        if self._cfg.launch_profiles:
+            for pid in configured:
+                profile = self._cfg.launch_profiles.get(pid)
+                if profile is None:
+                    if not self._cfg.launch_auto_mode:
+                        availability[pid] = uxon_agents.AgentAvailability(
+                            status="missing", error="unknown launch profile"
+                        )
+                    continue
+                report = reports.get(profile.launch_user)
+                if report is None or report.tmux.path is None:
+                    if not self._cfg.launch_auto_mode:
+                        availability[pid] = uxon_agents.AgentAvailability(
+                            status="missing",
+                            error="tmux not found on PATH",
+                        )
+                    continue
+                if profile.container_profile:
+                    availability[pid] = uxon_agents.AgentAvailability(
                         status="ok",
-                        path=status.path,
+                        path=f"container:{profile.container_profile}",
                     )
-                else:
-                    spec = self._cfg.agents.get(aid)
-                    binary = spec.binary if spec is not None else aid
-                    availability[aid] = uxon_agents.AgentAvailability(
-                        status="missing",
-                        error=f"{binary} not found on PATH",
+                    continue
+                status = report.agents.get(profile.agent)
+                if status is not None and status.path is not None:
+                    availability[pid] = uxon_agents.AgentAvailability(status="ok", path=status.path)
+                elif not self._cfg.launch_auto_mode:
+                    spec = self._cfg.agents.get(profile.agent)
+                    binary = spec.binary if spec is not None else profile.agent
+                    availability[pid] = uxon_agents.AgentAvailability(
+                        status="missing", error=f"{binary} not found on PATH"
                     )
         else:
-            for aid, status in report.agents.items():
-                if status.path is not None:
-                    availability[aid] = uxon_agents.AgentAvailability(
-                        status="ok",
-                        path=status.path,
-                    )
+            report = next(iter(reports.values()))
+            configured_agents = self._cfg.enabled_agents
+            if configured_agents:
+                for aid in configured_agents:
+                    status = report.agents.get(aid)
+                    if status is not None and status.path is not None:
+                        availability[aid] = uxon_agents.AgentAvailability(
+                            status="ok", path=status.path
+                        )
+                    else:
+                        spec = self._cfg.agents.get(aid)
+                        binary = spec.binary if spec is not None else aid
+                        availability[aid] = uxon_agents.AgentAvailability(
+                            status="missing", error=f"{binary} not found on PATH"
+                        )
+            else:
+                for aid, status in report.agents.items():
+                    if status.path is not None:
+                        availability[aid] = uxon_agents.AgentAvailability(
+                            status="ok", path=status.path
+                        )
         self._post_message(
             _HostReportUpdated(
                 availability=availability,
