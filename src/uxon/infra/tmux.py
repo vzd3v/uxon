@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import sys
 from pathlib import Path
 
 from uxon.domain.args import ParsedArgs
@@ -30,10 +31,10 @@ from uxon.domain.container import (
     wrap_agent_for_container,
 )
 from uxon.domain.launch_profiles import ResolvedLaunchProfile
-from uxon.domain.launch_request import LaunchRequest
+from uxon.domain.launch_request import LaunchRequest, ManagedTmuxLaunch
 from uxon.domain.session import SessionInfo, slugify
 from uxon.errors import fail
-from uxon.infra import process
+from uxon.infra import launch_records, process
 from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
 
 
@@ -248,6 +249,7 @@ def _build_tmux_launch_request(
     resolved_profile: ResolvedLaunchProfile | None = None,
     server_running: bool = False,
     include_container_identity: bool = True,
+    pending_record: launch_records.PendingLaunchRecord | None = None,
 ):
     """Assemble the agent + tmux argv plus the socket-parent mkdir.
 
@@ -298,6 +300,13 @@ def _build_tmux_launch_request(
     agent_argv = (
         [spec.binary] + list(spec.default_args) + list(args.agent_args) + list(mode_obj.flags)
     )
+    if pending_record is None:
+        pending_record = launch_records.pending_from_resolved(
+            socket_path=tmux_socket_path(cfg, launch_user),
+            session_name=session,
+            resolved=resolved_profile,
+        )
+    record_dir = str(launch_records.state_dir())
     # Container exec wrap (off by default): when enabled, the operator's
     # opaque ``exec_template`` prefixes the agent command so it runs inside a
     # container. Disabled → ``exec_prefix``/``session_env`` stay empty and
@@ -306,13 +315,31 @@ def _build_tmux_launch_request(
     # caller runs it off the loop before launch); this single exec-site only
     # composes the resolved prefix into ``final_cmd``.
     exec_prefix: list[str] = []
-    session_env: list[str] = []
+    session_env: list[str] = [
+        "-e",
+        f"{launch_records.LAUNCH_PROFILE_ENV}={resolved_profile.profile.id}",
+        "-e",
+        f"{launch_records.LAUNCH_NONCE_ENV}={pending_record.launch_nonce}",
+        "-e",
+        f"{launch_records.LAUNCH_AGENT_ENV}={resolved_profile.agent.id}",
+        "-e",
+        f"{launch_records.LAUNCH_RECORD_DIR_ENV}={record_dir}",
+    ]
+    container_identity = None
     if resolved_profile.container_context is not None:
         from uxon.infra.container import resolve_container_identity_for_profile
 
         context = resolved_profile.container_context
         container_profile = cfg.container_profiles[context.profile_id]
         name = context.name
+        session_env += [
+            "-e",
+            f"{launch_records.CONTAINER_PROFILE_ENV}={context.profile_id}",
+            "-e",
+            f"{launch_records.CONTAINER_PROFILE_FINGERPRINT_ENV}={context.profile_fingerprint}",
+            "-e",
+            f"{CONTAINER_NAME_ENV}={name}",
+        ]
         exec_prefix = render_profile_template(
             container_profile.exec_template,
             profile=container_profile,
@@ -331,9 +358,9 @@ def _build_tmux_launch_request(
         # container identity (id / host-side cgroup path / start-epoch) rides
         # SEPARATE vars, each appended only when resolution yields a non-empty
         # value (absent var = the documented degrade; AC-P1.3 / AC-P3.5).
-        session_env = ["-e", f"{CONTAINER_NAME_ENV}={name}"]
         if include_container_identity:
             identity = resolve_container_identity_for_profile(cfg, target_dir, resolved_profile)
+            container_identity = identity
             for var, value in (
                 (CONTAINER_ID_ENV, identity.id),
                 (CONTAINER_CGROUP_ENV, identity.cgroup),
@@ -363,34 +390,168 @@ def _build_tmux_launch_request(
     # live server already carries it (D9, see _tmux_set_chain).
     set_chain = _tmux_set_chain(cfg, server_running=server_running)
     mode = tmux_nesting_mode(socket_path)
+    bootstrap_cmd = [
+        sys.executable,
+        "-m",
+        "uxon.infra.launch_bootstrap",
+        "--socket",
+        socket_path,
+        "--session",
+        session,
+        "--nonce",
+        pending_record.launch_nonce,
+        "--",
+        *final_cmd,
+    ]
+    create_cmd = tuple(
+        base
+        + set_chain
+        + ["new-session", "-d", "-s", session, "-c", target_dir]
+        + session_env
+        + bootstrap_cmd
+    )
+    query_cmd = tuple(
+        base
+        + [
+            "display-message",
+            "-p",
+            "-t",
+            session,
+            "#{session_id}\t#{session_created}\t#{session_name}\t#{E:"
+            + launch_records.LAUNCH_NONCE_ENV
+            + "}",
+        ]
+    )
+    kill_cmd = tuple(base + ["kill-session", "-t", session])
+    managed = ManagedTmuxLaunch(
+        create_cmd=create_cmd,
+        query_cmd=query_cmd,
+        kill_cmd=kill_cmd,
+        record_socket=socket_path,
+        record_session=session,
+        record_nonce=pending_record.launch_nonce,
+        record_dir=record_dir,
+        launch_profile=pending_record.launch_profile,
+        agent=pending_record.agent,
+        launch_user=pending_record.launch_user,
+        container_profile=pending_record.container_profile,
+        container_profile_fingerprint=pending_record.container_profile_fingerprint,
+        container=pending_record.container,
+        container_id=getattr(container_identity, "id", ""),
+        container_cgroup=getattr(container_identity, "cgroup", ""),
+        container_epoch=getattr(container_identity, "epoch", ""),
+    )
     if mode == "switch":
-        # Already inside tmux on the target socket — classic
-        # ``new-session -As`` would try to attach and tmux refuses to
-        # nest. Instead create the session detached (idempotent via
-        # ``-dA``; claude is ignored when the session already exists)
-        # and then switch the current client over to it. The set chain
-        # rides the detached-create entry, before its ``new-session`` (AC3).
-        create = tuple(
-            base
-            + set_chain
-            + ["new-session", "-dA", "-s", session, "-c", target_dir]
-            + session_env
-            + final_cmd
-        )
         switch = tuple(base + ["switch-client", "-t", session])
         return LaunchRequest(
             cmd=switch,
-            prelaunch=(ensure_socket_parent, create),
+            prelaunch=(ensure_socket_parent,),
             label=f"switch-client {session} (nested)",
+            managed=managed,
         )
-    full = tuple(
-        base
-        + set_chain
-        + ["new-session", "-As", session, "-c", target_dir]
-        + session_env
-        + final_cmd
+    attach = tuple(base + ["attach-session", "-t", session])
+    return LaunchRequest(
+        cmd=attach,
+        prelaunch=(ensure_socket_parent,),
+        label=f"launch {session}",
+        managed=managed,
     )
-    return LaunchRequest(cmd=full, prelaunch=(ensure_socket_parent,), label=f"launch {session}")
+
+
+def build_managed_tmux_launch_request(
+    target_dir: str,
+    session: str,
+    args: ParsedArgs,
+    cfg: Config,
+    branch: str | None,
+    *,
+    resolved_profile: ResolvedLaunchProfile,
+    server_running: bool = False,
+    include_container_identity: bool = True,
+) -> tuple[LaunchRequest, launch_records.PendingLaunchRecord]:
+    socket_path = tmux_socket_path(cfg, resolved_profile.launch_user)
+    pending = launch_records.pending_from_resolved(
+        socket_path=socket_path,
+        session_name=session,
+        resolved=resolved_profile,
+    )
+    req = _build_tmux_launch_request(
+        target_dir,
+        session,
+        args,
+        cfg,
+        branch,
+        resolved_profile=resolved_profile,
+        server_running=server_running,
+        include_container_identity=include_container_identity,
+        pending_record=pending,
+    )
+    return req, pending
+
+
+def pending_record_from_request(req: LaunchRequest) -> launch_records.PendingLaunchRecord:
+    managed = req.managed
+    if managed is None:
+        fail("internal: managed launch metadata missing")
+    return launch_records.PendingLaunchRecord(
+        socket_path=managed.record_socket,
+        session_name=managed.record_session,
+        launch_nonce=managed.record_nonce,
+        launch_profile=managed.launch_profile,
+        agent=managed.agent,
+        launch_user=managed.launch_user,
+        container_profile=managed.container_profile,
+        container_profile_fingerprint=managed.container_profile_fingerprint,
+        container=managed.container,
+    )
+
+
+def prepare_managed_launch(
+    req: LaunchRequest, pending: launch_records.PendingLaunchRecord | None = None
+) -> None:
+    managed = req.managed
+    if managed is None:
+        return
+    if pending is None:
+        pending = pending_record_from_request(req)
+    record_dir = Path(managed.record_dir)
+    launch_records.create_pending_record(pending, override_dir=record_dir)
+    cp = process.run_cmd(list(managed.create_cmd), check=False)
+    if cp.returncode != 0:
+        launch_records.fail_pending_record(pending, override_dir=record_dir)
+        detail = (cp.stderr or cp.stdout or "").strip()
+        fail(
+            f"tmux session {pending.session_name!r} could not be created"
+            + (f": {detail}" if detail else "")
+        )
+    try:
+        meta_cp = process.run_cmd(list(managed.query_cmd), check=True)
+        metadata = _parse_tmux_launch_metadata(meta_cp.stdout)
+        launch_records.finalize_pending_record(
+            pending,
+            metadata,
+            container_id=managed.container_id,
+            container_cgroup=managed.container_cgroup,
+            container_epoch=managed.container_epoch,
+            override_dir=record_dir,
+        )
+    except BaseException:
+        process.run_cmd(list(managed.kill_cmd), check=False)
+        launch_records.fail_pending_record(pending, override_dir=record_dir)
+        raise
+
+
+def _parse_tmux_launch_metadata(stdout: str) -> launch_records.TmuxSessionMetadata:
+    line = stdout.strip().splitlines()[0] if stdout.strip() else ""
+    parts = line.split("\t")
+    if len(parts) != 4:
+        fail("tmux did not return launch metadata for the created session")
+    return launch_records.TmuxSessionMetadata(
+        session_id=parts[0],
+        created=parts[1],
+        name=parts[2],
+        launch_nonce=parts[3],
+    )
 
 
 def launch_in_tmux(
@@ -409,21 +570,35 @@ def launch_in_tmux(
         fail("internal: launch profile must be resolved before launch_in_tmux")
     launch_user = resolved_profile.launch_user
 
-    req = _build_tmux_launch_request(
-        target_dir,
-        session,
-        args,
-        cfg,
-        branch,
-        resolved_profile=resolved_profile,
-        server_running=server_running,
-    )
+    if args.dry_run:
+        req = _build_tmux_launch_request(
+            target_dir,
+            session,
+            args,
+            cfg,
+            branch,
+            resolved_profile=resolved_profile,
+            server_running=server_running,
+        )
+        pending = None
+    else:
+        req, pending = build_managed_tmux_launch_request(
+            target_dir,
+            session,
+            args,
+            cfg,
+            branch,
+            resolved_profile=resolved_profile,
+            server_running=server_running,
+        )
     if args.dry_run:
         print(f"launch_user={shlex.quote(launch_user)}")
         print(f"dir={shlex.quote(target_dir)}")
         print(f"socket={shlex.quote(tmux_socket_path(cfg, launch_user))}")
         for pre in req.prelaunch:
             print(f"socket_parent_mkdir={shlex.join(pre)}")
+        if req.managed is not None:
+            print(f"tmux_create={shlex.join(req.managed.create_cmd)}")
         print(f"session={shlex.quote(session)}")
         if branch:
             print(f"branch={shlex.quote(branch)}")
@@ -431,6 +606,8 @@ def launch_in_tmux(
         return 0
     for pre in req.prelaunch:
         process.run_cmd(list(pre))
+    if pending is not None:
+        prepare_managed_launch(req, pending)
     # Lane B — interactive terminal handoff: ``execvp`` replaces this image
     # with the tmux client, which keeps the controlling terminal. Bypasses
     # ``Popen``/the loop guard by construction.

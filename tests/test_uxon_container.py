@@ -147,6 +147,11 @@ def _resolved(
 _EXEC = ("docker", "exec", "-it", "-w", "{dir}", "{name}")
 
 
+def _managed_create_cmd(req):
+    assert req.managed is not None
+    return req.managed.create_cmd
+
+
 class NameResolutionTests(unittest.TestCase):
     """AC-B2 — same container per (user, project dir), never per-session."""
 
@@ -244,16 +249,15 @@ class ExecWrapTests(unittest.TestCase):
         also_disabled = self._build(_cfg(ContainerConfig(enabled=False, name_template="x")))
         self.assertEqual(disabled.cmd, also_disabled.cmd)
         # And the agent binary leads the final_cmd (no exec prefix).
-        self.assertIn("claude", disabled.cmd)
-        idx = disabled.cmd.index("claude")
-        self.assertNotIn("docker", disabled.cmd[:idx])
-        # AC-P0.1 off-invariant: none of the new hoisted markers / wrapper
-        # appear when disabled — no ``-e UXON_*``, no ``sh -c`` wrapper.
-        cmd = list(disabled.cmd)
+        disabled_create = _managed_create_cmd(disabled)
+        idx = disabled_create.index("claude")
+        self.assertNotIn("docker", disabled_create[:idx])
+        # AC-P0.1 off-invariant: no container marker / wrapper appears when
+        # disabled. Launch-profile diagnostics still ride every managed launch.
+        cmd = list(disabled_create)
         joined = " ".join(cmd)
         self.assertNotIn("UXON_CONTAINER", joined)
         self.assertNotIn("UXON_SESSION", joined)
-        self.assertNotIn("-e", cmd)
         self.assertNotIn("sh", cmd)
         self.assertEqual(cmd[idx:], ["claude", "--dangerously-skip-permissions"])
 
@@ -263,7 +267,7 @@ class ExecWrapTests(unittest.TestCase):
         # exec_template(resolved) + the per-session wrapper + agent argv, in
         # order. After the hoist, EVERY enabled session is wrapped (to export
         # UXON_SESSION), so the resolved exec prefix is the leading 6 tokens.
-        cmd = list(req.cmd)
+        cmd = list(_managed_create_cmd(req))
         agent_tail = cmd[cmd.index("docker") :]
         self.assertEqual(
             agent_tail[:6],
@@ -283,7 +287,7 @@ class ExecWrapTests(unittest.TestCase):
             path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
         )
         req = self._build(_cfg(c))
-        cmd = list(req.cmd)
+        cmd = list(_managed_create_cmd(req))
         # -w token is the container-side path, not the host path.
         self.assertIn("/work", cmd)
         self.assertNotIn("/srv/projects/myapp", cmd[cmd.index("docker") :])
@@ -299,7 +303,7 @@ class ExecWrapTests(unittest.TestCase):
             exec_template=_EXEC,
             stop_template=("docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile})"),
         )
-        cmd = list(self._build(_cfg(c)).cmd)
+        cmd = list(_managed_create_cmd(self._build(_cfg(c))))
         # ``-e UXON_CONTAINER=proj-myapp`` rides the new-session argv.
         self.assertIn("-e", cmd)
         self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
@@ -324,7 +328,7 @@ class ExecWrapTests(unittest.TestCase):
         # agent to export ``UXON_SESSION``, but does NOT write a pidfile, and the
         # identity vars are ABSENT (resolve_cmd unset → degrade path).
         c = ContainerConfig(enabled=True, name_template="proj-{project_slug}", exec_template=_EXEC)
-        cmd = list(self._build(_cfg(c)).cmd)
+        cmd = list(_managed_create_cmd(self._build(_cfg(c))))
         # Bare-name marker rides the session env.
         self.assertIn("-e", cmd)
         self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
@@ -359,7 +363,7 @@ class ExecWrapTests(unittest.TestCase):
         with mock.patch(
             "uxon.infra.container.resolve_container_identity_for_profile", return_value=ident
         ):
-            cmd = list(self._build(_cfg(c)).cmd)
+            cmd = list(_managed_create_cmd(self._build(_cfg(c))))
         self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
         self.assertIn(f"{CONTAINER_ID_ENV}=abc123", cmd)
         self.assertIn(f"{CONTAINER_CGROUP_ENV}=/sys/fs/cgroup/x.scope", cmd)

@@ -11,6 +11,28 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class ManagedTmuxLaunch:
+    """Metadata needed to create and finalize a managed tmux launch."""
+
+    create_cmd: tuple[str, ...]
+    query_cmd: tuple[str, ...]
+    kill_cmd: tuple[str, ...]
+    record_socket: str
+    record_session: str
+    record_nonce: str
+    record_dir: str
+    launch_profile: str
+    agent: str
+    launch_user: str
+    container_profile: str = ""
+    container_profile_fingerprint: str = ""
+    container: str = ""
+    container_id: str = ""
+    container_cgroup: str = ""
+    container_epoch: str = ""
+
+
+@dataclass(frozen=True)
 class LaunchRequest:
     """Describes a tmux invocation the TUI wants the outer loop to fork-and-wait.
 
@@ -23,6 +45,7 @@ class LaunchRequest:
     cmd: tuple[str, ...]
     prelaunch: tuple[tuple[str, ...], ...] = ()
     label: str = ""
+    managed: ManagedTmuxLaunch | None = None
 
 
 def session_name_from_launch_label(label: str) -> str:
