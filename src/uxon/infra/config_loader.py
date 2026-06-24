@@ -1,20 +1,19 @@
 # SPDX-License-Identifier: MIT
-"""Config layering + TOML loading: produce a :class:`uxon.domain.Config`.
+"""Config loading: produce a :class:`uxon.domain.Config`.
 
-Walks the repo + project ``.uxon.toml`` layers, validates every field,
-and returns the immutable domain ``Config``. Impure: reads the
-filesystem (TOML files), ``os.environ`` (demo mode), and composes the
-git-profile / remote-host / demo adapters.
+Reads the operator-owned repo config, validates every field, and returns the
+typed domain ``Config``. Impure: reads TOML files, ``os.environ`` (demo mode),
+and composes the git-profile / remote-host / demo adapters.
 """
 
 from __future__ import annotations
 
-import re
+import os
 from pathlib import Path
 from typing import Any, Literal
 
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG, AgentSpec, PermissionMode
-from uxon.domain.authz import canonical, is_under
+from uxon.domain.authz import canonical
 from uxon.domain.config import (
     DEFAULT_CONFIG,
     Config,
@@ -24,16 +23,21 @@ from uxon.domain.config import (
 )
 from uxon.domain.container import (
     ContainerConfig,
+    ContainerProfile,
     validate_container_name,
+    validate_container_profile,
     validate_path_map,
+)
+from uxon.domain.launch_profiles import (
+    GitRemotePolicy,
+    LaunchConfig,
+    LaunchPathRule,
+    LaunchProfile,
+    builtin_launch_profiles,
+    validate_tmux_safe_id,
 )
 from uxon.errors import fail
 from uxon.infra import demo, events, version_probe
-
-# Agent ids must match the session-name scanner charset (``session.py``)
-# and be tmux-safe (no ``:``/``.``). Validated on the merged catalog so a
-# custom operator-declared id is rejected here, not at launch.
-_AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 try:
     import tomllib
@@ -71,124 +75,17 @@ def normalize_user_list(values: list[str]) -> list[str]:
     return users
 
 
-def find_project_config(cwd: str, allowed_roots: list[str]) -> Path | None:
-    """Walk up from ``cwd`` looking for a ``.uxon.toml``.
-
-    With a non-empty ``allowed_roots`` whitelist, the file is only
-    accepted when it lives under one of the listed roots — same strict-
-    whitelist semantics as ``is_launch_target_allowed``. With an
-    empty list the whitelist is bypassed and the first ``.uxon.toml``
-    found while walking up is returned (matches the "empty = no
-    restriction beyond the launch user's filesystem" policy used
-    everywhere else for ``allowed_roots``).
-    """
-    cur = Path(cwd)
-    allowed = [str(Path(p)) for p in allowed_roots]
-    for parent in [cur] + list(cur.parents):
-        candidate = parent / ".uxon.toml"
-        try:
-            exists = candidate.exists()
-        except PermissionError:
-            continue
-        if not exists:
-            continue
-        if not allowed:
-            return candidate
-        for root in allowed:
-            if is_under(str(parent), root):
-                return candidate
-        return None
-    return None
-
-
 def repo_config_path() -> Path:
     return version_probe.repo_root() / "config" / "config.toml"
 
 
-# Project-layer (``.uxon.toml``) keys that survive the deny-by-default
-# allowlist. ``agents``/``container`` are descended into leaf-by-leaf
-# (only the listed leaves are merged onto the running config); ``tui`` is
-# allowed whole. Everything else — ``allowed_roots``,
-# ``launch_user_by_caller``, ``local_host``, every ``[agents.<id>]`` argv
-# sub-table, every operator-only ``[container]`` key — is dropped.
-#
-# This is the security spine: a ``.uxon.toml`` discovered by walking up from
-# ``cwd`` is *untrusted* (a cloned repo can carry one), so it may never inject
-# argv or policy that ``uxon`` then executes under ``sudo -iu``. The operator
-# ``config/config.toml`` layer is unaffected — it keeps full power.
-_PROJECT_AGENTS_LEAVES = ("default", "enabled")
-# Project-allowed ``[container]`` leaves: pure data only. ``name``/``path_map``
-# never become argv that uxon couldn't already see — the name is re-validated
-# against the safe charset and ``path_map`` against the absolute/``..``-free
-# rules in ``load_config`` (so a kept project leaf is never trusted
-# unvalidated). Every executed/policy key (``exec_template``,
-# ``create_template``, ``on_missing``, ``enabled``, …) stays operator-only and
-# is dropped from the project layer.
-_PROJECT_CONTAINER_LEAVES: tuple[str, ...] = ("name", "path_map")
-
-
-def project_allowlist(project: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
-    """Rewrite an untrusted ``.uxon.toml`` dict to only its allowlisted keys.
-
-    Built as a **fresh empty dict** — never a copy of ``project`` with keys
-    deleted — so any unlisted top-level key (``allowed_roots``,
-    ``launch_user_by_caller``, ``local_host``, raw ``[agents.<id>]`` argv,
-    operator-only ``[container]`` keys) is absent by construction.
-
-    ``agents``/``container`` are leaf-granular: their allowed leaves are
-    merged onto ``base[...]`` (the running default ⊕ operator config) so
-    operator-defined ``[agents.<id>]`` sub-tables survive while the
-    project's ``[agents.<id>]`` argv is dropped. A non-dict value for any of
-    these tables (a malformed ``agents = "x"``) is treated as absent and
-    dropped — never iterated — so it cannot raise mid-merge.
-
-    ``tui`` is pure UI data and allowed whole.
-    """
-    filtered: dict[str, Any] = {}
-
-    def _merge_leaves(table_key: str, leaves: tuple[str, ...]) -> None:
-        sub = project.get(table_key)
-        if not isinstance(sub, dict):
-            if table_key in project:
-                events.debug("config", reason="project_layer_dropped_nondict", key=table_key)
-            return
-        base_sub = base.get(table_key)
-        running = dict(base_sub) if isinstance(base_sub, dict) else {}
-        kept = {k: v for k, v in sub.items() if k in leaves}
-        for dropped in (k for k in sub if k not in leaves):
-            events.debug("config", reason="project_layer_dropped_key", key=f"{table_key}.{dropped}")
-        if kept:
-            filtered[table_key] = {**running, **kept}
-
-    _merge_leaves("agents", _PROJECT_AGENTS_LEAVES)
-    _merge_leaves("container", _PROJECT_CONTAINER_LEAVES)
-    tui = project.get("tui")
-    if isinstance(tui, dict):
-        filtered["tui"] = tui
-    elif "tui" in project:
-        events.debug("config", reason="project_layer_dropped_nondict", key="tui")
-    for dropped in (k for k in project if k not in ("agents", "container", "tui")):
-        events.debug("config", reason="project_layer_dropped_key", key=dropped)
-    return filtered
-
-
-def resolve_config_layers(cwd: str) -> tuple[dict[str, Any], list[Path]]:
+def resolve_config_layers(_cwd: str) -> tuple[dict[str, Any], list[Path]]:
     merged = dict(DEFAULT_CONFIG)
     sources: list[Path] = []
     repo_cfg = repo_config_path()
     if repo_cfg.exists():
         sources.append(repo_cfg)
-    # Operator layer: full power, merged verbatim.
     merged = merge_config(merged, load_toml(repo_cfg))
-    seed_allowed = [canonical(p) for p in merged.get("allowed_roots", [])]
-    proj_cfg = find_project_config(cwd, seed_allowed)
-    if proj_cfg is not None:
-        sources.append(proj_cfg)
-        # Project layer: untrusted — filter through the deny-by-default
-        # allowlist BEFORE merging (rewrite the override, never post-process
-        # ``merged``), so unlisted keys never reach the running config.
-        filtered = project_allowlist(load_toml(proj_cfg), merged)
-        merged = merge_config(merged, filtered)
     return merged, sources
 
 
@@ -240,13 +137,9 @@ def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
     The validators here run on the *expanded/merged* id set so a hostile or
     typo'd custom id fails ``load_config`` naming the offender (AC-A6).
     """
-    config_ids = [
-        k for k, v in agents_tbl.items() if k not in ("enabled", "default") and isinstance(v, dict)
-    ]
+    config_ids = [k for k, v in agents_tbl.items() if isinstance(v, dict)]
     # Non-dict ``[agents.<id>]`` (e.g. ``claude = 5``) is a config error.
     for k, v in agents_tbl.items():
-        if k in ("enabled", "default"):
-            continue
         if not isinstance(v, dict):
             fail(f"'agents.{k}' must be a TOML table")
     union_ids: list[str] = list(DEFAULT_AGENT_CATALOG)
@@ -256,11 +149,7 @@ def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
 
     catalog: dict[str, AgentSpec] = {}
     for aid in union_ids:
-        if not _AGENT_ID_RE.match(aid) or ":" in aid or "." in aid:
-            fail(
-                f"invalid agent id {aid!r}: must match [a-z][a-z0-9_]* and "
-                "contain no ':' or '.' (tmux-safe)"
-            )
+        validate_tmux_safe_id(aid, what="agent id")
         default_spec = DEFAULT_AGENT_CATALOG.get(aid)
         sub = agents_tbl.get(aid, {})
         if not isinstance(sub, dict):
@@ -318,6 +207,268 @@ def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
     return catalog
 
 
+_REMOVED_CONTAINER_KEYS = {
+    "enabled",
+    "name_template",
+    "exec_template",
+    "is_running_cmd",
+    "exists_cmd",
+    "start_template",
+    "create_template",
+    "stop_template",
+    "resolve_cmd",
+    "on_missing",
+    "on_missing_mode",
+    "name",
+    "path_map",
+}
+
+
+def reject_removed_operator_keys(raw_repo: dict[str, Any]) -> None:
+    if "default_claude_args" in raw_repo:
+        fail(
+            "config key 'default_claude_args' was replaced by "
+            "'[agents.claude] default_args = [...]'. "
+            "Update config/config.toml accordingly."
+        )
+    if "default_git_remote_profile" in raw_repo:
+        fail(
+            "config key 'default_git_remote_profile' moved under launch profiles. "
+            "Set launch.profiles.<id>.default_git_remote_profile instead."
+        )
+    agents_tbl = raw_repo.get("agents")
+    if isinstance(agents_tbl, dict):
+        for key in ("enabled", "default"):
+            if key in agents_tbl:
+                fail(
+                    f"config key 'agents.{key}' was removed. Use "
+                    "'[launch] enabled_profiles/default_profile' and "
+                    "'[launch.profiles.<id>] agent = ...' instead."
+                )
+    container_tbl = raw_repo.get("container")
+    if isinstance(container_tbl, dict):
+        for key in sorted(_REMOVED_CONTAINER_KEYS):
+            if key in container_tbl:
+                fail(
+                    f"config key 'container.{key}' was removed. Use "
+                    "'[container.profiles.<id>]' and reference it from "
+                    "'launch.profiles.<id>.container_profile' instead."
+                )
+
+
+def _string_list(value: Any, *, source: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        fail(f"{source} must be a list of strings")
+    return tuple(value)
+
+
+def _string_value(
+    raw: dict[str, Any], key: str, *, source: str, default: str = "", strip: bool = False
+) -> str:
+    value = raw.get(key, default)
+    if not isinstance(value, str):
+        fail(f"{source}.{key} must be a string")
+    return value.strip() if strip else value
+
+
+def _argv_list_from(tbl: dict[str, Any], key: str, *, source: str) -> tuple[str, ...]:
+    raw = tbl.get(key, [])
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        fail(f"{source}.{key} must be a list of strings (an argv list, not a shell string)")
+    return tuple(raw)
+
+
+def build_container_profiles(container_tbl: dict[str, Any]) -> dict[str, ContainerProfile]:
+    profiles_tbl = container_tbl.get("profiles", {})
+    if not isinstance(profiles_tbl, dict):
+        fail("'container.profiles' must be a TOML table")
+    out: dict[str, ContainerProfile] = {}
+    for cid, raw in profiles_tbl.items():
+        validate_tmux_safe_id(str(cid), what="container profile id")
+        if not isinstance(raw, dict):
+            fail(f"'container.profiles.{cid}' must be a TOML table")
+        source = f"container.profiles.{cid}"
+        path_map_raw = raw.get("path_map", {})
+        if not isinstance(path_map_raw, dict):
+            fail(f"{source}.path_map must be a TOML table of host_prefix -> container_prefix")
+        profile = ContainerProfile(
+            id=str(cid),
+            runtime_namespace=_string_value(raw, "runtime_namespace", source=source, strip=True),  # type: ignore[arg-type]
+            name_template=_string_value(raw, "name_template", source=source),
+            exec_template=_argv_list_from(raw, "exec_template", source=source),
+            is_running_cmd=_argv_list_from(raw, "is_running_cmd", source=source),
+            exists_cmd=_argv_list_from(raw, "exists_cmd", source=source),
+            start_template=_argv_list_from(raw, "start_template", source=source),
+            create_template=_argv_list_from(raw, "create_template", source=source),
+            stop_template=_argv_list_from(raw, "stop_template", source=source),
+            resolve_cmd=_argv_list_from(raw, "resolve_cmd", source=source),
+            on_missing=_string_value(raw, "on_missing", source=source, default="off", strip=True),  # type: ignore[arg-type]
+            on_missing_mode=_string_value(
+                raw, "on_missing_mode", source=source, default="prompt", strip=True
+            ),  # type: ignore[arg-type]
+            path_map=validate_path_map({str(k): str(v) for k, v in path_map_raw.items()}),
+        )
+        out[str(cid)] = validate_container_profile(profile)
+    return out
+
+
+def _parse_git_policy(raw: dict[str, Any], *, source: str) -> GitRemotePolicy:
+    allowed = _string_list(
+        raw.get("allowed_git_remote_profiles"), source=f"{source}.allowed_git_remote_profiles"
+    )
+    default = _string_value(raw, "default_git_remote_profile", source=source, strip=True)
+    if default and default not in allowed:
+        fail(
+            f"{source}.default_git_remote_profile={default!r} is not allowed by {source}.allowed_git_remote_profiles"
+        )
+    return GitRemotePolicy(allowed_profiles=allowed, default_profile=default)
+
+
+def _validate_git_names(names: tuple[str, ...], valid_names: set[str], *, source: str) -> None:
+    for name in names:
+        if name not in valid_names:
+            fail(f"{source} references unknown git_remote_profiles entry {name!r}")
+
+
+def build_launch_config(
+    launch_tbl: dict[str, Any],
+    *,
+    agents: dict[str, AgentSpec],
+    container_profiles: dict[str, ContainerProfile],
+    git_remote_profile_names: set[str],
+) -> LaunchConfig:
+    profiles = builtin_launch_profiles(agents)
+    builtin_profile_ids = set(profiles)
+    enabled_profiles = _string_list(
+        launch_tbl.get("enabled_profiles", []), source="launch.enabled_profiles"
+    )
+    profiles_tbl = launch_tbl.get("profiles", {})
+    if not isinstance(profiles_tbl, dict):
+        fail("'launch.profiles' must be a TOML table")
+    for pid, raw in profiles_tbl.items():
+        validate_tmux_safe_id(str(pid), what="launch profile id")
+        if not isinstance(raw, dict):
+            fail(f"'launch.profiles.{pid}' must be a TOML table")
+        if not enabled_profiles and str(pid) in builtin_profile_ids:
+            fail(
+                f"launch.profiles.{pid} overrides a shipped auto-mode profile; "
+                "set launch.enabled_profiles to name it explicitly"
+            )
+        source = f"launch.profiles.{pid}"
+        agent = _string_value(raw, "agent", source=source, strip=True)
+        if not agent:
+            fail(f"{source}.agent is required")
+        if agent not in agents:
+            fail(f"{source}.agent={agent!r} is not in the configured agent catalog")
+        container_profile = _string_value(raw, "container_profile", source=source, strip=True)
+        if container_profile and container_profile not in container_profiles:
+            fail(f"{source}.container_profile={container_profile!r} is not configured")
+        policy = _parse_git_policy(raw, source=source)
+        _validate_git_names(
+            policy.allowed_profiles,
+            git_remote_profile_names,
+            source=f"{source}.allowed_git_remote_profiles",
+        )
+        profiles[str(pid)] = LaunchProfile(
+            id=str(pid),
+            agent=agent,
+            display_name=_string_value(raw, "display_name", source=source),
+            launch_user=_string_value(raw, "launch_user", source=source, strip=True),
+            container_profile=container_profile,
+            git_remote=policy,
+        )
+
+    for pid in enabled_profiles:
+        if pid not in profiles:
+            fail(f"launch.enabled_profiles references unknown launch profile {pid!r}")
+    default_profile = _string_value(launch_tbl, "default_profile", source="launch", strip=True)
+    effective_enabled = enabled_profiles or tuple(
+        pid for pid in ("claude", "codex", "cursor") if pid in profiles
+    )
+    if default_profile and default_profile not in effective_enabled:
+        fail(f"launch.default_profile={default_profile!r} is not enabled")
+
+    path_rules_raw = launch_tbl.get("path_rules", [])
+    if not isinstance(path_rules_raw, list) or not all(
+        isinstance(rule, dict) for rule in path_rules_raw
+    ):
+        fail("'launch.path_rules' must be an array of tables")
+    path_rules: list[LaunchPathRule] = []
+    enabled_set = set(effective_enabled)
+    for index, raw in enumerate(path_rules_raw):
+        source = f"launch.path_rules[{index}]"
+        prefix = raw.get("path_prefix")
+        if not isinstance(prefix, str) or not prefix.strip():
+            fail(f"{source}.path_prefix must be a non-empty absolute path")
+        if not prefix.startswith("/"):
+            fail(f"{source}.path_prefix must be an absolute path")
+        if os.path.normpath(prefix) != prefix or ".." in prefix.split("/"):
+            fail(f"{source}.path_prefix must be an absolute normalized path without '..'")
+        path_prefix = canonical(prefix)
+        allowed = _string_list(raw.get("allowed_profiles"), source=f"{source}.allowed_profiles")
+        if not allowed:
+            fail(f"{source}.allowed_profiles must be a non-empty list")
+        for pid in allowed:
+            if pid not in enabled_set:
+                fail(f"{source}.allowed_profiles references disabled launch profile {pid!r}")
+        rule_default = _string_value(raw, "default_profile", source=source, strip=True)
+        if rule_default and rule_default not in allowed:
+            fail(f"{source}.default_profile={rule_default!r} is not in allowed_profiles")
+        rule_allowed_git: tuple[str, ...] | None = None
+        if "allowed_git_remote_profiles" in raw:
+            rule_allowed_git = _string_list(
+                raw.get("allowed_git_remote_profiles"),
+                source=f"{source}.allowed_git_remote_profiles",
+            )
+            _validate_git_names(
+                rule_allowed_git,
+                git_remote_profile_names,
+                source=f"{source}.allowed_git_remote_profiles",
+            )
+        rule_default_git = _string_value(
+            raw, "default_git_remote_profile", source=source, strip=True
+        )
+        if rule_default_git and rule_default_git not in git_remote_profile_names:
+            fail(
+                f"{source}.default_git_remote_profile references unknown git_remote_profiles entry {rule_default_git!r}"
+            )
+        for pid in allowed:
+            profile_policy = profiles[pid].git_remote
+            effective_allowed = (
+                tuple(
+                    name
+                    for name in profile_policy.allowed_profiles
+                    if rule_allowed_git is not None and name in rule_allowed_git
+                )
+                if rule_allowed_git is not None
+                else profile_policy.allowed_profiles
+            )
+            effective_default = rule_default_git or profile_policy.default_profile
+            if effective_default and effective_default not in effective_allowed:
+                fail(
+                    f"{source}.default_git_remote_profile={effective_default!r} is not "
+                    f"allowed for launch profile {pid!r} after git-remote policy intersection"
+                )
+        path_rules.append(
+            LaunchPathRule(
+                path_prefix=path_prefix,
+                allowed_profiles=allowed,
+                default_profile=rule_default,
+                allowed_git_remote_profiles=rule_allowed_git,
+                default_git_remote_profile=rule_default_git,
+            )
+        )
+
+    return LaunchConfig(
+        enabled_profiles=enabled_profiles,
+        default_profile=default_profile,
+        profiles=profiles,
+        path_rules=tuple(path_rules),
+    )
+
+
 def _argv_list(tbl: dict[str, Any], key: str) -> tuple[str, ...]:
     """Read an operator ``[container]`` argv template (list of strings).
 
@@ -332,15 +483,7 @@ def _argv_list(tbl: dict[str, Any], key: str) -> tuple[str, ...]:
 
 
 def build_container_config(container_tbl: dict[str, Any]) -> ContainerConfig:
-    """Parse + validate the merged ``[container]`` table into ContainerConfig.
-
-    ``enabled``/templates/policy are operator-only (the project layer already
-    dropped them in ``project_allowlist``). ``name``/``path_map`` may come
-    from the project layer, so they are re-validated here against the safe
-    charset / absolute-``..``-free rules (AC-B8) — a kept project leaf is
-    never trusted unvalidated. When ``enabled = false`` no template is
-    required and validation is skipped beyond the data leaves.
-    """
+    """Parse + validate a legacy singleton container table."""
     enabled = bool(container_tbl.get("enabled", False))
 
     on_missing = str(container_tbl.get("on_missing", "off"))
@@ -359,8 +502,7 @@ def build_container_config(container_tbl: dict[str, Any]) -> ContainerConfig:
     stop_template = _argv_list(container_tbl, "stop_template")
     resolve_cmd = _argv_list(container_tbl, "resolve_cmd")
 
-    # Project-layer data leaves (re-validated even though deny-by-default
-    # admitted only these two keys).
+    # Legacy singleton data leaves retained for the pre-profile runtime path.
     name_raw = container_tbl.get("name", "")
     if not isinstance(name_raw, str):
         fail("container.name must be a string")
@@ -380,7 +522,7 @@ def build_container_config(container_tbl: dict[str, Any]) -> ContainerConfig:
         if not exec_template:
             fail("container.enabled = true requires a non-empty container.exec_template")
         if not name and not name_template:
-            fail("container.enabled = true requires container.name_template (or .uxon.toml name)")
+            fail("container.enabled = true requires container.name_template")
         if on_missing in ("start", "create") and not is_running_cmd:
             fail(
                 f"container.on_missing = {on_missing!r} requires container.is_running_cmd "
@@ -418,8 +560,9 @@ def load_config(cwd: str) -> Config:
 
     merged, _ = resolve_config_layers(cwd)
     # Load raw repo data (before merge with defaults) so the removed flat
-    # ``default_claude_args`` key surfaces an error instead of being masked.
+    # keys surface an error instead of being masked.
     _raw_repo = load_toml(repo_config_path())
+    reject_removed_operator_keys(_raw_repo)
     runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
     default_launch_mode = str(
         merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])
@@ -454,42 +597,40 @@ def load_config(cwd: str) -> Config:
         canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])
     ]
 
-    # Hard-reject the removed flat ``default_claude_args`` key with a
-    # clear migration message. Check raw repo config (not merged with
-    # defaults) so DEFAULT_CONFIG's nested ``[agents.claude]`` block
-    # doesn't mask the failure.
-    if "default_claude_args" in _raw_repo:
-        fail(
-            "config key 'default_claude_args' was replaced by "
-            "'[agents.claude] default_args = [...]'. "
-            "Update config/config.toml accordingly."
-        )
-
     agents_tbl = merged.get("agents", {})
     if not isinstance(agents_tbl, dict):
         fail("'agents' must be a TOML table")
     # Merged catalog (defaults ⊕ operator config). The valid-id set is
     # derived dynamically from its keys — there is no static VALID_AGENT_IDS.
     agents = build_agent_catalog(agents_tbl)
-    valid_agent_ids = tuple(agents)
-    # ``enabled`` empty/absent = auto-mode (every installed catalogued
-    # agent is launchable). Non-empty list = strict whitelist.
-    enabled_raw = agents_tbl.get("enabled", [])
-    if not isinstance(enabled_raw, list):
-        fail("'agents.enabled' must be a list (use [] for auto-mode)")
-    enabled = tuple(str(x) for x in enabled_raw)
-    for aid in enabled:
-        if aid not in agents:
-            fail(f"unknown agent id in agents.enabled: {aid!r} (expected one of {valid_agent_ids})")
-    default_agent = str(agents_tbl.get("default", ""))
-    if default_agent:
-        if default_agent not in agents:
-            fail(
-                f"unknown agent id in agents.default: {default_agent!r} "
-                f"(expected one of {valid_agent_ids})"
-            )
-        if enabled and default_agent not in enabled:
-            fail(f"agents.default={default_agent!r} is not in agents.enabled={list(enabled)}")
+    try:
+        git_remote_profiles = uxon_git_profiles.load_profiles(
+            merged.get("git_remote_profiles", DEFAULT_CONFIG["git_remote_profiles"])
+        )
+    except uxon_git_profiles.ProfileError as exc:
+        fail(str(exc))
+    git_remote_profile_names = {profile.name for profile in git_remote_profiles}
+
+    container_tbl = merged.get("container", DEFAULT_CONFIG["container"])
+    if not isinstance(container_tbl, dict):
+        fail("'container' must be a TOML table")
+    container_profiles = build_container_profiles(container_tbl)
+
+    launch_tbl = merged.get("launch", DEFAULT_CONFIG["launch"])
+    if not isinstance(launch_tbl, dict):
+        fail("'launch' must be a TOML table")
+    launch = build_launch_config(
+        launch_tbl,
+        agents=agents,
+        container_profiles=container_profiles,
+        git_remote_profile_names=git_remote_profile_names,
+    )
+    enabled = (
+        tuple(dict.fromkeys(launch.profiles[pid].agent for pid in launch.enabled_profiles))
+        if launch.enabled_profiles
+        else ()
+    )
+    default_agent = launch.profiles[launch.default_profile].agent if launch.default_profile else ""
 
     new_project_root = canonical(
         str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"]))
@@ -625,15 +766,7 @@ def load_config(cwd: str) -> Config:
     git_create_enabled = bool(
         merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"])
     )
-    default_git_remote_profile = str(
-        merged.get("default_git_remote_profile", DEFAULT_CONFIG["default_git_remote_profile"])
-    ).strip()
-    try:
-        git_remote_profiles = uxon_git_profiles.load_profiles(
-            merged.get("git_remote_profiles", DEFAULT_CONFIG["git_remote_profiles"])
-        )
-    except uxon_git_profiles.ProfileError as exc:
-        fail(str(exc))
+    default_git_remote_profile = ""
 
     from uxon.infra import remote_hosts as uxon_remote_hosts
 
@@ -686,18 +819,7 @@ def load_config(cwd: str) -> Config:
                 fail(f"'tmux.{_scope}.{_k}' must be a scalar (bool/int/str)")
         tmux_scope_tables[_scope] = dict(_sub)
 
-    if default_git_remote_profile and not uxon_git_profiles.find_profile(
-        git_remote_profiles, default_git_remote_profile
-    ):
-        fail(
-            f"default_git_remote_profile={default_git_remote_profile!r} does not "
-            f"exist in git_remote_profiles"
-        )
-
-    container_tbl = merged.get("container", DEFAULT_CONFIG["container"])
-    if not isinstance(container_tbl, dict):
-        fail("'container' must be a TOML table")
-    container = build_container_config(container_tbl)
+    container = ContainerConfig()
 
     return Config(
         runtime_user=runtime_user,
@@ -711,6 +833,8 @@ def load_config(cwd: str) -> Config:
         enabled_agents=enabled,
         default_agent=default_agent,
         agents=agents,
+        launch=launch,
+        container_profiles=container_profiles,
         new_project_root=new_project_root,
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,

@@ -4,10 +4,6 @@ Single source of truth for which keys are user-editable through the TUI
 superuser block, their type, and how to persist changes back to the
 repo-level ``config/config.toml``.
 
-Project-level ``.uxon.toml`` is never written from here — it is surfaced
-read-only in the UI so operators can see where a given key's value came
-from.
-
 Round-trip writes preserve comments: the existing TOML text is parsed
 with ``tomlkit``, only the changed keys are mutated in the document tree,
 and the document is re-serialized. If the file does not exist yet, a
@@ -20,8 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from uxon.domain.authz import canonical
-from uxon.domain.config import DEFAULT_CONFIG
 from uxon.infra import config_loader
 from uxon.infra.run import run_query
 from uxon.infra.settings_toml import set_dotted, update_repo_config_text
@@ -59,18 +53,6 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "legacy_session_prefixes",
         "array",
         "Additional prefixes recognised for list/attach/kill (never used to create new sessions).",
-    ),
-    SettingSpec("agents.enabled", "array", "Enabled agents (subset of the configured catalog)."),
-    # ``choices`` is left empty here: ``SETTINGS_SPECS`` is built at import,
-    # before any config is loaded, so the catalog ids are populated at
-    # Settings-screen build time (see :func:`settings_specs_for`). The
-    # per-agent argv / mode catalog is config-file-only — ``SettingSpec`` /
-    # ``settings_toml`` cannot model array-of-tables or dynamic per-agent keys.
-    SettingSpec(
-        "agents.default",
-        "enum",
-        "Default agent when --agent is not passed.",
-        choices=(),
     ),
     SettingSpec("new_project_root", "string", "Base directory for 'uxon new <name>'."),
     SettingSpec(
@@ -111,11 +93,6 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "Dashboard columns in display order. Empty == REGISTRY defaults.",
     ),
     SettingSpec("git_create_enabled", "bool", "Enable the git-remote-on-new-project flow."),
-    SettingSpec(
-        "default_git_remote_profile",
-        "string",
-        "Profile name used when --git-remote default is passed or picked as TUI default.",
-    ),
     SettingSpec(
         "tui.table.default_view",
         "enum",
@@ -187,26 +164,17 @@ def _get_dotted(doc: Any, dotted_key: str, default: Any = None) -> Any:
 class SettingEntry:
     spec: SettingSpec
     value: Any
-    source: str  # "default" | "repo" | "project:<path>"
-    editable: bool  # False when source is project-level — TUI never writes .uxon.toml
+    source: str  # "default" | "repo"
+    editable: bool
 
 
-def settings_specs_for(agent_ids: tuple[str, ...]) -> tuple[SettingSpec, ...]:
-    """Return ``SETTINGS_SPECS`` with the dynamic ``agents.default`` ``choices``
-    bound to ``agent_ids`` (the resolved catalog ids for the current config).
+def settings_specs_for(_agent_ids: tuple[str, ...]) -> tuple[SettingSpec, ...]:
+    """Return the scalar settings schema.
 
-    ``SETTINGS_SPECS`` is built at import, before any config is loaded, so the
-    static ``agents.default`` spec carries an empty ``choices``; this fills it
-    in at Settings-screen build time. Empty ``agent_ids`` leaves the spec as-is.
+    ``agent_ids`` is accepted for the old call surface; launch profiles and
+    agent catalog tables are file-only and are not represented here.
     """
-    if not agent_ids:
-        return SETTINGS_SPECS
-    return tuple(
-        SettingSpec(s.key, s.kind, s.description, choices=tuple(agent_ids))
-        if s.key == "agents.default"
-        else s
-        for s in SETTINGS_SPECS
-    )
+    return SETTINGS_SPECS
 
 
 def resolve_setting_entries(
@@ -218,23 +186,19 @@ def resolve_setting_entries(
 ) -> list[SettingEntry]:
     """Merge the three layers and return one entry per schema key with source info.
 
-    ``agent_ids`` (when supplied) binds the dynamic ``agents.default`` enum
-    choices to the resolved catalog ids — see :func:`settings_specs_for`.
+    ``project_data`` / ``project_path`` are accepted for the old call surface
+    but ignored. Runtime policy is operator-owned and no project config layer
+    is displayed.
     """
+    del project_data, project_path
     out: list[SettingEntry] = []
     for spec in settings_specs_for(agent_ids):
         key = spec.key
         is_dotted = "." in key
         if is_dotted:
-            # Check project_data using dotted lookup
-            proj_val = _get_dotted(project_data, key, _MISSING)
             repo_val = _get_dotted(repo_data, key, _MISSING)
             def_val = _get_dotted(defaults, key, None)
-            if proj_val is not _MISSING:
-                value = proj_val
-                source = f"project:{project_path}" if project_path else "project"
-                editable = False
-            elif repo_val is not _MISSING:
+            if repo_val is not _MISSING:
                 value = repo_val
                 source = "repo"
                 editable = True
@@ -243,11 +207,7 @@ def resolve_setting_entries(
                 source = "default"
                 editable = True
         else:
-            if key in project_data:
-                value = project_data[key]
-                source = f"project:{project_path}" if project_path else "project"
-                editable = False
-            elif key in repo_data:
+            if key in repo_data:
                 value = repo_data[key]
                 source = "repo"
                 editable = True
@@ -390,17 +350,12 @@ def remove_repo_key(path: Path | str, key: str) -> None:
         write_repo_config_toml(tomlkit.dumps(doc), path)
 
 
-def load_settings_sources(cwd: str) -> tuple[dict, dict, Path | None]:
-    """Load raw repo + project config data (unmerged) plus the project path.
+def load_settings_sources(_cwd: str) -> tuple[dict, dict, Path | None]:
+    """Load raw repo config data.
 
     Used by the TUI settings screen so it can show each value's origin and
     write back only to the repo-level file.
     """
     repo_cfg = config_loader.repo_config_path()
     repo_data = config_loader.load_toml(repo_cfg)
-    seed_allowed = [
-        canonical(p) for p in repo_data.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])
-    ]
-    proj_cfg = config_loader.find_project_config(cwd, seed_allowed)
-    proj_data = config_loader.load_toml(proj_cfg) if proj_cfg else {}
-    return repo_data, proj_data, proj_cfg
+    return repo_data, {}, None

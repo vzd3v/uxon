@@ -165,16 +165,12 @@ services:
 """
 
 
-def write_project(project_dir: Path, container_name: str) -> Path:
-    """Materialize the synthetic project: stub agent + project .uxon.toml.
+def write_project(project_dir: Path, _container_name: str) -> Path:
+    """Materialize the synthetic project and stub agent.
 
     Returns the stub path (bind-mounted to ``/usr/local/bin/claude``).
-    The ``.uxon.toml`` carries only the unique container name — the data
-    a project layer is trusted to supply — mirroring how an operator
-    would pin a per-project container.
     """
     stub = project_dir / "claude-stub"
     stub.write_text(STUB_AGENT)
     stub.chmod(0o755)
-    (project_dir / ".uxon.toml").write_text(f'[container]\nname = "{container_name}"\n')
     return stub

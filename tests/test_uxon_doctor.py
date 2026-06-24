@@ -10,8 +10,10 @@ from __future__ import annotations
 import io
 import os
 import pwd
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 _USER = pwd.getpwuid(os.getuid()).pw_name
@@ -134,6 +136,50 @@ class DoctorParallelProbeTests(unittest.TestCase):
         self.assertIn("codex:  -  MISSING", out)
         self.assertIn("cursor:  -  MISSING", out)
 
+    def test_doctor_config_sources_do_not_open_project_uxon_toml(self) -> None:
+        from uxon.app import doctor as doctor_app
+        from uxon.infra import agents as uxon_agents
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_cfg = root / "config" / "config.toml"
+            repo_cfg.parent.mkdir()
+            repo_cfg.write_text('runtime_user = "operator"\n', encoding="utf-8")
+            cwd = root / "project" / "sub"
+            cwd.mkdir(parents=True)
+            project_cfg = cwd.parent / ".uxon.toml"
+            project_cfg.write_text('[agents]\ndefault = "codex"\n', encoding="utf-8")
+
+            opened: list[Path] = []
+            original_open = Path.open
+
+            def spy_open(path_self: Path, *args, **kwargs):
+                opened.append(path_self)
+                return original_open(path_self, *args, **kwargs)
+
+            with (
+                patch("uxon.infra.version_probe.repo_root", return_value=root),
+                patch.object(Path, "open", spy_open),
+                patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host()),
+                patch.object(
+                    uxon_agents,
+                    "_probe_one",
+                    return_value=uxon_agents.AgentAvailability(status="ok", version="x"),
+                ),
+                patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]),
+                redirect_stdout(io.StringIO()),
+            ):
+                doctor_app.do_doctor(
+                    self._stub_cfg(),
+                    caller_user=_USER,
+                    launch_user=_USER,
+                    cwd=str(cwd),
+                )
+
+        self.assertIn(repo_cfg, opened)
+        self.assertNotIn(project_cfg, opened)
+
 
 class ProbeOneTimeoutOverrideTests(unittest.TestCase):
     """``_probe_one`` honours ``timeout_override`` keyword-only arg."""
@@ -178,8 +224,7 @@ class ProbeOneTimeoutOverrideTests(unittest.TestCase):
 class DoctorRemoteFlagTests(unittest.TestCase):
     """Stage 10c — opt-in ``uxon doctor --remote`` probes peers.
 
-    Default ``uxon doctor`` stays local-only (the AGENTS.md walk-back
-    is gated on the explicit flag). The flag triggers one
+    Default ``uxon doctor`` stays local-only. The flag triggers one
     ``fetch_remote_snapshot`` call per configured peer.
     """
 

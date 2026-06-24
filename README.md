@@ -137,24 +137,23 @@ Full keybinding list:
 | `codex`  | `codex` | `--full-auto` | `--dangerously-bypass-approvals-and-sandbox` | `npm i -g @openai/codex` |
 | `cursor` | `cursor-agent` | (not supported) | `--yolo` | `curl https://cursor.com/install -fsSL \| bash` |
 
-Enable agents in `config/config.toml`:
+Expose launch profiles in `config/config.toml`:
 
 ```toml
-[agents]
-enabled = ["claude", "codex"]
-default = "claude"
+[launch]
+enabled_profiles = ["claude", "codex"]
+default_profile = "claude"
 ```
 
 `-w <branch>` (worktree) works with any agent; uxon manages the worktree
 itself. `cursor` has no `auto` mode.
 
-`uxon doctor` probes each enabled agent and prints its path,
-version, and status. The TUI auto-detects newly-installed
-agents and offers a one-keypress enable.
+`uxon doctor` probes the agent catalog and prints each path,
+version, and status.
 
-Agents can optionally run **inside a container** (off by default),
+Launch profiles can optionally run agents **inside a container**,
 composed on top of the paired account — see
-[`docs/guides/customise/run-agents-in-a-container.md`](docs/guides/customise/run-agents-in-a-container.md).
+[`docs/reference/configuration.md`](docs/reference/configuration.md#containerprofilesid-table).
 
 ## Versioning
 

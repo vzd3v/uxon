@@ -5,38 +5,18 @@ to set a key — see the [scenario hubs](../scenarios/solo-1.md), the
 [tutorials in `start/`](../start/install.md), or the
 [how-to guides in `guides/customise/`](../guides/customise/switch-default-agent.md).
 
-## Layers
+## Config file
 
-`uxon` reads two layers, later wins:
-
-1. **Repo config** — `<repo>/config/config.toml`, host-wide.
-   `config/config.example.toml` is the tracked starting point.
-2. **Project config** — the nearest `.uxon.toml` in `cwd` or a
-   parent inside an `allowed_roots` entry. Per-project overrides.
-   The TUI never writes `.uxon.toml`.
+`uxon` reads the operator-owned repo config:
+`<repo>/config/config.toml`. `config/config.example.toml` is the
+tracked starting point.
 
 The TUI's ⚙ Settings screen rewrites repo config in place via a
 `tomlkit` round-trip, preserving comments and formatting.
 
-**Project-layer allowlist (`.uxon.toml`).** A `.uxon.toml` is
-discovered by walking up from `cwd`, so a cloned repo can carry one —
-it is **untrusted** and may never inject argv or policy that `uxon`
-runs under `sudo -iu`. The project layer is therefore filtered
-deny-by-default: only these keys survive, everything else is dropped
-(logged at debug, never a hard error):
-
-| Project key | Effect |
-|---|---|
-| `agents.default`, `agents.enabled` | Select among the **operator-defined** agents (pure selection, no argv). |
-| `tui.*` | Dashboard layout (pure UI data). |
-| `container.name`, `container.path_map` | Container identity + path mapping (data; re-validated). See [`[container]`](#container-table). |
-
-Every other key — `allowed_roots`, `launch_user_by_caller`,
-`local_host`, any `[agents.<id>]` argv sub-table, and every
-operator-only `[container]` key — is dropped from the project layer.
-The repo `config/config.toml` layer is unaffected and keeps full
-power. (So `allowed_roots` is **host-wide** — a `.uxon.toml` cannot
-widen it.)
+Project-owned `.uxon.toml` files are not read. Runtime policy,
+launch profiles, path rules, agents, containers, and git credentials
+are operator-owned.
 
 ## Top-level keys
 
@@ -58,39 +38,77 @@ widen it.)
 | `worktree_root` | string | `""` | Base directory for uxon-managed worktrees. Empty = default `<repo>/.uxon/worktrees/<branch-slug>/` (excluded from git via `.git/info/exclude`). When set: `<worktree_root>/<repo-slug>/<branch-slug>/` — the admin must ensure it is writable by the launch user and inside `allowed_roots`. |
 | `worktree_base` | `"local"` / `"remote"` | `"local"` | Base ref for a *new* worktree branch. `local` (default): branch off the local `origin/HEAD` if present, else local `HEAD` — no `git fetch`, no network. `remote`: `git fetch origin` first, then branch off the fetched `origin/HEAD` (claude-like; needs network + credentials). |
 | `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
-| `default_git_remote_profile` | string | `""` | Profile picked by `--git-remote default` and the TUI default. |
 | `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=<ssh_control_persist_seconds>s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
 | `ssh_control_persist_seconds` | int | `300` | `ControlPersist` lifetime (seconds) for the multiplex master. Must be `> 0`; to disable multiplexing entirely set `ssh_multiplex = "off"` rather than zeroing this out. Ignored when `ssh_multiplex = "off"` and per-host when `command_template` is set. |
 | `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. Not exposed on the TUI's ⚙ Settings screen — edit `config.toml` directly. |
 
-## `[agents]` table
+## `[launch]` table
+
+Launch profiles are the runnable choices. Agents remain the
+binary/mode catalog; a launch profile selects an agent and may pin a
+launch user, a container profile, and git-remote credentials.
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
-| `agents.enabled` | array | `[]` | Strict whitelist of agent ids when non-empty (`claude`, `codex`, `cursor`); empty or absent flips uxon into **auto-mode** where every installed CATALOG agent is launchable for the launch user. |
-| `agents.default` | string | `""` | Default agent when `--agent` is not passed. Optional; if unset uxon picks the first entry of `agents.enabled` (strict mode) or the first installed agent (auto-mode). Must be in `agents.enabled` when both are set. |
+| `launch.enabled_profiles` | array | `[]` | Ordered whitelist of launch profile ids. Empty or absent means auto-mode with the shipped built-in profiles `claude`, `codex`, and `cursor`. Operator-defined profiles are enabled only when listed. |
+| `launch.default_profile` | string | `""` | Default launch profile. When set, it must be enabled. |
 
-Auto-mode vs strict whitelist:
+### Launch profiles (`[launch.profiles.<id>]`)
 
-- **`enabled = []` or absent** — auto-mode. uxon probes the host at
-  startup and treats every installed CATALOG agent as launchable.
-  `r` on the main screen re-probes (e.g. after `npm i -g …`).
-- **`enabled = ["claude", "codex"]`** — strict whitelist. Only the
-  listed agents are launchable, even if more are installed. Use this
-  to pin a fleet to an approved subset (operator/CI scenarios).
+Profile ids must match `[a-z][a-z0-9_]*` and contain no `:` or `.`.
 
-`agents.enabled = []` and an absent `[agents].enabled` are
-semantically identical — both mean auto. There is no explicit
-"disable" mode; if you want uxon to refuse to launch anything,
-uninstall the agent binaries.
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `agent` | string | — | Required agent catalog id. |
+| `display_name` | string | `""` | Optional human label. |
+| `launch_user` | string | `""` | Optional OS-user override. Empty uses `launch_user_by_caller` / `default_launch_mode` / `runtime_user`. |
+| `container_profile` | string | `""` | Optional `[container.profiles.<id>]`. Empty means no container. |
+| `allowed_git_remote_profiles` | array | `[]` | Git remote profiles this launch profile may use. Empty means this launch profile cannot create remote repos. |
+| `default_git_remote_profile` | string | `""` | Default for `--git-remote default`; must be listed in `allowed_git_remote_profiles`. |
 
-### Per-agent catalog (`[agents.<id>]`)
+```toml
+[launch]
+enabled_profiles = ["claude_work", "codex_safe"]
+default_profile = "claude_work"
+
+[launch.profiles.claude_work]
+agent = "claude"
+display_name = "Claude work"
+launch_user = "wes-claude-agent"
+container_profile = "claude_work"
+allowed_git_remote_profiles = ["work"]
+default_git_remote_profile = "work"
+```
+
+### Path rules (`[[launch.path_rules]]`)
+
+Path rules narrow launch and git-remote policy under an operator-owned
+host path. Longest matching `path_prefix` wins. Paths are matched by
+path component, not string prefix.
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `path_prefix` | string | — | Required absolute host path. |
+| `allowed_profiles` | array | — | Non-empty subset of effective enabled launch profiles. |
+| `default_profile` | string | `""` | Default for this path; must be in `allowed_profiles` when set. |
+| `allowed_git_remote_profiles` | array | unset | Optional narrowing list. It never grants credentials not already allowed by the selected launch profile. |
+| `default_git_remote_profile` | string | `""` | Path default after narrowing; must remain allowed for every profile named by the rule. |
+
+```toml
+[[launch.path_rules]]
+path_prefix = "/srv/projects/billing-api"
+allowed_profiles = ["claude_work", "codex_safe"]
+default_profile = "codex_safe"
+allowed_git_remote_profiles = ["work"]
+default_git_remote_profile = "work"
+```
+
+## `[agents.<id>]` catalog
 
 Each `[agents.<id>]` table customises one agent in the catalog, or
 declares a brand-new one. The shipped presets are `claude`, `codex`,
 `cursor`; supplying a table for a new id adds it (the id must match
-`[a-z][a-z0-9_]*` and contain no `:` / `.` — it becomes the
-`@<id>` session suffix).
+`[a-z][a-z0-9_]*` and contain no `:` / `.`).
 
 | Key | Type | Default | Purpose |
 |---|---|---|---|
@@ -142,44 +160,34 @@ flags     = ["--auto-approve"]
 dangerous = true
 ```
 
-**File-only.** The `[agents.<id>]` catalog (per-agent scalar fields
-and the `[[agents.<id>.mode]]` array-of-tables) is edited in the
-config file directly — like the [`[container]`](#container-table)
-templates, it is **not** exposed on the TUI ⚙ Settings screen, which
-covers scalar keys only. The catalog is canonical here; guides link
-to this section rather than re-document it.
+**File-only.** The `[agents.<id>]` catalog and launch/container profile
+tables are edited in `config.toml` directly. They are not exposed on
+the TUI ⚙ Settings screen, which covers scalar keys only.
 
-## `[container]` table
+## `[container.profiles.<id>]` table
 
-**Off by default.** When enabled, uxon wraps the agent command in an
-operator-supplied runtime exec prefix so the agent process runs inside
-a container (`docker` / `podman` / `nerdctl` / …). uxon models **no**
-runtime semantics — every command below is an argv **list** you supply
-verbatim, never a shell string. The argv-list shape is the security
-invariant: `"{name}"` is one token, so a hostile container name can
-never inject extra arguments.
-
-Every container command (probes, start, create) runs **as the launch
-user** — the same identity the agent execs under — and the start/create
-run in the **host** project directory. For rootless docker/podman the
-daemon is per-user, so this keeps the probe and the agent on the same
-daemon and a compose file resolves where it lives on the host.
+A launch is containerized only when its launch profile names a
+`container_profile`. Container profile ids must match
+`[a-z][a-z0-9_]*` and contain no `:` or `.`.
 
 | Key | Type | Default | Purpose |
 |---|---|---|---|
-| `container.enabled` | bool | `false` | Master switch. Default (or absent) leaves the launch argv byte-identical to a non-container launch. |
-| `container.exec_template` | array | `[]` | Argv prefix prepended to the agent command when enabled. Placeholders: `{name}` (resolved container name), `{dir}` (container-side working directory). Required when enabled. |
-| `container.name_template` | string | `""` | Template for the container name. Placeholders: `{user}`, `{project_slug}`, `{dir}`. Required when enabled unless a project `.uxon.toml` supplies `container.name`. |
-| `container.name` | string | `""` | Explicit container name; overrides `name_template`. Settable from a project `.uxon.toml` (see Layers). |
-| `container.path_map` | table | `{}` | Maps a host directory prefix to its container-side path; longest matching host prefix wins, no match → host path verbatim. Settable from a project `.uxon.toml`. When **non-empty**, a uxon-managed **worktree** whose path falls under none of the host prefixes fails fast before `git worktree add` (the container would have no mount backing it) — name a prefix that covers the worktree, or set `worktree_root` to a path that is already mapped. An **empty** `path_map` is the bind-at-same-path carve-out and never trips this gate. |
-| `container.is_running_cmd` | array | `[]` | Probe argv; **exit 0 ⇒ the container is RUNNING** (exec directly). Must distinguish running from merely existing: `docker inspect` exits 0 for a stopped container too, so use `docker top {name}` (non-zero unless running). Placeholders: `{name}`, `{dir}`. |
-| `container.exists_cmd` | array | `[]` | Probe argv (run only when not running); exit 0 ⇒ the container exists but is stopped (needs a start), non-zero ⇒ absent (needs a create). e.g. `docker container inspect {name}`. |
-| `container.on_missing` | `"off"` / `"start"` / `"create"` | `"off"` | Capability gate when the container is not running. `off` execs only (a stopped/absent container fails with an actionable message); `start` may also start a stopped container; `create` may also create an absent one. |
-| `container.on_missing_mode` | `"prompt"` / `"auto"` | `"prompt"` | How a permitted start/create is triggered. `auto` runs the template without asking; `prompt` shows a TUI confirm before running it. The CLI is non-interactive, so it always acts auto-if-permitted. |
-| `container.start_template` | array | `[]` | Argv that starts a stopped container. Required when `on_missing` is `start` or `create`. |
-| `container.create_template` | array | `[]` | Argv that creates an absent container. Required when `on_missing` is `create`. |
-| `container.stop_template` | array | `[]` | Argv run on **kill** to terminate this session's in-container agent. Placeholders: `{name}` and `{pidfile}` (uxon-supplied path where the launch wrapper recorded the agent's in-container PID, unique per session). Optional; when set, uxon wraps the agent at launch to record its PID and reaps it on kill (the container is left running). Needs `sh` in the image. |
-| `container.resolve_cmd` | array | `[]` | Optional argv that prints the container's host **identity** on stdout so uxon can attribute monitoring stats and guard teardown against PID recycling. Placeholders: `{name}`, `{dir}`. **Expected stdout:** the first non-empty line, whitespace-separated `<id> <init_pid> <start_epoch>`. uxon `str.format`s each token, so a runtime template using `{…}` (e.g. a docker/podman Go `--format`) must **double its own braces** to survive — write `{{{{.Id}}}}` to emit `{{.Id}}`: `["docker", "inspect", "--format", "{{{{.Id}}}} {{{{.State.Pid}}}} {{{{.State.StartedAt}}}}", "{name}"]`. Off by default; any runtime or parse failure is ignored (the markers below are simply absent). |
+| `runtime_namespace` | `"global"` / `"per_user"` | — | Required. Whether container names are shared globally or per launch user. |
+| `name_template` | string | — | Required. Placeholders: `{user}`, `{launch_profile}`, `{container_profile}`, `{agent}`, `{project_slug}`. |
+| `exec_template` | array | — | Required argv prefix prepended to the agent command. Placeholders include `{name}` and `{dir}`. |
+| `is_running_cmd` | array | `[]` | Probe argv; exit 0 means running. |
+| `exists_cmd` | array | `[]` | Probe argv; exit 0 means exists but may be stopped. |
+| `on_missing` | `"off"` / `"start"` / `"create"` | `"off"` | Capability gate when the container is not running. |
+| `on_missing_mode` | `"prompt"` / `"auto"` | `"prompt"` | TUI confirmation policy for permitted start/create. |
+| `start_template` | array | `[]` | Argv that starts a stopped container. Required when `on_missing` is `start` or `create`. |
+| `create_template` | array | `[]` | Argv that creates an absent container. Required when `on_missing` is `create`. |
+| `resolve_cmd` | array | `[]` | Argv that resolves stable container identity. Required when `stop_template` is set. |
+| `stop_template` | array | `[]` | Argv run on kill to terminate this session's in-container agent. Placeholders include `{name}` and `{pidfile}`. Requires `resolve_cmd`. |
+| `path_map` | table | `{}` | Host path prefix to container path prefix; longest host prefix wins. |
+
+Runtime command templates may use `{user}`, `{launch_profile}`,
+`{container_profile}`, `{agent}`, `{project_slug}`, `{name}`, and
+`{dir}`. `stop_template` may use `{pidfile}` instead of `{dir}`.
 
 The container is resolved deterministically per **(launch user,
 project directory)** — the same container is reused across sessions,
@@ -198,18 +206,10 @@ directory as part of the launch, so the container can only be readied
 *after* that — those two paths use auto-if-permitted (no prompt) even in
 the TUI.
 
-**Trust boundary.** From an untrusted project `.uxon.toml`, only
-`container.name` and `container.path_map` are honoured. Every executed
-or policy key (`exec_template`, `start_template`, `create_template`,
-`on_missing`, `name_template`, …) is operator-only and is dropped from
-the project layer. The resolved name is validated after expansion
+The resolved name is validated after expansion
 (`[A-Za-z0-9][A-Za-z0-9_.-]*`, ≤128 chars, no leading `-`/`.`/`_`);
 `path_map` keys/values and the post-map `{dir}` must be absolute,
 normalized, and `..`-free.
-
-**File-only.** The nested `[container]` structures (argv-list
-templates, `[container.path_map]`) are edited in `config.toml`
-directly — they are not exposed on the TUI ⚙ Settings screen.
 
 **Auth provisioning — operator-owned, no passthrough.** uxon does not
 install the agent and does **not** forward host credentials into the
@@ -221,22 +221,6 @@ environment variables (`-e NAME`) would push secrets into
 `/proc/<pid>/environ` inside the container, the exact exposure the
 hardening guide warns against. See
 [Provision auth safely](../guides/harden/harden-a-container.md#provision-auth-safely).
-
-**Launch-time markers (internal mechanics).** For an enabled container
-session, uxon stashes a few variables so it can later attribute
-monitoring statistics and reap the right process. They are set
-automatically — you do not configure them — and never appear when
-`[container]` is disabled:
-
-- `UXON_CONTAINER` (tmux session environment) — the resolved bare
-  container name.
-- `UXON_CONTAINER_ID` / `UXON_CONTAINER_CGROUP` / `UXON_CONTAINER_EPOCH`
-  (tmux session environment) — the container's identity, host-side
-  cgroup path, and start time. Present only when `resolve_cmd` is set
-  and resolves; absent otherwise.
-- `UXON_SESSION` (the in-container agent process environment) — the
-  session name, exported by the launch wrapper so host-side monitoring
-  can map an in-container process back to its session.
 
 **Teardown.** `tmux kill-session` only severs uxon's client-side exec;
 the in-container agent does **not** die on that disconnect under docker
@@ -388,7 +372,6 @@ touching `xkb`.
 | `UXON_METRICS` | When set to `1`, writes per-fetch latency rows to `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files). |
 | `SUDO_USER` | Honoured when `uxon` is invoked via `sudo` to identify the real caller. |
 | `SSH_CONNECTION` | Inspected by `audit.py` to detect peer-inbound invocations and switch local events to `*.remote.in`. |
-| `UXON_AGENT_RELEASE_OK` | Internal — gates the agent-only release-class hook bypass. Not for human use. |
 
 ## Rendering config from JSON (multi-host fleets)
 
@@ -398,16 +381,12 @@ python3 install/render_uxon_config.py \
   --output config/config.toml
 ```
 
-`git_create_enabled`, `default_git_remote_profile`, and
-`[[git_remote_profiles]]` are intentionally **not** part of the
-JSON-to-TOML flow — they reference `creds_user` and `token_file`
-that infra shouldn't hard-code across hosts. Hand-edit them in
+`git_create_enabled`, launch-profile git policy,
+`[[git_remote_profiles]]`, and container profiles are intentionally
+**not** part of the JSON-to-TOML flow — they reference credential
+domains, runtime argv, `creds_user`, and `token_file` values that
+infra should not hard-code across hosts. Hand-edit them in
 `config.toml`.
-
-A `"container"` object in the JSON payload renders to the
-`[container]` TOML block (argv-list keys become TOML arrays,
-`path_map` becomes a `[container.path_map]` table); see the example
-payload for the disabled-by-default shape.
 
 For the multi-host operating model see
 [`explain/multi-host-philosophy.md`](../explain/multi-host-philosophy.md).

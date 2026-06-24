@@ -37,7 +37,7 @@ class ResolveSettingEntriesTests(unittest.TestCase):
         self.assertEqual(by_key["runtime_user"].value, "dana_agent")
         self.assertTrue(by_key["runtime_user"].editable)
 
-    def test_project_override_is_readonly(self) -> None:
+    def test_project_data_is_ignored(self) -> None:
         entries = cs.resolve_setting_entries(
             {"runtime_user": "repoish"},
             {"runtime_user": "projish"},
@@ -45,9 +45,9 @@ class ResolveSettingEntriesTests(unittest.TestCase):
             DEFAULTS,
         )
         by_key = {e.spec.key: e for e in entries}
-        self.assertEqual(by_key["runtime_user"].source, "project:/p/.uxon.toml")
-        self.assertEqual(by_key["runtime_user"].value, "projish")
-        self.assertFalse(by_key["runtime_user"].editable)
+        self.assertEqual(by_key["runtime_user"].source, "repo")
+        self.assertEqual(by_key["runtime_user"].value, "repoish")
+        self.assertTrue(by_key["runtime_user"].editable)
 
 
 class RenderRepoConfigTomlTests(unittest.TestCase):
@@ -279,65 +279,43 @@ class WriteRepoConfigTomlTests(unittest.TestCase):
         self.assertFalse(real_run.call_args.kwargs["text"])
 
 
-class NestedAgentKeysTests(unittest.TestCase):
-    """Round-trip tests for dotted agents.* keys."""
-
-    def _src(self) -> str:
-        return (
-            "# top comment\n"
-            "[agents]\n"
-            'enabled = ["claude"]\n'
-            'default = "claude"\n'
-            "\n"
-            "[agents.claude]\n"
-            "default_args = []\n"
-        )
-
-    def test_round_trip_agents_default(self) -> None:
-        src = self._src()
-        new = ct.update_repo_config_text(
-            src, {"agents.default": "codex"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
-        )
-        parsed = tomllib.loads(new)
-        self.assertEqual(parsed["agents"]["default"], "codex")
-        self.assertIn("# top comment", new)
-
-    def test_round_trip_agents_enabled_list(self) -> None:
-        """List-of-strings under [agents] table writes via persist_repo_config_updates.
-
-        The detected-agents banner relies on this round-trip to add a newly
-        discovered agent to ``[agents].enabled`` in repo config. Cover the
-        list-write path explicitly since none of the existing TUI write
-        call-sites round-trip a list-of-strings under a dotted-key table.
-        """
+class LoadSettingsSourcesTests(unittest.TestCase):
+    def test_does_not_open_project_uxon_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "config.toml"
-            path.write_text(self._src(), encoding="utf-8")
-            cs.persist_repo_config_updates(
-                path,
-                {"agents.enabled": ["claude", "codex"]},
-            )
-            text = path.read_text(encoding="utf-8")
-            parsed = tomllib.loads(text)
-            self.assertEqual(parsed["agents"]["enabled"], ["claude", "codex"])
-            # Sibling keys + leading comment survive.
-            self.assertEqual(parsed["agents"]["default"], "claude")
-            self.assertIn("# top comment", text)
-            self.assertEqual(parsed["agents"]["claude"]["default_args"], [])
+            root = Path(tmp)
+            repo_cfg = root / "config" / "config.toml"
+            repo_cfg.parent.mkdir()
+            repo_cfg.write_text('runtime_user = "repo"\n', encoding="utf-8")
+            project = root / "work"
+            project.mkdir()
+            project_cfg = project / ".uxon.toml"
+            project_cfg.write_text('runtime_user = "project"\n', encoding="utf-8")
 
-    def test_resolve_entries_dotted_key_from_repo(self) -> None:
-        repo_data = {"agents": {"enabled": ["claude", "cursor"], "default": "cursor"}}
-        entries = cs.resolve_setting_entries(repo_data, {}, None, {})
-        by_key = {e.spec.key: e for e in entries}
-        self.assertEqual(by_key["agents.enabled"].value, ["claude", "cursor"])
-        self.assertEqual(by_key["agents.enabled"].source, "repo")
-        self.assertEqual(by_key["agents.default"].value, "cursor")
+            opened: list[Path] = []
+            original_open = Path.open
 
-    def test_resolve_entries_dotted_key_default_when_absent(self) -> None:
-        entries = cs.resolve_setting_entries({}, {}, None, {})
-        by_key = {e.spec.key: e for e in entries}
-        self.assertEqual(by_key["agents.enabled"].source, "default")
-        self.assertIsNone(by_key["agents.enabled"].value)
+            def spy_open(path_self: Path, *args, **kwargs):
+                opened.append(path_self)
+                return original_open(path_self, *args, **kwargs)
+
+            with mock.patch("uxon.infra.version_probe.repo_root", return_value=root):
+                with mock.patch.object(Path, "open", spy_open):
+                    repo_data, project_data, project_path = cs.load_settings_sources(str(project))
+
+        self.assertEqual(repo_data["runtime_user"], "repo")
+        self.assertEqual(project_data, {})
+        self.assertIsNone(project_path)
+        self.assertIn(repo_cfg, opened)
+        self.assertNotIn(project_cfg, opened)
+
+
+class ProfileSettingsSchemaTests(unittest.TestCase):
+    def test_launch_and_container_profiles_are_file_only(self) -> None:
+        self.assertNotIn("agents.enabled", cs.SCHEMA_KEYS)
+        self.assertNotIn("agents.default", cs.SCHEMA_KEYS)
+        self.assertNotIn("default_git_remote_profile", cs.SCHEMA_KEYS)
+        self.assertNotIn("launch.enabled_profiles", cs.SCHEMA_KEYS)
+        self.assertNotIn("container.profiles", cs.SCHEMA_KEYS)
 
 
 class WorktreeSettingsSpecTests(unittest.TestCase):

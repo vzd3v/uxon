@@ -48,6 +48,13 @@ def _install_loop_guard():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_repo_config(tmp_path):
+    """Keep unit tests from reading a developer's ignored config/config.toml."""
+    with mock.patch("uxon.infra.version_probe.repo_root", return_value=tmp_path):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _stub_probe_host_by_default(request: pytest.FixtureRequest):
     """Default ``probes.probe_host`` to a fully-installed CATALOG.
 

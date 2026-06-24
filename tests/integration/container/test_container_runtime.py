@@ -92,19 +92,13 @@ def _operator_container_table(rt: Runtime, project_dir: Path) -> dict[str, objec
 def _load_container(rt: Runtime, project_dir: Path):
     """Build a validated ContainerConfig the way the loader does.
 
-    Merges the operator table with the project ``.uxon.toml`` through the
-    real deny-by-default allowlist, so the unique name genuinely flows
-    from the project file (and is re-validated) rather than being injected
-    directly — exercising the production trust split.
+    The unique runtime name is operator-owned test data. Project-level
+    runtime policy is no longer read.
     """
     from uxon.infra import config_loader
 
-    operator = {"container": _operator_container_table(rt, project_dir)}
-    project = config_loader.load_toml(project_dir / ".uxon.toml")
-    # The allowlist merges the project's surviving leaves (here, ``name``)
-    # onto the operator table; only that merged table is trusted to build.
-    filtered = config_loader.project_allowlist(project, operator)
-    container_tbl = filtered.get("container", operator["container"])
+    container_tbl = _operator_container_table(rt, project_dir)
+    container_tbl["name"] = rt.container_name
     return config_loader.build_container_config(container_tbl)  # type: ignore[arg-type]
 
 

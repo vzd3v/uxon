@@ -249,12 +249,9 @@ class UxonTests(unittest.TestCase):
             return {}
 
         with mock.patch.object(version_probe, "repo_root", return_value=tmp_path):
-            with mock.patch("uxon.infra.config_loader.find_project_config", return_value=None):
-                with mock.patch("uxon.infra.config_loader.canonical", side_effect=lambda v: str(v)):
-                    with mock.patch(
-                        "uxon.infra.config_loader.load_toml", side_effect=fake_load_toml
-                    ):
-                        return config_loader.load_config(str(cwd))
+            with mock.patch("uxon.infra.config_loader.canonical", side_effect=lambda v: str(v)):
+                with mock.patch("uxon.infra.config_loader.load_toml", side_effect=fake_load_toml):
+                    return config_loader.load_config(str(cwd))
 
     def test_load_config_reads_new_multi_user_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -269,12 +266,12 @@ class UxonTests(unittest.TestCase):
                     repeat_noninteractive_mode = "attach"
                     tmux_socket_template = "/tmp/uxon-{user}-{uid}.sock"
 
-                    [agents]
-                    enabled = ["claude"]
-                    default = "claude"
-
                     [agents.claude]
                     default_args = ["--model", "sonnet"]
+
+                    [launch]
+                    enabled_profiles = ["claude"]
+                    default_profile = "claude"
 
                     [launch_user_by_caller]
                     erin = "dana_agent"
@@ -439,12 +436,11 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(fields.get("reason"), "ignored_default_sort_by")
         self.assertEqual(fields.get("id"), "ram")
 
-    def test_load_config_reads_git_remote_profiles(self) -> None:
+    def test_load_config_reads_git_remote_profiles_and_launch_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg(
                 textwrap.dedent("""
                     git_create_enabled = true
-                    default_git_remote_profile = "vzd3v-gh"
 
                     [[git_remote_profiles]]
                     name = "vzd3v-gh"
@@ -461,21 +457,246 @@ class UxonTests(unittest.TestCase):
                     auth = "token"
                     creds_user = "erin"
                     token_file = "/home/erin/.secrets/acme.token"
+
+                    [launch.profiles.claude_work]
+                    agent = "claude"
+                    allowed_git_remote_profiles = ["vzd3v-gh", "acme-tok"]
+                    default_git_remote_profile = "vzd3v-gh"
+
+                    [launch]
+                    enabled_profiles = ["claude_work"]
+                    default_profile = "claude_work"
                 """).strip()
                 + "\n",
                 tmpdir,
             )
 
         self.assertTrue(cfg.git_create_enabled)
-        self.assertEqual(cfg.default_git_remote_profile, "vzd3v-gh")
+        self.assertEqual(cfg.launch.profiles["claude_work"].git_remote.default_profile, "vzd3v-gh")
         self.assertEqual([p.name for p in cfg.git_remote_profiles], ["vzd3v-gh", "acme-tok"])
         self.assertEqual(cfg.git_remote_profiles[1].token_file, "/home/erin/.secrets/acme.token")
 
-    def test_load_config_rejects_default_pointing_to_missing_profile(self) -> None:
+    def test_load_config_rejects_removed_top_level_default_git_remote_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg(
                     'default_git_remote_profile = "missing"\n',
+                    tmpdir,
+                )
+
+    def test_load_config_reads_launch_profile_and_container_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [launch]
+                    enabled_profiles = ["claude_sub1"]
+                    default_profile = "claude_sub1"
+
+                    [launch.profiles.claude_sub1]
+                    agent = "claude"
+                    display_name = "Claude subscription 1"
+                    launch_user = "dana_agent"
+                    container_profile = "claude_sub1"
+
+                    [container.profiles.claude_sub1]
+                    runtime_namespace = "per_user"
+                    name_template = "{user}-{launch_profile}-{project_slug}"
+                    exec_template = ["docker", "exec", "-w", "{dir}", "{name}"]
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+
+        self.assertEqual(cfg.launch.enabled_profiles, ("claude_sub1",))
+        self.assertEqual(cfg.launch.default_profile, "claude_sub1")
+        self.assertEqual(cfg.launch.profiles["claude_sub1"].agent, "claude")
+        self.assertEqual(cfg.launch.profiles["claude_sub1"].container_profile, "claude_sub1")
+        self.assertEqual(cfg.container_profiles["claude_sub1"].runtime_namespace, "per_user")
+
+    def test_load_config_rejects_tmux_unsafe_launch_profile_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [launch.profiles."bad.profile"]
+                        agent = "claude"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+
+    def test_load_config_rejects_tmux_unsafe_container_profile_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [container.profiles."bad-profile"]
+                        runtime_namespace = "global"
+                        name_template = "{project_slug}"
+                        exec_template = ["docker", "exec", "{name}"]
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+
+    def test_load_config_rejects_container_placeholder_not_allowed_in_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [container.profiles.box]
+                        runtime_namespace = "global"
+                        name_template = "{name}"
+                        exec_template = ["docker", "exec", "{name}"]
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertIn("unsupported placeholder", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_load_config_rejects_non_string_container_profile_scalar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [container.profiles.box]
+                        runtime_namespace = "global"
+                        name_template = 123
+                        exec_template = ["docker", "exec", "{name}"]
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertIn("name_template must be a string", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_load_config_rejects_stop_template_without_resolve_cmd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [container.profiles.box]
+                        runtime_namespace = "global"
+                        name_template = "{project_slug}"
+                        exec_template = ["docker", "exec", "{name}"]
+                        stop_template = ["docker", "exec", "{name}", "kill", "$(cat {pidfile})"]
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertIn("resolve_cmd", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_load_config_rejects_path_rule_git_default_after_intersection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [[git_remote_profiles]]
+                        name = "work"
+                        host = "github.com"
+                        owner = "org"
+                        auth = "gh"
+
+                        [[git_remote_profiles]]
+                        name = "personal"
+                        host = "github.com"
+                        owner = "me"
+                        auth = "gh"
+
+                        [launch]
+                        enabled_profiles = ["claude_work"]
+
+                        [launch.profiles.claude_work]
+                        agent = "claude"
+                        allowed_git_remote_profiles = ["work"]
+                        default_git_remote_profile = "work"
+
+                        [[launch.path_rules]]
+                        path_prefix = "/srv/repos/app"
+                        allowed_profiles = ["claude_work"]
+                        default_profile = "claude_work"
+                        allowed_git_remote_profiles = ["personal"]
+                        default_git_remote_profile = "personal"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertIn("after git-remote policy intersection", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_load_config_rejects_relative_path_rule_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [launch]
+                        enabled_profiles = ["claude"]
+
+                        [[launch.path_rules]]
+                        path_prefix = "relative/app"
+                        allowed_profiles = ["claude"]
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertIn("path_prefix must be an absolute path", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_load_config_rejects_non_normalized_path_rule_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [launch]
+                        enabled_profiles = ["claude"]
+
+                        [[launch.path_rules]]
+                        path_prefix = "/srv/app/../secret"
+                        allowed_profiles = ["claude"]
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertIn("absolute normalized path", getattr(cm.exception, "uxon_msg", ""))
+
+    def test_load_config_rejects_builtin_profile_override_in_auto_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as cm:
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [launch.profiles.claude]
+                        agent = "claude"
+                        launch_user = "dana_agent"
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertIn(
+            "overrides a shipped auto-mode profile", getattr(cm.exception, "uxon_msg", "")
+        )
+
+    def test_load_config_allows_builtin_profile_override_when_explicitly_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [launch]
+                    enabled_profiles = ["claude"]
+
+                    [launch.profiles.claude]
+                    agent = "claude"
+                    launch_user = "dana_agent"
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        self.assertEqual(cfg.launch.profiles["claude"].launch_user, "dana_agent")
+
+    def test_load_config_rejects_removed_global_container_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit):
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [container]
+                        enabled = true
+                    """).strip()
+                    + "\n",
                     tmpdir,
                 )
 
@@ -550,32 +771,33 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(cfg.agents["claude"].default_args, ())
 
     def test_load_config_empty_enabled_is_auto_mode(self) -> None:
-        """``enabled = []`` is equivalent to absent — auto-mode."""
+        """``launch.enabled_profiles = []`` is equivalent to absent — auto-mode."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg(
                 textwrap.dedent("""
-                    [agents]
-                    enabled = []
+                    [launch]
+                    enabled_profiles = []
                 """).strip()
                 + "\n",
                 tmpdir,
             )
         self.assertEqual(cfg.enabled_agents, ())
         self.assertEqual(cfg.default_agent, "")
+        self.assertEqual(cfg.launch.effective_enabled_profiles, ("claude", "codex", "cursor"))
 
-    def test_load_config_multi_agent(self) -> None:
+    def test_load_config_multi_launch_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg(
                 textwrap.dedent("""
-                    [agents]
-                    enabled = ["claude", "cursor"]
-                    default = "cursor"
-
                     [agents.claude]
                     default_args = ["--verbose"]
 
                     [agents.cursor]
                     default_args = []
+
+                    [launch]
+                    enabled_profiles = ["claude", "cursor"]
+                    default_profile = "cursor"
                 """).strip()
                 + "\n",
                 tmpdir,
@@ -592,19 +814,19 @@ class UxonTests(unittest.TestCase):
                     tmpdir,
                 )
 
-    def test_load_config_rejects_unknown_agent(self) -> None:
+    def test_load_config_rejects_removed_agents_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg(
-                    '[agents]\nenabled = ["nosuch"]\ndefault = "nosuch"\n',
+                    '[agents]\nenabled = ["claude"]\n',
                     tmpdir,
                 )
 
-    def test_load_config_rejects_default_not_in_enabled(self) -> None:
+    def test_load_config_rejects_removed_agents_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg(
-                    '[agents]\nenabled = ["claude"]\ndefault = "codex"\n',
+                    '[agents]\ndefault = "claude"\n',
                     tmpdir,
                 )
 
@@ -1126,20 +1348,27 @@ class UxonTests(unittest.TestCase):
         run_cmd.assert_called_once()
         execvp.assert_called_once()
 
-    def test_find_project_config_ignores_permission_errors(self) -> None:
+    def test_load_config_does_not_open_project_uxon_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            allowed = [str(root)]
-            target = root / "a" / "b"
-            target.mkdir(parents=True)
+            cwd = root / "project" / "sub"
+            cwd.mkdir(parents=True)
+            project_cfg = root / "project" / ".uxon.toml"
+            project_cfg.write_text('[agents]\ndefault = "codex"\n', encoding="utf-8")
 
-            def fake_exists(self: Path) -> bool:
-                if self == root / "a" / ".uxon.toml":
-                    raise PermissionError("denied")
-                return False
+            opened: list[Path] = []
+            original_open = Path.open
 
-            with mock.patch.object(Path, "exists", fake_exists):
-                self.assertIsNone(config_loader.find_project_config(str(target), allowed))
+            def spy_open(path_self: Path, *args, **kwargs):
+                opened.append(path_self)
+                return original_open(path_self, *args, **kwargs)
+
+            with mock.patch.object(version_probe, "repo_root", return_value=root):
+                with mock.patch.object(Path, "open", spy_open):
+                    cfg = config_loader.load_config(str(cwd))
+
+        self.assertEqual(cfg.default_agent, "")
+        self.assertNotIn(project_cfg, opened)
 
     # ── is_launch_target_allowed / ensure_launch_target_allowed ──────
     # Mirrors the TUI's "new session in current folder" gate so the CLI
@@ -1818,8 +2047,8 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
     """Regression: empty ``allowed_roots`` must mean "any writable" everywhere.
 
     The 3.1.0 fix introduced this semantics for ``is_launch_target_allowed``
-    but missed ``do_new``, ``_resolve_tui_project_dir``,
-    ``do_doctor`` and ``find_project_config``. After the unification
+    but missed ``do_new``, ``_resolve_tui_project_dir`` and
+    ``do_doctor``. After the unification
     refactor every consumer routes through
     :func:`uxon.domain.authz.is_under_allowed_roots` so the four sites behave
     identically.
@@ -1917,30 +2146,6 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         # Direct unit test of the predicate that drives the doctor
         # warning; the full doctor flow is exercised elsewhere.
         self.assertTrue(domain_authz.is_under_allowed_roots(cfg, cfg.new_project_root))
-
-    def test_find_project_config_empty_list_returns_any_uxon_toml(self) -> None:
-        """Regression: with ``allowed_roots=[]``, ``find_project_config``
-        used to silently return ``None`` (empty for-loop never matched),
-        so project configs were ignored on default-config hosts."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_real = os.path.realpath(tmp)
-            (Path(tmp_real) / ".uxon.toml").write_text("# stub\n")
-            sub = Path(tmp_real) / "sub"
-            sub.mkdir()
-            found = config_loader.find_project_config(str(sub), allowed_roots=[])
-            self.assertIsNotNone(found)
-            self.assertEqual(str(found), str(Path(tmp_real) / ".uxon.toml"))
-
-    def test_find_project_config_non_empty_list_still_strict(self) -> None:
-        """Non-empty ``allowed_roots`` still constrains the walk — a
-        ``.uxon.toml`` outside the listed roots is rejected."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_real = os.path.realpath(tmp)
-            (Path(tmp_real) / ".uxon.toml").write_text("# stub\n")
-            sub = Path(tmp_real) / "sub"
-            sub.mkdir()
-            found = config_loader.find_project_config(str(sub), allowed_roots=["/some/other/root"])
-            self.assertIsNone(found)
 
 
 class SessionNamingTests(unittest.TestCase):

@@ -94,10 +94,8 @@ def _operator_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
 def _build_cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     from uxon.infra import config_loader
 
-    operator = {"container": _operator_table(rt, project_dir)}
-    project = config_loader.load_toml(project_dir / ".uxon.toml")
-    filtered = config_loader.project_allowlist(project, operator)
-    container_tbl = filtered.get("container", operator["container"])
+    container_tbl = _operator_table(rt, project_dir)
+    container_tbl["name"] = rt.container_name
     container = config_loader.build_container_config(container_tbl)  # type: ignore[arg-type]
     return make_config(
         allowed_roots=[str(project_dir)],
@@ -106,11 +104,10 @@ def _build_cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     )
 
 
-def _write_project(project_dir: Path, container_name: str) -> Path:
+def _write_project(project_dir: Path, _container_name: str) -> Path:
     stub = project_dir / "agent-stub"
     stub.write_text(STUB_AGENT_SELECTABLE)
     stub.chmod(0o755)
-    (project_dir / ".uxon.toml").write_text(f'[container]\nname = "{container_name}"\n')
     return stub
 
 

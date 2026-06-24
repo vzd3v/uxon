@@ -423,10 +423,11 @@ class LoopStaysResponsiveTests(unittest.IsolatedAsyncioTestCase):
             table.move_cursor(row=0)
             await pilot.pause()
 
+            await pilot.press("d")  # kill → confirm
+            for _ in range(3):
+                await pilot.pause()
             mon = LoopBlockMonitor(interval=0.01)
             mon.start(app)
-            await pilot.press("d")  # kill → confirm
-            await pilot.pause()
             await pilot.press("y")  # confirm → off-loop worker sleeps `block`
             # Keep the loop running across the whole blocking window so the
             # heartbeat can tick — if the sleep were on the loop, it could not.

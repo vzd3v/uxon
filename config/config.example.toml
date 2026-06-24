@@ -35,9 +35,9 @@ session_prefix      = "uxon-"
 # allowed_roots    = ["~/projects"]
 # new_project_root = "~/projects"
 
-[agents]
-enabled = ["claude"]
-default = "claude"
+[launch]
+enabled_profiles = ["claude"]
+default_profile = "claude"
 
 [agents.claude]
 default_args = []
@@ -155,8 +155,7 @@ default_args = []
 # calls the REST API with a fine-grained PAT read from
 # ``token_file`` (required for token auth; never logged).
 #
-# git_create_enabled        = true
-# default_git_remote_profile = "work"
+# git_create_enabled = true
 #
 # [[git_remote_profiles]]
 # name       = "work"
@@ -165,6 +164,11 @@ default_args = []
 # auth       = "gh"            # or "token" + token_file
 # creds_user = "wes"           # defaults to launch user
 # visibility = "private"
+#
+# [launch.profiles.claude]
+# agent = "claude"
+# allowed_git_remote_profiles = ["work"]
+# default_git_remote_profile = "work"
 
 
 # ─── Dashboard columns + view (TUI) ───────────────────────────────
@@ -298,23 +302,18 @@ default_args = []
 # syslog_facility = "user"
 
 
-# ─── Container-agnostic launch ────────────────────────────────────
-# docs/reference/configuration.md ([container])
+# ─── Container profiles ───────────────────────────────────────────
+# docs/reference/configuration.md ([container.profiles.<id>])
 #
-# OFF BY DEFAULT. When enabled, uxon wraps the agent command in your
-# runtime's exec prefix so the agent process runs inside a container
-# (docker / podman / nerdctl / …). uxon models NO runtime semantics:
-# every command below is an argv LIST you supply verbatim — never a
-# shell string. ``{name}`` is the resolved container name; ``{dir}``
-# is the container-side working directory (after ``path_map``);
-# ``name_template`` also accepts ``{user}`` and ``{project_slug}``.
-# Every command runs AS THE LAUNCH USER — for rootless docker/podman
-# the probe and the agent then hit the same per-user daemon.
+# A launch is containerized only when its launch profile names a
+# ``container_profile``. uxon models NO runtime semantics: every
+# command below is an argv LIST you supply verbatim — never a shell
+# string. ``{name}`` is the resolved container name; ``{dir}`` is the
+# container-side working directory after ``path_map``.
 #
 # The container is chosen deterministically per (launch user, project
 # directory) — the SAME container is reused across sessions, never one
-# per session. A project ``.uxon.toml`` may override only ``name`` and
-# ``path_map`` (data); every key below is operator-only.
+# per session.
 #
 # ``on_missing`` gates what uxon may do when the container is not
 # running: ``off`` (default) execs only — a stopped/absent container
@@ -341,24 +340,29 @@ default_args = []
 # Omit ``stop_template`` to keep the old behaviour (agent orphans; uxon
 # prints a reminder at every kill).
 #
-# [container]
-# enabled         = true
-# exec_template   = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
-# name_template   = "uxon-{user}-{project_slug}"
-# is_running_cmd  = ["docker", "top", "{name}"]
-# exists_cmd      = ["docker", "container", "inspect", "{name}"]
-# on_missing      = "off"          # off | start | create
-# on_missing_mode = "prompt"       # prompt | auto
-# start_template  = ["docker", "start", "{name}"]
+# [launch.profiles.claude_container]
+# agent = "claude"
+# container_profile = "workbox"
+#
+# [container.profiles.workbox]
+# runtime_namespace = "per_user"   # global | per_user
+# exec_template     = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
+# name_template     = "uxon-{user}-{launch_profile}-{project_slug}"
+# is_running_cmd    = ["docker", "top", "{name}"]
+# exists_cmd        = ["docker", "container", "inspect", "{name}"]
+# on_missing        = "off"        # off | start | create
+# on_missing_mode   = "prompt"     # prompt | auto
+# start_template    = ["docker", "start", "{name}"]
 # # Reap this session's agent on kill ({pidfile} is uxon-supplied,
 # # unique per session); the container itself is left running:
-# stop_template   = ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
+# resolve_cmd      = ["docker", "inspect", "--format", "{{{{.Id}}}} {{{{.State.Pid}}}} {{{{.State.StartedAt}}}}", "{name}"]
+# stop_template    = ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
 # # Define the container in a compose.yml next to the project and let
 # # uxon bring it up — create_template runs in the host project dir:
-# create_template = ["docker", "compose", "up", "-d"]
+# create_template  = ["docker", "compose", "up", "-d"]
 #
 # Translate the host working directory to a container path (longest
 # matching host prefix wins; no match → host path verbatim):
 #
-# [container.path_map]
+# [container.profiles.workbox.path_map]
 # "/srv/projects" = "/work"

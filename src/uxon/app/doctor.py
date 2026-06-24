@@ -2,12 +2,11 @@
 """``uxon doctor`` use-case: diagnose tmux/agent/config/git-profile health.
 
 Impure: probes the host (subprocess), resolves command paths, reads config
-layers, optionally SSHes to remote peers under ``--remote``.
+sources, optionally SSHes to remote peers under ``--remote``.
 
-HARD RULE (AGENTS.md): default ``uxon doctor`` performs zero remote SSH I/O;
-remote probes run only under ``--remote`` (:func:`_doctor_remote_rows`).
-:func:`detect_root_nopasswd` keeps its tight 0.5s timeout — do not add probes
-that can exceed it.
+Default ``uxon doctor`` performs zero remote SSH I/O; remote probes run only
+under ``--remote`` (:func:`_doctor_remote_rows`). :func:`detect_root_nopasswd`
+keeps its tight 0.5s timeout — do not add probes that can exceed it.
 """
 
 from __future__ import annotations
@@ -309,10 +308,8 @@ def do_doctor(
             print(f"- {issue}")
     else:
         print("issues: none")
-    # Remote-host probes: only when the operator explicitly opts in via
-    # ``--remote``. Default ``uxon doctor`` stays local-only per the
-    # AGENTS.md contract; the rule has been amended to add "except
-    # under --remote" in the same change.
+    # Remote-host probes run only when the operator explicitly opts in via
+    # ``--remote``. Default ``uxon doctor`` stays local-only.
     if probe_remote:
         if not cfg.remote_hosts:
             print("remote_hosts: no remote hosts configured")
@@ -422,11 +419,9 @@ def _doctor_container_section(cfg: Config, cwd: str, launch_user: str) -> dict[s
 def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:
     """Probe each ``[[remote_hosts]]`` peer once for ``uxon doctor --remote``.
 
-    **Deliberate AGENTS.md walk-back**: the project rule "uxon doctor
-    does not probe ``[[remote_hosts]]``" stays in force for default
-    ``uxon doctor``. This helper runs only when the operator passes
-    ``--remote`` — the explicit gesture for fleet health diagnosis.
-    The default invocation still has zero SSH I/O.
+    Default ``uxon doctor`` does not probe ``[[remote_hosts]]``. This helper
+    runs only when the operator passes ``--remote`` — the explicit gesture for
+    fleet health diagnosis. The default invocation still has zero SSH I/O.
 
     Each peer gets one ``ssh ... uxon list --json`` round-trip with the
     fleet-global SSH multiplex setting; per-host overrides on

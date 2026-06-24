@@ -5,8 +5,8 @@
 ``DEFAULT_CONFIG`` / ``RECOMMENDED_TMUX_OPTIONS`` are the seed data.
 ``merge_config`` and the ``validate_*`` helpers are pure (the validators
 call :func:`uxon.errors.fail`, the leaf exit primitive). The impure
-config *loader* (TOML reading, project-config discovery) lives in the
-infra layer and produces a :class:`Config`.
+config *loader* (TOML reading) lives in the infra layer and produces a
+:class:`Config`.
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from uxon.domain.agents import AgentSpec, default_agent_catalog
-from uxon.domain.container import ContainerConfig
+from uxon.domain.container import ContainerConfig, ContainerProfile
 from uxon.domain.git_profiles import GitRemoteProfile
+from uxon.domain.launch_profiles import LaunchConfig
 from uxon.errors import fail
 
 # Recommended uxon-managed tmux options (3.5.0). This is the SINGLE source of
@@ -57,14 +58,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # different ``session_prefix`` add the previous value here to keep
     # already-running sessions reachable; new installs leave it empty.
     "legacy_session_prefixes": [],
-    # ``enabled`` is empty by default — auto-mode: uxon picks up
-    # whichever agents are actually installed for the launch user.
-    # Set it to a non-empty list (e.g. ``["claude", "codex"]``) to
-    # switch to strict-whitelist mode. ``default`` may also be empty;
-    # consumers fall back to the first available agent at launch time.
-    "agents": {
-        "enabled": [],
-        "default": "",
+    # Agent catalog only. Launch selection lives under [launch].
+    "agents": {},
+    "launch": {
+        "enabled_profiles": [],
+        "default_profile": "",
+        "profiles": {},
+        "path_rules": [],
     },
     "new_project_root": str(Path.home() / "projects"),
     "repeat_noninteractive_mode": "fail",
@@ -104,7 +104,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Stage 5 step 7 wires the semaphore.
     "fetch_concurrency": 16,
     "git_create_enabled": False,
-    "default_git_remote_profile": "",
     "git_remote_profiles": [],
     "remote_hosts": [],
     # Application-level audit channel.  ``enabled`` is the only kill-switch
@@ -125,23 +124,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "server_options": dict(RECOMMENDED_TMUX_OPTIONS["server_options"]),
         "append_server_options": dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"]),
     },
-    # Container-agnostic agent launch (off by default). When
-    # ``enabled = true`` uxon prefixes the agent command with the operator's
-    # opaque ``exec_template`` so the agent runs inside a container; every
-    # other key is an argv/policy operator-only value. ``.uxon.toml`` may set
-    # only ``name`` / ``path_map`` (data). See ``domain/container.py``.
-    "container": {
-        "enabled": False,
-        "name_template": "",
-        "exec_template": [],
-        "is_running_cmd": [],
-        "exists_cmd": [],
-        "start_template": [],
-        "create_template": [],
-        "resolve_cmd": [],
-        "on_missing": "off",
-        "on_missing_mode": "prompt",
-    },
+    # Container runtime profiles live under [container.profiles.<id>].
+    "container": {"profiles": {}},
 }
 
 
@@ -155,6 +139,9 @@ class Config:
     allowed_roots: list[str]
     session_prefix: str
     legacy_session_prefixes: tuple[str, ...]
+    # Temporary runtime compatibility fields until P2 replaces launch call
+    # sites with resolved launch profiles. They are derived from [launch], not
+    # accepted as [agents] config keys.
     enabled_agents: tuple[str, ...]
     default_agent: str
     new_project_root: str
@@ -178,6 +165,8 @@ class Config:
     # old ``agent_default_args`` map — binaries, default_args, install hints,
     # version probe args, and permission modes all live here as data.
     agents: dict[str, AgentSpec] = field(default_factory=default_agent_catalog)
+    launch: LaunchConfig = field(default_factory=LaunchConfig)
+    container_profiles: dict[str, ContainerProfile] = field(default_factory=dict)
     # ``None`` is the load-time signal "use REGISTRY defaults". An empty
     # tuple would mean "operator explicitly cleared the column list" —
     # that's not a state we want to expose distinctly, so absent / ``[]``

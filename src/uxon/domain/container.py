@@ -12,17 +12,19 @@ keep an attacker-controlled directory name out of the sudo-executed exec
 template. The impure probe/start/create shell-outs live in
 :mod:`uxon.infra.container`.
 
-Trust split (see ``config_loader.project_allowlist``): the project
-``.uxon.toml`` may supply only ``container.name`` and ``container.path_map``
-(pure data); every executed/policy key (``exec_template``,
-``create_template``, ``on_missing``, …) is operator-only.
+The current runtime still carries the pre-profile ``ContainerConfig`` object
+until later launch-profile phases replace the singleton launch path. New config
+files use ``ContainerProfile`` under ``[container.profiles.<id>]``.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shlex
+import string
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -30,6 +32,7 @@ from uxon.errors import fail
 
 OnMissing = Literal["off", "start", "create"]
 OnMissingMode = Literal["prompt", "auto"]
+RuntimeNamespace = Literal["global", "per_user"]
 
 # Session-environment variable carrying the resolved container name from
 # launch to kill. Set on the tmux session via ``new-session -e`` and read
@@ -76,6 +79,19 @@ _NAME_MAX_LEN = 128
 
 # Placeholders accepted in templates / name_template.
 _NAME_PLACEHOLDERS = ("user", "project_slug", "dir")
+_BASE_PROFILE_PLACEHOLDERS = frozenset(
+    {"user", "launch_profile", "container_profile", "agent", "project_slug"}
+)
+_TEMPLATE_PLACEHOLDERS: dict[str, frozenset[str]] = {
+    "name_template": _BASE_PROFILE_PLACEHOLDERS,
+    "exec_template": _BASE_PROFILE_PLACEHOLDERS | {"name", "dir"},
+    "is_running_cmd": _BASE_PROFILE_PLACEHOLDERS | {"name", "dir"},
+    "exists_cmd": _BASE_PROFILE_PLACEHOLDERS | {"name", "dir"},
+    "start_template": _BASE_PROFILE_PLACEHOLDERS | {"name", "dir"},
+    "create_template": _BASE_PROFILE_PLACEHOLDERS | {"name", "dir"},
+    "resolve_cmd": _BASE_PROFILE_PLACEHOLDERS | {"name", "dir"},
+    "stop_template": _BASE_PROFILE_PLACEHOLDERS | {"name", "pidfile"},
+}
 
 
 @dataclass(frozen=True)
@@ -108,9 +124,123 @@ class ContainerConfig:
     resolve_cmd: tuple[str, ...] = ()
     on_missing: OnMissing = "off"
     on_missing_mode: OnMissingMode = "prompt"
-    # Project-layer (``.uxon.toml``) data-only overrides.
+    # Legacy singleton data fields kept until profile resolution replaces the
+    # old runtime path.
     name: str = ""
     path_map: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class ContainerProfile:
+    """Operator-owned reusable container runtime profile."""
+
+    id: str
+    runtime_namespace: RuntimeNamespace
+    name_template: str = ""
+    exec_template: tuple[str, ...] = ()
+    is_running_cmd: tuple[str, ...] = ()
+    exists_cmd: tuple[str, ...] = ()
+    start_template: tuple[str, ...] = ()
+    create_template: tuple[str, ...] = ()
+    stop_template: tuple[str, ...] = ()
+    resolve_cmd: tuple[str, ...] = ()
+    on_missing: OnMissing = "off"
+    on_missing_mode: OnMissingMode = "prompt"
+    path_map: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+
+    @property
+    def fingerprint(self) -> str:
+        payload = {
+            "runtime_namespace": self.runtime_namespace,
+            "name_template": self.name_template,
+            "exec_template": self.exec_template,
+            "is_running_cmd": self.is_running_cmd,
+            "exists_cmd": self.exists_cmd,
+            "start_template": self.start_template,
+            "create_template": self.create_template,
+            "stop_template": self.stop_template,
+            "resolve_cmd": self.resolve_cmd,
+            "on_missing": self.on_missing,
+            "on_missing_mode": self.on_missing_mode,
+            "path_map": self.path_map,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_template_placeholders(
+    template: str, *, field_name: str, source: str, allowed: frozenset[str]
+) -> None:
+    formatter = string.Formatter()
+    try:
+        parsed = formatter.parse(template)
+        for _literal, placeholder, format_spec, conversion in parsed:
+            if placeholder is None:
+                continue
+            if not placeholder:
+                fail(f"{source}.{field_name} uses an empty placeholder")
+            if "." in placeholder or "[" in placeholder or "]" in placeholder:
+                fail(f"{source}.{field_name} uses unsupported placeholder {placeholder!r}")
+            if placeholder not in allowed:
+                valid = ", ".join(f"{{{p}}}" for p in sorted(allowed))
+                fail(
+                    f"{source}.{field_name} uses unsupported placeholder "
+                    f"{placeholder!r}; valid: {valid}"
+                )
+            if format_spec or conversion:
+                fail(f"{source}.{field_name} must not use format specs or conversions")
+    except ValueError as exc:
+        fail(f"{source}.{field_name} is not a valid format template: {exc}")
+
+
+def validate_container_profile(profile: ContainerProfile) -> ContainerProfile:
+    """Validate a parsed ``[container.profiles.<id>]`` record."""
+    source = f"container.profiles.{profile.id}"
+    if profile.runtime_namespace not in ("global", "per_user"):
+        fail(f"{source}.runtime_namespace must be 'global' or 'per_user'")
+    if not profile.name_template:
+        fail(f"{source}.name_template must be a non-empty string")
+    if not profile.exec_template:
+        fail(f"{source}.exec_template must be a non-empty argv list")
+    if profile.on_missing not in ("off", "start", "create"):
+        fail(f"{source}.on_missing must be 'off', 'start', or 'create'")
+    if profile.on_missing_mode not in ("prompt", "auto"):
+        fail(f"{source}.on_missing_mode must be 'prompt' or 'auto'")
+    if profile.stop_template and not profile.resolve_cmd:
+        fail(f"{source}.stop_template requires {source}.resolve_cmd")
+    if profile.on_missing in ("start", "create"):
+        if not profile.is_running_cmd:
+            fail(f"{source}.on_missing = {profile.on_missing!r} requires is_running_cmd")
+        if not profile.exists_cmd:
+            fail(f"{source}.on_missing = {profile.on_missing!r} requires exists_cmd")
+        if not profile.start_template:
+            fail(f"{source}.on_missing = {profile.on_missing!r} requires start_template")
+    if profile.on_missing == "create" and not profile.create_template:
+        fail(f"{source}.on_missing = 'create' requires create_template")
+
+    _validate_template_placeholders(
+        profile.name_template,
+        field_name="name_template",
+        source=source,
+        allowed=_TEMPLATE_PLACEHOLDERS["name_template"],
+    )
+    for field_name in (
+        "exec_template",
+        "is_running_cmd",
+        "exists_cmd",
+        "start_template",
+        "create_template",
+        "resolve_cmd",
+        "stop_template",
+    ):
+        for token in getattr(profile, field_name):
+            _validate_template_placeholders(
+                token,
+                field_name=field_name,
+                source=source,
+                allowed=_TEMPLATE_PLACEHOLDERS[field_name],
+            )
+    return profile
 
 
 def _validate_abs_normalized(path: str, what: str) -> str:
@@ -312,9 +442,9 @@ def resolve_container_name(
 ) -> str:
     """Resolve the container name deterministically and validate it.
 
-    Project ``.uxon.toml [container.name]`` wins over the operator
-    ``name_template``. Both run through the same post-expansion validator
-    (AC-B8). Same (user, project dir) → same name (never per-session).
+    A literal legacy ``name`` wins over ``name_template``. Both run through the
+    same post-expansion validator. Same (user, project dir) → same name (never
+    per-session).
     """
     source = cfg.name or cfg.name_template
     if not source:
