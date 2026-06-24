@@ -38,6 +38,7 @@ def _make_session(**overrides: object) -> SessionInfo:
         "cpu_pct": 1.5,
         "rss_kib": 4096,
         "agent": "claude",
+        "profile": "claude",
         "legacy": False,
     }
     base.update(overrides)
@@ -63,7 +64,10 @@ class BuildSessionRecordsTests(unittest.TestCase):
         self.assertEqual(rec["user"], "alice")
         self.assertEqual(rec["name"], "uxon-foo@claude")
         self.assertEqual(rec["short_id"], "foo@claude")
+        self.assertEqual(rec["profile"], "claude")
         self.assertEqual(rec["agent"], "claude")
+        self.assertEqual(rec["container_profile"], "")
+        self.assertEqual(rec["container"], "")
         self.assertFalse(rec["attached"])
         self.assertEqual(rec["windows"], "1")
         self.assertEqual(rec["created"], "2026-05-03T12:00:00+00:00")
@@ -150,7 +154,10 @@ class BuildSessionRecordsTests(unittest.TestCase):
             "user",
             "name",
             "short_id",
+            "profile",
             "agent",
+            "container_profile",
+            "container",
             "attached",
             "windows",
             "created",
@@ -161,6 +168,7 @@ class BuildSessionRecordsTests(unittest.TestCase):
             "active_path",
             "cpu_pct",
             "rss_kib",
+            "container_down",
             "legacy",
         }
         self.assertEqual(set(rec.keys()), expected_keys)

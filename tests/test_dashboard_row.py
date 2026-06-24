@@ -166,7 +166,10 @@ def _wire(**overrides: object) -> dict[str, object]:
         "user": "alice",
         "name": "cc-myproj",
         "short_id": "myproj",
+        "profile": "claude_fast",
         "agent": "claude",
+        "container_profile": "box",
+        "container": "uxon-box",
         "attached": False,
         "windows": "1",
         "created": "2026-05-03T12:34:56+00:00",
@@ -194,7 +197,10 @@ class FromWireRecordTests(unittest.TestCase):
         self.assertEqual(row.user, "alice")
         self.assertEqual(row.name, "cc-myproj")
         self.assertEqual(row.short, "myproj")
+        self.assertEqual(row.profile, "claude_fast")
         self.assertEqual(row.agent, "claude")
+        self.assertEqual(row.container_profile, "box")
+        self.assertEqual(row.container, "uxon-box")
         self.assertTrue(row.attached)
         self.assertTrue(row.legacy)
         self.assertEqual(row.pid, 1234)

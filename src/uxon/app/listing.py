@@ -188,7 +188,11 @@ def _print_remote_table(
                 active_path=str(r.get("active_path", "")),
                 cpu_pct=float(r.get("cpu_pct", 0.0) or 0.0),
                 rss_kib=int(r.get("rss_kib", 0) or 0),
-                agent=str(r.get("agent", "claude")),
+                agent=str(r.get("agent", "")),
+                profile=str(r.get("profile", "")),
+                container_profile=str(r.get("container_profile", "")),
+                container=str(r.get("container", "")),
+                container_down=bool(r.get("container_down", False)),
                 legacy=bool(r.get("legacy", False)),
             )
         )

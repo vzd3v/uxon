@@ -38,9 +38,21 @@ class SessionInfo:
     active_path: str
     cpu_pct: float = 0.0
     rss_kib: int = 0
-    agent: str = "claude"  # underlying agent id when known
-    profile: str = ""  # launch profile id parsed from the session name
+    agent: str = ""  # underlying agent id from the verified launch record
+    profile: str = ""  # launch profile id from record, or suffix display fallback
     legacy: bool = False  # True iff name uses a non-current (legacy) prefix
+    tmux_session_id: str = ""
+    launch_nonce: str = ""
+    launch_record_verified: bool = False
+    launch_user: str = ""
+    container_profile: str = ""
+    container_profile_fingerprint: str = ""
+    container_id: str = ""
+    container_epoch: str = ""
+    # Diagnostic-only tmux environment marker. It is never used as container
+    # authority; it only lets destructive paths explain why teardown was skipped
+    # for an older or unmanaged containerized session.
+    container_marker: str = ""
     # Container telemetry markers, read from the session env via the existing
     # ``list-sessions -F`` batch (``#{E:VAR}`` expands to "" for an unset var,
     # i.e. a non-container session). ``container`` is the bare container name
@@ -73,8 +85,8 @@ class TuiSession:
     user: str
     # Multi-agent fields (default to backward-compatible values).
     stem: str = ""  # bare project stem, e.g. "myproject"
-    agent: str = "claude"  # underlying agent id when known
-    profile: str = ""  # launch profile id parsed from the session name
+    agent: str = ""  # underlying agent id when known
+    profile: str = ""  # launch profile id when known
     legacy: bool = False  # True when parsed from old cc-<stem> naming
     # Raw ISO 8601 timestamps preserved alongside the pre-formatted
     # display strings so dashboard sort by ``new`` / ``last`` ranks
@@ -160,9 +172,12 @@ def compatible_indexed_sessions(
     *,
     prefix: str = "uxon-",
     legacy_prefixes: tuple[str, ...] = (),
+    require_verified: bool = True,
 ) -> list[SessionInfo]:
     matches: list[SessionInfo] = []
     for session in sessions:
+        if require_verified and not session.launch_record_verified:
+            continue
         idx = parse_plain_session_index(
             session.name, stem, profile, prefix=prefix, legacy_prefixes=legacy_prefixes
         )
@@ -256,10 +271,11 @@ def to_tui_session(
             break
     parsed = parse_session_name(s.name, prefix=prefix, legacy_prefixes=legacy_prefixes)
     if parsed is not None:
-        stem, profile, _idx, legacy = parsed
+        stem, fallback_profile, _idx, legacy = parsed
     else:
-        stem, profile, legacy = s.name, "unknown", False
-    agent = s.agent or profile
+        stem, fallback_profile, legacy = s.name, "unknown", False
+    profile = s.profile or fallback_profile
+    agent = s.agent or "-"
     return TuiSession(
         name=s.name,
         short=short,

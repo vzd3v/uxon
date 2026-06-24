@@ -234,6 +234,13 @@ class NameFormatterTests(unittest.TestCase):
         text = col.format(_row(short="billing-api@claude", agent="claude"))
         self.assertEqual(text.plain, "○ billing-api")
 
+    def test_strips_profile_suffix_when_agent_differs(self) -> None:
+        col = _by_id("name")
+        text = col.format(
+            _row(short="billing-api@claude_fast", profile="claude_fast", agent="claude")
+        )
+        self.assertEqual(text.plain, "○ billing-api")
+
     def test_preserves_disambiguator_index(self) -> None:
         # ``-N`` comes after the suffix in the session name. Two
         # siblings at the same stem rely on this number to stay

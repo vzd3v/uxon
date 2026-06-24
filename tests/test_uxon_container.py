@@ -46,6 +46,7 @@ from uxon.domain.container import (
 from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.domain.launch_profiles import (
     ContainerContext,
+    ContainerIdentity,
     LaunchConfig,
     LaunchProfile,
     ResolvedLaunchProfile,
@@ -932,6 +933,30 @@ class TelemetryEnrichTests(unittest.TestCase):
             setattr(s, k, v)
         return s
 
+    def _profile(self, *, running: bool = False) -> ContainerProfile:
+        return ContainerProfile(
+            id="box",
+            runtime_namespace="per_user",
+            name_template="cbox",
+            exec_template=("docker", "exec", "{name}"),
+            is_running_cmd=("docker", "top", "{name}") if running else (),
+            resolve_cmd=("docker", "inspect", "{name}"),
+        )
+
+    def _record_session(self, name: str, profile: ContainerProfile, **kw):
+        values = dict(
+            container="cbox",
+            container_cgroup="/c.scope",
+            launch_record_verified=True,
+            launch_user="u-vz",
+            container_profile=profile.id,
+            container_profile_fingerprint=profile.fingerprint,
+            container_id="cid-1",
+            container_epoch="1000",
+        )
+        values.update(kw)
+        return self._session(name, **values)
+
     def test_non_container_session_uses_pane_walk_and_touches_nothing(self) -> None:
         """AC-P0.4: a no-marker session adds no subprocess / /proc / sudo read."""
         from pathlib import Path
@@ -957,8 +982,9 @@ class TelemetryEnrichTests(unittest.TestCase):
         """One session per container: cgroup.procs IS its set — no sudo read."""
         from uxon.infra import sessions_probe
 
-        s = self._session(
-            "uxon-c@claude", container="cbox", container_cgroup="/system.slice/docker-c.scope"
+        profile = self._profile()
+        s = self._record_session(
+            "uxon-c@claude", profile, container_cgroup="/system.slice/docker-c.scope"
         )
 
         def fake_run(cmd, *a, **k):
@@ -967,8 +993,16 @@ class TelemetryEnrichTests(unittest.TestCase):
         with (
             mock.patch("uxon.infra.sessions_probe.subprocess.run", side_effect=fake_run) as run,
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=ContainerIdentity(
+                    id="cid-1", cgroup="/system.slice/docker-c.scope", epoch="1000"
+                ),
+            ),
         ):
-            sessions_probe.enrich_session_usage([s])
+            sessions_probe.enrich_session_usage(
+                [s], container_profiles={"box": profile}, launch_user="u-vz"
+            )
         # No sudo environ batch (single session) — only the ps call.
         self.assertEqual(run.call_count, 1)
         self.assertEqual(s.rss_kib, 8192 + 1024)
@@ -978,8 +1012,9 @@ class TelemetryEnrichTests(unittest.TestCase):
         """AC-P1.6: ≥2 sessions share a cgroup → split by UXON_SESSION."""
         from uxon.infra import sessions_probe
 
-        a = self._session("uxon-a@claude", container="cbox", container_cgroup="/c.scope")
-        b = self._session("uxon-b@claude", container="cbox", container_cgroup="/c.scope")
+        profile = self._profile()
+        a = self._record_session("uxon-a@claude", profile)
+        b = self._record_session("uxon-b@claude", profile)
         with (
             mock.patch(
                 "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
@@ -989,24 +1024,37 @@ class TelemetryEnrichTests(unittest.TestCase):
                 "uxon.infra.sessions_probe._read_pid_sessions",
                 return_value={900: "uxon-a@claude", 901: "uxon-b@claude"},
             ),
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+            ),
         ):
-            sessions_probe.enrich_session_usage([a, b])
+            sessions_probe.enrich_session_usage(
+                [a, b], container_profiles={"box": profile}, launch_user="u-vz"
+            )
         self.assertEqual((a.rss_kib, a.cpu_pct), (8192, 50.0))
         self.assertEqual((b.rss_kib, b.cpu_pct), (1024, 60.0))
 
     def test_shared_container_degrades_to_shared_total_without_privilege(self) -> None:
         from uxon.infra import sessions_probe
 
-        a = self._session("uxon-a@claude", container="cbox", container_cgroup="/c.scope")
-        b = self._session("uxon-b@claude", container="cbox", container_cgroup="/c.scope")
+        profile = self._profile()
+        a = self._record_session("uxon-a@claude", profile)
+        b = self._record_session("uxon-b@claude", profile)
         with (
             mock.patch(
                 "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
             ),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
             mock.patch("uxon.infra.sessions_probe._read_pid_sessions", return_value=None),
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+            ),
         ):
-            sessions_probe.enrich_session_usage([a, b])
+            sessions_probe.enrich_session_usage(
+                [a, b], container_profiles={"box": profile}, launch_user="u-vz"
+            )
         # Both show the summed total (the documented degrade), not zero.
         shared = (8192 + 1024, 110.0)
         self.assertEqual((a.rss_kib, a.cpu_pct), shared)
@@ -1016,20 +1064,54 @@ class TelemetryEnrichTests(unittest.TestCase):
         """AC-P1.8: empty cgroup + is_running_cmd non-zero → container_down."""
         from uxon.infra import sessions_probe
 
-        cfg = ContainerConfig(
-            enabled=True,
-            exec_template=("docker", "exec", "{name}"),
-            is_running_cmd=("docker", "top", "{name}"),
-        )
-        s = self._session("uxon-c@claude", container="cbox", container_cgroup="/c.scope")
+        profile = self._profile(running=True)
+        s = self._record_session("uxon-c@claude", profile)
         with (
             mock.patch(
                 "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
             ),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
-            mock.patch("uxon.infra.container.probe_container_running", return_value=False),
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+            ),
+            mock.patch(
+                "uxon.infra.container.probe_container_state_for_profile", return_value=("no", "yes")
+            ),
         ):
-            sessions_probe.enrich_session_usage([s], container_cfg=cfg, launch_user="u-vz")
+            sessions_probe.enrich_session_usage(
+                [s], container_profiles={"box": profile}, launch_user="u-vz"
+            )
+        self.assertTrue(s.container_down)
+        self.assertEqual(s.cpu_pct, 0.0)
+        self.assertEqual(s.rss_kib, 0)
+
+    def test_unresolved_live_identity_marks_container_down_when_probe_says_stopped(
+        self,
+    ) -> None:
+        from uxon.infra import sessions_probe
+
+        profile = self._profile(running=True)
+        s = self._record_session("uxon-c@claude", profile)
+        with (
+            mock.patch(
+                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
+            ),
+            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs") as read_cgroup,
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=None,
+            ),
+            mock.patch(
+                "uxon.infra.container.probe_container_state_for_profile",
+                return_value=("no", "yes"),
+            ) as probe,
+        ):
+            sessions_probe.enrich_session_usage(
+                [s], container_profiles={"box": profile}, launch_user="u-vz"
+            )
+        read_cgroup.assert_not_called()
+        probe.assert_called_once()
         self.assertTrue(s.container_down)
         self.assertEqual(s.cpu_pct, 0.0)
         self.assertEqual(s.rss_kib, 0)
@@ -1037,21 +1119,51 @@ class TelemetryEnrichTests(unittest.TestCase):
     def test_empty_cgroup_running_container_degrades_to_zero_not_down(self) -> None:
         from uxon.infra import sessions_probe
 
-        cfg = ContainerConfig(
-            enabled=True,
-            exec_template=("docker", "exec", "{name}"),
-            is_running_cmd=("docker", "top", "{name}"),
-        )
-        s = self._session("uxon-c@claude", container="cbox", container_cgroup="/c.scope")
+        profile = self._profile(running=True)
+        s = self._record_session("uxon-c@claude", profile)
         with (
             mock.patch(
                 "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
             ),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
-            mock.patch("uxon.infra.container.probe_container_running", return_value=True),
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+            ),
+            mock.patch(
+                "uxon.infra.container.probe_container_state_for_profile",
+                return_value=("yes", "yes"),
+            ),
         ):
-            sessions_probe.enrich_session_usage([s], container_cfg=cfg, launch_user="u-vz")
+            sessions_probe.enrich_session_usage(
+                [s], container_profiles={"box": profile}, launch_user="u-vz"
+            )
         # Running but empty cgroup (race / unresolved path) → 0/—, not "down".
+        self.assertFalse(s.container_down)
+        self.assertEqual(s.cpu_pct, 0.0)
+
+    def test_empty_cgroup_unknown_profile_probe_degrades_to_zero_not_down(self) -> None:
+        from uxon.infra import sessions_probe
+
+        profile = self._profile(running=True)
+        s = self._record_session("uxon-c@claude", profile)
+        with (
+            mock.patch(
+                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
+            ),
+            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+            ),
+            mock.patch(
+                "uxon.infra.container.probe_container_state_for_profile",
+                return_value=("?", "?"),
+            ),
+        ):
+            sessions_probe.enrich_session_usage(
+                [s], container_profiles={"box": profile}, launch_user="u-vz"
+            )
         self.assertFalse(s.container_down)
         self.assertEqual(s.cpu_pct, 0.0)
 
@@ -1490,24 +1602,78 @@ class ContainerTeardownAuditTests(unittest.TestCase):
         )
         return _cfg(c)
 
+    def _record_session(self, cfg: Config):
+        from helpers import make_session
+
+        profile = cfg.container_profiles["box"]
+        s = make_session("uxon-x@claude", user="dana")
+        s.profile = "claude"
+        s.agent = "claude"
+        s.launch_record_verified = True
+        s.launch_user = "dana"
+        s.container = "proj-myapp"
+        s.container_profile = profile.id
+        s.container_profile_fingerprint = profile.fingerprint
+        s.container_id = "cid-1"
+        s.container_epoch = "1000"
+        return s
+
     def test_prepare_captures_launch_epoch(self) -> None:
-        # AC-P3.5: prepare stashes the launch-time epoch off the live session
-        # env; the live comparison is deferred to run_container_teardown.
         from uxon.app import kill as kill_app
 
         cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
-
-        def _fake_env(_cfg, _user, _session, var):
-            return {
-                "UXON_CONTAINER": "proj-myapp",
-                "UXON_CONTAINER_EPOCH": "1000",
-            }.get(var)
-
-        with mock.patch("uxon.infra.tmux.read_session_env", side_effect=_fake_env):
-            teardown = kill_app.prepare_container_teardown(cfg, "dana", "uxon-x@claude")
+        teardown = kill_app.prepare_container_teardown(cfg, self._record_session(cfg))
         assert teardown is not None
         self.assertEqual(teardown.name, "proj-myapp")
+        self.assertEqual(teardown.container_profile, "box")
+        self.assertEqual(teardown.container_id, "cid-1")
         self.assertEqual(teardown.launch_epoch, "1000")
+
+    def test_missing_record_skips_prepare_with_warning(self) -> None:
+        from helpers import make_session
+
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        s = make_session("uxon-x@claude", user="dana")
+        s.container_marker = "proj-myapp"
+        with mock.patch("uxon.app.kill.eprint") as eprint:
+            teardown = kill_app.prepare_container_teardown(cfg, s)
+        self.assertIsNone(teardown)
+        self.assertIn("no verified launch record", eprint.call_args.args[0])
+
+    def test_missing_container_profile_skips_prepare(self) -> None:
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        s = self._record_session(cfg)
+        s.container_profile = ""
+        with mock.patch("uxon.app.kill.eprint") as eprint:
+            teardown = kill_app.prepare_container_teardown(cfg, s)
+        self.assertIsNone(teardown)
+        self.assertIn("missing container profile", eprint.call_args.args[0])
+
+    def test_fingerprint_mismatch_skips_prepare(self) -> None:
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        s = self._record_session(cfg)
+        s.container_profile_fingerprint = "old"
+        with mock.patch("uxon.app.kill.eprint") as eprint:
+            teardown = kill_app.prepare_container_teardown(cfg, s)
+        self.assertIsNone(teardown)
+        self.assertIn("container profile changed", eprint.call_args.args[0])
+
+    def test_missing_saved_identity_skips_prepare(self) -> None:
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        s = self._record_session(cfg)
+        s.container_id = ""
+        with mock.patch("uxon.app.kill.eprint") as eprint:
+            teardown = kill_app.prepare_container_teardown(cfg, s)
+        self.assertIsNone(teardown)
+        self.assertIn("missing container identity", eprint.call_args.args[0])
 
     def test_stale_teardown_emits_stale_and_skips_kill(self) -> None:
         # AC-P3.2/P3.5: live epoch != stashed epoch → emit outcome=stale and do
@@ -1515,11 +1681,20 @@ class ContainerTeardownAuditTests(unittest.TestCase):
         from uxon.app import kill as kill_app
 
         cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        profile = cfg.container_profiles["box"]
         teardown = kill_app.ContainerTeardown(
-            stop_cmd=["docker", "exec", "c", "true"], name="proj-myapp", launch_epoch="1000"
+            stop_cmd=["docker", "exec", "c", "true"],
+            container_profile="box",
+            name="proj-myapp",
+            container_id="cid-1",
+            profile_fingerprint=profile.fingerprint,
+            launch_epoch="1000",
         )
         with (
-            mock.patch("uxon.infra.container.current_container_epoch", return_value="2000"),
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=ContainerIdentity(id="cid-2", epoch="2000"),
+            ),
             mock.patch("uxon.infra.container.run_teardown") as run_td,
             mock.patch("uxon.infra.audit.audit") as audit,
         ):
@@ -1528,17 +1703,27 @@ class ContainerTeardownAuditTests(unittest.TestCase):
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "container.teardown")
         self.assertEqual(audit.call_args.kwargs["outcome"], "stale")
-        self.assertEqual(audit.call_args.kwargs["name"], "proj-myapp")
+        self.assertEqual(audit.call_args.kwargs["container"], "proj-myapp")
+        self.assertEqual(audit.call_args.kwargs["container_profile"], "box")
 
     def test_matching_epoch_teardown_runs_and_emits_ok(self) -> None:
         from uxon.app import kill as kill_app
 
         cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        profile = cfg.container_profiles["box"]
         teardown = kill_app.ContainerTeardown(
-            stop_cmd=["docker", "exec", "c", "true"], name="proj-myapp", launch_epoch="1000"
+            stop_cmd=["docker", "exec", "c", "true"],
+            container_profile="box",
+            name="proj-myapp",
+            container_id="cid-1",
+            profile_fingerprint=profile.fingerprint,
+            launch_epoch="1000",
         )
         with (
-            mock.patch("uxon.infra.container.current_container_epoch", return_value="1000"),
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile",
+                return_value=ContainerIdentity(id="cid-1", epoch="1000"),
+            ),
             mock.patch("uxon.infra.container.run_teardown", return_value=(True, "")) as run_td,
             mock.patch("uxon.infra.audit.audit") as audit,
         ):
@@ -1546,22 +1731,51 @@ class ContainerTeardownAuditTests(unittest.TestCase):
         run_td.assert_called_once()
         self.assertEqual(audit.call_args.kwargs["outcome"], "ok")
 
-    def test_unconfirmable_epoch_proceeds_with_kill(self) -> None:
-        # Degrade-never-block: live epoch unresolvable (None) → kill proceeds.
+    def test_missing_current_profile_skips_teardown(self) -> None:
         from uxon.app import kill as kill_app
 
         cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        profile = cfg.container_profiles["box"]
+        cfg.container_profiles.clear()
         teardown = kill_app.ContainerTeardown(
-            stop_cmd=["docker", "exec", "c", "true"], name="proj-myapp", launch_epoch="1000"
+            stop_cmd=["docker", "exec", "c", "true"],
+            container_profile="box",
+            name="proj-myapp",
+            container_id="cid-1",
+            profile_fingerprint=profile.fingerprint,
+            launch_epoch="1000",
         )
         with (
-            mock.patch("uxon.infra.container.current_container_epoch", return_value=None),
+            mock.patch("uxon.infra.container.run_teardown") as run_td,
+            mock.patch("uxon.infra.audit.audit") as audit,
+        ):
+            kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
+        run_td.assert_not_called()
+        self.assertEqual(audit.call_args.kwargs["outcome"], "missing_profile")
+
+    def test_unresolved_live_identity_skips_kill(self) -> None:
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        profile = cfg.container_profiles["box"]
+        teardown = kill_app.ContainerTeardown(
+            stop_cmd=["docker", "exec", "c", "true"],
+            container_profile="box",
+            name="proj-myapp",
+            container_id="cid-1",
+            profile_fingerprint=profile.fingerprint,
+            launch_epoch="1000",
+        )
+        with (
+            mock.patch(
+                "uxon.infra.container.current_container_identity_for_profile", return_value=None
+            ),
             mock.patch("uxon.infra.container.run_teardown", return_value=(True, "")) as run_td,
             mock.patch("uxon.infra.audit.audit") as audit,
         ):
             kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
-        run_td.assert_called_once()
-        self.assertEqual(audit.call_args.kwargs["outcome"], "ok")
+        run_td.assert_not_called()
+        self.assertEqual(audit.call_args.kwargs["outcome"], "identity_unresolved")
 
 
 class WorktreePathMapGateTests(unittest.TestCase):

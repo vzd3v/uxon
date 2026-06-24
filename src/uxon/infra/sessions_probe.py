@@ -13,7 +13,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from uxon.domain.authz import canonical
 from uxon.domain.config import Config
@@ -21,6 +21,7 @@ from uxon.domain.container import (
     CONTAINER_CGROUP_ENV,
     CONTAINER_NAME_ENV,
     ContainerConfig,
+    ContainerProfile,
 )
 from uxon.domain.container_usage import (
     parse_cgroup_procs,
@@ -39,6 +40,7 @@ from uxon.errors import fail
 from uxon.infra import demo, tmux
 from uxon.infra.config_loader import normalize_user_list
 from uxon.infra.container import CONTAINER_CMD_TIMEOUT_SEC
+from uxon.infra.launch_records import LAUNCH_NONCE_ENV, TmuxSessionMetadata, read_verified_record
 from uxon.infra.process import run_cmd
 from uxon.infra.run import run_query
 
@@ -46,6 +48,7 @@ from uxon.infra.run import run_query
 def enrich_session_usage(
     sessions: list[SessionInfo],
     *,
+    container_profiles: dict[str, ContainerProfile] | None = None,
     container_cfg: ContainerConfig | None = None,
     launch_user: str = "",
 ) -> None:
@@ -99,7 +102,11 @@ def enrich_session_usage(
 
     if container_sessions:
         _enrich_container_sessions(
-            container_sessions, proc_rows, container_cfg=container_cfg, launch_user=launch_user
+            container_sessions,
+            proc_rows,
+            container_profiles=container_profiles,
+            container_cfg=container_cfg,
+            launch_user=launch_user,
         )
 
 
@@ -133,6 +140,7 @@ def _enrich_container_sessions(
     container_sessions: list[SessionInfo],
     proc_rows: dict[int, tuple[int, int, float]],
     *,
+    container_profiles: dict[str, ContainerProfile] | None,
     container_cfg: ContainerConfig | None,
     launch_user: str,
 ) -> None:
@@ -148,12 +156,18 @@ def _enrich_container_sessions(
     # session with an empty ``container_cgroup`` (identity unresolved at launch,
     # the degrade) gets no cgroup attribution — it falls to the down/zero path.
     by_cgroup: dict[str, list[SessionInfo]] = {}
+    down_probe_groups: dict[tuple[str, str], list[SessionInfo]] = {}
     for session in container_sessions:
         # Default to 0/— first; the cgroup path overwrites on success.
         session.cpu_pct = 0.0
         session.rss_kib = 0
-        if session.container_cgroup:
+        identity_state = _container_identity_state(
+            session, container_profiles=container_profiles, launch_user=launch_user
+        )
+        if identity_state == "current" and session.container_cgroup:
             by_cgroup.setdefault(session.container_cgroup, []).append(session)
+        elif identity_state == "unresolved":
+            _append_down_probe_group(down_probe_groups, session)
 
     for cgroup_path, group in by_cgroup.items():
         cgroup_pids = _read_cgroup_procs(cgroup_path)
@@ -161,7 +175,12 @@ def _enrich_container_sessions(
             # Empty/absent cgroup → the container is stopped or its path went
             # stale (restart). Confirm with the operator's liveness probe,
             # bounded once per distinct container, only here.
-            _mark_container_down(group, container_cfg=container_cfg, launch_user=launch_user)
+            _mark_container_down(
+                group,
+                container_profiles=container_profiles,
+                container_cfg=container_cfg,
+                launch_user=launch_user,
+            )
             continue
         if len(group) == 1:
             # One session per container: cgroup.procs IS that session's set —
@@ -192,10 +211,27 @@ def _enrich_container_sessions(
             session.rss_kib = rss_kib
             session.cpu_pct = cpu_pct
 
+    for group in down_probe_groups.values():
+        _mark_container_down(
+            group,
+            container_profiles=container_profiles,
+            container_cfg=container_cfg,
+            launch_user=launch_user,
+        )
+
+
+def _append_down_probe_group(
+    down_probe_groups: dict[tuple[str, str], list[SessionInfo]], session: SessionInfo
+) -> None:
+    if not session.container_profile or not session.container:
+        return
+    down_probe_groups.setdefault((session.container_profile, session.container), []).append(session)
+
 
 def _mark_container_down(
     group: list[SessionInfo],
     *,
+    container_profiles: dict[str, ContainerProfile] | None,
     container_cfg: ContainerConfig | None,
     launch_user: str,
 ) -> None:
@@ -207,12 +243,54 @@ def _mark_container_down(
     the sessions stay at the already-set ``0``/``—`` degrade rather than
     asserting a "down" it cannot verify.
     """
+    name = group[0].container
+    if container_profiles is not None and group[0].container_profile:
+        profile = container_profiles.get(group[0].container_profile)
+        if profile is None or not profile.is_running_cmd:
+            return
+        from uxon.infra.container import probe_container_state_for_profile
+
+        if probe_container_state_for_profile(profile, name, launch_user)[0] == "no":
+            for session in group:
+                session.container_down = True
+        return
     if container_cfg is None or not container_cfg.is_running_cmd:
         return
-    name = group[0].container
     if not _container_is_running(container_cfg, name, launch_user):
         for session in group:
             session.container_down = True
+
+
+ContainerIdentityState = Literal["current", "unresolved", "stale"]
+
+
+def _container_identity_state(
+    session: SessionInfo,
+    *,
+    container_profiles: dict[str, ContainerProfile] | None,
+    launch_user: str,
+) -> ContainerIdentityState:
+    if not session.launch_record_verified:
+        return "stale"
+    if not session.container_profile or not session.container:
+        return "stale"
+    if not session.container_id or not session.container_epoch:
+        return "stale"
+    if container_profiles is None:
+        return "stale"
+    profile = container_profiles.get(session.container_profile)
+    if profile is None:
+        return "stale"
+    if profile.fingerprint != session.container_profile_fingerprint:
+        return "stale"
+    from uxon.infra.container import current_container_identity_for_profile
+
+    live = current_container_identity_for_profile(profile, session.container, launch_user)
+    if live is None:
+        return "unresolved"
+    if live.id == session.container_id and live.epoch == session.container_epoch:
+        return "current"
+    return "stale"
 
 
 def _read_cgroup_procs(cgroup_path: str) -> list[int]:
@@ -293,6 +371,7 @@ def collect_sessions_for_user(
     socket_path: str | None,
     *,
     legacy_prefixes: tuple[str, ...] = (),
+    container_profiles: dict[str, ContainerProfile] | None = None,
     container_cfg: ContainerConfig | None = None,
 ) -> list[SessionInfo]:
     # Demo-mode short-circuit: when ``UXON_DEMO_HOSTS`` is set, bypass
@@ -315,24 +394,32 @@ def collect_sessions_for_user(
     if probe.returncode != 0:
         return []
 
-    # The trailing two ``#{E:...}`` fields read the container telemetry markers
-    # straight from each session's environment in the SAME batch (tmux expands
-    # ``#{E:VAR}`` to "" for an unset var — a non-container session). This is
-    # the AC-P0.4/P1.5 zero-cost path: no per-session ``show-environment``, no
-    # per-session subprocess.
+    # Environment markers are diagnostic only. The finalized launch record is
+    # the authority for profile, agent, and container identity.
     fmt = (
-        "#{session_name}\t#{session_attached}\t#{session_windows}"
+        "#{session_name}\t#{session_id}\t#{session_attached}\t#{session_windows}"
         "\t#{session_created}\t#{session_activity}"
-        "\t#{E:" + CONTAINER_NAME_ENV + "}\t#{E:" + CONTAINER_CGROUP_ENV + "}"
+        "\t#{E:" + LAUNCH_NONCE_ENV + "}\t#{E:" + CONTAINER_NAME_ENV + "}"
+        "\t#{E:" + CONTAINER_CGROUP_ENV + "}"
     )
     rows = run_cmd(base + ["list-sessions", "-F", fmt]).stdout.splitlines()
     sessions: list[SessionInfo] = []
     known_prefixes = (session_prefix, *legacy_prefixes)
     for row in rows:
         parts = row.split("\t")
-        if len(parts) != 7:
+        if len(parts) != 9:
             continue
-        name, attached, windows, created_ts, activity_ts, container, container_cgroup = parts
+        (
+            name,
+            session_id,
+            attached,
+            windows,
+            created_ts,
+            activity_ts,
+            launch_nonce,
+            container_marker,
+            _container_cgroup_marker,
+        ) = parts
         if not any(name.startswith(p) for p in known_prefixes):
             continue
 
@@ -365,9 +452,17 @@ def collect_sessions_for_user(
         if _parsed is None:
             continue  # dual-prefix filter matched but parser disagreed — skip
         _, _profile, _, _legacy = _parsed
-        # P5 will read the underlying agent from the launch record. Until
-        # then, expose the suffix as both profile and agent for legacy list
-        # surfaces that only know about SessionInfo.agent.
+        record = None
+        if socket_path is not None:
+            record = read_verified_record(
+                socket_path,
+                TmuxSessionMetadata(
+                    session_id=session_id,
+                    created=created_ts,
+                    name=name,
+                    launch_nonce=launch_nonce,
+                ),
+            )
         sessions.append(
             SessionInfo(
                 user=user,
@@ -380,14 +475,34 @@ def collect_sessions_for_user(
                 active_pid=active_pid,
                 active_cmd=active_cmd,
                 active_path=active_path,
-                agent=_profile,
-                profile=_profile,
+                agent=str(record.get("agent", "")) if record else "",
+                profile=(
+                    str(record.get("profile") or record.get("launch_profile") or _profile)
+                    if record
+                    else _profile
+                ),
                 legacy=_legacy,
-                container=container,
-                container_cgroup=container_cgroup,
+                tmux_session_id=session_id,
+                launch_nonce=launch_nonce,
+                launch_record_verified=record is not None,
+                launch_user=str(record.get("launch_user", "")) if record else "",
+                container_profile=str(record.get("container_profile", "")) if record else "",
+                container_profile_fingerprint=(
+                    str(record.get("container_profile_fingerprint", "")) if record else ""
+                ),
+                container=str(record.get("container", "")) if record else "",
+                container_cgroup=str(record.get("container_cgroup", "")) if record else "",
+                container_id=str(record.get("container_id", "")) if record else "",
+                container_epoch=str(record.get("container_epoch", "")) if record else "",
+                container_marker=container_marker,
             )
         )
-    enrich_session_usage(sessions, container_cfg=container_cfg, launch_user=user)
+    enrich_session_usage(
+        sessions,
+        container_profiles=container_profiles,
+        container_cfg=container_cfg,
+        launch_user=user,
+    )
     return sessions
 
 
@@ -400,6 +515,7 @@ def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
                 cfg.session_prefix,
                 tmux.tmux_socket_path(cfg, user),
                 legacy_prefixes=cfg.legacy_session_prefixes,
+                container_profiles=cfg.container_profiles,
                 container_cfg=cfg.container if cfg.container.enabled else None,
             )
         )
@@ -548,11 +664,12 @@ def legacy_compatible_sessions(
     )
     return compatible_indexed_sessions(
         stem,
-        cfg.default_agent,
+        cfg.launch.default_profile or cfg.default_agent,
         compatibility_root,
         sessions,
         prefix=cfg.session_prefix,
         legacy_prefixes=cfg.legacy_session_prefixes,
+        require_verified=False,
     )
 
 

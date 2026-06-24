@@ -52,6 +52,7 @@ class ProbeHelperTests(unittest.TestCase):
                 active_cmd="",
                 active_path=target_dir,
                 agent="claude",
+                launch_record_verified=True,
             ),
             SessionInfo(
                 user="dev",
@@ -65,6 +66,7 @@ class ProbeHelperTests(unittest.TestCase):
                 active_cmd="",
                 active_path=target_dir,
                 agent="codex",
+                launch_record_verified=True,
             ),
             SessionInfo(
                 user="dev",
@@ -78,6 +80,7 @@ class ProbeHelperTests(unittest.TestCase):
                 active_cmd="",
                 active_path="/srv/repos/other",
                 agent="claude",
+                launch_record_verified=True,
             ),
         ]
         cfg = make_config()

@@ -36,6 +36,7 @@ import uxon.app.listing as listing_app
 from uxon.cli.parsing import parse_args
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
 from uxon.infra import version_probe
 
 
@@ -87,7 +88,7 @@ class VersionJsonTests(unittest.TestCase):
             with redirect_stdout(buf):
                 listing_app._emit_json("version", version_probe._version_data())
         env = json.loads(buf.getvalue())
-        self.assertEqual(env["schema_version"], "1")
+        self.assertEqual(env["schema_version"], WIRE_SCHEMA_VERSION)
         self.assertEqual(env["uxon_version"], "9.9.9")
         self.assertEqual(env["kind"], "version")
         self.assertEqual(
@@ -125,6 +126,34 @@ class ListJsonTests(unittest.TestCase):
         self.assertEqual(data["sessions"][0]["short_id"], "alpha@claude")
         self.assertEqual(data["sessions"][1]["short_id"], "beta@claude")
 
+    def test_session_records_split_profile_agent_and_container(self) -> None:
+        cfg = _make_config()
+        same_agent_a = _make_session("uxon-demo@claude_fast")
+        same_agent_a.profile = "claude_fast"
+        same_agent_a.agent = "claude"
+        same_agent_a.launch_record_verified = True
+        same_agent_b = _make_session("uxon-demo@claude_safe")
+        same_agent_b.profile = "claude_safe"
+        same_agent_b.agent = "claude"
+        same_agent_b.launch_record_verified = True
+        boxed = _make_session("uxon-demo@claude_box")
+        boxed.profile = "claude_box"
+        boxed.agent = "claude"
+        boxed.launch_record_verified = True
+        boxed.container_profile = "box_a"
+        boxed.container = "uxon-box-a"
+
+        data = listing_app._list_data(
+            cfg, [same_agent_a, same_agent_b, boxed], ["u-vz"], all_users=False
+        )
+        records = data["sessions"]
+        self.assertEqual(
+            [(r["profile"], r["agent"]) for r in records],
+            [("claude_fast", "claude"), ("claude_safe", "claude"), ("claude_box", "claude")],
+        )
+        self.assertEqual(records[2]["container_profile"], "box_a")
+        self.assertEqual(records[2]["container"], "uxon-box-a")
+
     def test_empty_sessions_emits_empty_list(self) -> None:
         cfg = _make_config()
         data = listing_app._list_data(cfg, [], ["u-vz"], all_users=False)
@@ -135,6 +164,106 @@ class ListJsonTests(unittest.TestCase):
         data = listing_app._list_data(cfg, [], ["alice", "bob"], all_users=True)
         self.assertTrue(data["all_users"])
         self.assertEqual(data["scope_users"], ["alice", "bob"])
+
+    def test_collect_sessions_uses_verified_launch_record_fields(self) -> None:
+        from uxon.infra import sessions_probe
+
+        list_row = "\t".join(
+            [
+                "uxon-demo@claude_fast",
+                "$1",
+                "0",
+                "1",
+                "1780000000",
+                "1780000100",
+                "nonce-1",
+                "env-box",
+                "/env.scope",
+            ]
+        )
+        pane_row = "1\t111\tsh\t/srv/repos/demo"
+        record = {
+            "profile": "claude_fast",
+            "agent": "claude",
+            "launch_user": "alice",
+            "container_profile": "box",
+            "container_profile_fingerprint": "fp",
+            "container": "record-box",
+            "container_id": "cid-1",
+            "container_cgroup": "/record.scope",
+            "container_epoch": "1000",
+        }
+        with (
+            mock.patch(
+                "uxon.infra.sessions_probe.run_query",
+                return_value=mock.Mock(returncode=0, stdout=""),
+            ),
+            mock.patch(
+                "uxon.infra.sessions_probe.run_cmd",
+                side_effect=[
+                    mock.Mock(stdout=list_row),
+                    mock.Mock(stdout=pane_row),
+                ],
+            ),
+            mock.patch("uxon.infra.sessions_probe.read_verified_record", return_value=record),
+            mock.patch("uxon.infra.sessions_probe.enrich_session_usage"),
+        ):
+            [session] = sessions_probe.collect_sessions_for_user(
+                "alice", "uxon-", "/tmp/uxon-alice.sock"
+            )
+
+        self.assertEqual(session.profile, "claude_fast")
+        self.assertEqual(session.agent, "claude")
+        self.assertEqual(session.launch_user, "alice")
+        self.assertEqual(session.container_profile, "box")
+        self.assertEqual(session.container, "record-box")
+        self.assertEqual(session.container_id, "cid-1")
+        self.assertEqual(session.container_cgroup, "/record.scope")
+        self.assertEqual(session.container_epoch, "1000")
+        self.assertEqual(session.container_marker, "env-box")
+
+    def test_collect_sessions_without_record_uses_suffix_display_only(self) -> None:
+        from uxon.infra import sessions_probe
+
+        list_row = "\t".join(
+            [
+                "uxon-demo@claude_fast",
+                "$1",
+                "0",
+                "1",
+                "1780000000",
+                "1780000100",
+                "nonce-1",
+                "env-box",
+                "/env.scope",
+            ]
+        )
+        pane_row = "1\t111\tdocker\t/srv/repos/demo"
+        with (
+            mock.patch(
+                "uxon.infra.sessions_probe.run_query",
+                return_value=mock.Mock(returncode=0, stdout=""),
+            ),
+            mock.patch(
+                "uxon.infra.sessions_probe.run_cmd",
+                side_effect=[
+                    mock.Mock(stdout=list_row),
+                    mock.Mock(stdout=pane_row),
+                ],
+            ),
+            mock.patch("uxon.infra.sessions_probe.read_verified_record", return_value=None),
+            mock.patch("uxon.infra.sessions_probe.enrich_session_usage"),
+        ):
+            [session] = sessions_probe.collect_sessions_for_user(
+                "alice", "uxon-", "/tmp/uxon-alice.sock"
+            )
+
+        self.assertEqual(session.profile, "claude_fast")
+        self.assertEqual(session.agent, "")
+        self.assertFalse(session.launch_record_verified)
+        self.assertEqual(session.container, "")
+        self.assertEqual(session.container_profile, "")
+        self.assertEqual(session.container_marker, "env-box")
 
 
 class KillJsonTests(unittest.TestCase):

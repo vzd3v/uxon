@@ -276,6 +276,33 @@ class KillUserLocalTests(unittest.TestCase):
         self.assertEqual(err_emit["session"], "uxon-demo@claude")
         self.assertEqual(err_emit["target_user"], "u-vz")
 
+    def test_session_kill_audit_includes_profile_agent_and_target_user(self) -> None:
+        cfg = _make_config()
+        target = _make_session("uxon-demo@claude_fast")
+        target.profile = "claude_fast"
+        target.agent = "claude"
+        target.launch_record_verified = True
+        args = ParsedArgs(action="kill", target_id="demo@claude_fast", user="u-vz", dry_run=True)
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with (
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+        ):
+            with redirect_stdout(io.StringIO()):
+                rc = kill_app.do_kill(args, cfg, "u-vz")
+
+        self.assertEqual(rc, 0)
+        [event] = [fields for name, fields in recorded if name == "session.kill"]
+        self.assertEqual(event["session"], "uxon-demo@claude_fast")
+        self.assertEqual(event["target_user"], "u-vz")
+        self.assertEqual(event["profile"], "claude_fast")
+        self.assertEqual(event["agent"], "claude")
+
 
 class KillPeerInboundTests(unittest.TestCase):
     """Peer-inbound branch (``SSH_CONNECTION`` set): ``kill.remote.in``

@@ -329,7 +329,7 @@ class ParseEnvelopeTests(unittest.TestCase):
         self.assertIn("invalid JSON", err)
 
     def test_schema_version_mismatch_rejected(self) -> None:
-        bad = json.dumps({"schema_version": "2", "kind": "list", "data": {"sessions": []}})
+        bad = json.dumps({"schema_version": "1", "kind": "list", "data": {"sessions": []}})
         sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
         self.assertIsNone(sessions)
         assert err is not None

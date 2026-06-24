@@ -151,6 +151,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 outcome="denied",
                 **{_session_field: args.target_id or ""},
                 target_user=target_user,
+                profile="",
+                agent="",
             )
             eprint(
                 f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
@@ -165,6 +167,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             audit_event=_attach_event,
             target_user=target_user,
             session_field=_session_field,
+            extra={"profile": "", "agent": ""},
         )
         base = tmux.configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
         full = ["sudo", "-niu", target_user, "--", *base]
@@ -183,6 +186,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             _attach_event,
             **{_session_field: target.name},
             target_user=target_user,
+            profile=target.profile,
+            agent=target.agent,
         )
         try:
             os.execvp(full[0], full)
@@ -192,6 +197,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 outcome="error",
                 **{_session_field: target.name},
                 target_user=target_user,
+                profile=target.profile,
+                agent=target.agent,
                 error=str(exc)[:256],
             )
             raise
@@ -218,6 +225,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         audit_event=_attach_event,
         target_user=launch_user,
         session_field=_session_field,
+        extra={"profile": "", "agent": ""},
     )
     # Same-user audit fires once before ``attach_session``'s execvp.
     # Emitting from ``do_attach`` (not ``attach_session``) keeps the
@@ -226,6 +234,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         _attach_event,
         **{_session_field: target.name},
         target_user=launch_user,
+        profile=target.profile,
+        agent=target.agent,
     )
     try:
         return attach_session(target, cfg, launch_user, args.dry_run)
@@ -235,6 +245,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             outcome="error",
             **{_session_field: target.name},
             target_user=launch_user,
+            profile=target.profile,
+            agent=target.agent,
             error=str(exc)[:256],
         )
         raise

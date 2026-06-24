@@ -13,6 +13,7 @@ from typing import Any
 import uxon.app.listing as listing_app
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
+from uxon.domain.session import SessionInfo
 from uxon.errors import eprint, fail
 from uxon.infra import identity, process, sessions_probe, tmux
 from uxon.infra.run import run_query
@@ -33,7 +34,10 @@ class ContainerTeardown:
     """
 
     stop_cmd: list[str]
+    container_profile: str
     name: str
+    container_id: str
+    profile_fingerprint: str
     launch_epoch: str = ""
 
 
@@ -53,9 +57,11 @@ def _print_killed(name: str, cfg: Config) -> None:
         print(f"note: {caveat}")
 
 
-def prepare_container_teardown(
-    cfg: Config, target_user: str, session_name: str
-) -> ContainerTeardown | None:
+def _teardown_skip(session_name: str, reason: str) -> None:
+    eprint(f"uxon: container teardown for {session_name} skipped: {reason}")
+
+
+def prepare_container_teardown(cfg: Config, target: SessionInfo) -> ContainerTeardown | None:
     """Prepare the in-container teardown for ``session_name``, or None.
 
     The mirror of the launch wrap: when ``[container].stop_template`` is set,
@@ -85,36 +91,66 @@ def prepare_container_teardown(
     unreadable/invalid, bad template) degrades to None, and the kill proceeds
     regardless (orphaning is no worse than the pre-teardown behaviour).
     """
-    c = cfg.container
-    if not c.enabled or not c.stop_template:
+    if not target.container and not target.container_marker:
+        return None
+    if not target.launch_record_verified:
+        _teardown_skip(target.name, "no verified launch record")
+        return None
+    if not target.container_profile:
+        _teardown_skip(target.name, "missing container profile")
+        return None
+    profile = cfg.container_profiles.get(target.container_profile)
+    if profile is None:
+        _teardown_skip(
+            target.name, f"container profile {target.container_profile!r} is unavailable"
+        )
+        return None
+    if profile.fingerprint != target.container_profile_fingerprint:
+        _teardown_skip(target.name, "container profile changed since launch")
+        return None
+    if not profile.stop_template:
+        return None
+    if not target.container_id or not target.container_epoch:
+        _teardown_skip(target.name, "missing container identity")
         return None
     try:
         from uxon.domain.container import (
-            CONTAINER_EPOCH_ENV,
-            CONTAINER_NAME_ENV,
             container_pidfile,
             is_valid_container_name,
-            render_stop_template,
+            render_profile_template,
         )
 
-        name = tmux.read_session_env(cfg, target_user, session_name, CONTAINER_NAME_ENV)
+        name = target.container
         if not name or not is_valid_container_name(name):
-            # Session predates teardown, ran without a container, or the env
-            # var is malformed — nothing safe to target.
+            _teardown_skip(target.name, "missing container name")
             return None
-        pidfile = container_pidfile(session_name)
-        stop_cmd = render_stop_template(c.stop_template, name=name, pidfile=pidfile)
-        # PID-recycle guard input: stash the launch-time epoch off the live
-        # session env now; run_container_teardown re-resolves the live epoch
-        # just before the kill and compares (AC-P3.5).
-        launch_epoch = tmux.read_session_env(cfg, target_user, session_name, CONTAINER_EPOCH_ENV)
-        return ContainerTeardown(stop_cmd=stop_cmd, name=name, launch_epoch=launch_epoch or "")
-    except SystemExit as exc:  # render_stop_template fail() — never abort the kill
+        pidfile = container_pidfile(target.name)
+        stop_cmd = render_profile_template(
+            profile.stop_template,
+            profile=profile,
+            what="stop_template",
+            name=name,
+            dir_token="/",
+            user=target.launch_user or target.user,
+            launch_profile=target.profile,
+            agent=target.agent,
+            project_slug="",
+            pidfile=pidfile,
+        )
+        return ContainerTeardown(
+            stop_cmd=stop_cmd,
+            container_profile=target.container_profile,
+            name=name,
+            container_id=target.container_id,
+            profile_fingerprint=target.container_profile_fingerprint,
+            launch_epoch=target.container_epoch,
+        )
+    except SystemExit as exc:  # template render failure must never abort the kill
         msg = getattr(exc, "uxon_msg", exc)
-        eprint(f"uxon: container teardown for {session_name} skipped: {msg}")
+        _teardown_skip(target.name, str(msg))
         return None
     except Exception as exc:  # noqa: BLE001 — teardown must never block kill-session
-        eprint(f"uxon: container teardown for {session_name} skipped: {exc}")
+        _teardown_skip(target.name, str(exc))
         return None
 
 
@@ -146,21 +182,63 @@ def run_container_teardown(
     from uxon.infra import audit as _audit
     from uxon.infra import container as container_infra
 
-    if teardown.launch_epoch:
-        live_epoch = container_infra.current_container_epoch(cfg, teardown.name, target_user)
-        if live_epoch and live_epoch != teardown.launch_epoch:
-            eprint(
-                f"uxon: container teardown for {session_name} skipped: the container "
-                "restarted since launch (the recorded process is no longer the agent)"
-            )
-            _audit.audit(
-                "container.teardown",
-                outcome="stale",
-                name=teardown.name,
-                session=session_name,
-                target_user=target_user,
-            )
-            return
+    profile = cfg.container_profiles.get(teardown.container_profile)
+    if profile is None:
+        _teardown_skip(
+            session_name, f"container profile {teardown.container_profile!r} is unavailable"
+        )
+        _audit.audit(
+            "container.teardown",
+            outcome="missing_profile",
+            container_profile=teardown.container_profile,
+            container=teardown.name,
+            action="skip",
+            session=session_name,
+            target_user=target_user,
+        )
+        return
+    if profile.fingerprint != teardown.profile_fingerprint:
+        _teardown_skip(session_name, "container profile changed since launch")
+        _audit.audit(
+            "container.teardown",
+            outcome="fingerprint_mismatch",
+            container_profile=teardown.container_profile,
+            container=teardown.name,
+            action="skip",
+            session=session_name,
+            target_user=target_user,
+        )
+        return
+    live = container_infra.current_container_identity_for_profile(
+        profile, teardown.name, target_user
+    )
+    if live is None:
+        _teardown_skip(session_name, "live container identity could not be resolved")
+        _audit.audit(
+            "container.teardown",
+            outcome="identity_unresolved",
+            container_profile=teardown.container_profile,
+            container=teardown.name,
+            action="skip",
+            session=session_name,
+            target_user=target_user,
+        )
+        return
+    if live.id != teardown.container_id or live.epoch != teardown.launch_epoch:
+        _teardown_skip(
+            session_name,
+            "the container identity changed since launch",
+        )
+        _audit.audit(
+            "container.teardown",
+            outcome="stale",
+            container_profile=teardown.container_profile,
+            container=teardown.name,
+            action="skip",
+            session=session_name,
+            target_user=target_user,
+        )
+        return
 
     ok, detail = container_infra.run_teardown(teardown.stop_cmd, target_user)
     if not ok:
@@ -168,7 +246,9 @@ def run_container_teardown(
     _audit.audit(
         "container.teardown",
         outcome="ok" if ok else "error",
-        name=teardown.name,
+        container_profile=teardown.container_profile,
+        container=teardown.name,
+        action="stop",
         session=session_name,
         target_user=target_user,
         **({"error": detail[:256]} if not ok and detail else {}),
@@ -181,6 +261,8 @@ def run_kill_session(
     audit_event: str,
     session: str,
     target_user: str,
+    profile: str,
+    agent: str,
     force: bool,
     dry_run: bool,
 ) -> None:
@@ -203,6 +285,8 @@ def run_kill_session(
             outcome="error",
             session=session,
             target_user=target_user,
+            profile=profile,
+            agent=agent,
             force=force,
             dry_run=dry_run,
             rc=cp.returncode,
@@ -427,6 +511,8 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 outcome="denied",
                 session=args.target_id or "",
                 target_user=target_user,
+                profile="",
+                agent="",
                 force=args.force,
                 dry_run=args.dry_run,
             )
@@ -452,7 +538,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             cfg,
             audit_event=_kill_event,
             target_user=target_user,
-            extra={"force": args.force, "dry_run": args.dry_run},
+            extra={"force": args.force, "dry_run": args.dry_run, "profile": "", "agent": ""},
         )
         # Non-interactive sudo: there's no TTY in the kill path even
         # for the CLI; if NOPASSWD is missing we want a fast failure
@@ -467,6 +553,8 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 _kill_event,
                 session=target.name,
                 target_user=target_user,
+                profile=target.profile,
+                agent=target.agent,
                 force=args.force,
                 dry_run=True,
             )
@@ -486,15 +574,16 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             else:
                 print(f"dry-run: {shlex.join(full)}")
             return 0
-        # Capture the teardown command while the session is still alive (its
-        # env holds the container name); run it AFTER kill-session reaps the
-        # orphaned in-container agent. Best-effort, never blocks the kill.
-        teardown = prepare_container_teardown(cfg, target_user, target.name)
+        # Prepare teardown from the verified launch record before tmux removes
+        # the session; run it after kill-session severs the container exec.
+        teardown = prepare_container_teardown(cfg, target)
         run_kill_session(
             full,
             audit_event=_kill_event,
             session=target.name,
             target_user=target_user,
+            profile=target.profile,
+            agent=target.agent,
             force=args.force,
             dry_run=args.dry_run,
         )
@@ -504,6 +593,8 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             _kill_event,
             session=target.name,
             target_user=target_user,
+            profile=target.profile,
+            agent=target.agent,
             force=args.force,
             dry_run=args.dry_run,
         )
@@ -532,7 +623,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         cfg,
         audit_event=_kill_event,
         target_user=launch_user,
-        extra={"force": args.force, "dry_run": args.dry_run},
+        extra={"force": args.force, "dry_run": args.dry_run, "profile": "", "agent": ""},
     )
     full = tmux.configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
     if args.dry_run:
@@ -540,6 +631,8 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             _kill_event,
             session=target.name,
             target_user=launch_user,
+            profile=target.profile,
+            agent=target.agent,
             force=args.force,
             dry_run=True,
         )
@@ -557,14 +650,16 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         else:
             print(f"dry-run: {shlex.join(full)}")
         return 0
-    # Capture teardown before the kill (session env holds the name); reap the
-    # orphaned in-container agent after kill-session. Best-effort.
-    teardown = prepare_container_teardown(cfg, launch_user, target.name)
+    # Prepare teardown from the verified launch record before tmux removes the
+    # session; run it after kill-session severs the container exec.
+    teardown = prepare_container_teardown(cfg, target)
     run_kill_session(
         full,
         audit_event=_kill_event,
         session=target.name,
         target_user=launch_user,
+        profile=target.profile,
+        agent=target.agent,
         force=args.force,
         dry_run=args.dry_run,
     )
@@ -574,6 +669,8 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         _kill_event,
         session=target.name,
         target_user=launch_user,
+        profile=target.profile,
+        agent=target.agent,
         force=args.force,
         dry_run=args.dry_run,
     )
@@ -641,7 +738,7 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             results.append({"name": s.name, "action": "would-kill"})
             continue
         # Capture teardown before the kill, reap the orphan after it.
-        teardown = prepare_container_teardown(cfg, launch_user, s.name)
+        teardown = prepare_container_teardown(cfg, s)
         cp = process.run_cmd(full, check=False)
         ok = cp.returncode == 0
         if ok and teardown:

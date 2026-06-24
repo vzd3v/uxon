@@ -215,7 +215,14 @@ def _plan_tui_create_new_agent(
     launch_user = resolved.launch_user
     if args.git_remote:
         new_app._do_create_git_remote(
-            args, cfg, launch_user, project_dir, name, None, resolved.git_remote
+            args,
+            cfg,
+            launch_user,
+            project_dir,
+            name,
+            None,
+            resolved.profile.id,
+            resolved.git_remote,
         )
     launch_app.ensure_container_ready(cfg, project_dir, resolved)
     return _plan_tui_existing_session_or_launch(

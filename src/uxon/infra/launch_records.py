@@ -195,6 +195,34 @@ def read_finalized_record(
     return payload
 
 
+def read_verified_record(
+    socket_path: str,
+    metadata: TmuxSessionMetadata,
+    *,
+    override_dir: Path | None = None,
+    require_owner: bool = True,
+) -> dict[str, Any] | None:
+    """Return the finalized record only when it matches live tmux metadata."""
+    if not metadata.launch_nonce:
+        return None
+    payload = read_finalized_record(
+        socket_path,
+        metadata.name,
+        metadata.launch_nonce,
+        override_dir=override_dir,
+        require_owner=require_owner,
+    )
+    if payload is None:
+        return None
+    if (
+        payload.get("tmux_session_id") != metadata.session_id
+        or payload.get("tmux_session_created") != metadata.created
+        or payload.get("tmux_session_name") != metadata.name
+    ):
+        return None
+    return payload
+
+
 def wait_for_finalized_record(
     socket_path: str,
     session_name: str,
@@ -226,6 +254,7 @@ def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
         "socket_path": record.socket_path,
         "session_name": record.session_name,
         "launch_nonce": record.launch_nonce,
+        "profile": record.launch_profile,
         "launch_profile": record.launch_profile,
         "agent": record.agent,
         "launch_user": record.launch_user,

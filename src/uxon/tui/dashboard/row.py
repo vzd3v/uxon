@@ -46,6 +46,9 @@ class SessionRow:
     last_attached_epoch: float | None
     cmd: str
     path: str
+    profile: str = ""
+    container_profile: str = ""
+    container: str = ""
     # True iff this row's containerized session has a stopped/absent container
     # (AC-P1.8). Drives the distinct "container down" CPU/RAM rendering instead
     # of a silent idle 0/—. Defaults False so a peer running an older wire
@@ -155,7 +158,10 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         user=s.user,
         name=s.name,
         short=s.short,
+        profile=getattr(s, "profile", ""),
         agent=s.agent,
+        container_profile="",
+        container="",
         attached=s.attached,
         legacy=s.legacy,
         pid=_parse_pid(s.pid),
@@ -189,7 +195,10 @@ def from_wire_record(host: str, rec: dict[str, Any]) -> SessionRow:
         user=str(rec.get("user", "") or ""),
         name=name,
         short=short,
+        profile=str(rec.get("profile", "") or ""),
         agent=str(rec.get("agent", "") or ""),
+        container_profile=str(rec.get("container_profile", "") or ""),
+        container=str(rec.get("container", "") or ""),
         attached=bool(rec.get("attached", False)),
         legacy=bool(rec.get("legacy", False)),
         pid=rec.get("active_pid") if isinstance(rec.get("active_pid"), int) else None,

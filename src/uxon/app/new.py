@@ -189,6 +189,8 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
                     "session.attach",
                     session=attach_target.name,
                     target_user=launch_user,
+                    profile=attach_target.profile,
+                    agent=attach_target.agent,
                 )
                 return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
         # No existing session, or decision == "new": create + launch via the
@@ -256,7 +258,14 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     target_desc = target_dir
     if args.git_remote:
         _do_create_git_remote(
-            args, cfg, launch_user, project_dir, name, branch, resolved.git_remote
+            args,
+            cfg,
+            launch_user,
+            project_dir,
+            name,
+            branch,
+            resolved.profile.id,
+            resolved.git_remote,
         )
 
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
@@ -289,6 +298,8 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
                 "session.attach",
                 session=attach_target.name,
                 target_user=launch_user,
+                profile=attach_target.profile,
+                agent=attach_target.agent,
             )
             try:
                 return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
@@ -298,6 +309,8 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
                     outcome="error",
                     session=attach_target.name,
                     target_user=launch_user,
+                    profile=attach_target.profile,
+                    agent=attach_target.agent,
                     error=str(exc)[:256],
                 )
                 raise
@@ -316,7 +329,9 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
 
     _audit.audit(
         "session.new",
+        profile=resolved.profile.id,
         agent=resolved.agent.id,
+        target_user=launch_user,
         project=target_dir,
         branch=branch or "",
         session=session,
@@ -339,7 +354,9 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         _audit.audit(
             "session.new",
             outcome="error",
+            profile=resolved.profile.id,
             agent=resolved.agent.id,
+            target_user=launch_user,
             project=target_dir,
             branch=branch or "",
             session=session,
@@ -356,6 +373,7 @@ def _do_create_git_remote(
     project_dir: str,
     repo_name: str,
     branch: str | None,
+    launch_profile_id: str,
     git_remote_policy: GitRemotePolicy,
 ) -> None:
     """Resolve the selected profile and drive the creation orchestrator.
@@ -429,9 +447,11 @@ def _do_create_git_remote(
         _audit.audit(
             "git.remote.create",
             outcome="error",
-            profile=profile.name,
+            profile=launch_profile_id,
+            git_remote_profile=profile.name,
             repo=repo_name,
             creds_user=profile.creds_user or launch_user,
+            launch_user=launch_user,
             rc=1,
         )
         fail(f"git remote creation failed at stage {exc.stage!r}: {exc}")
@@ -439,9 +459,11 @@ def _do_create_git_remote(
         _audit.audit(
             "git.remote.create",
             outcome="ok",
-            profile=profile.name,
+            profile=launch_profile_id,
+            git_remote_profile=profile.name,
             repo=repo_name,
             creds_user=profile.creds_user or launch_user,
+            launch_user=launch_user,
             rc=0,
         )
 

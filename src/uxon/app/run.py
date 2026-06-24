@@ -138,7 +138,9 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
 
     _audit.audit(
         "session.new",
+        profile=resolved.profile.id,
         agent=resolved.agent.id,
+        target_user=launch_user,
         project=target_dir,
         branch=branch or "",
         session=session,
@@ -161,7 +163,9 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         _audit.audit(
             "session.new",
             outcome="error",
+            profile=resolved.profile.id,
             agent=resolved.agent.id,
+            target_user=launch_user,
             project=target_dir,
             branch=branch or "",
             session=session,

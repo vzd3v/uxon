@@ -375,6 +375,42 @@ def current_container_epoch_for_profile(
     return epoch
 
 
+def current_container_identity_for_profile(
+    profile: ContainerProfile,
+    name: str,
+    launch_user: str,
+) -> ContainerIdentity | None:
+    """Best-effort live identity for a profile-scoped container."""
+    if not profile.resolve_cmd:
+        return None
+    try:
+        cmd = render_profile_template(
+            profile.resolve_cmd,
+            profile=profile,
+            what="resolve_cmd",
+            name=name,
+            dir_token="/",
+            user=launch_user,
+            launch_profile="",
+            agent="",
+            project_slug="",
+        )
+    except SystemExit:
+        return None
+    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+    try:
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if cp.returncode != 0:
+        return None
+    parsed = parse_resolve_output(cp.stdout)
+    if parsed is None:
+        return None
+    cid, init_pid, epoch = parsed
+    return ContainerIdentity(id=cid, cgroup=_read_proc_cgroup(init_pid), epoch=epoch)
+
+
 def probe_container_state(
     container_cfg: ContainerConfig | None, name: str, launch_user: str
 ) -> tuple[str, str]:

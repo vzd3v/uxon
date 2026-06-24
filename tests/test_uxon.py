@@ -207,6 +207,7 @@ class UxonTests(unittest.TestCase):
             active_pid=1234,
             active_cmd="claude",
             active_path=path,
+            launch_record_verified=True,
         )
 
     def test_resolve_caller_user_prefers_current_non_root_user(self) -> None:
@@ -1192,6 +1193,8 @@ class UxonTests(unittest.TestCase):
         )
         wt = "/srv/repos/demo/.uxon/worktrees/feature-x"
         existing = [self.make_session("uxon-demo-feature-x@claude", wt)]
+        existing[0].profile = "claude"
+        existing[0].agent = "claude"
 
         with (
             mock.patch.object(os.path, "isdir", return_value=True),
@@ -1205,12 +1208,20 @@ class UxonTests(unittest.TestCase):
             mock.patch("builtins.input", return_value=""),
             mock.patch.object(attach_app, "attach_session", return_value=0) as attach,
             mock.patch.object(launch_app, "plan_worktree_launch") as plan,
+            mock.patch("uxon.infra.audit.audit") as audit,
         ):
             result = new_app.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
         attach.assert_called_once()
         plan.assert_not_called()  # attach decision → no worktree creation
+        audit.assert_called_once_with(
+            "session.attach",
+            session="uxon-demo-feature-x@claude",
+            target_user="u-vz",
+            profile="claude",
+            agent="claude",
+        )
 
     def test_do_new_existing_worktree_session_uses_configured_noninteractive_new(self) -> None:
         # Same §2.5 worktree-path compatibility root; with the noninteractive
@@ -2428,6 +2439,7 @@ def _mk_session(
         active_cmd="",
         active_path=path,
         agent=agent,
+        launch_record_verified=True,
         legacy=legacy,
     )
 
@@ -2972,6 +2984,7 @@ class ProbeWorktreeStemTests(unittest.TestCase):
             active_pid=None,
             active_cmd="claude",
             active_path=path,
+            launch_record_verified=True,
         )
 
     def test_explicit_stem_matches_worktree_session(self) -> None:
@@ -3017,6 +3030,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
             active_pid=None,
             active_cmd="claude",
             active_path=path,
+            launch_record_verified=True,
         )
 
     def test_planner_allocates_repo_qualified_name_probe_then_matches(self) -> None:
@@ -3613,6 +3627,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
             active_pid=None,
             active_cmd="claude",
             active_path=wt,
+            launch_record_verified=True,
         )
         cfg = config_loader.load_config("/tmp")
         resolved = _resolved_for_test(cfg, launch_user="dana_agent")

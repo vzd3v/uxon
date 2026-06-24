@@ -508,7 +508,9 @@ def plan_worktree_launch(
     # worktree.create is the ADDITIONAL lifecycle event, not a replacement.
     _audit.audit(
         "session.new",
+        profile=resolved_profile.profile.id,
         agent=resolved_profile.agent.id,
+        target_user=launch_user,
         project=worktree_path,
         branch=branch_name,
         session=session,

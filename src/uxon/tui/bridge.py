@@ -89,8 +89,15 @@ class TuiBridge:
             self.cfg,
             audit_event="session.attach",
             target_user=user,
+            extra={"profile": "", "agent": ""},
         )
-        _audit.audit("session.attach", session=target.name, target_user=user)
+        _audit.audit(
+            "session.attach",
+            session=target.name,
+            target_user=user,
+            profile=target.profile,
+            agent=target.agent,
+        )
         return tmux._build_tmux_attach_request(target, self.cfg, user)
 
     def on_kill(self, user: str, name: str) -> None:
@@ -106,7 +113,7 @@ class TuiBridge:
             self.cfg,
             audit_event="session.kill",
             target_user=user,
-            extra={"force": True, "dry_run": False},
+            extra={"force": True, "dry_run": False, "profile": "", "agent": ""},
         )
         # TUI-driven kill: no TTY available, use non-interactive sudo.
         full = tmux.configured_tmux_base(self.cfg, user, nonint=True) + [
@@ -122,12 +129,14 @@ class TuiBridge:
             run_kill_session,
         )
 
-        teardown = prepare_container_teardown(self.cfg, user, target.name)
+        teardown = prepare_container_teardown(self.cfg, target)
         run_kill_session(
             full,
             audit_event="session.kill",
             session=target.name,
             target_user=user,
+            profile=target.profile,
+            agent=target.agent,
             force=True,
             dry_run=False,
         )
@@ -137,6 +146,8 @@ class TuiBridge:
             "session.kill",
             session=target.name,
             target_user=user,
+            profile=target.profile,
+            agent=target.agent,
             force=True,
             dry_run=False,
         )
@@ -156,7 +167,7 @@ class TuiBridge:
                 "-t",
                 s.name,
             ]
-            teardown = prepare_container_teardown(self.cfg, self.launch_user, s.name)
+            teardown = prepare_container_teardown(self.cfg, s)
             cp = process.run_cmd(full, check=False)
             if cp.returncode == 0:
                 killed_count += 1
@@ -345,7 +356,7 @@ class TuiBridge:
                     "-t",
                     s.name,
                 ]
-                teardown = prepare_container_teardown(self.cfg, u, s.name)
+                teardown = prepare_container_teardown(self.cfg, s)
                 cp = process.run_cmd(full, check=False)
                 attempted += 1
                 if cp.returncode == 0:
@@ -457,9 +468,12 @@ class TuiBridge:
         # attach), so this path is unconditional ``session.new``.
         from uxon.infra import audit as _audit
 
+        managed = req.managed
         _audit.audit(
             "session.new",
-            agent=agent_id,
+            profile=managed.launch_profile if managed is not None else agent_id,
+            agent=managed.agent if managed is not None else agent_id,
+            target_user=managed.launch_user if managed is not None else self.launch_user,
             project=target,
             branch="",
             session=attach_app._session_name_from_launch_label(req.label),
@@ -478,9 +492,12 @@ class TuiBridge:
         project = canonical(os.path.join(self.cfg.new_project_root, name))
         from uxon.infra import audit as _audit
 
+        managed = req.managed
         _audit.audit(
             "session.new",
-            agent=agent_id,
+            profile=managed.launch_profile if managed is not None else agent_id,
+            agent=managed.agent if managed is not None else agent_id,
+            target_user=managed.launch_user if managed is not None else self.launch_user,
             project=project,
             branch="",
             session=attach_app._session_name_from_launch_label(req.label),
@@ -499,9 +516,12 @@ class TuiBridge:
         # (prompt affordance) — see ``on_launch_cwd``.
         from uxon.infra import audit as _audit
 
+        managed = req.managed
         _audit.audit(
             "session.new",
-            agent=agent_id,
+            profile=managed.launch_profile if managed is not None else agent_id,
+            agent=managed.agent if managed is not None else agent_id,
+            target_user=managed.launch_user if managed is not None else self.launch_user,
             project=project,
             branch="",
             session=attach_app._session_name_from_launch_label(req.label),
@@ -606,9 +626,12 @@ class TuiBridge:
         )
         from uxon.infra import audit as _audit
 
+        managed = req.managed
         _audit.audit(
             "session.new",
-            agent=agent_id,
+            profile=managed.launch_profile if managed is not None else agent_id,
+            agent=managed.agent if managed is not None else agent_id,
+            target_user=managed.launch_user if managed is not None else self.launch_user,
             project=worktree_path,
             branch=branch,
             session=attach_app._session_name_from_launch_label(req.label),

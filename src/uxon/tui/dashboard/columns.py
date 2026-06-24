@@ -156,25 +156,22 @@ def _format_user(row: SessionRow) -> Text:
     return Text(row.user or "-")
 
 
-def _strip_agent_suffix(short: str, agent: str) -> str:
-    """Drop the profile/agent suffix token from a prefix-stripped session name.
+def _strip_profile_suffix(short: str, profile: str) -> str:
+    """Drop the profile suffix token from a prefix-stripped session name.
 
-    Session names follow ``<prefix><stem>@<profile>[-N]``. Until launch
-    records split profile from agent in list data, ``row.agent`` carries the
-    parsed suffix for this renderer. ``row.short`` is the name with the prefix
-    removed — i.e. ``<stem>@<profile>[-N]``. The dashboard renders the suffix
-    in its own AGENT column, so showing it in NAME is redundant. We strip the
-    last occurrence and preserve the trailing ``-N``
+    Session names follow ``<prefix><stem>@<profile>[-N]``. ``row.short`` is the
+    name with the prefix removed — i.e. ``<stem>@<profile>[-N]``. We strip the
+    last profile occurrence and preserve the trailing ``-N``
     disambiguator (so ``proj@claude-2`` becomes ``proj-2``, not
     ``proj`` — otherwise two siblings would collide visually).
 
     ``rpartition`` over ``find``: a stem like ``foo@claude_helper``
-    happens to contain the agent name as a substring; partitioning
+    happens to contain the profile name as a substring; partitioning
     from the right matches the actual suffix.
     """
-    if not agent:
+    if not profile:
         return short
-    needle = f"@{agent}"
+    needle = f"@{profile}"
     if needle not in short:
         return short
     base, _, tail = short.rpartition(needle)
@@ -194,7 +191,7 @@ def _format_name(row: SessionRow) -> Text:
     glyph = "● " if row.attached else "○ "
     text = Text(glyph)
     base = row.short or row.name or "-"
-    text.append(_strip_agent_suffix(base, row.agent))
+    text.append(_strip_profile_suffix(base, row.profile or row.agent))
     return text
 
 
@@ -263,7 +260,7 @@ def _sort_name(row: SessionRow) -> str:
     # by ``<stem>@<profile>``. Otherwise two same-stem siblings on
     # different profiles interleave with unrelated rows whose stem
     # happens to alphabetise between them.
-    return _strip_agent_suffix(row.short or row.name, row.agent)
+    return _strip_profile_suffix(row.short or row.name, row.profile or row.agent)
 
 
 def _sort_agent(row: SessionRow) -> str:

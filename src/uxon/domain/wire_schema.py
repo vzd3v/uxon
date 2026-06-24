@@ -55,7 +55,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
-WIRE_SCHEMA_VERSION = "1"
+WIRE_SCHEMA_VERSION = "2"
 """Current wire-schema version. Bump on incompatible changes only."""
 
 
@@ -76,8 +76,13 @@ class SessionRecord(TypedDict):
       stripped, mirroring the human table. For ``legacy=True``
       records the current prefix does not match, so ``short_id``
       equals ``name``.
-    - ``agent``: the suffix parsed from the session name until launch records
-      split profile from underlying agent in the list payload.
+    - ``profile``: launch profile id from the verified launch record, or the
+      session-name suffix display fallback for unmanaged sessions.
+    - ``agent``: underlying agent id from the verified launch record, or ``""``
+      when the session is unmanaged.
+    - ``container_profile`` / ``container``: verified launch-record container
+      profile id and resolved container name, or ``""`` for host-only and
+      unmanaged sessions.
     - ``attached``: ``True`` iff a tmux client is currently attached.
     - ``windows``: tmux window count, as reported by
       ``#{session_windows}``. Kept as a string because tmux emits it
@@ -101,7 +106,10 @@ class SessionRecord(TypedDict):
     user: str
     name: str
     short_id: str
+    profile: str
     agent: str
+    container_profile: str
+    container: str
     attached: bool
     windows: str
     created: str
@@ -112,6 +120,7 @@ class SessionRecord(TypedDict):
     active_path: str
     cpu_pct: float
     rss_kib: int
+    container_down: bool
     legacy: bool
 
 
@@ -236,6 +245,10 @@ class _SessionLike(Protocol):
     cpu_pct: float
     rss_kib: int
     agent: str
+    profile: str
+    container_profile: str
+    container: str
+    container_down: bool
     legacy: bool
 
 
@@ -272,7 +285,10 @@ def build_session_records(
                 user=s.user,
                 name=s.name,
                 short_id=short_id,
+                profile=s.profile,
                 agent=s.agent,
+                container_profile=s.container_profile,
+                container=s.container,
                 attached=(s.attached == "1"),
                 windows=s.windows,
                 created=s.created,
@@ -283,6 +299,7 @@ def build_session_records(
                 active_path=s.active_path,
                 cpu_pct=s.cpu_pct,
                 rss_kib=s.rss_kib,
+                container_down=s.container_down,
                 legacy=s.legacy,
             )
         )
