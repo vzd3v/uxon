@@ -64,8 +64,8 @@ class LaunchConfig:
 @dataclass(frozen=True)
 class ContainerIdentity:
     id: str
-    cgroup_path: str = ""
-    start_epoch: str = ""
+    cgroup: str = ""
+    epoch: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,7 @@ class ContainerContext:
     profile_id: str
     name: str
     dir_token: str
+    profile_fingerprint: str = ""
     identity: ContainerIdentity | None = None
 
 
@@ -84,6 +85,10 @@ class ResolvedLaunchProfile:
     mode_id: str = ""
     container: ContainerContext | None = None
     git_remote: GitRemotePolicy = field(default_factory=GitRemotePolicy)
+
+    @property
+    def container_context(self) -> ContainerContext | None:
+        return self.container
 
 
 def validate_tmux_safe_id(value: str, *, what: str) -> str:

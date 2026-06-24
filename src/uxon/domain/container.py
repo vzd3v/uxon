@@ -151,6 +151,7 @@ class ContainerProfile:
     @property
     def fingerprint(self) -> str:
         payload = {
+            "id": self.id,
             "runtime_namespace": self.runtime_namespace,
             "name_template": self.name_template,
             "exec_template": self.exec_template,
@@ -340,7 +341,7 @@ def _safe_format(template: str, what: str, **values: str) -> str:
     try:
         return template.format(**values)
     except KeyError as exc:
-        placeholders = ", ".join(f"{{{p}}}" for p in _NAME_PLACEHOLDERS)
+        placeholders = ", ".join(f"{{{p}}}" for p in sorted(values))
         fail(
             f"container {what} uses unsupported placeholder {exc.args[0]!r}; valid: {placeholders}"
         )
@@ -453,6 +454,27 @@ def resolve_container_name(
     return validate_container_name(expanded)
 
 
+def resolve_profile_container_name(
+    profile: ContainerProfile,
+    *,
+    user: str,
+    launch_profile: str,
+    agent: str,
+    project_slug: str,
+) -> str:
+    """Resolve a profile-scoped container name and validate it."""
+    expanded = _safe_format(
+        profile.name_template,
+        "name_template",
+        user=user,
+        launch_profile=launch_profile,
+        container_profile=profile.id,
+        agent=agent,
+        project_slug=project_slug,
+    )
+    return validate_container_name(expanded)
+
+
 def render_exec_prefix(exec_template: tuple[str, ...], *, name: str, dir_token: str) -> list[str]:
     """Render the exec-template argv list with ``{name}``/``{dir}`` filled.
 
@@ -462,6 +484,33 @@ def render_exec_prefix(exec_template: tuple[str, ...], *, name: str, dir_token: 
     ``{dir}`` the already-validated container path.
     """
     return [_safe_format(tok, "exec_template", name=name, dir=dir_token) for tok in exec_template]
+
+
+def render_profile_template(
+    template: tuple[str, ...],
+    *,
+    profile: ContainerProfile,
+    what: str,
+    name: str,
+    dir_token: str = "",
+    user: str,
+    launch_profile: str,
+    agent: str,
+    project_slug: str,
+    pidfile: str = "",
+) -> list[str]:
+    """Render a profile runtime argv template with the profile placeholder set."""
+    values = {
+        "user": user,
+        "launch_profile": launch_profile,
+        "container_profile": profile.id,
+        "agent": agent,
+        "project_slug": project_slug,
+        "name": name,
+        "dir": dir_token,
+        "pidfile": pidfile,
+    }
+    return [_safe_format(tok, what, **values) for tok in template]
 
 
 def render_template(

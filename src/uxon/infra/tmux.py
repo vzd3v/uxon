@@ -25,7 +25,7 @@ from uxon.domain.container import (
     CONTAINER_NAME_ENV,
     apply_path_map,
     container_pidfile,
-    render_exec_prefix,
+    render_profile_template,
     resolve_container_name,
     wrap_agent_for_container,
 )
@@ -307,12 +307,22 @@ def _build_tmux_launch_request(
     # composes the resolved prefix into ``final_cmd``.
     exec_prefix: list[str] = []
     session_env: list[str] = []
-    if cfg.container.enabled:
-        from uxon.infra.container import resolve_container_identity
+    if resolved_profile.container_context is not None:
+        from uxon.infra.container import resolve_container_identity_for_profile
 
-        name, dir_token = resolve_container(cfg, target_dir, launch_user)
-        exec_prefix = render_exec_prefix(
-            cfg.container.exec_template, name=name, dir_token=dir_token
+        context = resolved_profile.container_context
+        container_profile = cfg.container_profiles[context.profile_id]
+        name = context.name
+        exec_prefix = render_profile_template(
+            container_profile.exec_template,
+            profile=container_profile,
+            what="exec_template",
+            name=context.name,
+            dir_token=context.dir_token,
+            user=launch_user,
+            launch_profile=resolved_profile.profile.id,
+            agent=resolved_profile.agent.id,
+            project_slug=slugify(os.path.basename(os.path.normpath(target_dir))),
         )
         # Launch-time telemetry markers (hoisted to the ``enabled`` guard so
         # EVERY enabled session carries them, regardless of teardown opt-in).
@@ -323,7 +333,7 @@ def _build_tmux_launch_request(
         # value (absent var = the documented degrade; AC-P1.3 / AC-P3.5).
         session_env = ["-e", f"{CONTAINER_NAME_ENV}={name}"]
         if include_container_identity:
-            identity = resolve_container_identity(cfg, target_dir, launch_user)
+            identity = resolve_container_identity_for_profile(cfg, target_dir, resolved_profile)
             for var, value in (
                 (CONTAINER_ID_ENV, identity.id),
                 (CONTAINER_CGROUP_ENV, identity.cgroup),
@@ -336,7 +346,7 @@ def _build_tmux_launch_request(
         # The pidfile write stays gated on ``stop_template`` (teardown opt-in):
         # the kill path then terminates exactly this session's recorded
         # in-container PID, leaving the shared container running.
-        pidfile = container_pidfile(session) if cfg.container.stop_template else None
+        pidfile = container_pidfile(session) if container_profile.stop_template else None
         agent_argv = wrap_agent_for_container(agent_argv, session=session, pidfile=pidfile)
     final_cmd = exec_prefix + agent_argv
     socket_path = tmux_socket_path(cfg, launch_user)

@@ -403,10 +403,11 @@ class LoopStaysResponsiveTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.widgets.session_list_view import SessionListView
 
         # Loose backstop, not a tight bound: the thread-identity tests above
-        # are the real contract. A generous block/threshold ratio keeps this
-        # robust against scheduler/GC hiccups under parallel test load — only
-        # a multi-hundred-ms loop stall (the regression) trips it.
-        block = 0.8
+        # are the real contract. Keep the simulated action long enough that a
+        # true on-loop sleep is still clearly separated from Textual/scheduler
+        # jitter under parallel test load.
+        block = 1.4
+        stall_limit = block * 2 / 3
 
         ctx = _mk_ctx(
             sessions=[_session("s1")],
@@ -438,12 +439,12 @@ class LoopStaysResponsiveTests(unittest.IsolatedAsyncioTestCase):
             mon.stop()
 
             self.assertGreater(len(mon.gaps), 0, msg="heartbeat never ticked — test is invalid")
-            # Off the loop, gaps stay near the 10 ms interval; the regression
-            # (sleep on the loop) would freeze one heartbeat for the full
-            # `block`. Half of `block` separates the two with wide margin.
+            # Off the loop, gaps stay near the heartbeat interval plus normal
+            # scheduler jitter; the regression (sleep on the loop) freezes one
+            # heartbeat for nearly the full `block`.
             self.assertLess(
                 mon.max_block,
-                block / 2,
+                stall_limit,
                 msg=(
                     f"event loop stalled {mon.max_block:.3f}s during a {block}s action — "
                     "blocking work is back on the loop"

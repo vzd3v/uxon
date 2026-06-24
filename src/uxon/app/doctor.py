@@ -62,15 +62,20 @@ def doctor_issues(
         issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
     if tmux_path is None:
         issues.append(f"'tmux' is not resolvable for {launch_user}")
-    # Strict-whitelist: every enabled agent must resolve. Auto-mode:
-    # missing agents are not issues — they're just outside what the
-    # user can launch, and the doctor's per-agent table already shows
-    # the full installed/missing landscape.
-    if cfg.enabled_agents:
-        for aid in cfg.enabled_agents:
+    host_required_agents = tuple(
+        dict.fromkeys(
+            cfg.launch.profiles[pid].agent
+            for pid in cfg.launch.effective_enabled_profiles
+            if pid in cfg.launch.profiles
+            and not cfg.launch.profiles[pid].container_profile
+            and (cfg.launch.profiles[pid].launch_user or launch_user) == launch_user
+        )
+    )
+    if host_required_agents:
+        for aid in host_required_agents:
             if agent_paths.get(aid) is None:
                 issues.append(f"'{aid}' agent binary is not resolvable for {launch_user}")
-    elif all(path is None for path in agent_paths.values()):
+    elif cfg.launch.auto_mode and all(path is None for path in agent_paths.values()):
         issues.append(
             f"no agent binary is resolvable for {launch_user} (auto-mode); "
             f"install one of {tuple(cfg.agents)}"
@@ -159,6 +164,7 @@ def do_doctor(
         current_sessions,
         legacy_sessions,
     )
+    launch_profile_rows = _doctor_launch_profile_rows(cfg, caller_user, launch_user, agent_paths)
 
     if json_output:
         agents_block: dict[str, dict[str, Any]] = {}
@@ -188,6 +194,7 @@ def do_doctor(
                 "socket_parent_writable": user_can_write_dir(socket_parent, launch_user),
             },
             "agents": agents_block,
+            "launch_profiles": launch_profile_rows,
             "current_socket_sessions": build_session_records(
                 current_sessions, session_prefix=cfg.session_prefix
             ),
@@ -253,6 +260,13 @@ def do_doctor(
             print(f"{aid}:  {path}  TIMEOUT (>2.0s)")
         else:
             print(f"{aid}:  -  MISSING  ({spec.install_hint})")
+    print(f"launch_profiles={len(launch_profile_rows)}:")
+    for row in launch_profile_rows:
+        print(
+            f"- {row['id']}  agent={row['agent']}  launch_user={row['launch_user']}  "
+            f"container_profile={row['container_profile'] or '-'}  "
+            f"host_agent={'not-required' if row['containerized'] else row['host_agent_path'] or 'missing'}"
+        )
     print(f"current_socket_sessions={len(current_sessions)}")
     if current_sessions:
         print(
@@ -326,6 +340,34 @@ def do_doctor(
                     err = (row["error"] or "").splitlines()[0] if row["error"] else "error"
                     print(f"- {row['name']}  err  latency={row['latency_ms']}ms  {err}")
     return 0
+
+
+def _doctor_launch_profile_rows(
+    cfg: Config,
+    caller_user: str,
+    default_launch_user: str,
+    agent_paths: dict[str, str | None],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for pid in cfg.launch.effective_enabled_profiles:
+        profile = cfg.launch.profiles.get(pid)
+        if profile is None:
+            continue
+        selected_user = profile.launch_user or identity.resolve_launch_user(cfg, caller_user)
+        container_profile = profile.container_profile
+        rows.append(
+            {
+                "id": pid,
+                "agent": profile.agent,
+                "launch_user": selected_user,
+                "container_profile": container_profile or None,
+                "containerized": bool(container_profile),
+                "host_agent_path": (
+                    agent_paths.get(profile.agent) if selected_user == default_launch_user else None
+                ),
+            }
+        )
+    return rows
 
 
 def _doctor_container_section(cfg: Config, cwd: str, launch_user: str) -> dict[str, Any]:

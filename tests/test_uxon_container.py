@@ -30,6 +30,7 @@ from uxon.domain.container import (
     CONTAINER_NAME_ENV,
     SESSION_ENV,
     ContainerConfig,
+    ContainerProfile,
     apply_path_map,
     container_pidfile,
     decide_container_action,
@@ -38,11 +39,13 @@ from uxon.domain.container import (
     render_stop_template,
     resolve_container_name,
     validate_container_name,
+    validate_container_profile,
     validate_path_map,
     wrap_agent_for_container,
 )
 from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.domain.launch_profiles import (
+    ContainerContext,
     LaunchConfig,
     LaunchProfile,
     ResolvedLaunchProfile,
@@ -53,7 +56,26 @@ from uxon.domain.launch_profiles import (
 def _cfg(container: ContainerConfig, **overrides) -> Config:
     """Minimal Config carrying a ContainerConfig (other fields are inert here)."""
     agents = default_agent_catalog()
-    launch = LaunchConfig(default_profile="claude", profiles=builtin_launch_profiles(agents))
+    profiles = builtin_launch_profiles(agents)
+    container_profiles = {}
+    if container.enabled:
+        container_profiles["box"] = ContainerProfile(
+            id="box",
+            runtime_namespace="per_user",
+            name_template=container.name or container.name_template,
+            exec_template=container.exec_template,
+            is_running_cmd=container.is_running_cmd,
+            exists_cmd=container.exists_cmd,
+            start_template=container.start_template,
+            create_template=container.create_template,
+            stop_template=container.stop_template,
+            resolve_cmd=container.resolve_cmd,
+            on_missing=container.on_missing,
+            on_missing_mode=container.on_missing_mode,
+            path_map=container.path_map,
+        )
+        profiles["claude"] = LaunchProfile(id="claude", agent="claude", container_profile="box")
+    launch = LaunchConfig(default_profile="claude", profiles=profiles)
     base = dict(
         runtime_user="",
         default_launch_mode="caller",
@@ -79,18 +101,46 @@ def _cfg(container: ContainerConfig, **overrides) -> Config:
         agents=agents,
         launch=launch,
         container=container,
+        container_profiles=container_profiles,
     )
     base.update(overrides)
     return Config(**base)
 
 
-def _resolved(cfg: Config, launch_user: str, *, profile_id: str = "claude", mode: str = "yolo"):
+def _resolved(
+    cfg: Config,
+    launch_user: str,
+    *,
+    profile_id: str = "claude",
+    mode: str = "yolo",
+    target_dir: str = "/srv/projects/myapp",
+):
+    from uxon.domain.container import apply_path_map, resolve_profile_container_name
+    from uxon.domain.session import slugify
+
     profile = cfg.launch.profiles[profile_id]
+    context = None
+    if profile.container_profile:
+        container_profile = cfg.container_profiles[profile.container_profile]
+        dir_token = apply_path_map(target_dir, container_profile.path_map)
+        context = ContainerContext(
+            profile_id=container_profile.id,
+            name=resolve_profile_container_name(
+                container_profile,
+                user=launch_user,
+                launch_profile=profile.id,
+                agent=profile.agent,
+                project_slug=slugify(target_dir.rsplit("/", 1)[-1]),
+            ),
+            dir_token=dir_token,
+            profile_fingerprint=container_profile.fingerprint,
+        )
     return ResolvedLaunchProfile(
         profile=profile,
         agent=cfg.agents[profile.agent],
         launch_user=launch_user,
         mode_id=mode,
+        container=context,
     )
 
 
@@ -174,7 +224,7 @@ class ExecWrapTests(unittest.TestCase):
         # use a real OS account (the test runner's own user).
         launch_user = getpass.getuser()
         args = ParsedArgs(action="run", profile="claude", permission_mode="yolo")
-        resolved = _resolved(cfg, launch_user)
+        resolved = _resolved(cfg, launch_user, target_dir=target_dir)
         # ``tmux_nesting_mode`` reads $TMUX; force the classic (execvp) path so
         # the request is deterministic regardless of the test runner's tmux.
         with mock.patch("uxon.infra.tmux.tmux_nesting_mode", return_value="execvp"):
@@ -306,7 +356,9 @@ class ExecWrapTests(unittest.TestCase):
         ident = ContainerIdentity(
             id="abc123", cgroup="/sys/fs/cgroup/x.scope", epoch="2026-06-15T00:00:00Z"
         )
-        with mock.patch("uxon.infra.container.resolve_container_identity", return_value=ident):
+        with mock.patch(
+            "uxon.infra.container.resolve_container_identity_for_profile", return_value=ident
+        ):
             cmd = list(self._build(_cfg(c)).cmd)
         self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
         self.assertIn(f"{CONTAINER_ID_ENV}=abc123", cmd)
@@ -1164,6 +1216,261 @@ class ContainerGatingTests(unittest.TestCase):
                 container_enabled=True,
             )
         )
+
+
+class ContainerProfileRuntimeTests(unittest.TestCase):
+    """P3 — launch runtime decisions come from the resolved container profile."""
+
+    @staticmethod
+    def _profile(
+        cid: str,
+        *,
+        namespace: str = "per_user",
+        name_template: str = "box-{project_slug}",
+        path_map=(),
+    ) -> ContainerProfile:
+        return ContainerProfile(
+            id=cid,
+            runtime_namespace=namespace,  # type: ignore[arg-type]
+            name_template=name_template,
+            exec_template=("docker", "exec", "-w", "{dir}", "{name}"),
+            is_running_cmd=("docker", "top", "{name}"),
+            exists_cmd=("docker", "inspect", "{name}"),
+            start_template=("docker", "start", "{name}"),
+            on_missing="start",
+            path_map=path_map,
+        )
+
+    @staticmethod
+    def _report(*, launch_user: str, claude_path: str | None = None) -> HostReport:
+        return HostReport(
+            tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
+            agents={"claude": BinaryStatus("claude", claude_path, "install claude")},
+            launch_user=launch_user,
+        )
+
+    def _cfg_profiles(
+        self,
+        launch_profiles: dict[str, LaunchProfile],
+        container_profiles: dict[str, ContainerProfile],
+        *,
+        enabled: tuple[str, ...],
+        default: str,
+    ) -> Config:
+        agents = default_agent_catalog()
+        profiles = builtin_launch_profiles(agents)
+        profiles.update(launch_profiles)
+        return _cfg(
+            ContainerConfig(),
+            launch=LaunchConfig(
+                enabled_profiles=enabled,
+                default_profile=default,
+                profiles=profiles,
+            ),
+            container_profiles=container_profiles,
+        )
+
+    def test_prepare_and_agent_probe_use_pinned_launch_user_and_profile(self) -> None:
+        profile = LaunchProfile(
+            id="claude_box", agent="claude", launch_user="alice", container_profile="box"
+        )
+        cfg = self._cfg_profiles(
+            {"claude_box": profile},
+            {"box": self._profile("box", path_map=validate_path_map({"/srv/projects": "/work"}))},
+            enabled=("claude_box",),
+            default="claude_box",
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            "dana",
+            "claude_box",
+            "/srv/projects/myapp",
+            "normal",
+            report=self._report(launch_user="alice", claude_path=None),
+        )
+        self.assertEqual(resolved.launch_user, "alice")
+        assert resolved.container_context is not None
+        self.assertEqual(resolved.container_context.name, "box-myapp")
+        self.assertEqual(resolved.container_context.dir_token, "/work/myapp")
+
+        from uxon.app import launch as launch_app
+        from uxon.infra import container as container_infra
+
+        probes = iter([False, True])
+        with (
+            mock.patch.object(
+                container_infra, "_probe_exit_ok", side_effect=lambda c, u: next(probes)
+            ),
+            mock.patch.object(container_infra, "_run_prepare") as run_prepare,
+            mock.patch.object(container_infra, "probe_agent_in_container") as probe_agent,
+        ):
+            launch_app.ensure_container_ready(cfg, "/srv/projects/myapp", resolved)
+        run_prepare.assert_called_once_with(
+            ["docker", "start", "box-myapp"], "/srv/projects/myapp", "alice"
+        )
+        probe_agent.assert_called_once_with(cfg, "/srv/projects/myapp", resolved)
+
+    def test_tui_gate_probes_agent_for_running_container_profile(self) -> None:
+        profile = LaunchProfile(
+            id="claude_box", agent="claude", launch_user="alice", container_profile="box"
+        )
+        cfg = self._cfg_profiles(
+            {"claude_box": profile},
+            {"box": self._profile("box")},
+            enabled=("claude_box",),
+            default="claude_box",
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            "dana",
+            "claude_box",
+            "/srv/projects/myapp",
+            "normal",
+            report=self._report(launch_user="alice", claude_path=None),
+        )
+
+        from uxon.app import launch as launch_app
+        from uxon.infra import container as container_infra
+
+        with (
+            mock.patch.object(container_infra, "_probe_exit_ok", return_value=True),
+            mock.patch.object(container_infra, "probe_agent_in_container") as probe_agent,
+        ):
+            gate = launch_app.decide_container_gate(cfg, "/srv/projects/myapp", resolved)
+        self.assertIsNone(gate)
+        probe_agent.assert_called_once_with(cfg, "/srv/projects/myapp", resolved)
+
+    def test_agent_probe_runs_inside_container_not_on_host(self) -> None:
+        profile = LaunchProfile(
+            id="claude_box", agent="claude", launch_user="alice", container_profile="box"
+        )
+        cfg = self._cfg_profiles(
+            {"claude_box": profile},
+            {"box": self._profile("box")},
+            enabled=("claude_box",),
+            default="claude_box",
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            "dana",
+            "claude_box",
+            "/srv/projects/myapp",
+            "normal",
+            report=self._report(launch_user="alice", claude_path=None),
+        )
+        from uxon.infra import container as container_infra
+
+        cp = mock.Mock(returncode=0, stdout="", stderr="")
+        with (
+            mock.patch("uxon.infra.identity.process_user", return_value="root"),
+            mock.patch.object(container_infra, "run_query", return_value=cp) as run_query,
+        ):
+            container_infra.probe_agent_in_container(cfg, "/srv/projects/myapp", resolved)
+        argv = run_query.call_args.args[0]
+        self.assertEqual(argv[:4], ["sudo", "-niu", "alice", "--"])
+        self.assertIn("docker", argv)
+        self.assertIn("box-myapp", argv)
+        self.assertEqual(argv[-1], "claude")
+
+    def test_global_namespace_rejects_distinct_profile_name_collision(self) -> None:
+        cfg = self._cfg_profiles(
+            {
+                "one": LaunchProfile(
+                    id="one", agent="claude", launch_user="alice", container_profile="c1"
+                ),
+                "two": LaunchProfile(
+                    id="two", agent="claude", launch_user="bob", container_profile="c2"
+                ),
+            },
+            {
+                "c1": self._profile("c1", namespace="global", name_template="shared"),
+                "c2": self._profile("c2", namespace="global", name_template="shared"),
+            },
+            enabled=("one", "two"),
+            default="one",
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            launch_profile_app.resolve_launch_profile(
+                cfg,
+                "dana",
+                "one",
+                "/srv/projects/myapp",
+                "normal",
+                report=self._report(launch_user="alice", claude_path=None),
+            )
+        self.assertIn("collides", getattr(ctx.exception, "uxon_msg", ""))
+
+    def test_per_user_namespace_rejects_same_user_collision(self) -> None:
+        cfg = self._cfg_profiles(
+            {
+                "one": LaunchProfile(
+                    id="one", agent="claude", launch_user="alice", container_profile="c1"
+                ),
+                "two": LaunchProfile(
+                    id="two", agent="claude", launch_user="alice", container_profile="c2"
+                ),
+            },
+            {
+                "c1": self._profile("c1", name_template="shared"),
+                "c2": self._profile("c2", name_template="shared"),
+            },
+            enabled=("one", "two"),
+            default="one",
+        )
+        with self.assertRaises(SystemExit):
+            launch_profile_app.resolve_launch_profile(
+                cfg,
+                "dana",
+                "one",
+                "/srv/projects/myapp",
+                "normal",
+                report=self._report(launch_user="alice", claude_path=None),
+            )
+
+    def test_same_container_profile_id_is_intentional_sharing(self) -> None:
+        cfg = self._cfg_profiles(
+            {
+                "one": LaunchProfile(
+                    id="one", agent="claude", launch_user="alice", container_profile="shared"
+                ),
+                "two": LaunchProfile(
+                    id="two", agent="claude", launch_user="alice", container_profile="shared"
+                ),
+            },
+            {"shared": self._profile("shared", name_template="shared")},
+            enabled=("one", "two"),
+            default="one",
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            cfg,
+            "dana",
+            "one",
+            "/srv/projects/myapp",
+            "normal",
+            report=self._report(launch_user="alice", claude_path=None),
+        )
+        assert resolved.container_context is not None
+        self.assertEqual(resolved.container_context.profile_id, "shared")
+
+    def test_placeholder_validation_names_field_and_placeholder(self) -> None:
+        bad = self._profile("box")
+        bad = ContainerProfile(
+            **{
+                **bad.__dict__,
+                "exec_template": ("docker", "exec", "{bogus}", "{name}"),
+            }
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            validate_container_profile(bad)
+        msg = getattr(ctx.exception, "uxon_msg", "")
+        self.assertIn("exec_template", msg)
+        self.assertIn("bogus", msg)
+
+    def test_container_profile_fingerprint_includes_profile_id(self) -> None:
+        one = self._profile("one", name_template="{container_profile}-{project_slug}")
+        two = self._profile("two", name_template="{container_profile}-{project_slug}")
+
+        self.assertNotEqual(one.fingerprint, two.fingerprint)
 
 
 class ContainerTeardownAuditTests(unittest.TestCase):

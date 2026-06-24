@@ -13,6 +13,10 @@ from pathlib import Path
 
 from uxon.domain.agents import permission_mode_for
 from uxon.domain.config import Config
+from uxon.domain.container import (
+    apply_path_map,
+    resolve_profile_container_name,
+)
 from uxon.domain.host_report import HostReport
 from uxon.domain.launch_profiles import (
     ContainerContext,
@@ -21,6 +25,7 @@ from uxon.domain.launch_profiles import (
     ResolvedLaunchProfile,
     match_path_rule,
 )
+from uxon.domain.session import slugify
 from uxon.errors import fail
 from uxon.infra import identity
 
@@ -165,6 +170,91 @@ def _profile_launch_user(cfg: Config, caller_user: str, profile_id: str) -> str:
     return profile.launch_user or identity.resolve_launch_user(cfg, caller_user)
 
 
+def _resolve_container_context(
+    cfg: Config,
+    profile_id: str,
+    *,
+    launch_user: str,
+    canonical_target: str,
+) -> ContainerContext | None:
+    profile = cfg.launch.profiles[profile_id]
+    if not profile.container_profile:
+        return None
+    container_profile = cfg.container_profiles[profile.container_profile]
+    dir_token = apply_path_map(canonical_target, container_profile.path_map)
+    project_slug = slugify(Path(canonical_target).name)
+    name = resolve_profile_container_name(
+        container_profile,
+        user=launch_user,
+        launch_profile=profile.id,
+        agent=profile.agent,
+        project_slug=project_slug,
+    )
+    return ContainerContext(
+        profile_id=container_profile.id,
+        name=name,
+        dir_token=dir_token,
+        profile_fingerprint=container_profile.fingerprint,
+    )
+
+
+def _check_container_name_collisions(
+    cfg: Config,
+    caller_user: str,
+    canonical_target: str,
+    rule: LaunchPathRule | None,
+) -> None:
+    enabled = set(cfg.launch.effective_enabled_profiles)
+    path_allowed = _path_allowed_profiles(cfg, rule)
+    seen: list[tuple[str, str, str, str, str]] = []
+    for profile_id in path_allowed:
+        if profile_id not in enabled or profile_id not in cfg.launch.profiles:
+            continue
+        profile = cfg.launch.profiles[profile_id]
+        if not profile.container_profile:
+            continue
+        launch_user = _profile_launch_user(cfg, caller_user, profile_id)
+        ctx = _resolve_container_context(
+            cfg,
+            profile_id,
+            launch_user=launch_user,
+            canonical_target=canonical_target,
+        )
+        if ctx is None:
+            continue
+        container_profile = cfg.container_profiles[ctx.profile_id]
+        for other_profile_id, other_container_id, other_namespace, other_user, other_name in seen:
+            if other_name != ctx.name or other_container_id == ctx.profile_id:
+                continue
+            collides = (
+                container_profile.runtime_namespace == "global"
+                or other_namespace == "global"
+                or launch_user == other_user
+            )
+            if collides:
+                scope = (
+                    "global namespace"
+                    if container_profile.runtime_namespace == "global"
+                    or other_namespace == "global"
+                    else f"user {launch_user!r}"
+                )
+                fail(
+                    f"container name {ctx.name!r} collides between launch profiles "
+                    f"{other_profile_id!r} and {profile_id!r} in {scope}; "
+                    "use the same container_profile id for intentional sharing "
+                    "or change the name_template"
+                )
+        seen.append(
+            (
+                profile_id,
+                ctx.profile_id,
+                container_profile.runtime_namespace,
+                launch_user,
+                ctx.name,
+            )
+        )
+
+
 def preflight_launch_user(cfg: Config, caller_user: str, requested_profile: str | None) -> str:
     """Resolve a seed launch user without tmux/agent probes.
 
@@ -280,6 +370,7 @@ def resolve_launch_profile(
         launch_user = _profile_launch_user(cfg, caller_user, selected)
 
     profile = cfg.launch.profiles[selected]
+    _check_container_name_collisions(cfg, caller_user, canonical_target, rule)
     if profile.agent not in cfg.agents:
         fail(f"launch profile {selected!r} references unknown agent {profile.agent!r}")
     agent = cfg.agents[profile.agent]
@@ -305,10 +396,11 @@ def resolve_launch_profile(
             1,
         )
 
-    container = (
-        ContainerContext(profile_id=profile.container_profile, name="", dir_token="")
-        if profile.container_profile
-        else None
+    container = _resolve_container_context(
+        cfg,
+        selected,
+        launch_user=launch_user,
+        canonical_target=canonical_target,
     )
     return ResolvedLaunchProfile(
         profile=profile,
@@ -345,6 +437,7 @@ def revalidate_launch_profile(
         or resolved.launch_user != original.launch_user
         or resolved.agent.id != original.agent.id
         or resolved.mode_id != original.mode_id
+        or resolved.container != original.container
         or resolved.git_remote != original.git_remote
     ):
         fail("launch profile policy changed after target creation; refusing to continue")

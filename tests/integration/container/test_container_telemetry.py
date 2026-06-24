@@ -44,9 +44,16 @@ from helpers import make_config  # type: ignore[import-not-found]
 
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
-from uxon.domain.launch_profiles import ResolvedLaunchProfile
+from uxon.domain.launch_profiles import (
+    ContainerContext,
+    LaunchConfig,
+    LaunchProfile,
+    ResolvedLaunchProfile,
+    builtin_launch_profiles,
+)
 
 pytestmark = pytest.mark.container
+_CONTAINER_PROFILE_ID = "it"
 
 
 def _sudo_root_available() -> bool:
@@ -98,10 +105,54 @@ def _build_cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     container_tbl = _operator_table(rt, project_dir)
     container_tbl["name"] = rt.container_name
     container = config_loader.build_container_config(container_tbl)  # type: ignore[arg-type]
+    from uxon.domain.agents import default_agent_catalog
+
+    agents = default_agent_catalog()
+    launch_profiles = builtin_launch_profiles(agents)
+    launch_profiles["claude"] = LaunchProfile(
+        id="claude", agent="claude", container_profile=_CONTAINER_PROFILE_ID
+    )
+    profile_tbl = dict(_operator_table(rt, project_dir))
+    profile_tbl["runtime_namespace"] = "per_user"
+    profile_tbl["name_template"] = rt.container_name
+    container_profiles = config_loader.build_container_profiles(
+        {"profiles": {_CONTAINER_PROFILE_ID: profile_tbl}}
+    )
     return make_config(
         allowed_roots=[str(project_dir)],
         tmux_socket_template=str(socket_path),
         container=container,
+        agents=agents,
+        launch=LaunchConfig(default_profile="claude", profiles=launch_profiles),
+        container_profiles=container_profiles,
+    )
+
+
+def _resolved(cfg: Config, project_dir: Path, launch_user: str) -> ResolvedLaunchProfile:
+    profile = cfg.launch.profiles["claude"]
+    container_profile = cfg.container_profiles[_CONTAINER_PROFILE_ID]
+    from uxon.domain.container import apply_path_map, resolve_profile_container_name
+    from uxon.domain.session import slugify
+
+    dir_token = apply_path_map(str(project_dir), container_profile.path_map)
+    context = ContainerContext(
+        profile_id=container_profile.id,
+        name=resolve_profile_container_name(
+            container_profile,
+            user=launch_user,
+            launch_profile=profile.id,
+            agent=profile.agent,
+            project_slug=slugify(project_dir.name),
+        ),
+        dir_token=dir_token,
+        profile_fingerprint=container_profile.fingerprint,
+    )
+    return ResolvedLaunchProfile(
+        profile=profile,
+        agent=cfg.agents[profile.agent],
+        launch_user=launch_user,
+        mode_id="normal",
+        container=context,
     )
 
 
@@ -119,12 +170,7 @@ def _launch(cfg: Config, project_dir: Path, session: str, launch_user: str, agen
     args = ParsedArgs(
         action="run", profile="claude", permission_mode="normal", agent_args=agent_args
     )
-    resolved = ResolvedLaunchProfile(
-        profile=cfg.launch.profiles["claude"],
-        agent=cfg.agents["claude"],
-        launch_user=launch_user,
-        mode_id="normal",
-    )
+    resolved = _resolved(cfg, project_dir, launch_user)
     with mock.patch("uxon.infra.tmux.tmux_nesting_mode", return_value="execvp"):
         req = tmux._build_tmux_launch_request(
             str(project_dir),
@@ -176,7 +222,8 @@ def test_two_sessions_one_container_split_and_runaway(runtime: Runtime, tmp_path
 
     from uxon.app import launch as launch_app
 
-    launch_app.ensure_container_ready(cfg, str(project_dir), launch_user)
+    resolved = _resolved(cfg, project_dir, launch_user)
+    launch_app.ensure_container_ready(cfg, str(project_dir), resolved)
 
     try:
         # Session A spins (busy), session B idles — same container.
@@ -252,7 +299,9 @@ def test_stopped_container_shows_down(runtime: Runtime, tmp_path: Path) -> None:
     from uxon.app import launch as launch_app
     from uxon.infra.container import resolve_container_identity
 
-    launch_app.ensure_container_ready(cfg, str(project_dir), launch_user)
+    launch_app.ensure_container_ready(
+        cfg, str(project_dir), _resolved(cfg, project_dir, launch_user)
+    )
     try:
         # Capture the real launch-time cgroup path while the container runs.
         ident = resolve_container_identity(cfg, str(project_dir), launch_user)

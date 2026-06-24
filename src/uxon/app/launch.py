@@ -96,21 +96,35 @@ def is_worktree_target_allowed(cfg: Config, launch_user: str, worktree_path: str
     return is_under_allowed_roots(cfg, worktree_path)
 
 
-def plan_container(cfg: Config, target_dir: str, launch_user: str):
+def plan_container(
+    cfg: Config,
+    target_dir: str,
+    resolved_or_launch_user: ResolvedLaunchProfile | str,
+):
     """Probe the container and return the not-ready plan (no side effects).
 
-    Returns ``None`` when ``[container]`` is disabled. Otherwise returns a
+    Returns ``None`` when the resolved launch profile is host-only. Otherwise returns a
     ``ContainerPlan`` whose ``action`` is the capability-gated verdict
     (``exec`` / ``start`` / ``create`` / ``fail``). The probe shells out as
     the launch user under a bounded timeout, so the caller MUST run this off
     the event loop in the TUI. The TUI inspects the plan to decide whether to
     prompt before running the prepare; the CLI runs it auto-if-permitted.
     """
-    if not cfg.container.enabled:
-        return None
     from uxon.infra import container as container_infra
 
-    return container_infra.plan_container_launch(cfg, target_dir, launch_user)
+    if isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
+        if resolved_or_launch_user.container_context is None:
+            return None
+        return container_infra.plan_container_launch_for_profile(
+            cfg, target_dir, resolved_or_launch_user
+        )
+
+    # Compatibility for non-launch callers/tests that still exercise the
+    # singleton container display path. New launch runtime decisions pass a
+    # ResolvedLaunchProfile and do not reach this branch.
+    if not cfg.container.enabled:
+        return None
+    return container_infra.plan_container_launch(cfg, target_dir, resolved_or_launch_user)
 
 
 def _run_prepare_audited(plan: ContainerPlan, target_dir: str, launch_user: str) -> None:
@@ -150,7 +164,11 @@ def _run_prepare_audited(plan: ContainerPlan, target_dir: str, launch_user: str)
     _audit.audit("container.prepare", action=plan.action, name=plan.name)
 
 
-def ensure_container_ready(cfg: Config, target_dir: str, launch_user: str) -> None:
+def ensure_container_ready(
+    cfg: Config,
+    target_dir: str,
+    resolved_or_launch_user: ResolvedLaunchProfile | str,
+) -> None:
     """Probe + (auto) start/create the project's container before launch.
 
     No-op when ``[container]`` is disabled. Headless (CLI) policy: a missing
@@ -165,13 +183,22 @@ def ensure_container_ready(cfg: Config, target_dir: str, launch_user: str) -> No
     probe) from the prepare so it can show a confirm affordance when
     ``on_missing_mode == "prompt"`` before any side effect.
     """
-    plan = plan_container(cfg, target_dir, launch_user)
+    plan = plan_container(cfg, target_dir, resolved_or_launch_user)
     if plan is None:
         return
+    launch_user = (
+        resolved_or_launch_user.launch_user
+        if isinstance(resolved_or_launch_user, ResolvedLaunchProfile)
+        else resolved_or_launch_user
+    )
     # ``run_prepare`` is a no-op for ``exec``, ``fail``s for an out-of-policy
     # state, and runs the start/create template otherwise. The audited wrapper
     # emits ``container.prepare`` (start/create + outcome).
     _run_prepare_audited(plan, target_dir, launch_user)
+    if isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
+        from uxon.infra import container as container_infra
+
+        container_infra.probe_agent_in_container(cfg, target_dir, resolved_or_launch_user)
 
 
 @dataclass(frozen=True)
@@ -193,10 +220,14 @@ class ContainerGate:
     prepare: Callable[[], None]
 
 
-def decide_container_gate(cfg: Config, target_dir: str, launch_user: str) -> ContainerGate | None:
+def decide_container_gate(
+    cfg: Config,
+    target_dir: str,
+    resolved_or_launch_user: ResolvedLaunchProfile | str,
+) -> ContainerGate | None:
     """Probe the container and return the TUI gate (no side effects yet).
 
-    ``None`` when ``[container]`` is disabled or the container is already
+    ``None`` when the resolved launch profile is host-only or the container is already
     running (``exec``) — the TUI launches straight through. Otherwise the
     caller inspects the flags: ``fail_message`` → abort; else if
     ``needs_prepare`` run ``prepare`` (gated by ``needs_prompt``) before the
@@ -205,8 +236,14 @@ def decide_container_gate(cfg: Config, target_dir: str, launch_user: str) -> Con
     can never start/create beyond policy. The probe runs off the event loop in
     the caller's worker.
     """
-    plan = plan_container(cfg, target_dir, launch_user)
-    if plan is None or plan.action == "exec":
+    plan = plan_container(cfg, target_dir, resolved_or_launch_user)
+    if plan is None:
+        return None
+    if plan.action == "exec":
+        if isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
+            from uxon.infra import container as container_infra
+
+            container_infra.probe_agent_in_container(cfg, target_dir, resolved_or_launch_user)
         return None
     if plan.action == "fail":
         return ContainerGate(
@@ -220,11 +257,28 @@ def decide_container_gate(cfg: Config, target_dir: str, launch_user: str) -> Con
     def _prepare() -> None:
         # Audited prepare — emits ``container.prepare`` (start/create + outcome)
         # at the single shared call site, identical to the headless path.
+        launch_user = (
+            resolved_or_launch_user.launch_user
+            if isinstance(resolved_or_launch_user, ResolvedLaunchProfile)
+            else resolved_or_launch_user
+        )
         _run_prepare_audited(plan, target_dir, launch_user)
+        if isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
+            from uxon.infra import container as container_infra
+
+            container_infra.probe_agent_in_container(cfg, target_dir, resolved_or_launch_user)
 
     return ContainerGate(
         needs_prepare=True,
-        needs_prompt=cfg.container.on_missing_mode == "prompt",
+        needs_prompt=(
+            cfg.container_profiles[
+                resolved_or_launch_user.container_context.profile_id
+            ].on_missing_mode
+            == "prompt"
+            if isinstance(resolved_or_launch_user, ResolvedLaunchProfile)
+            and resolved_or_launch_user.container_context is not None
+            else cfg.container.on_missing_mode == "prompt"
+        ),
         message=plan.message,
         fail_message="",
         prepare=_prepare,
@@ -291,13 +345,19 @@ def plan_worktree_launch(
     # the legitimate bind-at-same-path case — never fails. Disabled → skipped.
     from uxon.domain.container import path_map_under_prefix
 
+    container_context = resolved_profile.container_context
+    container_profile = (
+        cfg.container_profiles[container_context.profile_id]
+        if container_context is not None
+        else None
+    )
     if (
-        cfg.container.enabled
-        and cfg.container.path_map
-        and not path_map_under_prefix(worktree_path, cfg.container.path_map)
+        container_profile is not None
+        and container_profile.path_map
+        and not path_map_under_prefix(worktree_path, container_profile.path_map)
     ):
         fail(
-            f"worktree path {worktree_path} is not under any [container.path_map] "
+            f"worktree path {worktree_path} is not under any container path_map "
             "host prefix, so the container has no mount backing it. Add a path_map "
             "entry covering it, or set worktree_root to a path that is already mapped."
         )
@@ -415,7 +475,7 @@ def plan_worktree_launch(
     # TUI's pre-launch prompt affordance (which needs the path up front) does
     # not cover this path, so it uses the headless auto-if-permitted policy
     # documented for non-interactive worktree creation.
-    ensure_container_ready(cfg, worktree_path, launch_user)
+    ensure_container_ready(cfg, worktree_path, resolved_profile)
 
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
     session = allocate_session_name(

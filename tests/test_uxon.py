@@ -3420,7 +3420,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
             )
             self.assertIsNone(ctx.on_container_gate("/srv/work", "claude", "normal"))
 
-        gate.assert_called_once_with(cfg, "/srv/work", "profile_user")
+        gate.assert_called_once_with(cfg, "/srv/work", resolved)
 
 
 if __name__ == "__main__":

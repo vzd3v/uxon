@@ -322,7 +322,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     )
     if not args.dry_run:
         # Probe + (auto) start/create the container before exec when enabled.
-        launch_app.ensure_container_ready(cfg, target_dir, launch_user)
+        launch_app.ensure_container_ready(cfg, target_dir, resolved)
     try:
         return tmux.launch_in_tmux(
             target_dir,

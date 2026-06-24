@@ -544,7 +544,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                     cfg, "erin", "dana_agent", "demo", "claude", "normal", ""
                 )
 
-        ready.assert_called_once_with(cfg, str(Path(tmp) / "demo"), "profile_user")
+        ready.assert_called_once_with(cfg, str(Path(tmp) / "demo"), resolved)
 
     def test_tui_open_existing_resolves_before_gate_and_does_not_mkdir(self) -> None:
         launch = LaunchConfig(

@@ -39,9 +39,13 @@ from uxon.domain.config import Config
 from uxon.domain.container import (
     Action,
     ContainerConfig,
+    ContainerProfile,
     decide_container_action,
+    render_profile_template,
     render_template,
 )
+from uxon.domain.launch_profiles import ResolvedLaunchProfile
+from uxon.domain.session import slugify
 from uxon.errors import fail
 from uxon.infra import events
 from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
@@ -208,6 +212,36 @@ def _run_prepare(cmd: list[str], host_dir: str, launch_user: str) -> None:
         fail(detail or f"container command failed: {cmd[0]}")
 
 
+def _project_slug(target_dir: str) -> str:
+    from os.path import basename, normpath
+
+    return slugify(basename(normpath(target_dir)))
+
+
+def _render_profile_cmd(
+    template: tuple[str, ...],
+    *,
+    profile: ContainerProfile,
+    context,
+    resolved: ResolvedLaunchProfile,
+    target_dir: str,
+    what: str,
+    pidfile: str = "",
+) -> list[str]:
+    return render_profile_template(
+        template,
+        profile=profile,
+        what=what,
+        name=context.name,
+        dir_token=context.dir_token,
+        user=resolved.launch_user,
+        launch_profile=resolved.profile.id,
+        agent=resolved.agent.id,
+        project_slug=_project_slug(target_dir),
+        pidfile=pidfile,
+    )
+
+
 def run_teardown(stop_cmd: list[str], launch_user: str) -> tuple[bool, str]:
     """Run a rendered ``stop_template`` as ``launch_user`` — best-effort.
 
@@ -305,6 +339,42 @@ def current_container_epoch(cfg: Config, name: str, launch_user: str) -> str | N
     return epoch
 
 
+def current_container_epoch_for_profile(
+    profile: ContainerProfile,
+    name: str,
+    launch_user: str,
+) -> str | None:
+    """Best-effort live start epoch for a profile-scoped container."""
+    if not profile.resolve_cmd:
+        return None
+    try:
+        cmd = render_profile_template(
+            profile.resolve_cmd,
+            profile=profile,
+            what="resolve_cmd",
+            name=name,
+            dir_token="/",
+            user=launch_user,
+            launch_profile="",
+            agent="",
+            project_slug="",
+        )
+    except SystemExit:
+        return None
+    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+    try:
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if cp.returncode != 0:
+        return None
+    parsed = parse_resolve_output(cp.stdout)
+    if parsed is None:
+        return None
+    _cid, _init_pid, epoch = parsed
+    return epoch
+
+
 def probe_container_state(
     container_cfg: ContainerConfig | None, name: str, launch_user: str
 ) -> tuple[str, str]:
@@ -334,6 +404,42 @@ def probe_container_state(
 
     running = _probe(container_cfg.is_running_cmd if container_cfg else (), "is_running_cmd")
     exists = _probe(container_cfg.exists_cmd if container_cfg else (), "exists_cmd")
+    return running, exists
+
+
+def probe_container_state_for_profile(
+    profile: ContainerProfile | None,
+    name: str,
+    launch_user: str,
+) -> tuple[str, str]:
+    """Non-raising doctor probe for a profile-scoped container."""
+
+    def _probe(cmd_template: tuple[str, ...], what: str) -> str:
+        if profile is None or not cmd_template:
+            return "?"
+        try:
+            cmd = render_profile_template(
+                cmd_template,
+                profile=profile,
+                what=what,
+                name=name,
+                dir_token="/",
+                user=launch_user,
+                launch_profile="",
+                agent="",
+                project_slug="",
+            )
+        except SystemExit:
+            return "?"
+        full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+        try:
+            cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+        except (subprocess.TimeoutExpired, OSError):
+            return "?"
+        return "yes" if cp.returncode == 0 else "no"
+
+    running = _probe(profile.is_running_cmd if profile else (), "is_running_cmd")
+    exists = _probe(profile.exists_cmd if profile else (), "exists_cmd")
     return running, exists
 
 
@@ -400,6 +506,126 @@ def plan_container_launch(cfg: Config, target_dir: str, launch_user: str) -> Con
     )
 
 
+def plan_container_launch_for_profile(
+    cfg: Config,
+    target_dir: str,
+    resolved: ResolvedLaunchProfile,
+) -> ContainerPlan:
+    """Probe the selected container profile and decide the prepare action."""
+    context = resolved.container_context
+    if context is None:
+        fail("internal: container plan requested for a host-only launch profile")
+    profile = cfg.container_profiles[context.profile_id]
+
+    def _render(template: tuple[str, ...], what: str) -> list[str]:
+        return _render_profile_cmd(
+            template,
+            profile=profile,
+            context=context,
+            resolved=resolved,
+            target_dir=target_dir,
+            what=what,
+        )
+
+    running = (
+        _probe_exit_ok(_render(profile.is_running_cmd, "is_running_cmd"), resolved.launch_user)
+        if profile.is_running_cmd
+        else False
+    )
+    if running:
+        exists = True
+    elif profile.exists_cmd:
+        exists = _probe_exit_ok(_render(profile.exists_cmd, "exists_cmd"), resolved.launch_user)
+    else:
+        exists = False
+
+    action, reason = decide_container_action(
+        running=running, exists=exists, on_missing=profile.on_missing
+    )
+    events.debug(
+        "container",
+        reason="probe",
+        profile=context.profile_id,
+        name=context.name,
+        running=running,
+        exists=exists,
+        action=action,
+    )
+
+    prepare: tuple[str, ...] = ()
+    if action == "start":
+        prepare = tuple(_render(profile.start_template, "start_template"))
+        message = f"Container {context.name!r} is stopped — start and launch?"
+    elif action == "create":
+        prepare = tuple(_render(profile.create_template, "create_template"))
+        message = f"Container {context.name!r} does not exist — create and launch?"
+    elif action == "fail":
+        if reason == "stopped":
+            message = (
+                f"Container {context.name!r} is stopped and on_missing = "
+                f"{profile.on_missing!r} does not permit starting it"
+            )
+        else:
+            message = (
+                f"Container {context.name!r} does not exist and on_missing = "
+                f"{profile.on_missing!r} does not permit creating it"
+            )
+    else:
+        message = f"Container {context.name!r} is running"
+
+    return ContainerPlan(
+        name=context.name,
+        action=action,
+        reason=reason,
+        prepare_cmd=prepare,
+        message=message,
+    )
+
+
+def probe_agent_in_container(
+    cfg: Config,
+    target_dir: str,
+    resolved: ResolvedLaunchProfile,
+) -> None:
+    """Verify the selected agent binary is resolvable inside the container."""
+    context = resolved.container_context
+    if context is None:
+        return
+    profile = cfg.container_profiles[context.profile_id]
+    exec_prefix = _render_profile_cmd(
+        profile.exec_template,
+        profile=profile,
+        context=context,
+        resolved=resolved,
+        target_dir=target_dir,
+        what="exec_template",
+    )
+    cmd = exec_prefix + [
+        "sh",
+        "-lc",
+        'command -v -- "$1" >/dev/null 2>&1',
+        "uxon-agent-probe",
+        resolved.agent.binary,
+    ]
+    full = _as_user_in_dir(nonint_command_prefix_for_user(resolved.launch_user), cmd, None)
+    try:
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        fail(
+            f"container runtime did not respond within {CONTAINER_CMD_TIMEOUT_SEC:.0f}s "
+            f"while probing agent {resolved.agent.id!r}"
+        )
+    except OSError:
+        fail(f"container runtime {cmd[0]!r} not found or not executable for the launch user")
+    if cp.returncode != 0:
+        detail = (cp.stderr or cp.stdout or "").strip()
+        fail(
+            f"agent {resolved.agent.id!r} for launch profile {resolved.profile.id!r} "
+            "is not installed inside the selected container" + (f": {detail}" if detail else ""),
+            1,
+        )
+
+
 def run_prepare(plan: ContainerPlan, target_dir: str, launch_user: str) -> None:
     """Execute a plan's ``start``/``create`` command (after the policy/prompt).
 
@@ -462,6 +688,41 @@ def resolve_container_identity(cfg: Config, target_dir: str, launch_user: str) -
         name, dir_token = resolve_container(cfg, target_dir, launch_user)
         cmd = render_template(c.resolve_cmd, name=name, dir_token=dir_token, what="resolve_cmd")
         full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
+        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
+    except (subprocess.TimeoutExpired, OSError, SystemExit):
+        return EMPTY_IDENTITY
+    if cp.returncode != 0:
+        return EMPTY_IDENTITY
+    parsed = parse_resolve_output(cp.stdout)
+    if parsed is None:
+        return EMPTY_IDENTITY
+    cid, init_pid, epoch = parsed
+    cgroup = _read_proc_cgroup(init_pid)
+    return ContainerIdentity(id=cid, cgroup=cgroup, epoch=epoch)
+
+
+def resolve_container_identity_for_profile(
+    cfg: Config,
+    target_dir: str,
+    resolved: ResolvedLaunchProfile,
+) -> ContainerIdentity:
+    """Resolve launch-time identity for the selected container profile."""
+    context = resolved.container_context
+    if context is None:
+        return EMPTY_IDENTITY
+    profile = cfg.container_profiles[context.profile_id]
+    if not profile.resolve_cmd:
+        return EMPTY_IDENTITY
+    try:
+        cmd = _render_profile_cmd(
+            profile.resolve_cmd,
+            profile=profile,
+            context=context,
+            resolved=resolved,
+            target_dir=target_dir,
+            what="resolve_cmd",
+        )
+        full = _as_user_in_dir(nonint_command_prefix_for_user(resolved.launch_user), cmd, None)
         cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
     except (subprocess.TimeoutExpired, OSError, SystemExit):
         return EMPTY_IDENTITY

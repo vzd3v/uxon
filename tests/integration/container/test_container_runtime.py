@@ -41,7 +41,15 @@ from helpers import make_config  # type: ignore[import-not-found]
 
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
-from uxon.domain.launch_profiles import ResolvedLaunchProfile
+from uxon.domain.launch_profiles import (
+    ContainerContext,
+    LaunchConfig,
+    LaunchProfile,
+    ResolvedLaunchProfile,
+    builtin_launch_profiles,
+)
+
+_CONTAINER_PROFILE_ID = "it"
 
 pytestmark = pytest.mark.container
 
@@ -78,6 +86,13 @@ def _operator_container_table(rt: Runtime, project_dir: Path) -> dict[str, objec
             "-c",
             "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}",
         ],
+        "resolve_cmd": [
+            rt.binary,
+            "inspect",
+            "-f",
+            "{{{{.Id}}}} {{{{.State.Pid}}}} {{{{.State.StartedAt}}}}",
+            "{name}",
+        ],
         "is_running_cmd": [rt.binary, "top", "{name}"],
         "exists_cmd": [rt.binary, "container", "inspect", "{name}"],
         # on_missing="create" still requires a start_template (a created
@@ -105,12 +120,58 @@ def _load_container(rt: Runtime, project_dir: Path):
 
 def _cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     container = _load_container(rt, project_dir)
+    from uxon.domain.agents import default_agent_catalog
+    from uxon.infra import config_loader
+
+    agents = default_agent_catalog()
+    launch_profiles = builtin_launch_profiles(agents)
+    launch_profiles["claude"] = LaunchProfile(
+        id="claude", agent="claude", container_profile=_CONTAINER_PROFILE_ID
+    )
+    profile_tbl = dict(_operator_container_table(rt, project_dir))
+    profile_tbl.pop("enabled", None)
+    profile_tbl["runtime_namespace"] = "per_user"
+    profile_tbl["name_template"] = rt.container_name
+    container_profiles = config_loader.build_container_profiles(
+        {"profiles": {_CONTAINER_PROFILE_ID: profile_tbl}}
+    )
     return make_config(
         allowed_roots=[str(project_dir)],
         # Per-test socket under tmp_path so this never touches a real uxon
         # server and teardown is total.
         tmux_socket_template=str(socket_path),
         container=container,
+        agents=agents,
+        launch=LaunchConfig(default_profile="claude", profiles=launch_profiles),
+        container_profiles=container_profiles,
+    )
+
+
+def _resolved(cfg: Config, project_dir: Path, launch_user: str) -> ResolvedLaunchProfile:
+    profile = cfg.launch.profiles["claude"]
+    container_profile = cfg.container_profiles[_CONTAINER_PROFILE_ID]
+    from uxon.domain.container import apply_path_map, resolve_profile_container_name
+    from uxon.domain.session import slugify
+
+    dir_token = apply_path_map(str(project_dir), container_profile.path_map)
+    context = ContainerContext(
+        profile_id=container_profile.id,
+        name=resolve_profile_container_name(
+            container_profile,
+            user=launch_user,
+            launch_profile=profile.id,
+            agent=profile.agent,
+            project_slug=slugify(project_dir.name),
+        ),
+        dir_token=dir_token,
+        profile_fingerprint=container_profile.fingerprint,
+    )
+    return ResolvedLaunchProfile(
+        profile=profile,
+        agent=cfg.agents[profile.agent],
+        launch_user=launch_user,
+        mode_id="normal",
+        container=context,
     )
 
 
@@ -168,7 +229,8 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
 
     # 1. Readiness: container is absent → on_missing="create" runs the
     #    compose create_template (the real ensure_container_ready path).
-    launch_app.ensure_container_ready(cfg, str(project_dir), launch_user)
+    resolved = _resolved(cfg, project_dir, launch_user)
+    launch_app.ensure_container_ready(cfg, str(project_dir), resolved)
 
     # 2. Build the real launch request (the single exec-site wrap) and run
     #    it as a detached tmux session — the same argv the CLI would exec,
@@ -176,12 +238,6 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
     #    flow so the request shape is deterministic even when this runs
     #    inside an outer tmux client.
     args = ParsedArgs(action="run", profile="claude", permission_mode="normal")
-    resolved = ResolvedLaunchProfile(
-        profile=cfg.launch.profiles["claude"],
-        agent=cfg.agents["claude"],
-        launch_user=launch_user,
-        mode_id="normal",
-    )
     with mock.patch("uxon.infra.tmux.tmux_nesting_mode", return_value="execvp"):
         req = tmux._build_tmux_launch_request(
             str(project_dir),

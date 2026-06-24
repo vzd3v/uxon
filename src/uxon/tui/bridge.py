@@ -652,7 +652,7 @@ class TuiBridge:
             mode_id,
             target_may_not_exist=False,
         )
-        return launch_app.decide_container_gate(self.cfg, target_dir, resolved.launch_user)
+        return launch_app.decide_container_gate(self.cfg, target_dir, resolved)
 
     def on_probe_cwd_writable(self) -> bool:
         return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, self.cwd)
