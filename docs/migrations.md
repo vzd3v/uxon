@@ -4,6 +4,130 @@ Per-version upgrade notes for changes that need operator
 attention beyond a routine `pipx upgrade`. For the full release
 log see [`CHANGELOG.md`](../CHANGELOG.md).
 
+## 4.0.0
+
+### Launch profiles replace agent selectors
+
+`uxon` now launches a **profile**. Agents remain the binary/mode
+catalog used by profiles.
+
+Old strict agent selector:
+
+```toml
+[agents]
+enabled = ["claude", "codex"]
+default = "claude"
+```
+
+New launch profiles:
+
+```toml
+[launch]
+enabled_profiles = ["claude", "codex"]
+default_profile = "claude"
+```
+
+The built-in `claude`, `codex`, and `cursor` launch profiles map to
+the same-named agents. To define a named runtime lane:
+
+```toml
+[launch.profiles.claude_work]
+agent = "claude"
+display_name = "Claude work"
+launch_user = "wes-agent"
+```
+
+Use `uxon run --profile <id>` and `uxon new <name> --profile <id>`.
+`--agent <id>` is removed and fails with a migration hint.
+
+### Move project `.uxon.toml` policy into path rules
+
+Project-owned `.uxon.toml` files are no longer read.
+
+Old project default:
+
+```toml
+# /srv/projects/billing/.uxon.toml
+[agents]
+default = "codex"
+```
+
+New operator-owned path rule:
+
+```toml
+[[launch.path_rules]]
+path_prefix = "/srv/projects/billing"
+allowed_profiles = ["codex"]
+default_profile = "codex"
+```
+
+After migrating, delete stale `.uxon.toml` files so operators do not
+mistake them for live policy.
+
+### Container profiles replace singleton `[container]`
+
+Old singleton container config:
+
+```toml
+[container]
+enabled = true
+name_template = "uxon-{user}-{project_slug}"
+exec_template = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
+```
+
+New profile-scoped config:
+
+```toml
+[launch.profiles.claude_box]
+agent = "claude"
+container_profile = "workbox"
+
+[container.profiles.workbox]
+runtime_namespace = "per_user"
+name_template = "uxon-{user}-{launch_profile}-{project_slug}"
+exec_template = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
+```
+
+A launch is containerized only when the selected launch profile names
+`container_profile`.
+
+### GitHub repo creation is profile-scoped
+
+The global `default_git_remote_profile` key is removed. Put git
+remote policy on each launch profile, and optionally narrow it in a
+matching path rule.
+
+```toml
+git_create_enabled = true
+
+[launch.profiles.claude]
+agent = "claude"
+allowed_git_remote_profiles = ["work"]
+default_git_remote_profile = "work"
+```
+
+`uxon new --git-remote default` uses the selected launch profile's
+effective default.
+
+### Runtime rollout
+
+This is a coordinated major upgrade.
+
+- Drain or kill pre-upgrade managed sessions before switching the
+  host config. Live old sessions do not carry the new launch-record
+  authority and should not be mixed with new profile-suffixed sessions.
+- Upgrade all peers in a multi-host fleet together. The JSON wire
+  schema is now `schema_version = "2"`; mixed-version fleets are not
+  supported.
+- New sessions are named `<prefix><stem>@<profile>[-N]`. The suffix is
+  a launch profile id, not necessarily an agent id.
+- For same-UID host-only launches, launch records are authority for
+  `uxon`'s own repeat/list/kill behavior, not a security boundary
+  against that same Unix user.
+- Tmux environment markers are diagnostic. Teardown and telemetry use
+  the verified launch record and will not substitute a different
+  container profile when records are missing, stale, or mismatched.
+
 ## 3.5.0
 
 ### uxon-managed tmux options (opt-in)

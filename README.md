@@ -101,7 +101,7 @@ Top-level pointers:
 
 `uxon` (no args, on a TTY) opens a full-screen picker:
 
-- **New session in current folder** — start the default agent
+- **New session in current folder** — start the default launch profile
   in `$PWD`.
 - **Create new project** — prompt for a name, create
   `<new_project_root>/<name>`, optionally create a GitHub repo,

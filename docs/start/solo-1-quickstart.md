@@ -52,12 +52,12 @@ new_project_root = "~/projects"
 nothing else — they gate on write access alone when
 `allowed_roots` is empty.
 
-To switch the default agent, add:
+To choose the default launch profile, add:
 
 ```toml
-[agents]
-enabled = ["claude", "codex"]
-default = "claude"
+[launch]
+enabled_profiles = ["claude", "codex"]
+default_profile = "claude"
 ```
 
 ## Recommended: paired account <a id="recommended-paired-account"></a>
@@ -138,7 +138,7 @@ Full CLI reference: [`reference/cli.md`](../reference/cli.md).
 ## Where next
 
 - Add a second host: [`scenarios/solo-n.md`](../scenarios/solo-n.md).
-- Switch default agent or auto-create GitHub repos:
+- Choose launch profiles or auto-create GitHub repos:
   [`scenarios/solo-1.md`](../scenarios/solo-1.md) "Likely
   customisations".
 - Optionally run the agent in a container:

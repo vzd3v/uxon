@@ -16,7 +16,7 @@ TUI session picker.
 
 There is no daemon. There is no database. State lives in:
 - `tmux` sessions on a per-user dedicated socket;
-- `config/config.toml` (host config) and `.uxon.toml` (per-project);
+- `config/config.toml` (operator-owned host config);
 - the host's platform log channel (journald native or `/dev/log`
   syslog), for the `audit` channel;
 - `${XDG_STATE_HOME:-~/.local/state}/uxon/`, for the developer-facing
@@ -306,12 +306,9 @@ behaviour depends on Textual lifecycle.
 
 ## Configuration
 
-Two layers, merged in order (later wins):
-
-1. **Repo config** — `config/config.toml`, host-wide.
-2. **Project config** — nearest `.uxon.toml` in cwd or a parent that
-   is itself inside an `allowed_roots` entry. The TUI never writes
-   project config.
+One operator-owned runtime config is read: `config/config.toml`.
+Project-owned `.uxon.toml` files are ignored; path-specific launch
+policy lives in `[[launch.path_rules]]`.
 
 The single source of truth for known **scalar** keys is
 `src/uxon/infra/settings.py::SETTINGS_SPECS`. Add a key there in
@@ -320,7 +317,8 @@ changes in `src/uxon/domain/config.py` and the `load_config`
 read path in `src/uxon/infra/config_loader.py`.
 
 The nested structures — the agent catalog (`[agents.<id>]`
-array-of-modes) and the `[container]` argv-list templates — are
+array-of-modes), `[launch.profiles.<id>]`, `[[launch.path_rules]]`,
+and `[container.profiles.<id>]` argv-list templates — are
 **file-only**: `SettingSpec` cannot model array-of-tables or dynamic
 keys, so they are edited in the config file directly and are not on
 the ⚙ Settings screen. Their canonical reference is

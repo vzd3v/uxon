@@ -12,7 +12,7 @@ flagged in each section.
 ## Conventions
 
 - `<id>` — session identifier. Resolution order: full name
-  (`uxon-myproj@claude`), short name (`myproj@claude`), bare stem
+  (`uxon-myproj@claude_work`), short name (`myproj@claude_work`), bare stem
   (`myproj`) when exactly one session matches, legacy-prefix name
   (e.g. `old-myproj` when `old-` is in `legacy_session_prefixes`),
   or active-pane PID.
@@ -35,14 +35,14 @@ flagged in each section.
 - With a TTY: opens the interactive TUI.
 - Without a TTY: prints usage and exits with code `2`.
 
-## `uxon run [-w <branch>] [--dry-run] [--agent <id>] [--mode <id>] [agent-flags...]`
+## `uxon run [-w <branch>] [--dry-run] [--profile <id>] [--mode <id>] [agent-flags...]`
 
 Start an agent in the **current working directory**.
 
 | Flag | Effect |
 |------|--------|
-| `--agent <id>` | Pick the agent. `<id>` is any agent in the resolved catalog (`claude` / `codex` / `cursor` ship by default; operators add more in config). Default: `agents.default` from config. |
-| `--mode <id>` | Select a permission mode from the chosen agent's catalog. Omitting it picks the agent's first (default) mode. An unknown id fails listing the agent's valid modes. See [`--mode`](#--mode-id). |
+| `--profile <id>` | Pick the launch profile. `<id>` is any enabled profile from `[launch]` / `[launch.profiles.<id>]`; fresh auto-mode installs ship built-in `claude`, `codex`, and `cursor` profiles. |
+| `--mode <id>` | Select a permission mode from the selected profile's underlying agent catalog. Omitting it picks the agent's first mode. An unknown id fails listing the agent's valid modes. See [`--mode`](#--mode-id). |
 | `-w <branch>` | Create a git worktree for `<branch>` in `cwd`'s repo and launch any agent there. Fails if the worktree already exists. See [Worktrees](#worktrees--w-branch). |
 | `--dry-run` | Print the `tmux` command instead of executing. |
 
@@ -68,11 +68,11 @@ be a git repo) and launches in a worktree for `<branch>`. See
 | Flag | Effect |
 |------|--------|
 | `--attach-existing` / `--new-session` | Bypass the repeat prompt (see [Repeat behaviour](#repeat-behaviour)). |
-| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses `default_git_remote_profile`. Cannot be combined with `-w` (rejected). Without this flag, no git is touched (CLI is non-interactive). |
+| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses the selected launch profile's effective `default_git_remote_profile`. Cannot be combined with `-w` (rejected). Without this flag, no git is touched (CLI is non-interactive). |
 | `--git-visibility private\|public` | Override the profile's visibility default for this one call. |
 | `--no-git` | Explicit "don't touch git" (same as omitting `--git-remote`). |
 
-All flags from `run` (`--agent`, `--mode`, `--dry-run`,
+All flags from `run` (`--profile`, `--mode`, `--dry-run`,
 forwarded agent flags) also apply.
 
 ## `uxon list [--all-users] [--host <name> | --all-hosts] [--json]`
@@ -107,8 +107,8 @@ attach, current command, and path.
 Short form: `uxon -a <id>`. Re-attaches to an existing session.
 
 Identifier resolution (first match wins):
-1. Full session name — `uxon-myproj@claude`.
-2. Short name without prefix — `myproj@claude`.
+1. Full session name — `uxon-myproj@claude_work`.
+2. Short name without prefix — `myproj@claude_work`.
 3. Bare stem — `myproj` (only when exactly one session matches).
 4. Legacy-prefix name — e.g. `old-myproj` when `old-` is in
    `legacy_session_prefixes`.
@@ -214,10 +214,12 @@ report, or audit several launch users at once.
 
 Prints:
 - caller user vs launch user;
-- active config paths (repo + project);
+- active operator config path;
 - `allowed_roots`, `new_project_root`;
 - `repeat_noninteractive_mode` and any env override;
 - `tmux` and agent binary paths for the launch user;
+- enabled launch profiles, their underlying agents, launch users,
+  container profiles, and host-agent status;
 - dedicated `tmux` socket details;
 - current sessions on the dedicated socket;
 - any sessions on the default `tmux` socket that match
@@ -261,7 +263,7 @@ a no-op probe either way: it emits no audit event.
 ## Repeat behaviour
 
 When `uxon new` finds a session that already matches the requested
-target (same project, same agent, same worktree branch):
+target (same project, same launch profile, same worktree branch):
 
 - **Interactive TTY** — prompts to attach, start a parallel
   session, or cancel.
@@ -291,7 +293,7 @@ socket.
   [`worktree_base`](configuration.md#top-level-keys).
 - The session name includes both repo and branch slugs, so multiple
   branches of the same repo coexist cleanly.
-- Forwarded agent flags apply (e.g. `uxon run -w feat --agent codex --mode yolo`).
+- Forwarded agent flags apply (e.g. `uxon run -w feat --profile codex --mode yolo`).
 
 See the how-to: [Work in a git worktree](../guides/customise/worktrees.md)
 and [why uxon manages worktrees](../explain/worktrees.md).
@@ -299,9 +301,9 @@ and [why uxon manages worktrees](../explain/worktrees.md).
 ## Session naming
 
 ```
-uxon-<stem>@<agent>             plain
-uxon-<repo>-<branch>@<agent>    worktree
-uxon-<stem>@<agent>-N           parallels (N appended after the agent)
+uxon-<stem>@<profile>             plain
+uxon-<repo>-<branch>@<profile>    worktree
+uxon-<stem>@<profile>-N           parallels (N appended after the profile)
 ```
 
 The `uxon-` prefix is the default and is configurable via
@@ -312,9 +314,9 @@ remain reachable via `list` / `attach` / `kill`. `uxon` never
 
 ## `--mode <id>`
 
-`--mode <id>` selects a permission mode from the chosen agent's
-catalog. Mode ids are free-form and defined per agent in config;
-the shipped agents carry:
+`--mode <id>` selects a permission mode from the selected launch
+profile's underlying agent catalog. Mode ids are free-form and
+defined per agent in config; the shipped agents carry:
 
 | Agent | Modes (first = default) | Effect of each |
 |-------|-------------------------|----------------|
@@ -326,6 +328,12 @@ Omitting `--mode` picks the agent's **first** catalogued mode (the
 default). An unknown id fails listing the agent's valid modes. The
 TUI offers the same modes as a list and asks explicitly before
 every launch.
+
+## Removed flags
+
+| Flag | Replacement |
+|------|-------------|
+| `--agent <id>` | Use `--profile <id>`. Agents are now binary/mode catalog entries; launch profiles are the runnable choices. |
 
 ## Environment variables
 

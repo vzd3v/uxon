@@ -84,12 +84,12 @@ columns = ["name", "path", "last"]
 - Attached state is shown by a glyph in the NAME column: `●`
   filled when attached, `○` hollow otherwise. There is no bold
   green override.
-- The NAME column shows the project stem only — the `@<agent>`
+- The NAME column shows the project stem only — the `@<profile>`
   suffix that lives in the underlying tmux session name (and
   that `tmux ls` would print) is dropped here because the AGENT
-  column carries it. Sibling sessions on the same stem keep
-  their `-N` index so they stay visually distinct
-  (`proj@claude-2` → `proj-2`).
+  column carries the underlying agent. Sibling sessions on the
+  same stem keep their `-N` index so they stay visually distinct
+  (`proj@claude_work-2` → `proj-2`).
 - The LAST column tints by how long a session has been idle:
   the timestamp turns **yellow** after 24 h and **red** after
   3 days, so stale sessions stand out at a glance. Idle means

@@ -3,7 +3,7 @@
 Every config key, type, default, and semantics. For *when and why*
 to set a key — see the [scenario hubs](../scenarios/solo-1.md), the
 [tutorials in `start/`](../start/install.md), or the
-[how-to guides in `guides/customise/`](../guides/customise/switch-default-agent.md).
+[how-to guides in `guides/customise/`](../guides/customise/choose-launch-profile.md).
 
 ## Config file
 
@@ -261,12 +261,12 @@ The attach indicator is a glyph in the NAME column: `●` filled
 when the session is attached, `○` hollow otherwise. No bold
 green override.
 
-The NAME column renders the project stem only. The `@<agent>`
+The NAME column renders the project stem only. The `@<profile>`
 suffix carried by the underlying tmux session name (visible in
 `tmux ls` and the CLI `uxon list` table) is omitted here because
-the AGENT column carries it. The `-N` disambiguator that
-distinguishes siblings on the same stem is preserved
-(`proj@claude-2` → `proj-2`).
+the AGENT column carries the underlying agent. The `-N`
+disambiguator that distinguishes siblings on the same stem is
+preserved (`proj@claude_work-2` → `proj-2`).
 
 ## `[tui.search]` table
 

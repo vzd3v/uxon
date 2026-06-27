@@ -9,7 +9,7 @@ schema is part of the public contract.
 
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "uxon_version": "<emitter version>",
   "kind": "list" | "doctor" | "version" | "kill" | "kill-all",
   "data": { ... kind-specific },
@@ -48,9 +48,12 @@ schema is part of the public contract.
     "sessions": [
       {
         "user": "nadia-agent",
-        "name": "uxon-myproj@claude",
-        "short_id": "myproj@claude",
+        "name": "uxon-myproj@claude_work",
+        "short_id": "myproj@claude_work",
+        "profile": "claude_work",
         "agent": "claude",
+        "container_profile": "",
+        "container": "",
         "attached": false,
         "windows": "1",
         "created": "2026-05-07T09:11:24Z",
@@ -60,7 +63,8 @@ schema is part of the public contract.
         "active_cmd": "claude",
         "active_path": "/srv/projects/myproj",
         "cpu_pct": 1.4,
-        "rss_kib": 2_408_192,
+        "rss_kib": 2408192,
+        "container_down": false,
         "legacy": false
       }
     ]
@@ -79,6 +83,17 @@ schema is part of the public contract.
   `legacy_session_prefixes` rather than the active `session_prefix`.
 - `windows` — kept as a string (tmux emits it as text via
   `#{session_windows}`).
+- `profile` — launch profile id from the verified launch record. For
+  unmanaged sessions, the session-name suffix is used as a display
+  fallback.
+- `agent` — underlying agent id from the verified launch record, or
+  `""` for unmanaged sessions.
+- `container_profile` / `container` — verified container profile id
+  and resolved container name. Empty strings mean host-only or
+  unmanaged.
+- `container_down` — `true` when a record-backed container session's
+  container is known to be stopped or unresolved during liveness
+  probing.
 
 ## `kind = "doctor"`
 
@@ -88,12 +103,17 @@ schema is part of the public contract.
   "data": {
     "caller_user": "nadia",
     "launch_user": "nadia-agent",
-    "config_paths": {"repo": "...", "project": "..."},
+    "config_paths": ["config/config.toml"],
     "allowed_roots": ["/srv/projects"],
     "new_project_root": "/srv/projects",
-    "agents": [{"id": "claude", "path": "...", "version": "..."}],
-    "sockets": [...],
-    "sessions": [...],
+    "tmux": {"path": "/usr/bin/tmux", "socket": "/tmp/uxon-nadia-agent.sock"},
+    "agents": {"claude": {"path": "...", "status": "ok", "version": "...", "error": null}},
+    "launch_profiles": [...],
+    "current_socket_sessions": [...],
+    "legacy_default_socket_sessions": [...],
+    "git_create_enabled": true,
+    "git_remote_profiles": [...],
+    "container_profiles": [...],
     "audit": {"enabled": true, "sink": "journal"},
     "issues": [...],
     "remote_hosts": [...]   // only when --remote was passed
@@ -133,7 +153,7 @@ Local kill (own user):
 {
   "kind": "kill",
   "data": {
-    "target": "uxon-myproj@claude",
+    "target": "uxon-myproj@claude_work",
     "user": "nadia-agent",
     "socket": "/tmp/uxon-nadia-agent.sock",
     "action": "killed",
@@ -223,6 +243,6 @@ emits an envelope with empty `sessions` and `from_cache` /
 
 ## Versioning
 
-Within `schema_version = "1"` `uxon` will not remove fields or
+Within `schema_version = "2"` `uxon` will not remove fields or
 rename them; new optional fields may be added. Breaking changes
 bump the major version and the `schema_version`.

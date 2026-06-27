@@ -10,9 +10,9 @@ container, and what kind of host it is *not* suitable for.
 `uxon` is not in the business of choosing your isolation primitive.
 It pairs an OS account to a developer and execs the agent under it;
 if the operator also wants the agent inside a container, `uxon`
-wraps the exec in their runtime prefix (`[container]`) and the two
-layers stack. The question is never "OS users *or* containers" — it
-is "OS users, and optionally a container on top".
+wraps selected launch profiles with a configured container profile and
+the two layers stack. The question is never "OS users *or* containers"
+— it is "OS users, and optionally a container on top".
 
 ## What "paired-account" means
 

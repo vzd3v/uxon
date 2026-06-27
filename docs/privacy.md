@@ -30,9 +30,9 @@ Every event carries:
 
 Per-event extras:
 
-- **Launching a session** → the agent (`claude` / `codex` /
-  `cursor`), the absolute project path, the worktree branch
-  if any, the session name.
+- **Launching a session** → the launch profile, the underlying
+  agent (`claude` / `codex` / `cursor`), the absolute project path,
+  the worktree branch if any, the session name.
 - **Attaching** → the session name, the target user.
 - **Killing** → the session name, the target user, whether
   it was forced or a dry-run.

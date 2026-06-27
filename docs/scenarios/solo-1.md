@@ -26,12 +26,12 @@ sessions on it.
 
 ## Likely customisations
 
-- **Switch the default agent** —
-  [`guides/customise/switch-default-agent.md`](../guides/customise/switch-default-agent.md)
+- **Choose launch profiles** —
+  [`guides/customise/choose-launch-profile.md`](../guides/customise/choose-launch-profile.md)
 - **Auto-create a GitHub repo on `uxon new`** —
   [`guides/customise/configure-github-on-new-project.md`](../guides/customise/configure-github-on-new-project.md)
-- **Pick a project-local override (`.uxon.toml`)** —
-  [`guides/customise/template-uxon-toml.md`](../guides/customise/template-uxon-toml.md)
+- **Move old project-local overrides into operator config** —
+  [`guides/customise/remove-project-uxon-toml.md`](../guides/customise/remove-project-uxon-toml.md)
 - **Tune dashboard refresh on a slow link** —
   [`guides/customise/tune-refresh-cadence.md`](../guides/customise/tune-refresh-cadence.md)
 - **Work in a git worktree** —

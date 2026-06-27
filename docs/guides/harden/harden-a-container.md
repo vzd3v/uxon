@@ -1,6 +1,6 @@
 # Harden a container
 
-You have a working `[container]` setup
+You have a working container-profile setup
 ([`run-agents-in-a-container.md`](../customise/run-agents-in-a-container.md))
 and want to tighten it. The minimal recipe there gets the agent
 running inside a container; it does **not** lock it down. This page is
@@ -32,7 +32,7 @@ builds from — on an **operator-owned path outside the bind-mounted
 repo**, and reference it with an explicit `-f`:
 
 ```toml
-[container]
+[container.profiles.workbox]
 create_template = ["docker", "compose", "-f", "/operator/uxon/compose.yml", "up", "-d"]
 ```
 
@@ -255,7 +255,7 @@ is the adversary.
 - [`../../explain/isolation-model.md`](../../explain/isolation-model.md)
   — how the container layer composes with the paired account, and what
   it does and does not buy you.
-- [`../../reference/configuration.md`](../../reference/configuration.md#container-table)
-  — the `[container]` table: every key, the trust boundary, validation.
+- [`../../reference/configuration.md`](../../reference/configuration.md#containerprofilesid-table)
+  — `[container.profiles.<id>]`: every key, the trust boundary, validation.
 - [`../operate/respond-to-rogue-agent.md`](../operate/respond-to-rogue-agent.md#container-path-also-stop-the-container)
   — reaping a rogue agent on the container path.

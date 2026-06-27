@@ -133,7 +133,7 @@ session manager, not `tmux`. Look them up with `pgrep -u
 
 ## Container path: also stop the container
 
-If the session ran inside a container (the `[container]` feature, or
+If the session ran inside a container (a containerized launch profile, or
 a PATH wrapper that `docker exec`s — see
 [`../customise/run-agents-in-a-container.md`](../customise/run-agents-in-a-container.md)),
 `tmux kill-session` reaps only the **client-side** `docker exec`
@@ -150,9 +150,10 @@ row and a stopped container shows a distinct `down` marker. The
 orphan above is the agent that has already outlived its session, not
 the live one.
 
-`uxon` closes this when `[container].stop_template` is configured: the
-kill reaps the agent process by the per-session PID the launch wrapper
-recorded (the container itself is left running). **Confirm it worked:**
+`uxon` closes this when the launch record names a container profile
+with `stop_template`: the kill reaps the agent process by the
+per-session PID the launch wrapper recorded (the container itself is
+left running). **Confirm it worked:**
 
 ```bash
 sudo -niu <user>-agent docker top <container-name>    # the agent's process should be gone

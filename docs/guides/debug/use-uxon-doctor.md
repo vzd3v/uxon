@@ -14,10 +14,11 @@ uxon doctor
 Prints:
 
 - caller user vs. launch user;
-- active config paths (repo + project);
+- active operator config path;
 - `allowed_roots`, `new_project_root`;
 - `repeat_noninteractive_mode` and any env override;
 - `tmux` and agent binary paths for the launch user;
+- enabled launch profiles and their underlying agents;
 - dedicated `tmux` socket details;
 - current sessions on the dedicated socket;
 - any sessions on the default `tmux` socket that match
@@ -81,12 +82,12 @@ journalctl SYSLOG_IDENTIFIER=uxon --since "10 minutes ago" -o json \
 
 ## Container diagnostics
 
-When `[container]` is enabled, `uxon doctor` adds a container section
-for the current directory's target:
+When a launch profile names a container profile, `uxon doctor` adds
+container details for a representative current-directory target:
 
 ```
-container: enabled
-- name_template=proj-{project_slug}
+container profiles:
+- profile=workbox
 - resolved_name=proj-myapp
 - is_running=yes  exists=yes
 - host agent binaries absent from PATH are EXPECTED (provisioned in the container)
@@ -98,8 +99,8 @@ once against that representative target (best-effort — a wedged daemon
 shows `?`, never an abort), and surfaces these warnings:
 
 - **`stop_template` unset** — the in-container agent is not reaped on
-  kill (it orphans); set `[container].stop_template` so uxon terminates
-  it for you.
+  kill (it orphans); set `stop_template` on the container profile so
+  uxon terminates it for you.
 - **`path_map` doesn't cover the current directory** — launches from
   here may hit a path the container has no mount for.
 - **`create_template` definition under a mapped path** — the container
@@ -109,10 +110,10 @@ shows `?`, never an abort), and surfaces these warnings:
   mount.
 
 A missing agent binary on the host PATH is **not** flagged as a fault
-under container mode — the agent is provisioned inside the container,
-not on the host. The container section is absent entirely when
-`[container]` is disabled. Also available under `uxon doctor --json`
-as `data.container`.
+for a containerized launch profile — the agent is provisioned inside
+the container, not on the host. Container details are absent when no
+enabled launch profile uses a container profile. Also available under
+`uxon doctor --json`.
 
 ## What it does *not* do
 

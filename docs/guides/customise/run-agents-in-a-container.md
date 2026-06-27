@@ -43,14 +43,14 @@ resolves before relying on it.
 This is the right recipe when you want containerisation for **one**
 agent on **one** account without touching shared config.
 
-## Recipe 2 — native `[container]` support
+## Recipe 2 — native container profiles
 
-The `[container]` block lets `uxon` itself wrap the launch, resolve
-the container per (launch user, project), and — when you permit it —
-start or create a stopped/absent container. The full key reference
+Container profiles let `uxon` itself wrap selected launch profiles,
+resolve the container per (launch user, project), and — when you
+permit it — start or create a stopped/absent container. The full key reference
 (types, defaults, the trust boundary, the probe-semantics gotcha) is
 in
-[`../../reference/configuration.md`](../../reference/configuration.md#container-table);
+[`../../reference/configuration.md`](../../reference/configuration.md#containerprofilesid-table);
 this guide only shows a working shape.
 
 Define the container with a `compose.yml` (or a devcontainer) rather
@@ -60,19 +60,28 @@ that file on an **operator-owned path outside the bind-mounted repo**
 and reference it with an explicit `-f`:
 
 ```toml
-[container]
-enabled         = true
-exec_template   = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
-name_template   = "uxon-{user}-{project_slug}"
-is_running_cmd  = ["docker", "top", "{name}"]
-exists_cmd      = ["docker", "container", "inspect", "{name}"]
-on_missing      = "create"          # off | start | create
-on_missing_mode = "prompt"          # prompt | auto
-start_template  = ["docker", "start", "{name}"]
-stop_template   = ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
-create_template = ["docker", "compose", "-f", "/operator/uxon/compose.yml", "up", "-d"]
+[launch]
+enabled_profiles = ["claude_workbox"]
+default_profile = "claude_workbox"
 
-[container.path_map]
+[launch.profiles.claude_workbox]
+agent = "claude"
+container_profile = "workbox"
+
+[container.profiles.workbox]
+runtime_namespace = "per_user"
+exec_template     = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
+name_template     = "uxon-{user}-{launch_profile}-{project_slug}"
+is_running_cmd    = ["docker", "top", "{name}"]
+exists_cmd        = ["docker", "container", "inspect", "{name}"]
+on_missing        = "create"          # off | start | create
+on_missing_mode   = "prompt"          # prompt | auto
+start_template    = ["docker", "start", "{name}"]
+resolve_cmd       = ["docker", "inspect", "--format", "{{.Id}} {{.State.Pid}} {{.State.StartedAt}}", "{name}"]
+stop_template     = ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
+create_template   = ["docker", "compose", "-f", "/operator/uxon/compose.yml", "up", "-d"]
+
+[container.profiles.workbox.path_map]
 "/srv/projects" = "/work"
 ```
 
@@ -111,27 +120,17 @@ and the rest.
 
 ### The agent need not be installed on the host
 
-With `[container]` enabled the agent is provisioned **inside** the
-container (its image or `create_template`), so `uxon` does **not**
-require the agent binary on the host PATH and does **not** fail the
-launch when it is absent — host presence is the operator's
-responsibility for the container's contents, exactly as it already is
-for the agent binary itself. (Recipe 1's PATH wrapper is no longer
-needed for native `[container]` use.) `uxon` still resolves *which*
-agent to launch by the normal precedence; because it can't auto-detect
-an agent from the host in this mode, an **auto** setup (no `--agent`,
-empty `agents.enabled`, no `agents.default`) must name an agent
-explicitly — pass `--agent <id>` or set `agents.default`. `uxon doctor`
-notes a host-absent agent as expected here, not a fault.
+With a containerized launch profile, the agent is provisioned
+**inside** the container (its image or `create_template`), so `uxon`
+does **not** require the agent binary on the host PATH and does
+**not** fail the launch when it is absent. Host-only launch profiles
+still require the agent binary on the launch user's host PATH. `uxon
+doctor` reports a host-absent agent as expected for containerized
+profiles, not as a fault.
 
-### A project `.uxon.toml` may only name the container
-
-From an untrusted project `.uxon.toml`, only `container.name` and
-`container.path_map` are honoured — every executed or policy key
-(`exec_template`, `create_template`, `on_missing`, …) stays
-operator-only. The boundary and the validation rules are documented
-in
-[`../../reference/configuration.md`](../../reference/configuration.md#container-table).
+Project-owned `.uxon.toml` files are not read. Container selection,
+path mapping, and all executed runtime templates are operator-owned
+config in `config/config.toml`.
 
 ## Observability
 
@@ -179,8 +178,8 @@ to a rogue agent — see
 
 ## Reference
 
-- [`../../reference/configuration.md`](../../reference/configuration.md#container-table)
-  — the `[container]` table: every key, the trust boundary, validation.
+- [`../../reference/configuration.md`](../../reference/configuration.md#containerprofilesid-table)
+  — `[container.profiles.<id>]`: every key, the trust boundary, validation.
 - [`../../explain/isolation-model.md`](../../explain/isolation-model.md)
   — how the container layer composes with the paired account.
 - [`SECURITY.md`](../../../SECURITY.md) — rootful-vs-rootless,
