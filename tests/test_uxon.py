@@ -3225,6 +3225,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         self.assertEqual(wc.get("branch"), "feature/auth")
         self.assertEqual(wc.get("project"), repo)
         self.assertEqual(wc.get("base"), "local")
+        self.assertEqual(wc.get("profile"), "claude")
         self.assertEqual(wc.get("agent"), "claude")
         self.assertEqual(wc.get("session"), "uxon-myapp-feature-auth@claude")
         self.assertTrue(wc.get("path", "").endswith("/.uxon/worktrees/feature-auth"))

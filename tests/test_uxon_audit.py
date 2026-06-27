@@ -435,6 +435,7 @@ class WorktreeCreateAuditTests(_BaseAuditTests):
             au.configure(enabled=True, syslog_facility="user", subcmd="run")
             au.audit(
                 "worktree.create",
+                profile="claude",
                 agent="claude",
                 project="/srv/work/myapp",
                 branch="feature/auth",
@@ -448,6 +449,7 @@ class WorktreeCreateAuditTests(_BaseAuditTests):
         idx = text.index("@cee: ") + len("@cee: ")
         fields: dict[str, Any] = json.loads(text[idx:])
         self.assertEqual(fields["event"], "worktree.create")
+        self.assertEqual(fields["profile"], "claude")
         self.assertEqual(fields["agent"], "claude")
         self.assertEqual(fields["project"], "/srv/work/myapp")
         self.assertEqual(fields["branch"], "feature/auth")

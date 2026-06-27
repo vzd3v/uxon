@@ -492,6 +492,7 @@ def plan_worktree_launch(
 
     _audit.audit(
         "worktree.create",
+        profile=resolved_profile.profile.id,
         agent=resolved_profile.agent.id,
         project=repo_root,
         branch=branch_name,
