@@ -51,7 +51,7 @@ class AuditOverheadTests(unittest.TestCase):
             au.configure(enabled=True, syslog_facility="user", subcmd="run")
             # Warm-up + cold-call timing.
             t0 = time.perf_counter_ns()
-            au.audit("cli.start", flags=[], agents_enabled=["claude"])
+            au.audit("cli.start", flags=[], profiles_enabled=["claude"])
             cold_us = (time.perf_counter_ns() - t0) / 1000.0
 
             samples: list[float] = []

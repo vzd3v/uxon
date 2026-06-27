@@ -17,6 +17,7 @@ The real-runtime harness (in-container exec, kill reaping) is P4.
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest import mock
 
 import uxon.app.launch_profile as launch_profile_app
@@ -1855,11 +1856,18 @@ class WorktreePathMapGateTests(unittest.TestCase):
 
 
 class DoctorContainerSectionTests(unittest.TestCase):
-    """AC-P5 — doctor container section: probes, expected-absence note, warnings."""
+    """AC-P5 — doctor container-profile rows: probes, expected-absence note, warnings."""
+
+    def _rows(self, c: ContainerConfig, probe: tuple[str, str]) -> list[dict[str, Any]]:
+        from uxon.app.doctor import _doctor_container_profile_rows
+
+        cfg = _cfg(c)
+        with mock.patch(
+            "uxon.infra.container.probe_container_state_for_profile", return_value=probe
+        ):
+            return _doctor_container_profile_rows(cfg, "/srv/projects/myapp", "dana")
 
     def test_section_warns_on_unset_stop_template(self) -> None:
-        from uxon.app.doctor import _doctor_container_section
-
         c = ContainerConfig(
             enabled=True,
             name_template="proj-{project_slug}",
@@ -1867,19 +1875,17 @@ class DoctorContainerSectionTests(unittest.TestCase):
             is_running_cmd=("docker", "inspect", "{name}"),
             exists_cmd=("docker", "inspect", "{name}"),
         )
-        cfg = _cfg(c)
-        with mock.patch("uxon.infra.container.probe_container_state", return_value=("yes", "yes")):
-            section = _doctor_container_section(cfg, "/srv/projects/myapp", "dana")
-        self.assertTrue(section["enabled"])
-        self.assertEqual(section["resolved_name"], "proj-myapp")
-        self.assertEqual(section["is_running"], "yes")
-        self.assertTrue(section["host_agent_absence_expected"])
-        self.assertTrue(any("stop_template" in w for w in section["warnings"]))
+        rows = self._rows(c, ("yes", "yes"))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["container_profile"], "box")
+        self.assertEqual(row["resolved_name"], "proj-myapp")
+        self.assertEqual(row["is_running"], "yes")
+        self.assertTrue(row["host_agent_absence_expected"])
+        self.assertTrue(any("stop_template" in w for w in row["warnings"]))
 
     def test_section_warns_on_definition_under_mount(self) -> None:
         # AC-P5.4: create_template path token under a path_map host prefix.
-        from uxon.app.doctor import _doctor_container_section
-
         c = ContainerConfig(
             enabled=True,
             name_template="proj-{project_slug}",
@@ -1888,17 +1894,14 @@ class DoctorContainerSectionTests(unittest.TestCase):
             create_template=("docker", "compose", "-f", "/srv/projects/myapp/compose.yml", "up"),
             path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
         )
-        cfg = _cfg(c)
-        with mock.patch("uxon.infra.container.probe_container_state", return_value=("no", "no")):
-            section = _doctor_container_section(cfg, "/srv/projects/myapp", "dana")
+        rows = self._rows(c, ("no", "no"))
+        row = rows[0]
         self.assertTrue(
-            any("agent-writable bind mount" in w for w in section["warnings"]),
-            section["warnings"],
+            any("agent-writable bind mount" in w for w in row["warnings"]),
+            row["warnings"],
         )
 
     def test_section_clean_when_hardened(self) -> None:
-        from uxon.app.doctor import _doctor_container_section
-
         c = ContainerConfig(
             enabled=True,
             name_template="proj-{project_slug}",
@@ -1907,10 +1910,8 @@ class DoctorContainerSectionTests(unittest.TestCase):
             create_template=("docker", "compose", "-f", "/operator/compose.yml", "up"),
             path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
         )
-        cfg = _cfg(c)
-        with mock.patch("uxon.infra.container.probe_container_state", return_value=("yes", "yes")):
-            section = _doctor_container_section(cfg, "/srv/projects/myapp", "dana")
-        self.assertEqual(section["warnings"], [])
+        rows = self._rows(c, ("yes", "yes"))
+        self.assertEqual(rows[0]["warnings"], [])
 
 
 if __name__ == "__main__":

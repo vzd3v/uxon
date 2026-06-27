@@ -165,6 +165,7 @@ def do_doctor(
         legacy_sessions,
     )
     launch_profile_rows = _doctor_launch_profile_rows(cfg, caller_user, launch_user, agent_paths)
+    container_profile_rows = _doctor_container_profile_rows(cfg, cwd, caller_user)
 
     if json_output:
         agents_block: dict[str, dict[str, Any]] = {}
@@ -202,16 +203,12 @@ def do_doctor(
                 legacy_sessions, session_prefix=cfg.session_prefix
             ),
             "git_create_enabled": cfg.git_create_enabled,
-            "default_git_remote_profile": cfg.default_git_remote_profile or None,
             "git_remote_profiles": _doctor_git_profile_rows(cfg, launch_user)
             if cfg.git_remote_profiles
             else [],
+            "container_profiles": container_profile_rows,
             "issues": list(issues),
         }
-        if cfg.container.enabled:
-            # Container diagnostics section (P5): present only when enabled
-            # (AC-P0.1 off-invariant — disabled deployments see no section).
-            data["container"] = _doctor_container_section(cfg, cwd, launch_user)
         if probe_remote:
             # Forward-compat addition: ``data.remote_hosts`` only
             # appears under ``--remote``. Default doctor JSON output
@@ -280,29 +277,26 @@ def do_doctor(
             + ", ".join(session.name for session in legacy_sessions)
         )
     print(f"git_create_enabled={'yes' if cfg.git_create_enabled else 'no'}")
-    print(f"default_git_remote_profile={cfg.default_git_remote_profile or '-'}")
     if cfg.git_remote_profiles:
         print(f"git_remote_profiles={len(cfg.git_remote_profiles)}:")
         for row in _doctor_git_profile_rows(cfg, launch_user):
             print(f"- {row}")
     else:
         print("git_remote_profiles=0")
-    if cfg.container.enabled:
-        # Container diagnostics (P5) — only when enabled (off-invariant).
-        section = _doctor_container_section(cfg, cwd, launch_user)
-        print("container: enabled")
-        print(f"- name_template={section['name_template'] or '-'}")
-        if section["name_error"]:
-            print(f"- resolved_name=ERROR ({section['name_error']})")
-        else:
-            print(f"- resolved_name={section['resolved_name'] or '-'}")
-            print(f"- is_running={section['is_running']}  exists={section['exists']}")
-        print("- host agent binaries absent from PATH are EXPECTED (provisioned in the container)")
-        if section["warnings"]:
-            for warning in section["warnings"]:
+    if container_profile_rows:
+        print(f"container_profiles={len(container_profile_rows)}:")
+        for row in container_profile_rows:
+            print(
+                f"- launch_profile={row['launch_profile']}  "
+                f"container_profile={row['container_profile']}  "
+                f"resolved_name={row['resolved_name'] or '-'}  "
+                f"is_running={row['is_running']}  exists={row['exists']}"
+            )
+            print(
+                "- host agent binaries absent from PATH are EXPECTED (provisioned in the container)"
+            )
+            for warning in row["warnings"]:
                 print(f"- warn: {warning}")
-        else:
-            print("- no container warnings")
     # Audit-channel report (Bug 2) — operator-visible verification of
     # the platform-log path.  Force sink detection if it hasn't run yet
     # (``cli.start`` already triggered it for non-doctor invocations,
@@ -370,92 +364,102 @@ def _doctor_launch_profile_rows(
     return rows
 
 
-def _doctor_container_section(cfg: Config, cwd: str, launch_user: str) -> dict[str, Any]:
-    """Build the ``uxon doctor`` container diagnostics block (P5).
+def _doctor_container_profile_rows(
+    cfg: Config,
+    cwd: str,
+    caller_user: str,
+) -> list[dict[str, Any]]:
+    """Build non-raising diagnostics for enabled containerized launch profiles."""
 
-    Only called when ``cfg.container.enabled``. Resolves the container name for
-    a representative target (``cwd``), runs the operator's
-    ``exists_cmd``/``is_running_cmd`` for it (best-effort, non-raising), and
-    assembles operator-facing warnings:
-
-    - ``stop_template`` unset → the in-container agent orphans on kill (AC-P5.3).
-    - inconsistent ``path_map`` (a host prefix that is not a parent of ``cwd``
-      while another covers it, or no prefix covers ``cwd``) — surfaced as a
-      note, not a hard fault (AC-P5.3).
-    - the ``create_template`` references a compose/definition path that resolves
-      **under** a ``path_map`` host prefix, i.e. inside the agent-writable bind
-      mount — a host-escape footgun (AC-P5.4 / AC-P6.6). Best-effort string
-      scan: uxon cannot fully introspect an opaque template.
-
-    Returns a JSON-friendly dict (also rendered by the human path). All
-    internals-free: only operator-chosen names/templates appear.
-    """
-    from uxon.domain.container import path_map_under_prefix
+    from uxon.domain.container import (
+        apply_path_map,
+        path_map_under_prefix,
+        resolve_profile_container_name,
+    )
+    from uxon.domain.session import slugify
     from uxon.infra import container as container_infra
-    from uxon.infra import tmux as _tmux
 
-    c = cfg.container
-    warnings: list[str] = []
-
-    name = ""
-    name_error = ""
-    try:
-        name, _dir_token = _tmux.resolve_container(cfg, cwd, launch_user)
-    except SystemExit as exc:
-        name_error = str(getattr(exc, "uxon_msg", exc))
-
-    running, exists = ("?", "?")
-    if name:
-        running, exists = container_infra.probe_container_state(c, name, launch_user)
-
-    if not c.stop_template:
-        warnings.append(
-            "stop_template is unset: the in-container agent is not reaped on kill "
-            "(it orphans); set [container].stop_template so uxon terminates it"
+    rows: list[dict[str, Any]] = []
+    project_slug = slugify(Path(cwd).name)
+    for launch_profile_id in cfg.launch.effective_enabled_profiles:
+        launch_profile = cfg.launch.profiles.get(launch_profile_id)
+        if launch_profile is None or not launch_profile.container_profile:
+            continue
+        profile = cfg.container_profiles.get(launch_profile.container_profile)
+        launch_user = launch_profile.launch_user or identity.resolve_launch_user(cfg, caller_user)
+        warnings: list[str] = []
+        name = ""
+        name_error = ""
+        is_running, exists = ("?", "?")
+        if profile is None:
+            warnings.append(
+                f"container profile {launch_profile.container_profile!r} is not configured"
+            )
+        else:
+            try:
+                # Validate the mapped cwd: a non-absolute or ``..`` result
+                # raises SystemExit (caught below → name_error).
+                apply_path_map(cwd, profile.path_map)
+                name = resolve_profile_container_name(
+                    profile,
+                    user=launch_user,
+                    launch_profile=launch_profile.id,
+                    agent=launch_profile.agent,
+                    project_slug=project_slug,
+                )
+            except SystemExit as exc:
+                name_error = str(getattr(exc, "uxon_msg", exc))
+            if name:
+                is_running, exists = container_infra.probe_container_state_for_profile(
+                    profile,
+                    name,
+                    launch_user,
+                    launch_profile=launch_profile.id,
+                    agent=launch_profile.agent,
+                    project_slug=project_slug,
+                )
+            if not profile.stop_template:
+                warnings.append(
+                    "stop_template is unset: the in-container agent is not reaped on kill "
+                    "(it orphans); set stop_template on the container profile"
+                )
+            if profile.path_map and not path_map_under_prefix(cwd, profile.path_map):
+                warnings.append(
+                    f"path_map is set but the current directory {cwd} is under none of its "
+                    "host prefixes — launches from here may hit an unmapped path inside the container"
+                )
+            definition_under_mount = ""
+            if profile.path_map:
+                for token in profile.create_template:
+                    candidate = (
+                        token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
+                    )
+                    if candidate.startswith("/") and path_map_under_prefix(
+                        candidate, profile.path_map
+                    ):
+                        definition_under_mount = candidate
+                        break
+            if definition_under_mount:
+                warnings.append(
+                    f"create_template references {definition_under_mount}, which is under a "
+                    "path_map host prefix (inside the agent-writable bind mount). Move the "
+                    "container definition to an operator-owned path outside the mount"
+                )
+        rows.append(
+            {
+                "launch_profile": launch_profile_id,
+                "agent": launch_profile.agent,
+                "launch_user": launch_user,
+                "container_profile": launch_profile.container_profile,
+                "resolved_name": name,
+                "name_error": name_error or None,
+                "is_running": is_running,
+                "exists": exists,
+                "host_agent_absence_expected": True,
+                "warnings": warnings,
+            }
         )
-
-    # path_map sanity: with a non-empty map, cwd should fall under some host
-    # prefix (else launches from here have no container mount backing them).
-    if c.path_map and not path_map_under_prefix(cwd, c.path_map):
-        warnings.append(
-            f"path_map is set but the current directory {cwd} is under none of its "
-            "host prefixes — launches from here may hit an unmapped path inside the container"
-        )
-
-    # AC-P5.4 / AC-P6.6: a create_template definition path under a path_map host
-    # prefix is agent-writable (inside the bind mount) — a host-escape footgun.
-    definition_under_mount = ""
-    if c.path_map:
-        for token in c.create_template:
-            # Catch both a bare ``/abs/path`` token and a flag-joined form like
-            # ``--file=/abs/path`` / ``-f=/abs/path`` (best-effort — relative
-            # forms are out of reach without resolving the template's cwd).
-            candidate = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
-            if candidate.startswith("/") and path_map_under_prefix(candidate, c.path_map):
-                definition_under_mount = candidate
-                break
-    if definition_under_mount:
-        warnings.append(
-            f"create_template references {definition_under_mount}, which is under a "
-            "path_map host prefix (inside the agent-writable bind mount). A "
-            "yolo/injected agent could edit it to escape the container — move the "
-            "container definition to an operator-owned path outside the mount"
-        )
-
-    return {
-        "enabled": True,
-        # The template verbatim (empty → rendered as "-"). The actual resolved
-        # name is reported separately as ``resolved_name``; don't conflate an
-        # explicit ``container.name`` into the template field.
-        "name_template": c.name_template,
-        "resolved_name": name,
-        "name_error": name_error or None,
-        "is_running": running,
-        "exists": exists,
-        "stop_template_set": bool(c.stop_template),
-        "host_agent_absence_expected": True,
-        "warnings": warnings,
-    }
+    return rows
 
 
 def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:

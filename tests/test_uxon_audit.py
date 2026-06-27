@@ -354,7 +354,7 @@ class AuditSendTests(_BaseAuditTests):
             au.audit(
                 "cli.start",
                 flags=[],
-                agents_enabled=["claude"],
+                profiles_enabled=["claude"],
                 enable_all_users_list=False,
                 audit_enabled=True,
                 allowed_roots_count=0,
@@ -370,7 +370,7 @@ class AuditSendTests(_BaseAuditTests):
         self.assertEqual(evt["outcome"], "ok")
         self.assertIn("ts", evt)
         self.assertEqual(evt["subcmd"], "run")
-        self.assertEqual(evt["agents_enabled"], ["claude"])
+        self.assertEqual(evt["profiles_enabled"], ["claude"])
 
     def test_correlation_id_threaded_through(self) -> None:
         recorded: list[bytes] = []

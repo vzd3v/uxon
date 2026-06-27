@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     _audit.audit(
         "cli.start",
         flags=_audit._sanitize_flags(list(argv or [])),
-        agents_enabled=list(cfg.enabled_agents),
+        profiles_enabled=list(cfg.launch.effective_enabled_profiles),
         enable_all_users_list=cfg.enable_all_users_list,
         audit_enabled=True,
         allowed_roots_count=len(cfg.allowed_roots),

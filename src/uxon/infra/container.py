@@ -339,42 +339,6 @@ def current_container_epoch(cfg: Config, name: str, launch_user: str) -> str | N
     return epoch
 
 
-def current_container_epoch_for_profile(
-    profile: ContainerProfile,
-    name: str,
-    launch_user: str,
-) -> str | None:
-    """Best-effort live start epoch for a profile-scoped container."""
-    if not profile.resolve_cmd:
-        return None
-    try:
-        cmd = render_profile_template(
-            profile.resolve_cmd,
-            profile=profile,
-            what="resolve_cmd",
-            name=name,
-            dir_token="/",
-            user=launch_user,
-            launch_profile="",
-            agent="",
-            project_slug="",
-        )
-    except SystemExit:
-        return None
-    full = _as_user_in_dir(nonint_command_prefix_for_user(launch_user), cmd, None)
-    try:
-        cp = run_query(full, timeout=CONTAINER_CMD_TIMEOUT_SEC)
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if cp.returncode != 0:
-        return None
-    parsed = parse_resolve_output(cp.stdout)
-    if parsed is None:
-        return None
-    _cid, _init_pid, epoch = parsed
-    return epoch
-
-
 def current_container_identity_for_profile(
     profile: ContainerProfile,
     name: str,
@@ -447,6 +411,10 @@ def probe_container_state_for_profile(
     profile: ContainerProfile | None,
     name: str,
     launch_user: str,
+    *,
+    launch_profile: str = "",
+    agent: str = "",
+    project_slug: str = "",
 ) -> tuple[str, str]:
     """Non-raising doctor probe for a profile-scoped container."""
 
@@ -461,9 +429,9 @@ def probe_container_state_for_profile(
                 name=name,
                 dir_token="/",
                 user=launch_user,
-                launch_profile="",
-                agent="",
-                project_slug="",
+                launch_profile=launch_profile,
+                agent=agent,
+                project_slug=project_slug,
             )
         except SystemExit:
             return "?"
