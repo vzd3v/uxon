@@ -6,15 +6,11 @@ agent process runs inside a container (``docker``/``podman``/``nerdctl``/…).
 uxon models **no** runtime semantics — every command is an opaque argv
 **list** supplied by the operator, never a shell string.
 
-This module is pure (no I/O): the :class:`ContainerConfig` record, the
+This module is pure (no I/O): the :class:`ContainerProfile` record, the
 deterministic name/``{dir}`` resolution, and the safety validators that
 keep an attacker-controlled directory name out of the sudo-executed exec
 template. The impure probe/start/create shell-outs live in
 :mod:`uxon.infra.container`.
-
-The current runtime still carries the pre-profile ``ContainerConfig`` object
-until later launch-profile phases replace the singleton launch path. New config
-files use ``ContainerProfile`` under ``[container.profiles.<id>]``.
 """
 
 from __future__ import annotations
@@ -92,42 +88,6 @@ _TEMPLATE_PLACEHOLDERS: dict[str, frozenset[str]] = {
     "resolve_cmd": _BASE_PROFILE_PLACEHOLDERS | {"name", "dir"},
     "stop_template": _BASE_PROFILE_PLACEHOLDERS | {"name", "pidfile"},
 }
-
-
-@dataclass(frozen=True)
-class ContainerConfig:
-    """Operator container schema (off by default).
-
-    Templates are argv **lists**. ``name_template``/``name`` placeholders:
-    ``{user}``, ``{project_slug}``, ``{dir}``. ``exec_template`` placeholders:
-    ``{name}`` (resolved container name) and ``{dir}`` (container-side path
-    after ``path_map``). ``stop_template`` placeholders: ``{name}`` and
-    ``{pidfile}`` (the in-container PID file uxon's launch wrapper records,
-    keyed per session) — the mirror of the launch path that lets ``uxon
-    kill`` terminate the exact agent process it started, leaving the shared
-    container itself untouched.
-    """
-
-    enabled: bool = False
-    name_template: str = ""
-    exec_template: tuple[str, ...] = ()
-    is_running_cmd: tuple[str, ...] = ()
-    exists_cmd: tuple[str, ...] = ()
-    start_template: tuple[str, ...] = ()
-    create_template: tuple[str, ...] = ()
-    stop_template: tuple[str, ...] = ()
-    # Optional operator-supplied opaque argv that prints the container's host
-    # ``<id> <init_pid> <start_epoch>`` on stdout, used to anchor telemetry +
-    # the teardown PID-recycle guard. Off by default — empty means no shell-out
-    # and the identity markers degrade to absent. Placeholders: ``{name}``,
-    # ``{dir}``. Operator-only (not in the project allowlist).
-    resolve_cmd: tuple[str, ...] = ()
-    on_missing: OnMissing = "off"
-    on_missing_mode: OnMissingMode = "prompt"
-    # Legacy singleton data fields kept until profile resolution replaces the
-    # old runtime path.
-    name: str = ""
-    path_map: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -438,22 +398,6 @@ def validate_container_name(name: str) -> str:
     return name
 
 
-def resolve_container_name(
-    cfg: ContainerConfig, *, user: str, project_slug: str, dir_token: str
-) -> str:
-    """Resolve the container name deterministically and validate it.
-
-    A literal legacy ``name`` wins over ``name_template``. Both run through the
-    same post-expansion validator. Same (user, project dir) → same name (never
-    per-session).
-    """
-    source = cfg.name or cfg.name_template
-    if not source:
-        fail("container is enabled but neither [container] name nor name_template is set")
-    expanded = _safe_format(source, "name", user=user, project_slug=project_slug, dir=dir_token)
-    return validate_container_name(expanded)
-
-
 def resolve_profile_container_name(
     profile: ContainerProfile,
     *,
@@ -513,40 +457,7 @@ def render_profile_template(
     return [_safe_format(tok, what, **values) for tok in template]
 
 
-def render_template(
-    template: tuple[str, ...], *, name: str, dir_token: str, what: str
-) -> list[str]:
-    """Render a probe / start / create argv list (``{name}``/``{dir}``)."""
-    return [_safe_format(tok, what, name=name, dir=dir_token) for tok in template]
-
-
 Action = Literal["exec", "start", "create", "fail"]
-
-
-def kill_caveat(cfg: ContainerConfig) -> str | None:
-    """One-line kill-path caveat, or None when no reminder is warranted.
-
-    ``tmux kill-session`` reaps only the client-side ``<runtime> exec``
-    process; the in-container agent does NOT die on that disconnect under
-    docker or podman — it orphans. When a ``stop_template`` is configured,
-    uxon's kill path runs it to terminate the recorded in-container PID, so
-    the agent is genuinely reaped and no caveat is needed (None). When it is
-    NOT configured, the orphan risk stands, so every surface that reports a
-    kill appends this reminder.
-
-    Carries ZERO agent/host internals: ``<runtime>`` is the operator's
-    ``exec_template`` binary (a config value, e.g. ``docker``/``podman``);
-    the container name is operator-chosen too. No usernames, host paths, or
-    session names leak here.
-    """
-    if not cfg.enabled or cfg.stop_template:
-        return None
-    runtime = cfg.exec_template[0] if cfg.exec_template else "docker"
-    return (
-        f"the in-container agent is NOT reaped by the kill; confirm with "
-        f"`{runtime} top <container>` and stop it, or set [container].stop_template "
-        "so uxon terminates it for you"
-    )
 
 
 def decide_container_action(

@@ -20,7 +20,6 @@ from uxon.domain.config import Config
 from uxon.domain.container import (
     CONTAINER_CGROUP_ENV,
     CONTAINER_NAME_ENV,
-    ContainerConfig,
     ContainerProfile,
 )
 from uxon.domain.container_usage import (
@@ -49,7 +48,6 @@ def enrich_session_usage(
     sessions: list[SessionInfo],
     *,
     container_profiles: dict[str, ContainerProfile] | None = None,
-    container_cfg: ContainerConfig | None = None,
     launch_user: str = "",
 ) -> None:
     """Fill each session's ``cpu_pct`` / ``rss_kib`` from a single ``ps`` table.
@@ -105,7 +103,6 @@ def enrich_session_usage(
             container_sessions,
             proc_rows,
             container_profiles=container_profiles,
-            container_cfg=container_cfg,
             launch_user=launch_user,
         )
 
@@ -141,7 +138,6 @@ def _enrich_container_sessions(
     proc_rows: dict[int, tuple[int, int, float]],
     *,
     container_profiles: dict[str, ContainerProfile] | None,
-    container_cfg: ContainerConfig | None,
     launch_user: str,
 ) -> None:
     """Attribute in-container CPU/RAM for the marker-carrying sessions.
@@ -178,7 +174,6 @@ def _enrich_container_sessions(
             _mark_container_down(
                 group,
                 container_profiles=container_profiles,
-                container_cfg=container_cfg,
                 launch_user=launch_user,
             )
             continue
@@ -215,7 +210,6 @@ def _enrich_container_sessions(
         _mark_container_down(
             group,
             container_profiles=container_profiles,
-            container_cfg=container_cfg,
             launch_user=launch_user,
         )
 
@@ -232,16 +226,16 @@ def _mark_container_down(
     group: list[SessionInfo],
     *,
     container_profiles: dict[str, ContainerProfile] | None,
-    container_cfg: ContainerConfig | None,
     launch_user: str,
 ) -> None:
     """Flag a group's sessions container-down iff ``is_running_cmd`` confirms it.
 
     Called only when the cgroup is empty/unresolvable. The liveness probe runs
-    once per distinct container (AC-P1.5). Without an ``is_running_cmd`` template
-    (or with no container config threaded in) uxon cannot confirm down-state, so
-    the sessions stay at the already-set ``0``/``—`` degrade rather than
-    asserting a "down" it cannot verify.
+    once per distinct container (AC-P1.5). The session's container profile is
+    looked up via ``container_profiles``; without an ``is_running_cmd`` template
+    (or with no profile threaded in) uxon cannot confirm down-state, so the
+    sessions stay at the already-set ``0``/``—`` degrade rather than asserting a
+    "down" it cannot verify.
     """
     name = group[0].container
     if container_profiles is not None and group[0].container_profile:
@@ -254,11 +248,6 @@ def _mark_container_down(
             for session in group:
                 session.container_down = True
         return
-    if container_cfg is None or not container_cfg.is_running_cmd:
-        return
-    if not _container_is_running(container_cfg, name, launch_user):
-        for session in group:
-            session.container_down = True
 
 
 ContainerIdentityState = Literal["current", "unresolved", "stale"]
@@ -350,21 +339,6 @@ def _read_pid_sessions(pids: list[int]) -> dict[int, str] | None:
     return parse_sudo_environ_lines(cp.stdout)
 
 
-def _container_is_running(container_cfg: ContainerConfig, name: str, launch_user: str) -> bool:
-    """Run the operator's ``is_running_cmd`` for ``name`` → True iff it exits 0.
-
-    Reuses the bounded as-user probe in :mod:`uxon.infra.container` (same
-    rootless-daemon identity the agent execs under). Any failure to even run
-    the probe is treated as "cannot confirm running" → returns the running
-    interpretation conservatively False only when the probe cleanly says so;
-    a render/exec error degrades to ``True`` (don't assert down on a probe we
-    couldn't run). Bounded once per distinct container by the caller.
-    """
-    from uxon.infra.container import probe_container_running
-
-    return probe_container_running(container_cfg, name, launch_user)
-
-
 def collect_sessions_for_user(
     user: str,
     session_prefix: str,
@@ -372,7 +346,6 @@ def collect_sessions_for_user(
     *,
     legacy_prefixes: tuple[str, ...] = (),
     container_profiles: dict[str, ContainerProfile] | None = None,
-    container_cfg: ContainerConfig | None = None,
 ) -> list[SessionInfo]:
     # Demo-mode short-circuit: when ``UXON_DEMO_HOSTS`` is set, bypass
     # tmux entirely and read the synthetic-local envelope. Returning
@@ -500,7 +473,6 @@ def collect_sessions_for_user(
     enrich_session_usage(
         sessions,
         container_profiles=container_profiles,
-        container_cfg=container_cfg,
         launch_user=user,
     )
     return sessions
@@ -516,7 +488,6 @@ def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
                 tmux.tmux_socket_path(cfg, user),
                 legacy_prefixes=cfg.legacy_session_prefixes,
                 container_profiles=cfg.container_profiles,
-                container_cfg=cfg.container if cfg.container.enabled else None,
             )
         )
     return sessions

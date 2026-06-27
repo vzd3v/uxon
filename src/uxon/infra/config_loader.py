@@ -22,9 +22,7 @@ from uxon.domain.config import (
     validate_worktree_base,
 )
 from uxon.domain.container import (
-    ContainerConfig,
     ContainerProfile,
-    validate_container_name,
     validate_container_profile,
     validate_path_map,
 )
@@ -482,79 +480,6 @@ def _argv_list(tbl: dict[str, Any], key: str) -> tuple[str, ...]:
     return tuple(raw)
 
 
-def build_container_config(container_tbl: dict[str, Any]) -> ContainerConfig:
-    """Parse + validate a legacy singleton container table."""
-    enabled = bool(container_tbl.get("enabled", False))
-
-    on_missing = str(container_tbl.get("on_missing", "off"))
-    if on_missing not in ("off", "start", "create"):
-        fail(f"container.on_missing must be 'off', 'start', or 'create'; got {on_missing!r}")
-    on_missing_mode = str(container_tbl.get("on_missing_mode", "prompt"))
-    if on_missing_mode not in ("prompt", "auto"):
-        fail(f"container.on_missing_mode must be 'prompt' or 'auto'; got {on_missing_mode!r}")
-
-    name_template = str(container_tbl.get("name_template", ""))
-    exec_template = _argv_list(container_tbl, "exec_template")
-    is_running_cmd = _argv_list(container_tbl, "is_running_cmd")
-    exists_cmd = _argv_list(container_tbl, "exists_cmd")
-    start_template = _argv_list(container_tbl, "start_template")
-    create_template = _argv_list(container_tbl, "create_template")
-    stop_template = _argv_list(container_tbl, "stop_template")
-    resolve_cmd = _argv_list(container_tbl, "resolve_cmd")
-
-    # Legacy singleton data leaves retained for the pre-profile runtime path.
-    name_raw = container_tbl.get("name", "")
-    if not isinstance(name_raw, str):
-        fail("container.name must be a string")
-    name = name_raw
-    if name:
-        # Validate the literal override here; a template-derived name is
-        # re-validated post-expansion at resolve time (both go through the
-        # same charset check).
-        validate_container_name(name)
-
-    path_map_raw = container_tbl.get("path_map", {})
-    if not isinstance(path_map_raw, dict):
-        fail("container.path_map must be a TOML table of host_prefix -> container_prefix")
-    path_map = validate_path_map({str(k): str(v) for k, v in path_map_raw.items()})
-
-    if enabled:
-        if not exec_template:
-            fail("container.enabled = true requires a non-empty container.exec_template")
-        if not name and not name_template:
-            fail("container.enabled = true requires container.name_template")
-        if on_missing in ("start", "create") and not is_running_cmd:
-            fail(
-                f"container.on_missing = {on_missing!r} requires container.is_running_cmd "
-                "and container.exists_cmd to probe the container state"
-            )
-        if on_missing in ("start", "create") and not exists_cmd:
-            fail(
-                f"container.on_missing = {on_missing!r} requires container.exists_cmd "
-                "to detect an absent vs stopped container"
-            )
-        if on_missing in ("start", "create") and not start_template:
-            fail(f"container.on_missing = {on_missing!r} requires container.start_template")
-        if on_missing == "create" and not create_template:
-            fail("container.on_missing = 'create' requires container.create_template")
-
-    return ContainerConfig(
-        enabled=enabled,
-        name_template=name_template,
-        exec_template=exec_template,
-        is_running_cmd=is_running_cmd,
-        exists_cmd=exists_cmd,
-        start_template=start_template,
-        create_template=create_template,
-        stop_template=stop_template,
-        resolve_cmd=resolve_cmd,
-        on_missing=on_missing,  # type: ignore[arg-type]
-        on_missing_mode=on_missing_mode,  # type: ignore[arg-type]
-        name=name,
-        path_map=path_map,
-    )
-
-
 def load_config(cwd: str) -> Config:
     from uxon.domain import git_profiles as uxon_git_profiles
 
@@ -819,8 +744,6 @@ def load_config(cwd: str) -> Config:
                 fail(f"'tmux.{_scope}.{_k}' must be a scalar (bool/int/str)")
         tmux_scope_tables[_scope] = dict(_sub)
 
-    container = ContainerConfig()
-
     return Config(
         runtime_user=runtime_user,
         default_launch_mode=default_launch_mode,
@@ -860,5 +783,4 @@ def load_config(cwd: str) -> Config:
         tmux_options=tmux_scope_tables["options"],
         tmux_server_options=tmux_scope_tables["server_options"],
         tmux_append_server_options=tmux_scope_tables["append_server_options"],
-        container=container,
     )

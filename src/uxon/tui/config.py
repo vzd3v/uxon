@@ -118,15 +118,6 @@ class TuiConfig:
     on_setting_save_mapping: Callable[[str, dict], None]
     get_git_remote_profile_rows: Callable[[], list]
 
-    # ── Container ────────────────────────────────────────────────────
-    # Pre-rendered kill-path caveat when ``[container].enabled`` (else
-    # ``None``); appended at the kill-flow notify sites. Defaulted (last
-    # field) so bare ``TuiConfig`` fixtures keep constructing.
-    container_kill_caveat: str | None = None
-    # True when ``[container].enabled`` — the launch-gate predicates suppress
-    # the host-presence "agents unavailable" block (AC-P2.2).
-    container_enabled: bool = False
-
     @classmethod
     def from_context(cls, ctx: TuiContext) -> TuiConfig:
         """Snapshot the immutable side of ``ctx`` into a :class:`TuiConfig`.
@@ -164,8 +155,6 @@ class TuiConfig:
             git_remote_profile_options=tuple(
                 (name, desc) for (name, desc) in ctx.git_remote_profile_options
             ),
-            container_kill_caveat=ctx.container_kill_caveat,
-            container_enabled=ctx.container_enabled,
             on_attach=ctx.on_attach,
             on_kill=ctx.on_kill,
             on_kill_all=ctx.on_kill_all,

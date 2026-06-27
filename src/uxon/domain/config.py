@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from uxon.domain.agents import AgentSpec, default_agent_catalog
-from uxon.domain.container import ContainerConfig, ContainerProfile
+from uxon.domain.container import ContainerProfile
 from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.domain.launch_profiles import LaunchConfig
 from uxon.errors import fail
@@ -192,10 +192,6 @@ class Config:
     tmux_append_server_options: dict = field(
         default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"])
     )
-    # Container-agnostic launch (off by default). Parsed + validated once in
-    # ``load_config``; the disabled default is byte-for-byte the pre-container
-    # behaviour (no exec wrap).
-    container: ContainerConfig = field(default_factory=ContainerConfig)
 
 
 def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from uxon.domain.config import Config
-from uxon.domain.container import kill_caveat as container_kill_caveat
 from uxon.domain.format import compact_time, fmt_epoch, format_cpu_pct, format_rss_kib
 from uxon.domain.session import SessionInfo, to_tui_session
 from uxon.infra import (
@@ -447,8 +446,6 @@ def build_tui_context(
         ssh_multiplex=cfg.ssh_multiplex,
         ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         fetch_concurrency=cfg.fetch_concurrency,
-        container_kill_caveat=container_kill_caveat(cfg.container),
-        container_enabled=cfg.container.enabled,
         cwd_writable=cwd_writable,
         current_user=launch_user,
         sudo_caps=sudo_caps,

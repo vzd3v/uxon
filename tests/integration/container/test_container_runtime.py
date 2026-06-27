@@ -59,8 +59,7 @@ def _operator_container_table(rt: Runtime, project_dir: Path) -> dict[str, objec
 
     Mirrors what ``config/config.toml`` would carry: the exec wrap, the
     state probes, and a ``create_template`` delegating to ``compose`` —
-    all opaque operator argv. The project ``.uxon.toml`` supplies only the
-    name (merged in by :func:`_load_container`).
+    all opaque operator argv, fed to ``build_container_profiles``.
     """
     return {
         "enabled": True,
@@ -105,21 +104,7 @@ def _operator_container_table(rt: Runtime, project_dir: Path) -> dict[str, objec
     }
 
 
-def _load_container(rt: Runtime, project_dir: Path):
-    """Build a validated ContainerConfig the way the loader does.
-
-    The unique runtime name is operator-owned test data. Project-level
-    runtime policy is no longer read.
-    """
-    from uxon.infra import config_loader
-
-    container_tbl = _operator_container_table(rt, project_dir)
-    container_tbl["name"] = rt.container_name
-    return config_loader.build_container_config(container_tbl)  # type: ignore[arg-type]
-
-
 def _cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
-    container = _load_container(rt, project_dir)
     from uxon.domain.agents import default_agent_catalog
     from uxon.infra import config_loader
 
@@ -140,7 +125,6 @@ def _cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
         # Per-test socket under tmp_path so this never touches a real uxon
         # server and teardown is total.
         tmux_socket_template=str(socket_path),
-        container=container,
         agents=agents,
         launch=LaunchConfig(default_profile="claude", profiles=launch_profiles),
         container_profiles=container_profiles,

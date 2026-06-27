@@ -112,19 +112,14 @@ def plan_container(
     """
     from uxon.infra import container as container_infra
 
-    if isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
-        if resolved_or_launch_user.container_context is None:
-            return None
-        return container_infra.plan_container_launch_for_profile(
-            cfg, target_dir, resolved_or_launch_user
-        )
-
-    # Compatibility for non-launch callers/tests that still exercise the
-    # singleton container display path. New launch runtime decisions pass a
-    # ResolvedLaunchProfile and do not reach this branch.
-    if not cfg.container.enabled:
+    if not isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
+        # Host-only launch (no resolved profile → no container context).
         return None
-    return container_infra.plan_container_launch(cfg, target_dir, resolved_or_launch_user)
+    if resolved_or_launch_user.container_context is None:
+        return None
+    return container_infra.plan_container_launch_for_profile(
+        cfg, target_dir, resolved_or_launch_user
+    )
 
 
 def _run_prepare_audited(plan: ContainerPlan, target_dir: str, launch_user: str) -> None:
@@ -277,7 +272,7 @@ def decide_container_gate(
             == "prompt"
             if isinstance(resolved_or_launch_user, ResolvedLaunchProfile)
             and resolved_or_launch_user.container_context is not None
-            else cfg.container.on_missing_mode == "prompt"
+            else False
         ),
         message=plan.message,
         fail_message="",

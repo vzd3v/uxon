@@ -24,10 +24,8 @@ from uxon.domain.container import (
     CONTAINER_EPOCH_ENV,
     CONTAINER_ID_ENV,
     CONTAINER_NAME_ENV,
-    apply_path_map,
     container_pidfile,
     render_profile_template,
-    resolve_container_name,
     wrap_agent_for_container,
 )
 from uxon.domain.launch_profiles import ResolvedLaunchProfile
@@ -174,25 +172,6 @@ def _tmux_set_chain(cfg: Config, *, server_running: bool = False) -> list[str]:
         for key, value in table.items():
             chain += ["set", flag, str(key), _tmux_opt_value(value), ";"]
     return chain
-
-
-def resolve_container(cfg: Config, target_dir: str, launch_user: str) -> tuple[str, str]:
-    """Resolve the (validated name, container-side {dir}) for ``target_dir``.
-
-    Deterministic in (launch_user, target dir) — never per-session — so every
-    session for a user in one project execs into the same container. The
-    ``{project_slug}`` placeholder derives from the host directory basename
-    (attacker-controllable), so the resolved name is re-validated against the
-    safe charset (AC-B8). ``{dir}`` is the host path with ``path_map``
-    longest-prefix applied (container-side); no map → host path verbatim.
-    ``allowed_roots`` and the writable-probe keep running on the HOST path.
-    """
-    dir_token = apply_path_map(target_dir, cfg.container.path_map)
-    project_slug = slugify(os.path.basename(os.path.normpath(target_dir)))
-    name = resolve_container_name(
-        cfg.container, user=launch_user, project_slug=project_slug, dir_token=dir_token
-    )
-    return name, dir_token
 
 
 def read_session_env(cfg: Config, user: str, session: str, var: str) -> str | None:

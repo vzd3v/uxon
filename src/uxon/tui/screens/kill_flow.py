@@ -28,17 +28,6 @@ class KillFlow:
     def __init__(self, host: MainScreen) -> None:
         self.host = host
 
-    def _with_caveat(self, message: str) -> str:
-        """Append the container kill-path caveat when one is configured.
-
-        Centralizes the ``[container].enabled`` reminder (Security MEDIUM-2)
-        so every kill-success surface — single local, single remote,
-        kill-all-own, kill-all-reachable — reads it identically. The caveat
-        carries zero internals (pre-rendered from operator config).
-        """
-        caveat = self.host.cfg.container_kill_caveat
-        return f"{message} — {caveat}" if caveat else message
-
     def kill(self) -> None:
         """Confirm then kill the session under focus.
 
@@ -77,10 +66,8 @@ class KillFlow:
 
                 def on_ok(_result) -> None:
                     host.app.notify(
-                        self._with_caveat(
-                            f"Killed {session_short} on {host_name}; "
-                            "remote table will update on next poll"
-                        )
+                        f"Killed {session_short} on {host_name}; "
+                        "remote table will update on next poll"
                     )
                     host.action_refresh()
 
@@ -106,7 +93,7 @@ class KillFlow:
                 return
 
             def on_ok(_result) -> None:
-                host.app.notify(self._with_caveat(f"Killed {session_short}"))
+                host.app.notify(f"Killed {session_short}")
                 host.action_refresh()
 
             # ``on_kill`` shells out to tmux — off the event loop (§ invariant).
@@ -138,7 +125,7 @@ class KillFlow:
                 return
 
             def on_ok(_result) -> None:
-                host.app.notify(self._with_caveat(f"Killed all {n} sessions"))
+                host.app.notify(f"Killed all {n} sessions")
                 host.action_refresh()
 
             # Loops tmux kill-session over every own session — off-loop.
@@ -174,11 +161,7 @@ class KillFlow:
                 return
 
             def on_ok(_result) -> None:
-                host.app.notify(
-                    self._with_caveat(
-                        f"Killed all {total} sessions across {n_users} reachable users"
-                    )
-                )
+                host.app.notify(f"Killed all {total} sessions across {n_users} reachable users")
                 host.action_refresh()
 
             # Fans out tmux/ssh kills across reachable users — off-loop.

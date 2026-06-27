@@ -100,12 +100,8 @@ def _operator_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
 
 
 def _build_cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
-    from uxon.infra import config_loader
-
-    container_tbl = _operator_table(rt, project_dir)
-    container_tbl["name"] = rt.container_name
-    container = config_loader.build_container_config(container_tbl)  # type: ignore[arg-type]
     from uxon.domain.agents import default_agent_catalog
+    from uxon.infra import config_loader
 
     agents = default_agent_catalog()
     launch_profiles = builtin_launch_profiles(agents)
@@ -121,7 +117,6 @@ def _build_cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     return make_config(
         allowed_roots=[str(project_dir)],
         tmux_socket_template=str(socket_path),
-        container=container,
         agents=agents,
         launch=LaunchConfig(default_profile="claude", profiles=launch_profiles),
         container_profiles=container_profiles,
@@ -238,7 +233,7 @@ def test_two_sessions_one_container_split_and_runaway(runtime: Runtime, tmp_path
                 launch_user,
                 cfg.session_prefix,
                 str(socket_path),
-                container_cfg=cfg.container,
+                container_profiles=cfg.container_profiles,
             )
             by_name = {s.name: s for s in sessions}
             sess_a = by_name.get("uxon-it@claude")
@@ -297,14 +292,13 @@ def test_stopped_container_shows_down(runtime: Runtime, tmp_path: Path) -> None:
     cfg = _build_cfg(runtime, project_dir, project_dir / "uxon.sock")
 
     from uxon.app import launch as launch_app
-    from uxon.infra.container import resolve_container_identity
+    from uxon.infra.container import resolve_container_identity_for_profile
 
-    launch_app.ensure_container_ready(
-        cfg, str(project_dir), _resolved(cfg, project_dir, launch_user)
-    )
+    resolved = _resolved(cfg, project_dir, launch_user)
+    launch_app.ensure_container_ready(cfg, str(project_dir), resolved)
     try:
         # Capture the real launch-time cgroup path while the container runs.
-        ident = resolve_container_identity(cfg, str(project_dir), launch_user)
+        ident = resolve_container_identity_for_profile(cfg, str(project_dir), resolved)
         assert ident.cgroup, "resolve_cmd must yield a real cgroup path while running"
         # Stop the container — its cgroup.procs empties; is_running_cmd → non-zero.
         subprocess.run(
@@ -326,10 +320,11 @@ def test_stopped_container_shows_down(runtime: Runtime, tmp_path: Path) -> None:
             active_path=str(project_dir),
             agent="claude",
             container=runtime.container_name,
+            container_profile=_CONTAINER_PROFILE_ID,
             container_cgroup=ident.cgroup,
         )
         sessions_probe.enrich_session_usage(
-            [sess], container_cfg=cfg.container, launch_user=launch_user
+            [sess], container_profiles=cfg.container_profiles, launch_user=launch_user
         )
         assert sess.container_down, "a stopped container must show the distinct down state"
         assert sess.cpu_pct == 0.0
