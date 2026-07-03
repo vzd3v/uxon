@@ -17,6 +17,7 @@ from uxon.domain.agents import DEFAULT_AGENT_CATALOG as _CATALOG
 from uxon.tui.context import (
     _ACTION_KINDS,
     ACTION_COUNT,
+    LaunchProfileOption,
     ServerStatus,
     _segments,
     _total_items,
@@ -357,6 +358,43 @@ class LaunchOptionsStateTests(unittest.TestCase):
         )
         self.assertEqual(agent_list_label(1, "claude", self._avail("ok")), "1 claude")
         self.assertEqual(agent_list_label(1, "claude", None), "1 claude")
+
+    def test_launch_profile_list_label_dedupes_agent_profile_details(self) -> None:
+        from uxon.tui.state import launch_profile_list_label
+
+        self.assertEqual(
+            launch_profile_list_label(
+                2,
+                "codex",
+                LaunchProfileOption(
+                    id="codex",
+                    label="codex",
+                    agent="codex",
+                    launch_user="deva2",
+                ),
+                None,
+            ),
+            "2 codex  deva2",
+        )
+
+    def test_launch_profile_list_label_keeps_distinct_agent_and_container(self) -> None:
+        from uxon.tui.state import launch_profile_list_label
+
+        self.assertEqual(
+            launch_profile_list_label(
+                1,
+                "claude_work",
+                LaunchProfileOption(
+                    id="claude_work",
+                    label="Claude work",
+                    agent="claude",
+                    launch_user="agent1",
+                    container_profile="box",
+                ),
+                self._avail("pending"),
+            ),
+            "1 Claude work  claude_work · claude · agent1 · container:box  (checking…)",
+        )
 
     def test_mode_item_ids_match_catalog_order(self) -> None:
         self.assertEqual(

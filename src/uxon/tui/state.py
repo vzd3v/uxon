@@ -306,11 +306,19 @@ def launch_profile_list_label(
     if profile is None:
         label = f"{index} {profile_id}"
     else:
-        label = f"{index} {profile.label or profile.id}"
-        details = [profile.id, profile.agent, profile.launch_user]
+        primary = profile.label or profile.id
+        label = f"{index} {primary}"
+        details = []
+        if profile.id != primary:
+            details.append(profile.id)
+        if profile.agent != profile.id:
+            details.append(profile.agent)
+        if profile.launch_user:
+            details.append(profile.launch_user)
         if profile.container_profile:
             details.append(f"container:{profile.container_profile}")
-        label += "  " + " · ".join(details)
+        if details:
+            label += "  " + " · ".join(details)
     if availability_obj is not None and getattr(availability_obj, "status", None) == "pending":
         label += "  (checking…)"
     return label
