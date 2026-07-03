@@ -39,6 +39,7 @@ from uxon.tui.state import (
     launch_commit_decision,
     launch_mode_id,
     launch_options_state,
+    launch_profile_users_differ,
     main_action_intent,
     mode_item_ids,
     pick_index,
@@ -377,6 +378,25 @@ class LaunchOptionsStateTests(unittest.TestCase):
             "2 codex  deva2",
         )
 
+    def test_launch_profile_list_label_can_hide_uniform_launch_user(self) -> None:
+        from uxon.tui.state import launch_profile_list_label
+
+        self.assertEqual(
+            launch_profile_list_label(
+                2,
+                "codex",
+                LaunchProfileOption(
+                    id="codex",
+                    label="codex",
+                    agent="codex",
+                    launch_user="deva2",
+                ),
+                None,
+                show_launch_user=False,
+            ),
+            "2 codex",
+        )
+
     def test_launch_profile_list_label_keeps_distinct_agent_and_container(self) -> None:
         from uxon.tui.state import launch_profile_list_label
 
@@ -395,6 +415,22 @@ class LaunchOptionsStateTests(unittest.TestCase):
             ),
             "1 Claude work  claude_work · claude · agent1 · container:box  (checking…)",
         )
+
+    def test_launch_profile_users_differ_only_when_visible_users_differ(self) -> None:
+        profiles = {
+            "claude": LaunchProfileOption(
+                id="claude", label="claude", agent="claude", launch_user="deva2"
+            ),
+            "codex": LaunchProfileOption(
+                id="codex", label="codex", agent="codex", launch_user="deva2"
+            ),
+            "opencode": LaunchProfileOption(
+                id="opencode", label="opencode", agent="opencode", launch_user="devagent"
+            ),
+        }
+
+        self.assertFalse(launch_profile_users_differ(("claude", "codex"), profiles))
+        self.assertTrue(launch_profile_users_differ(("claude", "opencode"), profiles))
 
     def test_mode_item_ids_match_catalog_order(self) -> None:
         self.assertEqual(

@@ -302,6 +302,8 @@ def launch_profile_list_label(
     profile_id: str,
     profile: LaunchProfileOption | None,
     availability_obj: Any | None,
+    *,
+    show_launch_user: bool = True,
 ) -> str:
     if profile is None:
         label = f"{index} {profile_id}"
@@ -313,7 +315,7 @@ def launch_profile_list_label(
             details.append(profile.id)
         if profile.agent != profile.id:
             details.append(profile.agent)
-        if profile.launch_user:
+        if show_launch_user and profile.launch_user:
             details.append(profile.launch_user)
         if profile.container_profile:
             details.append(f"container:{profile.container_profile}")
@@ -322,6 +324,18 @@ def launch_profile_list_label(
     if availability_obj is not None and getattr(availability_obj, "status", None) == "pending":
         label += "  (checking…)"
     return label
+
+
+def launch_profile_users_differ(
+    profile_ids: tuple[str, ...],
+    launch_profiles: Mapping[str, LaunchProfileOption],
+) -> bool:
+    users = {
+        profile.launch_user
+        for profile_id in profile_ids
+        if (profile := launch_profiles.get(profile_id)) is not None and profile.launch_user
+    }
+    return len(users) > 1
 
 
 def _agent_id_for_launch_choice(

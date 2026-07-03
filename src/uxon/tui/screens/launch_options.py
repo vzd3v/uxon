@@ -39,6 +39,7 @@ from ..state import (
     launch_commit_decision,
     launch_options_state,
     launch_profile_list_label,
+    launch_profile_users_differ,
     next_launch_panel,
     pick_visible_agent,
     update_launch_options_after_availability,
@@ -171,12 +172,17 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
                 items = []
                 avail = self._availability_now()
                 profiles = self._launch_profiles()
+                show_launch_user = launch_profile_users_differ(self._visible_agents, profiles)
                 for idx, aid in enumerate(self._visible_agents, start=1):
                     items.append(
                         ListItem(
                             Static(
                                 launch_profile_list_label(
-                                    idx, aid, profiles.get(aid), avail.get(aid)
+                                    idx,
+                                    aid,
+                                    profiles.get(aid),
+                                    avail.get(aid),
+                                    show_launch_user=show_launch_user,
                                 )
                             ),
                             id=f"agent-{aid}",
@@ -390,10 +396,19 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         await agent_list.clear()
         new_items = []
         profiles = self._launch_profiles()
+        show_launch_user = launch_profile_users_differ(visible, profiles)
         for idx, aid in enumerate(visible, start=1):
             new_items.append(
                 ListItem(
-                    Static(launch_profile_list_label(idx, aid, profiles.get(aid), avail.get(aid))),
+                    Static(
+                        launch_profile_list_label(
+                            idx,
+                            aid,
+                            profiles.get(aid),
+                            avail.get(aid),
+                            show_launch_user=show_launch_user,
+                        )
+                    ),
                     id=f"agent-{aid}",
                 )
             )
