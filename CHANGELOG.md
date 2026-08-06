@@ -8,6 +8,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- The interactive TUI now exits when its controlling terminal disappears instead of leaving an orphaned process that can spin at 100% CPU after an SSH or ET disconnect.
+
 ### Changed (breaking)
 - Runtime selection moved from `agents.enabled` / `agents.default` and the old global `[container]` block to operator-owned launch profiles. Configure runnable choices under `[launch]` / `[launch.profiles.<id>]`, container runtimes under `[container.profiles.<id>]`, and profile-scoped git defaults under each launch profile. Project `.uxon.toml` files are no longer read.
 - `uxon run` and `uxon new` now select runnable lanes with `--profile <id>`; `--agent <id>` fails with a migration hint. New sessions use the launch-profile suffix (`<prefix><stem>@<profile>[-N]`).
