@@ -4,7 +4,7 @@
 # ── Recommended workflow ──────────────────────────────────────────
 # Pair each shell user with a low-privilege OS account that owns
 # the agent's runtime — e.g. `wes` (you) + `wes-agent`. The agent
-# runs as `<user>-agent` via `sudo -iu`. With `--mode yolo`, the
+# runs as `<user>-agent` via `sudo -H -u USER --`. With `--mode yolo`, the
 # blast radius of a runaway tool is `<user>-agent`'s sandbox, not
 # your home directory or your team's filesystem. In team setups
 # this also gives the operator supervision without impersonation —
@@ -44,6 +44,12 @@ session_prefix      = "uxon-"
 # kind = "command"
 # command_prefix = ["/usr/bin/sudo", "-n", "--", "/usr/local/libexec/uxon-exec", "{user}", "--"]
 # probe_timeout_seconds = 5.0
+# The helper must set a deterministic PATH or agents should use absolute binaries;
+# uxon does not source a login shell.
+#
+# Multi-controller supervision only: pre-provision this root-owned directory as
+# mode 2770 with a control group containing controllers but no launch users.
+# launch_record_dir = "/var/lib/uxon/launch-records"
 
 # Required only for `uxon new <name>` (project scaffolding). Leave
 # both unset to use just `uxon run` and the TUI's "New session in

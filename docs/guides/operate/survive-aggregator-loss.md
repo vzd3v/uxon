@@ -34,8 +34,8 @@ The aggregator carries:
   fallback for the TUI when a peer is briefly unreachable. This
   is **safe to lose**: a fresh aggregator just refetches.
 - The **caller side** of `correlation_id` pairs for in-flight
-  remote gestures — orphaned. The peer-side `*.remote.in` event
-  carries the same id but has no matching `*.remote.out` to join
+  remote gestures — orphaned. The peer-side `attach.remote.in.dispatch` or
+  `kill.remote.in` event carries the same id but has no matching caller event to join
   against. Acceptable for incident triage; impossible to
   reconstruct after the fact unless you had central log
   forwarding catching both sides on the way out.

@@ -25,7 +25,7 @@ lets the lead:
 - run the TUI's `kill-all-reachable` action across `nadia-agent`,
   `liam-agent`, and any other agent accounts the lead can reach.
 
-It does **not** let the lead `sudo -iu nadia` or `sudo -iu liam` —
+It does **not** let the lead `sudo -H -u nadia --` or `sudo -H -u liam --` —
 the grant targets the agent accounts only. The lead never becomes
 the developer.
 
@@ -75,7 +75,7 @@ in a refactor:
    that need it.
 
 3. **Secrets stored inside the `<user>-agent` account are
-   reachable by anyone who can `sudo -iu <user>-agent`.**
+   reachable by anyone who can `sudo -H -u <user>-agent --`.**
    Long-lived `OPENAI_API_KEY`, `~/.aws/credentials` copied
    in for convenience, session tokens cached under
    `~/.claude/`, `.env` files in the project tree — all of

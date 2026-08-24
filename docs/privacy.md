@@ -42,6 +42,14 @@ Per-event extras:
 
 Full per-event reference: [`reference/audit-events.md`](reference/audit-events.md).
 
+Managed sessions also have an authoritative controller-side launch record. It
+contains the session name/id/creation time, launch nonce, launch user, profile,
+agent, execution backend, workload runtime/resource identifiers, and record
+timestamps. It does not contain prompts, transcript content, credentials, or
+the project path. One-controller installs keep records private to that
+controller; multi-controller installs may use a group-readable control
+directory that launch users cannot access.
+
 ## What's not recorded
 
 - The contents of your prompts to the agent.
@@ -98,6 +106,10 @@ says (typically a few weeks of `/var/log/journal/` until the
 filesystem hits its cap). For teams that ship to a central
 collector, retention is whatever the collector's policy is. Ask
 your operator.
+
+Launch records are deleted after a verified successful kill. Bounded garbage
+collection removes abandoned pending records after 10 minutes and finalized
+records after 7 days once their tmux session is no longer live.
 
 ## Related
 

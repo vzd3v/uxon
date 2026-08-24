@@ -16,21 +16,22 @@ a stronger escape boundary than UID separation alone) while keeping
 The lowest-friction approach needs zero `uxon` changes: put an
 executable named like the agent binary (`claude`) early on the
 launch user's `PATH` that re-execs into the container. `uxon` launches
-the agent through the login shell (`sudo -iu` loads it), so the
-wrapper is what gets found.
+the agent with the execution backend's inherited `PATH`; it does not source a
+login shell. Either make that PATH explicit in the backend or configure the
+wrapper's absolute path as `agents.claude.binary`.
 
 ```bash
-# ~/.local/bin/claude  (on the launch user's PATH, ahead of the real binary)
+# /opt/uxon/wrappers/claude
 #!/usr/bin/env bash
 exec docker exec -i -w "$PWD" my-project-container claude "$@"
 ```
 
 ```bash
-chmod +x ~/.local/bin/claude
+chmod +x /opt/uxon/wrappers/claude
 ```
 
 Mechanically: `uxon` builds the same launch command it always does
-and runs `claude`; the shell resolves `claude` to this wrapper; the
+and runs the configured binary; the execution environment resolves it to this wrapper; the
 wrapper hands off to `docker exec` in the already-running container.
 `uxon` is unaware of the container — it sees a normal agent process.
 Because of that, `uxon` cannot ready a stopped container for you, and —

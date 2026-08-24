@@ -71,8 +71,9 @@ The grant lets `nadia` become **`nadia-agent`**, not the other
 way round. `nadia-agent` cannot impersonate `nadia`.
 
 Install the agent binary for each `<user>-agent` — typically by
-`sudo -iu nadia-agent` and running the agent's own installer
-there. The TUI auto-detects newly-installed agents and offers
+running `sudo -H -u nadia-agent -- /bin/bash` and then the agent's installer.
+This is deliberately not a login shell; configure PATH explicitly or use an
+absolute agent binary. The TUI auto-detects newly-installed agents and offers
 one-keypress enable.
 
 ## Step 4 — Lead's supervision grant
@@ -93,7 +94,7 @@ become the developer. Detailed property and three honest caveats:
 If you want lead-as-root supervision (sees every reachable user
 in `session_users`), use the broader grant
 `lead ALL=(ALL) NOPASSWD: ALL` — but understand that this also
-lets the lead `sudo -iu nadia` and become the developer
+lets the lead `sudo -H -u nadia --` and become the developer
 (weakening the supervision-without-impersonation property). In
 most teams the per-target grant is the right default.
 
@@ -139,7 +140,7 @@ As the lead:
 ssh lead@host
 uxon doctor                # caller=lead, launch=lead (lead has no -agent)
 uxon                       # TUI shows superuser block; (3/3 reachable)
-# Press Enter on Nadia's session row -> attaches via sudo -niu nadia-agent.
+# Press Enter on Nadia's session row -> attaches via sudo -n -H -u nadia-agent --.
 ```
 
 If only some `session_users` are reachable, the section header
@@ -182,7 +183,7 @@ allowed_roots       = ["/srv/projects"]
 new_project_root    = "/srv/projects"
 ```
 
-Plus passwordless `sudo -iu team-agent` for every caller. Note:
+Plus passwordless `sudo -H -u team-agent --` for every caller. Note:
 every developer's agent shares one `~/.claude/`, one
 `~/.gitconfig`, one session pool — a runaway agent affects
 everybody.

@@ -51,7 +51,7 @@ Stable error tags on stderr disambiguate the failure mode:
 
 | Tag | Meaning | Fix |
 |---|---|---|
-| `uxon-error: not-reachable` | Caller cannot `sudo -niu <user>` | Add per-target NOPASSWD on the peer. |
+| `uxon-error: not-reachable` | Caller cannot `sudo -n -H -u <user> --` | Add per-target NOPASSWD on the peer. |
 | `uxon-error: all-users-disabled` | Peer's `enable_all_users_list = false` | Set `true` on peer (and confirm sudoers for `session_users`). |
 
 Other stderr → generic SSH/peer failure → falls to cache

@@ -21,18 +21,19 @@ public issues for security reports.
 ## Threat model
 
 uxon is a privileged orchestrator that pairs each developer with a
-low-privilege launch user and runs the agent under it via
-`sudo -iu`, across one or more Linux hosts. It is **orthogonal to how
+low-privilege launch user and runs the agent through a configured execution
+backend across one or more Linux hosts. The built-in local backend uses
+`sudo -H -u USER --` for cross-user commands. It is **orthogonal to how
 the agent process itself is isolated**: OS-user pairing is the
 default, and it composes with a containerised agent rather than
 competing with one (see
 [Why OS users, and where containers fit](#why-os-users-and-where-containers-fit)).
 The trust boundaries are:
 
-1. **Caller → launch user.** uxon uses `sudo -iu <user>` to fork
-   `tmux` and the agent binary as a different OS user. Authorisation
-   is enforced by the operator's `sudoers` configuration; uxon never
-   elevates beyond what `sudoers` already grants.
+1. **Caller → launch user.** The built-in local backend uses
+   `sudo -H -u <user> --` to fork `tmux` and the agent binary as a different
+   OS user. A command backend delegates this to its operator-owned helper.
+   uxon never grants authority beyond the configured OS mechanism.
 
    The recommended team setup pairs each developer's shell user
    with a low-privilege launch user (`<user>_agent`). A team-lead
@@ -65,7 +66,7 @@ The trust boundaries are:
      to its home — long-lived `OPENAI_API_KEY`, `~/.aws/credentials`
      copied in for convenience, session tokens cached under
      `~/.claude/`, or `.env` files in the project tree — is
-     readable by anyone who can `sudo -iu <user>_agent`. Use
+     readable by anyone who can `sudo -H -u <user>_agent --`. Use
      ephemeral credentials (`aws-vault`-shaped helpers, short-lived
      tokens, per-session secret managers) rather than long-lived
      keys in agent home directories.
@@ -118,6 +119,14 @@ The trust boundaries are:
    The new content is staged in a temporary file and then atomically
    replaced.
 
+6. **Launch records.** Managed runtime teardown trusts a finalized controller-side
+   record, not pane environment alone. The default record store is private to one
+   controller (`0700`/`0600`). Multi-controller supervision requires an explicit
+   root-owned `2770` directory whose control group contains controllers but no
+   launch user; shared records are `0640` and directories with access ACLs are
+   rejected. Records contain operational session, profile, runtime, and timestamp
+   metadata and are retained for at most seven days after becoming stale.
+
 ## Out of scope
 
 - **Sandbox escape from inside the agent binary.** uxon does not
@@ -135,7 +144,8 @@ The trust boundaries are:
   AppArmor, seccomp, kernel namespaces, or per-UID network policies
   — the namespace/runtime definition is the operator's to harden (see
   [Why OS users, and where containers fit](#why-os-users-and-where-containers-fit)).
-  The fixed execution probe confirms the effective target UID/GID; it does not
+  The fixed execution probe confirms the effective target UID/GID and supplementary
+  groups; it does not
   certify helper hardening, boundary continuity, or lifecycle. uxon cannot
   migrate or drain an external boundary that the helper no longer reaches.
 - **tmux configuration.** uxon can apply a small set of tmux `set`
@@ -157,7 +167,8 @@ The trust boundaries are:
 ## Why OS users, and where containers fit
 
 `uxon` pairs each developer with a dedicated low-privilege Linux
-user (`<user>_agent`) and runs the agent under it via `sudo -iu`.
+user (`<user>_agent`) and runs the agent under it. The built-in local backend
+uses `sudo -H -u USER --`; command backends use their configured helper.
 That OS-user pairing is `uxon`'s isolation default — but it is
 **orthogonal to whether the agent also runs in a container**, not an
 alternative to it. The two compose: you can run a containerised
@@ -282,7 +293,7 @@ uxon guarantees.
   for the recommended `~/.ssh/config` snippet.
 
 - **Do not store long-lived credentials in `<user>_agent` home.**
-  Anyone who can `sudo -iu <user>_agent` reads them. Prefer
+  Anyone who can `sudo -H -u <user>_agent --` reads them. Prefer
   ephemeral credentials (`aws-vault`-shaped helpers, short-lived
   tokens, OAuth refresh in a session-scoped agent).
 
@@ -297,7 +308,7 @@ uxon guarantees.
 
 - **Set `enable_all_users_list = false` unless multi-user
   inspection is genuinely required.** The cross-user list relies
-  on `sudo -niu` probes; turning it off reduces probe traffic and
+  on `sudo -n -H -u USER --` probes; turning it off reduces probe traffic and
   the chance of accidental visibility.
 
 - **Restrict write access to `config/config.toml` to

@@ -1,6 +1,6 @@
 # Harden a container
 
-You have a working container-profile setup
+You have a working command-runtime container setup
 ([`run-agents-in-a-container.md`](../customise/run-agents-in-a-container.md))
 and want to tighten it. The minimal recipe there gets the agent
 running inside a container; it does **not** lock it down. This page is

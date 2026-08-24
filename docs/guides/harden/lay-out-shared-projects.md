@@ -68,15 +68,15 @@ sudo setfacl -d -m group:devs:rwx /srv/projects/shared
 `setfacl -d` sets default ACLs that new files inherit. Verify:
 
 ```bash
-sudo -niu nadia-agent touch /srv/projects/nadia/test.txt
+sudo -n -H -u nadia-agent -- touch /srv/projects/nadia/test.txt
 ls -la /srv/projects/nadia/test.txt
 # nadia-agent:devs, mode like rw-rw-r--
 
 # Cross-user check — liam can read, can't write:
-sudo -niu liam-agent cat /srv/projects/nadia/test.txt    # works
-sudo -niu liam-agent rm  /srv/projects/nadia/test.txt    # permission denied
+sudo -n -H -u liam-agent -- cat /srv/projects/nadia/test.txt    # works
+sudo -n -H -u liam-agent -- rm  /srv/projects/nadia/test.txt    # permission denied
 
-sudo -niu nadia-agent rm /srv/projects/nadia/test.txt
+sudo -n -H -u nadia-agent -- rm /srv/projects/nadia/test.txt
 ```
 
 ## When developers need to write each other's trees
@@ -84,7 +84,7 @@ sudo -niu nadia-agent rm /srv/projects/nadia/test.txt
 Two patterns:
 
 **Pattern 1 — pair-coding sessions.** The lead (or another
-developer) attaches to nadia's running agent via `sudo -niu
+developer) attaches to nadia's running agent via `sudo -n -H -u
 nadia-agent` (TUI's superuser block). The agent writes as
 `nadia-agent`, regardless of who's typing. No file-level write
 sharing needed.

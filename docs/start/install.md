@@ -11,7 +11,7 @@ points.
 - **Python ≥ 3.11** (stdlib `tomllib` is used for config reads).
 - **`tmux`** on the host.
 - **Linux.** The runtime assumes per-user `tmux` sockets and
-  `sudo -iu` style cross-user invocation. macOS / WSL work for
+  `sudo -H -u USER --` style cross-user invocation. macOS / WSL work for
   development but aren't supported targets.
 - Runtime deps `textual >= 0.80, < 9` and `tomlkit` come in
   automatically through every install path below.

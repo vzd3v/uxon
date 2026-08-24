@@ -47,7 +47,9 @@ existing again.
    `cmd` matches the agent id. Note the `USER`, `HOST`, `NAME`,
    and the `cmd` / `path`.
 2. **Suspend** before killing if you want to inspect state. From
-   another shell on the same host:
+   another shell on the same host. The signal example below is for the built-in
+   local backend; with a command backend, send the same `kill` argv through its
+   configured helper prefix so it reaches the target namespace:
    ```bash
    # Find the active PID without bypassing the configured execution backend:
    uxon list --all-users --json \
@@ -79,6 +81,10 @@ client. uxon does not expose a backend-safe non-interactive `capture-pane`
 command; do not bypass a command execution backend with raw tmux.
 
 **Process tree:**
+
+The following host-root probes are local-backend examples. With a command
+backend, run equivalent fixed probes through its configured helper prefix; a
+controller-side `/proc` view may describe different processes.
 
 ```bash
 sudo ps -fH -p <pid> --forest
@@ -150,17 +156,25 @@ per-session PID the launch wrapper recorded (the container itself is
 left running). **Confirm it worked:**
 
 ```bash
-sudo -niu <user>-agent docker top <container-name>    # the agent's process should be gone
+sudo -n -H -u <user>-agent -- docker top <container-name>    # the agent's process should be gone
 ```
+
+That command is for the built-in local backend. With a command backend, prepend
+the exact configured `command_prefix` (substituting `{user}`) to the `docker top`
+argv so the check observes the same boundary as uxon.
 
 If `session.stop_command` is **not** set — or the session used a PATH-wrapper
 that `uxon` is unaware of — the agent orphans and you must stop it
 yourself; the bluntest sure thing is to stop the container:
 
 ```bash
-sudo -niu <user>-agent docker stop <container-name>   # or: podman stop
-sudo -niu <user>-agent docker top <container-name>    # errors once stopped
+sudo -n -H -u <user>-agent -- docker stop <container-name>   # or: podman stop
+sudo -n -H -u <user>-agent -- docker top <container-name>    # errors once stopped
 ```
+
+Those are local-backend examples. For a command backend, issue the same runtime
+argv through its configured helper prefix; invoking the runtime directly on the
+controller may inspect or stop a different resource.
 
 `uxon` never stops or removes a user's container for you — only the
 agent *process* it launched, and only when `session.stop_command` is set.
@@ -246,8 +260,8 @@ meantime.)
 - **Killing the `tmux` session before capturing scrollback.**
   Reverse the order: stop, capture, kill.
 - **Killing the agent process directly without notifying tmux.**
-  `tmux` then leaves a zombie session. Use `uxon kill` or
-  `tmux kill-session`, not raw `kill -9`.
+  `tmux` then leaves a zombie session. Use `uxon kill`, which traverses the
+  selected execution backend, not raw `tmux` or `kill -9`.
 - **Forgetting child processes outside the pane.** `npm`,
   `docker`, `pytest -n auto`, background watchers. `pgrep -u`
   is your friend.

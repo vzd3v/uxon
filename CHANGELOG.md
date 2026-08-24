@@ -22,8 +22,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Generic command runtimes with deterministic resources, path mapping, readiness/start/create policy, optional cgroup telemetry, identity resolution, and safe per-session teardown.
-- Command execution backends accept one generic argv prefix, verify the effective target UID/GID with a fixed internal probe, canonicalize launch paths inside the boundary, and keep credential-file reads plus token-authenticated HTTP inside that boundary.
-- Managed launches finalize their controller-local launch record before releasing the new tmux pane through a one-shot tmux synchronization channel; no shared record directory is required inside a command backend.
+- Command execution backends accept one generic argv prefix, verify the effective target UID/GID and supplementary groups with a fixed internal probe, canonicalize target filesystem and telemetry reads inside the boundary, and keep credential-file reads plus token-authenticated HTTP inside that boundary. The built-in local backend uses argv-preserving non-login `sudo`.
+- Managed launches finalize and fsync their authoritative controller-side launch record before releasing the new tmux pane through a one-shot tmux synchronization channel. Records are private by default; multi-controller deployments can opt into a validated shared control-group directory with bounded stale-record collection.
 - A runnable, privileged opt-in network-namespace contract test proves the tmux server itself enters the execution boundary, preventing tmux `new-window` / `run-shell` escapes.
 
 ## [3.7.0] — 2026-06-14

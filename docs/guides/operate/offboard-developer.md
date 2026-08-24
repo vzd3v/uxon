@@ -18,8 +18,13 @@ sessions first, then revoke access, then garbage-collect.
 Per host:
 
 ```bash
-sudo -niu nadia-agent uxon list           # see what's running
-sudo -niu nadia-agent uxon kill-all --force
+uxon list --all-users --json | jq -r \
+  '.data.sessions[] | select(.user == "nadia-agent") | .name'
+uxon list --all-users --json | jq -r \
+  '.data.sessions[] | select(.user == "nadia-agent") | .name' |
+  while IFS= read -r session; do
+    uxon kill --user nadia-agent "$session" --force
+  done
 # or, from the lead's TUI: select nadia-agent's rows, press d.
 ```
 
@@ -160,8 +165,8 @@ role and run it across the fleet.
 Per host:
 
 ```bash
-sudo -niu nadia-agent uxon list 2>&1 | head -1
-# Expected: account locked / nologin / non-zero exit.
+uxon list --all-users 2>&1 | grep nadia-agent
+# Expected: skipped/unreachable; no session rows.
 
 grep -E '^nadia |^nadia-agent ' /etc/passwd
 # Expected: no matches.

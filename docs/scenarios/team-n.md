@@ -14,9 +14,9 @@ SSH and shows everything in one TUI.
 - Per-host health badges (`[ok]`, `[cache 12s]`, `[err: …]`,
   `[loading]`) so an operator can tell at a glance whether a
   silent peer is empty or unreachable.
-- Cross-host audit correlation: each remote attach / kill pair
-  emits `*.remote.out` on the caller and `*.remote.in` on the
-  peer, joined by a UUID `correlation_id`. One
+- Cross-host audit correlation: attach emits `attach.remote.out.dispatch` /
+  `attach.remote.in.dispatch`; kill emits `kill.remote.out` / `kill.remote.in`.
+  Caller and peer events share a UUID `correlation_id`. One
   `journalctl … CORRELATION_ID=<uuid>` query (against a central
   collector) returns the full pair.
 - **Per-peer authority.** Cross-host operation does not delegate
@@ -68,7 +68,7 @@ SSH and shows everything in one TUI.
 - [`reference/cli.md`](../reference/cli.md) — `--host`, `--all-hosts`, `attach --host --user`, `kill --host`, `doctor --remote`.
 - [`reference/configuration.md`](../reference/configuration.md) — `[[remote_hosts]]` (with `interval`, `connect_timeout`, `total_timeout`, `extra_ssh_options`, `command_template`), `ssh_multiplex`, `fetch_concurrency`.
 - [`reference/wire-schema.md`](../reference/wire-schema.md) — what travels over the SSH wire.
-- [`reference/audit-events.md`](../reference/audit-events.md) — `*.remote.out` / `*.remote.in` semantics, `correlation_id`.
+- [`reference/audit-events.md`](../reference/audit-events.md) — remote dispatch/inbound semantics and `correlation_id`.
 
 ## Worth understanding once
 

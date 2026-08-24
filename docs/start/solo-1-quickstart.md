@@ -64,7 +64,7 @@ default_profile = "claude"
 
 Pair your shell user (say `wes`) with a low-privilege agent
 account (`wes-agent`). The agent runs as `wes-agent` via
-`sudo -iu`; your shell user stays the trust boundary that holds
+`sudo -H -u USER --`; your shell user stays the trust boundary that holds
 your dotfiles, SSH keys, and credentials. A yolo-mode (`--mode yolo`)
 run blasts `wes-agent`'s files, not yours.
 
@@ -92,7 +92,9 @@ new_project_root    = "/srv/projects"
 ```
 
 Install the agent binary for `wes-agent` (claude / codex / cursor)
-— `sudo -iu wes-agent` and run the agent's installer there. Then:
+— run `sudo -H -u wes-agent -- /bin/bash` and use the agent's installer there.
+The shell is deliberately non-login; configure an explicit PATH or an absolute
+agent binary in `config.toml`. Then:
 
 ```bash
 uxon                          # the TUI launches into the new setup
@@ -105,7 +107,7 @@ launch user.
 If the agent needs your SSH keys (e.g. to push to private repos),
 forward them explicitly: `ssh -A` from your laptop, and ensure
 `wes-agent` can read your `SSH_AUTH_SOCK` (group ACL, or set up
-the agent forwarding inside the `sudo -iu` step).
+the agent forwarding inside the `sudo -H -u USER --` step).
 
 ## Daily flow
 

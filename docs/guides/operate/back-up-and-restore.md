@@ -86,8 +86,7 @@ sudo visudo -c                                  # syntax check
 
 # 5. Verify.
 uxon doctor
-# Per developer:
-sudo -niu nadia-agent uxon list
+uxon list --all-users
 ```
 
 For team·N, repeat per host. There is no central state to

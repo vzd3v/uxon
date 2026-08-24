@@ -17,7 +17,7 @@ execution boundary → optional workload runtime.
 The recommended pattern across all four scenarios is the same:
 each shell user is paired with a low-privilege OS account that
 owns the agent's runtime — `wes` (you) + `wes-agent`, or `marcus` +
-`marcus-agent`. The agent runs as `<user>-agent` via `sudo -iu`;
+`marcus-agent`. The agent runs as `<user>-agent` via `sudo -H -u USER --`;
 the developer's shell user stays the trust boundary that holds
 dotfiles, SSH keys, credentials.
 
@@ -30,8 +30,8 @@ In both directions:
   its own home, so the agent has no implicit access to the
   developer's files. Anything the developer wants the agent to
   see (the project tree, an SSH-agent socket, a credentials
-  file) is opt-in via group ACLs, bind mounts, or the `sudo -iu`
-  step itself.
+  file) is opt-in via group ACLs, bind mounts, or explicit environment
+  delegation.
 
 `uxon` does **not** add a sandbox of its own. Isolation between
 `<user>-agent` and the rest of the host is whatever ordinary
