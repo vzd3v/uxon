@@ -45,6 +45,12 @@ class DirectoryEntry:
     mtime: int
 
 
+@dataclass(frozen=True)
+class FilesystemUsage:
+    total: int
+    available: int
+
+
 def resolve_target(cfg: ExecutionConfigured, user: str) -> ExecutionTarget:
     return ExecutionTarget(user=user, backend=cfg.execution.backend_for_user(user))
 
@@ -265,6 +271,64 @@ def list_directories(cfg: ExecutionConfigured, user: str, path: str) -> tuple[Di
             fail("execution backend returned invalid directory entry")
         parsed.append(DirectoryEntry(name=item["name"], mtime=item["mtime"]))
     return tuple(parsed)
+
+
+def filesystem_usage(cfg: ExecutionConfigured, user: str, path: str) -> FilesystemUsage:
+    """Read path filesystem capacity inside the target execution boundary."""
+    target = str(Path(path).expanduser())
+    if not Path(target).is_absolute():
+        target = str(Path.cwd() / target)
+    backend = cfg.execution.backend_for_user(user)
+    if backend.kind == "local":
+        from uxon.infra.path_probe import filesystem_usage as inspect_usage
+
+        try:
+            payload = inspect_usage(target)
+        except (OSError, ValueError) as exc:
+            fail(str(exc))
+    else:
+        cmd = wrap_command(
+            cfg,
+            user,
+            [
+                sys.executable,
+                "-m",
+                "uxon.infra.path_probe",
+                "--mode",
+                "filesystem-usage",
+                "--path",
+                target,
+            ],
+            interactive=False,
+        )
+        try:
+            result = run_query(cmd, timeout=backend.probe_timeout_seconds)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            fail(f"execution backend could not inspect target filesystem: {exc}")
+        try:
+            payload = json.loads(result.stdout)
+        except (TypeError, json.JSONDecodeError) as exc:
+            fail(f"execution backend returned invalid filesystem usage JSON: {exc}")
+        if result.returncode != 0:
+            error = payload.get("error", "") if isinstance(payload, dict) else ""
+            fail(error or "execution backend could not inspect target filesystem")
+    total = payload.get("total") if isinstance(payload, dict) else None
+    available = payload.get("available") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"ok", "total", "available", "error"}
+        or payload.get("ok") is not True
+        or not isinstance(total, int)
+        or isinstance(total, bool)
+        or total < 0
+        or not isinstance(available, int)
+        or isinstance(available, bool)
+        or available < 0
+        or available > total
+        or not isinstance(payload.get("error"), str)
+    ):
+        fail("execution backend returned invalid filesystem usage")
+    return FilesystemUsage(total=total, available=available)
 
 
 def probe(cfg: ExecutionConfigured, user: str) -> ExecutionProbe:

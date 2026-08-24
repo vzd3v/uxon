@@ -39,7 +39,9 @@ from uxon.infra import (
 from uxon.infra.execution import (
     DirectoryEntry,
     ExecutionProbe,
+    FilesystemUsage,
     canonicalize_path,
+    filesystem_usage,
     list_directories,
     probe,
     resolve_target,
@@ -183,6 +185,20 @@ def test_command_backend_lists_target_directories_inside_boundary() -> None:
     argv = run.call_args.args[0]
     assert argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
     assert argv[-4:] == ["--mode", "list-directories", "--path", "/inside/projects"]
+
+
+def test_command_backend_reads_target_filesystem_usage_inside_boundary() -> None:
+    cfg = _command_cfg()
+    payload = {"ok": True, "total": 4096, "available": 1024, "error": ""}
+    with mock.patch(
+        "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
+    ) as run:
+        assert filesystem_usage(cfg, "alice", "/inside/projects") == FilesystemUsage(
+            total=4096, available=1024
+        )
+    argv = run.call_args.args[0]
+    assert argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+    assert argv[-4:] == ["--mode", "filesystem-usage", "--path", "/inside/projects"]
 
 
 def test_local_intended_path_rejects_symlink_component(tmp_path: Path) -> None:

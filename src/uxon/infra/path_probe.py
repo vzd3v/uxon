@@ -55,6 +55,20 @@ def list_directories(path: str) -> dict[str, object]:
     return {"ok": True, "entries": entries, "error": ""}
 
 
+def filesystem_usage(path: str) -> dict[str, object]:
+    """Return filesystem byte totals for the nearest existing path."""
+    cursor = _absolute(path)
+    while not cursor.exists():
+        parent = cursor.parent
+        if parent == cursor:
+            raise ValueError(f"no existing ancestor for filesystem usage: {path}")
+        cursor = parent
+    usage = os.statvfs(cursor)
+    total = usage.f_blocks * usage.f_frsize
+    available = usage.f_bavail * usage.f_frsize
+    return {"ok": True, "total": total, "available": available, "error": ""}
+
+
 def _absolute(path: str) -> Path:
     target = Path(path)
     if not target.is_absolute() or any(part in {"", ".", ".."} for part in target.parts):
@@ -97,7 +111,9 @@ def canonical_intended(path: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="uxon path-probe")
     parser.add_argument(
-        "--mode", choices=("existing", "intended", "inspect", "list-directories"), required=True
+        "--mode",
+        choices=("existing", "intended", "inspect", "list-directories", "filesystem-usage"),
+        required=True,
     )
     parser.add_argument("--path", required=True)
     ns = parser.parse_args(argv)
@@ -106,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = inspect(ns.path)
         elif ns.mode == "list-directories":
             payload = list_directories(ns.path)
+        elif ns.mode == "filesystem-usage":
+            payload = filesystem_usage(ns.path)
         else:
             canonical = (
                 canonical_existing(ns.path)
@@ -126,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             }
         elif ns.mode == "list-directories":
             payload = {"ok": False, "entries": [], "error": str(exc)}
+        elif ns.mode == "filesystem-usage":
+            payload = {"ok": False, "total": 0, "available": 0, "error": str(exc)}
         else:
             payload = {"ok": False, "path": "", "error": str(exc)}
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
