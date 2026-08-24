@@ -311,10 +311,11 @@ uxon guarantees.
   a long-lived PAT on disk.
 
 - **Set `enable_all_users_list = false` unless multi-user
-  inspection is genuinely required.** The cross-user list relies
-  on `sudo -n -H -u USER --` probes; turning it off reduces probe traffic and
-  the chance of accidental visibility.
+  inspection is genuinely required.** The cross-user list probes each target
+  through its selected execution backend; turning it off reduces target probes
+  and the chance of accidental visibility.
 
 - **Restrict write access to `/etc/uxon/config.toml` to
-  administrators.** TUI writes use a fixed `sudo install` command, but
-  sudoers remains the authorisation boundary.
+  administrators.** Settings is read-only for non-root users. A root process
+  writes the file atomically; non-root operators render a candidate separately
+  and install it through an explicit privileged operator action.
