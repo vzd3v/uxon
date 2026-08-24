@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG, AgentSpec, PermissionMode
-from uxon.domain.authz import canonical, lexical_absolute
+from uxon.domain.authz import lexical_absolute
 from uxon.domain.config import (
     DEFAULT_CONFIG,
     Config,
@@ -21,6 +21,7 @@ from uxon.domain.config import (
     validate_repeat_mode,
     validate_worktree_base,
 )
+from uxon.domain.config_schema import ConfigSchemaError, validate_public_config
 from uxon.domain.execution import (
     LOCAL_PROBE_TIMEOUT_SECONDS,
     ExecutionBackendSpec,
@@ -225,7 +226,10 @@ def _reject_unknown_keys(raw: dict[str, Any], allowed: set[str], *, source: str)
 
 def validate_operator_schema(raw_repo: dict[str, Any]) -> None:
     """Reject unknown operator keys before defaults can mask them."""
-    _reject_unknown_keys(raw_repo, set(DEFAULT_CONFIG), source="config")
+    try:
+        validate_public_config(raw_repo)
+    except ConfigSchemaError as exc:
+        fail(str(exc))
 
 
 def _string_list(value: Any, *, source: str) -> tuple[str, ...]:
@@ -648,8 +652,8 @@ def load_config(cwd: str) -> Config:
     session_users = normalize_user_list([str(x) for x in session_users_raw])
     if not session_users:
         session_users = [default_launch_user] if default_launch_user else []
-    enable_all_users_list = bool(
-        merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"])
+    enable_all_users_list = merged.get(
+        "enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"]
     )
     session_prefix = str(merged.get("session_prefix", DEFAULT_CONFIG["session_prefix"]))
     legacy_raw = merged.get("legacy_session_prefixes", DEFAULT_CONFIG["legacy_session_prefixes"])
@@ -699,9 +703,13 @@ def load_config(cwd: str) -> Config:
         git_remote_profile_names=git_remote_profile_names,
     )
 
-    new_project_root = canonical(
-        str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"]))
-    )
+    new_project_root_raw = merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"])
+    if not isinstance(new_project_root_raw, str):
+        fail("new_project_root must be a string")
+    try:
+        new_project_root = lexical_absolute(new_project_root_raw)
+    except ValueError as exc:
+        fail(f"new_project_root: {exc}")
     repeat_noninteractive_mode = validate_repeat_mode(
         str(merged.get("repeat_noninteractive_mode", DEFAULT_CONFIG["repeat_noninteractive_mode"])),
         "repeat_noninteractive_mode",
@@ -711,6 +719,15 @@ def load_config(cwd: str) -> Config:
     ).strip()
     if not tmux_socket_template:
         fail("tmux_socket_template must not be empty")
+    launch_record_dir = merged.get("launch_record_dir", DEFAULT_CONFIG["launch_record_dir"])
+    if not isinstance(launch_record_dir, str):
+        fail("launch_record_dir must be a string")
+    launch_record_dir = launch_record_dir.strip()
+    if launch_record_dir:
+        try:
+            launch_record_dir = lexical_absolute(launch_record_dir)
+        except ValueError as exc:
+            fail(f"launch_record_dir: {exc}")
     try:
         tui_refresh_interval_seconds = float(
             merged.get(
@@ -819,9 +836,7 @@ def load_config(cwd: str) -> Config:
     if fetch_concurrency <= 0:
         fail("fetch_concurrency must be greater than 0")
 
-    git_create_enabled = bool(
-        merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"])
-    )
+    git_create_enabled = merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"])
     default_git_remote_profile = ""
 
     from uxon.infra import remote_hosts as uxon_remote_hosts
@@ -847,7 +862,7 @@ def load_config(cwd: str) -> Config:
     if not isinstance(audit_tbl, dict):
         fail("'audit' must be a TOML table")
     _reject_unknown_keys(audit_tbl, {"enabled", "syslog_facility"}, source="audit")
-    audit_enabled = bool(audit_tbl.get("enabled", True))
+    audit_enabled = audit_tbl.get("enabled", True)
     audit_syslog_facility = str(audit_tbl.get("syslog_facility", "user"))
 
     tmux_tbl = merged.get("tmux", DEFAULT_CONFIG["tmux"])
@@ -862,7 +877,7 @@ def load_config(cwd: str) -> Config:
     # operator sets ``manage_options = true``. ``merged`` is seeded from
     # DEFAULT_CONFIG, so the recommended scope tables are present-but-dormant —
     # flipping the toggle on yields the recommended set with no further config.
-    tmux_manage_options = bool(tmux_tbl.get("manage_options", False))
+    tmux_manage_options = tmux_tbl.get("manage_options", False)
     tmux_scope_tables: dict[str, dict] = {}
     for _scope in ("options", "server_options", "append_server_options"):
         # Per-scope fallback to the recommended default (mirrors how [audit]
@@ -897,6 +912,7 @@ def load_config(cwd: str) -> Config:
         new_project_root=new_project_root,
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,
+        launch_record_dir=launch_record_dir,
         tui_refresh_interval_seconds=tui_refresh_interval_seconds,
         tui_ssh_refresh_interval_seconds=tui_ssh_refresh_interval_seconds,
         git_create_enabled=git_create_enabled,

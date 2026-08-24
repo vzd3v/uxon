@@ -131,29 +131,6 @@ class LaunchProfileResolutionTests(unittest.TestCase):
 
             self.assertEqual(resolved.profile.id, "claude")
 
-    def test_intended_target_rejects_symlink_final_component_and_dotdot(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            real = Path(tmp) / "real"
-            real.mkdir()
-            link = Path(tmp) / "link"
-            os.symlink(real, link)
-            broken = Path(tmp) / "future"
-            os.symlink("missing-target", broken)
-
-            with self.assertRaises(SystemExit) as cm:
-                launch_profile_app.canonical_intended_target(str(link))
-            self.assertIn("symlink", getattr(cm.exception, "uxon_msg", ""))
-
-            with self.assertRaises(SystemExit) as cm:
-                launch_profile_app.canonical_intended_target(str(broken))
-            self.assertIn("symlink", getattr(cm.exception, "uxon_msg", ""))
-
-            with self.assertRaises(SystemExit) as cm:
-                launch_profile_app.canonical_intended_target(
-                    str(Path(tmp) / "missing" / ".." / "x")
-                )
-            self.assertIn("component", getattr(cm.exception, "uxon_msg", ""))
-
     def test_existing_target_canonicalizes_symlinks_before_path_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             real = Path(tmp) / "real"

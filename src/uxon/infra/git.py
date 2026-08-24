@@ -11,10 +11,9 @@ from __future__ import annotations
 import os
 import shlex
 
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.errors import fail
-from uxon.infra.execution import command_prefix
+from uxon.infra.execution import canonicalize_path, command_prefix, path_facts
 from uxon.infra.process import run_cmd
 from uxon.infra.run import run_query
 
@@ -28,7 +27,9 @@ def git_repo_root(cwd: str) -> str | None:
     out = (cp.stdout or "").strip()
     if not out:
         return None
-    return canonical(out)
+    from uxon.infra.path_probe import canonical_existing
+
+    return canonical_existing(out)
 
 
 def git_repo_root_as_user(cfg: Config, cwd: str, target_user: str) -> str | None:
@@ -41,7 +42,7 @@ def git_repo_root_as_user(cfg: Config, cwd: str, target_user: str) -> str | None
     out = (cp.stdout or "").strip()
     if not out:
         return None
-    return canonical(out)
+    return canonicalize_path(cfg, target_user, out, intended=False)
 
 
 def git_repo_root_nonint_as_user(cfg: Config, cwd: str, target_user: str) -> str | None:
@@ -60,7 +61,7 @@ def git_repo_root_nonint_as_user(cfg: Config, cwd: str, target_user: str) -> str
     out = (cp.stdout or "").strip()
     if not out:
         return None
-    return canonical(out)
+    return canonicalize_path(cfg, target_user, out, intended=False)
 
 
 def git_common_dir_root_as_user(cfg: Config, cwd: str, target_user: str) -> str | None:
@@ -84,7 +85,7 @@ def git_common_dir_root_as_user(cfg: Config, cwd: str, target_user: str) -> str 
         return None
     common_abs = common if os.path.isabs(common) else os.path.join(cwd, common)
     # ``<root>/.git`` → ``<root>``.
-    return canonical(os.path.dirname(common_abs))
+    return canonicalize_path(cfg, target_user, os.path.dirname(common_abs), intended=False)
 
 
 _UXON_EXCLUDE_LINE = ".uxon/"
@@ -142,7 +143,7 @@ def copy_worktreeinclude_matches(cfg: Config, repo_root: str, dest: str, launch_
     """
     prefix = command_prefix(cfg, launch_user, interactive=True)
     include_file = os.path.join(repo_root, ".worktreeinclude")
-    if not os.path.exists(include_file):
+    if not path_facts(cfg, launch_user, include_file).exists:
         return
 
     def _ls(extra: list[str]) -> set[str]:

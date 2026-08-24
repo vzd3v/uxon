@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Literal
 
 from uxon.domain.args import ParsedArgs
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.launch_profiles import ResolvedLaunchProfile
 from uxon.domain.launch_request import LaunchRequest, ManagedTmuxLaunch
@@ -41,6 +40,7 @@ from uxon.infra.execution import command_prefix, wrap_command
 from uxon.infra.run import run_query
 
 _LAUNCH_HANDSHAKE_TIMEOUT_SECONDS = 60.0
+_TMUX_CONTROL_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -104,11 +104,11 @@ def tmux_base(
     """Build the tmux command base for ``target_user``.
 
     ``nonint=False`` (default, launch path): wraps tmux with the
-    interactive sudo prefix (``sudo -iu``). The launch path has a TTY,
+    interactive sudo prefix (``sudo -H -u``). The launch path has a TTY,
     so an unreachable target prompts/fails with a clear sudo error.
 
     ``nonint=True`` (listing / probing / TUI background polling): wraps
-    tmux with the non-interactive prefix (``sudo -niu``). A missing
+    tmux with the non-interactive prefix (``sudo -n -H -u``). A missing
     NOPASSWD grant returns a non-zero exit immediately rather than
     blocking on a hidden password prompt.
     """
@@ -135,8 +135,7 @@ def tmux_socket_path(cfg: Config, target_user: str) -> str:
         fail(f"tmux_socket_template uses unsupported placeholder: {exc.args[0]!r}")
     if not rendered.startswith("/"):
         fail(f"tmux_socket_template must render to an absolute path; got: {rendered}")
-    socket_path = canonical(rendered)
-    return socket_path
+    return os.path.normpath(rendered)
 
 
 def configured_tmux_base(cfg: Config, target_user: str, *, nonint: bool = False) -> list[str]:
@@ -157,7 +156,7 @@ def tmux_host_socket() -> str | None:
     return socket or None
 
 
-def tmux_nesting_mode(target_socket: str) -> str:
+def tmux_nesting_mode(cfg: Config, launch_user: str, target_socket: str) -> str:
     """Decide how to launch/attach a tmux session given the current ``$TMUX``.
 
     Returns ``"execvp"`` when the process is not already inside tmux
@@ -173,6 +172,11 @@ def tmux_nesting_mode(target_socket: str) -> str:
     host = tmux_host_socket()
     if host is None:
         return "execvp"
+    if cfg.execution.backend_for_user(launch_user).kind == "command":
+        fail(
+            "uxon: already inside a controller-side tmux client while the target "
+            "server uses a command execution backend; detach first (Ctrl-B d) and rerun uxon"
+        )
     try:
         host_real = os.path.realpath(host)
     except OSError:
@@ -254,7 +258,7 @@ def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: st
     # session, without a kill-server. ``-as`` is skipped (server_running) so
     # the append list does not grow. ``[]`` when managed options are off.
     set_chain = _tmux_set_chain(cfg, server_running=True)
-    mode = tmux_nesting_mode(tmux_socket_path(cfg, launch_user))
+    mode = tmux_nesting_mode(cfg, launch_user, tmux_socket_path(cfg, launch_user))
     if mode == "switch":
         full = tuple(base + set_chain + ["switch-client", "-t", target.name])
         return LaunchRequest(cmd=full, prelaunch=(), label=f"switch-client {target.name}")
@@ -330,7 +334,12 @@ def _build_tmux_launch_request(
             session_name=session,
             resolved=resolved_profile,
         )
-    record_dir = str(launch_records.state_dir())
+    record_shared = bool(cfg.launch_record_dir)
+    record_dir = str(
+        launch_records.default_launch_record_dir(
+            override=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None
+        )
+    )
     # Workload-runtime wrap (off by default): the operator's opaque
     # ``exec_prefix`` enters the selected resource. Direct runtime keeps
     # ``exec_prefix`` empty and preserves the host agent argv. The
@@ -409,7 +418,7 @@ def _build_tmux_launch_request(
     # ``-as`` scope rides only the birthing launch (server_running False); a
     # live server already carries it (D9, see _tmux_set_chain).
     set_chain = _tmux_set_chain(cfg, server_running=server_running)
-    mode = tmux_nesting_mode(socket_path)
+    mode = tmux_nesting_mode(cfg, launch_user, socket_path)
     bootstrap_cmd = [
         sys.executable,
         "-m",
@@ -465,6 +474,9 @@ def _build_tmux_launch_request(
         launch_profile=pending_record.launch_profile,
         agent=pending_record.agent,
         launch_user=pending_record.launch_user,
+        project=target_dir,
+        branch=branch or "",
+        record_shared=record_shared,
         execution_backend=pending_record.execution_backend,
         execution_fingerprint=pending_record.execution_fingerprint,
         runtime=pending_record.runtime,
@@ -554,17 +566,35 @@ def prepare_managed_launch(
     if pending is None:
         pending = pending_record_from_request(req)
     record_dir = Path(managed.record_dir)
-    launch_records.create_pending_record(pending, override_dir=record_dir)
-    cp = process.run_cmd(list(managed.create_cmd), check=False)
-    if cp.returncode != 0:
-        launch_records.fail_pending_record(pending, override_dir=record_dir)
-        detail = (cp.stderr or cp.stdout or "").strip()
-        fail(
-            f"tmux session {pending.session_name!r} could not be created"
-            + (f": {detail}" if detail else "")
-        )
+    from uxon.infra import audit as _audit
+
+    audit_fields = {
+        "profile": managed.launch_profile,
+        "agent": managed.agent,
+        "target_user": managed.launch_user,
+        "project": managed.project,
+        "branch": managed.branch,
+        "session": managed.record_session,
+        "dry_run": False,
+    }
     try:
-        meta_cp = process.run_cmd(list(managed.query_cmd), check=True)
+        launch_records.create_pending_record(
+            pending, override_dir=record_dir, shared=managed.record_shared
+        )
+        for prelaunch in req.prelaunch:
+            process.run_cmd(list(prelaunch), timeout=_TMUX_CONTROL_TIMEOUT_SECONDS)
+        cp = process.run_cmd(
+            list(managed.create_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
+        )
+        if cp.returncode != 0:
+            detail = (cp.stderr or cp.stdout or "").strip()
+            fail(
+                f"tmux session {pending.session_name!r} could not be created"
+                + (f": {detail}" if detail else "")
+            )
+        meta_cp = process.run_cmd(
+            list(managed.query_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
+        )
         metadata = _parse_tmux_launch_metadata(meta_cp.stdout)
         launch_records.finalize_pending_record(
             pending,
@@ -573,18 +603,32 @@ def prepare_managed_launch(
             runtime_cgroup=managed.runtime_cgroup,
             runtime_epoch=managed.runtime_epoch,
             override_dir=record_dir,
+            shared=managed.record_shared,
         )
-        process.run_cmd(list(managed.release_cmd), check=True)
-    except BaseException:
+        process.run_cmd(
+            list(managed.release_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
+        )
+    except BaseException as exc:
         try:
-            process.run_cmd(list(managed.kill_cmd), check=False)
+            process.run_cmd(
+                list(managed.kill_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
+            )
         except BaseException:
             pass
         try:
-            launch_records.fail_pending_record(pending, override_dir=record_dir)
+            launch_records.fail_pending_record(
+                pending, override_dir=record_dir, shared=managed.record_shared
+            )
         except BaseException:
             pass
+        _audit.audit(
+            "session.new",
+            outcome="error",
+            **audit_fields,
+            error=str(getattr(exc, "uxon_msg", exc))[:256],
+        )
         raise
+    _audit.audit("session.new", **audit_fields)
 
 
 def _parse_tmux_launch_metadata(stdout: str) -> launch_records.TmuxSessionMetadata:
@@ -641,6 +685,18 @@ def launch_in_tmux(
             active_sessions=active_sessions,
         )
     if args.dry_run:
+        from uxon.infra import audit as _audit
+
+        _audit.audit(
+            "session.new",
+            profile=resolved_profile.profile.id,
+            agent=resolved_profile.agent.id,
+            target_user=launch_user,
+            project=target_dir,
+            branch=branch or "",
+            session=session,
+            dry_run=True,
+        )
         print(f"launch_user={shlex.quote(launch_user)}")
         print(f"dir={shlex.quote(target_dir)}")
         print(f"socket={shlex.quote(tmux_socket_path(cfg, launch_user))}")
@@ -653,10 +709,11 @@ def launch_in_tmux(
             print(f"branch={shlex.quote(branch)}")
         print(f"exec {shlex.join(req.cmd)}")
         return 0
-    for pre in req.prelaunch:
-        process.run_cmd(list(pre))
     if pending is not None:
         prepare_managed_launch(req, pending)
+    else:
+        for pre in req.prelaunch:
+            process.run_cmd(list(pre))
     # Lane B — interactive terminal handoff: ``execvp`` replaces this image
     # with the tmux client, which keeps the controlling terminal. Bypasses
     # ``Popen``/the loop guard by construction.

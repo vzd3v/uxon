@@ -121,8 +121,8 @@ class KillUserLocalTests(unittest.TestCase):
         probe.assert_called_once_with(cfg, ["alice"])
         # The argv contains the non-interactive sudo prefix and kill-session.
         argv = run.call_args[0][0]
-        # ``sudo -niu alice -- tmux ... kill-session -t uxon-demo@claude``
-        self.assertEqual(argv[0:4], ["sudo", "-niu", "alice", "--"])
+        # argv-preserving sudo wraps the tmux kill command.
+        self.assertEqual(argv[0:6], ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"])
         self.assertIn("kill-session", argv)
         self.assertIn("uxon-demo@claude", argv)
 
@@ -484,7 +484,7 @@ class KillHostRemoteTests(unittest.TestCase):
         cp = mock.Mock(
             returncode=1,
             stdout="",
-            stderr="uxon-error: not-reachable (cannot sudo -niu alice; ...)\n",
+            stderr="uxon-error: not-reachable (cannot sudo -n -H -u alice; ...)\n",
         )
         with mock.patch.object(kill_app.subprocess, "run", return_value=cp):
             err = io.StringIO()

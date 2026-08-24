@@ -32,50 +32,6 @@ from uxon.infra import execution, identity
 _BUILTIN_PROFILE_ORDER = ("claude", "codex", "cursor")
 
 
-def canonical_existing_target(path: str) -> str:
-    """Canonicalize an existing launch target for policy matching."""
-    return str(Path(path).expanduser().resolve(strict=False))
-
-
-def canonical_intended_target(path: str) -> str:
-    """Safely canonicalize a target that may not exist yet.
-
-    Resolve the nearest existing parent, reject symlink missing components
-    including a broken symlink final component, validate the remaining path
-    components, and append them without following a future path.
-    """
-    target = Path(path).expanduser()
-    if not target.is_absolute():
-        target = Path.cwd() / target
-
-    raw_parts = target.parts
-    if any(part in {"", ".", ".."} or "\0" in part for part in raw_parts):
-        fail(f"invalid launch target path component in {path!r}")
-
-    if target.is_symlink():
-        fail(f"refusing to create launch target through symlink: {target}")
-    if target.exists():
-        return str(target.resolve(strict=False))
-
-    missing: list[str] = []
-    cursor = target
-    while not cursor.exists():
-        if cursor.is_symlink():
-            fail(f"refusing to create launch target through symlink: {cursor}")
-        missing.append(cursor.name)
-        parent = cursor.parent
-        if parent == cursor:
-            fail(f"no existing parent for launch target: {target}")
-        cursor = parent
-
-    base = cursor.resolve(strict=True)
-    for part in reversed(missing):
-        if part in {"", ".", ".."} or "\0" in part:
-            fail(f"invalid launch target path component {part!r} in {path!r}")
-        base = base / part
-    return str(base)
-
-
 def _choices_text(choices: tuple[str, ...]) -> str:
     return ", ".join(choices) if choices else "(none)"
 

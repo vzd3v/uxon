@@ -57,7 +57,7 @@ class AuditOverheadTests(unittest.TestCase):
             samples: list[float] = []
             for _ in range(10_000):
                 t = time.perf_counter_ns()
-                au.audit("session.attach", session="s", target_user="u")
+                au.audit("session.attach.dispatch", session="s", target_user="u")
                 samples.append((time.perf_counter_ns() - t) / 1000.0)
 
             samples.sort()

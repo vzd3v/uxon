@@ -22,11 +22,9 @@ import subprocess
 import threading
 from typing import TYPE_CHECKING, Any
 
-import uxon.app.attach as attach_app
 import uxon.app.launch as launch_app
 import uxon.app.launch_profile as launch_profile_app
 import uxon.app.tui_planning as tui_planning
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.session import session_stem_for_worktree
 from uxon.errors import fail
@@ -77,8 +75,8 @@ class TuiBridge:
     def on_attach(self, user: str, name: str):
         # TUI Enter on a local row dispatches a direct
         # ``tmux attach-session`` (no ``uxon`` wrapper) — emit
-        # ``session.attach`` here so the operation is auditable.
-        # ``do_attach``'s emit only covers the CLI-side ``uxon attach``
+        # ``session.attach.dispatch`` here so the handoff is auditable.
+        # ``do_attach``'s dispatch emit only covers the CLI-side ``uxon attach``
         # invocation; the TUI request bypasses that path entirely.
         from uxon.infra import audit as _audit
 
@@ -87,12 +85,12 @@ class TuiBridge:
             name,
             fresh,
             self.cfg,
-            audit_event="session.attach",
+            audit_event="session.attach.dispatch",
             target_user=user,
             extra={"profile": "", "agent": ""},
         )
         _audit.audit(
-            "session.attach",
+            "session.attach.dispatch",
             session=target.name,
             target_user=user,
             profile=target.profile,
@@ -124,6 +122,7 @@ class TuiBridge:
         # Capture teardown before the kill, reap the orphaned workload
         # agent after kill-session — the same best-effort path as CLI do_kill.
         from uxon.app.kill import (
+            cleanup_launch_record,
             prepare_runtime_teardown,
             run_kill_session,
             run_runtime_teardown,
@@ -142,6 +141,7 @@ class TuiBridge:
         )
         if teardown:
             run_runtime_teardown(self.cfg, teardown, user, target.name)
+        cleanup_launch_record(self.cfg, target)
         _audit.audit(
             "session.kill",
             session=target.name,
@@ -156,7 +156,11 @@ class TuiBridge:
         # TUI 'D' / kill-all-mine. Mirrors ``on_kill_all_reachable``'s
         # audit shape (``target_users``, ``killed_count``, ``dry_run``)
         # for the single-user case.
-        from uxon.app.kill import prepare_runtime_teardown, run_runtime_teardown
+        from uxon.app.kill import (
+            cleanup_launch_record,
+            prepare_runtime_teardown,
+            run_runtime_teardown,
+        )
         from uxon.infra import audit as _audit
 
         fresh = sessions_probe.collect_sessions([self.launch_user], self.cfg)
@@ -173,6 +177,7 @@ class TuiBridge:
                 killed_count += 1
                 if teardown:
                     run_runtime_teardown(self.cfg, teardown, self.launch_user, s.name)
+                cleanup_launch_record(self.cfg, s)
         _audit.audit(
             "session.kill_all",
             outcome="ok" if killed_count == len(fresh) else "error",
@@ -206,10 +211,10 @@ class TuiBridge:
         # Pass correlation_id explicitly via kwargs rather than seeding
         # ``_audit._correlation_id``: the TUI process is long-lived, and a
         # left-behind global would leak into subsequent local audit events
-        # (next session.attach / session.kill picked up the stale UUID).
+        # (next attach dispatch / session.kill picked up the stale UUID).
         corr_id = str(_uuid.uuid4())
         _audit.audit(
-            "attach.remote.out",
+            "attach.remote.out.dispatch",
             peer_name=peer.name,
             ssh_alias=peer.ssh_alias,
             target_user=user,
@@ -271,16 +276,6 @@ class TuiBridge:
         # avoid the module-level correlation_id global to keep state from
         # bleeding into the next local emit.
         corr_id = str(_uuid.uuid4())
-        _audit.audit(
-            "kill.remote.out",
-            peer_name=peer.name,
-            ssh_alias=peer.ssh_alias,
-            target_user=user,
-            target_session=name,
-            force=True,
-            dry_run=False,
-            correlation_id=corr_id,
-        )
         # target first (see _do_attach_remote for rationale).
         remote_cmd = (
             f"{shlex.quote(peer.remote_uxon)} kill {shlex.quote(name)} --force "
@@ -336,13 +331,28 @@ class TuiBridge:
             tail = stderr[-1] if stderr else f"ssh exited {cp.returncode}"
             _emit_kill_remote_error(f"non-zero ssh rc: {tail}", cp.returncode)
             fail(f"remote kill on {host_name} failed: {tail}", 1)
+        _audit.audit(
+            "kill.remote.out",
+            peer_name=peer.name,
+            ssh_alias=peer.ssh_alias,
+            target_user=user,
+            target_session=name,
+            force=True,
+            dry_run=False,
+            correlation_id=corr_id,
+            rc=0,
+        )
 
     def on_kill_all_reachable(self) -> None:
         # Iterate the launch user plus every reachable peer user. An
         # empty ``reachable_users`` collapses to "kill all my own
         # sessions", which is the same behaviour the legacy
         # ``kill-all-global`` had when sudo was unavailable.
-        from uxon.app.kill import prepare_runtime_teardown, run_runtime_teardown
+        from uxon.app.kill import (
+            cleanup_launch_record,
+            prepare_runtime_teardown,
+            run_runtime_teardown,
+        )
 
         reachable = self.sudo_caps.reachable_users if self.sudo_caps else frozenset()
         users = sorted({self.launch_user, *reachable})
@@ -363,6 +373,7 @@ class TuiBridge:
                     killed_count += 1
                     if teardown:
                         run_runtime_teardown(self.cfg, teardown, u, s.name)
+                    cleanup_launch_record(self.cfg, s)
         # Operationally the most-significant kill_all path: cross-user
         # bulk kill from the TUI.  Audit emit covers the whole sweep,
         # not per-session — matches the spec's `target_users` /
@@ -461,71 +472,17 @@ class TuiBridge:
         req = tui_planning._plan_tui_run_agent(
             self.cfg, self.caller_user, self.launch_user, target, agent_id, mode_id
         )
-        # Container readiness is NOT handled here: the TUI runs the probe +
-        # (prompt-confirmed) start/create through ``LaunchFlow`` BEFORE this
-        # commit so ``approval = "prompt"`` can show an affordance.
-        # ``_plan_tui_run_agent`` only ever yields a launch (never an
-        # attach), so this path is unconditional ``session.new``.
-        from uxon.infra import audit as _audit
-
-        managed = req.managed
-        _audit.audit(
-            "session.new",
-            profile=managed.launch_profile if managed is not None else agent_id,
-            agent=managed.agent if managed is not None else agent_id,
-            target_user=managed.launch_user if managed is not None else self.launch_user,
-            project=target,
-            branch="",
-            session=attach_app._session_name_from_launch_label(req.label),
-            dry_run=False,
-        )
         return req
 
     def on_launch_new(self, name: str, agent_id: str, mode_id: str, git_profile: str):
         req = tui_planning._plan_tui_create_new_agent(
             self.cfg, self.caller_user, self.launch_user, name, agent_id, mode_id, git_profile
         )
-        # The TUI planner no longer auto-attaches — every launch request
-        # routed here is a fresh ``session.new``. The attach path is
-        # owned by ``on_attach`` (which emits its own ``session.attach``
-        # event when the operator picks "attach" in SessionChoiceScreen).
-        project = canonical(os.path.join(self.cfg.new_project_root, name))
-        from uxon.infra import audit as _audit
-
-        managed = req.managed
-        _audit.audit(
-            "session.new",
-            profile=managed.launch_profile if managed is not None else agent_id,
-            agent=managed.agent if managed is not None else agent_id,
-            target_user=managed.launch_user if managed is not None else self.launch_user,
-            project=project,
-            branch="",
-            session=attach_app._session_name_from_launch_label(req.label),
-            dry_run=False,
-        )
         return req
 
     def on_launch_existing(self, name: str, agent_id: str, mode_id: str):
         req = tui_planning._plan_tui_open_existing_agent(
             self.cfg, self.caller_user, self.launch_user, name, agent_id, mode_id
-        )
-        # Same as ``on_launch_new``: TUI owns attach decisions; this path
-        # always emits ``session.new``.
-        project = canonical(os.path.join(self.cfg.new_project_root, name))
-        # Container readiness handled by ``LaunchFlow`` before this commit
-        # (prompt affordance) — see ``on_launch_cwd``.
-        from uxon.infra import audit as _audit
-
-        managed = req.managed
-        _audit.audit(
-            "session.new",
-            profile=managed.launch_profile if managed is not None else agent_id,
-            agent=managed.agent if managed is not None else agent_id,
-            target_user=managed.launch_user if managed is not None else self.launch_user,
-            project=project,
-            branch="",
-            session=attach_app._session_name_from_launch_label(req.label),
-            dry_run=False,
         )
         return req
 
@@ -564,9 +521,7 @@ class TuiBridge:
         screen is shown, so the modal never offers a remote that the later
         planner would reject.
         """
-        target = launch_profile_app.canonical_intended_target(
-            os.path.join(self.cfg.new_project_root, name)
-        )
+        target = os.path.normpath(os.path.join(self.cfg.new_project_root, name))
         resolved = launch_profile_app.resolve_launch_profile(
             self.cfg,
             self.caller_user,
@@ -655,19 +610,6 @@ class TuiBridge:
             agent_id,
             mode_id,
             worktree=(repo_root, branch),
-        )
-        from uxon.infra import audit as _audit
-
-        managed = req.managed
-        _audit.audit(
-            "session.new",
-            profile=managed.launch_profile if managed is not None else agent_id,
-            agent=managed.agent if managed is not None else agent_id,
-            target_user=managed.launch_user if managed is not None else self.launch_user,
-            project=worktree_path,
-            branch=branch,
-            session=attach_app._session_name_from_launch_label(req.label),
-            dry_run=False,
         )
         return req
 

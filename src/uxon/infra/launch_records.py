@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import pwd
 import re
 import secrets
 import stat
@@ -27,6 +29,11 @@ RUNTIME_FINGERPRINT_ENV = "UXON_RUNTIME_FINGERPRINT"
 _RECORD_VERSION = 2
 _STORE_MODE = 0o700
 _RECORD_MODE = 0o600
+_SHARED_STORE_MODE = 0o2770
+_SHARED_RECORD_MODE = 0o640
+_STALE_FINALIZED_SECONDS = 7 * 24 * 60 * 60
+_STALE_PENDING_SECONDS = 10 * 60
+_MAX_GC_RECORDS = 1024
 _NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
 
@@ -58,7 +65,7 @@ def new_launch_nonce() -> str:
     return secrets.token_urlsafe(24)
 
 
-def state_dir(*, override: Path | None = None) -> Path:
+def default_launch_record_dir(*, override: Path | None = None) -> Path:
     if override is not None:
         return override
     return Path(platformdirs.user_state_dir("uxon", appauthor=False)) / "launch-records"
@@ -108,15 +115,22 @@ def _record_path(
     import hashlib
 
     key = hashlib.sha256(f"{socket_path}\0{session_name}\0{launch_nonce}".encode()).hexdigest()
-    return state_dir(override=override_dir) / f"{key}.json"
+    return default_launch_record_dir(override=override_dir) / f"{key}.json"
 
 
-def create_pending_record(record: PendingLaunchRecord, *, override_dir: Path | None = None) -> Path:
-    directory = _ensure_store_ready(override_dir=override_dir)
+def create_pending_record(
+    record: PendingLaunchRecord,
+    *,
+    override_dir: Path | None = None,
+    shared: bool = False,
+) -> Path:
+    directory = _ensure_store_ready(
+        override_dir=override_dir, shared=shared, launch_user=record.launch_user
+    )
     path = record_path(record, override_dir=directory)
     payload = _base_payload(record)
     payload["status"] = "pending"
-    _write_new_json(path, payload)
+    _write_new_json(path, payload, shared=shared, shared_gid=os.lstat(directory).st_gid)
     return path
 
 
@@ -128,14 +142,19 @@ def finalize_pending_record(
     runtime_cgroup: str = "",
     runtime_epoch: str = "",
     override_dir: Path | None = None,
+    shared: bool = False,
 ) -> Path:
     if metadata.name != record.session_name:
         fail(f"tmux created unexpected session {metadata.name!r}; expected {record.session_name!r}")
     if metadata.launch_nonce != record.launch_nonce:
         fail("tmux launch nonce mismatch; refusing to trust the created session")
-    directory = _ensure_store_ready(override_dir=override_dir)
+    directory = _ensure_store_ready(
+        override_dir=override_dir, shared=shared, launch_user=record.launch_user
+    )
     path = record_path(record, override_dir=directory)
-    pending = _read_json(path)
+    pending = _read_json(
+        path, require_owner=not shared, shared_gid=os.lstat(directory).st_gid if shared else None
+    )
     if pending.get("status") != "pending":
         fail("launch record is not pending")
     payload = _base_payload(record)
@@ -151,12 +170,20 @@ def finalize_pending_record(
             "finalized_at": time.time(),
         }
     )
-    _replace_json(path, payload)
+    _replace_json(path, payload, shared=shared, shared_gid=os.lstat(directory).st_gid)
     return path
 
 
-def fail_pending_record(record: PendingLaunchRecord, *, override_dir: Path | None = None) -> None:
-    path = record_path(record, override_dir=override_dir)
+def fail_pending_record(
+    record: PendingLaunchRecord,
+    *,
+    override_dir: Path | None = None,
+    shared: bool = False,
+) -> None:
+    directory = _ensure_store_ready(
+        override_dir=override_dir, shared=shared, launch_user=record.launch_user
+    )
+    path = record_path(record, override_dir=directory)
     try:
         path.unlink()
     except FileNotFoundError:
@@ -172,10 +199,21 @@ def read_finalized_record(
     *,
     override_dir: Path | None = None,
     require_owner: bool = True,
+    shared: bool = False,
+    launch_user: str = "",
 ) -> dict[str, Any] | None:
-    path = _record_path(socket_path, session_name, launch_nonce, override_dir)
+    directory = default_launch_record_dir(override=override_dir)
     try:
-        payload = _read_json(path, require_owner=require_owner)
+        _ensure_store_ready(override_dir=directory, shared=shared, launch_user=launch_user)
+    except SystemExit:
+        return None
+    path = _record_path(socket_path, session_name, launch_nonce, directory)
+    try:
+        payload = _read_json(
+            path,
+            require_owner=require_owner and not shared,
+            shared_gid=os.lstat(directory).st_gid if shared else None,
+        )
     except (FileNotFoundError, PermissionError, OSError, ValueError):
         return None
     if payload.get("status") != "finalized":
@@ -197,6 +235,8 @@ def read_verified_record(
     *,
     override_dir: Path | None = None,
     require_owner: bool = True,
+    shared: bool = False,
+    launch_user: str = "",
 ) -> dict[str, Any] | None:
     """Return the finalized record only when it matches live tmux metadata."""
     if not metadata.launch_nonce:
@@ -207,6 +247,8 @@ def read_verified_record(
         metadata.launch_nonce,
         override_dir=override_dir,
         require_owner=require_owner,
+        shared=shared,
+        launch_user=launch_user,
     )
     if payload is None:
         return None
@@ -219,6 +261,79 @@ def read_verified_record(
     return payload
 
 
+def delete_verified_record(
+    socket_path: str,
+    metadata: TmuxSessionMetadata,
+    *,
+    override_dir: Path | None = None,
+    shared: bool = False,
+    launch_user: str = "",
+) -> bool:
+    """Delete exactly one record after its matching tmux session was killed."""
+    payload = read_verified_record(
+        socket_path,
+        metadata,
+        override_dir=override_dir,
+        require_owner=not shared,
+        shared=shared,
+        launch_user=launch_user,
+    )
+    if payload is None:
+        return False
+    path = _record_path(socket_path, metadata.name, metadata.launch_nonce, override_dir)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        fail(f"unable to remove finalized launch record: {exc}")
+    return True
+
+
+def garbage_collect_records(
+    live: set[tuple[str, str, str]],
+    *,
+    socket_path: str,
+    override_dir: Path | None = None,
+    shared: bool = False,
+    launch_user: str = "",
+    now: float | None = None,
+) -> int:
+    """Remove bounded, old records for one socket which no longer identify a live session."""
+    directory = _ensure_store_ready(
+        override_dir=override_dir, shared=shared, launch_user=launch_user
+    )
+    current = time.time() if now is None else now
+    removed = 0
+    try:
+        entries = sorted(directory.iterdir(), key=lambda item: item.name)[:_MAX_GC_RECORDS]
+    except OSError:
+        return 0
+    shared_gid = os.lstat(directory).st_gid if shared else None
+    for path in entries:
+        if path.suffix != ".json":
+            continue
+        try:
+            payload = _read_json(path, require_owner=not shared, shared_gid=shared_gid)
+            key = (
+                str(payload.get("socket_path", "")),
+                str(payload.get("session_name", "")),
+                str(payload.get("launch_nonce", "")),
+            )
+            if key[0] != socket_path:
+                continue
+            status = payload.get("status")
+            timestamp = float(payload.get("finalized_at", payload.get("created_at", current)))
+            retention = _STALE_PENDING_SECONDS if status == "pending" else _STALE_FINALIZED_SECONDS
+            if key in live or current - timestamp < retention:
+                continue
+            path.unlink()
+            removed += 1
+        except (OSError, TypeError, ValueError):
+            continue
+    return removed
+
+
 def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
     return {
         "version": _RECORD_VERSION,
@@ -226,7 +341,6 @@ def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
         "session_name": record.session_name,
         "launch_nonce": record.launch_nonce,
         "profile": record.launch_profile,
-        "launch_profile": record.launch_profile,
         "agent": record.agent,
         "launch_user": record.launch_user,
         "execution_backend": record.execution_backend,
@@ -242,10 +356,62 @@ def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
 def _ensure_store_ready(
     *,
     override_dir: Path | None,
+    shared: bool = False,
+    launch_user: str = "",
 ) -> Path:
-    directory = state_dir(override=override_dir)
-    _ensure_private_dir(directory)
+    directory = default_launch_record_dir(override=override_dir)
+    if shared:
+        _validate_shared_dir(directory, launch_user)
+    else:
+        _ensure_private_dir(directory)
     return directory
+
+
+def _has_posix_acl(path: Path) -> bool:
+    try:
+        os.getxattr(path, "system.posix_acl_access", follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in {errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP}:
+            return False
+        raise
+    return True
+
+
+def _validate_shared_dir(path: Path, launch_user: str) -> None:
+    """Validate the pre-provisioned multi-controller record directory."""
+    if not path.is_absolute():
+        fail(f"launch_record_dir must be absolute: {path}")
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            fail(f"shared launch_record_dir must be pre-provisioned: {path}")
+        if stat.S_ISLNK(metadata.st_mode):
+            fail(f"launch_record_dir path must not contain symlinks: {current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            fail(f"launch_record_dir component is not a directory: {current}")
+        mode = stat.S_IMODE(metadata.st_mode)
+        if current != path and mode & 0o022 and not mode & stat.S_ISVTX:
+            fail(f"launch_record_dir parent is writable by other users: {current}")
+    metadata = os.lstat(path)
+    mode = stat.S_IMODE(metadata.st_mode)
+    if metadata.st_uid != 0 or mode != _SHARED_STORE_MODE:
+        fail("shared launch_record_dir must be root-owned with mode 2770")
+    controller_groups = {os.getegid(), *os.getgroups()}
+    if metadata.st_gid not in controller_groups and os.geteuid() != 0:
+        fail("controller is not a member of launch_record_dir's control group")
+    if _has_posix_acl(path):
+        fail("shared launch_record_dir must not have a POSIX access ACL")
+    if launch_user:
+        try:
+            account = pwd.getpwnam(launch_user)
+            launch_groups = set(os.getgrouplist(launch_user, account.pw_gid))
+        except KeyError:
+            fail(f"unknown launch user {launch_user!r}")
+        if metadata.st_gid in launch_groups:
+            fail("launch user must not belong to launch_record_dir's control group")
 
 
 def _ensure_private_dir(path: Path) -> None:
@@ -273,14 +439,23 @@ def _ensure_private_dir(path: Path) -> None:
             fail(f"launch record path component is writable by other users: {current}")
 
 
-def _write_new_json(path: Path, payload: dict[str, Any]) -> None:
+def _write_new_json(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    shared: bool = False,
+    shared_gid: int | None = None,
+) -> None:
     data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags, _RECORD_MODE)
+    mode = _SHARED_RECORD_MODE if shared else _RECORD_MODE
+    fd = os.open(path, flags, mode)
     try:
-        os.fchmod(fd, _RECORD_MODE)
+        if shared and shared_gid is not None:
+            os.fchown(fd, -1, shared_gid)
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
@@ -293,9 +468,15 @@ def _write_new_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def _replace_json(path: Path, payload: dict[str, Any]) -> None:
+def _replace_json(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    shared: bool = False,
+    shared_gid: int | None = None,
+) -> None:
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-    _write_new_json(tmp, payload)
+    _write_new_json(tmp, payload, shared=shared, shared_gid=shared_gid)
     os.replace(tmp, path)
     flags = os.O_RDONLY | (os.O_DIRECTORY if hasattr(os, "O_DIRECTORY") else 0)
     directory_fd = os.open(path.parent, flags)
@@ -305,7 +486,12 @@ def _replace_json(path: Path, payload: dict[str, Any]) -> None:
         os.close(directory_fd)
 
 
-def _read_json(path: Path, *, require_owner: bool = True) -> dict[str, Any]:
+def _read_json(
+    path: Path,
+    *,
+    require_owner: bool = True,
+    shared_gid: int | None = None,
+) -> dict[str, Any]:
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -317,7 +503,10 @@ def _read_json(path: Path, *, require_owner: bool = True) -> dict[str, Any]:
             raise ValueError("launch record is not a regular file")
         if require_owner and st.st_uid != os.geteuid():
             raise PermissionError("launch record has unsafe ownership")
-        if stat.S_IMODE(st.st_mode) & 0o022:
+        mode = stat.S_IMODE(st.st_mode)
+        if shared_gid is not None and (st.st_gid != shared_gid or mode != _SHARED_RECORD_MODE):
+            raise PermissionError("shared launch record has unsafe group or mode")
+        if shared_gid is None and mode & 0o022:
             raise PermissionError("launch record has unsafe ownership or mode")
         with os.fdopen(fd, "rb") as f:
             close_fd = False

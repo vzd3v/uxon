@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -89,3 +91,42 @@ def test_renderer_rejects_unknown_keys_at_nested_levels() -> None:
 def test_renderer_rejects_removed_v3_isolation_keys_as_unknown(payload: dict) -> None:
     with pytest.raises(ValueError, match="unknown key"):
         _renderer().render_config(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"enable_all_users_list": "false"},
+        {"git_create_enabled": 1},
+        {"audit": {"enabled": "yes"}},
+        {"tmux": {"manage_options": 0}},
+        {"agents": {"claude": {"mode": [{"id": "normal", "dangerous": "no"}]}}},
+        {"fetch_concurrency": True},
+        {"execution": {"backends": {"box": {"probe_timeout_seconds": False}}}},
+    ],
+)
+def test_renderer_rejects_type_coercion(payload: dict) -> None:
+    with pytest.raises(ValueError, match="must be"):
+        _renderer().render_config(payload)
+
+
+def test_renderer_invalid_json_is_a_clean_cli_error(tmp_path: Path) -> None:
+    payload = tmp_path / "bad.json"
+    payload.write_text("{broken", encoding="utf-8")
+    script = Path(__file__).resolve().parent.parent / "install" / "render_uxon_config.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--config-json", str(payload)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "render_uxon_config.py:" in result.stderr
+
+
+def test_renderer_quotes_dynamic_table_ids_instead_of_reinterpreting_them() -> None:
+    payload = {"agents": {"odd.id": {"binary": "/opt/agent"}}}
+    rendered = _renderer().render_config(payload)
+    parsed = tomllib.loads(rendered)
+    assert parsed["agents"]["odd.id"]["binary"] == "/opt/agent"

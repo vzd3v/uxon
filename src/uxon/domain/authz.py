@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 """Pure path-authorization predicates.
 
-``canonical`` / ``is_under`` / ``is_under_allowed_roots`` are pure
+``lexical_absolute`` / ``is_under`` / ``is_under_allowed_roots`` are pure
 string/path predicates (no filesystem access — they reason about path
-*shapes*, not the FS). The filesystem-and-subprocess gates that build on
-them (``is_*_target_allowed`` / ``ensure_*_allowed``) are impure and live
-in the composition root for now.
+*shapes*, not the FS). Canonical filesystem paths come only from the selected
+execution backend. The filesystem-and-subprocess gates that build on these
+predicates live in the composition root for now.
 """
 
 from __future__ import annotations
@@ -14,10 +14,6 @@ import os
 from pathlib import Path
 
 from uxon.domain.config import Config
-
-
-def canonical(path: str) -> str:
-    return str(Path(path).expanduser().resolve(strict=False))
 
 
 def lexical_absolute(path: str) -> str:

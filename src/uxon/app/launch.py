@@ -48,9 +48,10 @@ def is_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str) -> 
     is enabled). :func:`ensure_launch_target_allowed` is the raise-on-
     failure variant with user-facing error messages.
     """
-    if not os.path.isdir(target_dir):
+    facts = execution.path_facts(cfg, launch_user, target_dir)
+    if not facts.directory:
         return False
-    if not identity.probe_cwd_writable(cfg, launch_user, target_dir):
+    if not facts.writable:
         return False
     return is_under_allowed_roots(cfg, target_dir)
 
@@ -63,9 +64,10 @@ def ensure_launch_target_allowed(cfg: Config, launch_user: str, target_dir: str)
     emits a specific user-facing error describing exactly what failed
     (not a directory / not writable / outside ``allowed_roots``).
     """
-    if not os.path.isdir(target_dir):
+    facts = execution.path_facts(cfg, launch_user, target_dir)
+    if not facts.directory:
         fail(f"not a directory: {target_dir}")
-    if not identity.probe_cwd_writable(cfg, launch_user, target_dir):
+    if not facts.writable:
         fail(f"no write access to {target_dir} for {launch_user}")
     if not is_under_allowed_roots(cfg, target_dir):
         eprint("uxon: directory must be under one of:")
@@ -85,13 +87,11 @@ def is_worktree_target_allowed(cfg: Config, launch_user: str, worktree_path: str
     created later by the caller; here we only check policy.
     """
     parent = os.path.dirname(worktree_path) or "/"
-    # The immediate parent may not exist yet (e.g. ``.uxon/worktrees`` on
-    # first use); walk up to the nearest existing ancestor for the
-    # write-access probe, which is what mkdir -p will actually need.
-    probe_dir = parent
-    while probe_dir and probe_dir != "/" and not os.path.isdir(probe_dir):
-        probe_dir = os.path.dirname(probe_dir)
-    if not identity.probe_cwd_writable(cfg, launch_user, probe_dir):
+    facts = execution.path_facts(cfg, launch_user, parent)
+    if not facts.nearest_existing_ancestor:
+        return False
+    ancestor = execution.path_facts(cfg, launch_user, facts.nearest_existing_ancestor)
+    if not ancestor.directory or not ancestor.writable:
         return False
     return is_under_allowed_roots(cfg, worktree_path)
 
@@ -477,7 +477,7 @@ def plan_worktree_launch(
         session,
         run_args,
         cfg,
-        None,
+        branch_name,
         resolved_profile=resolved_profile,
         server_running=bool(sessions),
         active_sessions=sessions,
@@ -492,17 +492,5 @@ def plan_worktree_launch(
         path=worktree_path,
         base=base,
         session=session,
-    )
-    # §4.6 / B3: the launched session still emits its own session.new —
-    # worktree.create is the ADDITIONAL lifecycle event, not a replacement.
-    _audit.audit(
-        "session.new",
-        profile=resolved_profile.profile.id,
-        agent=resolved_profile.agent.id,
-        target_user=launch_user,
-        project=worktree_path,
-        branch=branch_name,
-        session=session,
-        dry_run=False,
     )
     return req

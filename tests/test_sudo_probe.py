@@ -38,6 +38,7 @@ def _stubbed_run(stub):
             "uxon.infra.execution.pwd.getpwnam",
             return_value=mock.Mock(pw_uid=1000, pw_gid=1000),
         ),
+        mock.patch("uxon.infra.execution.os.getgrouplist", return_value=[1000]),
         mock.patch("uxon.infra.sudo_probe.run_query", side_effect=stub),
     ):
         yield
@@ -76,9 +77,9 @@ class _SudoStub:
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
-        # Per-target probe: sudo login boundary + fixed JSON probe module.
-        if len(argv) >= 4 and argv[:2] == ["sudo", "-niu"] and argv[3] == "--":
-            user = argv[2]
+        # Per-target probe: argv-preserving sudo + fixed JSON probe module.
+        if len(argv) >= 6 and argv[:4] == ["/usr/bin/sudo", "-n", "-H", "-u"]:
+            user = argv[4]
             outcome = self.per_user.get(user, 1)
             return self._dispatch(outcome, argv, probe=True)
         # Root probe: ["sudo", "-n", "true"]
@@ -93,7 +94,7 @@ class _SudoStub:
         if outcome == "oserror":
             raise OSError("simulated")
         if isinstance(outcome, int):
-            stdout = '{"euid":1000,"egid":1000}' if probe and outcome == 0 else ""
+            stdout = '{"euid":1000,"egid":1000,"groups":[1000]}' if probe and outcome == 0 else ""
             return _fake_completed(outcome, stdout=stdout)
         raise AssertionError(f"bad outcome sentinel: {outcome!r}")
 
@@ -149,8 +150,8 @@ class SelfIsExcluded(unittest.TestCase):
             with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
                 caps = probe_sudo_capability(_CFG, ["vz", "alice_agent"])
         # No probe should have been issued for ``vz``.
-        per_user_argvs = [c for c in stub.calls if c[:2] == ["sudo", "-niu"]]
-        probed_users = {argv[2] for argv in per_user_argvs}
+        per_user_argvs = [c for c in stub.calls if c[:4] == ["/usr/bin/sudo", "-n", "-H", "-u"]]
+        probed_users = {argv[4] for argv in per_user_argvs}
         self.assertEqual(probed_users, {"alice_agent"})
         self.assertEqual(caps.reachable_users, frozenset({"alice_agent"}))
 
@@ -159,7 +160,7 @@ class SelfIsExcluded(unittest.TestCase):
         with _stubbed_run(stub):
             with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
                 caps = probe_sudo_capability(_CFG, ["alice_agent", "alice_agent", "alice_agent"])
-        per_user_argvs = [c for c in stub.calls if c[:2] == ["sudo", "-niu"]]
+        per_user_argvs = [c for c in stub.calls if c[:4] == ["/usr/bin/sudo", "-n", "-H", "-u"]]
         self.assertEqual(len(per_user_argvs), 1)
         self.assertEqual(caps.reachable_users, frozenset({"alice_agent"}))
 
@@ -168,7 +169,7 @@ class SelfIsExcluded(unittest.TestCase):
         with _stubbed_run(stub):
             with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
                 caps = probe_sudo_capability(_CFG, ["", "alice_agent"])
-        per_user_argvs = [c for c in stub.calls if c[:2] == ["sudo", "-niu"]]
+        per_user_argvs = [c for c in stub.calls if c[:4] == ["/usr/bin/sudo", "-n", "-H", "-u"]]
         self.assertEqual(len(per_user_argvs), 1)
         self.assertEqual(caps.reachable_users, frozenset({"alice_agent"}))
 
@@ -181,13 +182,15 @@ class ProbeArgvShape(unittest.TestCase):
         with _stubbed_run(stub):
             with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
                 probe_sudo_capability(_CFG, ["alice_agent"])
-        per_user_argvs = [c for c in stub.calls if c[:2] == ["sudo", "-niu"]]
+        per_user_argvs = [c for c in stub.calls if c[:4] == ["/usr/bin/sudo", "-n", "-H", "-u"]]
         self.assertEqual(
             per_user_argvs,
             [
                 [
-                    "sudo",
-                    "-niu",
+                    "/usr/bin/sudo",
+                    "-n",
+                    "-H",
+                    "-u",
                     "alice_agent",
                     "--",
                     sys.executable,
@@ -236,7 +239,7 @@ class ParallelismBoundedByPool(unittest.TestCase):
             time.sleep(per_user_sleep)
             if argv == ["sudo", "-n", "true"]:
                 return _fake_completed(0)
-            return _fake_completed(0, stdout='{"euid":1000,"egid":1000}')
+            return _fake_completed(0, stdout='{"euid":1000,"egid":1000,"groups":[1000]}')
 
         candidates = [f"user{i}_agent" for i in range(MAX_WORKERS)]
         with _stubbed_run(stub_run):

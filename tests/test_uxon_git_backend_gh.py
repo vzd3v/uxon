@@ -55,7 +55,7 @@ class SudoPrefixTests(unittest.TestCase):
     def test_prefix_when_different(self) -> None:
         self.assertEqual(
             gh.execution_prefix(_CFG, "erin"),
-            ["sudo", "-niu", "erin", "--"],
+            ["/usr/bin/sudo", "-n", "-H", "-u", "erin", "--"],
         )
 
 
@@ -102,7 +102,7 @@ class CreateRemoteTests(unittest.TestCase):
         self.assertNotIn("--source", cmd)
         self.assertNotIn("--push", cmd)
         self.assertIn("vzd3v/r", cmd)
-        self.assertEqual(cmd[:4], ["sudo", "-niu", "erin", "--"])
+        self.assertEqual(cmd[:6], ["/usr/bin/sudo", "-n", "-H", "-u", "erin", "--"])
 
     def test_public_visibility(self) -> None:
         runner = FakeRunner([_ok()])
@@ -126,7 +126,7 @@ class CreateRemoteTests(unittest.TestCase):
 class DescribeCommandTests(unittest.TestCase):
     def test_matches_actual_invocation(self) -> None:
         desc = gh.describe_command(_CFG, _profile(), "r", "/tmp/r", "erin", "dana_agent")
-        self.assertEqual(desc[:4], ["sudo", "-niu", "erin", "--"])
+        self.assertEqual(desc[:6], ["/usr/bin/sudo", "-n", "-H", "-u", "erin", "--"])
         self.assertIn("gh", desc)
         self.assertIn("vzd3v/r", desc)
 

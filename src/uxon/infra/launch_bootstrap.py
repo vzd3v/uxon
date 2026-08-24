@@ -11,13 +11,30 @@ import sys
 from uxon.infra import launch_records
 from uxon.infra.run import run_query
 
+_CLEANUP_TIMEOUT_SECONDS = 5.0
+
 
 def _kill_exact_session(socket_path: str, session_name: str) -> None:
     """Best-effort cleanup after the release wait cannot complete."""
     try:
-        run_query(["tmux", "-S", socket_path, "kill-session", "-t", session_name])
+        run_query(
+            ["tmux", "-S", socket_path, "kill-session", "-t", session_name],
+            timeout=_CLEANUP_TIMEOUT_SECONDS,
+        )
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+def _release_cleanup_then_kill(socket_path: str, session_name: str, release: str) -> None:
+    """Consume/clear the nonce channel once, then kill the exact session."""
+    try:
+        run_query(
+            ["tmux", "-S", socket_path, "wait-for", "-S", release],
+            timeout=_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    _kill_exact_session(socket_path, session_name)
 
 
 def wait_then_exec(
@@ -38,11 +55,15 @@ def wait_then_exec(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
-        _kill_exact_session(socket_path, session_name)
+        _release_cleanup_then_kill(socket_path, session_name, release)
         print("uxon: launch record was not finalized in time", file=sys.stderr)
         return 124
+    except OSError as exc:
+        _release_cleanup_then_kill(socket_path, session_name, release)
+        print(f"uxon: tmux release wait failed: {exc}", file=sys.stderr)
+        return 1
     if wait.returncode != 0:
-        _kill_exact_session(socket_path, session_name)
+        _release_cleanup_then_kill(socket_path, session_name, release)
         detail = (wait.stderr or wait.stdout or "tmux release wait failed").strip()
         print(f"uxon: {detail}", file=sys.stderr)
         return 1

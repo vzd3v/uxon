@@ -12,7 +12,6 @@ import shlex
 import uxon.app.launch as launch_app
 import uxon.app.launch_profile as launch_profile_app
 from uxon.domain.args import ParsedArgs
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.session import allocate_session_name, session_stem_for_path
 from uxon.errors import fail
@@ -21,7 +20,10 @@ from uxon.infra.worktrees import compute_worktree_path
 
 
 def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
-    cwd = canonical(os.getcwd())
+    # Keep the caller path lexical until the launch user is known. Git and
+    # launch-profile resolution canonicalize it inside that user's execution
+    # backend; resolving it on the controller can cross the wrong mount view.
+    cwd = os.path.normpath(os.path.abspath(os.getcwd()))
     branch = args.worktree_branch
     if branch:
         seed_user = launch_profile_app.preflight_launch_user(cfg, caller_user, args.profile)
@@ -103,10 +105,11 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             print(f"launch_user={shlex.quote(launch_user)}")
             print(f"exec {shlex.join(req.cmd)}")
             return 0
-        for pre in req.prelaunch:
-            process.run_cmd(list(pre))
         if req.managed is not None:
             tmux.prepare_managed_launch(req)
+        else:
+            for pre in req.prelaunch:
+                process.run_cmd(list(pre))
         # Lane B — interactive terminal handoff: ``execvp`` replaces this
         # image with the agent/tmux client, which keeps the controlling
         # terminal. Bypasses ``Popen``/the loop guard by construction.
@@ -134,43 +137,16 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         sessions,
         prefix=cfg.session_prefix,
     )
-    from uxon.infra import audit as _audit
-
-    _audit.audit(
-        "session.new",
-        profile=resolved.profile.id,
-        agent=resolved.agent.id,
-        target_user=launch_user,
-        project=target_dir,
-        branch=branch or "",
-        session=session,
-        dry_run=args.dry_run,
-    )
     if not args.dry_run:
         # Probe + (auto) start/create the container before exec when enabled.
         launch_app.ensure_runtime_ready(cfg, target_dir, resolved)
-    try:
-        return tmux.launch_in_tmux(
-            target_dir,
-            session,
-            args,
-            cfg,
-            branch,
-            resolved_profile=resolved,
-            server_running=bool(sessions),
-            active_sessions=sessions,
-        )
-    except Exception as exc:
-        _audit.audit(
-            "session.new",
-            outcome="error",
-            profile=resolved.profile.id,
-            agent=resolved.agent.id,
-            target_user=launch_user,
-            project=target_dir,
-            branch=branch or "",
-            session=session,
-            dry_run=args.dry_run,
-            error=str(exc)[:256],
-        )
-        raise
+    return tmux.launch_in_tmux(
+        target_dir,
+        session,
+        args,
+        cfg,
+        branch,
+        resolved_profile=resolved,
+        server_running=bool(sessions),
+        active_sessions=sessions,
+    )

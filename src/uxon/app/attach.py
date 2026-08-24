@@ -75,7 +75,7 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     # non-blocking ``socket.send``, so the kernel buffers the datagram
     # and the data is handed off before we exec.
     _audit.audit(
-        "attach.remote.out",
+        "attach.remote.out.dispatch",
         peer_name=peer.name,
         ssh_alias=peer.ssh_alias,
         target_user=args.user,
@@ -85,20 +85,7 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     if args.dry_run:
         print(shlex.join(ssh_argv))
         return 0
-    try:
-        os.execvp(ssh_argv[0], ssh_argv)
-    except Exception as exc:
-        _audit.audit(
-            "attach.remote.out",
-            outcome="error",
-            peer_name=peer.name,
-            ssh_alias=peer.ssh_alias,
-            target_user=args.user,
-            target_session=args.target_id,
-            correlation_id=corr_id,
-            error=str(exc)[:256],
-        )
-        raise
+    os.execvp(ssh_argv[0], ssh_argv)
     return 0  # unreachable
 
 
@@ -116,28 +103,27 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # Checked *before* the SSH_CONNECTION peer-inbound branch: a
     # caller invoking ``ssh peer1 "uxon attach --host peer2 …"`` is the
     # caller-side leg dispatching onward, not a peer-inbound terminus,
-    # and must not emit ``attach.remote.in``.
+    # and must not emit ``attach.remote.in.dispatch``.
     if args.host is not None:
         return _do_attach_remote(args, cfg)
 
     # Bug 6 — peer-inbound branch.  When invoked over SSH the only
-    # signal that this is the peer side of an ``attach.remote.out`` is
+    # signal that this is the peer side of an ``attach.remote.out.dispatch`` is
     # ``SSH_CONNECTION`` in the env (sudo strips it on the next leg, so
     # we have to capture it before the sudo execvp below).  Spec line
-    # 299: ``attach.remote.in`` *replaces* ``session.attach`` on the
+    # ``attach.remote.in.dispatch`` *replaces* ``session.attach.dispatch`` on the
     # peer side — both names describe the same physical event from
     # caller-vs-peer POV.
     #
     # The spec also requires (line 207-209) that state-changing events
     # emit on **both** the success and failure paths.  We honour that
-    # for the peer side too: instead of a single ``outcome=ok`` emit at
-    # the top, every ``session.attach`` emission point below switches
-    # event name (``attach.remote.in``) and identifier-field name
+    # for the peer side too: every ``session.attach.dispatch`` emission point
+    # below switches event name (``attach.remote.in.dispatch``) and identifier-field name
     # (``target_session`` instead of ``session``) when ``peer_inbound``.
-    # An auditor querying ``EVENT=attach.remote.in OUTCOME=denied``
+    # An auditor querying ``EVENT=attach.remote.in.dispatch OUTCOME=denied``
     # then actually finds the failure.
     peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    _attach_event: str = "attach.remote.in" if peer_inbound else "session.attach"
+    _attach_event: str = "attach.remote.in.dispatch" if peer_inbound else "session.attach.dispatch"
     _session_field: str = "target_session" if peer_inbound else "session"
 
     target_user = args.user or launch_user
@@ -155,7 +141,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 agent="",
             )
             eprint(
-                f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
+                f"uxon-error: not-reachable (cannot sudo -n -H -u {target_user}; "
                 "check /etc/sudoers.d for a NOPASSWD rule for this target)"
             )
             return 1
@@ -189,19 +175,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             profile=target.profile,
             agent=target.agent,
         )
-        try:
-            os.execvp(full[0], full)
-        except Exception as exc:
-            _audit.audit(
-                _attach_event,
-                outcome="error",
-                **{_session_field: target.name},
-                target_user=target_user,
-                profile=target.profile,
-                agent=target.agent,
-                error=str(exc)[:256],
-            )
-            raise
+        os.execvp(full[0], full)
         return 0
 
     # Same-user path.
@@ -228,7 +202,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         session_field=_session_field,
         extra={"profile": "", "agent": ""},
     )
-    # Same-user audit fires once before ``attach_session``'s execvp.
+    # Same-user dispatch audit fires once before ``attach_session``'s execvp.
     # Emitting from ``do_attach`` (not ``attach_session``) keeps the
     # call exactly once per CLI invocation.
     _audit.audit(
@@ -238,19 +212,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         profile=target.profile,
         agent=target.agent,
     )
-    try:
-        return attach_session(target, cfg, launch_user, args.dry_run)
-    except Exception as exc:
-        _audit.audit(
-            _attach_event,
-            outcome="error",
-            **{_session_field: target.name},
-            target_user=launch_user,
-            profile=target.profile,
-            agent=target.agent,
-            error=str(exc)[:256],
-        )
-        raise
+    return attach_session(target, cfg, launch_user, args.dry_run)
 
 
 def _tui_launch_request_cls() -> type:

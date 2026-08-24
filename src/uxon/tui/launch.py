@@ -34,14 +34,15 @@ def _run_launch_request(req: LaunchRequest) -> tuple[int, str, float]:
     # marks the spawn sanctioned for the loop guard — it is the single tty-
     # inheriting spawn the policy allows.
     with loop_guard.handoff_spawn():
-        for pre in req.prelaunch:
-            rc = subprocess.call(list(pre))
-            if rc != 0:
-                return rc, "prelaunch", _time.monotonic() - t0
         if req.managed is not None:
             from uxon.infra import tmux
 
             tmux.prepare_managed_launch(req)
+        else:
+            for pre in req.prelaunch:
+                rc = subprocess.call(list(pre))
+                if rc != 0:
+                    return rc, "prelaunch", _time.monotonic() - t0
         rc = subprocess.call(list(req.cmd))
     return rc, "cmd", _time.monotonic() - t0
 

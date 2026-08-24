@@ -23,7 +23,7 @@ def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], 
 
     - ``scope_users`` = ``launch_user`` plus every user from
       ``identity.resolve_all_session_users(cfg, launch_user)`` that the caller
-      can reach via ``sudo -niu <U>``. The list is deterministically
+      can reach via ``sudo -n -H -u <U>``. The list is deterministically
       ordered (stable, sorted by user where it matters).
     - ``scope_skipped`` = the rest of ``session_users`` (excluding
       self) — users in config that the caller cannot reach. Surfaced

@@ -102,7 +102,7 @@ def probe_sudo_capability(cfg: Config, candidates: Iterable[str]) -> SudoCapabil
 
     ``candidates`` is the list of OS users to probe — typically
     ``cfg.session_users`` minus the caller. The caller's own username
-    is filtered out defensively here too: ``sudo -niu <self>`` succeeds
+    is filtered out defensively here too: ``sudo -n -H -u <self>`` succeeds
     trivially for everyone, and including self would inflate
     ``reachable_users`` with a meaningless entry the TUI then has to
     strip.

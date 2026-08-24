@@ -32,7 +32,7 @@ List-data optional fields (forward-compatible additions, no version bump):
 
 - ``data.scope_skipped`` (``list[str]``): users in ``session_users``
   that the producer probed for sudo reachability and could *not* reach
-  via ``sudo -niu <U>``. ``data.scope_users`` is the *reachable*
+  via ``sudo -n -H -u <U>``. ``data.scope_users`` is the *reachable*
   subset; the union ``scope_users ∪ scope_skipped`` is the set of
   candidates actually probed. Users in ``session_users`` that were
   never asked (e.g. the caller themselves, filtered before probing)

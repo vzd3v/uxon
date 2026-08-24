@@ -173,7 +173,7 @@ class TuiContext:
     on_probe_link_health: Callable[[], Any] = lambda: None
     # Returns True if launch_user has write access to ``cwd``. Wired by
     # ``uxon.cli`` — uses ``os.access`` when launch_user == caller, otherwise
-    # ``sudo -iu launch_user test -w <cwd>``. App runs it in a worker
+    # ``sudo -H -u launch_user test -w <cwd>``. App runs it in a worker
     # thread on mount when ``cwd_writable`` is None; activation also
     # calls it synchronously as a fallback if the probe hasn't landed.
     on_probe_cwd_writable: Callable[[], bool] = lambda: True

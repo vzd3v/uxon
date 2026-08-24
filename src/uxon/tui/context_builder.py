@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import threading
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from uxon.domain.config import Config
@@ -37,30 +36,19 @@ if TYPE_CHECKING:
     from uxon.tui.context import TuiContext
 
 
-def _list_existing_projects(root: str) -> list[tuple[str, str]]:
+def _list_existing_projects(cfg: Config, launch_user: str, root: str) -> list[tuple[str, str]]:
     """List ``(name, compact_mtime)`` under ``new_project_root``, sorted by name.
 
     ``compact_mtime`` uses :func:`compact_time`: ``HH:MM`` if the
     directory was last modified today, ``MM-DD`` otherwise. ``"-"``
     when the stat call fails.
     """
-    try:
-        entries = [
-            (e.name, str(e))
-            for e in Path(root).iterdir()
-            if e.is_dir() and not e.name.startswith(".")
-        ]
-    except OSError:
-        return []
-    entries.sort()
+    from uxon.infra.execution import list_directories
+
+    entries = list_directories(cfg, launch_user, root)
     result: list[tuple[str, str]] = []
-    for name, path in entries:
-        try:
-            mtime = int(os.stat(path).st_mtime)
-            mtime_str = compact_time(fmt_epoch(str(mtime)))
-        except OSError:
-            mtime_str = "-"
-        result.append((name, mtime_str))
+    for entry in entries:
+        result.append((entry.name, compact_time(fmt_epoch(str(entry.mtime)))))
     return result
 
 
@@ -132,7 +120,7 @@ def build_tui_context(
             skipped_users = ()
         else:
             # One-shot probe: the candidate set is ``session_users \ {self}``.
-            # Self is filtered before probing because ``sudo -niu <self>``
+            # Self is filtered before probing because ``sudo -n -H -u <self>``
             # trivially succeeds and would inflate ``reachable_users``
             # with a meaningless entry.
             candidates = [
@@ -275,7 +263,7 @@ def build_tui_context(
         existing_projects: list[tuple[str, str]] = []
         server_status = ServerStatus()
     else:
-        existing_projects = _list_existing_projects(cfg.new_project_root)
+        existing_projects = _list_existing_projects(cfg, launch_user, cfg.new_project_root)
         server_status = host_status_probe.read_server_status(cfg.new_project_root)
 
     # Pluggable refresh sources. PR1 ships a single source that wraps

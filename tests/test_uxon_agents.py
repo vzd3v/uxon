@@ -130,7 +130,7 @@ class ProbeOneTests(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         # -iu loads the target user's login env (matches command_prefix_for_user
         # in uxon.cli) so PATH picks up npm-global / nvm / ~/.local/bin.
-        self.assertEqual(captured[0][:4], ["sudo", "-niu", "dana_agent", "--"])
+        self.assertEqual(captured[0][:6], ["/usr/bin/sudo", "-n", "-H", "-u", "dana_agent", "--"])
         self.assertIn("claude", captured[0])
 
 

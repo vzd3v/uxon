@@ -20,7 +20,6 @@ import uxon.app.listing as listing_app
 import uxon.app.new as new_app
 import uxon.app.run as run_app
 from uxon.domain.args import ParsedArgs
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.errors import fail
 
@@ -32,7 +31,7 @@ def dispatch(args: ParsedArgs, cfg: Config, caller_user: str, launch_user: str) 
             cfg,
             caller_user,
             launch_user,
-            canonical(os.getcwd()),
+            os.path.normpath(os.path.abspath(os.getcwd())),
             json_output=args.json_output,
             probe_remote=args.all_hosts,
         )

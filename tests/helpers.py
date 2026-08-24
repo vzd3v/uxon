@@ -29,6 +29,7 @@ def make_config(**overrides: object) -> Config:
         "new_project_root": "/srv/repos",
         "repeat_noninteractive_mode": "fail",
         "tmux_socket_template": "/tmp/uxon-{user}.sock",
+        "launch_record_dir": "",
         "tui_refresh_interval_seconds": 2.0,
         "git_create_enabled": False,
         "default_git_remote_profile": "",

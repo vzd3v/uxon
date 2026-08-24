@@ -255,7 +255,7 @@ class AuditDisabledTests(_BaseAuditTests):
         recorded: list[bytes] = []
         with patch.object(au, "_send_raw", side_effect=recorded.append):
             au.configure(enabled=False, syslog_facility="user", subcmd="list")
-            au.audit("session.attach", session="x", target_user="y")
+            au.audit("session.attach.dispatch", session="x", target_user="y")
         self.assertEqual(recorded, [])
 
 
@@ -276,7 +276,7 @@ class AuditNeverRaisesTests(_BaseAuditTests):
         ):
             au.configure(enabled=True, syslog_facility="user", subcmd="run")
             # Must not propagate the RuntimeError.
-            au.audit("session.attach", session="x", target_user="y")
+            au.audit("session.attach.dispatch", session="x", target_user="y")
 
     def test_audit_swallows_serializer_exception(self) -> None:
         # A serialiser raising (e.g. a future bug in _serialize_syslog)
@@ -292,7 +292,7 @@ class AuditNeverRaisesTests(_BaseAuditTests):
             patch.dict("os.environ", {"USER": "tester"}, clear=False),
         ):
             au.configure(enabled=True, syslog_facility="user", subcmd="run")
-            au.audit("session.attach", session="x", target_user="y")
+            au.audit("session.attach.dispatch", session="x", target_user="y")
 
 
 class CorrelationIdTests(_BaseAuditTests):
@@ -392,7 +392,7 @@ class AuditSendTests(_BaseAuditTests):
     def test_outcome_error_threaded_through(self) -> None:
         # Spec line 207: outcome ∈ {ok, denied, error, not_found}.
         # When the caller passes outcome="error" (failure-path emits
-        # for session.kill / session.new / session.attach), the value
+        # for session.kill / session.new / session.attach.dispatch), the value
         # must thread through into the wire payload — the default-arg
         # mechanism in audit() must not silently override or drop it.
         recorded: list[bytes] = []

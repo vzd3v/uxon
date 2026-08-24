@@ -211,6 +211,7 @@ class ListJsonTests(unittest.TestCase):
                 ],
             ),
             mock.patch("uxon.infra.sessions_probe.read_verified_record", return_value=record),
+            mock.patch("uxon.infra.sessions_probe.garbage_collect_records"),
             mock.patch("uxon.infra.sessions_probe.enrich_session_usage"),
         ):
             [session] = sessions_probe.collect_sessions_for_user(
@@ -262,6 +263,7 @@ class ListJsonTests(unittest.TestCase):
                 ],
             ),
             mock.patch("uxon.infra.sessions_probe.read_verified_record", return_value=None),
+            mock.patch("uxon.infra.sessions_probe.garbage_collect_records"),
             mock.patch("uxon.infra.sessions_probe.enrich_session_usage"),
         ):
             [session] = sessions_probe.collect_sessions_for_user(

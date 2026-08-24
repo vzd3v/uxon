@@ -27,16 +27,8 @@ from uxon.infra.run import run_query
 
 
 def user_can_write_dir(cfg: Config, path: str, target_user: str) -> bool:
-    cp = run_query(
-        identity.command_prefix_for_user(cfg, target_user)
-        + [
-            "python3",
-            "-c",
-            "import os, sys; raise SystemExit(0 if os.access(sys.argv[1], os.W_OK | os.X_OK) else 1)",
-            path,
-        ],
-    )
-    return cp.returncode == 0
+    facts = execution_infra.path_facts(cfg, target_user, path)
+    return facts.directory and facts.writable
 
 
 def doctor_issues(
@@ -57,7 +49,8 @@ def doctor_issues(
     if not is_under_allowed_roots(cfg, cfg.new_project_root):
         issues.append(f"new_project_root {cfg.new_project_root} is outside allowed_roots")
     socket_parent = str(Path(socket_path).parent)
-    if not os.path.isdir(socket_parent):
+    socket_facts = execution_infra.path_facts(cfg, launch_user, socket_parent)
+    if not socket_facts.directory:
         issues.append(f"tmux socket parent does not exist yet: {socket_parent}")
     elif not user_can_write_dir(cfg, socket_parent, launch_user):
         issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
@@ -170,6 +163,8 @@ def do_doctor(
     launch_profile_rows = _doctor_launch_profile_rows(cfg, caller_user, launch_user, agent_paths)
     runtime_rows = _doctor_runtime_rows(cfg, cwd, caller_user)
     execution_rows = _doctor_execution_rows(cfg, caller_user)
+    socket_parent = str(Path(socket_path).parent)
+    socket_parent_facts = execution_infra.path_facts(cfg, launch_user, socket_parent)
 
     if json_output:
         agents_block: dict[str, dict[str, Any]] = {}
@@ -181,7 +176,6 @@ def do_doctor(
                 "version": (avail.version if avail else None),
                 "error": (avail.error if avail else None),
             }
-        socket_parent = str(Path(socket_path).parent)
         data: dict[str, Any] = {
             "cwd": cwd,
             "caller_user": caller_user,
@@ -195,8 +189,8 @@ def do_doctor(
                 "path": tmux_path,
                 "socket": socket_path,
                 "socket_parent": socket_parent,
-                "socket_parent_exists": Path(socket_parent).is_dir(),
-                "socket_parent_writable": user_can_write_dir(cfg, socket_parent, launch_user),
+                "socket_parent_exists": socket_parent_facts.directory,
+                "socket_parent_writable": socket_parent_facts.writable,
             },
             "agents": agents_block,
             "launch_profiles": launch_profile_rows,
@@ -246,12 +240,9 @@ def do_doctor(
     print(f"repeat_noninteractive_env={env_repeat_mode or '-'}")
     print(f"tmux_path={tmux_path or '-'}")
     print(f"tmux_socket={socket_path}")
-    print(f"tmux_socket_parent={Path(socket_path).parent}")
-    print(f"tmux_socket_parent_exists={'yes' if Path(socket_path).parent.is_dir() else 'no'}")
-    print(
-        "tmux_socket_parent_writable="
-        f"{'yes' if user_can_write_dir(cfg, str(Path(socket_path).parent), launch_user) else 'no'}"
-    )
+    print(f"tmux_socket_parent={socket_parent}")
+    print(f"tmux_socket_parent_exists={'yes' if socket_parent_facts.directory else 'no'}")
+    print(f"tmux_socket_parent_writable={'yes' if socket_parent_facts.writable else 'no'}")
     # Per-agent status block.
     for aid in doctor_agent_ids:
         spec = cfg.agents[aid]

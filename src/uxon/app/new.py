@@ -29,7 +29,7 @@ from uxon.domain.session import (
     session_stem_for_worktree,
 )
 from uxon.errors import eprint, fail
-from uxon.infra import git, identity, process, sessions_probe, tmux
+from uxon.infra import execution, git, identity, process, sessions_probe, tmux
 from uxon.infra.worktrees import compute_worktree_path
 
 
@@ -43,7 +43,8 @@ def is_new_project_target_allowed(cfg: Config, launch_user: str, project_dir: st
     whitelist is bypassed and a writable parent suffices.
     """
     parent = os.path.dirname(project_dir) or "/"
-    if not identity.probe_cwd_writable(cfg, launch_user, parent):
+    facts = execution.path_facts(cfg, launch_user, parent)
+    if not facts.directory or not facts.writable:
         return False
     return is_under_allowed_roots(cfg, project_dir)
 
@@ -55,7 +56,8 @@ def ensure_new_project_target_allowed(cfg: Config, launch_user: str, project_dir
     unwritable or whether the path is outside ``allowed_roots``.
     """
     parent = os.path.dirname(project_dir) or "/"
-    if not identity.probe_cwd_writable(cfg, launch_user, parent):
+    facts = execution.path_facts(cfg, launch_user, parent)
+    if not facts.directory or not facts.writable:
         fail(f"no write access to {parent} for {launch_user}")
     if not is_under_allowed_roots(cfg, project_dir):
         eprint("uxon: new project directory must be under one of:")
@@ -70,19 +72,17 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         fail("new requires a name")
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
-    project_dir = launch_profile_app.canonical_intended_target(
-        os.path.join(cfg.new_project_root, name)
-    )
+    project_dir = os.path.normpath(os.path.join(cfg.new_project_root, name))
     branch = args.worktree_branch
     if branch:
         if args.git_remote:
             fail("new -w does not support --git-remote")
-        if not os.path.isdir(project_dir):
+        seed_user = launch_profile_app.preflight_launch_user(cfg, caller_user, args.profile)
+        if not execution.path_facts(cfg, seed_user, project_dir).directory:
             fail(
                 "new -w requires an existing project directory: "
                 f"{project_dir} (create it first with 'uxon -n {name}')"
             )
-        seed_user = launch_profile_app.preflight_launch_user(cfg, caller_user, args.profile)
         seed_repo_root = git.git_repo_root_as_user(cfg, project_dir, seed_user)
         if not seed_repo_root:
             fail(
@@ -186,7 +186,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
                 from uxon.infra import audit as _audit
 
                 _audit.audit(
-                    "session.attach",
+                    "session.attach.dispatch",
                     session=attach_target.name,
                     target_user=launch_user,
                     profile=attach_target.profile,
@@ -210,10 +210,11 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             print(f"launch_user={shlex.quote(launch_user)}")
             print(f"exec {shlex.join(req.cmd)}")
             return 0
-        for pre in req.prelaunch:
-            process.run_cmd(list(pre))
         if req.managed is not None:
             tmux.prepare_managed_launch(req)
+        else:
+            for pre in req.prelaunch:
+                process.run_cmd(list(pre))
         # Lane B — interactive terminal handoff: ``execvp`` replaces this
         # image with the agent/tmux client, which keeps the controlling
         # terminal. Bypasses ``Popen``/the loop guard by construction.
@@ -299,25 +300,13 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             from uxon.infra import audit as _audit
 
             _audit.audit(
-                "session.attach",
+                "session.attach.dispatch",
                 session=attach_target.name,
                 target_user=launch_user,
                 profile=attach_target.profile,
                 agent=attach_target.agent,
             )
-            try:
-                return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
-            except Exception as exc:
-                _audit.audit(
-                    "session.attach",
-                    outcome="error",
-                    session=attach_target.name,
-                    target_user=launch_user,
-                    profile=attach_target.profile,
-                    agent=attach_target.agent,
-                    error=str(exc)[:256],
-                )
-                raise
+            return attach_app.attach_session(attach_target, cfg, launch_user, args.dry_run)
     else:
         sessions_probe.repeat_guardrail_for_legacy_socket(
             cfg, launch_user, session_stem, compatibility_root
@@ -329,46 +318,19 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         sessions,
         prefix=cfg.session_prefix,
     )
-    from uxon.infra import audit as _audit
-
-    _audit.audit(
-        "session.new",
-        profile=resolved.profile.id,
-        agent=resolved.agent.id,
-        target_user=launch_user,
-        project=target_dir,
-        branch=branch or "",
-        session=session,
-        dry_run=args.dry_run,
-    )
     if not args.dry_run:
         # Probe + (auto) start/create the container before exec when enabled.
         launch_app.ensure_runtime_ready(cfg, target_dir, resolved)
-    try:
-        return tmux.launch_in_tmux(
-            target_dir,
-            session,
-            args,
-            cfg,
-            branch,
-            resolved_profile=resolved,
-            server_running=bool(sessions),
-            active_sessions=sessions,
-        )
-    except Exception as exc:
-        _audit.audit(
-            "session.new",
-            outcome="error",
-            profile=resolved.profile.id,
-            agent=resolved.agent.id,
-            target_user=launch_user,
-            project=target_dir,
-            branch=branch or "",
-            session=session,
-            dry_run=args.dry_run,
-            error=str(exc)[:256],
-        )
-        raise
+    return tmux.launch_in_tmux(
+        target_dir,
+        session,
+        args,
+        cfg,
+        branch,
+        resolved_profile=resolved,
+        server_running=bool(sessions),
+        active_sessions=sessions,
+    )
 
 
 def _do_create_git_remote(
