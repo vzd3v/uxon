@@ -8,18 +8,18 @@ unit tests that drive it directly) stay valid; the controller takes the
 owning Screen as ``host`` and mutates ``host._dashboard_rows`` exactly as
 before.
 
-Render model (spec D6): the model selector emits the current row set; the
+Render model: the model selector emits the current row set; the
 pure :func:`uxon.tui.dashboard.order.place` function freezes it against the
 persisted order (existing rows keep their slot, new rows land in their host
 block, dead rows drop); the result is pushed to the :class:`SessionListView`
 in one ``set_rows`` call and the cursor is re-pinned by row-key. No diff, no
 reconciler — the widget repaints only the visible viewport. Each widget is
 queried once, and aux widgets (status bars, tab strip, superuser rows) are
-written **only when their value changed** vs the last tick (AC11), so an
+written **only when their value changed** vs the last tick, so an
 identical-data tick mutates nothing. The change-gate extends to the
 ``apply_ctx_refresh`` tail too: the tab-strip ``display`` write goes through
 ``_changed("tabs_display", …)``, and the status line through the screen's own
-gated ``_update_status_line`` writer (AC2/AC3).
+gated ``_update_status_line`` writer.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ class DashboardRender:
 
     def __init__(self, host: MainScreen) -> None:
         self.host = host
-        # Last-applied aux-widget values, for the AC11 changed-only gate:
+        # Last-applied aux-widget values, for the changed-only gate:
         # an identical-data tick must not call ``Static.update`` / ``label``
         # / ``display`` on an unchanged value. ``_UNSET`` distinguishes
         # "never written" from a legitimate ``None``/``False`` value.
@@ -69,7 +69,7 @@ class DashboardRender:
         """True iff ``value`` differs from the last write under ``key``.
 
         Records ``value`` as the new last-write. Used to gate aux-widget
-        mutations so an identical-data tick touches nothing (AC11).
+        mutations so an identical-data tick touches nothing.
         """
         prev = self._last.get(key, self._UNSET)
         if prev is value or prev == value:
@@ -132,7 +132,7 @@ class DashboardRender:
         empty/non-empty transition — the Static is mounted
         unconditionally.
 
-        Changed-only (AC11): the ``-hidden`` class and the placeholder
+        Changed-only: the ``-hidden`` class and the placeholder
         text are each written only when their value changed vs the last
         tick, so an identical-data tick issues no ``set_class`` / ``update``
         at the call site (not merely relies on Textual's self-no-op).
@@ -153,7 +153,7 @@ class DashboardRender:
     def refresh_dashboard(self) -> None:
         """Compute the model, place it in frozen order, drive the list view.
 
-        Owns the dashboard's per-tick lifecycle (spec D6): pull state,
+        Owns the dashboard's per-tick lifecycle: pull state,
         build the row tuple via :func:`select_dashboard_model` (full model
         — local own + local other-user + remote per-host rows), freeze it
         against the persisted order with :func:`place` (existing rows keep
@@ -165,7 +165,7 @@ class DashboardRender:
 
         Each widget is queried once; aux widgets (tab strip, status bars,
         superuser rows) are written only when their value changed vs the
-        last tick (AC11).
+        last tick.
 
         ``cross_user`` is *not* recomputed here — the active column tuple
         is fixed at ``__init__`` time, and a flip in
@@ -188,7 +188,7 @@ class DashboardRender:
         model_rows = select_dashboard_model(state, cfg_view, host._dashboard_ui)  # type: ignore[arg-type]
         # Freeze the model against the persisted order: existing rows keep
         # their slot, new rows land in their host block, dead rows drop
-        # (spec D2). Persist the new order back onto the App-owned state so
+        # . Persist the new order back onto the App-owned state so
         # a ctx rebuild / background refresh never re-sorts.
         placed = place(host.app.main_ui.row_order, model_rows)  # type: ignore[attr-defined]
         host.app.main_ui.row_order = tuple(r.key for r in placed)  # type: ignore[attr-defined]
@@ -279,7 +279,7 @@ class DashboardRender:
         active_bucket: HostBucket | None,
         status_lines: tuple[HostStatusLine, ...],
     ) -> None:
-        """Drive the by_host per-tab status line (changed-only — AC11).
+        """Drive the by_host per-tab status line (changed-only — ).
 
         Shows the active host's detail under its tab in by_host; hidden
         otherwise. The ``display`` flag and the line content are each
@@ -303,7 +303,7 @@ class DashboardRender:
             compact_bar.display = False
 
     def _update_fleet_bar(self, status_lines: tuple[HostStatusLine, ...]) -> None:
-        """Drive the fleet status bar (changed-only — AC11).
+        """Drive the fleet status bar (changed-only — ).
 
         Present in both views: collapsed = counts + quiet alerts;
         expanded (``h``) = one line per host. The summary/lines/expanded
@@ -325,7 +325,7 @@ class DashboardRender:
         visibility is toggled here, never by re-composing the tree
         (a sudo-reachability flip or a 0↔N session crossing used to force
         a focus-dropping screen swap). Each ``display`` / ``label`` write
-        is gated on a value change vs the last tick (AC11).
+        is gated on a value change vs the last tick.
         """
         host = self.host
         has_super = bool(host.cfg.sudo_caps.reachable_users)

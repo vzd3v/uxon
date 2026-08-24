@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""TOML serialization for the repo-level ``config/config.toml``.
+"""TOML serialization for the host-wide operator configuration.
 
 Split out of :mod:`uxon.infra.settings` so the schema + resolution +
 persistence concern stays separate from the render/round-trip/escape
@@ -7,9 +7,9 @@ concern. A true serialization leaf: imports nothing from ``uxon`` — the
 caller injects the schema constants (``schema_keys`` / ``table_keys``).
 Two render paths:
 
-* :func:`render_repo_config_toml` — minimal from-scratch emit (no
+* :func:`render_operator_config_toml` — minimal from-scratch emit (no
   comments), used only when no file exists yet. Pure stdlib.
-* :func:`update_repo_config_text` — comment-preserving round-trip that
+* :func:`update_operator_config_text` — comment-preserving round-trip that
   mutates only the changed keys, lazily importing ``tomlkit`` (the
   AGENTS.md "config writes require tomlkit" rule); CLI read paths stay
   on stdlib ``tomllib``.
@@ -69,13 +69,13 @@ def _format_value(v: Any) -> str:
     raise ValueError(f"unsupported TOML value type: {type(v).__name__}")
 
 
-def render_repo_config_toml(
-    repo_data: dict,
+def render_operator_config_toml(
+    operator_data: dict,
     *,
     schema_keys: Sequence[str],
     table_keys: Sequence[str],
 ) -> str:
-    """Render a minimal repo-level config.toml body from scratch.
+    """Render a minimal operator config body from scratch.
 
     Used only when there is no existing file to update (e.g. fresh
     install). No comments are emitted — an installer that wants a
@@ -89,13 +89,13 @@ def render_repo_config_toml(
     for key in schema_keys:
         if key in table_keys:
             continue
-        if key in repo_data:
-            lines.append(f"{key} = {_format_value(repo_data[key])}")
+        if key in operator_data:
+            lines.append(f"{key} = {_format_value(operator_data[key])}")
 
     for table_key in table_keys:
         lines.append("")
         lines.append(f"[{table_key}]")
-        table = repo_data.get(table_key) or {}
+        table = operator_data.get(table_key) or {}
         if isinstance(table, dict):
             for sub_key in sorted(table):
                 sub_val = table[sub_key]
@@ -111,7 +111,7 @@ def render_repo_config_toml(
 # ── Round-trip update (comment-preserving) ───────────────────────────
 
 
-def update_repo_config_text(
+def update_operator_config_text(
     existing_text: str,
     updates: dict,
     *,

@@ -70,7 +70,7 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     # Lane B — interactive terminal handoff: ``execvp`` replaces this image
     # with the ssh client, which keeps the controlling terminal. Bypasses
     # ``Popen``/the loop guard by construction.
-    # Audit must fire *before* ``os.execvp`` (Bug 7) — once the process
+    # Audit must fire *before* ``os.execvp`` — once the process
     # image is replaced the cached socket is gone.  ``audit()`` is a
     # non-blocking ``socket.send``, so the kernel buffers the datagram
     # and the data is handed off before we exec.
@@ -107,17 +107,16 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if args.host is not None:
         return _do_attach_remote(args, cfg)
 
-    # Bug 6 — peer-inbound branch.  When invoked over SSH the only
+    # Peer-inbound branch. When invoked over SSH the only
     # signal that this is the peer side of an ``attach.remote.out.dispatch`` is
     # ``SSH_CONNECTION`` in the env (sudo strips it on the next leg, so
-    # we have to capture it before the sudo execvp below).  Spec line
+    # we have to capture it before the sudo execvp below).
     # ``attach.remote.in.dispatch`` *replaces* ``session.attach.dispatch`` on the
     # peer side — both names describe the same physical event from
     # caller-vs-peer POV.
     #
-    # The spec also requires (line 207-209) that state-changing events
-    # emit on **both** the success and failure paths.  We honour that
-    # for the peer side too: every ``session.attach.dispatch`` emission point
+    # State-changing events emit on both success and failure paths. Every
+    # ``session.attach.dispatch`` emission point
     # below switches event name (``attach.remote.in.dispatch``) and identifier-field name
     # (``target_session`` instead of ``session``) when ``peer_inbound``.
     # An auditor querying ``EVENT=attach.remote.in.dispatch OUTCOME=denied``
@@ -166,7 +165,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         # Lane B — interactive terminal handoff: ``execvp`` replaces this
         # image with ``tmux attach``, which keeps the controlling terminal.
         # Bypasses ``Popen``/the loop guard by construction.
-        # Audit before ``os.execvp`` (Bug 7) — once the image is
+        # Audit before ``os.execvp`` — once the image is
         # replaced our cached socket is gone.
         _audit.audit(
             _attach_event,

@@ -14,7 +14,6 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import pwd
 import re
 import socket
 import stat
@@ -26,9 +25,8 @@ from uxon import __version__ as _uxon_version
 # ---------------------------------------------------------------------------
 # Module state.
 #
-# Module-level defaults are the values that apply *before* :func:`configure`
-# is called.  They have to be live so the config-error path (Bug 5) can fire
-# from ``main()`` *before* ``load_config`` completes.
+# Module-level defaults apply before :func:`configure` so configuration-load
+# failures can be audited with secure defaults.
 # ---------------------------------------------------------------------------
 
 enabled: bool = True
@@ -74,8 +72,6 @@ _SEVERITY_INFO = 6
 
 _JOURNAL_SOCKET_PATH = "/run/systemd/journal/socket"
 _DEV_LOG_PATH = "/dev/log"
-
-_FLAG_DENYLIST_PREFIXES: tuple[str, ...] = ("--token", "--password", "--secret")
 
 # Canonical 8-4-4-4-12 hex UUID shape. Used to validate
 # ``--audit-correlation-id`` values before they land in module state and
@@ -159,49 +155,6 @@ def extract_correlation_id(argv: list[str]) -> tuple[str | None, list[str]]:
     return found, out
 
 
-def _sanitize_flags(flags: list[str]) -> list[str]:
-    """Make argv suitable for inclusion in a log field.
-
-    Two transformations:
-      - Mask values of secret-bearing keyword flags (denylist prefixes
-        ``--token``, ``--password``, ``--secret``). Both ``--foo=value``
-        and ``--foo value`` shapes are handled.
-      - Drop the internal ``--audit-correlation-id`` flag (and its value)
-        entirely. It is peer-protocol metadata, already emitted as the
-        ``correlation_id`` envelope field; including it in ``flags`` is
-        duplicate noise.
-    """
-    out: list[str] = []
-    i = 0
-    n = len(flags)
-    while i < n:
-        a = flags[i]
-        if a == "--audit-correlation-id":
-            # Drop the flag and its (separated) value, if any.
-            i += 2 if i + 1 < n else 1
-            continue
-        if a.startswith("--audit-correlation-id="):
-            i += 1
-            continue
-        is_secret = a.startswith(_FLAG_DENYLIST_PREFIXES)
-        if is_secret and "=" in a:
-            name = a.split("=", 1)[0]
-            out.append(f"{name}=REDACTED")
-            i += 1
-            continue
-        if is_secret:
-            out.append(a)
-            if i + 1 < n:
-                out.append("REDACTED")
-                i += 2
-                continue
-            i += 1
-            continue
-        out.append(a)
-        i += 1
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Sink detection + prefix construction.
 # ---------------------------------------------------------------------------
@@ -225,28 +178,16 @@ def _detect_sink() -> str:
 
 
 def _build_prefix() -> dict[str, Any]:
-    """Compute the cached caller-context prefix.  Called once per process."""
-    sudo_user = os.environ.get("SUDO_USER") or ""
-    user_env = os.environ.get("USER", "")
-    caller_user = sudo_user or user_env
+    """Compute the cached kernel-backed process identity prefix."""
+    from uxon.infra.identity import login_identity
 
-    sudo_uid_raw = os.environ.get("SUDO_UID") or ""
-    try:
-        caller_uid = int(sudo_uid_raw) if sudo_uid_raw else os.getuid()
-    except ValueError:
-        caller_uid = os.getuid()
-
-    try:
-        launch_user = pwd.getpwuid(os.geteuid()).pw_name
-    except KeyError:
-        launch_user = ""
+    actor = login_identity()
 
     prefix: dict[str, Any] = {
         "host": socket.gethostname(),
         "uxon_version": _uxon_version,
-        "caller_user": caller_user,
-        "caller_uid": caller_uid,
-        "launch_user": launch_user,
+        "process_user": actor.user,
+        "process_uid": actor.uid,
         "pid": os.getpid(),
         "ppid": os.getppid(),
     }
@@ -394,7 +335,7 @@ def _lazy_init() -> None:
 def audit(event: str, *, outcome: str = "ok", **fields: Any) -> None:
     """Emit one structured audit event.  Never raises, never blocks.
 
-    Hot-path budget per spec:  enabled-check (~0.1 µs) + dict merge (~3 µs)
+    Expected hot-path budget: enabled-check (~0.1 µs) + dict merge (~3 µs)
     + serialize (~5–10 µs) + socket.send (~10 µs) ≈ 15–25 µs per event.
     """
     if not enabled:

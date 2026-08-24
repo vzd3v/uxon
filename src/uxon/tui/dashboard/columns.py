@@ -78,7 +78,7 @@ def assign_block_colors(
     return out
 
 
-# Distinct "runtime down" marker for the CPU/RAM cells (AC-P1.8): a session
+# Distinct "runtime down" marker for the CPU/RAM cells: a session
 # whose workload resource is stopped/absent renders this instead of a silent
 # idle 0/—, so an operator can tell a down workload from a healthy
 # idle agent at a glance.
@@ -88,11 +88,11 @@ RUNTIME_DOWN_CELL = "down"
 def format_cpu(row: SessionRow) -> Text:
     """Format CPU% with the >50/>10 colour thresholds.
 
-    The missing/zero distinction is collapsed at the adapter boundary
-    (``from_tui_session``), so this always renders the numeric value;
-    an idle row shows as ``"0.0"``. A session whose workload resource is
-    down renders a distinct dim marker rather than a misleading ``0.0``
-    (AC-P1.8).
+        The missing/zero distinction is collapsed at the adapter boundary
+        (``from_tui_session``), so this always renders the numeric value;
+        an idle row shows as ``"0.0"``. A session whose workload resource is
+        down renders a distinct dim marker rather than a misleading ``0.0``
+    .
     """
     if row.runtime_down:
         return Text(RUNTIME_DOWN_CELL, style="dim italic")
@@ -108,7 +108,7 @@ def format_ram(row: SessionRow) -> str:
     """Format ``rss_kib`` to the same compact unit shape ``cli`` uses.
 
     A session whose workload resource is down renders the distinct
-    down-marker rather than ``-`` (AC-P1.8) — same signal as the CPU cell.
+    down-marker rather than ``-`` — same signal as the CPU cell.
     """
     if row.runtime_down:
         return RUNTIME_DOWN_CELL

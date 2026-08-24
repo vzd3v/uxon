@@ -90,7 +90,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
             patch.object(uxon_agents, "_probe_one", side_effect=fake_probe_one),
             patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]),
-            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, [])),
+            patch("uxon.infra.config_loader.config_sources", return_value=()),
             redirect_stdout(io.StringIO()),
         ):
             doctor_app.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
@@ -119,7 +119,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
             patch.object(uxon_agents, "_probe_one", side_effect=fake_probe_one),
             patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]),
-            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, [])),
+            patch("uxon.infra.config_loader.config_sources", return_value=()),
             redirect_stdout(io.StringIO()) as captured,
         ):
             doctor_app.do_doctor(self._stub_cfg(), caller_user=_USER, launch_user=_USER, cwd="/tmp")
@@ -143,9 +143,9 @@ class DoctorParallelProbeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            repo_cfg = root / "config" / "config.toml"
-            repo_cfg.parent.mkdir()
-            repo_cfg.write_text('default_launch_user = "operator"\n', encoding="utf-8")
+            operator_cfg = root / "etc" / "uxon" / "config.toml"
+            operator_cfg.parent.mkdir(parents=True)
+            operator_cfg.write_text('default_launch_user = "operator"\n', encoding="utf-8")
             cwd = root / "project" / "sub"
             cwd.mkdir(parents=True)
             project_cfg = cwd.parent / ".uxon.toml"
@@ -159,7 +159,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
                 return original_open(path_self, *args, **kwargs)
 
             with (
-                patch("uxon.infra.version_probe.repo_root", return_value=root),
+                patch("uxon.infra.config_loader.OPERATOR_CONFIG_PATH", operator_cfg),
                 patch.object(Path, "open", spy_open),
                 patch("uxon.infra.probes.probe_host", return_value=self._stub_probe_host()),
                 patch.object(
@@ -169,7 +169,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
                 ),
                 patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
                 patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[]),
-                redirect_stdout(io.StringIO()),
+                redirect_stdout(io.StringIO()) as captured,
             ):
                 doctor_app.do_doctor(
                     self._stub_cfg(),
@@ -178,8 +178,8 @@ class DoctorParallelProbeTests(unittest.TestCase):
                     cwd=str(cwd),
                 )
 
-        self.assertIn(repo_cfg, opened)
         self.assertNotIn(project_cfg, opened)
+        self.assertIn(str(operator_cfg), captured.getvalue())
 
 
 class ProbeOneTimeoutOverrideTests(unittest.TestCase):
@@ -284,9 +284,7 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         stack.enter_context(
             patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[])
         )
-        stack.enter_context(
-            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, []))
-        )
+        stack.enter_context(patch("uxon.infra.config_loader.config_sources", return_value=()))
         return stack
 
     def test_no_flag_no_ssh_attempt(self) -> None:
@@ -487,9 +485,7 @@ class DoctorAuditLineTests(unittest.TestCase):
         stack.enter_context(
             patch("uxon.infra.sessions_probe.collect_sessions_for_user", return_value=[])
         )
-        stack.enter_context(
-            patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, []))
-        )
+        stack.enter_context(patch("uxon.infra.config_loader.config_sources", return_value=()))
         return stack
 
     def test_human_readable_has_audit_line(self) -> None:

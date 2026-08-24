@@ -71,8 +71,7 @@ def build_tui_context(
 
     ``sudo_caps_override`` lets the caller (typically ``on_refresh``)
     reuse a previously-probed :class:`SudoCapability` instead of
-    re-running the probe. Probing is one-shot at startup — the spec
-    forbids per-refresh re-probing because new sudo grants are picked
+    re-running the probe. Probing is one-shot at startup; new sudo grants are picked
     up by restarting ``uxon``, not by polling. When ``None`` and
     ``skeleton=False``, the function probes once.
     """
@@ -142,7 +141,7 @@ def build_tui_context(
             skipped_users = tuple(
                 sorted(u for u in candidates if u not in sudo_caps.reachable_users)
             )
-        # Spec line 223: ``list.peek`` fires when the TUI actually
+        # ``list.peek`` fires when the TUI actually
         # enumerates cross-user sessions (gated by ``enable_all_users_list``
         # and ``reachable_users`` being non-empty).  CLI ``uxon list
         # --all-users`` emits its own ``list.peek`` from the list block;
@@ -183,7 +182,7 @@ def build_tui_context(
     on_attach = _wrap_tui_callback(bridge.on_attach, _CbErr)
     on_kill = _wrap_tui_callback(bridge.on_kill, _CbErr)
     on_kill_all = _wrap_tui_callback(bridge.on_kill_all, _CbErr)
-    on_kill_all_global = _wrap_tui_callback(bridge.on_kill_all_global, _CbErr)
+    on_kill_all_reachable = _wrap_tui_callback(bridge.on_kill_all_reachable, _CbErr)
     on_remote_kill = _wrap_tui_callback(bridge.on_remote_kill, _CbErr)
     # on_remote_attach already raises CallbackError directly (see
     # TuiBridge.on_remote_attach) — no _wrap_tui_callback shim needed.
@@ -266,11 +265,8 @@ def build_tui_context(
         existing_projects = _list_existing_projects(cfg, launch_user, cfg.new_project_root)
         server_status = host_status_probe.read_server_status(cfg, launch_user, cfg.new_project_root)
 
-    # Pluggable refresh sources. PR1 ships a single source that wraps
-    # ``on_refresh()`` so the existing kick-refresh path runs through the
-    # registry — same wall behaviour, but now extensible. PR3 adds one
-    # source per configured remote host alongside this one.
-    #
+    # Pluggable refresh sources include one local context rebuild and one
+    # source per configured remote host.
     # The skeleton ctx still gets the full source list. SourceSpec
     # construction is pure (just stores names + lambdas), no I/O, so
     # there is no cost to wiring it on the fast-path. The ctx is what
@@ -284,9 +280,7 @@ def build_tui_context(
     from uxon.tui.refresh import SourceSpec
 
     # ``main_ctx_rebuild`` returns a fresh ``TuiContext``. The app's
-    # source-result handler routes this into ``apply_loaded_ctx``,
-    # which is the same swap-or-recompose path the legacy
-    # ``_MainCtxLoaded`` message used.
+    # source-result handler routes this into ``apply_loaded_ctx``.
     # The lambda captures ``on_refresh`` by name; by the time the
     # registry runs the fetch on a worker thread, ``on_refresh`` has
     # already been replaced (a few lines above) by its
@@ -322,8 +316,7 @@ def build_tui_context(
     # fetcher short-circuits to a cache-only snapshot so the UI keeps
     # rendering the last good payload without the cost of yet another
     # doomed connect. ``BreakerSpec`` defaults are intentional — no
-    # new config knobs in this commit. Wiring a per-host override is a
-    # follow-up.
+    # The breaker uses one fixed package policy across peers.
     host_breakers: dict[str, HostBreaker] = bridge._host_breakers
 
     def _make_remote_fetch(h, sem, multiplex, persist_seconds, breaker):
@@ -386,7 +379,7 @@ def build_tui_context(
         # Per-host cadence: ``host.interval`` (if set) wins over the
         # fleet-global ``tui_ssh_refresh_interval_seconds``. We pass
         # cadence_seconds_attr=None so the timer reads the explicit
-        # value and does not fall through to the legacy attribute path.
+        # value rather than a global cadence attribute.
         host_cadence = (
             float(host.interval)
             if host.interval is not None
@@ -454,7 +447,7 @@ def build_tui_context(
         on_attach=on_attach,
         on_kill=on_kill,
         on_kill_all=on_kill_all,
-        on_kill_all_global=on_kill_all_global,
+        on_kill_all_reachable=on_kill_all_reachable,
         on_remote_kill=on_remote_kill,
         on_remote_attach=on_remote_attach,
         on_refresh=on_refresh,

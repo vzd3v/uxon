@@ -49,7 +49,7 @@ class SessionRow:
     profile: str = ""
     runtime: str = ""
     runtime_resource: str = ""
-    # True iff this row's workload resource is stopped/absent (AC-P1.8).
+    # True iff this row's workload resource is stopped/absent.
     # Drives the distinct "runtime down" CPU/RAM rendering instead
     # of a silent idle 0/—. Defaults False so a peer running an older wire
     # schema (no such field) renders as a normal row.

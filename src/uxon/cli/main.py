@@ -16,6 +16,7 @@ import sys
 import uxon.app.listing as listing_app
 from uxon.cli.dispatch import dispatch
 from uxon.cli.parsing import parse_args
+from uxon.domain.args import owned_option_flags
 from uxon.domain.config import Config
 from uxon.errors import eprint
 from uxon.infra import config_loader, identity, version_probe
@@ -73,21 +74,15 @@ def main(argv: list[str] | None = None) -> int:
     from uxon.infra import audit as _audit
 
     try:
-        cfg = config_loader.load_config(os.getcwd())
+        cfg = config_loader.load_config()
     except SystemExit as ex:
-        # Bug 5 part 2 — convert config-load failure into an audit event.
-        # The audit module's compile-time defaults (``enabled=True``,
-        # ``syslog_facility="user"``) are what fires here; ``configure()``
-        # has not run yet because ``config_loader.load_config`` is what feeds it.
-        # Spec says ``error`` carries the first 256 chars of the error
-        # text; ``fail()`` stashes the human-readable message on
-        # ``ex.uxon_msg`` so we don't end up logging just the int exit
-        # code (``str(SystemExit(1)) == "1"``).
+        # Config errors are auditable before config-derived audit settings
+        # exist, using the module's secure defaults.
         err_msg = getattr(ex, "uxon_msg", None) or str(ex.code)
         _audit.audit(
             "config.error",
             outcome="error",
-            path=str(config_loader.repo_config_path()),
+            path=str(config_loader.operator_config_path()),
             error=err_msg[:256],
         )
         raise
@@ -128,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     # substantive operator gesture that belongs in the audit history.
     _audit.audit(
         "cli.start",
-        flags=_audit._sanitize_flags(list(argv or [])),
+        flags=owned_option_flags(args),
         profiles_enabled=list(cfg.launch.effective_enabled_profiles),
         enable_all_users_list=cfg.enable_all_users_list,
         audit_enabled=True,

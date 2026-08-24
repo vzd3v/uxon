@@ -5,10 +5,10 @@ It creates a :class:`uxon.tui.app.UxonApp`, waits for it to exit (either via
 the quit binding or :meth:`UxonApp.request_launch`), and — on a launch intent
 — executes the requested subprocess outside the textual render loop before
 creating a fresh app instance. This is the ``exit()``-based TTY handoff
-pattern described in the migration plan
+runner boundary described by the package architecture
 (``request_launch`` → ``exit()`` → runner handoff).
 
-Extracted from ``app.py`` in Phase P7. The ``import textual`` presence check
+The ``import textual`` presence check
 stays here (it is the optional-textual UX guard, sanctioned).
 """
 
@@ -180,8 +180,8 @@ def run(ctx: TuiContext) -> int:
         except Exception as exc:
             # ``Exception`` (not ``BaseException``): a KeyboardInterrupt or
             # SystemExit propagating up here is a user-driven interruption,
-            # not an error in the launched subprocess.  Spec's outcome
-            # alphabet has no "cancelled" label, so leave those uncaught
+            # not an error in the launched subprocess. The outcome alphabet
+            # has no "cancelled" label, so leave those uncaught
             # rather than mislabel them as ``outcome="error"``.
             _audit.audit(
                 "session.ended",

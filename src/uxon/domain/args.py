@@ -43,7 +43,7 @@ Notes:
   - Use '--attach-existing' or '--new-session' to bypass that prompt explicitly.
   - Non-interactive repeat handling can be pinned via UXON_REPEAT_NONINTERACTIVE_POLICY or config.
   - Unknown flags in run/new are passed to the selected terminal agent.
-  - --profile <id> selects a launch profile. --agent is no longer a uxon selector.
+  - --profile <id> selects a launch profile.
   - --mode <id> selects a permission mode from the chosen agent's catalog
     (unset picks the agent's first mode); an unknown id fails listing valid modes.
   - ID accepts: session name (with/without configured session_prefix), unique prefix, or active pane PID.
@@ -87,3 +87,30 @@ class ParsedArgs:
     # paths. Launch profile resolution reuses it only when it was probed for
     # the same effective launch user.
     host_report: HostReport | None = None
+
+
+def owned_option_flags(args: ParsedArgs) -> list[str]:
+    """Return only parsed Uxon option names for the ``cli.start`` audit event.
+
+    Values and ``agent_args`` are deliberately excluded: either may contain an
+    agent prompt or credential.  The event records which Uxon controls were
+    requested, not a reconstruction of the command line.
+    """
+    fields = (
+        (args.worktree_branch is not None, "--worktree"),
+        (args.repeat_mode == "attach", "--attach-existing"),
+        (args.repeat_mode == "new", "--new-session"),
+        (args.dry_run, "--dry-run"),
+        (args.force, "--force"),
+        (args.all_users, "--all-users"),
+        (args.profile is not None, "--profile"),
+        (args.permission_mode is not None, "--mode"),
+        (args.git_remote is not None, "--git-remote"),
+        (args.no_git, "--no-git"),
+        (args.git_visibility is not None, "--git-visibility"),
+        (args.json_output, "--json"),
+        (args.host is not None, "--host"),
+        (args.all_hosts, "--all-hosts"),
+        (args.user is not None, "--user"),
+    )
+    return [name for enabled, name in fields if enabled]

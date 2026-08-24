@@ -3,9 +3,7 @@
 Pure-data carriers: each class is a thin :class:`textual.message.Message`
 subclass holding the payload a worker thread hands back to the event loop.
 No behaviour lives here — the on-loop handlers (``UxonApp.on__*``) and the
-reducers in :mod:`uxon.tui.source_dispatch` interpret these. Extracted from
-``app.py`` in Phase P7 so the worker payload schema is a single, importable,
-behaviour-free surface that tests can synthesise without touching the App.
+reducers in :mod:`uxon.tui.source_dispatch` interpret these.
 
 ``Message`` is the only Textual symbol imported — unavoidable, and fine: this
 is a tui module, not a pure-domain one.
@@ -16,26 +14,6 @@ from __future__ import annotations
 from typing import Any
 
 from textual.message import Message
-
-from .context import TuiContext
-
-
-class _AgentAvailabilityUpdated(Message):
-    """Posted by the background probe worker when its dict update lands.
-
-    Handled only at the app level (:meth:`UxonApp.on__agent_availability_updated`).
-    Modals that need to refresh are invoked via ``call_later`` — no
-    re-posting of this message. Re-posting to screens caused the message
-    to bubble back up to the app and trigger a second dispatch, observed
-    as an infinitely-flashing agent list with the selection resetting
-    each tick.
-
-    Kept for backward compatibility with existing tests that synthesise
-    this message; the worker now posts :class:`_HostReportUpdated` and
-    derives the same dispatch from there.
-    """
-
-    bubble = False
 
 
 class _HostReportUpdated(Message):
@@ -102,8 +80,8 @@ class _WorktreesProbed(Message):
     list + an optional ``error`` message plus the ``on_done`` callback the
     launch flow handed in. The on-loop handler invokes
     ``on_done(launchable, workspaces, error)`` so it can gate / push
-    :class:`LaunchOptionsScreen` safely off the worker thread (§4.2 — both
-    the launchability ``sudo`` probe and the git worktree probe run in the
+    :class:`LaunchOptionsScreen` safely off the worker thread (both
+    the launchability probe and the git worktree probe run in the
     thread; the screen push runs on the loop). ``launchable`` is ``None``
     when the caller pre-resolved it (cwd's reactive slot) and asked for no
     probe. ``error`` is a non-empty string only when the git probe raised
@@ -164,23 +142,6 @@ class _OffLoopCallbackDone(Message):
         self.on_success = on_success
         self.on_error = on_error
         self.instance_epoch = instance_epoch
-
-
-class _MainCtxLoaded(Message):
-    """Posted when the ``main_ctx_rebuild`` source returns a fresh ctx.
-
-    Applied via :meth:`MainScreen.apply_loaded_ctx`. The screen patches
-    itself in place or swaps for a fresh MainScreen when the layout
-    changed. Dispatched from :class:`_RefreshSourceLanded` for the
-    ``main_ctx_rebuild`` source.
-    """
-
-    bubble = False
-
-    def __init__(self, ctx: TuiContext | None, error: str = "") -> None:
-        super().__init__()
-        self.ctx = ctx
-        self.error = error
 
 
 class _RefreshSourceLanded(Message):

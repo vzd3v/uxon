@@ -95,7 +95,7 @@ class FleetStatusBar(Widget):
         # writes below. ``None`` until the first ``update_fleet`` so the
         # initial state always lands. The collapsed-counts line still updates
         # every tick (telemetry shifts each tick; ``layout=False`` keeps it a
-        # repaint, not a relayout — AC7).
+        # repaint, not a relayout — ).
         self._last_expanded: bool | None = None
 
     def compose(self) -> ComposeResult:
@@ -134,7 +134,7 @@ class FleetStatusBar(Widget):
         else:
             # ``layout=False``: the counts line is a single row of stable
             # height — a content swap must repaint it, not request a
-            # screen-global relayout (AC8). The fleet totals shift on every
+            # screen-global relayout. The fleet totals shift on every
             # telemetry tick, so this is on the steady-tick hot path.
             counts.update(format_collapsed(summary), layout=False)
             counts.set_class(bool(summary.alerts), "-alert")
@@ -147,7 +147,7 @@ class FleetStatusBar(Widget):
             text = _render(line)
             if i < len(existing):
                 # ``layout=False``: stable single-line host row; content
-                # swap repaints without a global relayout (AC8).
+                # swap repaints without a global relayout.
                 existing[i].update(text, layout=False)  # type: ignore[attr-defined]
             else:
                 box.mount(Static(text, id=f"fleet-line-{i}"))

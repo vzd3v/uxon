@@ -24,35 +24,28 @@ DEFAULTS = {
 
 class ResolveSettingEntriesTests(unittest.TestCase):
     def test_default_when_unset(self) -> None:
-        entries = cs.resolve_setting_entries({}, {}, None, DEFAULTS)
+        entries = cs.resolve_setting_entries({}, DEFAULTS)
         by_key = {e.spec.key: e for e in entries}
         self.assertEqual(by_key["default_launch_user"].source, "default")
         self.assertEqual(by_key["default_launch_user"].value, "")
         self.assertTrue(by_key["default_launch_user"].editable)
 
-    def test_repo_override(self) -> None:
-        entries = cs.resolve_setting_entries(
-            {"default_launch_user": "dana_agent"}, {}, None, DEFAULTS
-        )
+    def test_operator_override(self) -> None:
+        entries = cs.resolve_setting_entries({"default_launch_user": "dana_agent"}, DEFAULTS)
         by_key = {e.spec.key: e for e in entries}
-        self.assertEqual(by_key["default_launch_user"].source, "repo")
+        self.assertEqual(by_key["default_launch_user"].source, "operator")
         self.assertEqual(by_key["default_launch_user"].value, "dana_agent")
         self.assertTrue(by_key["default_launch_user"].editable)
 
-    def test_project_data_is_ignored(self) -> None:
-        entries = cs.resolve_setting_entries(
-            {"default_launch_user": "repoish"},
-            {"default_launch_user": "projish"},
-            Path("/p/.uxon.toml"),
-            DEFAULTS,
-        )
+    def test_only_operator_data_is_resolved(self) -> None:
+        entries = cs.resolve_setting_entries({"default_launch_user": "operator"}, DEFAULTS)
         by_key = {e.spec.key: e for e in entries}
-        self.assertEqual(by_key["default_launch_user"].source, "repo")
-        self.assertEqual(by_key["default_launch_user"].value, "repoish")
+        self.assertEqual(by_key["default_launch_user"].source, "operator")
+        self.assertEqual(by_key["default_launch_user"].value, "operator")
         self.assertTrue(by_key["default_launch_user"].editable)
 
 
-class RenderRepoConfigTomlTests(unittest.TestCase):
+class RenderOperatorConfigTomlTests(unittest.TestCase):
     def test_round_trip_simple(self) -> None:
         data = {
             "default_launch_user": "dana_agent",
@@ -66,7 +59,7 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
             "repeat_noninteractive_mode": "fail",
             "tmux_socket_template": "/tmp/ccw-{user}.sock",
         }
-        content = ct.render_repo_config_toml(
+        content = ct.render_operator_config_toml(
             data, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         parsed = tomllib.loads(content)
@@ -89,7 +82,7 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
             "default_launch_user": "a",
             "launch_user_by_caller": {"caller1": "dana_agent", "caller2": "erin"},
         }
-        content = ct.render_repo_config_toml(
+        content = ct.render_operator_config_toml(
             data, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         parsed = tomllib.loads(content)
@@ -99,7 +92,7 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
 
     def test_escapes_quotes_in_strings(self) -> None:
         data = {"default_launch_user": 'quote"here'}
-        content = ct.render_repo_config_toml(
+        content = ct.render_operator_config_toml(
             data, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         parsed = tomllib.loads(content)
@@ -109,7 +102,7 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
         self.assertEqual(ct._format_value(2.5), "2.5")
 
     def test_always_emits_launch_user_by_caller_header(self) -> None:
-        content = ct.render_repo_config_toml(
+        content = ct.render_operator_config_toml(
             {"default_launch_user": "x"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         self.assertIn("[launch_user_by_caller]", content)
@@ -139,7 +132,7 @@ class MutatorTests(unittest.TestCase):
             cs.replace_mapping({}, "launch_user_by_caller", {"a": 1})
 
 
-class UpdateRepoConfigTextTests(unittest.TestCase):
+class UpdateOperatorConfigTextTests(unittest.TestCase):
     def test_preserves_comments_and_unrelated_keys(self) -> None:
         original = (
             "# top comment\n"
@@ -152,7 +145,7 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
             "# who launches what\n"
             'alice = "dana_agent"\n'
         )
-        new = ct.update_repo_config_text(
+        new = ct.update_operator_config_text(
             original,
             {"default_launch_user": "erin"},
             schema_keys=cs.SCHEMA_KEYS,
@@ -177,7 +170,7 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
             "[launch_user_by_caller]\n"
             'alice = "dana_agent"\n'
         )
-        new = ct.update_repo_config_text(
+        new = ct.update_operator_config_text(
             original,
             {"launch_user_by_caller": {"bob": "erin"}},
             schema_keys=cs.SCHEMA_KEYS,
@@ -189,13 +182,13 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
 
     def test_unknown_key_raises(self) -> None:
         with self.assertRaises(KeyError):
-            ct.update_repo_config_text(
+            ct.update_operator_config_text(
                 "", {"nonsense": 1}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
             )
 
     def test_table_requires_mapping(self) -> None:
         with self.assertRaises(ValueError):
-            ct.update_repo_config_text(
+            ct.update_operator_config_text(
                 "",
                 {"launch_user_by_caller": "notadict"},
                 schema_keys=cs.SCHEMA_KEYS,
@@ -203,14 +196,14 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
             )
 
     def test_fresh_file_emits_only_requested_keys(self) -> None:
-        new = ct.update_repo_config_text(
+        new = ct.update_operator_config_text(
             "", {"default_launch_user": "x"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         parsed = tomllib.loads(new)
         self.assertEqual(parsed, {"default_launch_user": "x"})
 
 
-class PersistRepoConfigUpdatesTests(unittest.TestCase):
+class PersistOperatorConfigUpdatesTests(unittest.TestCase):
     def test_round_trip_on_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
@@ -218,7 +211,8 @@ class PersistRepoConfigUpdatesTests(unittest.TestCase):
                 '# hello\ndefault_launch_user = "a"\nsession_prefix = "cc-"\n',
                 encoding="utf-8",
             )
-            cs.persist_repo_config_updates(path, {"default_launch_user": "b"})
+            with mock.patch("os.geteuid", return_value=0):
+                cs.persist_operator_config_updates(path, {"default_launch_user": "b"})
             text = path.read_text(encoding="utf-8")
             self.assertIn("# hello", text)
             parsed = tomllib.loads(text)
@@ -228,12 +222,13 @@ class PersistRepoConfigUpdatesTests(unittest.TestCase):
     def test_fresh_file_creates_minimal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            cs.persist_repo_config_updates(path, {"default_launch_user": "z"})
+            with mock.patch("os.geteuid", return_value=0):
+                cs.persist_operator_config_updates(path, {"default_launch_user": "z"})
             parsed = tomllib.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(parsed, {"default_launch_user": "z"})
 
 
-class RemoveRepoKeyTests(unittest.TestCase):
+class RemoveOperatorKeyTests(unittest.TestCase):
     def test_removes_key_preserving_comments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
@@ -241,7 +236,8 @@ class RemoveRepoKeyTests(unittest.TestCase):
                 '# keep me\ndefault_launch_user = "a"\nsession_prefix = "cc-"\n',
                 encoding="utf-8",
             )
-            cs.remove_repo_key(path, "default_launch_user")
+            with mock.patch("os.geteuid", return_value=0):
+                cs.remove_operator_key(path, "default_launch_user")
             text = path.read_text(encoding="utf-8")
             self.assertIn("# keep me", text)
             parsed = tomllib.loads(text)
@@ -250,44 +246,58 @@ class RemoveRepoKeyTests(unittest.TestCase):
 
     def test_missing_file_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cs.remove_repo_key(Path(tmp) / "nope.toml", "default_launch_user")
+            cs.remove_operator_key(Path(tmp) / "nope.toml", "default_launch_user")
 
 
-class WriteRepoConfigTomlTests(unittest.TestCase):
-    def test_direct_write_when_writable(self) -> None:
+class WriteOperatorConfigTomlTests(unittest.TestCase):
+    def test_root_write_is_atomic_and_mode_0644(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            cs.write_repo_config_toml('default_launch_user = "x"\n', path)
+            with mock.patch("os.geteuid", return_value=0):
+                cs.write_operator_config_toml('default_launch_user = "x"\n', path)
             self.assertEqual(path.read_text(encoding="utf-8"), 'default_launch_user = "x"\n')
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
 
-    def test_falls_back_to_sudo_tee_on_permission_error(self) -> None:
-        target = Path("/tmp/ccw_test_dummy_config.toml")
+    def test_nonroot_uses_root_owned_install(self) -> None:
+        target = Path("/etc/uxon/config.toml")
 
-        # First call (tmp.replace) raises PermissionError; sudo path writes
-        # through the single sanctioned spawn primitive ``run_query``.
         real_run = mock.Mock(return_value=mock.Mock(returncode=0, stderr=b""))
-        with mock.patch("uxon.infra.settings.run_query", real_run):
-            with mock.patch.object(Path, "replace", side_effect=PermissionError):
-                with mock.patch.object(Path, "write_text"):
-                    cs.write_repo_config_toml("data", target)
+        with (
+            mock.patch("uxon.infra.settings.run_query", real_run),
+            mock.patch("os.geteuid", return_value=1000),
+        ):
+            cs.write_operator_config_toml("data", target)
         self.assertEqual(real_run.call_count, 1)
         cmd = real_run.call_args[0][0]
-        # No shell interpolation: plain sudo tee with destination as a
-        # separate argv element.
-        self.assertEqual(cmd[:3], ["sudo", "tee", "--"])
-        self.assertEqual(cmd[3], str(target))
+        self.assertEqual(
+            cmd,
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/bin/install",
+                "-o",
+                "root",
+                "-g",
+                "root",
+                "-m",
+                "0644",
+                "--",
+                "/dev/stdin",
+                str(target),
+            ],
+        )
         # Content goes via stdin (bytes), not the command line.
         self.assertEqual(real_run.call_args.kwargs["input"], b"data")
         self.assertFalse(real_run.call_args.kwargs["text"])
 
 
-class LoadSettingsSourcesTests(unittest.TestCase):
-    def test_does_not_open_project_uxon_toml(self) -> None:
+class LoadSettingsSourceTests(unittest.TestCase):
+    def test_reads_only_canonical_operator_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            repo_cfg = root / "config" / "config.toml"
-            repo_cfg.parent.mkdir()
-            repo_cfg.write_text('default_launch_user = "repo"\n', encoding="utf-8")
+            operator_cfg = root / "etc" / "uxon" / "config.toml"
+            operator_cfg.parent.mkdir(parents=True)
+            operator_cfg.write_text('default_launch_user = "operator"\n', encoding="utf-8")
             project = root / "work"
             project.mkdir()
             project_cfg = project / ".uxon.toml"
@@ -300,14 +310,12 @@ class LoadSettingsSourcesTests(unittest.TestCase):
                 opened.append(path_self)
                 return original_open(path_self, *args, **kwargs)
 
-            with mock.patch("uxon.infra.version_probe.repo_root", return_value=root):
+            with mock.patch("uxon.infra.config_loader.OPERATOR_CONFIG_PATH", operator_cfg):
                 with mock.patch.object(Path, "open", spy_open):
-                    repo_data, project_data, project_path = cs.load_settings_sources(str(project))
+                    operator_data = cs.load_settings_source()
 
-        self.assertEqual(repo_data["default_launch_user"], "repo")
-        self.assertEqual(project_data, {})
-        self.assertIsNone(project_path)
-        self.assertIn(repo_cfg, opened)
+        self.assertEqual(operator_data["default_launch_user"], "operator")
+        self.assertIn(operator_cfg, opened)
         self.assertNotIn(project_cfg, opened)
 
 
@@ -334,8 +342,9 @@ class WorktreeSettingsSpecTests(unittest.TestCase):
     def test_worktree_base_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "config.toml"
-            cs.persist_repo_config_updates(path, {"worktree_base": "remote"})
-            cs.persist_repo_config_updates(path, {"worktree_root": "/data/wt"})
+            with mock.patch("os.geteuid", return_value=0):
+                cs.persist_operator_config_updates(path, {"worktree_base": "remote"})
+                cs.persist_operator_config_updates(path, {"worktree_root": "/data/wt"})
             text = path.read_text()
         self.assertIn('worktree_base = "remote"', text)
         self.assertIn('worktree_root = "/data/wt"', text)
@@ -355,7 +364,8 @@ class TmuxManageOptionsSpecTests(unittest.TestCase):
     def test_manage_options_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "config.toml"
-            cs.persist_repo_config_updates(path, {"tmux.manage_options": True})
+            with mock.patch("os.geteuid", return_value=0):
+                cs.persist_operator_config_updates(path, {"tmux.manage_options": True})
             text = path.read_text()
             parsed = tomllib.loads(text)
         self.assertTrue(parsed["tmux"]["manage_options"])

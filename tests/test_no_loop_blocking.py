@@ -123,13 +123,13 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="me",
-        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
+        on_launch_cwd=lambda profile_id, mode_id, target_dir=None: LaunchRequest(
             cmd=("/bin/true",), label="cwd"
         ),
-        on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
+        on_launch_new=lambda n, profile_id, mode_id, g: LaunchRequest(
             cmd=("/bin/true",), label="new"
         ),
-        on_launch_existing=lambda n, agent_id, mode_id: LaunchRequest(
+        on_launch_existing=lambda n, profile_id, mode_id: LaunchRequest(
             cmd=("/bin/true",), label="existing"
         ),
     )
@@ -287,7 +287,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             app.screen._launch_flow.maybe_show_session_choice(
                 target_dir="/srv/work/proj",
                 target_label="proj",
-                agent_id="claude",
+                profile_id="claude",
                 mode_id="normal",
                 on_new=lambda: new_called.append(True),
                 probe=probe,
@@ -316,7 +316,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
 
         rec: list[bool] = []
 
-        def on_launch_cwd(agent_id, mode_id, target_dir=None):
+        def on_launch_cwd(profile_id, mode_id, target_dir=None):
             rec.append(_on_loop())
             return LaunchRequest(cmd=("/bin/true",), label="cwd")
 
@@ -373,7 +373,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
 
         rec: list[bool] = []
 
-        def on_launch_cwd(agent_id, mode_id, target_dir=None):
+        def on_launch_cwd(profile_id, mode_id, target_dir=None):
             # Drive the REAL runtime probe shell-out (the new off-loop work)
             # and record the thread it runs on. ``subprocess.run`` is the
             # guarded boundary; ``["true"]`` exits 0 fast. Probe as the current

@@ -331,10 +331,10 @@ def _agent_id_for_launch_choice(
 
 def mode_item_ids(
     agents: Mapping[str, Any],
-    agent_id: str,
+    profile_id: str,
     launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
 ) -> tuple[str, ...]:
-    spec = agents.get(_agent_id_for_launch_choice(agents, agent_id, launch_profiles))
+    spec = agents.get(_agent_id_for_launch_choice(agents, profile_id, launch_profiles))
     if spec is None:
         return ()
     return tuple(f"mode-{mode.id}" for mode in spec.permission_modes)
@@ -342,11 +342,11 @@ def mode_item_ids(
 
 def launch_mode_id(
     agents: Mapping[str, Any],
-    agent_id: str,
+    profile_id: str,
     mode_index: int,
     launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
 ) -> str | None:
-    spec = agents.get(_agent_id_for_launch_choice(agents, agent_id, launch_profiles))
+    spec = agents.get(_agent_id_for_launch_choice(agents, profile_id, launch_profiles))
     if spec is None:
         return None
     modes = spec.permission_modes

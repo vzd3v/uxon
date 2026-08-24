@@ -76,7 +76,7 @@ def read_cached_snapshot(name: str, *, override_dir: Path | None = None) -> Remo
     cached_at = blob.get("cached_at_epoch")
     if not isinstance(sessions, list) or not isinstance(cached_at, (int, float)):
         return None
-    # Forward-compat: pre-stage-5 caches don't carry scope flags.
+    # Same-major cache files may omit optional scope flags.
     # Treat as defaults rather than discarding the cache file.
     raw_limited = blob.get("scope_limited", False)
     scope_limited = bool(raw_limited) if isinstance(raw_limited, bool) else False
@@ -132,7 +132,7 @@ def write_cached_snapshot(snapshot: RemoteSnapshot, *, override_dir: Path | None
         "host_name": snapshot.host_name,
         "cached_at_epoch": snapshot.fetched_at_epoch,
         "sessions": snapshot.sessions,
-        # Stage 5 step 8: persist scope flags. Without them, a peer
+        # Persist scope flags. Without them, a peer
         # that flipped enable_all_users_list = false (or a peer that
         # accumulated scope_skipped users) would lose that signal on
         # the next cache-fallback path and the TUI would surface a

@@ -50,7 +50,6 @@ def _gc_launch_records(
 ) -> None:
     garbage_collect_records(
         live,
-        socket_path=socket_path,
         override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
         shared=bool(cfg.launch_record_dir),
         launch_user=launch_user,
@@ -67,17 +66,17 @@ def enrich_session_usage(
     """Fill each session's ``cpu_pct`` / ``rss_kib`` from a single ``ps`` table.
 
     A direct-runtime session takes the unchanged pane-PID child-walk, with
-    **zero** added subprocess or ``/proc`` read (AC-P0.4). Every new
+    **zero** added subprocess or ``/proc`` read. Every new
     branch below is gated on a non-empty ``session.runtime_resource`` marker, so a
     deployment with no command-runtime sessions never reaches workload telemetry.
 
     A command-runtime session is attributed from its resource's cgroup
     membership (``runtime_cgroup`` → ``cgroup.procs``) rather than the pane
     walk (the pane's child is the runtime client, not the workload agent).
-    Per-distinct-resource work is done once (AC-P1.5): the cgroup read, the
+    Per-distinct-resource work is done once: the cgroup read, the
     optional privileged ``environ`` split, and — only when the cgroup is empty —
     the ``ready_command`` liveness probe. Any unresolvable piece degrades that
-    session to ``0``/``—`` (AC-P1.3), never raising.
+    session to ``0``/``—``, never raising.
     """
     if not sessions:
         return
@@ -162,7 +161,7 @@ def _enrich_runtime_sessions(
 ) -> None:
     """Attribute workload CPU/RAM for the marker-carrying sessions.
 
-    Work is bounded by the number of **distinct cgroups** (AC-P1.5): each
+    Work is bounded by the number of **distinct cgroups**: each
     cgroup's ``cgroup.procs`` is read once; the per-session ``UXON_SESSION``
     split (a single privileged ``environ`` batch) runs only when ≥2 sessions
     share one cgroup; the ``ready_command`` liveness probe runs only when a
@@ -210,8 +209,8 @@ def _enrich_runtime_sessions(
         pid_to_session = _read_pid_sessions(cfg, launch_user, cgroup_pids)
         if pid_to_session is None:
             # No privilege / unreadable → degrade to the per-resource SHARED
-            # figure: every sharing session shows the summed total (AC-P1.6
-            # degrade), never an error.
+            # figure: every sharing session shows the summed total, never an
+            # error.
             shared_rss, shared_cpu = sum_usage_for_pids(cgroup_pids, proc_rows)
             for session in group:
                 session.rss_kib = shared_rss
@@ -254,7 +253,7 @@ def _mark_runtime_down(
     """Flag a group's sessions runtime-down iff ``ready_command`` confirms it.
 
     Called only when the cgroup is empty/unresolvable. The liveness probe runs
-    once per distinct resource (AC-P1.5). The session's runtime is
+    once per distinct resource. The session's runtime is
     looked up via ``runtimes``; without an ``ready_command`` template
     (or with no profile threaded in) uxon cannot confirm down-state, so the
     sessions stay at the already-set ``0``/``—`` degrade rather than asserting a
@@ -674,12 +673,12 @@ def probe_tui_compatible_sessions(
     cfg: Config,
     launch_user: str,
     target_dir: str,
-    agent_id: str,
+    profile_id: str,
     *,
     stem: str | None = None,
     compatibility_root: str | None = None,
 ) -> tuple[SessionInfo, ...]:
-    """Return launch_user's sessions compatible with ``target_dir`` + ``agent_id``.
+    """Return launch user's sessions compatible with a target and launch profile.
 
     Pure side-effect-free read of the live tmux session list (modulo the
     path-safety ``fail()`` inherited from :func:`compatible_indexed_sessions`,
@@ -692,7 +691,7 @@ def probe_tui_compatible_sessions(
     stem and the target dir (the unchanged primary/non-worktree path). For
     a worktree target the caller passes the repo-qualified
     :func:`session_stem_for_worktree` and the worktree path so the probe
-    derives the *same* stem the planner used (§2.5) — generalising here
+    derives the *same* stem the planner used — generalising here
     rather than always deriving from the basename is the fix that keeps
     the attach guard reliable across repos.
     """
@@ -704,7 +703,7 @@ def probe_tui_compatible_sessions(
     sessions = collect_sessions([launch_user], cfg)
     matches = compatible_indexed_sessions(
         session_stem,
-        agent_id,
+        profile_id,
         root,
         sessions,
         prefix=cfg.session_prefix,

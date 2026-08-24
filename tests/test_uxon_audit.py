@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Tests for the audit channel (``uxon.infra.audit``).
 
-Covers spec §Testability:
-- prefix construction (caller_uid from SUDO_UID, ssh_client omission)
+Covers:
+- kernel-backed process identity and SSH metadata
 - sink detection ordering (journal > syslog > none)
 - native-journal serialization (``KEY=value\\n`` lines)
 - syslog-CEE serialization (``<PRI>1 …  @cee: {…}``)
-- flag sanitiser (Bug 8)
+- parsed-only CLI option flags
 - ``audit.enabled = false`` short-circuit
 - correlation-id flag plumbing
 - end-to-end ``audit()`` field set
@@ -24,7 +24,9 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+from uxon.domain.args import ParsedArgs, owned_option_flags
 from uxon.infra import audit as au
+from uxon.infra.identity import LoginIdentity
 
 
 def _reset_audit_state() -> None:
@@ -46,15 +48,19 @@ class _BaseAuditTests(unittest.TestCase):
 
 
 class PrefixConstructionTests(_BaseAuditTests):
-    def test_sudo_uid_overrides_real_uid(self) -> None:
+    def test_uses_kernel_backed_login_identity(self) -> None:
         env = {"SUDO_USER": "alice", "SUDO_UID": "9001", "USER": "root"}
         with (
             patch.dict("os.environ", env, clear=False),
             patch("socket.gethostname", return_value="host1"),
+            patch(
+                "uxon.infra.identity.login_identity",
+                return_value=LoginIdentity(user="kernel-user", uid=8123),
+            ),
         ):
             prefix = au._build_prefix()
-        self.assertEqual(prefix["caller_user"], "alice")
-        self.assertEqual(prefix["caller_uid"], 9001)
+        self.assertEqual(prefix["process_user"], "kernel-user")
+        self.assertEqual(prefix["process_uid"], 8123)
         self.assertEqual(prefix["host"], "host1")
         self.assertNotIn("ssh_client", prefix)
 
@@ -63,11 +69,14 @@ class PrefixConstructionTests(_BaseAuditTests):
         with (
             patch.dict("os.environ", env, clear=True),
             patch("socket.gethostname", return_value="host2"),
+            patch(
+                "uxon.infra.identity.login_identity",
+                return_value=LoginIdentity(user="login-user", uid=1000),
+            ),
         ):
             prefix = au._build_prefix()
         self.assertEqual(prefix["ssh_client"], "10.0.0.7 51234 192.168.1.5 22")
-        # No SUDO_USER → caller_user falls back to USER.
-        self.assertEqual(prefix["caller_user"], "bob")
+        self.assertEqual(prefix["process_user"], "login-user")
 
     def test_subcmd_in_prefix_after_configure(self) -> None:
         au.configure(enabled=True, syslog_facility="user", subcmd="attach")
@@ -75,19 +84,18 @@ class PrefixConstructionTests(_BaseAuditTests):
             prefix = au._build_prefix()
         self.assertEqual(prefix["subcmd"], "attach")
 
-    def test_malformed_sudo_uid_falls_back_to_real_uid(self) -> None:
-        # ``SUDO_UID`` is a string in the environment; if it is unparseable
-        # (operator-set or proc/env corruption), ``int(...)`` raises
-        # ValueError. Spec contract: never raise, always emit; fall back
-        # to ``os.getuid()`` so the prefix stays well-formed.
-        env = {"SUDO_USER": "alice", "SUDO_UID": "not-a-number", "USER": "root"}
+    def test_environment_cannot_forge_process_identity(self) -> None:
+        env = {"SUDO_USER": "forged", "SUDO_UID": "9001", "USER": "forged"}
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("socket.gethostname", return_value="host3"),
-            patch("os.getuid", return_value=12345),
+            patch(
+                "uxon.infra.identity.login_identity",
+                return_value=LoginIdentity(user="kernel-user", uid=12345),
+            ),
         ):
             prefix = au._build_prefix()
-        self.assertEqual(prefix["caller_uid"], 12345)
+        self.assertEqual(prefix["process_user"], "kernel-user")
+        self.assertEqual(prefix["process_uid"], 12345)
 
 
 class SinkDetectionTests(_BaseAuditTests):
@@ -214,40 +222,20 @@ class SyslogSerializationTests(_BaseAuditTests):
         self.assertEqual(int(m.group(1)), 14)
 
 
-class FlagSanitizerTests(_BaseAuditTests):
-    def test_token_file_value_redacted_inline(self) -> None:
-        out = au._sanitize_flags(["--token-file=/etc/secrets/x", "--project=x"])
-        self.assertEqual(out, ["--token-file=REDACTED", "--project=x"])
-
-    def test_token_file_value_redacted_separated(self) -> None:
-        out = au._sanitize_flags(["--token-file", "/etc/secrets/x", "--project", "p"])
-        self.assertEqual(out, ["--token-file", "REDACTED", "--project", "p"])
-
-    def test_password_and_secret_prefixes(self) -> None:
-        out = au._sanitize_flags(
-            [
-                "--password=abc",
-                "--secret-key",
-                "xyz",
-                "--keep",
-                "v",
-            ]
+class OwnedOptionFlagTests(_BaseAuditTests):
+    def test_agent_prompt_and_credentials_are_never_recorded(self) -> None:
+        args = ParsedArgs(
+            action="run",
+            profile="codex",
+            permission_mode="safe",
+            dry_run=True,
+            agent_args=["--api-key", "top-secret", "write my private prompt"],
         )
-        self.assertEqual(out, ["--password=REDACTED", "--secret-key", "REDACTED", "--keep", "v"])
+        self.assertEqual(owned_option_flags(args), ["--dry-run", "--profile", "--mode"])
 
-    def test_audit_correlation_id_separated_dropped(self) -> None:
-        out = au._sanitize_flags(
-            ["--audit-correlation-id", "8f3c2d4e-1a6b-4c5e-9f7d-0a1b2c3d4e5f", "list", "--json"]
-        )
-        self.assertEqual(out, ["list", "--json"])
-
-    def test_audit_correlation_id_inline_dropped(self) -> None:
-        out = au._sanitize_flags(["--audit-correlation-id=abc", "list", "--json"])
-        self.assertEqual(out, ["list", "--json"])
-
-    def test_audit_correlation_id_trailing_no_value(self) -> None:
-        out = au._sanitize_flags(["list", "--audit-correlation-id"])
-        self.assertEqual(out, ["list"])
+    def test_option_values_are_not_recorded(self) -> None:
+        args = ParsedArgs(action="attach", host="secret-host", user="secret-user")
+        self.assertEqual(owned_option_flags(args), ["--host", "--user"])
 
 
 class AuditDisabledTests(_BaseAuditTests):

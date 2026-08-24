@@ -3,7 +3,7 @@
 :class:`WorkerCoordinator` owns the App's background fan-out: the per-source
 refresh workers, the host / link-health / cwd-writable probes, the one-shot
 worktree probe, the per-source/per-probe in-flight gating, and the teardown
-drain. Extracted from ``app.py`` in Phase P7.
+drain.
 
 The Textual primitives the coordinator needs are **injected** at construction
 (captured from the App), not reached through a hidden back-reference:
@@ -381,7 +381,7 @@ class WorkerCoordinator:
         """Probe ``cwd`` off the event loop; call ``on_done(launchable, list, error)``.
 
         Off-event-loop git probe (under the non-interactive sudo prefix on
-        the CLI side, §4.2). Runs ONCE per launch-flow open, before the
+        the CLI side). Runs once per launch-flow open, before the
         launch screen is pushed. The worker reads ``on_probe_worktrees``
         off the frozen :class:`TuiConfig` (no mutable-ctx access from the
         thread, same rule as :meth:`_probe_link_health_worker`), then posts
@@ -487,10 +487,8 @@ class WorkerCoordinator:
     def drain(self, *, grace_seconds: float = 0.1) -> None:
         """Cancel every tracked worker and wait briefly for completion.
 
-        Spec § Worker lifetime: "Before App.run() returns, every
-        in-flight worker is awaited (or hard-cancelled with a 100 ms
-        grace). No worker thread survives the App instance that
-        spawned it."
+        Before ``App.run()`` returns, every in-flight worker is cancelled and
+        given a bounded grace period. No worker thread may outlive its App.
 
         Cancel-then-poll-until-grace is the simplest portable
         implementation: textual's :meth:`Worker.cancel` flips the

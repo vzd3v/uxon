@@ -112,12 +112,12 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
                 "new -w requires a git repository (checked as launch user "
                 f"{launch_user}) in {project_dir}"
             )
-        # Normalise worktree-from-worktree to the primary repo (§8).
+        # Normalise worktree-from-worktree to the primary repo.
         primary = git.git_common_dir_root_as_user(cfg, project_dir, launch_user)
         if primary:
             repo_root = primary
         launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
-        # uxon-managed worktree sessions live AT the worktree path (§2.5),
+        # uxon-managed worktree sessions live AT the worktree path,
         # so both the stem and the compatibility root are derived from the
         # worktree, not the repo root.
         session_stem = session_stem_for_worktree(repo_root, branch)
@@ -236,7 +236,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     if args.git_remote and not cfg.git_create_enabled:
         fail(
             "git_create_enabled=false in config; either flip it on in "
-            "config/config.toml or drop --git-remote"
+            "/etc/uxon/config.toml or drop --git-remote"
         )
     ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     target_dir = project_dir
@@ -296,7 +296,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         if decision == "attach":
             # Same physical operation as ``do_attach`` for an existing
             # session — emit the same event before ``attach_session``'s
-            # execvp (Bug 7 — audit fires before the image is replaced).
+            # execvp; audit fires before the image is replaced.
             from uxon.infra import audit as _audit
 
             _audit.audit(
@@ -319,7 +319,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         prefix=cfg.session_prefix,
     )
     if not args.dry_run:
-        # Probe + (auto) start/create the container before exec when enabled.
+        # Probe and, when allowed, prepare the workload runtime before exec.
         launch_app.ensure_runtime_ready(cfg, target_dir, resolved)
     return tmux.launch_in_tmux(
         target_dir,
@@ -357,12 +357,12 @@ def _do_create_git_remote(
     if not cfg.git_create_enabled:
         fail(
             "git_create_enabled=false in config; either flip it on in "
-            "config/config.toml or drop --git-remote"
+            "/etc/uxon/config.toml or drop --git-remote"
         )
     if not cfg.git_remote_profiles:
         fail(
             "no git_remote_profiles configured; add at least one "
-            "[[git_remote_profiles]] entry to config/config.toml"
+            "[[git_remote_profiles]] entry to /etc/uxon/config.toml"
         )
 
     from uxon.domain import git_profiles as uxon_git_profiles

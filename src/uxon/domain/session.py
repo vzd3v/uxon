@@ -66,7 +66,7 @@ class SessionInfo:
     runtime_cgroup: str = ""
     # True iff this session's workload resource is not running
     # (empty/absent ``cgroup.procs`` confirmed by ``ready_command``). Renders a
-    # distinct "runtime down" indicator rather than a silent idle 0/— (AC-P1.8).
+    # distinct "runtime down" indicator rather than a silent idle 0/—.
     runtime_down: bool = False
 
 
@@ -85,7 +85,7 @@ class TuiSession:
     cmd: str
     path: str
     user: str
-    # Multi-agent fields (default to backward-compatible values).
+    # Empty authority fields represent an unmanaged session.
     stem: str = ""  # bare project stem, e.g. "myproject"
     agent: str = ""  # underlying agent id when known
     profile: str = ""  # launch profile id when known
@@ -98,7 +98,7 @@ class TuiSession:
     last_attached_iso: str = ""
     # True when the session's workload resource is not running — the dashboard
     # renders a distinct "runtime down" indicator in the
-    # cpu/ram cells rather than a silent idle 0/— (AC-P1.8).
+    # cpu/ram cells rather than a silent idle 0/—.
     runtime_down: bool = False
 
 
@@ -108,7 +108,7 @@ def session_stem_for_path(target_dir: str) -> str:
 
 def session_stem_for_worktree(repo_root: str, branch: str) -> str:
     # Always repo-qualified, even when the branch slug equals the repo slug
-    # (§2.5). Collapsing to the bare repo slug would make a worktree on a
+    # Collapsing to the bare repo slug would make a worktree on a
     # branch named like its repo share the primary tree's stem
     # (``session_stem_for_path``) and hard-fail on "session conflict".
     repo_slug = slugify(os.path.basename(repo_root))
@@ -168,7 +168,7 @@ def parse_plain_session_index(
 
 def compatible_indexed_sessions(
     stem: str,
-    profile: str,
+    profile_id: str,
     compatibility_root: str,
     sessions: list[SessionInfo],
     *,
@@ -181,7 +181,7 @@ def compatible_indexed_sessions(
         if require_verified and not session.launch_record_verified:
             continue
         idx = parse_plain_session_index(
-            session.name, stem, profile, prefix=prefix, legacy_prefixes=legacy_prefixes
+            session.name, stem, profile_id, prefix=prefix, legacy_prefixes=legacy_prefixes
         )
         if idx is None:
             continue
@@ -291,7 +291,7 @@ def to_tui_session(
         last_activity=compact_time(s.last_attached),
         # For an isolated-runtime session the active pane command is the runtime
         # client (``docker``/``sh``), not the agent — substitute the resolved
-        # agent id (AC-P1.4) so search-by-cmd matches the agent. Gated on the
+        # agent id so search-by-cmd matches the agent. Gated on the
         # runtime-resource marker; direct-runtime sessions are unchanged.
         cmd=(agent if s.runtime_resource else s.active_cmd) or "-",
         path=s.active_path or "-",

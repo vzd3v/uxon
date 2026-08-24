@@ -268,7 +268,9 @@ def _worker_request(
             input=json.dumps(request, sort_keys=True, separators=(",", ":")),
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
+        raise BackendError("token worker timed out", stage=operation) from None
+    except OSError as exc:
         raise BackendError(f"token worker failed: {exc}", stage=operation) from None
     try:
         response = json.loads(cp.stdout)

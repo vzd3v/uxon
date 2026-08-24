@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render repo-local uxon config.toml from one strict JSON payload."""
+"""Render the host-wide Uxon operator config from one strict JSON payload."""
 
 from __future__ import annotations
 

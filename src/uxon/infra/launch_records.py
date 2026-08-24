@@ -293,13 +293,16 @@ def delete_verified_record(
 def garbage_collect_records(
     live: set[tuple[str, str, str]],
     *,
-    socket_path: str,
     override_dir: Path | None = None,
     shared: bool = False,
     launch_user: str = "",
     now: float | None = None,
 ) -> int:
-    """Remove bounded, old records for one socket which no longer identify a live session."""
+    """Remove bounded, old records which no longer identify a live session.
+
+    Collection is store-wide so records left by a retired socket template do
+    not survive forever merely because current probes use a different socket.
+    """
     directory = _ensure_store_ready(
         override_dir=override_dir, shared=shared, launch_user=launch_user
     )
@@ -320,8 +323,6 @@ def garbage_collect_records(
                 str(payload.get("session_name", "")),
                 str(payload.get("launch_nonce", "")),
             )
-            if key[0] != socket_path:
-                continue
             status = payload.get("status")
             timestamp = float(payload.get("finalized_at", payload.get("created_at", current)))
             retention = _STALE_PENDING_SECONDS if status == "pending" else _STALE_FINALIZED_SECONDS

@@ -9,7 +9,7 @@ templates — each under its own bounded timeout so a stalled backend cannot
 block a uxon launch indefinitely.
 
 This timeout is deliberately **separate from** the 0.5 s passwordless-sudo
-detector (``detect_passwordless_sudo``) because backend readiness and a sudo
+detector (``detect_root_nopasswd``) because backend readiness and a sudo
 grant are independent capabilities.
 
 Every shell-out runs **as the launch user** — the same identity the agent
@@ -500,7 +500,10 @@ def resolve_runtime_identity_for_profile(
     if context is None:
         return EMPTY_IDENTITY
     profile = cfg.runtimes[context.runtime_id]
+    required = bool(profile.stop_command)
     if not profile.identity_command:
+        if required:
+            fail(f"runtime {profile.id!r} requires identity_command before session stop is enabled")
         return EMPTY_IDENTITY
     try:
         cmd = _render_profile_cmd(
@@ -515,17 +518,30 @@ def resolve_runtime_identity_for_profile(
             command_prefix(cfg, resolved.launch_user, interactive=False), cmd, None
         )
         cp = run_query(full, timeout=profile.probe_timeout_seconds)
-    except (subprocess.TimeoutExpired, OSError, SystemExit):
+    except subprocess.TimeoutExpired:
+        if required:
+            fail(f"runtime identity probe timed out for stop-enabled runtime {profile.id!r}")
+        return EMPTY_IDENTITY
+    except (OSError, SystemExit) as exc:
+        if required:
+            detail = getattr(exc, "uxon_msg", None) or "identity probe unavailable"
+            fail(f"runtime identity probe failed for stop-enabled runtime {profile.id!r}: {detail}")
         return EMPTY_IDENTITY
     if cp.returncode != 0:
+        if required:
+            fail(f"runtime identity probe failed for stop-enabled runtime {profile.id!r}")
         return EMPTY_IDENTITY
     identity = parse_runtime_identity_output(cp.stdout)
     if identity is None:
+        if required:
+            fail(f"runtime identity probe returned invalid data for runtime {profile.id!r}")
         return EMPTY_IDENTITY
     if profile.telemetry == "cgroup":
         from uxon.infra.runtime_telemetry import read_process_cgroup
 
         cgroup = read_process_cgroup(cfg, resolved.launch_user, identity.host_pid)
+        if required and not cgroup:
+            fail(f"runtime cgroup identity is unavailable for stop-enabled runtime {profile.id!r}")
     else:
         cgroup = ""
     return RuntimeIdentity(

@@ -43,8 +43,8 @@ patching globals. Production callers leave them defaulted to
 ``time.monotonic`` and a per-instance :class:`random.Random` seeded
 from ``os.urandom``.
 
-Wiring into the SSH fetch loop happens in stage 8 of the
-multi-host design spec; this module only ships the state machine.
+The SSH fetch scheduler owns the wiring; this module only ships the state
+machine.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class BreakerSpec:
             the cap rather than escalating indefinitely.
         trip_after: Number of consecutive failures while ``closed``
             before we trip to ``open``. Set to ``1`` for a hair-trigger
-            breaker (open on first failure); the spec default of ``3``
+            breaker (open on first failure); the default of ``3``
             tolerates a couple of transient blips per peer.
         half_open_jitter_pct: ±% jitter applied to ``next_attempt_at``
             at ``on_failure`` time. ``25.0`` means the next half-open
@@ -135,7 +135,7 @@ class HostBreaker:
         # still bounded sensibly. We pre-seed it to ``cap_seconds``
         # divided by ``factor`` so the first ``open`` window is
         # ``cap_seconds`` after one factor multiplication. In practice
-        # the first wait is computed as ``cap_seconds`` for the spec
+        # the first wait is computed as ``cap_seconds`` for the policy
         # defaults (30s × 2.0 capped at 60s).
         self._initial_backoff: float = max(spec.cap_seconds / spec.factor, 1.0)
         self.backoff_seconds: float = self._initial_backoff

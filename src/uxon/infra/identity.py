@@ -3,7 +3,7 @@
 
 Resolves who the process is running as, who sessions should launch as,
 and validates which users are reachable. Impure: reads ``pwd``, ``os``
-environment/uid, and probes the filesystem.
+kernel login identity/uid, and probes the filesystem.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import pwd
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
 from uxon.domain.config import Config
 from uxon.infra.config_loader import normalize_user_list
@@ -20,14 +22,31 @@ def process_user() -> str:
     return pwd.getpwuid(os.getuid()).pw_name
 
 
+@dataclass(frozen=True)
+class LoginIdentity:
+    user: str
+    uid: int
+
+
+def login_identity() -> LoginIdentity:
+    """Resolve the kernel audit login identity, falling back to real UID."""
+    uid = os.getuid()
+    try:
+        raw = Path("/proc/self/loginuid").read_text(encoding="ascii").strip()
+        login_uid = int(raw)
+        if 0 <= login_uid < 2**32 - 1:
+            uid = login_uid
+    except (OSError, ValueError):
+        pass
+    try:
+        user = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        user = str(uid)
+    return LoginIdentity(user=user, uid=uid)
+
+
 def resolve_caller_user() -> str:
-    current_user = process_user()
-    if current_user != "root":
-        return current_user
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if sudo_user and sudo_user != "root":
-        return sudo_user
-    return current_user
+    return login_identity().user
 
 
 def resolve_launch_user(cfg: Config, caller_user: str) -> str:

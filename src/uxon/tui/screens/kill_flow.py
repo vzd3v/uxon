@@ -166,7 +166,7 @@ class KillFlow:
 
             # Fans out tmux/ssh kills across reachable users — off-loop.
             host.app.run_off_loop(  # type: ignore[attr-defined]
-                host.cfg.on_kill_all_global,
+                host.cfg.on_kill_all_reachable,
                 on_success=on_ok,
                 on_error=lambda exc: host.app.notify(
                     f"Kill all (reachable) failed: {exc}",

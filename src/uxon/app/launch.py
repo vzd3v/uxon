@@ -83,7 +83,7 @@ def is_worktree_target_allowed(cfg: Config, launch_user: str, worktree_path: str
     is why ``ensure_launch_target_allowed``/``is_launch_target_allowed``,
     which hard-fail on a missing dir, cannot be used here). The *parent*
     must be writable by ``launch_user`` and the path must satisfy the
-    ``allowed_roots`` whitelist when non-empty (§2.3). The parent is
+    ``allowed_roots`` whitelist when non-empty. The parent is
     created later by the caller; here we only check policy.
     """
     parent = os.path.dirname(worktree_path) or "/"
@@ -99,7 +99,7 @@ def is_worktree_target_allowed(cfg: Config, launch_user: str, worktree_path: str
 def plan_runtime(
     cfg: Config,
     target_dir: str,
-    resolved_or_launch_user: ResolvedLaunchProfile | str,
+    resolved_profile: ResolvedLaunchProfile,
 ):
     """Probe the workload runtime and return the not-ready plan.
 
@@ -112,12 +112,9 @@ def plan_runtime(
     """
     from uxon.infra import runtime as runtime_infra
 
-    if not isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
-        # Legacy string input carries no resolved workload runtime.
+    if resolved_profile.runtime_context is None:
         return None
-    if resolved_or_launch_user.runtime_context is None:
-        return None
-    return runtime_infra.plan_runtime_launch_for_profile(cfg, target_dir, resolved_or_launch_user)
+    return runtime_infra.plan_runtime_launch_for_profile(cfg, target_dir, resolved_profile)
 
 
 def _run_prepare_audited(cfg: Config, plan: RuntimePlan, target_dir: str, launch_user: str) -> None:
@@ -150,7 +147,8 @@ def _run_prepare_audited(cfg: Config, plan: RuntimePlan, target_dir: str, launch
             outcome="error",
             action=plan.action,
             runtime_resource=plan.resource,
-            error=str(getattr(exc, "uxon_msg", exc))[:256],
+            error="runtime preparation failed",
+            error_type=type(exc).__name__,
         )
         raise
     _audit.audit("runtime.prepare", action=plan.action, runtime_resource=plan.resource)
@@ -159,7 +157,7 @@ def _run_prepare_audited(cfg: Config, plan: RuntimePlan, target_dir: str, launch
 def ensure_runtime_ready(
     cfg: Config,
     target_dir: str,
-    resolved_or_launch_user: ResolvedLaunchProfile | str,
+    resolved_profile: ResolvedLaunchProfile,
 ) -> None:
     """Probe and, when permitted, prepare the workload runtime before launch.
 
@@ -175,22 +173,17 @@ def ensure_runtime_ready(
     probe) from the prepare so it can show a confirm affordance when
     ``approval == "prompt"`` before any side effect.
     """
-    plan = plan_runtime(cfg, target_dir, resolved_or_launch_user)
+    plan = plan_runtime(cfg, target_dir, resolved_profile)
     if plan is None:
         return
-    launch_user = (
-        resolved_or_launch_user.launch_user
-        if isinstance(resolved_or_launch_user, ResolvedLaunchProfile)
-        else resolved_or_launch_user
-    )
+    launch_user = resolved_profile.launch_user
     # ``run_prepare`` is a no-op for ``exec``, ``fail``s for an out-of-policy
     # state, and runs the start/create template otherwise. The audited wrapper
     # emits ``runtime.prepare`` (start/create + outcome).
     _run_prepare_audited(cfg, plan, target_dir, launch_user)
-    if isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
-        from uxon.infra import runtime as runtime_infra
+    from uxon.infra import runtime as runtime_infra
 
-        runtime_infra.probe_agent_in_runtime(cfg, target_dir, resolved_or_launch_user)
+    runtime_infra.probe_agent_in_runtime(cfg, target_dir, resolved_profile)
 
 
 @dataclass(frozen=True)
@@ -215,7 +208,7 @@ class RuntimeGate:
 def decide_runtime_gate(
     cfg: Config,
     target_dir: str,
-    resolved_or_launch_user: ResolvedLaunchProfile | str,
+    resolved_profile: ResolvedLaunchProfile,
 ) -> RuntimeGate | None:
     """Probe the workload runtime and return the TUI gate without side effects.
 
@@ -228,14 +221,13 @@ def decide_runtime_gate(
     can never start/create beyond policy. The probe runs off the event loop in
     the caller's worker.
     """
-    plan = plan_runtime(cfg, target_dir, resolved_or_launch_user)
+    plan = plan_runtime(cfg, target_dir, resolved_profile)
     if plan is None:
         return None
     if plan.action == "exec":
-        if isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
-            from uxon.infra import runtime as runtime_infra
+        from uxon.infra import runtime as runtime_infra
 
-            runtime_infra.probe_agent_in_runtime(cfg, target_dir, resolved_or_launch_user)
+        runtime_infra.probe_agent_in_runtime(cfg, target_dir, resolved_profile)
         return None
     if plan.action == "fail":
         return RuntimeGate(
@@ -249,23 +241,16 @@ def decide_runtime_gate(
     def _prepare() -> None:
         # Audited prepare — emits ``runtime.prepare`` (start/create + outcome)
         # at the single shared call site, identical to the headless path.
-        launch_user = (
-            resolved_or_launch_user.launch_user
-            if isinstance(resolved_or_launch_user, ResolvedLaunchProfile)
-            else resolved_or_launch_user
-        )
-        _run_prepare_audited(cfg, plan, target_dir, launch_user)
-        if isinstance(resolved_or_launch_user, ResolvedLaunchProfile):
-            from uxon.infra import runtime as runtime_infra
+        _run_prepare_audited(cfg, plan, target_dir, resolved_profile.launch_user)
+        from uxon.infra import runtime as runtime_infra
 
-            runtime_infra.probe_agent_in_runtime(cfg, target_dir, resolved_or_launch_user)
+        runtime_infra.probe_agent_in_runtime(cfg, target_dir, resolved_profile)
 
     return RuntimeGate(
         needs_prepare=True,
         needs_prompt=(
-            cfg.runtimes[resolved_or_launch_user.runtime_context.runtime_id].approval == "prompt"
-            if isinstance(resolved_or_launch_user, ResolvedLaunchProfile)
-            and resolved_or_launch_user.runtime_context is not None
+            cfg.runtimes[resolved_profile.runtime_context.runtime_id].approval == "prompt"
+            if resolved_profile.runtime_context is not None
             else False
         ),
         message=plan.message,
@@ -290,15 +275,15 @@ def plan_worktree_launch(
 
     Single create-and-launch planner for both the CLI ``-w`` flag (on a
     "new" decision — the CLI keeps its own attach-vs-new guard)
-    and the TUI new-worktree path (§4.1). Gates the computed path via the
-    not-yet-exists predicate (§2.3); when ``worktree_base == "remote"``
-    fetches origin first, else stays local and network-free (§4.5). Adds
+    and the TUI new-worktree path. Gates the computed path via the
+    not-yet-exists predicate; when ``worktree_base == "remote"``
+    fetches origin first, else stays local and network-free. Adds
     the worktree (``-b`` for a new branch, plain checkout for an existing
-    one), copies ``.worktreeinclude`` (§2.4), writes the
+    one), copies ``.worktreeinclude``, writes the
     ``.git/info/exclude`` entry unless ``worktree_root`` moves the tree out
-    of the repo (§2.3), then launches with the worktree-aware stem (§2.5).
+    of the repo, then launches with the worktree-aware stem.
     Emits **both** ``worktree.create`` and ``session.new`` for the launched
-    session (§4.6, B3).
+    session.
 
     ``dry_run=True`` (CLI ``-w --dry-run``) still gates the path and
     resolves the base ref / branch existence, but prints the git commands
@@ -314,7 +299,7 @@ def plan_worktree_launch(
     )
     launch_user = resolved_profile.launch_user
     worktree_path = execution.canonicalize_path(cfg, launch_user, worktree_path, intended=True)
-    # Gate the computed path BEFORE any git work or mkdir (§2.3, B1). An
+    # Gate the computed path BEFORE any git work or mkdir. An
     # out-of-roots worktree_root is the common failure — name the override
     # key in the error so the operator knows how to fix it. Runs in dry-run
     # too, so a misconfigured worktree_root is caught without side effects.
@@ -407,7 +392,6 @@ def plan_worktree_launch(
             None,
             resolved_profile=resolved_profile,
             server_running=bool(sessions),
-            include_runtime_identity=False,
             active_sessions=sessions,
         )
         # No side effects: print the git plan, skip add/copy/exclude/audit.
@@ -419,7 +403,7 @@ def plan_worktree_launch(
 
     process.run_cmd(prefix + ["mkdir", "-p", parent], check=True)
     # ``.uxon/`` exclusion must precede the first add so the in-tree
-    # worktree never shows as untracked (§2.3); skipped for out-of-repo.
+    # worktree never shows as untracked; skipped for out-of-repo.
     if not cfg.worktree_root:
         git.write_uxon_exclude_entry(cfg, repo_root, launch_user)
     if base == "remote":
@@ -429,7 +413,7 @@ def plan_worktree_launch(
             add_cmd[-1] = git._remote_base_ref_as_user(cfg, repo_root, launch_user)
     # Run with check=False and inspect the result ourselves: process.run_cmd's own
     # failure path would surface the raw ``fatal:`` git stderr; we want a
-    # friendlier, actionable message for the §8 edges.
+    # friendlier, actionable message for invalid base refs.
     cp = process.run_cmd(add_cmd, check=False)
     if cp.returncode != 0:
         stderr = (cp.stderr or cp.stdout or "").strip()
@@ -457,7 +441,7 @@ def plan_worktree_launch(
 
     git.copy_worktreeinclude_matches(cfg, repo_root, worktree_path, launch_user)
 
-    # Container readiness for the worktree tree. The worktree dir only exists
+    # Workload-runtime readiness for the worktree. The directory only exists
     # after the add above, so its name/{dir} can't be resolved earlier — the
     # TUI's pre-launch prompt affordance (which needs the path up front) does
     # not cover this path, so it uses the headless auto-if-permitted policy

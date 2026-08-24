@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from uxon.infra.config_loader import parse_config
+
 
 def _renderer():
     path = Path(__file__).resolve().parent.parent / "install" / "render_uxon_config.py"
@@ -125,8 +127,23 @@ def test_renderer_invalid_json_is_a_clean_cli_error(tmp_path: Path) -> None:
     assert "render_uxon_config.py:" in result.stderr
 
 
-def test_renderer_quotes_dynamic_table_ids_instead_of_reinterpreting_them() -> None:
+def test_renderer_rejects_dynamic_ids_that_could_change_toml_structure() -> None:
     payload = {"agents": {"odd.id": {"binary": "/opt/agent"}}}
-    rendered = _renderer().render_config(payload)
-    parsed = tomllib.loads(rendered)
-    assert parsed["agents"]["odd.id"]["binary"] == "/opt/agent"
+    with pytest.raises(ValueError, match="invalid agent id"):
+        _renderer().render_config(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"execution": {"default_backend": "missing"}},
+        {"launch": {"enabled_profiles": ["missing"]}},
+        {"runtimes": {"box": {"telemetry": "bad"}}},
+    ],
+)
+def test_renderer_and_loader_share_semantic_validation(payload: dict) -> None:
+    with pytest.raises(ValueError) as loader_error:
+        parse_config(payload)
+    with pytest.raises(ValueError) as renderer_error:
+        _renderer().render_config(payload)
+    assert str(renderer_error.value) == str(loader_error.value)

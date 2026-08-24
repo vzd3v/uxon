@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from uxon.domain.config_schema import validate_public_config
+from uxon.infra.config_loader import parse_config
 
 
 def _string(value: str) -> str:
@@ -58,22 +58,12 @@ def _render_table(path: str, table: Any, lines: list[str], *, array: bool = Fals
 
 def render_config(payload: dict[str, Any]) -> str:
     """Render a fully validated public config payload without coercion."""
-    validate_public_config(payload)
-    default_launch_user = payload.get("default_launch_user", "").strip()
-    default_launch_mode = payload.get("default_launch_mode", "caller").strip()
-    session_prefix = payload.get("session_prefix", "uxon-").strip() or "uxon-"
-    repeat_mode = payload.get("repeat_noninteractive_mode", "fail").strip().lower()
-    socket_template = payload.get(
-        "tmux_socket_template", "/tmp/uxon-{user}-{execution_backend}.sock"
-    ).strip()
-    if default_launch_mode not in {"fixed", "caller"}:
-        raise ValueError("default_launch_mode must be 'fixed' or 'caller'")
-    if default_launch_mode == "fixed" and not default_launch_user:
-        raise ValueError("default_launch_user is required when default_launch_mode is 'fixed'")
-    if repeat_mode not in {"fail", "attach", "new"}:
-        raise ValueError("repeat_noninteractive_mode must be 'fail', 'attach', or 'new'")
-    if not socket_template:
-        raise ValueError("tmux_socket_template must not be empty")
+    cfg = parse_config(payload)
+    default_launch_user = cfg.default_launch_user
+    default_launch_mode = cfg.default_launch_mode
+    session_prefix = cfg.session_prefix
+    repeat_mode = cfg.repeat_noninteractive_mode
+    socket_template = cfg.tmux_socket_template
 
     lines: list[str] = []
     if default_launch_user:
@@ -81,8 +71,7 @@ def render_config(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             f"default_launch_mode = {_string(default_launch_mode)}",
-            "enable_all_users_list = "
-            + ("true" if payload.get("enable_all_users_list", False) else "false"),
+            "enable_all_users_list = " + ("true" if cfg.enable_all_users_list else "false"),
             f"session_prefix = {_string(session_prefix)}",
         ]
     )

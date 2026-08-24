@@ -4,7 +4,7 @@ A *profile* names one explicit target where uxon is allowed to create a
 new remote repository. uxon will never create a repo outside of the
 configured whitelist.
 
-Profiles come from ``config/config.toml`` under ``[[git_remote_profiles]]``
+Profiles come from ``/etc/uxon/config.toml`` under ``[[git_remote_profiles]]``
 and are parsed into immutable :class:`GitRemoteProfile` instances by
 :func:`load_profiles`. Validation errors are reported with a one-shot
 :class:`ProfileError` so the caller can decide how to surface them (CLI

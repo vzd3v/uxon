@@ -67,7 +67,7 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_pushes_when_all_agents_missing(self) -> None:
         from uxon.infra import agents as uxon_agents
         from uxon.tui.app import UxonApp
-        from uxon.tui.messages import _AgentAvailabilityUpdated
+        from uxon.tui.messages import _HostReportUpdated
         from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
         ctx = _mk_ctx(
@@ -78,18 +78,11 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            # Post-P5: mutate the live slot (the App's canonical store),
-            # then post a bare message to wake the dispatcher. The old
-            # ``ctx.agent_availability`` read-through proxy is gone.
-            avail = app.state.agent_availability.value
-            avail.clear()
-            avail.update(
-                {
-                    aid: uxon_agents.AgentAvailability(status="missing", error="not found")
-                    for aid in ctx.enabled_profiles
-                }
-            )
-            app.post_message(_AgentAvailabilityUpdated())
+            availability = {
+                aid: uxon_agents.AgentAvailability(status="missing", error="not found")
+                for aid in ctx.enabled_profiles
+            }
+            app.post_message(_HostReportUpdated(availability=availability))
             await pilot.pause()
             self.assertTrue(
                 any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack),

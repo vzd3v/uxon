@@ -4,7 +4,7 @@ Two scopes:
 
 1. CLI probe helper (``probe_tui_compatible_sessions``) — pure-Python,
    no textual dependency. Filters a fake session list down to entries
-   compatible with (target_dir, agent_id).
+   compatible with (target_dir, profile_id).
 
 2. ``SessionChoiceScreen`` modal behaviour — ↑/↓ + Enter row selection,
    the ``n`` new-alongside shortcut, Esc cancel, and the shape of the
@@ -391,7 +391,7 @@ class MainScreenHelperTests(unittest.TestCase):
         helper(
             target_dir="/srv/work",
             target_label="work",
-            agent_id="claude",
+            profile_id="claude",
             mode_id="normal",
             on_new=lambda: called.append("new"),
         )
@@ -407,7 +407,7 @@ class MainScreenHelperTests(unittest.TestCase):
         helper(
             target_dir="/srv/work",
             target_label="work",
-            agent_id="claude",
+            profile_id="claude",
             mode_id="normal",
             on_new=lambda: None,
         )
@@ -426,7 +426,7 @@ class MainScreenHelperTests(unittest.TestCase):
         helper(
             target_dir="/srv/work",
             target_label="work",
-            agent_id="claude",
+            profile_id="claude",
             mode_id="normal",
             on_new=lambda: new_called.append("new"),
         )
@@ -445,7 +445,7 @@ class MainScreenHelperTests(unittest.TestCase):
         helper(
             target_dir="/srv/work",
             target_label="work",
-            agent_id="claude",
+            profile_id="claude",
             mode_id="normal",
             on_new=lambda: None,
         )
@@ -463,7 +463,7 @@ class MainScreenHelperTests(unittest.TestCase):
         helper(
             target_dir="/srv/work",
             target_label="work",
-            agent_id="claude",
+            profile_id="claude",
             mode_id="normal",
             on_new=lambda: new_called.append("new"),
         )
@@ -481,7 +481,7 @@ class MainScreenHelperTests(unittest.TestCase):
         helper(
             target_dir="/srv/work",
             target_label="work",
-            agent_id="claude",
+            profile_id="claude",
             mode_id="normal",
             on_new=lambda: new_called.append("new"),
         )

@@ -303,8 +303,13 @@ class ExecWrapTests(unittest.TestCase):
             resource_name_template="proj-{project_slug}",
             exec_prefix=_EXEC,
             stop_command=("docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile})"),
+            identity_command=("inspect", "{resource}"),
         )
-        cmd = list(_managed_create_cmd(self._build(_cfg(c))))
+        with mock.patch(
+            "uxon.infra.runtime.resolve_runtime_identity_for_profile",
+            return_value=RuntimeIdentity(id="cid", host_pid=42, epoch="1000"),
+        ):
+            cmd = list(_managed_create_cmd(self._build(_cfg(c))))
         # ``-e UXON_CONTAINER=proj-myapp`` rides the new-session argv.
         self.assertIn("-e", cmd)
         self.assertIn(f"{RUNTIME_RESOURCE_ENV}=proj-myapp", cmd)
@@ -322,6 +327,17 @@ class ExecWrapTests(unittest.TestCase):
         self.assertEqual(
             tail[tail.index("uxon-agent") + 1 :], ["claude", "--dangerously-skip-permissions"]
         )
+
+    def test_stop_enabled_runtime_fails_launch_without_identity(self) -> None:
+        c = WorkloadRuntimeSpec(
+            id="box",
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
+            stop_command=("stop", "{resource}", "{pidfile}"),
+        )
+        with self.assertRaises(SystemExit):
+            self._build(_cfg(c))
 
     def test_enabled_without_stop_command_carries_marker_but_no_pidfile(self) -> None:
         # After the hoist: enabled + no stop_command (+ no identity_command, the
@@ -1557,7 +1573,7 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         run_td.assert_not_called()
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "runtime.session_stop")
-        self.assertEqual(audit.call_args.kwargs["outcome"], "error")
+        self.assertEqual(audit.call_args.kwargs["outcome"], "skipped")
         self.assertEqual(audit.call_args.kwargs["reason"], "stale_identity")
         self.assertEqual(audit.call_args.kwargs["runtime_resource"], "proj-myapp")
         self.assertEqual(audit.call_args.kwargs["runtime"], "box")
@@ -1607,7 +1623,7 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         ):
             kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
         run_td.assert_not_called()
-        self.assertEqual(audit.call_args.kwargs["outcome"], "error")
+        self.assertEqual(audit.call_args.kwargs["outcome"], "skipped")
         self.assertEqual(audit.call_args.kwargs["reason"], "missing_profile")
 
     def test_unresolved_live_identity_skips_kill(self) -> None:
@@ -1632,7 +1648,7 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         ):
             kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
         run_td.assert_not_called()
-        self.assertEqual(audit.call_args.kwargs["outcome"], "error")
+        self.assertEqual(audit.call_args.kwargs["outcome"], "skipped")
         self.assertEqual(audit.call_args.kwargs["reason"], "identity_unresolved")
 
 

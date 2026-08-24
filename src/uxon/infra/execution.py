@@ -118,7 +118,9 @@ def canonicalize_path(cfg: ExecutionConfigured, user: str, path: str, *, intende
     )
     try:
         result = run_query(cmd, timeout=backend.probe_timeout_seconds)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
+        fail("execution backend path canonicalization timed out")
+    except OSError as exc:
         fail(f"execution backend could not canonicalize launch path: {exc}")
     try:
         payload = json.loads(result.stdout)
@@ -162,7 +164,9 @@ def path_facts(cfg: ExecutionConfigured, user: str, path: str) -> PathFacts:
         )
         try:
             result = run_query(cmd, timeout=backend.probe_timeout_seconds)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired:
+            fail("execution backend target-path inspection timed out")
+        except OSError as exc:
             fail(f"execution backend could not inspect target path: {exc}")
         try:
             payload = json.loads(result.stdout)
@@ -239,7 +243,9 @@ def list_directories(cfg: ExecutionConfigured, user: str, path: str) -> tuple[Di
         )
         try:
             result = run_query(cmd, timeout=backend.probe_timeout_seconds)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired:
+            fail("execution backend directory listing timed out")
+        except OSError as exc:
             fail(f"execution backend could not list target directory: {exc}")
         try:
             payload = json.loads(result.stdout)
@@ -303,7 +309,9 @@ def filesystem_usage(cfg: ExecutionConfigured, user: str, path: str) -> Filesyst
         )
         try:
             result = run_query(cmd, timeout=backend.probe_timeout_seconds)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired:
+            fail("execution backend filesystem inspection timed out")
+        except OSError as exc:
             fail(f"execution backend could not inspect target filesystem: {exc}")
         try:
             payload = json.loads(result.stdout)
@@ -342,7 +350,9 @@ def probe(cfg: ExecutionConfigured, user: str) -> ExecutionProbe:
     )
     try:
         cp = run_query(cmd, timeout=backend.probe_timeout_seconds)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
+        return ExecutionProbe(backend=backend.id, ok=False, error="execution probe timed out")
+    except OSError as exc:
         return ExecutionProbe(backend=backend.id, ok=False, error=str(exc))
     if cp.returncode != 0:
         return ExecutionProbe(
@@ -379,3 +389,14 @@ def probe(cfg: ExecutionConfigured, user: str) -> ExecutionProbe:
             error=f"execution backend did not enter target user {user!r}",
         )
     return ExecutionProbe(backend=backend.id, ok=True)
+
+
+def require_probe(cfg: ExecutionConfigured, user: str) -> ExecutionProbe:
+    """Fail unless the selected backend proves the exact target identity."""
+    result = probe(cfg, user)
+    if not result.ok:
+        fail(
+            f"execution backend {result.backend!r} failed identity attestation "
+            f"for {user!r}: {result.error or 'unknown error'}"
+        )
+    return result

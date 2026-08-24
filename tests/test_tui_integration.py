@@ -234,14 +234,14 @@ class _StubReport:
         self.launch_user = "u-den"
 uxon_probes.probe_host = lambda *args, **kwargs: _StubReport()
 
-def fake_launch_cwd(agent_id, mode_id, target_dir=None):
+def fake_launch_cwd(profile_id, mode_id, target_dir=None):
     with open(MARKER, "a", encoding="utf-8") as f:
-        f.write(f"cwd:{{agent_id}}:{{mode_id}}\n")
+        f.write(f"cwd:{{profile_id}}:{{mode_id}}\n")
     return LaunchRequest(cmd=("/bin/sh", "-c", "sleep 2.0"), label="mock-attach")
 
-def fake_launch_new(name, agent_id, mode_id, git_profile):
+def fake_launch_new(name, profile_id, mode_id, git_profile):
     with open(MARKER, "a", encoding="utf-8") as f:
-        f.write(f"new:{{name}}:{{agent_id}}:{{mode_id}}:{{git_profile}}\n")
+        f.write(f"new:{{name}}:{{profile_id}}:{{mode_id}}:{{git_profile}}\n")
     return LaunchRequest(cmd=("/bin/true",), label="mock-new")
 
 ctx = uxon_tui.TuiContext(

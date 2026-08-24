@@ -5,7 +5,7 @@ that the local TUI can poll over SSH for its session list. Each
 entry names one such peer: a label, the SSH alias to connect with,
 and the command to invoke on the far side.
 
-Profiles come from ``config/config.toml`` under ``[[remote_hosts]]``
+Profiles come from ``/etc/uxon/config.toml`` under ``[[remote_hosts]]``
 and are parsed into immutable :class:`RemoteHost` instances by
 :func:`load_remote_hosts`. Validation errors surface through a
 single :class:`RemoteHostError` so the caller (cli.load_config) can
