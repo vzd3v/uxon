@@ -42,65 +42,65 @@ from helpers import make_config  # type: ignore[import-not-found]
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.launch_profiles import (
-    ContainerContext,
     LaunchConfig,
     LaunchProfile,
     ResolvedLaunchProfile,
+    RuntimeContext,
     builtin_launch_profiles,
 )
 
-_CONTAINER_PROFILE_ID = "it"
+_RUNTIME_PROFILE_ID = "it"
 
 pytestmark = pytest.mark.container
 
 
-def _operator_container_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
+def _operator_runtime_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
     """The operator ``[container]`` table for ``rt`` (argv templates only).
 
     Mirrors what ``config/config.toml`` would carry: the exec wrap, the
-    state probes, and a ``create_template`` delegating to ``compose`` —
-    all opaque operator argv, fed to ``build_container_profiles``.
+    state probes, and a ``create_command`` delegating to ``compose`` —
+    all opaque operator argv, fed to ``build_runtimes``.
     """
     return {
         "enabled": True,
-        # name comes from the project .uxon.toml; a name_template is still
+        # name comes from the project .uxon.toml; a resource_name_template is still
         # required by validation, so give a harmless fallback.
-        "name_template": "uxon-it-{project_slug}",
+        "resource_name_template": "uxon-it-{project_slug}",
         # The compose file bind-mounts the host project dir at /work, so the
-        # exec wrap's ``{dir}`` (``-w``) must resolve to the CONTAINER path,
+        # exec wrap's ``{runtime_dir}`` (``-w``) must resolve to the CONTAINER path,
         # not the host one — otherwise ``<runtime> exec -w <host-path>`` fails
         # with "chdir ... no such file or directory" before the agent runs.
         # This is the path translation a real container operator configures.
         "path_map": {str(project_dir): "/work"},
-        "exec_template": [rt.binary, "exec", "-i", "-w", "{dir}", "{name}"],
+        "exec_prefix": [rt.binary, "exec", "-i", "-w", "{runtime_dir}", "{resource}"],
         # Teardown mirror of the exec wrap: on kill, terminate exactly this
         # session's in-container PID (recorded by the launch wrapper into
         # ``{pidfile}``) and clean the file up. ``2>/dev/null`` + a trailing
         # ``rm -f`` keep the exit status 0 even when the agent is already gone.
-        "stop_template": [
+        "stop_command": [
             rt.binary,
             "exec",
-            "{name}",
+            "{resource}",
             "sh",
             "-c",
             "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}",
         ],
-        "resolve_cmd": [
+        "identity_command": [
             rt.binary,
             "inspect",
             "-f",
             "{{{{.Id}}}} {{{{.State.Pid}}}} {{{{.State.StartedAt}}}}",
-            "{name}",
+            "{resource}",
         ],
-        "is_running_cmd": [rt.binary, "top", "{name}"],
-        "exists_cmd": [rt.binary, "container", "inspect", "{name}"],
-        # on_missing="create" still requires a start_template (a created
+        "ready_command": [rt.binary, "top", "{resource}"],
+        "exists_command": [rt.binary, "container", "inspect", "{resource}"],
+        # on_missing="create" still requires a start_command (a created
         # container can later be stopped and need restarting), even though
         # this run only ever takes the create path. Both delegate to compose.
-        "start_template": [rt.binary, "compose", "start"],
-        "create_template": [rt.binary, "compose", "up", "-d"],
+        "start_command": [rt.binary, "compose", "start"],
+        "create_command": [rt.binary, "compose", "up", "-d"],
         "on_missing": "create",
-        "on_missing_mode": "auto",
+        "approval": "auto",
     }
 
 
@@ -111,15 +111,13 @@ def _cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     agents = default_agent_catalog()
     launch_profiles = builtin_launch_profiles(agents)
     launch_profiles["claude"] = LaunchProfile(
-        id="claude", agent="claude", container_profile=_CONTAINER_PROFILE_ID
+        id="claude", agent="claude", runtime=_RUNTIME_PROFILE_ID
     )
-    profile_tbl = dict(_operator_container_table(rt, project_dir))
+    profile_tbl = dict(_operator_runtime_table(rt, project_dir))
     profile_tbl.pop("enabled", None)
-    profile_tbl["runtime_namespace"] = "per_user"
-    profile_tbl["name_template"] = rt.container_name
-    container_profiles = config_loader.build_container_profiles(
-        {"profiles": {_CONTAINER_PROFILE_ID: profile_tbl}}
-    )
+    profile_tbl["resource_scope"] = "per_user"
+    profile_tbl["resource_name_template"] = rt.runtime_name
+    runtimes = config_loader.build_runtimes({"profiles": {_RUNTIME_PROFILE_ID: profile_tbl}})
     return make_config(
         allowed_roots=[str(project_dir)],
         # Per-test socket under tmp_path so this never touches a real uxon
@@ -127,39 +125,39 @@ def _cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
         tmux_socket_template=str(socket_path),
         agents=agents,
         launch=LaunchConfig(default_profile="claude", profiles=launch_profiles),
-        container_profiles=container_profiles,
+        runtimes=runtimes,
     )
 
 
 def _resolved(cfg: Config, project_dir: Path, launch_user: str) -> ResolvedLaunchProfile:
     profile = cfg.launch.profiles["claude"]
-    container_profile = cfg.container_profiles[_CONTAINER_PROFILE_ID]
-    from uxon.domain.container import apply_path_map, resolve_profile_container_name
+    runtime = cfg.runtimes[_RUNTIME_PROFILE_ID]
+    from uxon.domain.runtime import apply_path_map, resolve_runtime_resource_name
     from uxon.domain.session import slugify
 
-    dir_token = apply_path_map(str(project_dir), container_profile.path_map)
-    context = ContainerContext(
-        profile_id=container_profile.id,
-        name=resolve_profile_container_name(
-            container_profile,
+    dir_token = apply_path_map(str(project_dir), runtime.path_map)
+    context = RuntimeContext(
+        runtime_id=runtime.id,
+        resource=resolve_runtime_resource_name(
+            runtime,
             user=launch_user,
             launch_profile=profile.id,
             agent=profile.agent,
             project_slug=slugify(project_dir.name),
         ),
-        dir_token=dir_token,
-        profile_fingerprint=container_profile.fingerprint,
+        runtime_dir=dir_token,
+        fingerprint=runtime.fingerprint,
     )
     return ResolvedLaunchProfile(
         profile=profile,
         agent=cfg.agents[profile.agent],
         launch_user=launch_user,
         mode_id="normal",
-        container=context,
+        runtime_context=context,
     )
 
 
-def _in_container_pids(rt: Runtime, name: str) -> str:
+def _in_runtime_pids(rt: Runtime, name: str) -> str:
     """``<runtime> top`` output, or '' if the container is gone."""
     cp = subprocess.run(
         [rt.binary, "top", name],
@@ -181,7 +179,7 @@ def _kill_tmux(socket_path: Path, session: str) -> None:
     )
 
 
-def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_path: Path) -> None:
+def test_launch_runs_agent_in_runtime_and_kill_reaps(runtime: Runtime, tmp_path: Path) -> None:
     """End-to-end: create → exec inside container → kill reaps the agent.
 
     Asserts (a) the marker file the stub touches appears, proving the
@@ -197,13 +195,13 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
     project_dir.mkdir()
     socket_path = tmp_path / "uxon.sock"
 
-    stub_path = write_project(project_dir, runtime.container_name)
-    # The compose file is the create_template's input — stock base + the
+    stub_path = write_project(project_dir, runtime.runtime_name)
+    # The compose file is the create_command's input — stock base + the
     # bind mounts; no build.
     (project_dir / "compose.yml").write_text(
         COMPOSE_TEMPLATE.format(
             image=BASE_IMAGE,
-            name=runtime.container_name,
+            name=runtime.runtime_name,
             project_dir=project_dir,
             stub_path=stub_path,
         )
@@ -212,9 +210,9 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
     cfg = _cfg(runtime, project_dir, socket_path)
 
     # 1. Readiness: container is absent → on_missing="create" runs the
-    #    compose create_template (the real ensure_container_ready path).
+    #    compose create_command (the real ensure_runtime_ready path).
     resolved = _resolved(cfg, project_dir, launch_user)
-    launch_app.ensure_container_ready(cfg, str(project_dir), resolved)
+    launch_app.ensure_runtime_ready(cfg, str(project_dir), resolved)
 
     # 2. Build the real launch request (the single exec-site wrap) and run
     #    it as a detached tmux session — the same argv the CLI would exec,
@@ -250,12 +248,12 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
 
         # 4. AC-B5: uxon's kill path reaps the in-container agent. Raw
         #    ``tmux kill-session`` only severs the client-side ``exec`` and
-        #    orphans the agent under docker/podman; uxon's stop_template
+        #    orphans the agent under docker/podman; uxon's stop_command
         #    teardown (driven here through the real ``do_kill``) terminates
         #    the recorded in-container PID. The container itself stays up
         #    (PID 1 idles on ``tail``), so the agent's ``sleep`` is the
         #    unambiguous signal of an orphan.
-        before = _in_container_pids(runtime, runtime.container_name)
+        before = _in_runtime_pids(runtime, runtime.runtime_name)
         assert AGENT_SENTINEL in before, "expected the idle agent process before kill"
 
         kill_args = ParsedArgs(action="kill", target_id="uxon-it@claude", force=True)
@@ -263,12 +261,12 @@ def test_launch_runs_agent_in_container_and_kill_reaps(runtime: Runtime, tmp_pat
 
         deadline = time.monotonic() + PROBE_TIMEOUT_SEC
         while time.monotonic() < deadline:
-            if AGENT_SENTINEL not in _in_container_pids(runtime, runtime.container_name):
+            if AGENT_SENTINEL not in _in_runtime_pids(runtime, runtime.runtime_name):
                 break
             time.sleep(0.2)
-        after = _in_container_pids(runtime, runtime.container_name)
+        after = _in_runtime_pids(runtime, runtime.runtime_name)
         assert AGENT_SENTINEL not in after, (
-            "uxon kill left the in-container agent running (stop_template did not reap it)"
+            "uxon kill left the in-container agent running (stop_command did not reap it)"
         )
     finally:
         _kill_tmux(socket_path, "uxon-it@claude")

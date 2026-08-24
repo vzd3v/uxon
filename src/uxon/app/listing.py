@@ -38,7 +38,7 @@ def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], 
 
     all_users = identity.resolve_all_session_users(cfg, launch_user)
     candidates = [u for u in all_users if u != launch_user]
-    caps = probe_sudo_capability(candidates)
+    caps = probe_sudo_capability(cfg, candidates)
     reachable = [u for u in candidates if u in caps.reachable_users]
     skipped = [u for u in candidates if u not in caps.reachable_users]
     scope_users = config_loader.normalize_user_list([launch_user, *reachable])
@@ -190,9 +190,9 @@ def _print_remote_table(
                 rss_kib=int(r.get("rss_kib", 0) or 0),
                 agent=str(r.get("agent", "")),
                 profile=str(r.get("profile", "")),
-                container_profile=str(r.get("container_profile", "")),
-                container=str(r.get("container", "")),
-                container_down=bool(r.get("container_down", False)),
+                runtime=str(r.get("runtime", "")),
+                runtime_resource=str(r.get("runtime_resource", "")),
+                runtime_down=bool(r.get("runtime_down", False)),
                 legacy=bool(r.get("legacy", False)),
             )
         )
@@ -496,9 +496,9 @@ def print_list(
         )
         marker = "*" if s.attached == "1" else " "
         pid_s = str(s.active_pid) if s.active_pid is not None else "-"
-        # A containerized session whose container is down shows a distinct
+        # A session whose workload resource is down shows a distinct
         # "down" marker in cpu/ram rather than a silent idle 0/— (AC-P1.8).
-        if s.container_down:
+        if s.runtime_down:
             cpu_s = "down"
             ram_s = "down"
         else:
@@ -506,11 +506,11 @@ def print_list(
             ram_s = format_rss_kib(s.rss_kib)
         start_s = compact_time(s.created)
         last_s = compact_time(s.last_attached)
-        # For a containerized session the active pane command is the runtime
+        # For a command-runtime session the active pane command is the runtime
         # client (``docker``/``sh``), not the agent — show the resolved agent
-        # id (AC-P1.4). Gated on the ``UXON_CONTAINER`` marker; non-container
+        # id (AC-P1.4). Gated on the runtime-resource marker; direct-runtime
         # sessions unchanged.
-        cmd_s = (s.agent if s.container else s.active_cmd) or "-"
+        cmd_s = (s.agent if s.runtime_resource else s.active_cmd) or "-"
         path_s = s.active_path or "-"
         rows.append(
             {

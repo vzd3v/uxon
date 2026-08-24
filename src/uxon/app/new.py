@@ -43,7 +43,7 @@ def is_new_project_target_allowed(cfg: Config, launch_user: str, project_dir: st
     whitelist is bypassed and a writable parent suffices.
     """
     parent = os.path.dirname(project_dir) or "/"
-    if not identity.probe_cwd_writable(launch_user, parent):
+    if not identity.probe_cwd_writable(cfg, launch_user, parent):
         return False
     return is_under_allowed_roots(cfg, project_dir)
 
@@ -55,7 +55,7 @@ def ensure_new_project_target_allowed(cfg: Config, launch_user: str, project_dir
     unwritable or whether the path is outside ``allowed_roots``.
     """
     parent = os.path.dirname(project_dir) or "/"
-    if not identity.probe_cwd_writable(launch_user, parent):
+    if not identity.probe_cwd_writable(cfg, launch_user, parent):
         fail(f"no write access to {parent} for {launch_user}")
     if not is_under_allowed_roots(cfg, project_dir):
         eprint("uxon: new project directory must be under one of:")
@@ -83,13 +83,13 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
                 f"{project_dir} (create it first with 'uxon -n {name}')"
             )
         seed_user = launch_profile_app.preflight_launch_user(cfg, caller_user, args.profile)
-        seed_repo_root = git.git_repo_root_as_user(project_dir, seed_user)
+        seed_repo_root = git.git_repo_root_as_user(cfg, project_dir, seed_user)
         if not seed_repo_root:
             fail(
                 "new -w requires a git repository (checked as launch user "
                 f"{seed_user}) in {project_dir}"
             )
-        seed_primary = git.git_common_dir_root_as_user(project_dir, seed_user)
+        seed_primary = git.git_common_dir_root_as_user(cfg, project_dir, seed_user)
         if seed_primary:
             seed_repo_root = seed_primary
         compatibility_root = compute_worktree_path(
@@ -106,14 +106,14 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         )
         launch_user = resolved.launch_user
         ensure_new_project_target_allowed(cfg, launch_user, project_dir)
-        repo_root = git.git_repo_root_as_user(project_dir, launch_user)
+        repo_root = git.git_repo_root_as_user(cfg, project_dir, launch_user)
         if not repo_root:
             fail(
                 "new -w requires a git repository (checked as launch user "
                 f"{launch_user}) in {project_dir}"
             )
         # Normalise worktree-from-worktree to the primary repo (§8).
-        primary = git.git_common_dir_root_as_user(project_dir, launch_user)
+        primary = git.git_common_dir_root_as_user(cfg, project_dir, launch_user)
         if primary:
             repo_root = primary
         launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
@@ -138,13 +138,13 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             if next_launch_user != launch_user:
                 launch_user = next_launch_user
                 ensure_new_project_target_allowed(cfg, launch_user, project_dir)
-                repo_root = git.git_repo_root_as_user(project_dir, launch_user)
+                repo_root = git.git_repo_root_as_user(cfg, project_dir, launch_user)
                 if not repo_root:
                     fail(
                         "new -w requires a git repository (checked as launch user "
                         f"{launch_user}) in {project_dir}"
                     )
-                primary = git.git_common_dir_root_as_user(project_dir, launch_user)
+                primary = git.git_common_dir_root_as_user(cfg, project_dir, launch_user)
                 if primary:
                     repo_root = primary
                 launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
@@ -239,10 +239,12 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     target_dir = project_dir
     if args.dry_run:
-        mkdir_cmd = identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir]
+        mkdir_cmd = identity.command_prefix_for_user(cfg, launch_user) + ["mkdir", "-p", target_dir]
         print(f"mkdir= {shlex.join(mkdir_cmd)}")
     else:
-        process.run_cmd(identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", target_dir])
+        process.run_cmd(
+            identity.command_prefix_for_user(cfg, launch_user) + ["mkdir", "-p", target_dir]
+        )
         resolved = launch_profile_app.revalidate_launch_profile(
             cfg,
             caller_user,
@@ -339,7 +341,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     )
     if not args.dry_run:
         # Probe + (auto) start/create the container before exec when enabled.
-        launch_app.ensure_container_ready(cfg, target_dir, resolved)
+        launch_app.ensure_runtime_ready(cfg, target_dir, resolved)
     try:
         return tmux.launch_in_tmux(
             target_dir,
@@ -349,6 +351,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             branch,
             resolved_profile=resolved,
             server_running=bool(sessions),
+            active_sessions=sessions,
         )
     except Exception as exc:
         _audit.audit(
@@ -433,6 +436,7 @@ def _do_create_git_remote(
     _git_ok = False
     try:
         result = uxon_git_create.create_project_remote(
+            cfg,
             profile,
             repo_name,
             project_dir,

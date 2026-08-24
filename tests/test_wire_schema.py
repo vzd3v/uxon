@@ -66,8 +66,10 @@ class BuildSessionRecordsTests(unittest.TestCase):
         self.assertEqual(rec["short_id"], "foo@claude")
         self.assertEqual(rec["profile"], "claude")
         self.assertEqual(rec["agent"], "claude")
-        self.assertEqual(rec["container_profile"], "")
-        self.assertEqual(rec["container"], "")
+        self.assertEqual(rec["runtime"], "direct")
+        self.assertEqual(rec["runtime_kind"], "direct")
+        self.assertEqual(rec["runtime_resource"], "")
+        self.assertEqual(rec["execution_backend"], "")
         self.assertFalse(rec["attached"])
         self.assertEqual(rec["windows"], "1")
         self.assertEqual(rec["created"], "2026-05-03T12:00:00+00:00")
@@ -156,8 +158,10 @@ class BuildSessionRecordsTests(unittest.TestCase):
             "short_id",
             "profile",
             "agent",
-            "container_profile",
-            "container",
+            "runtime",
+            "runtime_kind",
+            "runtime_resource",
+            "execution_backend",
             "attached",
             "windows",
             "created",
@@ -168,7 +172,7 @@ class BuildSessionRecordsTests(unittest.TestCase):
             "active_path",
             "cpu_pct",
             "rss_kib",
-            "container_down",
+            "runtime_down",
             "legacy",
         }
         self.assertEqual(set(rec.keys()), expected_keys)

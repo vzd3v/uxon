@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from uxon.domain.host_report import BinaryStatus, HostReport
+from uxon.infra.execution import ExecutionConfigured, command_prefix, resolve_target
 from uxon.infra.run import run_query
 
 if TYPE_CHECKING:
@@ -71,6 +72,7 @@ def _resolve_paths_local(names: list[str]) -> dict[str, str | None]:
 
 
 def _resolve_paths_remote(
+    cfg: ExecutionConfigured,
     names: list[str],
     launch_user: str,
 ) -> dict[str, str | None]:
@@ -105,7 +107,7 @@ def _resolve_paths_remote(
 
     try:
         cp = run_query(
-            ["sudo", "-n", "-H", "-u", launch_user, "--", "sh", "-lc", script],
+            command_prefix(cfg, launch_user, interactive=False) + ["sh", "-lc", script],
             timeout=PROBE_TIMEOUT_SEC,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -148,7 +150,9 @@ _INSTALL_HINTS = {
 # ── Main probe API ───────────────────────────────────────────────────
 
 
-def probe_host(launch_user: str, catalog: dict[str, AgentSpec]) -> HostReport:
+def probe_host(
+    cfg: ExecutionConfigured, launch_user: str, catalog: dict[str, AgentSpec]
+) -> HostReport:
     """Probe tmux + every agent in ``catalog`` on the host for ``launch_user``.
 
     ``catalog`` is the merged agent catalog (``cfg.agents``); passing it
@@ -172,10 +176,10 @@ def probe_host(launch_user: str, catalog: dict[str, AgentSpec]) -> HostReport:
 
     # Single round-trip probe: tmux + every catalogued agent.
     probe_names = ["tmux", *all_agent_names]
-    if launch_user == _current_user():
+    if launch_user == _current_user() and resolve_target(cfg, launch_user).backend.kind == "local":
         paths = _resolve_paths_local(probe_names)
     else:
-        paths = _resolve_paths_remote(probe_names, launch_user)
+        paths = _resolve_paths_remote(cfg, probe_names, launch_user)
 
     tmux_status = BinaryStatus(
         name="tmux",

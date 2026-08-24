@@ -140,7 +140,7 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
             tmux = _BinaryStatus("tmux", "/usr/bin/tmux")
 
         original_probe = uxon_probes.probe_host
-        uxon_probes.probe_host = lambda _user, _catalog: _Report()  # type: ignore[assignment]
+        uxon_probes.probe_host = lambda _cfg, _user, _catalog: _Report()  # type: ignore[assignment]
 
         try:
             ctx = _mk_ctx()
@@ -204,7 +204,7 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
 
         calls: list[tuple[str, tuple[str, ...]]] = []
 
-        def fake_probe(user, catalog):
+        def fake_probe(_cfg, user, catalog):
             calls.append((user, tuple(catalog)))
             return HostReport(
                 tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
@@ -266,7 +266,7 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
 
         calls: list[tuple[str, tuple[str, ...]]] = []
 
-        def fake_probe(user, catalog):
+        def fake_probe(_cfg, user, catalog):
             calls.append((user, tuple(catalog)))
             return HostReport(
                 tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
@@ -287,7 +287,7 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
                         label="Box",
                         agent="claude",
                         launch_user="alice",
-                        container_profile="docker",
+                        runtime="docker",
                     ),
                 },
             )
@@ -305,10 +305,12 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
                 app._worker_coord._probe_host_worker()
                 await pilot.pause()
 
+            self.assertTrue(posted)
+            self.assertFalse(posted[-1].error, posted[-1].error)
             self.assertEqual(calls, [("alice", ())])
             self.assertEqual(
                 posted[-1].availability,
-                {"box": uxon_agents.AgentAvailability(status="ok", path="container:docker")},
+                {"box": uxon_agents.AgentAvailability(status="ok", path="runtime:docker")},
             )
         finally:
             uxon_probes.probe_host = original_probe  # type: ignore[assignment]

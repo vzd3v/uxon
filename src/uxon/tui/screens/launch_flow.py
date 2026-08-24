@@ -43,33 +43,33 @@ class LaunchFlow:
     def __init__(self, host: MainScreen) -> None:
         self.host = host
 
-    def commit_with_container_gate(
+    def commit_with_runtime_gate(
         self, target_dir: str, profile_id: str, mode_id: str, do_commit
     ) -> None:
-        """Probe the container for ``target_dir``, then run ``do_commit``.
+        """Probe the workload runtime for ``target_dir``, then run ``do_commit``.
 
-        The single TUI seam for ``[container]`` readiness. ``do_commit`` is the
+        The single TUI seam for workload-runtime readiness. ``do_commit`` is the
         zero-arg closure that actually launches (each entry point's existing
         ``run_off_loop(on_launch_*)`` block). Order, all off the event loop
         (§ blocking invariant):
 
-        1. ``on_container_gate`` resolves the selected profile, probes its
-           launch user's container, and returns a ``ContainerGate`` (or
+        1. ``on_runtime_gate`` resolves the selected profile, probes its
+           launch user's workload runtime, and returns a ``RuntimeGate`` (or
            ``None`` → launch straight through: disabled, or already running).
         2. ``fail_message`` (state outside ``on_missing`` policy) → notify and
            abort — uxon never exceeds the capability gate.
-        3. A needed start/create: when ``needs_prompt`` (``on_missing_mode ==
+        3. A needed start/create: when ``needs_prompt`` (``approval ==
            "prompt"``) push a ``ConfirmYesNo`` with the pre-built message and
            run the prepare only on confirm; otherwise (``auto``) run it
            straight. Then ``do_commit``.
 
         The capability decision already happened inside the gate
-        (``decide_container_action`` never exceeds ``on_missing``), so the
+        (``decide_runtime_action`` never exceeds ``on_missing``), so the
         prepare here can only do what policy permits — the prompt is consent,
         not authorization.
         """
         host = self.host
-        gate_fn = host.cfg.on_container_gate
+        gate_fn = host.cfg.on_runtime_gate
 
         def run_prepare_then_commit(gate) -> None:
             # The prepare shells out (start/create) — strictly off the loop.
@@ -77,7 +77,7 @@ class LaunchFlow:
                 gate.prepare,
                 on_success=lambda _: do_commit(),
                 on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
-                label="container_prepare",
+                label="runtime_prepare",
             )
 
         def on_gate(gate) -> None:
@@ -106,7 +106,7 @@ class LaunchFlow:
             on_error=lambda exc: host.app.notify(
                 f"Container probe failed: {exc}", severity="error", timeout=6
             ),
-            label="container_gate",
+            label="runtime_gate",
         )
 
     def run_intent(self, intent: MainIntent | None) -> None:
@@ -294,9 +294,9 @@ class LaunchFlow:
                     label="launch_existing_worktree",
                 )
 
-            # The worktree dir already exists, so its container resolves up
+            # The worktree dir already exists, so its workload resolves up
             # front — prompt affordance applies (unlike new-worktree create).
-            self.commit_with_container_gate(path, agent_id, mode_id, do_commit)
+            self.commit_with_runtime_gate(path, agent_id, mode_id, do_commit)
 
         def commit_new_worktree(agent_id: str, mode_id: str, repo_root: str, branch: str) -> None:
             # Creates a git worktree (`git worktree add`, possibly `git fetch`)
@@ -443,9 +443,7 @@ class LaunchFlow:
 
             # Container readiness (probe → prompt/auto start/create) precedes
             # the launch; ``None`` target resolves to the started-in folder.
-            self.commit_with_container_gate(
-                target_dir or host.cfg.cwd, agent_id, mode_id, do_commit
-            )
+            self.commit_with_runtime_gate(target_dir or host.cfg.cwd, agent_id, mode_id, do_commit)
 
         def on_probed(value: bool) -> None:
             # The cross-user / sudo probe may not have landed yet; when the
@@ -571,9 +569,9 @@ class LaunchFlow:
                         label="launch_existing",
                     )
 
-                # The named project already exists on disk → container resolves
+                # The named project already exists on disk → runtime resolves
                 # up front → prompt affordance applies.
-                self.commit_with_container_gate(project_dir, agent_id, mode_id, do_commit)
+                self.commit_with_runtime_gate(project_dir, agent_id, mode_id, do_commit)
 
             # Same worktree-aware flow as launch-cwd: a git project shows the
             # WORKSPACE column, a non-git one degrades to agent/mode only (§3).

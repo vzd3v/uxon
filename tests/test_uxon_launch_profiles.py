@@ -197,7 +197,7 @@ class LaunchProfileResolutionTests(unittest.TestCase):
         cfg = _cfg_with_launch(launch)
         seen_catalogs: list[tuple[str, ...]] = []
 
-        def fake_probe(launch_user, catalog):
+        def fake_probe(_cfg, launch_user, catalog):
             seen_catalogs.append(tuple(catalog))
             return _report(launch_user, ("codex",))
 
@@ -234,8 +234,9 @@ class LaunchProfileResolutionTests(unittest.TestCase):
 
         self.assertEqual(resolved.launch_user, "dana_agent")
         probe.assert_called_once()
-        self.assertEqual(probe.call_args.args[0], "dana_agent")
-        self.assertEqual(tuple(probe.call_args.args[1]), ("claude",))
+        self.assertIs(probe.call_args.args[0], cfg)
+        self.assertEqual(probe.call_args.args[1], "dana_agent")
+        self.assertEqual(tuple(probe.call_args.args[2]), ("claude",))
 
     def test_unknown_disabled_and_path_disallowed_messages_list_choices(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -481,7 +482,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
                 mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
                 mock.patch.object(tui_planning.new_app, "_do_create_git_remote") as create_remote,
-                mock.patch.object(tui_planning.launch_app, "ensure_container_ready"),
+                mock.patch.object(tui_planning.launch_app, "ensure_runtime_ready"),
             ):
                 with self.assertRaises(SystemExit):
                     tui_planning._plan_tui_create_new_agent(
@@ -534,7 +535,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
                 mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
                 mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
-                mock.patch.object(tui_planning.launch_app, "ensure_container_ready") as ready,
+                mock.patch.object(tui_planning.launch_app, "ensure_runtime_ready") as ready,
                 mock.patch(
                     "uxon.infra.tmux._build_tmux_launch_request",
                     return_value=LaunchRequest(cmd=("true",), label="launch x"),
@@ -580,7 +581,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
         gate.assert_called_once_with(cfg, "profile_user", str(project))
         run_cmd.assert_not_called()
 
-    def test_worktree_revalidates_after_add_before_container_prepare(self) -> None:
+    def test_worktree_revalidates_after_add_before_runtime_prepare(self) -> None:
         cfg = make_config(allowed_roots=["/srv/work"])
         resolved = _resolved(cfg, "claude")
         calls: list[list[str]] = []
@@ -610,7 +611,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 "revalidate_launch_profile",
                 side_effect=SystemExit(2),
             ),
-            mock.patch.object(launch_app, "ensure_container_ready") as container_ready,
+            mock.patch.object(launch_app, "ensure_runtime_ready") as runtime_ready,
         ):
             with self.assertRaises(SystemExit):
                 launch_app.plan_worktree_launch(
@@ -623,7 +624,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 )
 
         self.assertTrue([cmd for cmd in calls if "worktree" in cmd and "add" in cmd])
-        container_ready.assert_not_called()
+        runtime_ready.assert_not_called()
 
 
 if __name__ == "__main__":

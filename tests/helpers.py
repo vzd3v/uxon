@@ -18,7 +18,7 @@ from uxon.domain.session import SessionInfo
 def make_config(**overrides: object) -> Config:
     agents = default_agent_catalog()
     base: dict[str, object] = {
-        "runtime_user": "",
+        "default_launch_user": "",
         "default_launch_mode": "caller",
         "enable_all_users_list": False,
         "launch_user_by_caller": {},

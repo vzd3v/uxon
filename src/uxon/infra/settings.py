@@ -32,7 +32,7 @@ class SettingSpec:
 
 
 SETTINGS_SPECS: tuple[SettingSpec, ...] = (
-    SettingSpec("runtime_user", "string", "Launch user when default_launch_mode='fixed'."),
+    SettingSpec("default_launch_user", "string", "Launch user when default_launch_mode='fixed'."),
     SettingSpec(
         "default_launch_mode", "enum", "Who runs claude by default.", choices=("caller", "fixed")
     ),

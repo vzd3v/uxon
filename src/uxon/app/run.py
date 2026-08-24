@@ -25,10 +25,10 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     branch = args.worktree_branch
     if branch:
         seed_user = launch_profile_app.preflight_launch_user(cfg, caller_user, args.profile)
-        seed_repo_root = git.git_repo_root_nonint_as_user(cwd, seed_user)
+        seed_repo_root = git.git_repo_root_nonint_as_user(cfg, cwd, seed_user)
         if not seed_repo_root:
             fail(f"run -w must be run inside a git repository readable by {seed_user}")
-        seed_primary = git.git_common_dir_root_as_user(cwd, seed_user)
+        seed_primary = git.git_common_dir_root_as_user(cfg, cwd, seed_user)
         if seed_primary:
             seed_repo_root = seed_primary
         worktree_path = compute_worktree_path(
@@ -44,10 +44,10 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             report=args.host_report,
         )
         launch_user = resolved.launch_user
-        repo_root = git.git_repo_root_nonint_as_user(cwd, launch_user)
+        repo_root = git.git_repo_root_nonint_as_user(cfg, cwd, launch_user)
         if not repo_root:
             fail(f"run -w must be run inside a git repository readable by {launch_user}")
-        primary = git.git_common_dir_root_as_user(cwd, launch_user)
+        primary = git.git_common_dir_root_as_user(cfg, cwd, launch_user)
         if primary:
             repo_root = primary
         launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
@@ -67,10 +67,10 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             next_launch_user = resolved.launch_user
             if next_launch_user != launch_user:
                 launch_user = next_launch_user
-                repo_root = git.git_repo_root_nonint_as_user(cwd, launch_user)
+                repo_root = git.git_repo_root_nonint_as_user(cfg, cwd, launch_user)
                 if not repo_root:
                     fail(f"run -w must be run inside a git repository readable by {launch_user}")
-                primary = git.git_common_dir_root_as_user(cwd, launch_user)
+                primary = git.git_common_dir_root_as_user(cfg, cwd, launch_user)
                 if primary:
                     repo_root = primary
                 launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
@@ -148,7 +148,7 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     )
     if not args.dry_run:
         # Probe + (auto) start/create the container before exec when enabled.
-        launch_app.ensure_container_ready(cfg, target_dir, resolved)
+        launch_app.ensure_runtime_ready(cfg, target_dir, resolved)
     try:
         return tmux.launch_in_tmux(
             target_dir,
@@ -158,6 +158,7 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             branch,
             resolved_profile=resolved,
             server_running=bool(sessions),
+            active_sessions=sessions,
         )
     except Exception as exc:
         _audit.audit(

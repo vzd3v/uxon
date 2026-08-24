@@ -81,6 +81,32 @@ class GuardUnitTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(EventLoopBlockedError):
             subprocess.run(["true"], capture_output=True)
 
+    async def test_execution_backend_probe_trips_on_loop(self) -> None:
+        """The target-user execution probe is a guarded subprocess boundary."""
+        from helpers import make_config
+
+        from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
+        from uxon.infra import execution
+        from uxon.infra.loop_guard import EventLoopBlockedError
+
+        backend = ExecutionBackendSpec(
+            id="boundary",
+            kind="command",
+            command_prefix=("true",),
+            probe_command=("true",),
+        )
+        cfg = make_config(
+            execution=ExecutionConfig(
+                default_backend="boundary",
+                backends={
+                    "local": ExecutionConfig().backends["local"],
+                    "boundary": backend,
+                },
+            )
+        )
+        with self.assertRaises(EventLoopBlockedError):
+            execution.probe(cfg, "alice")
+
 
 def _mk_ctx(**overrides):
     from uxon.tui.context import LaunchRequest, TuiContext
@@ -325,19 +351,21 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             await self._settle(pilot)
             self.assertEqual(rec, [False], msg="on_launch_cwd commit ran on the event loop")
 
-    async def test_container_probe_runs_off_loop(self) -> None:
-        """The container probe/start shell-outs must run off the loop too.
+    async def test_runtime_probe_runs_off_loop(self) -> None:
+        """Workload-runtime probe/start shell-outs must run off the loop too.
 
-        ``[container].enabled`` gates the launch on ``on_container_gate``,
+        A configured runtime gates the launch on ``on_runtime_gate``,
         which shells out via the bounded-timeout probe. Like the launch
         commit, it runs on the off-loop worker — a hung ``docker inspect``
         must never freeze the UI. Here the launch callback stands in for that
-        work and records the thread the container probe would run on (the real
+        work and records the thread the runtime probe would run on (the real
         ``subprocess.run`` boundary is the guard).
         """
         import getpass
 
-        from uxon.infra import container as container_infra
+        from helpers import make_config
+
+        from uxon.infra import runtime as runtime_infra
         from uxon.infra.agents import AgentAvailability
         from uxon.tui.app import UxonApp
         from uxon.tui.context import LaunchRequest
@@ -346,12 +374,12 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
         rec: list[bool] = []
 
         def on_launch_cwd(agent_id, mode_id, target_dir=None):
-            # Drive the REAL container probe shell-out (the new off-loop work)
+            # Drive the REAL runtime probe shell-out (the new off-loop work)
             # and record the thread it runs on. ``subprocess.run`` is the
             # guarded boundary; ``["true"]`` exits 0 fast. Probe as the current
             # user so the same-user fast path (no sudo) keeps the test hermetic.
             rec.append(_on_loop())
-            container_infra._probe_exit_ok(["true"], getpass.getuser())
+            runtime_infra._probe_exit_ok(make_config(), ["true"], getpass.getuser(), 1.0)
             return LaunchRequest(cmd=("/bin/true",), label="cwd")
 
         ctx = _mk_ctx(

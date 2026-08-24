@@ -41,6 +41,7 @@ _prefix: dict[str, Any] = {}
 _prefix_subcmd: str = ""
 _syslog_facility_name: str = "user"
 _correlation_id: str | None = None
+AUDIT_SCHEMA_VERSION = 2
 
 # RFC 3164 / 5424 facility numbers, indexed by name.  Only the ones an
 # operator can plausibly reach for in ``[audit].syslog_facility`` matter.
@@ -241,6 +242,7 @@ def _build_prefix() -> dict[str, Any]:
         launch_user = ""
 
     prefix: dict[str, Any] = {
+        "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "host": socket.gethostname(),
         "uxon_version": _uxon_version,
         "caller_user": caller_user,

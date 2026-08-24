@@ -3,7 +3,7 @@
 
 Launch profiles are the operator-facing runnable choices. Agents remain the
 binary/mode catalog; a launch profile points at one agent and may pin a launch
-user, a container profile, and a git-remote credential policy.
+user, a workload runtime, and a git-remote credential policy.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 from uxon.domain.agents import AgentSpec
+from uxon.domain.execution import ExecutionTarget
 from uxon.errors import fail
 
 _TMUX_SAFE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -30,7 +31,7 @@ class LaunchProfile:
     agent: str
     display_name: str = ""
     launch_user: str = ""
-    container_profile: str = ""
+    runtime: str = "direct"
     git_remote: GitRemotePolicy = field(default_factory=GitRemotePolicy)
 
 
@@ -62,19 +63,20 @@ class LaunchConfig:
 
 
 @dataclass(frozen=True)
-class ContainerIdentity:
+class RuntimeIdentity:
     id: str
+    host_pid: int = 0
     cgroup: str = ""
     epoch: str = ""
 
 
 @dataclass(frozen=True)
-class ContainerContext:
-    profile_id: str
-    name: str
-    dir_token: str
-    profile_fingerprint: str = ""
-    identity: ContainerIdentity | None = None
+class RuntimeContext:
+    runtime_id: str
+    resource: str
+    runtime_dir: str
+    fingerprint: str = ""
+    identity: RuntimeIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -83,12 +85,9 @@ class ResolvedLaunchProfile:
     agent: AgentSpec
     launch_user: str
     mode_id: str = ""
-    container: ContainerContext | None = None
+    execution: ExecutionTarget | None = None
+    runtime_context: RuntimeContext | None = None
     git_remote: GitRemotePolicy = field(default_factory=GitRemotePolicy)
-
-    @property
-    def container_context(self) -> ContainerContext | None:
-        return self.container
 
 
 def validate_tmux_safe_id(value: str, *, what: str) -> str:

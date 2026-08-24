@@ -121,15 +121,15 @@ class TuiBridge:
             "-t",
             target.name,
         ]
-        # Capture teardown before the kill, reap the orphaned in-container
+        # Capture teardown before the kill, reap the orphaned workload
         # agent after kill-session — the same best-effort path as CLI do_kill.
         from uxon.app.kill import (
-            prepare_container_teardown,
-            run_container_teardown,
+            prepare_runtime_teardown,
             run_kill_session,
+            run_runtime_teardown,
         )
 
-        teardown = prepare_container_teardown(self.cfg, target)
+        teardown = prepare_runtime_teardown(self.cfg, target)
         run_kill_session(
             full,
             audit_event="session.kill",
@@ -141,7 +141,7 @@ class TuiBridge:
             dry_run=False,
         )
         if teardown:
-            run_container_teardown(self.cfg, teardown, user, target.name)
+            run_runtime_teardown(self.cfg, teardown, user, target.name)
         _audit.audit(
             "session.kill",
             session=target.name,
@@ -156,7 +156,7 @@ class TuiBridge:
         # TUI 'D' / kill-all-mine. Mirrors ``on_kill_all_reachable``'s
         # audit shape (``target_users``, ``killed_count``, ``dry_run``)
         # for the single-user case.
-        from uxon.app.kill import prepare_container_teardown, run_container_teardown
+        from uxon.app.kill import prepare_runtime_teardown, run_runtime_teardown
         from uxon.infra import audit as _audit
 
         fresh = sessions_probe.collect_sessions([self.launch_user], self.cfg)
@@ -167,12 +167,12 @@ class TuiBridge:
                 "-t",
                 s.name,
             ]
-            teardown = prepare_container_teardown(self.cfg, s)
+            teardown = prepare_runtime_teardown(self.cfg, s)
             cp = process.run_cmd(full, check=False)
             if cp.returncode == 0:
                 killed_count += 1
                 if teardown:
-                    run_container_teardown(self.cfg, teardown, self.launch_user, s.name)
+                    run_runtime_teardown(self.cfg, teardown, self.launch_user, s.name)
         _audit.audit(
             "session.kill_all",
             outcome="ok" if killed_count == len(fresh) else "error",
@@ -342,7 +342,7 @@ class TuiBridge:
         # empty ``reachable_users`` collapses to "kill all my own
         # sessions", which is the same behaviour the legacy
         # ``kill-all-global`` had when sudo was unavailable.
-        from uxon.app.kill import prepare_container_teardown, run_container_teardown
+        from uxon.app.kill import prepare_runtime_teardown, run_runtime_teardown
 
         reachable = self.sudo_caps.reachable_users if self.sudo_caps else frozenset()
         users = sorted({self.launch_user, *reachable})
@@ -356,13 +356,13 @@ class TuiBridge:
                     "-t",
                     s.name,
                 ]
-                teardown = prepare_container_teardown(self.cfg, s)
+                teardown = prepare_runtime_teardown(self.cfg, s)
                 cp = process.run_cmd(full, check=False)
                 attempted += 1
                 if cp.returncode == 0:
                     killed_count += 1
                     if teardown:
-                        run_container_teardown(self.cfg, teardown, u, s.name)
+                        run_runtime_teardown(self.cfg, teardown, u, s.name)
         # Operationally the most-significant kill_all path: cross-user
         # bulk kill from the TUI.  Audit emit covers the whole sweep,
         # not per-session — matches the spec's `target_users` /
@@ -463,7 +463,7 @@ class TuiBridge:
         )
         # Container readiness is NOT handled here: the TUI runs the probe +
         # (prompt-confirmed) start/create through ``LaunchFlow`` BEFORE this
-        # commit so ``on_missing_mode = "prompt"`` can show an affordance.
+        # commit so ``approval = "prompt"`` can show an affordance.
         # ``_plan_tui_run_agent`` only ever yields a launch (never an
         # attach), so this path is unconditional ``session.new``.
         from uxon.infra import audit as _audit
@@ -602,14 +602,14 @@ class TuiBridge:
         """
         from uxon.infra.worktrees import WorktreeProbeError, parse_worktree_porcelain
 
-        repo_root = git.git_repo_root_nonint_as_user(cwd_arg, self.launch_user)
+        repo_root = git.git_repo_root_nonint_as_user(self.cfg, cwd_arg, self.launch_user)
         if not repo_root:
             return []
-        primary = git.git_common_dir_root_as_user(cwd_arg, self.launch_user)
+        primary = git.git_common_dir_root_as_user(self.cfg, cwd_arg, self.launch_user)
         if primary:
             repo_root = primary
         cp = run_query(
-            identity.nonint_command_prefix_for_user(self.launch_user)
+            identity.nonint_command_prefix_for_user(self.cfg, self.launch_user)
             + ["git", "-C", repo_root, "worktree", "list", "--porcelain"],
         )
         if cp.returncode != 0:
@@ -692,8 +692,8 @@ class TuiBridge:
         )
         return tuple((s.user, s.name, s.attached == "1") for s in matches)
 
-    def on_container_gate(self, target_dir: str, agent_id: str, mode_id: str):
-        """Probe the container for ``target_dir``; return the TUI gate or None.
+    def on_runtime_gate(self, target_dir: str, agent_id: str, mode_id: str):
+        """Probe the workload runtime for ``target_dir``; return the TUI gate or None.
 
         Shells out as the launch user under a bounded timeout — MUST run off
         the event loop (the caller dispatches it via ``run_off_loop``). None
@@ -707,7 +707,7 @@ class TuiBridge:
             mode_id,
             target_may_not_exist=False,
         )
-        return launch_app.decide_container_gate(self.cfg, target_dir, resolved)
+        return launch_app.decide_runtime_gate(self.cfg, target_dir, resolved)
 
     def on_probe_cwd_writable(self) -> bool:
         return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, self.cwd)

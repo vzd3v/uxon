@@ -75,6 +75,7 @@ def _plan_tui_run_agent(
         None,
         resolved_profile=resolved,
         server_running=bool(sessions),
+        active_sessions=sessions,
     )
 
 
@@ -93,7 +94,9 @@ def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
     """
     project_dir = _canonical_tui_project_dir(cfg, name)
     new_app.ensure_new_project_target_allowed(cfg, launch_user, project_dir)
-    process.run_cmd(identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", project_dir])
+    process.run_cmd(
+        identity.command_prefix_for_user(cfg, launch_user) + ["mkdir", "-p", project_dir]
+    )
     return project_dir
 
 
@@ -160,6 +163,7 @@ def _plan_tui_existing_session_or_launch(
         None,
         resolved_profile=resolved,
         server_running=bool(sessions),
+        active_sessions=sessions,
     )
 
 
@@ -202,7 +206,9 @@ def _plan_tui_create_new_agent(
     )
     launch_user = resolved.launch_user
     new_app.ensure_new_project_target_allowed(cfg, launch_user, project_dir)
-    process.run_cmd(identity.command_prefix_for_user(launch_user) + ["mkdir", "-p", project_dir])
+    process.run_cmd(
+        identity.command_prefix_for_user(cfg, launch_user) + ["mkdir", "-p", project_dir]
+    )
     resolved = launch_profile_app.revalidate_launch_profile(
         cfg,
         caller_user,
@@ -224,7 +230,7 @@ def _plan_tui_create_new_agent(
             resolved.profile.id,
             resolved.git_remote,
         )
-    launch_app.ensure_container_ready(cfg, project_dir, resolved)
+    launch_app.ensure_runtime_ready(cfg, project_dir, resolved)
     return _plan_tui_existing_session_or_launch(
         cfg, caller_user, launch_user, project_dir, name, args, resolved=resolved
     )

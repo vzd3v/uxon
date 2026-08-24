@@ -47,13 +47,13 @@ class SessionRow:
     cmd: str
     path: str
     profile: str = ""
-    container_profile: str = ""
-    container: str = ""
-    # True iff this row's containerized session has a stopped/absent container
-    # (AC-P1.8). Drives the distinct "container down" CPU/RAM rendering instead
+    runtime: str = ""
+    runtime_resource: str = ""
+    # True iff this row's workload resource is stopped/absent (AC-P1.8).
+    # Drives the distinct "runtime down" CPU/RAM rendering instead
     # of a silent idle 0/—. Defaults False so a peer running an older wire
     # schema (no such field) renders as a normal row.
-    container_down: bool = False
+    runtime_down: bool = False
 
     @property
     def key(self) -> str:
@@ -160,8 +160,8 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         short=s.short,
         profile=getattr(s, "profile", ""),
         agent=s.agent,
-        container_profile="",
-        container="",
+        runtime="",
+        runtime_resource="",
         attached=s.attached,
         legacy=s.legacy,
         pid=_parse_pid(s.pid),
@@ -176,7 +176,7 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         # Additive field with a default — read defensively so an older /
         # partial source object (no such attribute) renders as a normal row,
         # the same forward-compat stance ``from_wire_record`` takes.
-        container_down=bool(getattr(s, "container_down", False)),
+        runtime_down=bool(getattr(s, "runtime_down", False)),
     )
 
 
@@ -197,8 +197,8 @@ def from_wire_record(host: str, rec: dict[str, Any]) -> SessionRow:
         short=short,
         profile=str(rec.get("profile", "") or ""),
         agent=str(rec.get("agent", "") or ""),
-        container_profile=str(rec.get("container_profile", "") or ""),
-        container=str(rec.get("container", "") or ""),
+        runtime=str(rec.get("runtime", "") or ""),
+        runtime_resource=str(rec.get("runtime_resource", "") or ""),
         attached=bool(rec.get("attached", False)),
         legacy=bool(rec.get("legacy", False)),
         pid=rec.get("active_pid") if isinstance(rec.get("active_pid"), int) else None,
@@ -209,8 +209,8 @@ def from_wire_record(host: str, rec: dict[str, Any]) -> SessionRow:
         cmd=str(rec.get("active_cmd", "") or ""),
         path=str(rec.get("active_path", "") or ""),
         # Read defensively: the current wire schema does not carry this field,
-        # so a peer's container-down state shows as a normal idle row remotely
+        # so a peer's runtime-down state shows as a normal idle row remotely
         # (an acceptable cross-host limitation — the field is forward-compat
         # only). ``False`` when absent.
-        container_down=bool(rec.get("container_down", False)),
+        runtime_down=bool(rec.get("runtime_down", False)),
     )

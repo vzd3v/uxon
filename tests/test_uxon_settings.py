@@ -8,7 +8,7 @@ from uxon.infra import settings as cs
 from uxon.infra import settings_toml as ct
 
 DEFAULTS = {
-    "runtime_user": "",
+    "default_launch_user": "",
     "default_launch_mode": "caller",
     "enable_all_users_list": False,
     "launch_user_by_caller": {},
@@ -26,34 +26,36 @@ class ResolveSettingEntriesTests(unittest.TestCase):
     def test_default_when_unset(self) -> None:
         entries = cs.resolve_setting_entries({}, {}, None, DEFAULTS)
         by_key = {e.spec.key: e for e in entries}
-        self.assertEqual(by_key["runtime_user"].source, "default")
-        self.assertEqual(by_key["runtime_user"].value, "")
-        self.assertTrue(by_key["runtime_user"].editable)
+        self.assertEqual(by_key["default_launch_user"].source, "default")
+        self.assertEqual(by_key["default_launch_user"].value, "")
+        self.assertTrue(by_key["default_launch_user"].editable)
 
     def test_repo_override(self) -> None:
-        entries = cs.resolve_setting_entries({"runtime_user": "dana_agent"}, {}, None, DEFAULTS)
+        entries = cs.resolve_setting_entries(
+            {"default_launch_user": "dana_agent"}, {}, None, DEFAULTS
+        )
         by_key = {e.spec.key: e for e in entries}
-        self.assertEqual(by_key["runtime_user"].source, "repo")
-        self.assertEqual(by_key["runtime_user"].value, "dana_agent")
-        self.assertTrue(by_key["runtime_user"].editable)
+        self.assertEqual(by_key["default_launch_user"].source, "repo")
+        self.assertEqual(by_key["default_launch_user"].value, "dana_agent")
+        self.assertTrue(by_key["default_launch_user"].editable)
 
     def test_project_data_is_ignored(self) -> None:
         entries = cs.resolve_setting_entries(
-            {"runtime_user": "repoish"},
-            {"runtime_user": "projish"},
+            {"default_launch_user": "repoish"},
+            {"default_launch_user": "projish"},
             Path("/p/.uxon.toml"),
             DEFAULTS,
         )
         by_key = {e.spec.key: e for e in entries}
-        self.assertEqual(by_key["runtime_user"].source, "repo")
-        self.assertEqual(by_key["runtime_user"].value, "repoish")
-        self.assertTrue(by_key["runtime_user"].editable)
+        self.assertEqual(by_key["default_launch_user"].source, "repo")
+        self.assertEqual(by_key["default_launch_user"].value, "repoish")
+        self.assertTrue(by_key["default_launch_user"].editable)
 
 
 class RenderRepoConfigTomlTests(unittest.TestCase):
     def test_round_trip_simple(self) -> None:
         data = {
-            "runtime_user": "dana_agent",
+            "default_launch_user": "dana_agent",
             "default_launch_mode": "fixed",
             "enable_all_users_list": True,
             "session_users": ["dana_agent", "erin"],
@@ -70,7 +72,7 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
         parsed = tomllib.loads(content)
         # Scalars round-trip
         for key in (
-            "runtime_user",
+            "default_launch_user",
             "default_launch_mode",
             "session_prefix",
             "new_project_root",
@@ -84,7 +86,7 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
 
     def test_table_with_entries(self) -> None:
         data = {
-            "runtime_user": "a",
+            "default_launch_user": "a",
             "launch_user_by_caller": {"caller1": "dana_agent", "caller2": "erin"},
         }
         content = ct.render_repo_config_toml(
@@ -96,41 +98,41 @@ class RenderRepoConfigTomlTests(unittest.TestCase):
         )
 
     def test_escapes_quotes_in_strings(self) -> None:
-        data = {"runtime_user": 'quote"here'}
+        data = {"default_launch_user": 'quote"here'}
         content = ct.render_repo_config_toml(
             data, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         parsed = tomllib.loads(content)
-        self.assertEqual(parsed["runtime_user"], 'quote"here')
+        self.assertEqual(parsed["default_launch_user"], 'quote"here')
 
     def test_formats_float_values(self) -> None:
         self.assertEqual(ct._format_value(2.5), "2.5")
 
     def test_always_emits_launch_user_by_caller_header(self) -> None:
         content = ct.render_repo_config_toml(
-            {"runtime_user": "x"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+            {"default_launch_user": "x"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         self.assertIn("[launch_user_by_caller]", content)
 
 
 class MutatorTests(unittest.TestCase):
     def test_apply_setting_is_nondestructive(self) -> None:
-        orig = {"runtime_user": "a"}
-        new = cs.apply_setting(orig, "runtime_user", "b")
-        self.assertEqual(orig, {"runtime_user": "a"})
-        self.assertEqual(new["runtime_user"], "b")
+        orig = {"default_launch_user": "a"}
+        new = cs.apply_setting(orig, "default_launch_user", "b")
+        self.assertEqual(orig, {"default_launch_user": "a"})
+        self.assertEqual(new["default_launch_user"], "b")
 
     def test_apply_setting_rejects_unknown_key(self) -> None:
         with self.assertRaises(KeyError):
             cs.apply_setting({}, "nonsense_key", 1)
 
     def test_remove_setting_drops_key(self) -> None:
-        new = cs.remove_setting({"runtime_user": "x"}, "runtime_user")
-        self.assertNotIn("runtime_user", new)
+        new = cs.remove_setting({"default_launch_user": "x"}, "default_launch_user")
+        self.assertNotIn("default_launch_user", new)
 
     def test_replace_mapping_requires_table_kind(self) -> None:
         with self.assertRaises(KeyError):
-            cs.replace_mapping({}, "runtime_user", {"a": "b"})
+            cs.replace_mapping({}, "default_launch_user", {"a": "b"})
 
     def test_replace_mapping_rejects_non_string_values(self) -> None:
         with self.assertRaises(ValueError):
@@ -141,7 +143,7 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
     def test_preserves_comments_and_unrelated_keys(self) -> None:
         original = (
             "# top comment\n"
-            'runtime_user = "dana_agent"  # inline comment\n'
+            'default_launch_user = "dana_agent"  # inline comment\n'
             "\n"
             "# section about session_prefix\n"
             'session_prefix = "cc-"\n'
@@ -152,7 +154,7 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
         )
         new = ct.update_repo_config_text(
             original,
-            {"runtime_user": "erin"},
+            {"default_launch_user": "erin"},
             schema_keys=cs.SCHEMA_KEYS,
             table_keys=cs.TABLE_KEYS,
         )
@@ -160,16 +162,16 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
         self.assertIn("# inline comment", new)
         self.assertIn("# section about session_prefix", new)
         self.assertIn("# who launches what", new)
-        self.assertIn('runtime_user = "erin"', new)
+        self.assertIn('default_launch_user = "erin"', new)
         # Untouched keys round-trip.
         parsed = tomllib.loads(new)
-        self.assertEqual(parsed["runtime_user"], "erin")
+        self.assertEqual(parsed["default_launch_user"], "erin")
         self.assertEqual(parsed["session_prefix"], "cc-")
         self.assertEqual(parsed["launch_user_by_caller"], {"alice": "dana_agent"})
 
     def test_updates_table_preserving_header_comment(self) -> None:
         original = (
-            'runtime_user = "a"\n'
+            'default_launch_user = "a"\n'
             "\n"
             "# per-caller overrides live here\n"
             "[launch_user_by_caller]\n"
@@ -202,10 +204,10 @@ class UpdateRepoConfigTextTests(unittest.TestCase):
 
     def test_fresh_file_emits_only_requested_keys(self) -> None:
         new = ct.update_repo_config_text(
-            "", {"runtime_user": "x"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
+            "", {"default_launch_user": "x"}, schema_keys=cs.SCHEMA_KEYS, table_keys=cs.TABLE_KEYS
         )
         parsed = tomllib.loads(new)
-        self.assertEqual(parsed, {"runtime_user": "x"})
+        self.assertEqual(parsed, {"default_launch_user": "x"})
 
 
 class PersistRepoConfigUpdatesTests(unittest.TestCase):
@@ -213,22 +215,22 @@ class PersistRepoConfigUpdatesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             path.write_text(
-                '# hello\nruntime_user = "a"\nsession_prefix = "cc-"\n',
+                '# hello\ndefault_launch_user = "a"\nsession_prefix = "cc-"\n',
                 encoding="utf-8",
             )
-            cs.persist_repo_config_updates(path, {"runtime_user": "b"})
+            cs.persist_repo_config_updates(path, {"default_launch_user": "b"})
             text = path.read_text(encoding="utf-8")
             self.assertIn("# hello", text)
             parsed = tomllib.loads(text)
-            self.assertEqual(parsed["runtime_user"], "b")
+            self.assertEqual(parsed["default_launch_user"], "b")
             self.assertEqual(parsed["session_prefix"], "cc-")
 
     def test_fresh_file_creates_minimal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            cs.persist_repo_config_updates(path, {"runtime_user": "z"})
+            cs.persist_repo_config_updates(path, {"default_launch_user": "z"})
             parsed = tomllib.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(parsed, {"runtime_user": "z"})
+            self.assertEqual(parsed, {"default_launch_user": "z"})
 
 
 class RemoveRepoKeyTests(unittest.TestCase):
@@ -236,27 +238,27 @@ class RemoveRepoKeyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             path.write_text(
-                '# keep me\nruntime_user = "a"\nsession_prefix = "cc-"\n',
+                '# keep me\ndefault_launch_user = "a"\nsession_prefix = "cc-"\n',
                 encoding="utf-8",
             )
-            cs.remove_repo_key(path, "runtime_user")
+            cs.remove_repo_key(path, "default_launch_user")
             text = path.read_text(encoding="utf-8")
             self.assertIn("# keep me", text)
             parsed = tomllib.loads(text)
-            self.assertNotIn("runtime_user", parsed)
+            self.assertNotIn("default_launch_user", parsed)
             self.assertEqual(parsed["session_prefix"], "cc-")
 
     def test_missing_file_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cs.remove_repo_key(Path(tmp) / "nope.toml", "runtime_user")
+            cs.remove_repo_key(Path(tmp) / "nope.toml", "default_launch_user")
 
 
 class WriteRepoConfigTomlTests(unittest.TestCase):
     def test_direct_write_when_writable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            cs.write_repo_config_toml('runtime_user = "x"\n', path)
-            self.assertEqual(path.read_text(encoding="utf-8"), 'runtime_user = "x"\n')
+            cs.write_repo_config_toml('default_launch_user = "x"\n', path)
+            self.assertEqual(path.read_text(encoding="utf-8"), 'default_launch_user = "x"\n')
 
     def test_falls_back_to_sudo_tee_on_permission_error(self) -> None:
         target = Path("/tmp/ccw_test_dummy_config.toml")
@@ -285,11 +287,11 @@ class LoadSettingsSourcesTests(unittest.TestCase):
             root = Path(tmp)
             repo_cfg = root / "config" / "config.toml"
             repo_cfg.parent.mkdir()
-            repo_cfg.write_text('runtime_user = "repo"\n', encoding="utf-8")
+            repo_cfg.write_text('default_launch_user = "repo"\n', encoding="utf-8")
             project = root / "work"
             project.mkdir()
             project_cfg = project / ".uxon.toml"
-            project_cfg.write_text('runtime_user = "project"\n', encoding="utf-8")
+            project_cfg.write_text('default_launch_user = "project"\n', encoding="utf-8")
 
             opened: list[Path] = []
             original_open = Path.open
@@ -302,7 +304,7 @@ class LoadSettingsSourcesTests(unittest.TestCase):
                 with mock.patch.object(Path, "open", spy_open):
                     repo_data, project_data, project_path = cs.load_settings_sources(str(project))
 
-        self.assertEqual(repo_data["runtime_user"], "repo")
+        self.assertEqual(repo_data["default_launch_user"], "repo")
         self.assertEqual(project_data, {})
         self.assertIsNone(project_path)
         self.assertIn(repo_cfg, opened)
@@ -310,7 +312,7 @@ class LoadSettingsSourcesTests(unittest.TestCase):
 
 
 class ProfileSettingsSchemaTests(unittest.TestCase):
-    def test_launch_and_container_profiles_are_file_only(self) -> None:
+    def test_launch_and_runtimes_are_file_only(self) -> None:
         self.assertNotIn("agents.enabled", cs.SCHEMA_KEYS)
         self.assertNotIn("agents.default", cs.SCHEMA_KEYS)
         self.assertNotIn("default_git_remote_profile", cs.SCHEMA_KEYS)

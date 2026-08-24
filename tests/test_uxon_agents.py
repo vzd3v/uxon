@@ -6,8 +6,12 @@ import subprocess
 import unittest
 from unittest import mock
 
+from helpers import make_config
+
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG, permission_mode_for
 from uxon.infra import agents as uxon_agents
+
+_CFG = make_config()
 
 
 class CatalogTests(unittest.TestCase):
@@ -79,37 +83,37 @@ class ProbeOneTests(unittest.TestCase):
     """
 
     def test_probe_ok(self) -> None:
-        with mock.patch("uxon.infra.agents.subprocess.run") as run:
+        with mock.patch("uxon.infra.agents.run_query") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="1.0.1\n", stderr=""
             )
-            result = uxon_agents._probe_one("claude", launch_user=None)
+            result = uxon_agents._probe_one(_CFG, "claude", launch_user=None)
         self.assertEqual(result.status, "ok")
         self.assertEqual(result.version, "1.0.1")
 
     def test_probe_missing_filenotfound(self) -> None:
         with mock.patch(
-            "uxon.infra.agents.subprocess.run",
+            "uxon.infra.agents.run_query",
             side_effect=FileNotFoundError("no such binary"),
         ):
-            result = uxon_agents._probe_one("codex", launch_user=None)
+            result = uxon_agents._probe_one(_CFG, "codex", launch_user=None)
         self.assertEqual(result.status, "missing")
         self.assertIsNone(result.version)
 
     def test_probe_missing_nonzero_exit(self) -> None:
-        with mock.patch("uxon.infra.agents.subprocess.run") as run:
+        with mock.patch("uxon.infra.agents.run_query") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=127, stdout="", stderr="not found"
             )
-            result = uxon_agents._probe_one("cursor-agent", launch_user=None)
+            result = uxon_agents._probe_one(_CFG, "cursor-agent", launch_user=None)
         self.assertEqual(result.status, "missing")
 
     def test_probe_timeout(self) -> None:
         with mock.patch(
-            "uxon.infra.agents.subprocess.run",
+            "uxon.infra.agents.run_query",
             side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=1.5),
         ):
-            result = uxon_agents._probe_one("claude", launch_user=None)
+            result = uxon_agents._probe_one(_CFG, "claude", launch_user=None)
         self.assertEqual(result.status, "timeout")
 
     def test_probe_uses_sudo_when_launch_user_differs(self) -> None:
@@ -119,9 +123,9 @@ class ProbeOneTests(unittest.TestCase):
             captured.append(cmd)
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="v\n", stderr="")
 
-        with mock.patch("uxon.infra.agents.subprocess.run", side_effect=fake_run):
-            with mock.patch("uxon.infra.agents._current_user", return_value="root"):
-                uxon_agents._probe_one("claude", launch_user="dana_agent")
+        with mock.patch("uxon.infra.agents.run_query", side_effect=fake_run):
+            with mock.patch("uxon.infra.identity.process_user", return_value="root"):
+                uxon_agents._probe_one(_CFG, "claude", launch_user="dana_agent")
 
         self.assertEqual(len(captured), 1)
         # -iu loads the target user's login env (matches command_prefix_for_user

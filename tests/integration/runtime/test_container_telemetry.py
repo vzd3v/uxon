@@ -45,15 +45,15 @@ from helpers import make_config  # type: ignore[import-not-found]
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.launch_profiles import (
-    ContainerContext,
     LaunchConfig,
     LaunchProfile,
     ResolvedLaunchProfile,
+    RuntimeContext,
     builtin_launch_profiles,
 )
 
 pytestmark = pytest.mark.container
-_CONTAINER_PROFILE_ID = "it"
+_RUNTIME_PROFILE_ID = "it"
 
 
 def _sudo_root_available() -> bool:
@@ -72,30 +72,30 @@ def _sudo_root_available() -> bool:
 
 
 def _operator_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
-    """Operator ``[container]`` table with a ``resolve_cmd`` for the cgroup stash."""
+    """Operator ``[container]`` table with a ``identity_command`` for the cgroup stash."""
     return {
         "enabled": True,
-        "name_template": "uxon-it-{project_slug}",
+        "resource_name_template": "uxon-it-{project_slug}",
         "path_map": {str(project_dir): "/work"},
-        "exec_template": [rt.binary, "exec", "-i", "-w", "{dir}", "{name}"],
-        "is_running_cmd": [rt.binary, "top", "{name}"],
-        "exists_cmd": [rt.binary, "container", "inspect", "{name}"],
-        "start_template": [rt.binary, "compose", "start"],
-        "create_template": [rt.binary, "compose", "up", "-d"],
+        "exec_prefix": [rt.binary, "exec", "-i", "-w", "{runtime_dir}", "{resource}"],
+        "ready_command": [rt.binary, "top", "{resource}"],
+        "exists_command": [rt.binary, "container", "inspect", "{resource}"],
+        "start_command": [rt.binary, "compose", "start"],
+        "create_command": [rt.binary, "compose", "up", "-d"],
         # Prints ``<id> <init_pid> <start_epoch>`` — uxon reads the cgroup path
         # from /proc/<init_pid>/cgroup (no hardcoded runtime layout). uxon
         # ``str.format``s each token, so the Go-template braces are DOUBLED
         # (``{{{{`` → ``{{``) to survive — the documented operator escaping for
         # a brace-using runtime template.
-        "resolve_cmd": [
+        "identity_command": [
             rt.binary,
             "inspect",
             "-f",
             "{{{{.Id}}}} {{{{.State.Pid}}}} {{{{.State.StartedAt}}}}",
-            "{name}",
+            "{resource}",
         ],
         "on_missing": "create",
-        "on_missing_mode": "auto",
+        "approval": "auto",
     }
 
 
@@ -106,52 +106,50 @@ def _build_cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     agents = default_agent_catalog()
     launch_profiles = builtin_launch_profiles(agents)
     launch_profiles["claude"] = LaunchProfile(
-        id="claude", agent="claude", container_profile=_CONTAINER_PROFILE_ID
+        id="claude", agent="claude", runtime=_RUNTIME_PROFILE_ID
     )
     profile_tbl = dict(_operator_table(rt, project_dir))
-    profile_tbl["runtime_namespace"] = "per_user"
-    profile_tbl["name_template"] = rt.container_name
-    container_profiles = config_loader.build_container_profiles(
-        {"profiles": {_CONTAINER_PROFILE_ID: profile_tbl}}
-    )
+    profile_tbl["resource_scope"] = "per_user"
+    profile_tbl["resource_name_template"] = rt.runtime_name
+    runtimes = config_loader.build_runtimes({"profiles": {_RUNTIME_PROFILE_ID: profile_tbl}})
     return make_config(
         allowed_roots=[str(project_dir)],
         tmux_socket_template=str(socket_path),
         agents=agents,
         launch=LaunchConfig(default_profile="claude", profiles=launch_profiles),
-        container_profiles=container_profiles,
+        runtimes=runtimes,
     )
 
 
 def _resolved(cfg: Config, project_dir: Path, launch_user: str) -> ResolvedLaunchProfile:
     profile = cfg.launch.profiles["claude"]
-    container_profile = cfg.container_profiles[_CONTAINER_PROFILE_ID]
-    from uxon.domain.container import apply_path_map, resolve_profile_container_name
+    runtime = cfg.runtimes[_RUNTIME_PROFILE_ID]
+    from uxon.domain.runtime import apply_path_map, resolve_runtime_resource_name
     from uxon.domain.session import slugify
 
-    dir_token = apply_path_map(str(project_dir), container_profile.path_map)
-    context = ContainerContext(
-        profile_id=container_profile.id,
-        name=resolve_profile_container_name(
-            container_profile,
+    dir_token = apply_path_map(str(project_dir), runtime.path_map)
+    context = RuntimeContext(
+        runtime_id=runtime.id,
+        resource=resolve_runtime_resource_name(
+            runtime,
             user=launch_user,
             launch_profile=profile.id,
             agent=profile.agent,
             project_slug=slugify(project_dir.name),
         ),
-        dir_token=dir_token,
-        profile_fingerprint=container_profile.fingerprint,
+        runtime_dir=dir_token,
+        fingerprint=runtime.fingerprint,
     )
     return ResolvedLaunchProfile(
         profile=profile,
         agent=cfg.agents[profile.agent],
         launch_user=launch_user,
         mode_id="normal",
-        container=context,
+        runtime_context=context,
     )
 
 
-def _write_project(project_dir: Path, _container_name: str) -> Path:
+def _write_project(project_dir: Path, _runtime_name: str) -> Path:
     stub = project_dir / "agent-stub"
     stub.write_text(STUB_AGENT_SELECTABLE)
     stub.chmod(0o755)
@@ -192,7 +190,7 @@ def _kill_server(socket_path: Path) -> None:
     )
 
 
-def test_two_sessions_one_container_split_and_runaway(runtime: Runtime, tmp_path: Path) -> None:
+def test_two_sessions_one_runtime_split_and_runaway(runtime: Runtime, tmp_path: Path) -> None:
     """AC-P1.6/P1.2: independent per-session usage; the busy session reddens, idle doesn't."""
     if runtime.binary != "docker":
         pytest.skip("telemetry split validated on docker; podman cgroup layout differs")
@@ -207,10 +205,10 @@ def test_two_sessions_one_container_split_and_runaway(runtime: Runtime, tmp_path
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     socket_path = tmp_path / "uxon.sock"
-    stub = _write_project(project_dir, runtime.container_name)
+    stub = _write_project(project_dir, runtime.runtime_name)
     (project_dir / "compose.yml").write_text(
         COMPOSE_TEMPLATE.format(
-            image=BASE_IMAGE, name=runtime.container_name, project_dir=project_dir, stub_path=stub
+            image=BASE_IMAGE, name=runtime.runtime_name, project_dir=project_dir, stub_path=stub
         )
     )
     cfg = _build_cfg(runtime, project_dir, socket_path)
@@ -218,7 +216,7 @@ def test_two_sessions_one_container_split_and_runaway(runtime: Runtime, tmp_path
     from uxon.app import launch as launch_app
 
     resolved = _resolved(cfg, project_dir, launch_user)
-    launch_app.ensure_container_ready(cfg, str(project_dir), resolved)
+    launch_app.ensure_runtime_ready(cfg, str(project_dir), resolved)
 
     try:
         # Session A spins (busy), session B idles — same container.
@@ -230,10 +228,11 @@ def test_two_sessions_one_container_split_and_runaway(runtime: Runtime, tmp_path
         sess_a = sess_b = None
         while time.monotonic() < deadline:
             sessions = sessions_probe.collect_sessions_for_user(
+                cfg,
                 launch_user,
                 cfg.session_prefix,
                 str(socket_path),
-                container_profiles=cfg.container_profiles,
+                runtimes=cfg.runtimes,
             )
             by_name = {s.name: s for s in sessions}
             sess_a = by_name.get("uxon-it@claude")
@@ -244,8 +243,8 @@ def test_two_sessions_one_container_split_and_runaway(runtime: Runtime, tmp_path
 
         assert sess_a is not None and sess_b is not None, "both sessions must be visible"
         # Both carry the marker (containerized) and the stashed cgroup.
-        assert sess_a.container == runtime.container_name
-        assert sess_a.container_cgroup, "cgroup path must be stashed at launch"
+        assert sess_a.runtime_resource == runtime.runtime_name
+        assert sess_a.runtime_cgroup, "cgroup path must be stashed at launch"
         # Per-session split: A is the runaway, B is idle — independent figures.
         assert sess_a.cpu_pct > 50.0, f"busy session A should exceed 50% (got {sess_a.cpu_pct})"
         assert sess_b.cpu_pct < 50.0, f"idle session B should stay calm (got {sess_b.cpu_pct})"
@@ -263,11 +262,11 @@ def test_two_sessions_one_container_split_and_runaway(runtime: Runtime, tmp_path
         _kill_server(socket_path)
 
 
-def test_stopped_container_shows_down(runtime: Runtime, tmp_path: Path) -> None:
-    """AC-P1.8: a marked session whose container is stopped reports container_down.
+def test_stopped_runtime_shows_down(runtime: Runtime, tmp_path: Path) -> None:
+    """AC-P1.8: a marked session whose container is stopped reports runtime_down.
 
     Drives the REAL telemetry path against a REAL stopped container — the
-    empty-cgroup detection plus the operator's ``is_running_cmd`` liveness
+    empty-cgroup detection plus the operator's ``ready_command`` liveness
     confirm. The tmux session is decoupled from the agent's lifecycle here
     (we synthesize the marked :class:`SessionInfo` directly) because stopping
     the container also tears the agent's pane down, which would close the tmux
@@ -283,26 +282,26 @@ def test_stopped_container_shows_down(runtime: Runtime, tmp_path: Path) -> None:
     launch_user = getpass.getuser()
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
-    stub = _write_project(project_dir, runtime.container_name)
+    stub = _write_project(project_dir, runtime.runtime_name)
     (project_dir / "compose.yml").write_text(
         COMPOSE_TEMPLATE.format(
-            image=BASE_IMAGE, name=runtime.container_name, project_dir=project_dir, stub_path=stub
+            image=BASE_IMAGE, name=runtime.runtime_name, project_dir=project_dir, stub_path=stub
         )
     )
     cfg = _build_cfg(runtime, project_dir, project_dir / "uxon.sock")
 
     from uxon.app import launch as launch_app
-    from uxon.infra.container import resolve_container_identity_for_profile
+    from uxon.infra.runtime import resolve_runtime_identity_for_profile
 
     resolved = _resolved(cfg, project_dir, launch_user)
-    launch_app.ensure_container_ready(cfg, str(project_dir), resolved)
+    launch_app.ensure_runtime_ready(cfg, str(project_dir), resolved)
     try:
         # Capture the real launch-time cgroup path while the container runs.
-        ident = resolve_container_identity_for_profile(cfg, str(project_dir), resolved)
-        assert ident.cgroup, "resolve_cmd must yield a real cgroup path while running"
-        # Stop the container — its cgroup.procs empties; is_running_cmd → non-zero.
+        ident = resolve_runtime_identity_for_profile(cfg, str(project_dir), resolved)
+        assert ident.cgroup, "identity_command must yield a real cgroup path while running"
+        # Stop the container — its cgroup.procs empties; ready_command → non-zero.
         subprocess.run(
-            [runtime.binary, "stop", runtime.container_name],
+            [runtime.binary, "stop", runtime.runtime_name],
             check=True,
             timeout=PROBE_TIMEOUT_SEC,
             capture_output=True,
@@ -319,18 +318,18 @@ def test_stopped_container_shows_down(runtime: Runtime, tmp_path: Path) -> None:
             active_cmd="docker",
             active_path=str(project_dir),
             agent="claude",
-            container=runtime.container_name,
-            container_profile=_CONTAINER_PROFILE_ID,
-            container_cgroup=ident.cgroup,
+            runtime_resource=runtime.runtime_name,
+            runtime=_RUNTIME_PROFILE_ID,
+            runtime_cgroup=ident.cgroup,
         )
         sessions_probe.enrich_session_usage(
-            [sess], container_profiles=cfg.container_profiles, launch_user=launch_user
+            cfg, [sess], runtimes=cfg.runtimes, launch_user=launch_user
         )
-        assert sess.container_down, "a stopped container must show the distinct down state"
+        assert sess.runtime_down, "a stopped container must show the distinct down state"
         assert sess.cpu_pct == 0.0
     finally:
         subprocess.run(
-            [runtime.binary, "rm", "-f", runtime.container_name],
+            [runtime.binary, "rm", "-f", runtime.runtime_name],
             capture_output=True,
             timeout=PROBE_TIMEOUT_SEC,
             check=False,
@@ -363,11 +362,11 @@ def test_no_marker_session_takes_pane_walk(runtime: Runtime, tmp_path: Path) -> 
     )
     try:
         sessions = sessions_probe.collect_sessions_for_user(
-            launch_user, cfg.session_prefix, str(socket_path)
+            cfg, launch_user, cfg.session_prefix, str(socket_path)
         )
         sess = next((s for s in sessions if s.name == "uxon-plain@claude"), None)
         assert sess is not None
-        assert sess.container == ""  # no marker
-        assert not sess.container_down
+        assert sess.runtime_resource == ""  # no marker
+        assert not sess.runtime_down
     finally:
         _kill_server(socket_path)

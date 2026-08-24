@@ -340,7 +340,7 @@ class MainScreenTests(unittest.IsolatedAsyncioTestCase):
 class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
     """AC-B4 — the TUI confirm affordance for a stopped/absent container.
 
-    With ``on_missing_mode = "prompt"`` a needed start/create must show a
+    With ``approval = "prompt"`` a needed start/create must show a
     ``ConfirmYesNo`` before the prepare runs; on confirm the prepare fires
     and the launch proceeds.
     """
@@ -350,7 +350,7 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
 
     async def test_prompt_then_confirm_runs_prepare_and_launches(self) -> None:
-        from uxon.app.launch import ContainerGate
+        from uxon.app.launch import RuntimeGate
         from uxon.infra.agents import AgentAvailability
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.confirm import ConfirmYesNo
@@ -359,7 +359,7 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
         prepared: list[bool] = []
         launched: list[str] = []
 
-        gate = ContainerGate(
+        gate = RuntimeGate(
             needs_prepare=True,
             needs_prompt=True,
             message="Container 'proj-work' is stopped — start and launch?",
@@ -368,7 +368,7 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         ctx = _mk_ctx(
-            on_container_gate=lambda *a: gate,
+            on_runtime_gate=lambda *a: gate,
             on_probe_existing_sessions=lambda *a: (),
             enabled_profiles=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},

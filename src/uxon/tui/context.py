@@ -13,13 +13,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from uxon.domain.agents import AgentSpec
+from uxon.domain.execution import ExecutionConfig
 from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
 from uxon.domain.sudo import SudoCapability
 
 if TYPE_CHECKING:
-    from uxon.app.launch import ContainerGate
+    from uxon.app.launch import RuntimeGate
     from uxon.infra.probes import HostStatsResult
 
 ExistingSessionChoice = tuple[str, bool] | tuple[str, str, bool]
@@ -33,7 +34,7 @@ class LaunchProfileOption:
     label: str
     agent: str
     launch_user: str
-    container_profile: str = ""
+    runtime: str = "direct"
 
 
 # ── Errors ───────────────────────────────────────────────────────────
@@ -134,6 +135,7 @@ class TuiContext:
     # literal. ``default_factory=dict`` keeps bare-``TuiContext`` test
     # fixtures constructing (the field sits in the defaulted block).
     agents: dict[str, AgentSpec] = field(default_factory=dict)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     launch_user: str = ""
     # Static seed for agent availability (agent_id → AgentAvailability,
     # status: "pending"|"ok"|"missing"|"timeout"). The live value lives
@@ -193,11 +195,11 @@ class TuiContext:
         LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
     # Container readiness gate: resolves the selected profile for ``target_dir``
-    # and probes that profile's launch user's container. The TUI runs this off
+    # and probes that profile's launch user's workload. The TUI runs this off
     # the loop BEFORE a commit so it can show a confirm affordance when a
-    # stopped/absent container needs a start/create and ``on_missing_mode ==
+    # stopped/absent resource needs a start/create and ``approval ==
     # "prompt"``. Disabled by default.
-    on_container_gate: Callable[[str, str, str], ContainerGate | None] = (
+    on_runtime_gate: Callable[[str, str, str], RuntimeGate | None] = (
         lambda target_dir, profile_id, mode_id: None
     )
     # Probe callback: returns (session_name, attached) pairs for the

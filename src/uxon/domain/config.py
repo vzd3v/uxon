@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from uxon.domain.agents import AgentSpec, default_agent_catalog
-from uxon.domain.container import ContainerProfile
+from uxon.domain.execution import ExecutionConfig
 from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.domain.launch_profiles import LaunchConfig
+from uxon.domain.runtime import WorkloadRuntimeSpec
 from uxon.errors import fail
 
 # Recommended uxon-managed tmux options (3.5.0). This is the SINGLE source of
@@ -39,7 +40,7 @@ RECOMMENDED_TMUX_OPTIONS: dict[str, dict[str, object]] = {
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "runtime_user": "",
+    "default_launch_user": "",
     "default_launch_mode": "caller",
     "enable_all_users_list": False,
     "launch_user_by_caller": {},
@@ -74,7 +75,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # else local HEAD; "remote" fetches origin first (claude-like).
     "worktree_root": "",
     "worktree_base": "local",
-    "tmux_socket_template": "/tmp/uxon-{user}.sock",
+    "tmux_socket_template": "/tmp/uxon-{user}-{execution_backend}.sock",
+    "execution": {
+        "default_backend": "local",
+        "backend_by_launch_user": {},
+        "backends": {},
+    },
     "tui_refresh_interval_seconds": 2.0,
     "tui_ssh_refresh_interval_seconds": 10.0,
     # Dashboard column layout. ``columns`` is a list of column ids (see
@@ -124,14 +130,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "server_options": dict(RECOMMENDED_TMUX_OPTIONS["server_options"]),
         "append_server_options": dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"]),
     },
-    # Container runtime profiles live under [container.profiles.<id>].
-    "container": {"profiles": {}},
+    "runtimes": {},
 }
 
 
 @dataclass
 class Config:
-    runtime_user: str
+    default_launch_user: str
     default_launch_mode: str
     enable_all_users_list: bool
     launch_user_by_caller: dict[str, str]
@@ -161,7 +166,10 @@ class Config:
     # version probe args, and permission modes all live here as data.
     agents: dict[str, AgentSpec] = field(default_factory=default_agent_catalog)
     launch: LaunchConfig = field(default_factory=LaunchConfig)
-    container_profiles: dict[str, ContainerProfile] = field(default_factory=dict)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    runtimes: dict[str, WorkloadRuntimeSpec] = field(
+        default_factory=lambda: {"direct": WorkloadRuntimeSpec(id="direct", kind="direct")}
+    )
     # ``None`` is the load-time signal "use REGISTRY defaults". An empty
     # tuple would mean "operator explicitly cleared the column list" —
     # that's not a state we want to expose distinctly, so absent / ``[]``

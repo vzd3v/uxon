@@ -13,21 +13,21 @@ from pathlib import Path
 
 from uxon.domain.agents import permission_mode_for
 from uxon.domain.config import Config
-from uxon.domain.container import (
-    apply_path_map,
-    resolve_profile_container_name,
-)
 from uxon.domain.host_report import HostReport
 from uxon.domain.launch_profiles import (
-    ContainerContext,
     GitRemotePolicy,
     LaunchPathRule,
     ResolvedLaunchProfile,
+    RuntimeContext,
     match_path_rule,
+)
+from uxon.domain.runtime import (
+    apply_path_map,
+    resolve_runtime_resource_name,
 )
 from uxon.domain.session import slugify
 from uxon.errors import fail
-from uxon.infra import identity
+from uxon.infra import execution, identity
 
 _BUILTIN_PROFILE_ORDER = ("claude", "codex", "cursor")
 
@@ -170,35 +170,35 @@ def _profile_launch_user(cfg: Config, caller_user: str, profile_id: str) -> str:
     return profile.launch_user or identity.resolve_launch_user(cfg, caller_user)
 
 
-def _resolve_container_context(
+def _resolve_runtime_context(
     cfg: Config,
     profile_id: str,
     *,
     launch_user: str,
     canonical_target: str,
-) -> ContainerContext | None:
+) -> RuntimeContext | None:
     profile = cfg.launch.profiles[profile_id]
-    if not profile.container_profile:
+    if profile.runtime == "direct":
         return None
-    container_profile = cfg.container_profiles[profile.container_profile]
-    dir_token = apply_path_map(canonical_target, container_profile.path_map)
+    runtime = cfg.runtimes[profile.runtime]
+    runtime_dir = apply_path_map(canonical_target, runtime.path_map)
     project_slug = slugify(Path(canonical_target).name)
-    name = resolve_profile_container_name(
-        container_profile,
+    resource = resolve_runtime_resource_name(
+        runtime,
         user=launch_user,
         launch_profile=profile.id,
         agent=profile.agent,
         project_slug=project_slug,
     )
-    return ContainerContext(
-        profile_id=container_profile.id,
-        name=name,
-        dir_token=dir_token,
-        profile_fingerprint=container_profile.fingerprint,
+    return RuntimeContext(
+        runtime_id=runtime.id,
+        resource=resource,
+        runtime_dir=runtime_dir,
+        fingerprint=runtime.fingerprint,
     )
 
 
-def _check_container_name_collisions(
+def _check_runtime_name_collisions(
     cfg: Config,
     caller_user: str,
     canonical_target: str,
@@ -211,10 +211,10 @@ def _check_container_name_collisions(
         if profile_id not in enabled or profile_id not in cfg.launch.profiles:
             continue
         profile = cfg.launch.profiles[profile_id]
-        if not profile.container_profile:
+        if profile.runtime == "direct":
             continue
         launch_user = _profile_launch_user(cfg, caller_user, profile_id)
-        ctx = _resolve_container_context(
+        ctx = _resolve_runtime_context(
             cfg,
             profile_id,
             launch_user=launch_user,
@@ -222,35 +222,34 @@ def _check_container_name_collisions(
         )
         if ctx is None:
             continue
-        container_profile = cfg.container_profiles[ctx.profile_id]
-        for other_profile_id, other_container_id, other_namespace, other_user, other_name in seen:
-            if other_name != ctx.name or other_container_id == ctx.profile_id:
+        runtime = cfg.runtimes[ctx.runtime_id]
+        for other_profile_id, other_runtime_id, other_namespace, other_user, other_name in seen:
+            if other_name != ctx.resource or other_runtime_id == ctx.runtime_id:
                 continue
             collides = (
-                container_profile.runtime_namespace == "global"
+                runtime.resource_scope == "global"
                 or other_namespace == "global"
                 or launch_user == other_user
             )
             if collides:
                 scope = (
-                    "global namespace"
-                    if container_profile.runtime_namespace == "global"
-                    or other_namespace == "global"
+                    "global resource scope"
+                    if runtime.resource_scope == "global" or other_namespace == "global"
                     else f"user {launch_user!r}"
                 )
                 fail(
-                    f"container name {ctx.name!r} collides between launch profiles "
+                    f"runtime resource {ctx.resource!r} collides between launch profiles "
                     f"{other_profile_id!r} and {profile_id!r} in {scope}; "
-                    "use the same container_profile id for intentional sharing "
-                    "or change the name_template"
+                    "use the same runtime id for intentional sharing "
+                    "or change resource_name_template"
                 )
         seen.append(
             (
                 profile_id,
-                ctx.profile_id,
-                container_profile.runtime_namespace,
+                ctx.runtime_id,
+                runtime.resource_scope,
                 launch_user,
-                ctx.name,
+                ctx.resource,
             )
         )
 
@@ -296,7 +295,7 @@ def _probe_host_for(
     from uxon.infra import probes
 
     catalog = {aid: cfg.agents[aid] for aid in agent_ids}
-    return probes.probe_host(launch_user, catalog)
+    return probes.probe_host(cfg, launch_user, catalog)
 
 
 def _fail_if_tmux_missing(report: HostReport) -> None:
@@ -319,7 +318,7 @@ def _auto_discover_profile(
         if pid in path_allowed
         and pid in cfg.launch.profiles
         and not cfg.launch.profiles[pid].launch_user
-        and not cfg.launch.profiles[pid].container_profile
+        and cfg.launch.profiles[pid].runtime == "direct"
     )
     if not candidates:
         fail(f"no auto-mode launch profiles are allowed for {canonical_target}")
@@ -370,7 +369,7 @@ def resolve_launch_profile(
         launch_user = _profile_launch_user(cfg, caller_user, selected)
 
     profile = cfg.launch.profiles[selected]
-    _check_container_name_collisions(cfg, caller_user, canonical_target, rule)
+    _check_runtime_name_collisions(cfg, caller_user, canonical_target, rule)
     if profile.agent not in cfg.agents:
         fail(f"launch profile {selected!r} references unknown agent {profile.agent!r}")
     agent = cfg.agents[profile.agent]
@@ -388,7 +387,7 @@ def resolve_launch_profile(
     )
     _fail_if_tmux_missing(final_report)
     status = final_report.agents.get(profile.agent)
-    if not profile.container_profile and (status is None or status.path is None):
+    if profile.runtime == "direct" and (status is None or status.path is None):
         hint = status.install_hint if status is not None else ""
         fail(
             f"agent {profile.agent!r} for launch profile {selected!r} is not installed for "
@@ -396,7 +395,7 @@ def resolve_launch_profile(
             1,
         )
 
-    container = _resolve_container_context(
+    runtime_context = _resolve_runtime_context(
         cfg,
         selected,
         launch_user=launch_user,
@@ -407,7 +406,8 @@ def resolve_launch_profile(
         agent=agent,
         launch_user=launch_user,
         mode_id=resolved_mode,
-        container=container,
+        execution=execution.resolve_target(cfg, launch_user),
+        runtime_context=runtime_context,
         git_remote=policy,
     )
 
@@ -437,7 +437,8 @@ def revalidate_launch_profile(
         or resolved.launch_user != original.launch_user
         or resolved.agent.id != original.agent.id
         or resolved.mode_id != original.mode_id
-        or resolved.container != original.container
+        or resolved.execution != original.execution
+        or resolved.runtime_context != original.runtime_context
         or resolved.git_remote != original.git_remote
     ):
         fail("launch profile policy changed after target creation; refusing to continue")

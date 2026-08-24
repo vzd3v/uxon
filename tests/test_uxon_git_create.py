@@ -1,11 +1,14 @@
 import unittest
 
+from helpers import make_config
+
 from uxon.domain import git_profiles as gp
 from uxon.gitremote import backend_gh as gh
 from uxon.gitremote import backend_token as tok
 from uxon.gitremote import create as orch
 
 SECRET = "ghp_SENSITIVE"
+_CFG = make_config()
 
 
 def _gh_profile(**over):
@@ -105,6 +108,7 @@ class GhHappyPathTests(unittest.TestCase):
             ]
         )
         result = orch.create_project_remote(
+            _CFG,
             _gh_profile(),
             "demo",
             "/tmp/demo",
@@ -123,6 +127,7 @@ class GhHappyPathTests(unittest.TestCase):
         runner = ScriptedRunner([("test -d", _ok())])
         with self.assertRaisesRegex(orch.CreationError, "already exists; refusing"):
             orch.create_project_remote(
+                _CFG,
                 _gh_profile(),
                 "demo",
                 "/tmp/demo",
@@ -141,6 +146,7 @@ class GhHappyPathTests(unittest.TestCase):
         )
         with self.assertRaises(orch.CreationError) as ctx:
             orch.create_project_remote(
+                _CFG,
                 _gh_profile(),
                 "demo",
                 "/tmp/demo",
@@ -181,6 +187,7 @@ class TokenHappyPathTests(unittest.TestCase):
             ]
         )
         result = orch.create_project_remote(
+            _CFG,
             _tok_profile(),
             "demo",
             "/tmp/demo",
@@ -207,6 +214,7 @@ class DryRunTests(unittest.TestCase):
             ]
         )
         result = orch.create_project_remote(
+            _CFG,
             _gh_profile(),
             "demo",
             "/tmp/demo",
@@ -236,6 +244,7 @@ class DryRunTests(unittest.TestCase):
             ]
         )
         result = orch.create_project_remote(
+            _CFG,
             _tok_profile(),
             "demo",
             "/tmp/demo",

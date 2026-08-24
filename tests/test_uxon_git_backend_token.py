@@ -1,10 +1,14 @@
 import unittest
+from unittest import mock
+
+from helpers import make_config
 
 from uxon.domain import git_profiles as gp
 from uxon.gitremote import backend_gh as gh
 from uxon.gitremote import backend_token as tok
 
 SECRET = "ghp_SENSITIVE_DO_NOT_LEAK"
+_CFG = make_config()
 
 
 def _profile(**over):
@@ -67,29 +71,30 @@ def _fail_cat(stderr="Permission denied"):
 class ReadTokenTests(unittest.TestCase):
     def test_reads_and_strips(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET + "\n")])
-        got = tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
+        got = tok.read_token(_CFG, "/tmp/t", "erin", "dana_agent", run=runner)
         self.assertEqual(got, SECRET)
         self.assertEqual(
             runner.calls[0],
-            ["sudo", "-n", "-u", "erin", "--", "cat", "--", "/tmp/t"],
+            ["sudo", "-niu", "erin", "--", "cat", "--", "/tmp/t"],
         )
 
     def test_empty_file_fails(self) -> None:
         runner = FakeRunner([_ok_cat("")])
         with self.assertRaisesRegex(gh.BackendError, "is empty"):
-            tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
+            tok.read_token(_CFG, "/tmp/t", "erin", "dana_agent", run=runner)
 
     def test_unreadable_file_fails_without_leaking_path(self) -> None:
         runner = FakeRunner([_fail_cat()])
         try:
-            tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
+            tok.read_token(_CFG, "/tmp/t", "erin", "dana_agent", run=runner)
         except gh.BackendError as exc:
             self.assertIn("cannot read", str(exc))
             self.assertIn("/tmp/t", str(exc))  # path itself is fine
 
     def test_no_sudo_when_same_user(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET)])
-        tok.read_token("/tmp/t", "alice", "alice", run=runner)
+        with mock.patch("uxon.infra.execution.process_user", return_value="alice"):
+            tok.read_token(_CFG, "/tmp/t", "alice", "alice", run=runner)
         self.assertEqual(runner.calls[0], ["cat", "--", "/tmp/t"])
 
 
@@ -102,7 +107,7 @@ class PreflightTokenTests(unittest.TestCase):
                 _resp(404),  # GET /repos/vzd3v/new-repo
             ]
         )
-        tok.preflight(_profile(), "new-repo", "erin", "dana_agent", run=runner, http=http)
+        tok.preflight(_CFG, _profile(), "new-repo", "erin", "dana_agent", run=runner, http=http)
         self.assertEqual(len(http.calls), 2)
         self.assertEqual(http.tokens_seen, [SECRET, SECRET])
 
@@ -115,7 +120,15 @@ class PreflightTokenTests(unittest.TestCase):
                 _resp(404),  # repo doesn't exist
             ]
         )
-        tok.preflight(_profile(owner="acme"), "r", "erin", "dana_agent", run=runner, http=http)
+        tok.preflight(
+            _CFG,
+            _profile(owner="acme"),
+            "r",
+            "erin",
+            "dana_agent",
+            run=runner,
+            http=http,
+        )
 
     def test_owner_not_in_orgs_fails(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET)])
@@ -126,7 +139,15 @@ class PreflightTokenTests(unittest.TestCase):
             ]
         )
         with self.assertRaisesRegex(gh.BackendError, "cannot create repos under owner"):
-            tok.preflight(_profile(owner="acme"), "r", "erin", "dana_agent", run=runner, http=http)
+            tok.preflight(
+                _CFG,
+                _profile(owner="acme"),
+                "r",
+                "erin",
+                "dana_agent",
+                run=runner,
+                http=http,
+            )
 
     def test_existing_repo_fails(self) -> None:
         runner = FakeRunner([_ok_cat(SECRET)])
@@ -137,7 +158,7 @@ class PreflightTokenTests(unittest.TestCase):
             ]
         )
         with self.assertRaisesRegex(gh.BackendError, "already exists"):
-            tok.preflight(_profile(), "r", "erin", "dana_agent", run=runner, http=http)
+            tok.preflight(_CFG, _profile(), "r", "erin", "dana_agent", run=runner, http=http)
 
     def test_bad_token_rejected(self) -> None:
         runner = FakeRunner([_ok_cat("deadbeef")])
@@ -147,7 +168,7 @@ class PreflightTokenTests(unittest.TestCase):
             ]
         )
         try:
-            tok.preflight(_profile(), "r", "erin", "dana_agent", run=runner, http=http)
+            tok.preflight(_CFG, _profile(), "r", "erin", "dana_agent", run=runner, http=http)
         except gh.BackendError as exc:
             self.assertIn("token rejected", str(exc))
             self.assertIn("Bad credentials", str(exc))
@@ -168,7 +189,7 @@ class CreateRemoteTokenTests(unittest.TestCase):
             ]
         )
         url = tok.create_remote(
-            _profile(), "r", "/tmp/r", "erin", "dana_agent", run=runner, http=http
+            _CFG, _profile(), "r", "/tmp/r", "erin", "dana_agent", run=runner, http=http
         )
         self.assertEqual(url, "git@github.com:vzd3v/r.git")
         _, post_url, body = http.calls[1]
@@ -188,6 +209,7 @@ class CreateRemoteTokenTests(unittest.TestCase):
             ]
         )
         tok.create_remote(
+            _CFG,
             _profile(owner="acme"),
             "r",
             "/tmp/r",
@@ -208,6 +230,7 @@ class CreateRemoteTokenTests(unittest.TestCase):
             ]
         )
         tok.create_remote(
+            _CFG,
             _profile(visibility="public"),
             "r",
             "/tmp/r",
@@ -229,13 +252,14 @@ class CreateRemoteTokenTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(gh.BackendError, "failed to create"):
             tok.create_remote(
-                _profile(), "r", "/tmp/r", "erin", "dana_agent", run=runner, http=http
+                _CFG, _profile(), "r", "/tmp/r", "erin", "dana_agent", run=runner, http=http
             )
 
     def test_dry_run_reads_no_token(self) -> None:
         runner = FakeRunner([])  # would blow up if called
         http = FakeHttp([])
         url = tok.create_remote(
+            _CFG,
             _profile(),
             "r",
             "/tmp/r",
