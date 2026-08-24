@@ -50,7 +50,7 @@ def git_repo_root_nonint_as_user(cfg: Config, cwd: str, target_user: str) -> str
 
     Uses :func:`nonint_command_prefix_for_user` (``sudo -n``) so a missing
     NOPASSWD grant fails fast instead of blocking on a hidden password
-    prompt — required for the fullscreen TUI's worktree probe (§4.2).
+    prompt — required for the fullscreen TUI's worktree probe.
     """
     cp = run_query(
         command_prefix(cfg, target_user, interactive=False)
@@ -71,7 +71,7 @@ def git_common_dir_root_as_user(cfg: Config, cwd: str, target_user: str) -> str 
     returns the primary repo's ``.git`` (whereas ``--show-toplevel``
     returns the *linked* worktree root). The primary root is that dir's
     parent. This anchors new worktrees to the primary repo even when
-    launched from inside another worktree (§8 worktree-from-worktree).
+    launched from inside another worktree.
     Non-interactive prefix, same rationale as the resolver above.
     """
     cp = run_query(
@@ -96,7 +96,7 @@ def write_uxon_exclude_entry(cfg: Config, repo_root: str, launch_user: str) -> N
 
     Local-only (never committed) and concurrency-safe: read-modify-write
     via a temp file + atomic rename so two simultaneous ``launch_user``
-    creates can't double-append or clobber each other (§2.3). Skipped by
+    creates can't double-append or clobber each other. Skipped by
     the caller when ``worktree_root`` is set (out-of-repo worktree).
     """
     prefix = command_prefix(cfg, launch_user, interactive=True)
@@ -138,7 +138,7 @@ def copy_worktreeinclude_matches(cfg: Config, repo_root: str, dest: str, launch_
     (gitignored + untracked) and B = ``git ls-files -o -i
     --exclude-from=<.worktreeinclude>`` (untracked matching the include
     patterns). Both queries are ``--others`` so tracked files are excluded
-    by construction; git is the sole authority for ignore + match (§2.4).
+    by construction; git is the sole authority for ignore + match.
     No-op when ``.worktreeinclude`` is absent.
     """
     prefix = command_prefix(cfg, launch_user, interactive=True)
@@ -175,7 +175,7 @@ def _local_base_ref_as_user(cfg: Config, repo_root: str, launch_user: str) -> st
     """Local base ref for a new branch: local origin/HEAD if present, else HEAD.
 
     No network — origin/HEAD is consulted only if a local remote-tracking
-    symref exists (``worktree_base = "local"`` contract, §4.5).
+    symref exists.
     """
     cp = run_query(
         command_prefix(cfg, launch_user, interactive=False)
@@ -185,7 +185,7 @@ def _local_base_ref_as_user(cfg: Config, repo_root: str, launch_user: str) -> st
 
 
 def _remote_base_ref_as_user(cfg: Config, repo_root: str, launch_user: str) -> str:
-    """Base ref after a ``worktree_base = "remote"`` fetch (§4.5, C4).
+    """Base ref after a ``worktree_base = "remote"`` fetch.
 
     ``git fetch origin`` does NOT create the local ``origin/HEAD`` symref
     (only clone / ``git remote set-head`` do), so we cannot assume it

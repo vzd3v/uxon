@@ -235,9 +235,12 @@ class UxonTests(unittest.TestCase):
             launch_record_verified=True,
         )
 
-    def test_resolve_caller_user_prefers_current_non_root_user(self) -> None:
-        with mock.patch("uxon.infra.identity.process_user", return_value="u-vz"):
-            with mock.patch.dict(os.environ, {"SUDO_USER": "erin"}, clear=False):
+    def test_resolve_caller_user_uses_kernel_login_identity(self) -> None:
+        with mock.patch(
+            "uxon.infra.identity.login_identity",
+            return_value=identity.LoginIdentity(user="u-vz", uid=1000),
+        ):
+            with mock.patch.dict(os.environ, {"SUDO_USER": "forged"}, clear=False):
                 self.assertEqual(identity.resolve_caller_user(), "u-vz")
 
     def test_parse_args_supports_version_flags(self) -> None:
@@ -249,6 +252,30 @@ class UxonTests(unittest.TestCase):
 
         parsed_subcommand = parse_args(["version"])
         self.assertEqual(parsed_subcommand.action, "version")
+
+    def test_config_error_is_audited_before_configure(self) -> None:
+        from uxon.infra import audit as audit_infra
+
+        error = SystemExit(2)
+        error.uxon_msg = "invalid operator config"  # type: ignore[attr-defined]
+        with (
+            mock.patch("uxon.infra.config_loader.load_config", side_effect=error),
+            mock.patch(
+                "uxon.infra.config_loader.operator_config_path",
+                return_value=Path("/etc/uxon/config.toml"),
+            ),
+            mock.patch.object(audit_infra, "audit") as audit,
+            mock.patch.object(audit_infra, "configure") as configure,
+            self.assertRaises(SystemExit),
+        ):
+            main(["doctor"])
+        configure.assert_not_called()
+        audit.assert_called_once_with(
+            "config.error",
+            outcome="error",
+            path="/etc/uxon/config.toml",
+            error="invalid operator config",
+        )
 
     def test_parse_args_supports_doctor(self) -> None:
         parsed = parse_args(["doctor"])
@@ -358,22 +385,12 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(parsed_new.repeat_mode, "new")
 
     def _write_and_load_cfg(self, toml_content: str, tmpdir: str) -> Config:
-        """Helper: write a config.toml in tmpdir and load_config from there."""
+        """Helper: write and load a temporary canonical operator config."""
         tmp_path = Path(tmpdir)
-        cwd = tmp_path / "workspace"
-        cwd.mkdir(exist_ok=True)
-        repo_cfg = tmp_path / "repo-config.toml"
-        repo_cfg.write_text(toml_content, encoding="utf-8")
-
-        def fake_load_toml(path: Path) -> dict[str, object]:
-            if path == tmp_path / "config" / "config.toml":
-                with repo_cfg.open("rb") as fh:
-                    return config_loader.tomllib.load(fh)
-            return {}
-
-        with mock.patch.object(version_probe, "repo_root", return_value=tmp_path):
-            with mock.patch("uxon.infra.config_loader.load_toml", side_effect=fake_load_toml):
-                return config_loader.load_config(str(cwd))
+        operator_cfg = tmp_path / "config.toml"
+        operator_cfg.write_text(toml_content, encoding="utf-8")
+        with mock.patch("uxon.infra.config_loader.OPERATOR_CONFIG_PATH", operator_cfg):
+            return config_loader.load_config()
 
     def test_load_config_reads_new_multi_user_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1476,8 +1493,8 @@ class UxonTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "uxon.infra.config_loader.resolve_config_layers",
-            return_value=({}, [Path("/srv/apps/uxon/config/config.toml")]),
+            "uxon.infra.config_loader.config_sources",
+            return_value=(Path("/etc/uxon/config.toml"),),
         ):
             with mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
                 with mock.patch("uxon.infra.probes.probe_host", return_value=host_report):
@@ -1505,7 +1522,7 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         rendered = output.getvalue()
         self.assertIn("uxon doctor", rendered)
-        self.assertIn("config_paths=/srv/apps/uxon/config/config.toml", rendered)
+        self.assertIn("config_paths=/etc/uxon/config.toml", rendered)
         self.assertIn("tmux_socket=/tmp/uxon-u-vz.sock", rendered)
         self.assertIn("claude:", rendered)
         self.assertIn("ok (1.2.3)", rendered)
@@ -1525,7 +1542,7 @@ class UxonTests(unittest.TestCase):
             launch_user="u-vz",
         )
 
-        with mock.patch("uxon.infra.config_loader.resolve_config_layers", return_value=({}, [])):
+        with mock.patch("uxon.infra.config_loader.config_sources", return_value=()):
             with mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"):
                 with mock.patch("uxon.infra.probes.probe_host", return_value=host_report):
                     with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
@@ -1743,7 +1760,7 @@ class UxonTests(unittest.TestCase):
 
         def fake_run_cmd(cmd, check=True, **_kwargs):
             calls.append(tuple(cmd))
-            if len(calls) == 2:
+            if len(calls) in {2, 3}:
                 return CP(stdout="$1\t123\tuxon-demo@claude\tnonce\n")
             return CP()
 
@@ -2012,7 +2029,7 @@ class UxonTests(unittest.TestCase):
 
             with mock.patch.object(version_probe, "repo_root", return_value=root):
                 with mock.patch.object(Path, "open", spy_open):
-                    cfg = config_loader.load_config(str(cwd))
+                    cfg = config_loader.load_config()
 
         self.assertEqual(cfg.launch.default_profile, "")
         self.assertNotIn(project_cfg, opened)
@@ -2591,10 +2608,10 @@ class UxonTests(unittest.TestCase):
             self.assertIsNone(p.permission_mode)
             self.assertEqual(p.agent_args, [alias])
 
-    def test_parse_agent_flag_fails_with_profile_hint(self) -> None:
-        with self.assertRaises(SystemExit) as cm:
-            parse_run_like(["--agent", "codex", "--mode", "yolo"], "run")
-        self.assertIn("--profile", getattr(cm.exception, "uxon_msg", ""))
+    def test_agent_flag_is_forwarded_to_selected_agent(self) -> None:
+        parsed = parse_run_like(["--agent", "codex", "--mode", "yolo"], "run")
+        self.assertEqual(parsed.agent_args, ["--agent", "codex"])
+        self.assertEqual(parsed.permission_mode, "yolo")
 
     def test_parse_profile_flag(self) -> None:
         p = parse_run_like(["--profile", "codex", "--mode", "yolo"], "run")
@@ -3189,8 +3206,8 @@ class DoInteractiveTextualMissingTests(unittest.TestCase):
         if hasattr(uxon_pkg, "tui"):
             delattr(uxon_pkg, "tui")
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                cfg = config_loader.load_config(tmp)
+            with tempfile.TemporaryDirectory():
+                cfg = config_loader.load_config()
                 buf_err = io.StringIO()
                 buf_out = io.StringIO()
                 with (
@@ -3220,7 +3237,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
             captured["stem"] = stem
             return f"{prefix}{stem}@{agent}"
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         with (
             mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
@@ -3230,7 +3247,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
                 lambda *a, **k: attach_app._tui_launch_request_cls()(cmd=("true",), label="x"),
             ),
         ):
-            tui_planning._plan_tui_run_agent(
+            tui_planning._plan_tui_run_profile(
                 cfg,
                 "dana_agent",
                 "dana_agent",
@@ -3248,7 +3265,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
             captured["stem"] = stem
             return f"{prefix}{stem}@{agent}"
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         with (
             mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
@@ -3258,7 +3275,7 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
                 lambda *a, **k: attach_app._tui_launch_request_cls()(cmd=("true",), label="x"),
             ),
         ):
-            tui_planning._plan_tui_run_agent(
+            tui_planning._plan_tui_run_profile(
                 cfg, "dana_agent", "dana_agent", "/srv/work/plain", "claude", "default"
             )
         self.assertEqual(captured["stem"], "plain")
@@ -3284,7 +3301,7 @@ class ProbeWorktreeStemTests(unittest.TestCase):
 
         wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
         sess = [self._session("uxon-myapp-feature-auth@claude", wt)]
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=sess):
             out = sessions_probe.probe_tui_compatible_sessions(
                 cfg,
@@ -3300,7 +3317,7 @@ class ProbeWorktreeStemTests(unittest.TestCase):
 
         target = "/srv/work/plain"
         sess = [self._session("uxon-plain@claude", target)]
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=sess):
             out = sessions_probe.probe_tui_compatible_sessions(cfg, "dana_agent", target, "claude")
         self.assertEqual([s.name for s in out], ["uxon-plain@claude"])
@@ -3330,7 +3347,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         repo = "/srv/work/myapp"
         wt = "/srv/work/myapp/.uxon/worktrees/feature-auth"
         branch = "feature/auth"
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
 
         # (a) planner names the session with the worktree stem.
         with (
@@ -3343,7 +3360,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
                 ),
             ),
         ):
-            req = tui_planning._plan_tui_run_agent(
+            req = tui_planning._plan_tui_run_profile(
                 cfg,
                 "dana_agent",
                 "dana_agent",
@@ -3371,7 +3388,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         repo_b = "/srv/work/beta"
         wt_a = "/srv/work/alpha/.uxon/worktrees/feature"
         wt_b = "/srv/work/beta/.uxon/worktrees/feature"
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         # alpha's worktree session is live; probing beta's worktree must
         # NOT match it and must NOT hard-fail (distinct repo-qualified stems).
         live = [self._session("uxon-alpha-feature@claude", wt_a)]
@@ -3401,7 +3418,7 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
 class PlanWorktreeLaunchTests(unittest.TestCase):
     def test_new_branch_local_base_adds_worktree_and_names_session(self) -> None:
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         repo = "/srv/work/myapp"
         resolved = dataclasses.replace(
             _resolved_for_test(cfg),
@@ -3477,7 +3494,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         # B1 / §2.3 / §9 "gating failure → clear error": a worktree_root
         # pointing outside allowed_roots must fail with an actionable error
         # BEFORE any git work runs.
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         cfg.worktree_root = "/not/allowed"
         cfg.allowed_roots = ["/srv/work"]
         called: list[list[str]] = []
@@ -3513,7 +3530,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
     def test_existing_branch_checks_out_without_b(self) -> None:
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         resolved = _resolved_for_test(cfg)
         calls: list[list[str]] = []
 
@@ -3563,7 +3580,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         # CLI parity: `uxon -w branch -- --extra-flag` must not silently drop
         # the agent passthrough args on the worktree create path.
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         resolved = _resolved_for_test(cfg)
         captured: dict[str, object] = {}
 
@@ -3607,7 +3624,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
     def test_worktree_add_failure_surfaces_clear_error(self) -> None:
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
 
         # The planner runs the add with check=False and inspects the
         # result itself (run_cmd's own failure path calls fail() with the
@@ -3655,7 +3672,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         # dry_run must not mkdir / fetch / write exclude / add worktree /
         # emit audit — only resolve + print the plan.
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         resolved = _resolved_for_test(cfg)
         calls: list[list[str]] = []
         events: list[str] = []
@@ -3709,7 +3726,7 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
 class CliWorktreeRoutingTests(unittest.TestCase):
     def test_do_run_w_routes_through_plan_worktree_launch(self) -> None:
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         args = ParsedArgs(
             action="run",
             profile="claude",
@@ -3841,7 +3858,7 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
 
             return CP()
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         with (
             mock.patch(
                 "uxon.infra.git.git_repo_root_nonint_as_user", return_value="/srv/work/myapp"
@@ -3860,7 +3877,7 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
         self.assertEqual(rows[1].branch, "feature/auth")
 
     def test_probe_worktrees_non_git_returns_empty(self) -> None:
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         with (
             mock.patch("uxon.infra.git.git_repo_root_nonint_as_user", return_value=None),
             mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"),
@@ -3887,7 +3904,7 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
 
             return CP()
 
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         with (
             mock.patch(
                 "uxon.infra.git.git_repo_root_nonint_as_user", return_value="/srv/work/myapp"
@@ -3923,7 +3940,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
             active_path=wt,
             launch_record_verified=True,
         )
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         resolved = _resolved_for_test(cfg, launch_user="dana_agent", canonical_target=wt)
         with (
             mock.patch.object(
@@ -3943,7 +3960,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
         self.assertEqual(out, (("dana_agent", "uxon-myapp-feature-auth@claude", True),))
 
     def test_session_probe_uses_resolved_launch_user(self) -> None:
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         resolved = _resolved_for_test(cfg, launch_user="profile_user", canonical_target="/srv/work")
         captured: dict[str, str] = {}
 
@@ -3969,7 +3986,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
         self.assertEqual(captured["profile"], "claude")
 
     def test_runtime_gate_uses_resolved_launch_user(self) -> None:
-        cfg = config_loader.load_config("/tmp")
+        cfg = config_loader.load_config()
         resolved = _resolved_for_test(cfg, launch_user="profile_user", canonical_target="/srv/work")
 
         with (

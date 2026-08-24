@@ -102,7 +102,7 @@ def do_doctor(
     from uxon.infra import agents as uxon_agents
     from uxon.infra import probes as uxon_probes
 
-    _, config_sources = config_loader.resolve_config_layers(cwd)
+    config_sources = config_loader.config_sources()
     socket_path = tmux.tmux_socket_path(cfg, launch_user)
     # Single-round-trip probe for tmux + every catalogued agent.
     report = uxon_probes.probe_host(cfg, launch_user, cfg.agents)
@@ -214,7 +214,7 @@ def do_doctor(
             # is unchanged so existing operator scripts that read the
             # envelope keep working.
             data["remote_hosts"] = _doctor_remote_rows(cfg)
-        # Audit-channel report (Bug 2).  Operators run ``uxon doctor``
+        # Audit-channel report. Operators run ``uxon doctor``
         # to validate the deploy; we surface the resolved sink so
         # "audit isn't reaching journald" is one command away.  Force
         # sink detection by reading ``audit.sink`` after a synthetic
@@ -299,7 +299,7 @@ def do_doctor(
             print("- host agent binaries absent from PATH may be expected for this runtime")
             for warning in row["warnings"]:
                 print(f"- warn: {warning}")
-    # Audit-channel report (Bug 2) — operator-visible verification of
+    # Audit-channel report — operator-visible verification of
     # the platform-log path.  Force sink detection if it hasn't run yet
     # (``cli.start`` already triggered it for non-doctor invocations,
     # but a stand-alone ``uxon doctor`` may be the first audit-aware
@@ -599,7 +599,7 @@ def detect_root_nopasswd() -> bool:
     Timeout is intentionally tight (0.5s) so the TUI never blocks on startup.
     False on timeout / OSError / non-zero exit.
 
-    Used for the Settings-screen writability gate (``sudo tee`` of a
+    Used for the Settings-screen writability gate (fixed ``sudo install`` of a
     root-owned config file). The "see other users' sessions" gate is
     now per-target — see :func:`uxon.infra.sudo_probe.probe_sudo_capability`.
     """
@@ -613,11 +613,3 @@ def detect_root_nopasswd() -> bool:
     except (subprocess.TimeoutExpired, OSError):
         return False
     return cp.returncode == 0
-
-
-# Backwards-compatible alias for any out-of-tree caller. The renamed
-# :func:`detect_root_nopasswd` is the canonical name; the old name is
-# preserved so a stale import doesn't crash ``uxon``. New code must
-# use the canonical name (or :func:`uxon.infra.sudo_probe.probe_sudo_capability`
-# for the per-target gate).
-detect_passwordless_sudo = detect_root_nopasswd

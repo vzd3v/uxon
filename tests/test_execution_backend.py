@@ -17,6 +17,7 @@ import pytest
 from helpers import make_config, make_session
 
 from uxon.app.doctor import _doctor_execution_rows
+from uxon.app.launch_profile import resolve_launch_profile
 from uxon.domain.args import ParsedArgs
 from uxon.domain.execution import (
     ExecutionBackendSpec,
@@ -84,6 +85,102 @@ def test_one_command_prefix_for_interactive_and_background_work() -> None:
     assert wrap_command(cfg, "alice", ["true"], interactive=False) == expected
 
 
+def test_helper_ignoring_target_user_fails_before_path_or_launch_side_effects() -> None:
+    """The fixed identity probe is the first launch boundary operation."""
+    user = getpass.getuser()
+    cfg = _command_cfg()
+    wrong_identity = json.dumps({"euid": 0, "egid": 0, "groups": [0]})
+    canonicalize = mock.Mock(side_effect=AssertionError("path probe must not run"))
+
+    def require_real_probe(probe_cfg, probe_user):
+        result = probe(probe_cfg, probe_user)
+        if not result.ok:
+            from uxon.errors import fail
+
+            fail(result.error)
+        return result
+
+    with (
+        mock.patch("uxon.infra.execution.run_query", return_value=_cp(stdout=wrong_identity)),
+        mock.patch("uxon.infra.execution.require_probe", side_effect=require_real_probe),
+        mock.patch("uxon.infra.execution.canonicalize_path", canonicalize),
+        pytest.raises(SystemExit),
+    ):
+        resolve_launch_profile(cfg, user, "claude", "/srv/demo", None)
+    canonicalize.assert_not_called()
+
+
+def _managed_request_for_race() -> tuple[tmux.LaunchRequest, launch_records.PendingLaunchRecord]:
+    pending = launch_records.PendingLaunchRecord(
+        socket_path="/tmp/uxon-race.sock",
+        session_name="uxon-race@claude",
+        launch_nonce="owned-nonce",
+        launch_profile="claude",
+        agent="claude",
+        launch_user=getpass.getuser(),
+    )
+    managed = tmux.ManagedTmuxLaunch(
+        create_cmd=("tmux", "new-session"),
+        query_cmd=("tmux", "display-message"),
+        release_cmd=("tmux", "wait-for"),
+        kill_cmd=("tmux", "kill-session"),
+        record_socket=pending.socket_path,
+        record_session=pending.session_name,
+        record_nonce=pending.launch_nonce,
+        record_dir="/tmp/uxon-race-records",
+        launch_profile="claude",
+        agent="claude",
+        launch_user=pending.launch_user,
+    )
+    return tmux.LaunchRequest(cmd=("tmux", "attach"), managed=managed), pending
+
+
+def test_concurrent_create_loser_never_kills_preexisting_session() -> None:
+    request, pending = _managed_request_for_race()
+    calls: list[tuple[str, ...]] = []
+
+    def run(cmd, **_kwargs):
+        calls.append(tuple(cmd))
+        return _cp(returncode=1)
+
+    with (
+        mock.patch("uxon.infra.launch_records.create_pending_record"),
+        mock.patch("uxon.infra.launch_records.fail_pending_record"),
+        mock.patch("uxon.infra.process.run_cmd", side_effect=run),
+        pytest.raises(SystemExit),
+    ):
+        tmux.prepare_managed_launch(request, pending)
+    assert request.managed is not None
+    assert request.managed.kill_cmd not in calls
+    assert request.managed.query_cmd not in calls
+
+
+def test_post_create_cleanup_does_not_kill_nonce_mismatch() -> None:
+    request, pending = _managed_request_for_race()
+    assert request.managed is not None
+    owned = "$1\t100\tuxon-race@claude\towned-nonce\n"
+    winner = "$2\t101\tuxon-race@claude\twinner-nonce\n"
+    responses = iter((_cp(), _cp(stdout=owned), _cp(stdout=winner)))
+    calls: list[tuple[str, ...]] = []
+
+    def run(cmd, **_kwargs):
+        calls.append(tuple(cmd))
+        return next(responses)
+
+    with (
+        mock.patch("uxon.infra.launch_records.create_pending_record"),
+        mock.patch(
+            "uxon.infra.launch_records.finalize_pending_record",
+            side_effect=RuntimeError("record failed"),
+        ),
+        mock.patch("uxon.infra.launch_records.fail_pending_record"),
+        mock.patch("uxon.infra.process.run_cmd", side_effect=run),
+        pytest.raises(RuntimeError),
+    ):
+        tmux.prepare_managed_launch(request, pending)
+    assert request.managed.kill_cmd not in calls
+
+
 def test_local_binary_probe_uses_argv_safe_nonlogin_sudo() -> None:
     cfg = make_config()
     with (
@@ -104,6 +201,27 @@ def test_local_binary_probe_uses_argv_safe_nonlogin_sudo() -> None:
         "sh",
     ]
     assert "-i" not in run.call_args.args[0]
+
+
+@pytest.mark.parametrize("failure", ("timeout", "nonzero"))
+def test_process_failures_never_echo_workload_argv_or_output(failure: str) -> None:
+    secret = "api-key-super-secret"
+    command = ["agent", "--api-key", secret, "private prompt"]
+    if failure == "timeout":
+        effect = subprocess.TimeoutExpired(command, 1.0)
+        context = mock.patch("uxon.infra.process.run_query", side_effect=effect)
+    else:
+        context = mock.patch(
+            "uxon.infra.process.run_query",
+            return_value=subprocess.CompletedProcess(command, 7, "", secret),
+        )
+    with context, pytest.raises(SystemExit) as raised:
+        from uxon.infra.process import run_cmd
+
+        run_cmd(command, timeout=1.0)
+    message = str(getattr(raised.value, "uxon_msg", ""))
+    assert secret not in message
+    assert "private prompt" not in message
 
 
 @pytest.mark.parametrize("token", ("{user.__class__}", "{user!r}", "{user:>5}", "{"))
@@ -435,7 +553,6 @@ def test_nested_runtime_never_replaces_execution_boundary() -> None:
             cfg,
             None,
             resolved_profile=resolved,
-            include_runtime_identity=False,
         )
     assert request.managed is not None
     create = list(request.managed.create_cmd)
@@ -619,7 +736,7 @@ def test_shared_launch_record_dir_rejects_launch_user_in_control_group(tmp_path:
         launch_records.create_pending_record(pending, override_dir=directory, shared=True)
 
 
-def test_launch_record_gc_is_scoped_to_one_tmux_socket(tmp_path: Path) -> None:
+def test_launch_record_gc_is_store_wide_across_retired_sockets(tmp_path: Path) -> None:
     records: list[tuple[launch_records.PendingLaunchRecord, Path]] = []
     for socket, nonce in (
         ("/run/uxon/alice.sock", "abcdefghijklmnop"),
@@ -648,10 +765,9 @@ def test_launch_record_gc_is_scoped_to_one_tmux_socket(tmp_path: Path) -> None:
 
     removed = launch_records.garbage_collect_records(
         set(),
-        socket_path=records[0][0].socket_path,
         override_dir=tmp_path,
         now=10**12,
     )
-    assert removed == 1
+    assert removed == 2
     assert not records[0][1].exists()
-    assert records[1][1].exists()
+    assert not records[1][1].exists()

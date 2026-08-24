@@ -88,9 +88,7 @@ def _probe_root() -> bool:
 def _self_user() -> str:
     """Return the OS user this process is running as.
 
-    Imported lazily / locally rather than via ``cli.process_user`` to
-    keep this module free of any ``cli`` dependency (the spec mandates
-    the inverse import direction).
+    Imported locally to keep this module free of a ``cli`` dependency.
     """
     import pwd
 
@@ -109,7 +107,7 @@ def probe_sudo_capability(cfg: Config, candidates: Iterable[str]) -> SudoCapabil
 
     Per-probe budget is :data:`PROBE_TIMEOUT_SEC` (0.5s); there is no
     override knob. The probe is invoked at most once per process at
-    startup — the spec forbids per-refresh re-probing, so a tunable
+    startup. Per-refresh re-probing is intentionally absent, so a tunable
     timeout has no caller today and offering one in the API would be
     misleading.
 

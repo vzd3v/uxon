@@ -229,10 +229,16 @@ def preflight_launch_user(cfg: Config, caller_user: str, requested_profile: str 
             fail(
                 f"profile {requested_profile!r} is disabled; valid profiles: {_choices_text(enabled)}"
             )
-        return _profile_launch_user(cfg, caller_user, requested_profile)
+        launch_user = _profile_launch_user(cfg, caller_user, requested_profile)
+        execution.require_probe(cfg, launch_user)
+        return launch_user
     if cfg.launch.default_profile and cfg.launch.default_profile in enabled:
-        return _profile_launch_user(cfg, caller_user, cfg.launch.default_profile)
-    return identity.resolve_launch_user(cfg, caller_user)
+        launch_user = _profile_launch_user(cfg, caller_user, cfg.launch.default_profile)
+        execution.require_probe(cfg, launch_user)
+        return launch_user
+    launch_user = identity.resolve_launch_user(cfg, caller_user)
+    execution.require_probe(cfg, launch_user)
+    return launch_user
 
 
 def _probe_host_for(
@@ -327,6 +333,7 @@ def resolve_launch_profile(
         launch_user = _profile_launch_user(cfg, caller_user, selected)
 
     if launch_user != seed_launch_user:
+        execution.require_probe(cfg, launch_user)
         final_target = execution.canonicalize_path(
             cfg,
             launch_user,

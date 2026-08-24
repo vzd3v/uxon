@@ -129,9 +129,9 @@ class SessionRecord(TypedDict):
 class HostStats(TypedDict, total=False):
     """Snapshot of host-level metrics returned alongside session list.
 
-    Forward-compatible: peers running schema 1 omit this field; the
-    parser treats absence as ``None``. Adding a new key here is also
-    additive — peers running an older binary omit unknown keys; the
+    Same-major peers may omit this optional field; the parser treats absence
+    as ``None``. Adding a new key here is also additive; older same-major
+    binaries omit unknown keys and the
     consumer should ``.get(...)`` defensively.
     """
 
@@ -150,7 +150,7 @@ Shape mirrors :class:`SessionRecord` (the producer-side total TypedDict
 written by :func:`build_session_records`), but
 :func:`uxon.infra.remote.envelope.parse_envelope` validates the envelope
 only and treats individual records as opaque. Forward-compatibility
-with peers running a newer or older uxon is the explicit goal: a peer
+with peers running a newer or older release of the same major is the goal: a peer
 that adds, renames, or omits a per-session field must not blank a
 whole snapshot. Consumers therefore read fields defensively
 (``rec.get(...)``) and cannot assume any field is present even after a
@@ -204,14 +204,12 @@ class RemoteSnapshot:
             operator knows the per-peer view is partial. Default
             ``False`` — fresh peers serve the all-users view.
         scope_skipped: Users the peer probed for sudo reachability
-            and could not reach. Forward-compatible: missing on older
-            peers that don't emit the field — the collector treats
-            that as ``[]``.
+            and could not reach. Absence on a same-major peer is treated
+            as ``[]``.
         host_stats: Optional snapshot of host-level metrics
             (CPU/RAM/loadavg/uptime/kernel) emitted by the peer
-            alongside the session list. Forward-compatible: missing
-            on peers that don't emit the field — the collector treats
-            that as ``None`` and the host status bar renders without
+            alongside the session list. Absence on a same-major peer is
+            treated as ``None`` and the host status bar renders without
             metrics.
     """
 

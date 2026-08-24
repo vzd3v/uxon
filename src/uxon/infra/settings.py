@@ -1,8 +1,8 @@
-"""Settings schema + repo-level config.toml read/write.
+"""Settings schema + host-wide operator config read/write.
 
 Single source of truth for which keys are user-editable through the TUI
-superuser block, their type, and how to persist changes back to the
-repo-level ``config/config.toml``.
+superuser block, their type, and how to persist changes to
+``/etc/uxon/config.toml``.
 
 Round-trip writes preserve comments: the existing TOML text is parsed
 with ``tomlkit``, only the changed keys are mutated in the document tree,
@@ -18,7 +18,7 @@ from typing import Any
 
 from uxon.infra import config_loader
 from uxon.infra.run import run_query
-from uxon.infra.settings_toml import set_dotted, update_repo_config_text
+from uxon.infra.settings_toml import set_dotted, update_operator_config_text
 
 # ── Schema ───────────────────────────────────────────────────────────
 
@@ -75,7 +75,8 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "tmux_socket_template",
         "string",
-        "Per-user socket path. Placeholders: {user}, {uid}.",
+        "Per-user/backend socket path. Placeholders: {user}, {uid}, "
+        "{execution_backend}, {execution_fingerprint}.",
     ),
     SettingSpec(
         "tui_refresh_interval_seconds",
@@ -164,52 +165,39 @@ def _get_dotted(doc: Any, dotted_key: str, default: Any = None) -> Any:
 class SettingEntry:
     spec: SettingSpec
     value: Any
-    source: str  # "default" | "repo"
+    source: str  # "default" | "operator"
     editable: bool
 
 
-def settings_specs_for(_agent_ids: tuple[str, ...]) -> tuple[SettingSpec, ...]:
-    """Return the scalar settings schema.
-
-    ``agent_ids`` is accepted for the old call surface; launch profiles and
-    agent catalog tables are file-only and are not represented here.
-    """
+def settings_specs() -> tuple[SettingSpec, ...]:
+    """Return the scalar settings schema."""
     return SETTINGS_SPECS
 
 
 def resolve_setting_entries(
-    repo_data: dict,
-    project_data: dict,
-    project_path: Path | None,
+    operator_data: dict,
     defaults: dict,
-    agent_ids: tuple[str, ...] = (),
 ) -> list[SettingEntry]:
-    """Merge the three layers and return one entry per schema key with source info.
-
-    ``project_data`` / ``project_path`` are accepted for the old call surface
-    but ignored. Runtime policy is operator-owned and no project config layer
-    is displayed.
-    """
-    del project_data, project_path
+    """Resolve one entry per editable key from operator data and defaults."""
     out: list[SettingEntry] = []
-    for spec in settings_specs_for(agent_ids):
+    for spec in settings_specs():
         key = spec.key
         is_dotted = "." in key
         if is_dotted:
-            repo_val = _get_dotted(repo_data, key, _MISSING)
+            operator_val = _get_dotted(operator_data, key, _MISSING)
             def_val = _get_dotted(defaults, key, None)
-            if repo_val is not _MISSING:
-                value = repo_val
-                source = "repo"
+            if operator_val is not _MISSING:
+                value = operator_val
+                source = "operator"
                 editable = True
             else:
                 value = def_val
                 source = "default"
                 editable = True
         else:
-            if key in repo_data:
-                value = repo_data[key]
-                source = "repo"
+            if key in operator_data:
+                value = operator_data[key]
+                source = "operator"
                 editable = True
             else:
                 value = defaults.get(key)
@@ -225,25 +213,50 @@ _MISSING = object()  # sentinel for dotted-key lookup
 # ── Persistence ──────────────────────────────────────────────────────
 
 
-def write_repo_config_toml(content: str, path: Path | str) -> None:
-    """Write ``content`` to ``path``. Tries a direct atomic write first; falls
-    back to ``sudo tee`` when the destination is not writable by the current
-    process (typical for a repo checkout owned by another service user).
-    """
-    path = Path(path)
-    try:
-        tmp = path.parent / (path.name + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(path)
-        return
-    except (PermissionError, OSError):
-        pass
+def write_operator_config_toml(content: str, path: Path | str) -> None:
+    """Atomically install root-owned operator config, directly or via sudo."""
+    import os
+    import secrets
 
-    # Fall back to ``sudo tee`` with content piped on stdin — avoids any
-    # shell interpolation of the destination path (which is otherwise
-    # attacker-influenced via repo checkout layout).
+    path = Path(path)
+    if os.geteuid() == 0:
+        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        tmp = path.parent / f".{path.name}.{secrets.token_hex(8)}.tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+        return
+
     result = run_query(
-        ["sudo", "tee", "--", str(path)],
+        [
+            "/usr/bin/sudo",
+            "-n",
+            "/usr/bin/install",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "0644",
+            "--",
+            "/dev/stdin",
+            str(path),
+        ],
         input=content.encode("utf-8"),
         text=False,
     )
@@ -252,9 +265,9 @@ def write_repo_config_toml(content: str, path: Path | str) -> None:
         raise RuntimeError(f"failed to write {path}: {stderr or 'unknown error'}")
 
 
-def persist_repo_config_updates(path: Path | str, updates: dict) -> None:
+def persist_operator_config_updates(path: Path | str, updates: dict) -> None:
     """Read ``path`` (if it exists), apply ``updates`` via
-    :func:`update_repo_config_text`, and write the result back.
+    :func:`update_operator_config_text`, and write the result back.
 
     When the file is missing, a minimal starter is rendered: the updates
     alone are emitted with no accompanying comments.
@@ -264,22 +277,22 @@ def persist_repo_config_updates(path: Path | str, updates: dict) -> None:
         existing = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         existing = ""
-    new_text = update_repo_config_text(
+    new_text = update_operator_config_text(
         existing, updates, schema_keys=SCHEMA_KEYS, table_keys=TABLE_KEYS
     )
-    write_repo_config_toml(new_text, path)
+    write_operator_config_toml(new_text, path)
 
 
 # ── Mutators (in-memory dict helpers) ────────────────────────────────
 
 
-def apply_setting(repo_data: dict, key: str, new_value: Any) -> dict:
-    """Return a new dict with repo_data[key] = new_value. Does not mutate input."""
+def apply_setting(operator_data: dict, key: str, new_value: Any) -> dict:
+    """Return operator data with one setting replaced, without mutation."""
     if key not in SCHEMA_KEYS:
         raise KeyError(f"unknown setting key: {key}")
     import copy
 
-    out = copy.deepcopy(repo_data)
+    out = copy.deepcopy(operator_data)
     if "." in key:
         set_dotted(out, key, new_value)
     else:
@@ -287,13 +300,13 @@ def apply_setting(repo_data: dict, key: str, new_value: Any) -> dict:
     return out
 
 
-def remove_setting(repo_data: dict, key: str) -> dict:
-    """Return a new dict with repo_data[key] removed (reverting to default)."""
+def remove_setting(operator_data: dict, key: str) -> dict:
+    """Return operator data without one setting, reverting to default."""
     if key not in SCHEMA_KEYS:
         raise KeyError(f"unknown setting key: {key}")
     import copy
 
-    out = copy.deepcopy(repo_data)
+    out = copy.deepcopy(operator_data)
     if "." in key:
         parts = key.split(".")
         node = out
@@ -307,8 +320,8 @@ def remove_setting(repo_data: dict, key: str) -> dict:
     return out
 
 
-def replace_mapping(repo_data: dict, key: str, new_mapping: dict) -> dict:
-    """Return a new dict with repo_data[key] = new_mapping (for table kinds)."""
+def replace_mapping(operator_data: dict, key: str, new_mapping: dict) -> dict:
+    """Return operator data with a mapping setting replaced."""
     spec_by_key = {spec.key: spec for spec in SETTINGS_SPECS}
     spec = spec_by_key.get(key)
     if spec is None or spec.kind != "table":
@@ -316,13 +329,13 @@ def replace_mapping(repo_data: dict, key: str, new_mapping: dict) -> dict:
     for k, v in new_mapping.items():
         if not isinstance(k, str) or not isinstance(v, str):
             raise ValueError(f"table {key} requires string keys and values")
-    out = dict(repo_data)
+    out = dict(operator_data)
     out[key] = dict(new_mapping)
     return out
 
 
-def remove_repo_key(path: Path | str, key: str) -> None:
-    """Drop ``key`` from the repo-level config.toml. Preserves comments
+def remove_operator_key(path: Path | str, key: str) -> None:
+    """Drop ``key`` from the operator config. Preserves comments
     and formatting of untouched parts. No-op if file or key is missing.
     """
     import tomlkit
@@ -344,18 +357,12 @@ def remove_repo_key(path: Path | str, key: str) -> None:
             node = node[part]
         if parts[-1] in node:
             del node[parts[-1]]
-            write_repo_config_toml(tomlkit.dumps(doc), path)
+            write_operator_config_toml(tomlkit.dumps(doc), path)
     elif key in doc:
         del doc[key]
-        write_repo_config_toml(tomlkit.dumps(doc), path)
+        write_operator_config_toml(tomlkit.dumps(doc), path)
 
 
-def load_settings_sources(_cwd: str) -> tuple[dict, dict, Path | None]:
-    """Load raw repo config data.
-
-    Used by the TUI settings screen so it can show each value's origin and
-    write back only to the repo-level file.
-    """
-    repo_cfg = config_loader.repo_config_path()
-    repo_data = config_loader.load_toml(repo_cfg)
-    return repo_data, {}, None
+def load_settings_source() -> dict:
+    """Load raw operator config for the TUI settings screen."""
+    return config_loader.load_toml(config_loader.operator_config_path())

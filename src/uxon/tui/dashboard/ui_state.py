@@ -56,7 +56,7 @@ class MainScreenUiState:
     seen_users: set[str] = field(default_factory=set)
     # Persisted row order (tuple of ``SessionRow.key`` strings) read and
     # rewritten by :func:`uxon.tui.dashboard.order.place`. Frozen order is
-    # a UX choice (visual stability — spec D2): existing rows keep their
+    # a UX choice (visual stability — ): existing rows keep their
     # slot across telemetry ticks, new rows are placed by recency at
     # arrival. Stored here (on the App-owned state, not a MainScreen
     # instance) so it survives the ``apply_loaded_ctx`` rebuild and a

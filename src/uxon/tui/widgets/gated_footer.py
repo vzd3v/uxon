@@ -1,4 +1,4 @@
-"""GatedFooter — stock Textual ``Footer`` with a recompose gate (spec D3).
+"""GatedFooter — stock Textual ``Footer`` with a recompose gate.
 
 The stock ``Footer`` fully **recomposes** (unmount + re-mount every key widget)
 on *every* focus change, because ``Screen`` publishes ``bindings_updated_signal``
@@ -15,7 +15,7 @@ final ``call_after_refresh(self.recompose)`` on a hash of the active binding
 set. First paint always composes (the stored hash starts at ``None``, so the
 first publish is a guaranteed mismatch → composes); same-hash focus changes
 skip the recompose; ``_bindings_ready`` is **never** gated, so the blank-footer
-trap (spec D3) cannot occur.
+trap cannot occur.
 
 Why a ``Footer`` subclass and not a ``Screen.refresh_bindings`` override: the
 screen cannot know *when* the footer subscribed to the signal, and
@@ -23,7 +23,7 @@ screen cannot know *when* the footer subscribed to the signal, and
 records the (invariant) hash on the early mount-time publish would then suppress
 every later publish, ``bindings_changed`` would never run, and the footer would
 stay blank. Gating inside ``bindings_changed`` (after ``_bindings_ready`` is
-set) is the only safe seam. See the spec § D3 for the full derivation.
+set) is the only safe seam.
 
 Hash domain
 -----------
@@ -33,8 +33,7 @@ Hash domain
 ``tooltip``, ``action`` (groups by it), and the ``show`` filter (and ``group``).
 To stay drift-proof we hash the **full per-binding tuple**
 ``(key, key_display, description, enabled, tooltip, action, show)`` over
-``screen.active_bindings`` — a superset of spec D3's enumerated fields, faithful
-to its stated principle "every field compose renders". In practice only the
+``screen.active_bindings``. In practice only the
 ``enabled`` flag varies across MainScreen's focusable children, so any visible
 change still recomposes while pure focus moves do not.
 """
@@ -56,7 +55,7 @@ if TYPE_CHECKING:
 # the old ``session_dashboard_table.py``.
 assert hasattr(Footer, "_bindings_ready"), (
     "Textual API changed: Footer._bindings_ready no longer exists. GatedFooter "
-    "relies on it to avoid the blank-footer first-paint trap (spec D3). Pin the "
+    "relies on it to avoid the blank-footer first-paint trap. Pin the "
     "Textual version in pyproject.toml and re-derive the gate before bumping."
 )
 

@@ -84,12 +84,6 @@ def _default_log_dir() -> str:
     return platformdirs.user_state_dir("uxon", appauthor=False)
 
 
-# Snapshot of the default at import time. Kept for backward-compat
-# with code that imports the constant directly; live lookups go
-# through ``_log_dir()``.
-LOG_DIR = _default_log_dir()
-
-
 def _log_dir() -> str:
     """Return the log directory, honouring ``UXON_LOG_DIR``."""
     return os.environ.get("UXON_LOG_DIR") or _default_log_dir()

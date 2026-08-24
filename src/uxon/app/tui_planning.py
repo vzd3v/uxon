@@ -27,12 +27,12 @@ from uxon.errors import fail
 from uxon.infra import execution, identity, process, sessions_probe, tmux
 
 
-def _plan_tui_run_agent(
+def _plan_tui_run_profile(
     cfg: Config,
     caller_user: str,
     launch_user: str,
     cwd: str,
-    agent_id: str,
+    profile_id: str,
     mode_id: str,
     worktree: tuple[str, str] | None = None,
 ):
@@ -45,14 +45,14 @@ def _plan_tui_run_agent(
     callback before this is called — no probe needed here.
 
     When ``worktree`` is ``(repo_root, branch)`` the session stem is the
-    repo-qualified :func:`session_stem_for_worktree` (§2.5) — identical to
+    repo-qualified :func:`session_stem_for_worktree` — identical to
     the stem the worktree-aware probe derives — instead of the
     basename-only :func:`session_stem_for_path`. ``cwd`` is the worktree
     path in that case; for a plain (primary / non-git) target ``worktree``
     is ``None`` and the basename stem is used unchanged.
     """
     resolved = launch_profile_app.resolve_launch_profile(
-        cfg, caller_user, agent_id, cwd, mode_id, target_may_not_exist=False
+        cfg, caller_user, profile_id, cwd, mode_id, target_may_not_exist=False
     )
     launch_user = resolved.launch_user
     target_dir = resolved.canonical_target
@@ -169,12 +169,12 @@ def _plan_tui_existing_session_or_launch(
     )
 
 
-def _plan_tui_create_new_agent(
+def _plan_tui_create_new_profile(
     cfg: Config,
     caller_user: str,
     launch_user: str,
     name: str,
-    agent_id: str,
+    profile_id: str,
     mode_id: str,
     git_profile: str,
 ):
@@ -186,13 +186,13 @@ def _plan_tui_create_new_agent(
     a blessed context). ``git_profile`` is the (possibly empty) name of
     a ``[[git_remote_profiles]]`` entry; when set this calls
     :func:`_do_create_git_remote`. The "Open existing project" flow must
-    never call this — see :func:`_plan_tui_open_existing_agent`.
+    never call this — see :func:`_plan_tui_open_existing_profile`.
     """
     project_dir = _canonical_tui_project_dir(cfg, name)
     args = ParsedArgs(
         action="new",
         target_id=name,
-        profile=agent_id,
+        profile=profile_id,
         permission_mode=mode_id,
         git_remote=git_profile or None,
         repeat_mode="attach",
@@ -240,12 +240,12 @@ def _plan_tui_create_new_agent(
     )
 
 
-def _plan_tui_open_existing_agent(
+def _plan_tui_open_existing_profile(
     cfg: Config,
     caller_user: str,
     launch_user: str,
     name: str,
-    agent_id: str,
+    profile_id: str,
     mode_id: str,
 ):
     """Build a LaunchRequest for the TUI "Open existing project" flow.
@@ -261,7 +261,7 @@ def _plan_tui_open_existing_agent(
     args = ParsedArgs(
         action="new",
         target_id=name,
-        profile=agent_id,
+        profile=profile_id,
         permission_mode=mode_id,
         git_remote=None,
         repeat_mode="attach",

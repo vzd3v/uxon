@@ -48,9 +48,21 @@ def _install_loop_guard():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_repo_config(tmp_path):
-    """Keep unit tests from reading a developer's ignored config/config.toml."""
-    with mock.patch("uxon.infra.version_probe.repo_root", return_value=tmp_path):
+def _isolate_operator_config(tmp_path):
+    """Keep unit tests from reading the host's ``/etc/uxon/config.toml``."""
+    with mock.patch("uxon.infra.config_loader.OPERATOR_CONFIG_PATH", tmp_path / "config.toml"):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _stub_execution_identity_probe_by_default():
+    """Keep generic launch tests focused; execution tests override this stub."""
+    from uxon.infra.execution import ExecutionProbe
+
+    with mock.patch(
+        "uxon.infra.execution.require_probe",
+        return_value=ExecutionProbe(backend="local", ok=True),
+    ):
         yield
 
 

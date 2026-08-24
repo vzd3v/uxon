@@ -180,7 +180,7 @@ class MainScreen(Screen):
         self.loading = bool(cfg.loading)
         self._restore_focus_key = ""
         # Primary repo root resolved by the launch-flow workspace probe
-        # (§4.2). Threaded into LaunchOptionsScreen + the workspace-choice
+        # . Threaded into LaunchOptionsScreen + the workspace-choice
         # dispatch so neither re-resolves the repo root on the event loop.
         self._workspace_repo_root = ""
         # Dashboard rows are an in-flight repaint cache, not UI state —
@@ -382,7 +382,7 @@ class MainScreen(Screen):
             settings_row = ActionRow(
                 kind="settings",
                 label="⚙ Settings",
-                detail="(repo-level config.toml)",
+                detail="(/etc/uxon/config.toml)",
                 enabled=True,
                 id="action-settings",
             )
@@ -499,7 +499,7 @@ class MainScreen(Screen):
         *,
         target_dir: str,
         target_label: str,
-        agent_id: str,
+        profile_id: str,
         mode_id: str,
         on_new,
         probe=None,
@@ -507,7 +507,7 @@ class MainScreen(Screen):
         self._launch_flow.maybe_show_session_choice(
             target_dir=target_dir,
             target_label=target_label,
-            agent_id=agent_id,
+            profile_id=profile_id,
             mode_id=mode_id,
             on_new=on_new,
             probe=probe,
@@ -1002,13 +1002,13 @@ class MainScreen(Screen):
         """Repaint the ``#server-status`` line, gated on a content change.
 
         Identical ``(text, alert)`` since the last write → zero widget
-        writes (AC8: a no-change link-health landing mutates nothing). A
+        writes. A
         glyph-only delta (the spinner advances every tick by construction)
         or a content delta → exactly one ``update(layout=False)`` — the
         fixed ``height: 1`` + ``text-wrap: nowrap`` CSS means the spinner
-        repaint never relayouts the screen (AC2/AC3). ``set_class`` fires
+        repaint never relayouts the screen. ``set_class`` fires
         only on an alert flip. The ``batch_update`` covers the link-health
-        path, which does not pass through ``_render_dirty`` (AC6).
+        path, which does not pass through ``_render_dirty``.
         """
         line = main_status_line(
             self.cfg.server_status,

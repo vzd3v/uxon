@@ -45,11 +45,8 @@ class TuiConfig:
     Callable fields (``on_attach``, ``on_kill``, …) are stored by
     reference. They make the dataclass non-equality-friendly (function
     identities differ even when wrapping the same closure), which is
-    why we deliberately avoid asserting structural equality between
-    two :class:`TuiConfig` instances. The known cleanliness debt
-    (callbacks are injected behaviour, not configuration) is filed
-    in the migration plan; this commit keeps them on
-    :class:`TuiConfig` to land the structural split first.
+    why structural equality between two :class:`TuiConfig` instances is
+    deliberately not part of the contract.
 
     Tuple-of-pairs is used for ``git_remote_profile_options`` because
     a frozen container with ``list`` would fail at construction time
@@ -92,7 +89,7 @@ class TuiConfig:
     on_attach: Callable[[str, str], LaunchRequest]
     on_kill: Callable[[str, str], None]
     on_kill_all: Callable[[], None]
-    on_kill_all_global: Callable[[], None]
+    on_kill_all_reachable: Callable[[], None]
     on_remote_kill: Callable[[str, str, str], None]
     on_remote_attach: Callable[[str, str, str], LaunchRequest]
     on_refresh: Callable[[], TuiContext]
@@ -156,7 +153,7 @@ class TuiConfig:
             on_attach=ctx.on_attach,
             on_kill=ctx.on_kill,
             on_kill_all=ctx.on_kill_all,
-            on_kill_all_global=ctx.on_kill_all_global,
+            on_kill_all_reachable=ctx.on_kill_all_reachable,
             on_remote_kill=ctx.on_remote_kill,
             on_remote_attach=ctx.on_remote_attach,
             on_refresh=ctx.on_refresh,

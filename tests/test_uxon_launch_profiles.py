@@ -471,7 +471,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 mock.patch.object(tui_planning.launch_app, "ensure_runtime_ready"),
             ):
                 with self.assertRaises(SystemExit):
-                    tui_planning._plan_tui_create_new_agent(
+                    tui_planning._plan_tui_create_new_profile(
                         cfg, "alice", "alice", "demo", "claude", "normal", "default"
                     )
 
@@ -531,7 +531,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                     return_value=LaunchRequest(cmd=("true",), label="launch x"),
                 ),
             ):
-                tui_planning._plan_tui_create_new_agent(
+                tui_planning._plan_tui_create_new_profile(
                     cfg, "erin", "dana_agent", "demo", "claude", "normal", ""
                 )
 
@@ -566,7 +566,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                     return_value=LaunchRequest(cmd=("true",), label="launch x"),
                 ),
             ):
-                tui_planning._plan_tui_open_existing_agent(
+                tui_planning._plan_tui_open_existing_profile(
                     cfg, "erin", "startup_user", "demo", "claude", "normal"
                 )
 

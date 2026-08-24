@@ -350,29 +350,23 @@ def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # ``SSH_CONNECTION`` set and neither ``--host`` nor ``--all-hosts``.
     # Fires *after* those early-returns so a caller-side
     # ``uxon list --host`` does not double-emit on its own host.
-    # Spec line 306: when peer-inbound, ``list.remote.in`` replaces
+    # When peer-inbound, ``list.remote.in`` replaces
     # ``list.peek`` ("instead of"), so we suppress the latter on
     # this code path.
     #
-    # Spec line 207-209: state-changing events emit on **both**
-    # success and failure paths.  ``list.remote.in`` is no
-    # exception: the previous shape (single ``outcome=ok`` emit at
-    # the top, before the all-users-disabled gate) lost the denied
-    # outcome — a peer that refused ``--all-users`` recorded a
-    # stale ``ok``.  Emit at outcome boundaries instead: once on
-    # the all-users-disabled denial, once on success after the
-    # gate passes (or for the own-only branch).
+    # Emit ``list.remote.in`` at outcome boundaries so a denied
+    # ``--all-users`` request cannot be recorded as successful.
     peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
     # ``correlation_id`` for ``list.remote.in`` is auto-injected by
     # ``audit()`` from module state when the parser popped
-    # ``--audit-correlation-id`` off argv.  See spec §"Correlation
-    # across hosts" ("omitted rather than synthesized").
+    # ``--audit-correlation-id`` off argv. Missing ids are omitted rather
+    # than synthesized.
     list_scope = "all-users" if args.all_users else "own"
     if args.all_users:
         if not cfg.enable_all_users_list:
             # Stable error tag. The remote-host aggregator's
             # fallback detector greps for this exact substring to
-            # decide whether to retry with the legacy ``list
+            # decide whether to retry with the own-only ``list
             # --json`` (own-only) command.
             if peer_inbound:
                 _audit.audit(
@@ -414,8 +408,8 @@ def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         return rc
     # Own-only branch: no gate, single success emit on the peer
     # side (the local-side ``list`` does not produce a ``list.peek``
-    # for its own user — that's by spec, only ``--all-users``
-    # local enumeration triggers ``list.peek``).
+    # for its own user; only ``--all-users`` local enumeration triggers
+    # ``list.peek``).
     if peer_inbound:
         _audit.audit(
             "list.remote.in",
@@ -497,7 +491,7 @@ def print_list(
         marker = "*" if s.attached == "1" else " "
         pid_s = str(s.active_pid) if s.active_pid is not None else "-"
         # A session whose workload resource is down shows a distinct
-        # "down" marker in cpu/ram rather than a silent idle 0/— (AC-P1.8).
+        # "down" marker in cpu/ram rather than a silent idle 0/—.
         if s.runtime_down:
             cpu_s = "down"
             ram_s = "down"
@@ -508,7 +502,7 @@ def print_list(
         last_s = compact_time(s.last_attached)
         # For a command-runtime session the active pane command is the runtime
         # client (``docker``/``sh``), not the agent — show the resolved agent
-        # id (AC-P1.4). Gated on the runtime-resource marker; direct-runtime
+        # id. Gated on the runtime-resource marker; direct-runtime
         # sessions unchanged.
         cmd_s = (s.agent if s.runtime_resource else s.active_cmd) or "-"
         path_s = s.active_path or "-"

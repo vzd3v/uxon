@@ -303,6 +303,37 @@ class KillUserLocalTests(unittest.TestCase):
         self.assertEqual(event["profile"], "claude_fast")
         self.assertEqual(event["agent"], "claude")
 
+    def test_post_kill_cleanup_failure_emits_one_terminal_error(self) -> None:
+        cfg = _make_config()
+        target = _make_session("uxon-demo@claude")
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with (
+            mock.patch(
+                "uxon.app.kill.cleanup_launch_record",
+                side_effect=RuntimeError("private cleanup detail"),
+            ),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+            self.assertRaises(SystemExit),
+        ):
+            kill_app._complete_kill(
+                cfg,
+                target,
+                None,
+                audit_event="session.kill",
+                target_user="u-vz",
+                force=True,
+                dry_run=False,
+            )
+
+        terminal = [fields for event, fields in recorded if event == "session.kill"]
+        self.assertEqual([event["outcome"] for event in terminal], ["error"])
+        self.assertEqual(terminal[0]["error"], "post-kill cleanup failed")
+        self.assertNotIn("private cleanup detail", str(terminal))
+
 
 class KillPeerInboundTests(unittest.TestCase):
     """Peer-inbound branch (``SSH_CONNECTION`` set): ``kill.remote.in``

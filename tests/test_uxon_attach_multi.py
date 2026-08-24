@@ -314,7 +314,7 @@ class OnLaunchCwdTargetDirTests(unittest.TestCase):
             return LaunchRequest(cmd=("true",), label="uxon-myapp@claude")
 
         with (
-            mock.patch.object(tui_planning, "_plan_tui_run_agent", _fake_plan),
+            mock.patch.object(tui_planning, "_plan_tui_run_profile", _fake_plan),
             mock.patch("uxon.infra.audit.audit"),
         ):
             if target_dir is None:

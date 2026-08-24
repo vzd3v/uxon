@@ -1,10 +1,10 @@
 """LaunchOptionsScreen — pick agent (left), permission mode, workspace.
 
 Dismiss value (variable arity, B2):
-- constructed WITHOUT ``workspaces`` → a 2-tuple ``(agent_id, mode_id)``
+- constructed WITHOUT ``workspaces`` → a 2-tuple ``(profile_id, mode_id)``
   (the project-create / project-open flows that have no workspace column);
 - constructed WITH a non-empty ``workspaces`` → a 3-tuple
-  ``(agent_id, mode_id, workspace_choice)`` where ``workspace_choice`` is
+  ``(profile_id, mode_id, workspace_choice)`` where ``workspace_choice`` is
   one of ``("primary", repo_root)`` / ``("worktree", path, branch)`` /
   ``("new", None)``;
 - ``None`` on cancel.
@@ -83,7 +83,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         # construct a TuiState.
         self.cfg = cfg
         self._state = state
-        # The WORKSPACE column is folder-selection only (§3). The rows are
+        # The WORKSPACE column is folder-selection only. The rows are
         # built from ``workspaces`` (filled by the launch-screen worker —
         # ``repo_root`` is the primary repo root the probe
         # resolved off the event loop; ``action_commit`` reads it for the
@@ -230,7 +230,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
 
         The primary row carries a ``(primary)`` suffix and is the default
         highlight (index 0) so Enter from any panel commits the common
-        "launch in the primary tree" case (§3 degradation).
+        "launch in the primary tree" case.
 
         When the probe returned no worktrees (an empty list, distinct from the
         ``None`` "never probed" case that hides the column entirely) the column
@@ -264,15 +264,15 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         await workspace_list.extend(items)
         workspace_list.index = 0
 
-    async def _rebuild_mode_list(self, agent_id: str) -> None:
+    async def _rebuild_mode_list(self, profile_id: str) -> None:
         mode_list = self.query_one("#mode-list", ListView)
         # clear() and extend() are async — must be awaited, otherwise the
         # removal of the previous agent's modes can race with mounting the
         # new ones and the list ends up showing stale entries (e.g. claude's
         # "auto" remains visible after switching to cursor).
         await mode_list.clear()
-        profile = self._launch_profiles().get(agent_id)
-        agent_key = profile.agent if profile is not None else agent_id
+        profile = self._launch_profiles().get(profile_id)
+        agent_key = profile.agent if profile is not None else profile_id
         spec = self.cfg.agents.get(agent_key)
         if spec is None:
             return

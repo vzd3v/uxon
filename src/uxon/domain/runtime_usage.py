@@ -123,7 +123,7 @@ def group_pids_by_session(
     cgroup_pids: list[int],
     pid_to_session: dict[int, str],
 ) -> dict[str, list[int]]:
-    """Split a workload resource's host PIDs into per-session sets (AC-P1.6).
+    """Split a workload resource's host PIDs into per-session sets.
 
     ``cgroup_pids`` is the resource's full host-PID set (from
     ``cgroup.procs``); ``pid_to_session`` maps each readable PID to its

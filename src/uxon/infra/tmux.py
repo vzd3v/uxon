@@ -195,7 +195,7 @@ def tmux_nesting_mode(cfg: Config, launch_user: str, target_socket: str) -> str:
 
 
 def _tmux_opt_value(value: object) -> str:
-    """Render a tmux option value as a single argv token (D4/AC8a).
+    """Render a tmux option value as a single argv token.
 
     ``bool`` is checked before ``int`` because ``bool`` is an ``int`` subclass;
     booleans become tmux's ``on``/``off`` rather than ``1``/``0``. Everything
@@ -210,14 +210,14 @@ def _tmux_set_chain(cfg: Config, *, server_running: bool = False) -> list[str]:
     """Flat argv token list applying the configured tmux options.
 
     Returns ``[]`` when ``manage_options`` is off or all three tables are
-    empty — so the launch argv is byte-identical to pre-3.5.0 (AC1/AC-empty).
+    empty, so no option-setting argv is emitted.
     Otherwise emits one ``set <scope> <key> <value> ;`` command per option,
     in the fixed inter-table order global -> server -> append-server, TOML
     declaration order within each table (``tomllib`` preserves insertion
     order). The separator is a bare ``;`` argv token — there is no shell
-    (D2/D5).
+    or interpolation.
 
-    ``server_running`` gates the **append-server** scope (D9): the tmux
+    ``server_running`` gates the **append-server** scope: the tmux
     server is per launch-user and these options are server-scoped, so they
     only need applying once, at server birth. ``-g``/``-s`` *overwrite*, so
     re-asserting them on every launch/attach is idempotent and lets a
@@ -275,7 +275,6 @@ def _build_tmux_launch_request(
     *,
     resolved_profile: ResolvedLaunchProfile | None = None,
     server_running: bool = False,
-    include_runtime_identity: bool = True,
     pending_record: launch_records.PendingLaunchRecord | None = None,
     active_sessions: tuple[SessionInfo, ...] | list[SessionInfo] = (),
 ):
@@ -302,15 +301,13 @@ def _build_tmux_launch_request(
 
     The launch profile is expected to be resolved before this is called.
     Install-gating is owned by ``app.launch_profile.resolve_launch_profile``.
-    ``resolved_profile`` carries the selected profile, agent, and mode; the
-    old config-derived agent fallback is intentionally not used by new launch
-    paths.
+    ``resolved_profile`` carries the selected profile, agent, and mode.
 
     ``branch`` is informational only (still printed by the dry-run path
     in ``launch_in_tmux``): uxon launches a worktree by creating it
     with ``git worktree add`` and pointing tmux at the worktree directory
     via ``-c <worktree_path>`` — it never delegates to the agent's native
-    ``-w`` flag, so this parameter does not affect ``final_cmd`` (§2.1).
+    ``-w`` flag, so this parameter does not affect ``final_cmd``.
     """
     from uxon.domain.agents import permission_mode_for
 
@@ -386,17 +383,16 @@ def _build_tmux_launch_request(
         # ``UXON_RUNTIME_RESOURCE`` stays the bare resource — the kill path reads
         # it verbatim and re-validates it. The workload identity and telemetry
         # SEPARATE vars, each appended only when resolution yields a non-empty
-        # value (absent var = the documented degrade; AC-P1.3 / AC-P3.5).
-        if include_runtime_identity:
-            identity = resolve_runtime_identity_for_profile(cfg, target_dir, resolved_profile)
-            runtime_identity = identity
-            for var, value in (
-                (RUNTIME_ID_ENV, identity.id),
-                (RUNTIME_CGROUP_ENV, identity.cgroup),
-                (RUNTIME_EPOCH_ENV, identity.epoch),
-            ):
-                if value:
-                    session_env += ["-e", f"{var}={value}"]
+        # value; an absent variable is the documented degraded state.
+        identity = resolve_runtime_identity_for_profile(cfg, target_dir, resolved_profile)
+        runtime_identity = identity
+        for var, value in (
+            (RUNTIME_ID_ENV, identity.id),
+            (RUNTIME_CGROUP_ENV, identity.cgroup),
+            (RUNTIME_EPOCH_ENV, identity.epoch),
+        ):
+            if value:
+                session_env += ["-e", f"{var}={value}"]
         # Wrap the agent for every enabled session so it exports
         # ``UXON_SESSION`` into its workload environ (telemetry attribution).
         # The pidfile write stays gated on ``stop_command`` (teardown opt-in):
@@ -412,11 +408,11 @@ def _build_tmux_launch_request(
     )
     base = configured_tmux_base(cfg, launch_user)
     # uxon-managed tmux options (3.5.0). The chain must ride the SAME
-    # invocation as its ``new-session`` (fail-fast ordering, D5) — never a
+    # invocation as its ``new-session`` (fail-fast ordering) — never a
     # standalone prelaunch entry, which would birth a session-less server that
-    # exits before the next subprocess. ``[]`` when disabled/empty (AC1). The
+    # exits before the next subprocess. ``[]`` when disabled/empty. The
     # ``-as`` scope rides only the birthing launch (server_running False); a
-    # live server already carries it (D9, see _tmux_set_chain).
+    # live server already carries it (see _tmux_set_chain).
     set_chain = _tmux_set_chain(cfg, server_running=server_running)
     mode = tmux_nesting_mode(cfg, launch_user, socket_path)
     bootstrap_cmd = [
@@ -513,7 +509,6 @@ def build_managed_tmux_launch_request(
     *,
     resolved_profile: ResolvedLaunchProfile,
     server_running: bool = False,
-    include_runtime_identity: bool = True,
     active_sessions: tuple[SessionInfo, ...] | list[SessionInfo] = (),
 ) -> tuple[LaunchRequest, launch_records.PendingLaunchRecord]:
     socket_path = tmux_socket_path(cfg, resolved_profile.launch_user)
@@ -530,7 +525,6 @@ def build_managed_tmux_launch_request(
         branch,
         resolved_profile=resolved_profile,
         server_running=server_running,
-        include_runtime_identity=include_runtime_identity,
         pending_record=pending,
         active_sessions=active_sessions,
     )
@@ -577,6 +571,8 @@ def prepare_managed_launch(
         "session": managed.record_session,
         "dry_run": False,
     }
+    created = False
+    metadata: launch_records.TmuxSessionMetadata | None = None
     try:
         launch_records.create_pending_record(
             pending, override_dir=record_dir, shared=managed.record_shared
@@ -587,11 +583,8 @@ def prepare_managed_launch(
             list(managed.create_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
         )
         if cp.returncode != 0:
-            detail = (cp.stderr or cp.stdout or "").strip()
-            fail(
-                f"tmux session {pending.session_name!r} could not be created"
-                + (f": {detail}" if detail else "")
-            )
+            fail(f"tmux session {pending.session_name!r} could not be created")
+        created = True
         meta_cp = process.run_cmd(
             list(managed.query_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
         )
@@ -609,12 +602,8 @@ def prepare_managed_launch(
             list(managed.release_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
         )
     except BaseException as exc:
-        try:
-            process.run_cmd(
-                list(managed.kill_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
-            )
-        except BaseException:
-            pass
+        if created:
+            _kill_created_session_if_owned(managed, pending, metadata)
         try:
             launch_records.fail_pending_record(
                 pending, override_dir=record_dir, shared=managed.record_shared
@@ -625,10 +614,35 @@ def prepare_managed_launch(
             "session.new",
             outcome="error",
             **audit_fields,
-            error=str(getattr(exc, "uxon_msg", exc))[:256],
+            error="launch preparation failed",
+            error_type=type(exc).__name__,
         )
         raise
     _audit.audit("session.new", **audit_fields)
+
+
+def _kill_created_session_if_owned(
+    managed: ManagedTmuxLaunch,
+    pending: launch_records.PendingLaunchRecord,
+    expected: launch_records.TmuxSessionMetadata | None,
+) -> None:
+    """Best-effort rollback only after re-identifying our exact session."""
+    try:
+        cp = process.run_cmd(
+            list(managed.query_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
+        )
+        if cp.returncode != 0:
+            return
+        observed = _parse_tmux_launch_metadata(cp.stdout)
+        if observed.name != pending.session_name or observed.launch_nonce != pending.launch_nonce:
+            return
+        if expected is not None and (
+            observed.session_id != expected.session_id or observed.created != expected.created
+        ):
+            return
+        process.run_cmd(list(managed.kill_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS)
+    except BaseException:
+        return
 
 
 def _parse_tmux_launch_metadata(stdout: str) -> launch_records.TmuxSessionMetadata:

@@ -28,7 +28,7 @@ class RuntimeTeardown:
     rendered ``stop_command`` argv; ``resource`` is operator-chosen;
     ``launch_epoch`` is the resource start epoch
     stashed at launch (``UXON_RUNTIME_EPOCH``, empty when ``identity_command`` is
-    unset). The PID-recycle guard (AC-P3.5) compares ``launch_epoch`` against
+    unset). The PID-recycle guard compares ``launch_epoch`` against
     the live epoch in :func:`run_runtime_teardown` — re-resolved there, after
     ``kill-session``, so the comparison sits as close to the kill as possible.
     """
@@ -49,8 +49,29 @@ def _print_killed(name: str, cfg: Config) -> None:
     print(f"killed: {name}")
 
 
-def _teardown_skip(session_name: str, reason: str) -> None:
+def _teardown_skip(
+    session_name: str,
+    reason: str,
+    *,
+    reason_code: str | None = None,
+    runtime: str = "",
+    resource: str = "",
+    target_user: str = "",
+) -> None:
     eprint(f"uxon: runtime session stop for {session_name} skipped: {reason}")
+    if reason_code is not None:
+        from uxon.infra import audit as _audit
+
+        _audit.audit(
+            "runtime.session_stop",
+            outcome="skipped",
+            reason=reason_code,
+            runtime=runtime,
+            runtime_resource=resource,
+            action="skip",
+            session=session_name,
+            target_user=target_user,
+        )
 
 
 def cleanup_launch_record(cfg: Config, target: SessionInfo) -> None:
@@ -87,7 +108,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
     shared across arbitrarily many sessions, so a per-session PID is the only
     correct target).
 
-    **PID-recycle guard (AC-P3.5):** this captures the launch-time start-epoch
+    **PID-recycle guard:** this captures the launch-time start-epoch
     (``UXON_RUNTIME_EPOCH``, set only when ``identity_command`` is configured) off
     the still-live session env onto the returned teardown. The actual
     restarted-since-launch comparison happens in :func:`run_runtime_teardown`,
@@ -115,19 +136,46 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             "no authoritative launch record is available"
         )
     if not target.runtime:
-        _teardown_skip(target.name, "missing workload runtime")
+        _teardown_skip(
+            target.name,
+            "missing workload runtime",
+            reason_code="missing_runtime",
+            resource=target.runtime_resource,
+            target_user=target.user,
+        )
         return None
     profile = cfg.runtimes.get(target.runtime)
     if profile is None:
-        _teardown_skip(target.name, f"workload runtime {target.runtime!r} is unavailable")
+        _teardown_skip(
+            target.name,
+            f"workload runtime {target.runtime!r} is unavailable",
+            reason_code="missing_profile",
+            runtime=target.runtime,
+            resource=target.runtime_resource,
+            target_user=target.user,
+        )
         return None
     if profile.fingerprint != target.runtime_fingerprint:
-        _teardown_skip(target.name, "workload runtime changed since launch")
+        _teardown_skip(
+            target.name,
+            "workload runtime changed since launch",
+            reason_code="fingerprint_mismatch",
+            runtime=target.runtime,
+            resource=target.runtime_resource,
+            target_user=target.user,
+        )
         return None
     if not profile.stop_command:
         return None
     if not target.runtime_id or not target.runtime_epoch:
-        _teardown_skip(target.name, "missing runtime resource identity")
+        _teardown_skip(
+            target.name,
+            "missing runtime resource identity",
+            reason_code="identity_unresolved",
+            runtime=target.runtime,
+            resource=target.runtime_resource,
+            target_user=target.user,
+        )
         return None
     try:
         from uxon.domain.runtime import (
@@ -138,7 +186,14 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
 
         name = target.runtime_resource
         if not name or not is_valid_runtime_resource(name):
-            _teardown_skip(target.name, "missing runtime resource")
+            _teardown_skip(
+                target.name,
+                "missing runtime resource",
+                reason_code="missing_resource",
+                runtime=target.runtime,
+                resource=target.runtime_resource,
+                target_user=target.user,
+            )
             return None
         pidfile = runtime_pidfile(target.name)
         stop_cmd = render_profile_template(
@@ -161,12 +216,25 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             runtime_fingerprint=target.runtime_fingerprint,
             launch_epoch=target.runtime_epoch,
         )
-    except SystemExit as exc:  # template render failure must never abort the kill
-        msg = getattr(exc, "uxon_msg", exc)
-        _teardown_skip(target.name, str(msg))
+    except SystemExit:  # template render failure must never abort the kill
+        _teardown_skip(
+            target.name,
+            "invalid runtime stop configuration",
+            reason_code="invalid_stop_config",
+            runtime=target.runtime,
+            resource=target.runtime_resource,
+            target_user=target.user,
+        )
         return None
-    except Exception as exc:  # noqa: BLE001 — teardown must never block kill-session
-        _teardown_skip(target.name, str(exc))
+    except Exception:  # noqa: BLE001 — teardown must never block kill-session
+        _teardown_skip(
+            target.name,
+            "runtime stop preparation failed",
+            reason_code="prepare_failed",
+            runtime=target.runtime,
+            resource=target.runtime_resource,
+            target_user=target.user,
+        )
         return None
 
 
@@ -177,18 +245,17 @@ def run_runtime_teardown(
 
     The single shared teardown-call site: every kill path (CLI self/cross-user,
     kill-all, and the three TUI bridge paths) routes through here so the
-    ``runtime.session_stop`` audit event (AC-P3.2) is emitted uniformly with
-    ``name``, ``session``, and ``outcome`` (``ok`` / ``error`` / ``stale``).
+    ``runtime.session_stop`` audit event is emitted uniformly with
+    ``name``, ``session``, and ``outcome`` (``ok`` / ``error`` / ``skipped``).
     Carries zero secrets; the runtime resource is operator-chosen.
 
-    **PID-recycle guard (AC-P3.5):** when the launch stashed a start-epoch, the
+    **PID-recycle guard:** when the launch stashed a start-epoch, the
     live epoch is re-resolved *here* — immediately before the kill, after
     ``kill-session`` — and a confirmed mismatch means the resource restarted
     since launch (the recorded runtime PID now names an unrelated
     process). The stop command is then **not** run and the event records
-    ``outcome=stale``. The guard fires only on a *confirmed* restart: when the
-    epoch cannot be re-resolved (no ``identity_command``, resource gone, probe
-    fails) the kill proceeds. A residual window remains between this re-resolve
+    ``outcome=skipped`` with a typed reason. An unresolved identity also skips
+    the stop command. A residual window remains between this re-resolve
     and the kill itself — fully closing it would need an epoch-conditional
     ``stop_command`` (an operator-template concern), but re-resolving here
     rather than at capture time shrinks it to a single resolve→kill round-trip.
@@ -203,7 +270,7 @@ def run_runtime_teardown(
         _teardown_skip(session_name, f"workload runtime {teardown.runtime!r} is unavailable")
         _audit.audit(
             "runtime.session_stop",
-            outcome="error",
+            outcome="skipped",
             reason="missing_profile",
             runtime=teardown.runtime,
             runtime_resource=teardown.resource,
@@ -216,7 +283,7 @@ def run_runtime_teardown(
         _teardown_skip(session_name, "workload runtime changed since launch")
         _audit.audit(
             "runtime.session_stop",
-            outcome="error",
+            outcome="skipped",
             reason="fingerprint_mismatch",
             runtime=teardown.runtime,
             runtime_resource=teardown.resource,
@@ -232,7 +299,7 @@ def run_runtime_teardown(
         _teardown_skip(session_name, "live runtime resource identity could not be resolved")
         _audit.audit(
             "runtime.session_stop",
-            outcome="error",
+            outcome="skipped",
             reason="identity_unresolved",
             runtime=teardown.runtime,
             runtime_resource=teardown.resource,
@@ -248,7 +315,7 @@ def run_runtime_teardown(
         )
         _audit.audit(
             "runtime.session_stop",
-            outcome="error",
+            outcome="skipped",
             reason="stale_identity",
             runtime=teardown.runtime,
             runtime_resource=teardown.resource,
@@ -311,8 +378,45 @@ def run_kill_session(
             dry_run=dry_run,
             rc=cp.returncode,
         )
-        stderr = (cp.stderr or cp.stdout or "").strip()
-        fail(stderr or f"kill-session failed (rc={cp.returncode})", 1)
+        fail(f"kill-session failed (rc={cp.returncode})", 1)
+
+
+def _complete_kill(
+    cfg: Config,
+    target: SessionInfo,
+    teardown: RuntimeTeardown | None,
+    *,
+    audit_event: str,
+    target_user: str,
+    force: bool,
+    dry_run: bool,
+) -> None:
+    """Run post-kill cleanup and emit exactly one terminal kill event."""
+    from uxon.infra import audit as _audit
+
+    failure: BaseException | None = None
+    if teardown is not None:
+        try:
+            run_runtime_teardown(cfg, teardown, target_user, target.name)
+        except BaseException as exc:  # audit/cleanup must not erase kill truth
+            failure = exc
+    try:
+        cleanup_launch_record(cfg, target)
+    except BaseException as exc:
+        failure = failure or exc
+    _audit.audit(
+        audit_event,
+        outcome="error" if failure is not None else "ok",
+        session=target.name,
+        target_user=target_user,
+        profile=target.profile,
+        agent=target.agent,
+        force=force,
+        dry_run=dry_run,
+        **({"error": "post-kill cleanup failed"} if failure is not None else {}),
+    )
+    if failure is not None:
+        fail("tmux session was killed, but post-kill cleanup failed", 1)
 
 
 def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
@@ -387,9 +491,8 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     if args.json_output:
         remote_cmd_parts.append("--json")
     # Correlation-id append must precede the join.  ``_do_kill_remote``
-    # uses ``run_query`` (not ``os.execvp``), so there is no Bug 7
-    # process-replacement concern here — the audit emit is correct
-    # anywhere before the run.
+    # uses ``run_query`` (not ``os.execvp``), so process replacement is not
+    # a concern and the dispatch event can be emitted immediately before it.
     import uuid as _uuid
 
     from uxon.infra import audit as _audit
@@ -511,17 +614,14 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if args.host is not None:
         return _do_kill_remote(args, cfg)
 
-    # Bug 6 — peer-inbound branch.  Same shape as ``do_attach`` above.
+    # Peer-inbound branch. Same shape as ``do_attach``.
     # ``correlation_id`` is auto-injected by ``audit()`` from module
     # state (the parser layer set it via ``set_correlation_id`` after
-    # popping ``--audit-correlation-id`` from argv).  Spec line 302:
+    # popping ``--audit-correlation-id`` from argv).
     # ``kill.remote.in`` *replaces* ``session.kill`` for the peer-side
-    # branch.  Spec line 207-209: state-changing events emit on **both**
-    # success and failure paths; we honour that on the peer side too by
-    # switching the event name at every emit point (rather than the old
-    # single ``outcome=ok`` emit at the top, which lost the failure
-    # signal for sudo-denied / not-found / process.run_cmd-error paths).  Per
-    # spec line 225, ``kill.remote.in`` shares the ``session`` key with
+    # branch. State-changing events emit on both success and failure paths,
+    # so every emit point selects the peer event. ``kill.remote.in`` shares the
+    # ``session`` key with
     # ``session.kill`` — only the event name differs, no field rename.
     peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
     _kill_event: str = "kill.remote.in" if peer_inbound else "session.kill"
@@ -606,7 +706,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 print(f"dry-run: {shlex.join(full)}")
             return 0
         # Prepare teardown from the verified launch record before tmux removes
-        # the session; run it after kill-session severs the container exec.
+        # the session; run it after kill-session severs the workload exec.
         teardown = prepare_runtime_teardown(cfg, target)
         run_kill_session(
             full,
@@ -618,15 +718,12 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             force=args.force,
             dry_run=args.dry_run,
         )
-        if teardown:
-            run_runtime_teardown(cfg, teardown, target_user, target.name)
-        cleanup_launch_record(cfg, target)
-        _audit.audit(
-            _kill_event,
-            session=target.name,
+        _complete_kill(
+            cfg,
+            target,
+            teardown,
+            audit_event=_kill_event,
             target_user=target_user,
-            profile=target.profile,
-            agent=target.agent,
             force=args.force,
             dry_run=args.dry_run,
         )
@@ -683,7 +780,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             print(f"dry-run: {shlex.join(full)}")
         return 0
     # Prepare teardown from the verified launch record before tmux removes the
-    # session; run it after kill-session severs the container exec.
+    # session; run it after kill-session severs the workload exec.
     teardown = prepare_runtime_teardown(cfg, target)
     run_kill_session(
         full,
@@ -695,15 +792,12 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         force=args.force,
         dry_run=args.dry_run,
     )
-    if teardown:
-        run_runtime_teardown(cfg, teardown, launch_user, target.name)
-    cleanup_launch_record(cfg, target)
-    _audit.audit(
-        _kill_event,
-        session=target.name,
+    _complete_kill(
+        cfg,
+        target,
+        teardown,
+        audit_event=_kill_event,
         target_user=launch_user,
-        profile=target.profile,
-        agent=target.agent,
         force=args.force,
         dry_run=args.dry_run,
     )

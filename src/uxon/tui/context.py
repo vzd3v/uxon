@@ -115,7 +115,7 @@ class TuiContext:
     current_user: str = ""
     # Per-target sudo capability. ``reachable_users`` gates the "Other
     # users' sessions" block + ``kill-all-reachable`` action;
-    # ``can_root`` gates the Settings-screen write fallback.
+    # ``can_root`` gates the Settings-screen privileged write path.
     sudo_caps: SudoCapability = field(default_factory=SudoCapability)
     # Users in ``session_users`` the per-target probe could not reach.
     # Surfaced in the TUI's "(N/M users reachable)" hint and on
@@ -137,7 +137,7 @@ class TuiContext:
     agents: dict[str, AgentSpec] = field(default_factory=dict)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     launch_user: str = ""
-    # Static seed for agent availability (agent_id → AgentAvailability,
+    # Static seed for agent availability (profile_id → AgentAvailability,
     # status: "pending"|"ok"|"missing"|"timeout"). The live value lives
     # on ``TuiState.agent_availability`` (a :class:`SlotState`); the App
     # seeds the slot from this dict at construction and screens read the
@@ -152,7 +152,7 @@ class TuiContext:
     )
     on_kill: Callable[[str, str], None] = lambda user, name: None  # (user, session) -> kill
     on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
-    on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
+    on_kill_all_reachable: Callable[[], None] = lambda: None  # kill all sessions across users
     # Multi-host per-session kill (3.4.0). Args: (host_name, user, session).
     # Implementation runs ``uxon kill --force --host <h> --user <u> <s>``
     # over SSH on the local CLI side; the peer's own ``uxon kill`` does the
@@ -183,18 +183,18 @@ class TuiContext:
     # project" launch synchronously at activation — that flow has no
     # pre-probed reactive slot like ``cwd`` does.
     on_probe_dir_launchable: Callable[[str], bool] = lambda target_dir: True
-    on_launch_cwd: Callable[..., LaunchRequest] = lambda agent_id, mode_id, target_dir=None: (
+    on_launch_cwd: Callable[..., LaunchRequest] = lambda profile_id, mode_id, target_dir=None: (
         LaunchRequest(cmd=("true",), label="noop-launch-cwd")
     )
     on_launch_new: Callable[[str, str, str, str], LaunchRequest] = (
-        lambda name, agent_id, mode_id, git_profile: LaunchRequest(
+        lambda name, profile_id, mode_id, git_profile: LaunchRequest(
             cmd=("true",), label="noop-launch-new"
         )
     )
-    on_launch_existing: Callable[[str, str, str], LaunchRequest] = lambda name, agent_id, mode_id: (
-        LaunchRequest(cmd=("true",), label="noop-launch-existing")
+    on_launch_existing: Callable[[str, str, str], LaunchRequest] = (
+        lambda name, profile_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
-    # Container readiness gate: resolves the selected profile for ``target_dir``
+    # Workload-runtime readiness gate resolves the selected profile for ``target_dir``
     # and probes that profile's launch user's workload. The TUI runs this off
     # the loop BEFORE a commit so it can show a confirm affordance when a
     # stopped/absent resource needs a start/create and ``approval ==
@@ -226,28 +226,28 @@ class TuiContext:
     # the column entirely is the screen-side ``workspaces=None`` (never
     # probed) case, not anything this callback returns. Runs ONCE in a worker
     # when the launch screen opens, under the non-interactive sudo prefix so a
-    # missing NOPASSWD grant fails fast (§4.2).
+    # missing NOPASSWD grant fails fast.
     on_probe_worktrees: Callable[[str], list] = lambda cwd: []
     # Worktree create → plan_worktree_launch. Builds + launches a
     # uxon-managed worktree for ``branch`` under the repo at ``repo_root``.
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest] = (
-        lambda repo_root, branch, agent_id, mode_id: LaunchRequest(
+        lambda repo_root, branch, profile_id, mode_id: LaunchRequest(
             cmd=("true",), label="noop-create-worktree"
         )
     )
     # Launch into an EXISTING worktree (or the primary tree treated as a
-    # worktree target) with the repo-qualified stem (§2.5) — never
+    # worktree target) with the repo-qualified stem — never
     # re-creates the worktree.
     on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest] = (
-        lambda repo_root, branch, worktree_path, agent_id, mode_id: LaunchRequest(
+        lambda repo_root, branch, worktree_path, profile_id, mode_id: LaunchRequest(
             cmd=("true",), label="noop-launch-existing-worktree"
         )
     )
-    # Worktree-aware attach-vs-new probe (§2.5, §3): derives the
+    # Worktree-aware attach-vs-new probe: derives the
     # repo-qualified stem and uses the worktree path as compatibility root.
     on_probe_existing_worktree_sessions: Callable[
         [str, str, str, str, str], tuple[ExistingSessionChoice, ...]
-    ] = lambda worktree_path, repo_root, branch, agent_id, mode_id: ()
+    ] = lambda worktree_path, repo_root, branch, profile_id, mode_id: ()
 
     # Git remote on new project — display only. The TUI never edits these.
     git_create_enabled: bool = False
@@ -303,12 +303,8 @@ class TuiContext:
 
 # Number of action items at the top of the main list.
 #
-# Historically a loose module-level constant; as of PR 9 (2026-04-18)
-# this is derived from :data:`_ACTION_KINDS` which is itself the
-# canonical description of "what are the action rows". Keep
-# ``ACTION_COUNT`` for backward compatibility with tests and for
-# readability in segment arithmetic; new code should use
-# :func:`build_items` / item.kind dispatch instead of raw indices.
+# Derived from the canonical action-row description and used for segment
+# arithmetic. Activation dispatches by item kind rather than raw indices.
 _ACTION_KINDS: tuple[str, ...] = ("action-cwd", "action-new", "action-open")
 ACTION_COUNT = len(_ACTION_KINDS)
 

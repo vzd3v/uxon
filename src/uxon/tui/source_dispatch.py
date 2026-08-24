@@ -2,7 +2,7 @@
 
 These are the free-function bodies of what used to be
 ``UxonApp._handle_main_ctx_rebuild`` / ``UxonApp._handle_remote_snapshot`` /
-``UxonApp._build_source_dispatch``. Extracted in Phase P7 so the
+``UxonApp._build_source_dispatch`` so the
 landed-result → state reduction is testable and reviewable on its own.
 
 The App keeps the thin ``on__refresh_source_landed`` / ``_render_dirty``

@@ -9,7 +9,6 @@ shells out; pure callers never touch it.
 
 from __future__ import annotations
 
-import shlex
 import subprocess
 
 from uxon.errors import fail
@@ -25,9 +24,8 @@ def run_cmd(
     try:
         cp = run_query(cmd, timeout=timeout)
     except subprocess.TimeoutExpired:
-        fail(f"command timed out after {timeout:g}s: {shlex.join(cmd)}", 1)
+        fail(f"command timed out after {timeout:g}s", 1)
         raise AssertionError("unreachable") from None
     if check and cp.returncode != 0:
-        stderr = (cp.stderr or cp.stdout).strip()
-        fail(stderr or f"command failed: {shlex.join(cmd)}", 1)
+        fail(f"command exited with status {cp.returncode}", 1)
     return cp

@@ -117,7 +117,7 @@ class HostStatusBar(Widget):
             text = _render(line)
             if i < len(existing):
                 # ``layout=False``: stable single-line status row; content
-                # swap repaints without a global relayout (AC8). On the
+                # swap repaints without a global relayout. On the
                 # by_host steady-tick path the compact bar updates every tick.
                 existing[i].update(text, layout=False)  # type: ignore[attr-defined]
             else:

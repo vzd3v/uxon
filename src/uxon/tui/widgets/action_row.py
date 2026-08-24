@@ -106,7 +106,7 @@ class ActionRow(Static):
         # Widget-boundary change gate: every caller (apply_ctx_refresh's
         # cwd/open/new rows, launch_flow, the cwd-writable landing, the
         # superuser kill row) routes through here, so a tick that leaves
-        # label/detail/enabled untouched issues zero writes (AC2/RC3).
+        # label/detail/enabled untouched issues zero writes.
         key = (self.label, self.detail, self._enabled)
         if key == self._last_painted:
             return
@@ -117,7 +117,7 @@ class ActionRow(Static):
             t.append(f"  {self.detail}", style="dim")
         # ``layout=False``: the row's box is a fixed cell — a label/detail
         # text swap never changes its size, so skip the screen-global
-        # relayout the default ``update`` would request (AC8).
+        # relayout the default ``update`` would request.
         self.update(t, layout=False)
         if not self._enabled:
             self.add_class("-disabled")

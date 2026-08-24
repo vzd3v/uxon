@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Config loading: produce a :class:`uxon.domain.Config`.
-
-Reads the operator-owned repo config, validates every field, and returns the
-typed domain ``Config``. Impure: reads TOML files, ``os.environ`` (demo mode),
-and composes the git-profile / remote-host / demo adapters.
-"""
+"""Load and semantically parse the host-wide operator configuration."""
 
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -42,7 +38,7 @@ from uxon.domain.runtime import (
     validate_runtime,
 )
 from uxon.errors import fail
-from uxon.infra import demo, version_probe
+from uxon.infra import demo
 
 try:
     import tomllib
@@ -80,18 +76,19 @@ def normalize_user_list(values: list[str]) -> list[str]:
     return users
 
 
-def repo_config_path() -> Path:
-    return version_probe.repo_root() / "config" / "config.toml"
+OPERATOR_CONFIG_PATH = Path("/etc/uxon/config.toml")
 
 
-def resolve_config_layers(_cwd: str) -> tuple[dict[str, Any], list[Path]]:
-    merged = dict(DEFAULT_CONFIG)
-    sources: list[Path] = []
-    repo_cfg = repo_config_path()
-    if repo_cfg.exists():
-        sources.append(repo_cfg)
-    merged = merge_config(merged, load_toml(repo_cfg))
-    return merged, sources
+class ConfigValidationError(ValueError):
+    """Operator configuration is structurally or semantically invalid."""
+
+
+def operator_config_path() -> Path:
+    return OPERATOR_CONFIG_PATH
+
+
+def config_sources() -> tuple[Path, ...]:
+    return (OPERATOR_CONFIG_PATH,) if OPERATOR_CONFIG_PATH.exists() else ()
 
 
 def _parse_modes(aid: str, raw_modes: Any) -> tuple[PermissionMode, ...]:
@@ -141,7 +138,7 @@ def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
     default modes; none supplied inherits the defaults.
 
     The validators here run on the *expanded/merged* id set so a hostile or
-    typo'd custom id fails ``load_config`` naming the offender (AC-A6).
+    typo'd custom id fails ``load_config`` naming the offender.
     """
     config_ids = [k for k, v in agents_tbl.items() if isinstance(v, dict)]
     # Non-dict ``[agents.<id>]`` (e.g. ``claude = 5``) is a config error.
@@ -620,14 +617,11 @@ def build_launch_config(
     )
 
 
-def load_config(cwd: str) -> Config:
+def _parse_config_or_fail(raw: dict[str, Any]) -> Config:
     from uxon.domain import git_profiles as uxon_git_profiles
 
-    merged, _ = resolve_config_layers(cwd)
-    # Load raw repo data (before merge with defaults) so the removed flat
-    # keys surface an error instead of being masked.
-    _raw_repo = load_toml(repo_config_path())
-    validate_operator_schema(_raw_repo)
+    validate_operator_schema(raw)
+    merged = merge_config(dict(DEFAULT_CONFIG), raw)
     default_launch_user = str(
         merged.get("default_launch_user", DEFAULT_CONFIG["default_launch_user"])
     ).strip()
@@ -848,16 +842,6 @@ def load_config(cwd: str) -> Config:
     except uxon_remote_hosts.RemoteHostError as exc:
         fail(str(exc))
 
-    # Demo-mode short-circuit: when UXON_DEMO_HOSTS=<dir> is set, replace
-    # the configured peer list with synthetic hosts derived from the
-    # envelope files in that directory. The collector hook in
-    # ``remote.collector.fetch_remote_snapshot`` then reads each envelope
-    # from disk instead of running ssh. Operator config is ignored in
-    # this mode by design — the scenario is the only source of truth.
-    _demo_dir = demo.demo_hosts_dir()
-    if _demo_dir is not None:
-        remote_hosts = demo.synthesize_remote_hosts(_demo_dir)
-
     audit_tbl = merged.get("audit", DEFAULT_CONFIG["audit"])
     if not isinstance(audit_tbl, dict):
         fail("'audit' must be a TOML table")
@@ -936,3 +920,32 @@ def load_config(cwd: str) -> Config:
         tmux_server_options=tmux_scope_tables["server_options"],
         tmux_append_server_options=tmux_scope_tables["append_server_options"],
     )
+
+
+def parse_config(raw: dict[str, Any]) -> Config:
+    """Return the typed config or raise one renderer/loader-safe error type."""
+    import contextlib
+    import io
+
+    try:
+        # ``fail`` is the CLI-facing primitive and writes to stderr.  The
+        # semantic parser is also used by the JSON renderer, where validation
+        # must be a typed result with no incidental output.
+        with contextlib.redirect_stderr(io.StringIO()):
+            return _parse_config_or_fail(raw)
+    except SystemExit as exc:
+        message = getattr(exc, "uxon_msg", None) or str(exc.code)
+        raise ConfigValidationError(message) from None
+
+
+def load_config() -> Config:
+    """Load the optional canonical host config and apply runtime demo data."""
+    raw = load_toml(OPERATOR_CONFIG_PATH)
+    try:
+        cfg = parse_config(raw)
+    except ConfigValidationError as exc:
+        fail(str(exc))
+    demo_dir = demo.demo_hosts_dir()
+    if demo_dir is not None:
+        cfg = replace(cfg, remote_hosts=demo.synthesize_remote_hosts(demo_dir))
+    return cfg

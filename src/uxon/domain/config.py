@@ -99,7 +99,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "color_palette": ["cyan", "blue"],
     },
     "local_host": {"color": "green"},
-    # Stage 5: ssh transport hardening.
+    # SSH transport hardening.
     # ``ssh_multiplex = "auto"`` adds ControlMaster/Path/Persist to the
     # default fetch template (warm tick: 5-20 ms vs cold 200-500 ms).
     # ``"off"`` strips them — for environments that prohibit the socket.
@@ -110,7 +110,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ssh_control_persist_seconds": 300,
     # ``fetch_concurrency`` caps concurrent SSH fetch workers fleet-wide
     # so a 50-host post-outage stampede doesn't exhaust the FD ulimit.
-    # Stage 5 step 7 wires the semaphore.
+    # Fleet fetch concurrency bound.
     "fetch_concurrency": 16,
     "git_create_enabled": False,
     "git_remote_profiles": [],
@@ -190,7 +190,7 @@ class Config:
     # ``RECOMMENDED_TMUX_OPTIONS`` to match ``DEFAULT_CONFIG`` — the three dicts
     # hold raw ``key -> value`` pairs per tmux scope (``-g`` / ``-s`` / ``-as``).
     # Values are bool/int/str and rendered verbatim by :func:`_tmux_set_chain`
-    # (no name/value validation — D4), but only once ``manage_options = true``.
+    # (no name/value validation), but only once ``manage_options = true``.
     tmux_manage_options: bool = False
     tmux_options: dict = field(default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["options"]))
     tmux_server_options: dict = field(

@@ -44,7 +44,7 @@ never rewrites its kwargs. At each ``Popen.__init__`` it checks:
    A marker-absent raw ``subprocess`` is a child that could inherit, and flush,
    the TUI's controlling terminal. It logs once and — only under
    ``UXON_SPAWN_GUARD_STRICT`` — raises :class:`UnsanctionedSpawnError`. By
-   default it never raises: the hard first-party enforcer is the AC8 grep test,
+   default it never raises: the hard first-party enforcer is a static test,
    so migrating a tree mid-suite (real-subprocess integration tests carry no
    marker) does not break.
 
@@ -130,7 +130,7 @@ class UnsanctionedSpawnError(RuntimeError):
     Distinct from :class:`EventLoopBlockedError`: that one is about the *thread*
     the spawn runs on (the on-loop block); this one is about *how* the spawn was
     created (raw vs. sanctioned). Off by default — the hard first-party enforcer
-    is the AC8 grep test, not a runtime raise that would trip every real-
+    is the static test, not a runtime raise that would trip every real-
     subprocess integration test in the suite.
     """
 
@@ -237,7 +237,7 @@ def _check_spawn_sanctioned(args: tuple, kwargs: dict) -> None:
     exactly once and — only under ``UXON_SPAWN_GUARD_STRICT`` — additionally
     raises :class:`UnsanctionedSpawnError`. The guard only ever *observes*; it
     does not rewrite ``start_new_session``/``stdin`` (that was the reverted
-    heuristic). The hard first-party enforcer is the AC8 grep test.
+    heuristic). The hard first-party enforcer is the static test.
     """
     if _spawn_sanctioned.get():
         return

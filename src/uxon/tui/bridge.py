@@ -345,9 +345,7 @@ class TuiBridge:
 
     def on_kill_all_reachable(self) -> None:
         # Iterate the launch user plus every reachable peer user. An
-        # empty ``reachable_users`` collapses to "kill all my own
-        # sessions", which is the same behaviour the legacy
-        # ``kill-all-global`` had when sudo was unavailable.
+        # empty ``reachable_users`` collapses to "kill all my own sessions".
         from uxon.app.kill import (
             cleanup_launch_record,
             prepare_runtime_teardown,
@@ -376,8 +374,7 @@ class TuiBridge:
                     cleanup_launch_record(self.cfg, s)
         # Operationally the most-significant kill_all path: cross-user
         # bulk kill from the TUI.  Audit emit covers the whole sweep,
-        # not per-session — matches the spec's `target_users` /
-        # `killed_count` shape.
+        # not per-session and carries the target-user set plus killed count.
         from uxon.infra import audit as _audit
 
         _audit.audit(
@@ -387,11 +384,6 @@ class TuiBridge:
             killed_count=killed_count,
             dry_run=False,
         )
-
-    # Legacy alias kept for any out-of-tree caller. The TUI dispatches
-    # via ``on_kill_all_global`` (the field name on TuiContext); the
-    # implementation now scopes to the reachable set.
-    on_kill_all_global = on_kill_all_reachable
 
     # ── refresh / link health ──
 
@@ -403,7 +395,7 @@ class TuiBridge:
         # so the probe runs at most once per process.
         from uxon.tui.context_builder import build_tui_context
 
-        fresh_cfg = config_loader.load_config(self.cwd)
+        fresh_cfg = config_loader.load_config()
         return build_tui_context(
             fresh_cfg,
             self.caller_user,
@@ -421,25 +413,27 @@ class TuiBridge:
         from uxon.domain.config import DEFAULT_CONFIG
         from uxon.infra import settings as uxon_settings
 
-        repo_data, proj_data, proj_cfg = uxon_settings.load_settings_sources(self.cwd)
-        return uxon_settings.resolve_setting_entries(
-            repo_data, proj_data, proj_cfg, DEFAULT_CONFIG, agent_ids=tuple(self.cfg.agents)
-        )
+        operator_data = uxon_settings.load_settings_source()
+        return uxon_settings.resolve_setting_entries(operator_data, DEFAULT_CONFIG)
 
     def on_setting_save(self, key: str, value: object) -> None:
         from uxon.infra import settings as uxon_settings
 
-        uxon_settings.persist_repo_config_updates(config_loader.repo_config_path(), {key: value})
+        uxon_settings.persist_operator_config_updates(
+            config_loader.operator_config_path(), {key: value}
+        )
 
     def on_setting_remove(self, key: str) -> None:
         from uxon.infra import settings as uxon_settings
 
-        uxon_settings.remove_repo_key(config_loader.repo_config_path(), key)
+        uxon_settings.remove_operator_key(config_loader.operator_config_path(), key)
 
     def on_setting_save_mapping(self, key: str, mapping: dict) -> None:
         from uxon.infra import settings as uxon_settings
 
-        uxon_settings.persist_repo_config_updates(config_loader.repo_config_path(), {key: mapping})
+        uxon_settings.persist_operator_config_updates(
+            config_loader.operator_config_path(), {key: mapping}
+        )
 
     def get_git_remote_profile_rows(self) -> list:
         return [
@@ -457,7 +451,7 @@ class TuiBridge:
 
     # ── launch ──
 
-    def on_launch_cwd(self, agent_id: str, mode_id: str, target_dir: str | None = None):
+    def on_launch_cwd(self, profile_id: str, mode_id: str, target_dir: str | None = None):
         # ``target_dir`` is the resolved primary ``repo_root`` for the
         # WORKSPACE primary row. It coincides with ``self.cwd`` when the TUI
         # was started at the primary repo root, and differs when it was
@@ -469,25 +463,25 @@ class TuiBridge:
         # (``session_stem_for_path``) is correct for the primary tree, so no
         # ``worktree=`` argument is threaded here.
         target = target_dir or self.cwd
-        req = tui_planning._plan_tui_run_agent(
-            self.cfg, self.caller_user, self.launch_user, target, agent_id, mode_id
+        req = tui_planning._plan_tui_run_profile(
+            self.cfg, self.caller_user, self.launch_user, target, profile_id, mode_id
         )
         return req
 
-    def on_launch_new(self, name: str, agent_id: str, mode_id: str, git_profile: str):
-        req = tui_planning._plan_tui_create_new_agent(
-            self.cfg, self.caller_user, self.launch_user, name, agent_id, mode_id, git_profile
+    def on_launch_new(self, name: str, profile_id: str, mode_id: str, git_profile: str):
+        req = tui_planning._plan_tui_create_new_profile(
+            self.cfg, self.caller_user, self.launch_user, name, profile_id, mode_id, git_profile
         )
         return req
 
-    def on_launch_existing(self, name: str, agent_id: str, mode_id: str):
-        req = tui_planning._plan_tui_open_existing_agent(
-            self.cfg, self.caller_user, self.launch_user, name, agent_id, mode_id
+    def on_launch_existing(self, name: str, profile_id: str, mode_id: str):
+        req = tui_planning._plan_tui_open_existing_profile(
+            self.cfg, self.caller_user, self.launch_user, name, profile_id, mode_id
         )
         return req
 
     def on_probe_existing_sessions(
-        self, target_dir: str, agent_id: str, mode_id: str
+        self, target_dir: str, profile_id: str, mode_id: str
     ) -> tuple[tuple[str, str, bool], ...]:
         """TUI probe: return (name, attached) pairs for the profile's
         compatible sessions under ``target_dir``.
@@ -501,7 +495,7 @@ class TuiBridge:
         resolved = launch_profile_app.resolve_launch_profile(
             self.cfg,
             self.caller_user,
-            agent_id,
+            profile_id,
             target_dir,
             mode_id,
             target_may_not_exist=False,
@@ -571,7 +565,7 @@ class TuiBridge:
             raise WorktreeProbeError((cp.stderr or "").strip() or "git worktree list failed")
         return parse_worktree_porcelain(cp.stdout or "", repo_root=repo_root)
 
-    def on_create_worktree(self, repo_root: str, branch: str, agent_id: str, mode_id: str):
+    def on_create_worktree(self, repo_root: str, branch: str, profile_id: str, mode_id: str):
         # plan_worktree_launch emits its own worktree.create + session.new
         # audit events. The TUI has no agent passthrough args (agent_args
         # defaults to None).
@@ -583,7 +577,7 @@ class TuiBridge:
         resolved = launch_profile_app.resolve_launch_profile(
             self.cfg,
             self.caller_user,
-            agent_id,
+            profile_id,
             worktree_path,
             mode_id,
             target_may_not_exist=True,
@@ -594,32 +588,32 @@ class TuiBridge:
             resolved,
             repo_root,
             branch,
-            requested_profile=agent_id,
+            requested_profile=profile_id,
         )
 
     def on_launch_existing_worktree(
-        self, repo_root: str, branch: str, worktree_path: str, agent_id: str, mode_id: str
+        self, repo_root: str, branch: str, worktree_path: str, profile_id: str, mode_id: str
     ):
         # Launch into an EXISTING worktree with the worktree-aware stem
-        # (§2.5) — never re-creates the worktree.
-        req = tui_planning._plan_tui_run_agent(
+        # — never re-creates the worktree.
+        req = tui_planning._plan_tui_run_profile(
             self.cfg,
             self.caller_user,
             self.launch_user,
             worktree_path,
-            agent_id,
+            profile_id,
             mode_id,
             worktree=(repo_root, branch),
         )
         return req
 
     def on_probe_existing_worktree_sessions(
-        self, worktree_path: str, repo_root: str, branch: str, agent_id: str, mode_id: str
+        self, worktree_path: str, repo_root: str, branch: str, profile_id: str, mode_id: str
     ) -> tuple[tuple[str, str, bool], ...]:
         resolved = launch_profile_app.resolve_launch_profile(
             self.cfg,
             self.caller_user,
-            agent_id,
+            profile_id,
             worktree_path,
             mode_id,
             target_may_not_exist=False,
@@ -634,7 +628,7 @@ class TuiBridge:
         )
         return tuple((s.user, s.name, s.attached == "1") for s in matches)
 
-    def on_runtime_gate(self, target_dir: str, agent_id: str, mode_id: str):
+    def on_runtime_gate(self, target_dir: str, profile_id: str, mode_id: str):
         """Probe the workload runtime for ``target_dir``; return the TUI gate or None.
 
         Shells out as the launch user under a bounded timeout — MUST run off
@@ -644,7 +638,7 @@ class TuiBridge:
         resolved = launch_profile_app.resolve_launch_profile(
             self.cfg,
             self.caller_user,
-            agent_id,
+            profile_id,
             target_dir,
             mode_id,
             target_may_not_exist=False,

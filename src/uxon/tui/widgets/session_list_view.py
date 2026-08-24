@@ -1,18 +1,8 @@
-"""SessionListView — render-on-demand session list on Textual's Line API.
+"""Render the session list on Textual's line-oriented viewport API.
 
-The render-on-demand replacement for ``SessionDashboardTable`` /
-``FocusReleasingDataTable`` (spec D1). A :class:`~textual.scroll_view.ScrollView`
-that owns the current row list and paints **only the visible viewport lines**
-via :meth:`render_line`. A telemetry tick is ``set_rows(new)`` → repaint visible
-lines; ``virtual_size`` (and thus a layout) changes **only when the row count
-changes** — a real arrival/departure, the one legitimate relayout. Compare to
-``DataTable``, whose every structural mutation forces a screen-global relayout
-(spec § Problem).
-
-Phase-1 status: this widget is built **alongside** the live dashboard and wired
-in by Phase 2. It re-exposes every public surface the current call sites use
-(spec § "New ``SessionListView`` public API") so the swap is a rename, not a
-reshape:
+The widget owns the row list and paints only visible lines. Telemetry updates
+repaint that viewport; arrivals and departures update ``virtual_size``. Its
+public surface is:
 
 * ``set_rows`` / ``set_columns`` / ``set_block_meta`` / ``set_block_starts``;
 * ``block_starts`` (property), ``row_count`` (property);
@@ -141,7 +131,7 @@ class SessionListView(ScrollView):
         self._rows: tuple[SessionRow, ...] = ()
         self._block_meta: dict[str, tuple[str, int]] = {}
         self._block_starts: tuple[int, ...] = ()
-        # AC11 no-op gate. ``set_block_meta`` runs before ``set_rows`` every
+        # no-op gate. ``set_block_meta`` runs before ``set_rows`` every
         # tick; a hue/zebra change with otherwise-unchanged rows must still
         # repaint, so ``set_block_meta`` flips this flag on a real change and
         # ``set_rows`` consults it. An identical-data tick (rows unchanged AND
@@ -171,7 +161,7 @@ class SessionListView(ScrollView):
         values at the same length repaints visible lines with no
         relayout. The cursor is clamped into the new bounds.
 
-        AC11: an identical-data tick — ``rows`` value-equal to the
+        : an identical-data tick — ``rows`` value-equal to the
         current rows (``SessionRow`` is a frozen dataclass, so ``==`` is
         a deep value compare) and no block-meta change since the last
         paint (``_render_dirty`` unset) — issues **zero** ``refresh``
@@ -217,7 +207,7 @@ class SessionListView(ScrollView):
         Seeds the block-hue (NAME / HOST foreground) and zebra parity
         at render time. Called every tick before :meth:`set_rows`.
 
-        AC11: a no-op when ``meta`` equals the current map. On a real
+        : a no-op when ``meta`` equals the current map. On a real
         change it flips ``_render_dirty`` so the following
         :meth:`set_rows` repaints even if the rows themselves are
         unchanged (a hue/zebra change with stable rows still needs a
@@ -308,7 +298,7 @@ class SessionListView(ScrollView):
         """
         if row_key is None:
             return
-        # AC11: the cursor is already on this key — no ``move_cursor``
+        # : the cursor is already on this key — no ``move_cursor``
         # (and thus no ``refresh``). A no-op tick that re-pins the same
         # selection must mutate nothing.
         if self.selected_row_key == row_key:
@@ -399,7 +389,7 @@ class SessionListView(ScrollView):
 
     def on_focus(self) -> None:
         # Textual's base ``Widget._on_focus`` already issues one whole-widget
-        # refresh (framework gesture-rate, accepted per AC4) — no uxon refresh.
+        # refresh (framework gesture-rate, accepted per ) — no uxon refresh.
         self._focused = True
 
     def on_blur(self) -> None:

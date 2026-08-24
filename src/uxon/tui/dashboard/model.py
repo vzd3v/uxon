@@ -11,7 +11,7 @@ This selector emits the **current** row set in canonical model order
 dashboard does **not** render that order directly: it is the recency
 reference for new arrivals only. Final on-screen order is owned by the
 frozen-order placement function (:func:`uxon.tui.dashboard.order.place`),
-so existing rows never swap on a telemetry tick (spec D2 / AC3). This
+so existing rows never swap on a telemetry tick (/ ). This
 selector therefore re-sorts every tick cheaply; placement decides what
 actually moves.
 

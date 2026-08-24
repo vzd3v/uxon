@@ -56,7 +56,7 @@ def _mk_ctx(**overrides) -> TuiContext:
         on_attach=lambda u, n: LaunchRequest(cmd=("/bin/true",), label="attach"),
         on_kill=lambda u, n: None,
         on_kill_all=lambda: None,
-        on_kill_all_global=lambda: None,
+        on_kill_all_reachable=lambda: None,
         on_remote_kill=lambda h, u, n: None,
         on_remote_attach=lambda h, u, n: LaunchRequest(cmd=("/bin/true",), label="remote-attach"),
         on_refresh=lambda: _mk_ctx(),
@@ -104,7 +104,7 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertIs(cfg.on_attach, ctx.on_attach)
         self.assertIs(cfg.on_kill, ctx.on_kill)
         self.assertIs(cfg.on_kill_all, ctx.on_kill_all)
-        self.assertIs(cfg.on_kill_all_global, ctx.on_kill_all_global)
+        self.assertIs(cfg.on_kill_all_reachable, ctx.on_kill_all_reachable)
         self.assertIs(cfg.on_remote_kill, ctx.on_remote_kill)
         self.assertIs(cfg.on_remote_attach, ctx.on_remote_attach)
         self.assertIs(cfg.on_refresh, ctx.on_refresh)

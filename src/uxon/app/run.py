@@ -138,7 +138,7 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         prefix=cfg.session_prefix,
     )
     if not args.dry_run:
-        # Probe + (auto) start/create the container before exec when enabled.
+        # Probe and, when allowed, prepare the workload runtime before exec.
         launch_app.ensure_runtime_ready(cfg, target_dir, resolved)
     return tmux.launch_in_tmux(
         target_dir,

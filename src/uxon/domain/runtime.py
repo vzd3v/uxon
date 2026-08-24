@@ -285,7 +285,7 @@ def path_map_under_prefix(host_dir: str, path_map: tuple[tuple[str, str], ...]) 
 
     Pure predicate mirroring :func:`apply_path_map`'s matching rule (exact
     match or ``prefix/`` segment match, normalized). Used by the worktree
-    launch gate (AC-P4.1): when a non-empty ``path_map`` is configured but the
+    launch gate: when a non-empty ``path_map`` is configured but the
     computed worktree path is under none of its host prefixes, the workload
     would have no mount backing that path — uxon fails fast with a clear
     message instead of deferring to an opaque runtime error.

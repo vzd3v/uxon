@@ -24,7 +24,7 @@ def worktree_branch_valid(value: str) -> bool:
     Rejects only what git itself forbids cheaply up front: empty, leading
     ``-``, whitespace, and the obvious bad tokens; git's own ``worktree
     add`` is the authority for the rest (and surfaces a clear error via
-    plan_worktree_launch's §8 handling).
+    plan_worktree_launch's normalization handling).
     """
     name = value.strip()
     if not name or name.startswith("-"):

@@ -92,11 +92,6 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
             # has ``cfg``/``spec``), where an unknown id fails listing the
             # agent's valid modes.
             parsed.permission_mode = argv[i]
-        elif token == "--agent":
-            i += 1
-            if i >= len(argv):
-                fail("--agent requires an id")
-            fail("--agent is no longer a uxon selector; use --profile <id> instead")
         elif token == "--profile":
             i += 1
             if i >= len(argv):
@@ -253,10 +248,7 @@ def parse_subcommand(argv: list[str]) -> ParsedArgs:
         return ParsedArgs(action="version", json_output=json_out)
     if cmd == "doctor":
         json_out = "--json" in argv[1:]
-        # Stage 10c — opt-in ``--remote`` flag walks back the
-        # AGENTS.md "doctor doesn't probe remote_hosts" rule under
-        # explicit operator gesture. See ``do_doctor`` for the
-        # rationale + the AGENTS.md addendum.
+        # Remote probing is an explicit operator gesture.
         all_remote = "--remote" in argv[1:]
         extras = [a for a in argv[1:] if a not in {"--json", "--remote"}]
         if extras:

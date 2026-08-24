@@ -20,7 +20,7 @@ def repo_root() -> Path:
     """Best-effort path to the repo root for in-tree dev runs.
 
     For pipx / `uv tool` / wheel installs this points into site-packages
-    and the resulting paths (``config/config.toml`` etc.) won't exist —
+    and the resulting paths (``/etc/uxon/config.toml`` etc.) won't exist —
     callers must tolerate missing files.
     """
     return Path(__file__).resolve().parents[3]
