@@ -134,9 +134,9 @@ sudo install -o root -g root -m 0644 /tmp/uxon-config.toml \
 
 You'll need at least one of `claude`, `codex`, or `cursor-agent`
 installed for the launch user — see the agent table in
-[`README.md`](../../README.md#supported-agents). The TUI
-auto-detects newly-installed agents and offers a one-keypress
-enable.
+[`README.md`](../../README.md#supported-agents). Refresh the TUI after
+installation; in strict mode the operator must add the corresponding launch
+profile to `enabled_profiles`.
 
 ## Where to go next
 

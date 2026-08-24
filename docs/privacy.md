@@ -36,9 +36,10 @@ Per-event extras:
 - **Attaching** → the session name, the target user.
 - **Killing** → the session name, the target user, whether
   it was forced or a dry-run.
-- **Cross-host** → the peer's name and SSH alias, plus a
-  UUID `correlation_id` joining the two halves of the
-  gesture.
+- **Cross-host** → the peer's name and SSH alias, final SSH return code when a
+  process ran, cache/scope status for remote listing, a bounded error summary
+  on failure, and a UUID `correlation_id` joining related operation and runtime
+  events across the boundary.
 
 Full per-event reference: [`reference/audit-events.md`](reference/audit-events.md).
 

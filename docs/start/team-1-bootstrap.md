@@ -73,8 +73,8 @@ way round. `nadia-agent` cannot impersonate `nadia`.
 Install the agent binary for each `<user>-agent` — typically by
 running `sudo -H -u nadia-agent -- /bin/bash` and then the agent's installer.
 This is deliberately not a login shell; configure PATH explicitly or use an
-absolute agent binary. The TUI auto-detects newly-installed agents and offers
-one-keypress enable.
+absolute agent binary. Refresh the TUI after installation; in strict mode the
+operator must add the corresponding launch profile to `enabled_profiles`.
 
 ## Step 4 — Lead's supervision grant
 

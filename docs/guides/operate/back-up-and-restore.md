@@ -14,7 +14,7 @@ small explicit backup policy.
 | `~/.claude/` (each `<user>-agent`) | `<user>-agent` | Optional | Cached agent config + history. Restorable via re-login. |
 | `/etc/uxon/config.toml` (host's `uxon` config) | root or admin | **Yes** | Drives the whole host. Render from JSON if you have one. |
 | `/etc/sudoers.d/uxon-*` | root | **Yes** | Per-developer grants. Easy to forget when restoring. |
-| `~/.local/state/uxon/` (any user) | per-user | No | Dismissed-banner state, debug logs, metrics. Recreated. |
+| `~/.local/state/uxon/` (any user) | per-user | No | Debug logs, metrics, and caches. Recreated. |
 | `~/.local/state/uxon/remote/<peer>.json` (aggregator) | aggregator user | No | Cache fallback. Refetched on next poll. |
 | journald log files (`/var/log/journal/`) | systemd | Per retention policy | Audit channel sink — see [`forward-audit-to-collector.md`](forward-audit-to-collector.md) for fleet-wide audit retention. |
 | `/etc/passwd`, `/etc/shadow`, `/etc/group` | root | Yes (system-level) | The `*-agent` accounts. |

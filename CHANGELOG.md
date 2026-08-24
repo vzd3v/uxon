@@ -11,6 +11,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - The interactive TUI now exits when its controlling terminal disappears instead of leaving an orphaned process that can spin at 100% CPU after an SSH or ET disconnect.
 - Session listing now distinguishes an absent tmux server from an unreachable socket or backend and reports the latter instead of silently rendering an empty list.
+- Installed wheels no longer report a surrounding consumer repository's Git commit as Uxon's source identity.
+- Cross-user attach dry-runs now emit one complete terminal audit event, and remote audit events report their actual final outcome and SSH return code.
+- `kill-all --json` keeps `action` to its closed operation enum and reports post-kill cleanup separately as `cleanup_outcome`.
 
 ### Changed (breaking)
 - Runtime selection moved from `agents.enabled` / `agents.default` and the old global `[container]` block to operator-owned launch profiles and `[runtimes.<id>]`. A launch profile selects `runtime = "direct"` by default; project `.uxon.toml` files are no longer read.
@@ -20,6 +23,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `uxon doctor --json` now reports `execution_backends` and `runtimes`; launch-profile rows expose `runtime_kind` and `uses_runtime`.
 - Audit: the `cli.start` event's `agents_enabled` field is renamed `profiles_enabled` and now lists launch-profile ids (it listed agent ids). Update audit/SIEM queries that filter on `agents_enabled`.
 - Removed configuration fields, including `tui.table.default_sort_by`, are rejected as unknown in v4.
+- The TUI Settings screen is read-only for non-root processes. Operators render configuration unprivileged, review it, and cross the privilege boundary explicitly with `sudo install`.
 
 ### Added
 - Generic command runtimes with deterministic resources, path mapping, readiness/start/create policy, optional cgroup telemetry, identity resolution, and safe per-session teardown.
@@ -27,6 +31,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Managed launches finalize and fsync their authoritative controller-side launch record before releasing the new tmux pane through a one-shot tmux synchronization channel. Records are private by default; multi-controller deployments can opt into a validated shared control-group directory with bounded stale-record collection.
 - A runnable, privileged opt-in network-namespace contract test proves the tmux server itself enters the execution boundary, preventing tmux `new-window` / `run-shell` escapes.
 - The agent catalog is config-driven. Operators can define binaries, default args, install hints, and ordered permission modes under `[agents.<id>]`; the first mode is the default.
+- `uxon config render` validates the public JSON config schema and renders canonical TOML without loading the installed config.
 
 ## [3.6.0] — 2026-06-12
 

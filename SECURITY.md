@@ -127,6 +127,9 @@ The trust boundaries are:
    launch user; shared records are `0640` and directories with access ACLs are
    rejected. Records contain operational session, profile, runtime, and timestamp
    metadata and are retained for at most seven days after becoming stale.
+   Machine-readable bulk-kill results keep the tmux action and post-kill
+   runtime/record cleanup as separate closed fields, so cleanup failure cannot
+   be mistaken for a failed kill or silently hidden.
 
 ## Out of scope
 

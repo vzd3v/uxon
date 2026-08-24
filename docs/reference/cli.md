@@ -22,9 +22,9 @@ flagged in each section.
 - Unknown flags after `run` / `new` are forwarded to the selected
   agent binary verbatim.
 - All subcommands honour the launch-user resolution described in
-  [`scenarios/team-1.md`](../scenarios/team-1.md) and run `tmux` /
-  `git` / `mkdir` under the launch user via `sudo -H -u USER --` when
-  caller ≠ launch user.
+  [`scenarios/team-1.md`](../scenarios/team-1.md). Every target-user command
+  crosses the selected execution backend; the built-in `local` backend uses
+  argv-preserving `sudo -H -u USER --` only when caller and target differ.
 - Every state-changing subcommand emits one terminal event; exec-based attach
   emits a dispatch event immediately before process replacement —
   see [`audit-events.md`](audit-events.md) for which event each
@@ -100,13 +100,12 @@ attach, current command, and path.
 
 - Default scope: the current launch user only.
 - `--all-users`: scope `session_users` from config — but only the
-  **reachable** subset (users the caller can `sudo -n -H -u USER --` to without
-  a password). Unreachable users are listed once on stderr as
-  `# N user(s) skipped (no sudo): <names>`; stdout stays parseable.
-  In `--json`, the same names are surfaced in the new field
-  `data.scope_skipped: list[str]` (forward-compatible — older peers
-  omit it). Requires `enable_all_users_list = true` to be enabled at
-  all; if disabled, exits with code 1 and the stable error tag
+  **reachable** subset (users whose selected execution backend passes the
+  fixed target probe). Unreachable users are listed once on stderr as
+  `# N user(s) skipped (unreachable): <names>`; stdout stays parseable.
+  In `--json`, the same names are surfaced in
+  `data.scope_skipped: list[str]`. Requires `enable_all_users_list = true` to
+  be enabled at all; if disabled, exits with code 1 and the stable error tag
   `uxon-error: all-users-disabled`, which the multi-host aggregator
   uses to fall back to per-peer "own only" mode.
 - `--host <name>`: route to a configured peer over SSH (see
@@ -135,9 +134,9 @@ If `$TMUX` names the **same** socket as `uxon` for the launch user,
 **`--user <name>`** attaches to a session belonging to a different
 launch user on the same host. `<name>` is the OS account that owns
 the tmux socket (typically `<dev>-agent` in the recommended
-paired-account setup). Requires per-target NOPASSWD
-(`sudo -n -H -u <name> --`) — the same gating the TUI applies to its
-superuser block. Probed once for the single target; an unreachable
+paired-account setup). The selected execution backend must attest that target;
+for the built-in `local` backend this requires per-target NOPASSWD. The TUI
+applies the same gate to its supervision block. Probed once; an unreachable
 target fails fast with the stable error tag `uxon-error:
 not-reachable` on stderr and exit code `1`. Passing `--user <self>`
 is a no-op.
@@ -145,7 +144,7 @@ is a no-op.
 **`--host <alias>`** routes the attach to a configured
 `[[remote_hosts]]` peer over SSH. **Requires `--user`** (the peer
 is the sole authority on who can attach to what — the local side
-delegates the per-target sudo gate to the peer's own
+delegates the per-target execution gate to the peer's own
 `uxon attach --user`). Wire command:
 `ssh <alias> uxon attach <id> --user <name>` with an
 `--audit-correlation-id <uuid>` internal flag so the initiating host's
@@ -170,17 +169,16 @@ session owned by the current launch user on the local box.
 user on the same host. `<name>` is a **launch user** — the OS
 account that owns the tmux socket (typically `<dev>-agent` in the
 recommended paired-account setup), not the developer's shell user.
-The grant `<caller> ALL=(<name>) NOPASSWD: ALL` lets the caller
-sudo into `<name>`, but does not give them any access to the
-developer's personal account. Requires per-target NOPASSWD
-(`sudo -n -H -u <name> --`) — exactly the same gating the TUI applies to
-the "superuser" block. Probed once for the single target; an
+With the built-in `local` backend, the grant
+`<caller> ALL=(<name>) NOPASSWD: ALL` reaches `<name>` without granting access
+to the developer's personal account. Command backends define the equivalent
+operator-owned boundary. The TUI applies the same fixed target probe. An
 unreachable target fails fast with the stable error tag
 `uxon-error: not-reachable` on stderr and exit code `1`. Passing
 `--user <self>` is a no-op (no probe, same as omitting the flag).
 
 **`--host <alias>`** routes the kill to a configured `[[remote_hosts]]`
-peer over SSH. The peer's own `uxon kill` does the per-target sudo
+peer over SSH. The peer's own `uxon kill` does the target execution
 gating, so the local side does not need to know the peer's user
 table. May be combined with `--user <name>` to target a specific
 launch user on the peer. The wire always sends `--force` — local
@@ -209,13 +207,14 @@ the current launch user. Requires interactive confirmation (typing
 
 **`--json`** emits a wire-schema envelope (`kind: "kill-all"`) with
 the launch user, socket path, and a per-session result list
-(`killed` / `failed` / `would-kill` under `--dry-run`). Like
+(`killed` / `failed` / `would-kill` under `--dry-run`) plus the typed
+post-kill `cleanup_outcome` (`ok` / `error` / `not_run`). Like
 `kill`, `--json` is non-interactive and refuses to run without
 `--force` or `--dry-run`.
 
 This **only** kills sessions for the current launch user. The
 "kill all sessions for every reachable user on this host"
-operation is TUI-only, requires passwordless `sudo`, and prompts
+operation is TUI-only, requires every target backend to be reachable, and prompts
 for `kill-all-reachable` to confirm.
 
 ## `uxon doctor [--remote] [--json]` <a id="doctor"></a>
@@ -246,7 +245,7 @@ Prints:
   When `audit.enabled = false` the line reads
   `audit:    disabled, sink=no-sink`;
 - per-profile status for `[[git_remote_profiles]]` (`ok` /
-  `warn:<reason>` — passwordless sudo to `creds_user`, presence of
+  `warn:<reason>` — execution reachability for `creds_user`, presence of
   `gh`, login status or token-file readability);
 - a list of detected configuration issues.
 

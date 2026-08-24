@@ -33,7 +33,8 @@ see [`guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-a
 Every event carries the same envelope: `v` (schema version), `event`
 (name), `outcome` (`ok` / `denied` / `error` / `not_found` / `skipped`), `ts`
 (ISO-8601 UTC ms), `host`, `uxon_version`, kernel-backed
-`process_user` / `process_uid`, `pid` / `ppid`, and `subcmd`. Per-event extra fields
+`process_user` / `process_uid`, `pid` / `ppid`, and `subcmd`, plus optional
+`correlation_id` for one cross-boundary operation. Per-event extra fields
 are listed in [`reference/audit-events.md`](../reference/audit-events.md).
 
 The event alphabet covers:

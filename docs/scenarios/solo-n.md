@@ -60,4 +60,4 @@ aggregates the others over SSH and shows everything in one TUI.
 - [`explain/multi-host-philosophy.md`](../explain/multi-host-philosophy.md)
   — read-mostly, per-peer authority, no cluster coordinator.
 - [`explain/audit-channel-design.md`](../explain/audit-channel-design.md)
-  — `correlation_id` joins caller-side and peer-side audit pairs.
+  — `correlation_id` joins initiating-host and target-host audit chains.
