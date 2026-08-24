@@ -89,15 +89,16 @@ The trust boundaries are:
    local backend to list, attach, and kill those sessions.
 
 2. **Per-peer authority.** Cross-host operation does not delegate
-   trust between peers. Each peer's `sudoers` is evaluated
-   independently by that peer's own SSH daemon. A compromised
-   operator SSH key on host A grants only what host A's `sudoers`
-   grants on host A; it does not propagate to host B. There is no
-   shared-secret handshake, no central authority, no certificate
-   chain that uxon installs across the fleet. To revoke an
-   operator's reach on host B, edit `sudoers` on host B; touching
-   the central config or the operator's machine does not change
-   what host B will accept.
+   authority from one peer to another. Every target host independently
+   authenticates the arriving SSH credential and evaluates its local execution
+   backend (including `sudoers` for the built-in local backend). Uxon installs
+   no shared secret, central authority, or fleet certificate chain. A
+   credential reused across the fleet can nevertheless reach every host that
+   accepts it. Compromise of that private key or certificate is not confined
+   to the host where it was
+   discovered. Revoke it at every accepting host (or at the SSH CA/identity
+   provider) and remove any corresponding local grants. Editing Uxon config or
+   deleting the original private-key file does not invalidate a copied key.
 
 3. **Allowed roots.** When `allowed_roots` is non-empty, sessions
    cannot be started outside those paths. When `allowed_roots` is

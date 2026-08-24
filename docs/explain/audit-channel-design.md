@@ -54,13 +54,14 @@ client was handed off, not that the later interactive session succeeded.
 
 ## Cross-host truthfulness
 
-When a gesture crosses an SSH boundary, two events are emitted —
-one per side:
+When a gesture crosses an SSH boundary, its audit chain contains:
 
-- **Initiating host** emits `attach.remote.out.dispatch`,
-  `kill.remote.out`, or `list.remote.out`.
+- **Initiating host** emits one `attach.remote.out.dispatch`,
+  `kill.remote.out`, or `list.remote.out` for the overall gesture.
 - **Target host** emits `session.attach.dispatch`, `session.kill`, or
-  `list.peek`, exactly as it does for a direct invocation.
+  `list.peek` for each peer command attempt that reaches Uxon, exactly as it
+  does for a direct invocation. A remote-list policy fallback can therefore
+  add a second `list.peek`; a transport failure can leave no target event.
 
 The shared `correlation_id` joins these records. Uxon does not infer transport
 provenance from `SSH_CONNECTION` or any other caller-controlled environment
@@ -70,9 +71,9 @@ variable.
 
 For each remote gesture the caller generates a UUIDv4 and passes
 it to the peer via an internal `--audit-correlation-id <uuid>`
-flag (hidden from `--help`). Both sides emit it under
-`correlation_id`, so a single
-`journalctl … CORRELATION_ID=<uuid>` query returns the full pair
+flag (hidden from `--help`). Every event in the initiating/target attempt chain
+uses it under `correlation_id`, so a single
+`journalctl … CORRELATION_ID=<uuid>` query returns the full chain
 across the two hosts.
 
 This pays off only if

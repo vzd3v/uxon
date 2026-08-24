@@ -82,10 +82,9 @@ def _resolve_paths_remote(
     It deliberately does not source a login shell; the execution backend owns
     PATH, and agent catalog entries may use absolute binaries.
 
-    The timeout applies to the entire sudo + sh subprocess, not to
-    detect_root_nopasswd. If sudo needs a password (no NOPASSWD),
-    `sudo -n` fails in ~10 ms (with non-zero exit code), so the 2s budget
-    is only ever consumed by an actual hung shell command.
+    The timeout applies to the entire execution-backend + shell subprocess.
+    The built-in local backend uses non-interactive sudo for this probe, so a
+    password prompt fails closed instead of consuming the timeout budget.
 
     """
     if not names:
