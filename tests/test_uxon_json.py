@@ -196,6 +196,10 @@ class ListJsonTests(unittest.TestCase):
         }
         with (
             mock.patch(
+                "uxon.infra.sessions_probe.tmux.probe_tmux_server",
+                return_value=mock.Mock(state="running", error=""),
+            ),
+            mock.patch(
                 "uxon.infra.sessions_probe.run_query",
                 return_value=mock.Mock(returncode=0, stdout=""),
             ),
@@ -203,7 +207,7 @@ class ListJsonTests(unittest.TestCase):
                 "uxon.infra.sessions_probe.run_cmd",
                 side_effect=[
                     mock.Mock(stdout=list_row),
-                    mock.Mock(stdout=pane_row),
+                    mock.Mock(returncode=0, stdout=pane_row),
                 ],
             ),
             mock.patch("uxon.infra.sessions_probe.read_verified_record", return_value=record),
@@ -243,6 +247,10 @@ class ListJsonTests(unittest.TestCase):
         pane_row = "1\t111\tdocker\t/srv/repos/demo"
         with (
             mock.patch(
+                "uxon.infra.sessions_probe.tmux.probe_tmux_server",
+                return_value=mock.Mock(state="running", error=""),
+            ),
+            mock.patch(
                 "uxon.infra.sessions_probe.run_query",
                 return_value=mock.Mock(returncode=0, stdout=""),
             ),
@@ -250,7 +258,7 @@ class ListJsonTests(unittest.TestCase):
                 "uxon.infra.sessions_probe.run_cmd",
                 side_effect=[
                     mock.Mock(stdout=list_row),
-                    mock.Mock(stdout=pane_row),
+                    mock.Mock(returncode=0, stdout=pane_row),
                 ],
             ),
             mock.patch("uxon.infra.sessions_probe.read_verified_record", return_value=None),

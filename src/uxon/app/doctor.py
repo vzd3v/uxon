@@ -85,11 +85,6 @@ def doctor_issues(
         issues.append(
             "legacy default-socket uxon sessions exist while the dedicated uxon socket has none"
         )
-    from uxon.infra.execution import launch_compatibility_error
-
-    execution_error = launch_compatibility_error(cfg, launch_user, current_sessions)
-    if execution_error:
-        issues.append(execution_error)
     if (
         caller_user != launch_user
         and launch_user not in cfg.session_users
@@ -280,7 +275,7 @@ def do_doctor(
         print(
             f"- launch_user={row['launch_user']}  backend={row['backend']}  "
             f"kind={row['kind']}  status={row['status']}  "
-            f"fingerprint={row['fingerprint'][:12]}  changes={row['change_policy']}"
+            f"fingerprint={row['fingerprint'][:12]}"
         )
     print(f"current_socket_sessions={len(current_sessions)}")
     if current_sessions:
@@ -498,7 +493,6 @@ def _doctor_execution_rows(cfg: Config, caller_user: str) -> list[dict[str, Any]
                 "fingerprint": backend.fingerprint,
                 "status": "ok" if result.ok else "error",
                 "error": result.error,
-                "change_policy": "drain-with-old-config",
             }
         )
     return rows

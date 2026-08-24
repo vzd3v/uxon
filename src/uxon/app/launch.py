@@ -27,7 +27,7 @@ from uxon.domain.launch_profiles import ResolvedLaunchProfile
 from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import allocate_session_name, session_stem_for_worktree
 from uxon.errors import eprint, fail
-from uxon.infra import git, identity, process, sessions_probe, tmux
+from uxon.infra import execution, git, identity, process, sessions_probe, tmux
 from uxon.infra.worktrees import compute_worktree_path
 
 if TYPE_CHECKING:
@@ -313,6 +313,7 @@ def plan_worktree_launch(
         repo_root=repo_root, branch=branch_name, worktree_root=cfg.worktree_root
     )
     launch_user = resolved_profile.launch_user
+    worktree_path = execution.canonicalize_path(cfg, launch_user, worktree_path, intended=True)
     # Gate the computed path BEFORE any git work or mkdir (§2.3, B1). An
     # out-of-roots worktree_root is the common failure — name the override
     # key in the error so the operator knows how to fix it. Runs in dry-run
@@ -452,6 +453,7 @@ def plan_worktree_launch(
         git_remote_selector=git_remote_selector,
     )
     launch_user = resolved_profile.launch_user
+    worktree_path = resolved_profile.canonical_target
 
     git.copy_worktreeinclude_matches(cfg, repo_root, worktree_path, launch_user)
 

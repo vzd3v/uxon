@@ -284,6 +284,7 @@ def attach_session(
         print(f"session={shlex.quote(target.name)}")
         print(f"exec {shlex.join(req.cmd)}")
         return 0
+    tmux.require_tmux_server(cfg, launch_user, tmux.tmux_socket_path(cfg, launch_user))
     # Lane B — interactive terminal handoff. ``execvp`` replaces this
     # process image with ``tmux attach``; the TUI is gone and the child
     # inherits the real controlling terminal (an interactive attach needs

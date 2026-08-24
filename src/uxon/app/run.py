@@ -122,8 +122,8 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         report=args.host_report,
     )
     launch_user = resolved.launch_user
-    launch_app.ensure_launch_target_allowed(cfg, launch_user, cwd)
-    target_dir = cwd
+    target_dir = resolved.canonical_target
+    launch_app.ensure_launch_target_allowed(cfg, launch_user, target_dir)
     session_stem = session_stem_for_path(target_dir)
     compatibility_root = target_dir
     sessions = sessions_probe.collect_sessions([launch_user], cfg)

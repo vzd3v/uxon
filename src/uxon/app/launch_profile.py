@@ -353,10 +353,12 @@ def resolve_launch_profile(
     target_may_not_exist: bool = False,
     report: HostReport | None = None,
 ) -> ResolvedLaunchProfile:
-    canonical_target = (
-        canonical_intended_target(target_path)
-        if target_may_not_exist
-        else canonical_existing_target(target_path)
+    seed_launch_user = preflight_launch_user(cfg, caller_user, requested_profile)
+    canonical_target = execution.canonicalize_path(
+        cfg,
+        seed_launch_user,
+        target_path,
+        intended=target_may_not_exist,
     )
     rule = match_path_rule(cfg.launch.path_rules, canonical_target)
     selected = _select_configured_profile(cfg, requested_profile, canonical_target, rule)
@@ -367,6 +369,33 @@ def resolve_launch_profile(
         )
     else:
         launch_user = _profile_launch_user(cfg, caller_user, selected)
+
+    if launch_user != seed_launch_user:
+        final_target = execution.canonicalize_path(
+            cfg,
+            launch_user,
+            target_path,
+            intended=target_may_not_exist,
+        )
+        final_rule = match_path_rule(cfg.launch.path_rules, final_target)
+        final_selected = _select_configured_profile(
+            cfg, requested_profile, final_target, final_rule
+        )
+        if final_selected is None:
+            final_selected, final_user, final_report = _auto_discover_profile(
+                cfg, caller_user, final_target, final_rule, report=report
+            )
+        else:
+            final_user = _profile_launch_user(cfg, caller_user, final_selected)
+            final_report = None
+        if final_selected != selected or final_user != launch_user:
+            fail(
+                "launch profile policy resolves to different execution backends depending on "
+                "the target-user path view"
+            )
+        canonical_target = final_target
+        rule = final_rule
+        selected_report = final_report or selected_report
 
     profile = cfg.launch.profiles[selected]
     _check_runtime_name_collisions(cfg, caller_user, canonical_target, rule)
@@ -409,6 +438,7 @@ def resolve_launch_profile(
         execution=execution.resolve_target(cfg, launch_user),
         runtime_context=runtime_context,
         git_remote=policy,
+        canonical_target=canonical_target,
     )
 
 
@@ -440,6 +470,7 @@ def revalidate_launch_profile(
         or resolved.execution != original.execution
         or resolved.runtime_context != original.runtime_context
         or resolved.git_remote != original.git_remote
+        or resolved.canonical_target != original.canonical_target
     ):
         fail("launch profile policy changed after target creation; refusing to continue")
     return resolved

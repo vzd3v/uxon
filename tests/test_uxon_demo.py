@@ -398,27 +398,20 @@ class CollectSessionsDemoHookTests(unittest.TestCase):
 
         Mock ``subprocess.run`` to short-circuit the actual probe so the
         test stays hermetic (no real tmux binary required)."""
-        calls: list[list[str]] = []
-
-        class FakeProbe:
-            returncode = 1
-            stdout = ""
-            stderr = ""
-
-        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
-            calls.append(cmd)
-            return FakeProbe()
-
         with mock.patch.dict("os.environ", {}, clear=False):
             import os
 
             os.environ.pop(uxon_demo.DEMO_ENV_VAR, None)
-            with mock.patch.object(sessions_probe, "run_query", side_effect=fake_run):
+            with mock.patch.object(
+                sessions_probe.tmux,
+                "probe_tmux_server",
+                return_value=mock.Mock(state="absent", error=""),
+            ) as probe:
                 got = sessions_probe.collect_sessions_for_user(
                     make_config(), "alice", "uxon-", None
                 )
         self.assertEqual(got, [])
-        self.assertTrue(calls, "expected tmux probe to be attempted when demo env is unset")
+        probe.assert_called_once()
 
 
 if __name__ == "__main__":

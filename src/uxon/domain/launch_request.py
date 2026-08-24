@@ -16,6 +16,7 @@ class ManagedTmuxLaunch:
 
     create_cmd: tuple[str, ...]
     query_cmd: tuple[str, ...]
+    release_cmd: tuple[str, ...]
     kill_cmd: tuple[str, ...]
     record_socket: str
     record_session: str
@@ -24,7 +25,6 @@ class ManagedTmuxLaunch:
     launch_profile: str
     agent: str
     launch_user: str
-    execution_state_probe_cmd: tuple[str, ...] = ()
     execution_backend: str = "local"
     execution_fingerprint: str = ""
     runtime: str = "direct"

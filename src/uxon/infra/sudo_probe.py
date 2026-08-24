@@ -1,7 +1,7 @@
 """Per-target sudo capability probe.
 
 Returns a *capability set*: which subset of ``session_users`` the caller
-can actually reach via ``sudo -niu <U> -- true``, plus a separate flag
+can actually reach through its configured execution backend, plus a separate flag
 for whether the caller has root NOPASSWD (used for settings-write
 gating, where there's no per-user target).
 
@@ -58,15 +58,7 @@ users, but the per-probe ceiling already bounds the total wall time."""
 
 
 def _probe_one_user(cfg: Config, target: str) -> tuple[str, bool]:
-    """Run ``sudo -niu <target> -- true`` once. Returns (target, ok).
-
-    ``-n`` makes sudo non-interactive (no prompt). ``-i`` runs the
-    target's login shell environment, matching how the launch path
-    actually invokes commands as that user — keeping probe semantics
-    aligned with launch semantics. ``--`` terminates sudo's option
-    parsing so a target user named ``-foo`` (improbable, but cheap to
-    defend against) cannot be mistaken for a flag.
-    """
+    """Run the fixed target UID/GID probe once. Returns ``(target, ok)``."""
     try:
         result = probe_execution(cfg, target)
     except (subprocess.TimeoutExpired, OSError, SystemExit):

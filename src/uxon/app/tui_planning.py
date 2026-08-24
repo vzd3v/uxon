@@ -24,7 +24,7 @@ from uxon.domain.session import (
     session_stem_for_worktree,
 )
 from uxon.errors import fail
-from uxon.infra import identity, process, sessions_probe, tmux
+from uxon.infra import execution, identity, process, sessions_probe, tmux
 
 
 def _plan_tui_run_agent(
@@ -55,8 +55,8 @@ def _plan_tui_run_agent(
         cfg, caller_user, agent_id, cwd, mode_id, target_may_not_exist=False
     )
     launch_user = resolved.launch_user
-    launch_app.ensure_launch_target_allowed(cfg, launch_user, cwd)
-    target_dir = cwd
+    target_dir = resolved.canonical_target
+    launch_app.ensure_launch_target_allowed(cfg, launch_user, target_dir)
     if worktree is not None:
         repo_root, branch = worktree
         session_stem = session_stem_for_worktree(repo_root, branch)
@@ -82,7 +82,7 @@ def _plan_tui_run_agent(
 def _canonical_tui_project_dir(cfg: Config, name: str) -> str:
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
-    return launch_profile_app.canonical_intended_target(os.path.join(cfg.new_project_root, name))
+    return os.path.normpath(os.path.join(cfg.new_project_root, name))
 
 
 def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
@@ -92,7 +92,9 @@ def _resolve_tui_project_dir(cfg: Config, launch_user: str, name: str) -> str:
     is malformed, the parent is not writable, or the path violates a
     non-empty ``allowed_roots`` whitelist.
     """
-    project_dir = _canonical_tui_project_dir(cfg, name)
+    project_dir = execution.canonicalize_path(
+        cfg, launch_user, _canonical_tui_project_dir(cfg, name), intended=True
+    )
     new_app.ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     process.run_cmd(
         identity.command_prefix_for_user(cfg, launch_user) + ["mkdir", "-p", project_dir]
@@ -205,6 +207,7 @@ def _plan_tui_create_new_agent(
         target_may_not_exist=True,
     )
     launch_user = resolved.launch_user
+    project_dir = resolved.canonical_target
     new_app.ensure_new_project_target_allowed(cfg, launch_user, project_dir)
     process.run_cmd(
         identity.command_prefix_for_user(cfg, launch_user) + ["mkdir", "-p", project_dir]
@@ -219,6 +222,7 @@ def _plan_tui_create_new_agent(
         git_remote_selector=args.git_remote,
     )
     launch_user = resolved.launch_user
+    project_dir = resolved.canonical_target
     if args.git_remote:
         new_app._do_create_git_remote(
             args,
@@ -253,9 +257,7 @@ def _plan_tui_open_existing_agent(
     """
     if "/" in name or name in (".", ".."):
         fail(f"invalid name: {name}")
-    project_dir = launch_profile_app.canonical_existing_target(
-        os.path.join(cfg.new_project_root, name)
-    )
+    project_dir = os.path.normpath(os.path.join(cfg.new_project_root, name))
     args = ParsedArgs(
         action="new",
         target_id=name,
@@ -273,6 +275,7 @@ def _plan_tui_open_existing_agent(
         target_may_not_exist=False,
     )
     launch_user = resolved.launch_user
+    project_dir = resolved.canonical_target
     launch_app.ensure_launch_target_allowed(cfg, launch_user, project_dir)
     return _plan_tui_existing_session_or_launch(
         cfg, caller_user, launch_user, project_dir, name, args, resolved=resolved

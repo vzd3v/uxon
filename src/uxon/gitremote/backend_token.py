@@ -16,6 +16,8 @@ This backend assumes GitHub-compatible REST semantics:
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -23,6 +25,8 @@ from dataclasses import dataclass
 from uxon.domain.config import Config
 from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.gitremote.backend_gh import BackendError, default_run, execution_prefix
+from uxon.infra.execution import wrap_command
+from uxon.infra.run import run_query
 
 # ── Token file I/O (under creds_user) ────────────────────────────────
 
@@ -138,6 +142,9 @@ def preflight(
     """Verify: token readable; token valid; owner is either the token
     owner or an org visible to it; target repo doesn't exist yet.
     """
+    if cfg.execution.backend_for_user(effective_creds_user).kind == "command":
+        _worker_request(cfg, profile, repo_name, effective_creds_user, operation="preflight")
+        return
     token = read_token(cfg, profile.token_file, effective_creds_user, current_user, run=run)
     try:
         _preflight_with_token(profile, repo_name, token, http=http)
@@ -218,11 +225,72 @@ def create_remote(
     if dry_run:
         return profile.ssh_remote_url(repo_name)
 
+    if cfg.execution.backend_for_user(effective_creds_user).kind == "command":
+        return _worker_request(cfg, profile, repo_name, effective_creds_user, operation="create")
+
     token = read_token(cfg, profile.token_file, effective_creds_user, current_user, run=run)
     try:
         return _create_with_token(profile, repo_name, token, http=http)
     finally:
         del token
+
+
+def _worker_request(
+    cfg: Config,
+    profile: GitRemoteProfile,
+    repo_name: str,
+    effective_creds_user: str,
+    *,
+    operation: str,
+) -> str:
+    request = {
+        "operation": operation,
+        "profile": {
+            "name": profile.name,
+            "host": profile.host,
+            "owner": profile.owner,
+            "auth": profile.auth,
+            "creds_user": profile.creds_user,
+            "token_file": profile.token_file,
+            "visibility": profile.visibility,
+        },
+        "repo_name": repo_name,
+    }
+    argv = wrap_command(
+        cfg,
+        effective_creds_user,
+        [sys.executable, "-m", "uxon.gitremote.token_worker"],
+        interactive=False,
+    )
+    try:
+        cp = run_query(
+            argv,
+            input=json.dumps(request, sort_keys=True, separators=(",", ":")),
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BackendError(f"token worker failed: {exc}", stage=operation) from None
+    try:
+        response = json.loads(cp.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise BackendError(f"token worker returned invalid JSON: {exc}", stage=operation) from None
+    if cp.returncode == 0 and isinstance(response, dict) and response.get("ok") is not True:
+        raise BackendError("token worker returned failure with a zero exit status", stage=operation)
+    if cp.returncode != 0 and isinstance(response, dict) and response.get("ok") is True:
+        raise BackendError(
+            "token worker returned success with a non-zero exit status", stage=operation
+        )
+    if not isinstance(response, dict) or response.get("ok") is not True:
+        error = (
+            response.get("error", "token worker failed")
+            if isinstance(response, dict)
+            else "token worker failed"
+        )
+        stage = response.get("stage", operation) if isinstance(response, dict) else operation
+        raise BackendError(str(error), stage=str(stage))
+    if set(response) != {"ok", "ssh_url"} or not isinstance(response.get("ssh_url"), str):
+        raise BackendError("token worker returned an invalid result", stage=operation)
+    return str(response["ssh_url"])
 
 
 def _create_with_token(profile: GitRemoteProfile, repo_name: str, token: str, *, http) -> str:
