@@ -16,7 +16,10 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from helpers import make_config
+
 _USER = pwd.getpwuid(os.getuid()).pw_name
+_CFG = make_config()
 
 
 class DoctorParallelProbeTests(unittest.TestCase):
@@ -26,7 +29,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
         from uxon.domain.config import Config
 
         return Config(
-            runtime_user="",
+            default_launch_user="",
             default_launch_mode="caller",
             enable_all_users_list=False,
             launch_user_by_caller={},
@@ -76,7 +79,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
         call_args: list[dict] = []
 
         def fake_probe_one(
-            binary, launch_user, *, version_args=("--version",), timeout_override=None
+            cfg, binary, launch_user, *, version_args=("--version",), timeout_override=None
         ):
             call_args.append({"binary": binary, "timeout_override": timeout_override})
             barrier.wait()
@@ -106,7 +109,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
         called: list[str] = []
 
         def fake_probe_one(
-            binary, launch_user, *, version_args=("--version",), timeout_override=None
+            cfg, binary, launch_user, *, version_args=("--version",), timeout_override=None
         ):
             called.append(binary)
             return uxon_agents.AgentAvailability(status="ok", version="x")
@@ -142,7 +145,7 @@ class DoctorParallelProbeTests(unittest.TestCase):
             root = Path(tmp)
             repo_cfg = root / "config" / "config.toml"
             repo_cfg.parent.mkdir()
-            repo_cfg.write_text('runtime_user = "operator"\n', encoding="utf-8")
+            repo_cfg.write_text('default_launch_user = "operator"\n', encoding="utf-8")
             cwd = root / "project" / "sub"
             cwd.mkdir(parents=True)
             project_cfg = cwd.parent / ".uxon.toml"
@@ -196,8 +199,8 @@ class ProbeOneTimeoutOverrideTests(unittest.TestCase):
             captured["timeout"] = kwargs["timeout"]
             return FakeCP()
 
-        with patch.object(uxon_agents.subprocess, "run", side_effect=fake_run):
-            uxon_agents._probe_one("/usr/bin/true", None)
+        with patch.object(uxon_agents, "run_query", side_effect=fake_run):
+            uxon_agents._probe_one(_CFG, "/usr/bin/true", None)
         self.assertEqual(captured["timeout"], uxon_agents.PROBE_TIMEOUT_SEC)
 
     def test_override_replaces_default(self) -> None:
@@ -214,8 +217,8 @@ class ProbeOneTimeoutOverrideTests(unittest.TestCase):
             captured["timeout"] = kwargs["timeout"]
             return FakeCP()
 
-        with patch.object(uxon_agents.subprocess, "run", side_effect=fake_run):
-            uxon_agents._probe_one("/usr/bin/true", None, timeout_override=2.0)
+        with patch.object(uxon_agents, "run_query", side_effect=fake_run):
+            uxon_agents._probe_one(_CFG, "/usr/bin/true", None, timeout_override=2.0)
         self.assertEqual(captured["timeout"], 2.0)
 
 
@@ -230,7 +233,7 @@ class DoctorRemoteFlagTests(unittest.TestCase):
         from uxon.domain.config import Config
 
         return Config(
-            runtime_user="",
+            default_launch_user="",
             default_launch_mode="caller",
             enable_all_users_list=False,
             launch_user_by_caller={},
@@ -434,7 +437,7 @@ class DoctorAuditLineTests(unittest.TestCase):
         from uxon.domain.config import Config
 
         return Config(
-            runtime_user="",
+            default_launch_user="",
             default_launch_mode="caller",
             enable_all_users_list=False,
             launch_user_by_caller={},

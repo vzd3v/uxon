@@ -23,12 +23,12 @@ from uxon.errors import fail
 LAUNCH_PROFILE_ENV = "UXON_LAUNCH_PROFILE"
 LAUNCH_NONCE_ENV = "UXON_LAUNCH_NONCE"
 LAUNCH_AGENT_ENV = "UXON_AGENT"
-CONTAINER_PROFILE_ENV = "UXON_CONTAINER_PROFILE"
-CONTAINER_PROFILE_FINGERPRINT_ENV = "UXON_CONTAINER_PROFILE_FINGERPRINT"
+RUNTIME_ENV = "UXON_RUNTIME"
+RUNTIME_FINGERPRINT_ENV = "UXON_RUNTIME_FINGERPRINT"
 
 LAUNCH_RECORD_DIR_ENV = "UXON_LAUNCH_RECORD_DIR"
 _STORE_ENV = LAUNCH_RECORD_DIR_ENV
-_RECORD_VERSION = 1
+_RECORD_VERSION = 2
 _STORE_MODE = 0o711
 _RECORD_MODE = 0o644
 
@@ -41,9 +41,12 @@ class PendingLaunchRecord:
     launch_profile: str
     agent: str
     launch_user: str
-    container_profile: str = ""
-    container_profile_fingerprint: str = ""
-    container: str = ""
+    execution_backend: str = "local"
+    execution_fingerprint: str = ""
+    runtime: str = "direct"
+    runtime_kind: str = "direct"
+    runtime_fingerprint: str = ""
+    runtime_resource: str = ""
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,7 @@ def state_dir(*, override: Path | None = None) -> Path:
     # The bootstrap runs as the launch user, so the default store must be
     # readable/traversable by that user while remaining control-plane-owned and
     # not writable by it. Per-user runtime/state directories are commonly 0700,
-    # which would deadlock cross-user and containerized launches.
+    # which would deadlock cross-user and isolated-runtime launches.
     if os.name == "posix":
         return Path(tempfile.gettempdir()) / f"uxon-launch-records-{os.geteuid()}"
     return Path(platformdirs.user_state_dir("uxon", appauthor=False)) / "launch-records"
@@ -80,7 +83,8 @@ def pending_from_resolved(
     resolved: ResolvedLaunchProfile,
     nonce: str | None = None,
 ) -> PendingLaunchRecord:
-    context = resolved.container_context
+    context = resolved.runtime_context
+    execution = resolved.execution
     return PendingLaunchRecord(
         socket_path=socket_path,
         session_name=session_name,
@@ -88,9 +92,12 @@ def pending_from_resolved(
         launch_profile=resolved.profile.id,
         agent=resolved.agent.id,
         launch_user=resolved.launch_user,
-        container_profile=context.profile_id if context is not None else "",
-        container_profile_fingerprint=context.profile_fingerprint if context is not None else "",
-        container=context.name if context is not None else "",
+        execution_backend=execution.backend.id if execution is not None else "local",
+        execution_fingerprint=(execution.backend.fingerprint if execution is not None else ""),
+        runtime=resolved.profile.runtime,
+        runtime_kind="command" if context is not None else "direct",
+        runtime_fingerprint=context.fingerprint if context is not None else "",
+        runtime_resource=context.resource if context is not None else "",
     )
 
 
@@ -111,7 +118,7 @@ def create_pending_record(record: PendingLaunchRecord, *, override_dir: Path | N
     directory = _ensure_store_ready(
         override_dir=override_dir,
         launch_user=record.launch_user,
-        requires_control_plane=bool(record.container_profile)
+        requires_control_plane=record.runtime_kind != "direct"
         or _uid_for_user(record.launch_user) != os.geteuid(),
     )
     path = record_path(record, override_dir=directory)
@@ -125,9 +132,9 @@ def finalize_pending_record(
     record: PendingLaunchRecord,
     metadata: TmuxSessionMetadata,
     *,
-    container_id: str = "",
-    container_cgroup: str = "",
-    container_epoch: str = "",
+    runtime_id: str = "",
+    runtime_cgroup: str = "",
+    runtime_epoch: str = "",
     override_dir: Path | None = None,
 ) -> Path:
     if metadata.name != record.session_name:
@@ -137,7 +144,7 @@ def finalize_pending_record(
     directory = _ensure_store_ready(
         override_dir=override_dir,
         launch_user=record.launch_user,
-        requires_control_plane=bool(record.container_profile)
+        requires_control_plane=record.runtime_kind != "direct"
         or _uid_for_user(record.launch_user) != os.geteuid(),
     )
     path = record_path(record, override_dir=directory)
@@ -151,9 +158,9 @@ def finalize_pending_record(
             "tmux_session_id": metadata.session_id,
             "tmux_session_created": metadata.created,
             "tmux_session_name": metadata.name,
-            "container_id": container_id,
-            "container_cgroup": container_cgroup,
-            "container_epoch": container_epoch,
+            "runtime_id": runtime_id,
+            "runtime_cgroup": runtime_cgroup,
+            "runtime_epoch": runtime_epoch,
             "finalized_at": time.time(),
         }
     )
@@ -185,6 +192,8 @@ def read_finalized_record(
     except (FileNotFoundError, PermissionError, OSError, ValueError):
         return None
     if payload.get("status") != "finalized":
+        return None
+    if payload.get("version") != _RECORD_VERSION:
         return None
     if (
         payload.get("socket_path") != socket_path
@@ -258,9 +267,12 @@ def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
         "launch_profile": record.launch_profile,
         "agent": record.agent,
         "launch_user": record.launch_user,
-        "container_profile": record.container_profile,
-        "container_profile_fingerprint": record.container_profile_fingerprint,
-        "container": record.container,
+        "execution_backend": record.execution_backend,
+        "execution_fingerprint": record.execution_fingerprint,
+        "runtime": record.runtime,
+        "runtime_kind": record.runtime_kind,
+        "runtime_fingerprint": record.runtime_fingerprint,
+        "runtime_resource": record.runtime_resource,
         "created_at": time.time(),
     }
 
@@ -276,7 +288,7 @@ def _ensure_store_ready(
     if requires_control_plane and _user_can_write_dir(_uid_for_user(launch_user), directory):
         fail(
             "launch record store is writable by the launch user; "
-            "cross-user and containerized launches require a separate control-plane store"
+            "cross-user and isolated-runtime launches require a separate control-plane store"
         )
     return directory
 

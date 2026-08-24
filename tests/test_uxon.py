@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from helpers import make_config as _make_config
+
 import uxon.app.attach as attach_app
 import uxon.app.doctor as doctor_app
 import uxon.app.kill as kill_app
@@ -159,7 +161,7 @@ class UxonTests(unittest.TestCase):
             ),
         )
         defaults = dict(
-            runtime_user="",
+            default_launch_user="",
             default_launch_mode="caller",
             enable_all_users_list=False,
             launch_user_by_caller={},
@@ -255,7 +257,7 @@ class UxonTests(unittest.TestCase):
             ),
         )
         return Config(
-            runtime_user=kw.get("runtime_user", ""),
+            default_launch_user=kw.get("default_launch_user", ""),
             default_launch_mode=kw.get("default_launch_mode", "caller"),
             enable_all_users_list=kw.get("enable_all_users_list", False),
             launch_user_by_caller=kw.get("launch_user_by_caller", {}),
@@ -278,15 +280,17 @@ class UxonTests(unittest.TestCase):
             launch=launch,
         )
 
-    def test_resolve_launch_user_fixed_mode_uses_runtime_user(self) -> None:
+    def test_resolve_launch_user_fixed_mode_uses_default_launch_user(self) -> None:
         cfg = self._make_config_explicit(
-            runtime_user="dana_agent", default_launch_mode="fixed", session_users=["dana_agent"]
+            default_launch_user="dana_agent",
+            default_launch_mode="fixed",
+            session_users=["dana_agent"],
         )
         self.assertEqual(identity.resolve_launch_user(cfg, "erin"), "dana_agent")
 
     def test_resolve_launch_user_caller_mode_uses_caller(self) -> None:
         cfg = self._make_config_explicit(
-            runtime_user="dana_agent",
+            default_launch_user="dana_agent",
             default_launch_mode="caller",
             session_users=["dana_agent", "erin"],
         )
@@ -294,7 +298,7 @@ class UxonTests(unittest.TestCase):
 
     def test_resolve_launch_user_mapping_overrides_default(self) -> None:
         cfg = self._make_config_explicit(
-            runtime_user="dana_agent",
+            default_launch_user="dana_agent",
             default_launch_mode="caller",
             enable_all_users_list=True,
             launch_user_by_caller={"erin": "dana_agent"},
@@ -304,7 +308,7 @@ class UxonTests(unittest.TestCase):
 
     def test_resolve_all_session_users_keeps_current_user_present(self) -> None:
         cfg = self._make_config_explicit(
-            runtime_user="dana_agent",
+            default_launch_user="dana_agent",
             default_launch_mode="fixed",
             enable_all_users_list=True,
             session_users=["dana_agent"],
@@ -352,7 +356,7 @@ class UxonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg(
                 textwrap.dedent("""
-                    runtime_user = "dana_agent"
+                    default_launch_user = "dana_agent"
                     default_launch_mode = "caller"
                     enable_all_users_list = true
                     session_users = ["dana_agent", "erin"]
@@ -375,7 +379,7 @@ class UxonTests(unittest.TestCase):
                 tmpdir,
             )
 
-        self.assertEqual(cfg.runtime_user, "dana_agent")
+        self.assertEqual(cfg.default_launch_user, "dana_agent")
         self.assertEqual(cfg.default_launch_mode, "caller")
         self.assertTrue(cfg.enable_all_users_list)
         self.assertEqual(cfg.session_users, ["dana_agent", "erin"])
@@ -384,7 +388,10 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(cfg.launch.enabled_profiles, ("claude",))
         self.assertEqual(cfg.launch.default_profile, "claude")
         self.assertEqual(cfg.repeat_noninteractive_mode, "attach")
-        self.assertEqual(cfg.tmux_socket_template, "/tmp/uxon-{user}-{uid}.sock")
+        self.assertEqual(
+            cfg.tmux_socket_template,
+            "/tmp/uxon-{user}-{uid}.sock",
+        )
 
     def test_load_config_reads_legacy_session_prefixes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -579,7 +586,7 @@ class UxonTests(unittest.TestCase):
                     tmpdir,
                 )
 
-    def test_load_config_reads_launch_profile_and_container_profile(self) -> None:
+    def test_load_config_reads_launch_profile_and_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg(
                 textwrap.dedent("""
@@ -591,12 +598,13 @@ class UxonTests(unittest.TestCase):
                     agent = "claude"
                     display_name = "Claude subscription 1"
                     launch_user = "dana_agent"
-                    container_profile = "claude_sub1"
+                    runtime = "claude_sub1"
 
-                    [container.profiles.claude_sub1]
-                    runtime_namespace = "per_user"
-                    name_template = "{user}-{launch_profile}-{project_slug}"
-                    exec_template = ["docker", "exec", "-w", "{dir}", "{name}"]
+                    [runtimes.claude_sub1]
+                    kind = "command"
+                    resource_scope = "per_user"
+                    resource_name_template = "{user}-{launch_profile}-{project_slug}"
+                    exec_prefix = ["docker", "exec", "-w", "{runtime_dir}", "{resource}"]
                 """).strip()
                 + "\n",
                 tmpdir,
@@ -605,8 +613,8 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(cfg.launch.enabled_profiles, ("claude_sub1",))
         self.assertEqual(cfg.launch.default_profile, "claude_sub1")
         self.assertEqual(cfg.launch.profiles["claude_sub1"].agent, "claude")
-        self.assertEqual(cfg.launch.profiles["claude_sub1"].container_profile, "claude_sub1")
-        self.assertEqual(cfg.container_profiles["claude_sub1"].runtime_namespace, "per_user")
+        self.assertEqual(cfg.launch.profiles["claude_sub1"].runtime, "claude_sub1")
+        self.assertEqual(cfg.runtimes["claude_sub1"].resource_scope, "per_user")
 
     def test_load_config_rejects_tmux_unsafe_launch_profile_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -620,65 +628,73 @@ class UxonTests(unittest.TestCase):
                     tmpdir,
                 )
 
-    def test_load_config_rejects_tmux_unsafe_container_profile_id(self) -> None:
+    def test_load_config_rejects_tmux_unsafe_runtime_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg(
                     textwrap.dedent("""
-                        [container.profiles."bad-profile"]
-                        runtime_namespace = "global"
-                        name_template = "{project_slug}"
-                        exec_template = ["docker", "exec", "{name}"]
+                        [runtimes."bad-profile"]
+                        kind = "command"
+                        resource_scope = "global"
+                        resource_name_template = "{project_slug}"
+                        exec_prefix = ["docker", "exec", "{resource}"]
                     """).strip()
                     + "\n",
                     tmpdir,
                 )
 
-    def test_load_config_rejects_container_placeholder_not_allowed_in_name(self) -> None:
+    def test_load_config_rejects_runtime_placeholder_not_allowed_in_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit) as cm:
                 self._write_and_load_cfg(
                     textwrap.dedent("""
-                        [container.profiles.box]
-                        runtime_namespace = "global"
-                        name_template = "{name}"
-                        exec_template = ["docker", "exec", "{name}"]
+                        [runtimes.box]
+                        kind = "command"
+                        resource_scope = "global"
+                        resource_name_template = "{resource}"
+                        exec_prefix = ["docker", "exec", "{resource}"]
                     """).strip()
                     + "\n",
                     tmpdir,
                 )
         self.assertIn("unsupported placeholder", getattr(cm.exception, "uxon_msg", ""))
 
-    def test_load_config_rejects_non_string_container_profile_scalar(self) -> None:
+    def test_load_config_rejects_non_string_runtime_scalar(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit) as cm:
                 self._write_and_load_cfg(
                     textwrap.dedent("""
-                        [container.profiles.box]
-                        runtime_namespace = "global"
-                        name_template = 123
-                        exec_template = ["docker", "exec", "{name}"]
+                        [runtimes.box]
+                        kind = "command"
+                        resource_scope = "global"
+                        resource_name_template = 123
+                        exec_prefix = ["docker", "exec", "{resource}"]
                     """).strip()
                     + "\n",
                     tmpdir,
                 )
-        self.assertIn("name_template must be a string", getattr(cm.exception, "uxon_msg", ""))
+        self.assertIn(
+            "resource_name_template must be a string", getattr(cm.exception, "uxon_msg", "")
+        )
 
-    def test_load_config_rejects_stop_template_without_resolve_cmd(self) -> None:
+    def test_load_config_rejects_stop_command_without_identity_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit) as cm:
                 self._write_and_load_cfg(
                     textwrap.dedent("""
-                        [container.profiles.box]
-                        runtime_namespace = "global"
-                        name_template = "{project_slug}"
-                        exec_template = ["docker", "exec", "{name}"]
-                        stop_template = ["docker", "exec", "{name}", "kill", "$(cat {pidfile})"]
+                        [runtimes.box]
+                        kind = "command"
+                        resource_scope = "global"
+                        resource_name_template = "{project_slug}"
+                        exec_prefix = ["docker", "exec", "{resource}"]
+
+                        [runtimes.box.session]
+                        stop_command = ["docker", "exec", "{resource}", "kill", "$(cat {pidfile})"]
                     """).strip()
                     + "\n",
                     tmpdir,
                 )
-        self.assertIn("resolve_cmd", getattr(cm.exception, "uxon_msg", ""))
+        self.assertIn("identity.resolve_command", getattr(cm.exception, "uxon_msg", ""))
 
     def test_load_config_rejects_path_rule_git_default_after_intersection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -783,7 +799,7 @@ class UxonTests(unittest.TestCase):
             )
         self.assertEqual(cfg.launch.profiles["claude"].launch_user, "dana_agent")
 
-    def test_load_config_rejects_removed_global_container_key(self) -> None:
+    def test_load_config_rejects_removed_global_runtime_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg(
@@ -981,15 +997,24 @@ class UxonTests(unittest.TestCase):
 
         calls = []
 
-        def fake_create(profile_arg, repo_name, project_dir, **kwargs):
+        def fake_create(
+            cfg_arg,
+            profile_arg,
+            repo_name,
+            project_dir,
+            launch_user,
+            current_user,
+            **kwargs,
+        ):
+            self.assertIs(cfg_arg, cfg)
             calls.append(
                 {
                     "name": profile_arg.name,
                     "repo": repo_name,
                     "dir": project_dir,
                     "dry_run": kwargs.get("dry_run"),
-                    "launch_user": kwargs.get("launch_user"),
-                    "current_user": kwargs.get("current_user"),
+                    "launch_user": launch_user,
+                    "current_user": current_user,
                 }
             )
             from uxon.gitremote import create as uxon_git_create
@@ -1259,7 +1284,7 @@ class UxonTests(unittest.TestCase):
                 ),
             )
 
-            def fake_probe(_user, catalog):
+            def fake_probe(_cfg, _user, catalog):
                 return HostReport(
                     tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
                     agents={aid: BinaryStatus(aid, f"/usr/bin/{aid}", "") for aid in catalog},
@@ -1722,9 +1747,9 @@ class UxonTests(unittest.TestCase):
                 launch_profile="claude",
                 agent="claude",
                 launch_user="dana_agent",
-                container_profile="box",
-                container_profile_fingerprint="fp",
-                container="box-demo",
+                runtime="box",
+                runtime_fingerprint="fp",
+                runtime_resource="box-demo",
             )
             meta = launch_records.TmuxSessionMetadata(
                 session_id="$1",
@@ -1739,9 +1764,9 @@ class UxonTests(unittest.TestCase):
                 launch_records.finalize_pending_record(
                     pending,
                     meta,
-                    container_id="cid",
-                    container_cgroup="/x.slice",
-                    container_epoch="1000",
+                    runtime_id="cid",
+                    runtime_cgroup="/x.slice",
+                    runtime_epoch="1000",
                     override_dir=Path(tmp) / "records",
                 )
             record_path = launch_records.record_path(pending, override_dir=Path(tmp) / "records")
@@ -1757,12 +1782,12 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(payload["launch_profile"], "claude")
         self.assertEqual(payload["agent"], "claude")
         self.assertEqual(payload["launch_user"], "dana_agent")
-        self.assertEqual(payload["container_profile"], "box")
-        self.assertEqual(payload["container_profile_fingerprint"], "fp")
-        self.assertEqual(payload["container"], "box-demo")
-        self.assertEqual(payload["container_id"], "cid")
-        self.assertEqual(payload["container_cgroup"], "/x.slice")
-        self.assertEqual(payload["container_epoch"], "1000")
+        self.assertEqual(payload["runtime"], "box")
+        self.assertEqual(payload["runtime_fingerprint"], "fp")
+        self.assertEqual(payload["runtime_resource"], "box-demo")
+        self.assertEqual(payload["runtime_id"], "cid")
+        self.assertEqual(payload["runtime_cgroup"], "/x.slice")
+        self.assertEqual(payload["runtime_epoch"], "1000")
 
     def test_launch_record_lookup_does_not_trust_env_markers(self) -> None:
         from uxon.infra import launch_records
@@ -2512,13 +2537,15 @@ class NonintGitResolverTests(unittest.TestCase):
             mock.patch("uxon.infra.git.run_query", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
-            root = git.git_repo_root_nonint_as_user("/srv/work/myapp/sub", "dana_agent")
+            root = git.git_repo_root_nonint_as_user(
+                _make_config(), "/srv/work/myapp/sub", "dana_agent"
+            )
         self.assertEqual(root, domain_authz.canonical("/srv/work/myapp"))
         # The resolver uses the non-interactive (``sudo -n``) prefix — assert
         # it is the leading prefix of the issued argv. (cli.py composes the
         # non-interactive flags as ``-niu``, so the prefix is checked as a
         # whole rather than for a standalone ``-n`` token.)
-        prefix = identity.nonint_command_prefix_for_user("dana_agent")
+        prefix = identity.nonint_command_prefix_for_user(_make_config(), "dana_agent")
         self.assertEqual(seen["cmd"][: len(prefix)], prefix)
 
     def test_repo_root_nonint_none_on_failure(self) -> None:
@@ -2534,7 +2561,9 @@ class NonintGitResolverTests(unittest.TestCase):
             mock.patch("uxon.infra.git.run_query", fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
-            self.assertIsNone(git.git_repo_root_nonint_as_user("/tmp/x", "dana_agent"))
+            self.assertIsNone(
+                git.git_repo_root_nonint_as_user(_make_config(), "/tmp/x", "dana_agent")
+            )
 
     def test_common_dir_normalises_to_primary_root(self) -> None:
         # git rev-parse --git-common-dir on a linked worktree returns the
@@ -2552,7 +2581,7 @@ class NonintGitResolverTests(unittest.TestCase):
             mock.patch("uxon.infra.identity.process_user", return_value="caller"),
         ):
             root = git.git_common_dir_root_as_user(
-                "/srv/work/myapp/.uxon/worktrees/feat", "dana_agent"
+                _make_config(), "/srv/work/myapp/.uxon/worktrees/feat", "dana_agent"
             )
         self.assertEqual(root, domain_authz.canonical("/srv/work/myapp"))
 
@@ -2573,7 +2602,7 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
 
         agents = default_agent_catalog()
         defaults = dict(
-            runtime_user="",
+            default_launch_user="",
             default_launch_mode="caller",
             enable_all_users_list=False,
             launch_user_by_caller={},
@@ -2882,7 +2911,7 @@ class CliPreflightTests(unittest.TestCase):
             recorded.append((event, {"outcome": outcome, **fields}))
 
         cfg = Config(
-            runtime_user="",
+            default_launch_user="",
             default_launch_mode="caller",
             enable_all_users_list=False,
             launch_user_by_caller={},
@@ -3529,9 +3558,9 @@ class ExcludeWriterTests(unittest.TestCase):
             _init_repo(d)
             # Launch user == process user so the sudo prefix collapses —
             # the CI runner has no fixed username to hard-code.
-            with mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"):
-                git.write_uxon_exclude_entry(d, "dana_agent")
-                git.write_uxon_exclude_entry(d, "dana_agent")  # idempotent
+            with mock.patch("uxon.infra.execution.process_user", return_value="dana_agent"):
+                git.write_uxon_exclude_entry(_make_config(), d, "dana_agent")
+                git.write_uxon_exclude_entry(_make_config(), d, "dana_agent")  # idempotent
             with open(os.path.join(d, ".git", "info", "exclude")) as fh:
                 text = fh.read()
         self.assertEqual(text.count(".uxon/"), 1)
@@ -3561,8 +3590,8 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
             dest = os.path.join(d, ".uxon", "worktrees", "feat")
             os.makedirs(dest)
             # Same process_user collapse as ExcludeWriterTests above.
-            with mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"):
-                git.copy_worktreeinclude_matches(d, dest, "dana_agent")
+            with mock.patch("uxon.infra.execution.process_user", return_value="dana_agent"):
+                git.copy_worktreeinclude_matches(_make_config(), d, dest, "dana_agent")
             self.assertTrue(os.path.exists(os.path.join(dest, ".env")))
             self.assertFalse(os.path.exists(os.path.join(dest, "debug.log")))
             self.assertFalse(os.path.exists(os.path.join(dest, "tracked.txt")))
@@ -3572,7 +3601,7 @@ class WorktreeIncludeCopyTests(unittest.TestCase):
             _init_repo(d)
             dest = os.path.join(d, "dest")
             os.makedirs(dest)
-            git.copy_worktreeinclude_matches(d, dest, "dana_agent")  # no raise
+            git.copy_worktreeinclude_matches(_make_config(), d, dest, "dana_agent")  # no raise
             self.assertEqual(os.listdir(dest), [])
 
 
@@ -3721,7 +3750,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
         self.assertEqual(captured["user"], "profile_user")
         self.assertEqual(captured["profile"], "claude")
 
-    def test_container_gate_uses_resolved_launch_user(self) -> None:
+    def test_runtime_gate_uses_resolved_launch_user(self) -> None:
         cfg = config_loader.load_config("/tmp")
         resolved = _resolved_for_test(cfg, launch_user="profile_user")
 
@@ -3730,13 +3759,13 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
                 tui_bridge.launch_profile_app, "resolve_launch_profile", return_value=resolved
             ),
             mock.patch.object(
-                tui_bridge.launch_app, "decide_container_gate", return_value=None
+                tui_bridge.launch_app, "decide_runtime_gate", return_value=None
             ) as gate,
         ):
             ctx = context_builder.build_tui_context(
                 cfg, "caller", "startup_user", "/srv/work", skeleton=True
             )
-            self.assertIsNone(ctx.on_container_gate("/srv/work", "claude", "normal"))
+            self.assertIsNone(ctx.on_runtime_gate("/srv/work", "claude", "normal"))
 
         gate.assert_called_once_with(cfg, "/srv/work", resolved)
 

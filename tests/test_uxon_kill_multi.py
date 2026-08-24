@@ -118,7 +118,7 @@ class KillUserLocalTests(unittest.TestCase):
                 with redirect_stdout(buf):
                     rc = kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(rc, 0)
-        probe.assert_called_once_with(["alice"])
+        probe.assert_called_once_with(cfg, ["alice"])
         # The argv contains the non-interactive sudo prefix and kill-session.
         argv = run.call_args[0][0]
         # ``sudo -niu alice -- tmux ... kill-session -t uxon-demo@claude``

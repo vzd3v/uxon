@@ -24,12 +24,15 @@ class ManagedTmuxLaunch:
     launch_profile: str
     agent: str
     launch_user: str
-    container_profile: str = ""
-    container_profile_fingerprint: str = ""
-    container: str = ""
-    container_id: str = ""
-    container_cgroup: str = ""
-    container_epoch: str = ""
+    execution_backend: str = "local"
+    execution_fingerprint: str = ""
+    runtime: str = "direct"
+    runtime_kind: str = "direct"
+    runtime_fingerprint: str = ""
+    runtime_resource: str = ""
+    runtime_id: str = ""
+    runtime_cgroup: str = ""
+    runtime_epoch: str = ""
 
 
 @dataclass(frozen=True)

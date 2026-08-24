@@ -19,25 +19,25 @@ from pathlib import Path
 from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import canonical
 from uxon.domain.config import Config
-from uxon.domain.container import (
-    CONTAINER_CGROUP_ENV,
-    CONTAINER_EPOCH_ENV,
-    CONTAINER_ID_ENV,
-    CONTAINER_NAME_ENV,
-    container_pidfile,
-    render_profile_template,
-    wrap_agent_for_container,
-)
 from uxon.domain.launch_profiles import ResolvedLaunchProfile
 from uxon.domain.launch_request import LaunchRequest, ManagedTmuxLaunch
+from uxon.domain.runtime import (
+    RUNTIME_CGROUP_ENV,
+    RUNTIME_EPOCH_ENV,
+    RUNTIME_ID_ENV,
+    RUNTIME_RESOURCE_ENV,
+    render_profile_template,
+    runtime_pidfile,
+    wrap_agent_for_runtime,
+)
 from uxon.domain.session import SessionInfo, slugify
 from uxon.errors import fail
 from uxon.infra import launch_records, process
-from uxon.infra.identity import command_prefix_for_user, nonint_command_prefix_for_user
+from uxon.infra.execution import command_prefix, ensure_launch_compatible
 
 
 def tmux_base(
-    target_user: str, socket_path: str | None = None, *, nonint: bool = False
+    cfg: Config, target_user: str, socket_path: str | None = None, *, nonint: bool = False
 ) -> list[str]:
     """Build the tmux command base for ``target_user``.
 
@@ -50,11 +50,7 @@ def tmux_base(
     NOPASSWD grant returns a non-zero exit immediately rather than
     blocking on a hidden password prompt.
     """
-    prefix = (
-        nonint_command_prefix_for_user(target_user)
-        if nonint
-        else command_prefix_for_user(target_user)
-    )
+    prefix = command_prefix(cfg, target_user, interactive=not nonint)
     base = prefix + ["tmux"]
     if socket_path:
         base.extend(["-S", socket_path])
@@ -67,7 +63,12 @@ def tmux_socket_path(cfg: Config, target_user: str) -> str:
     except KeyError:
         fail(f"unknown launch user for tmux socket expansion: {target_user}", 1)
     try:
-        rendered = cfg.tmux_socket_template.format(user=target_user, uid=uid)
+        rendered = cfg.tmux_socket_template.format(
+            user=target_user,
+            uid=uid,
+            execution_backend=cfg.execution.backend_for_user(target_user).id,
+            execution_fingerprint=(cfg.execution.backend_for_user(target_user).fingerprint[:12]),
+        )
     except KeyError as exc:
         fail(f"tmux_socket_template uses unsupported placeholder: {exc.args[0]!r}")
     if not rendered.startswith("/"):
@@ -77,7 +78,7 @@ def tmux_socket_path(cfg: Config, target_user: str) -> str:
 
 
 def configured_tmux_base(cfg: Config, target_user: str, *, nonint: bool = False) -> list[str]:
-    return tmux_base(target_user, tmux_socket_path(cfg, target_user), nonint=nonint)
+    return tmux_base(cfg, target_user, tmux_socket_path(cfg, target_user), nonint=nonint)
 
 
 def tmux_host_socket() -> str | None:
@@ -177,13 +178,13 @@ def _tmux_set_chain(cfg: Config, *, server_running: bool = False) -> list[str]:
 def read_session_env(cfg: Config, user: str, session: str, var: str) -> str | None:
     """Read one session-environment variable from a live tmux ``session``.
 
-    Used by the kill path to recover the container name uxon stashed at
+    Used by the kill path to recover the workload resource uxon stashed at
     launch (``new-session -e``). Runs under the non-interactive sudo prefix
     (the kill path has no TTY). Returns the value, or None when the variable
     is unset, the session is gone, or tmux errors — every "can't read it"
     case degrades to "skip teardown", never an abort of the kill.
     """
-    base = tmux_base(user, tmux_socket_path(cfg, user), nonint=True)
+    base = tmux_base(cfg, user, tmux_socket_path(cfg, user), nonint=True)
     cp = process.run_cmd(base + ["show-environment", "-t", session, var], check=False)
     if cp.returncode != 0:
         return None
@@ -227,8 +228,9 @@ def _build_tmux_launch_request(
     *,
     resolved_profile: ResolvedLaunchProfile | None = None,
     server_running: bool = False,
-    include_container_identity: bool = True,
+    include_runtime_identity: bool = True,
     pending_record: launch_records.PendingLaunchRecord | None = None,
+    active_sessions: tuple[SessionInfo, ...] | list[SessionInfo] = (),
 ):
     """Assemble the agent + tmux argv plus the socket-parent mkdir.
 
@@ -268,6 +270,8 @@ def _build_tmux_launch_request(
     if resolved_profile is None:
         fail("internal: launch profile must be resolved before _build_tmux_launch_request")
     launch_user = resolved_profile.launch_user
+    if active_sessions:
+        ensure_launch_compatible(cfg, launch_user, active_sessions)
     spec = resolved_profile.agent
     mode_id = resolved_profile.mode_id
     # Open modes: an unset ``--mode`` resolves to the agent's first (default)
@@ -286,10 +290,9 @@ def _build_tmux_launch_request(
             resolved=resolved_profile,
         )
     record_dir = str(launch_records.state_dir())
-    # Container exec wrap (off by default): when enabled, the operator's
-    # opaque ``exec_template`` prefixes the agent command so it runs inside a
-    # container. Disabled → ``exec_prefix``/``session_env`` stay empty and
-    # ``final_cmd`` is byte-for-byte the pre-container argv (AC-B6). The
+    # Workload-runtime wrap (off by default): the operator's opaque
+    # ``exec_prefix`` enters the selected resource. Direct runtime keeps
+    # ``exec_prefix`` empty and preserves the host agent argv. The
     # not-ready probe/start/create policy is orchestrated separately (the
     # caller runs it off the loop before launch); this single exec-site only
     # composes the resolved prefix into ``final_cmd``.
@@ -304,27 +307,27 @@ def _build_tmux_launch_request(
         "-e",
         f"{launch_records.LAUNCH_RECORD_DIR_ENV}={record_dir}",
     ]
-    container_identity = None
-    if resolved_profile.container_context is not None:
-        from uxon.infra.container import resolve_container_identity_for_profile
+    runtime_identity = None
+    if resolved_profile.runtime_context is not None:
+        from uxon.infra.runtime import resolve_runtime_identity_for_profile
 
-        context = resolved_profile.container_context
-        container_profile = cfg.container_profiles[context.profile_id]
-        name = context.name
+        context = resolved_profile.runtime_context
+        runtime = cfg.runtimes[context.runtime_id]
+        name = context.resource
         session_env += [
             "-e",
-            f"{launch_records.CONTAINER_PROFILE_ENV}={context.profile_id}",
+            f"{launch_records.RUNTIME_ENV}={context.runtime_id}",
             "-e",
-            f"{launch_records.CONTAINER_PROFILE_FINGERPRINT_ENV}={context.profile_fingerprint}",
+            f"{launch_records.RUNTIME_FINGERPRINT_ENV}={context.fingerprint}",
             "-e",
-            f"{CONTAINER_NAME_ENV}={name}",
+            f"{RUNTIME_RESOURCE_ENV}={name}",
         ]
         exec_prefix = render_profile_template(
-            container_profile.exec_template,
-            profile=container_profile,
-            what="exec_template",
-            name=context.name,
-            dir_token=context.dir_token,
+            runtime.exec_prefix,
+            profile=runtime,
+            what="exec_prefix",
+            resource=context.resource,
+            runtime_dir=context.runtime_dir,
             user=launch_user,
             launch_profile=resolved_profile.profile.id,
             agent=resolved_profile.agent.id,
@@ -332,33 +335,32 @@ def _build_tmux_launch_request(
         )
         # Launch-time telemetry markers (hoisted to the ``enabled`` guard so
         # EVERY enabled session carries them, regardless of teardown opt-in).
-        # ``UXON_CONTAINER``'s value stays the BARE name — the kill path reads
-        # it verbatim and re-validates with ``is_valid_container_name``. The
-        # container identity (id / host-side cgroup path / start-epoch) rides
+        # ``UXON_RUNTIME_RESOURCE`` stays the bare resource — the kill path reads
+        # it verbatim and re-validates it. The workload identity and telemetry
         # SEPARATE vars, each appended only when resolution yields a non-empty
         # value (absent var = the documented degrade; AC-P1.3 / AC-P3.5).
-        if include_container_identity:
-            identity = resolve_container_identity_for_profile(cfg, target_dir, resolved_profile)
-            container_identity = identity
+        if include_runtime_identity:
+            identity = resolve_runtime_identity_for_profile(cfg, target_dir, resolved_profile)
+            runtime_identity = identity
             for var, value in (
-                (CONTAINER_ID_ENV, identity.id),
-                (CONTAINER_CGROUP_ENV, identity.cgroup),
-                (CONTAINER_EPOCH_ENV, identity.epoch),
+                (RUNTIME_ID_ENV, identity.id),
+                (RUNTIME_CGROUP_ENV, identity.cgroup),
+                (RUNTIME_EPOCH_ENV, identity.epoch),
             ):
                 if value:
                     session_env += ["-e", f"{var}={value}"]
         # Wrap the agent for every enabled session so it exports
-        # ``UXON_SESSION`` into its in-container environ (telemetry attribution).
-        # The pidfile write stays gated on ``stop_template`` (teardown opt-in):
+        # ``UXON_SESSION`` into its workload environ (telemetry attribution).
+        # The pidfile write stays gated on ``stop_command`` (teardown opt-in):
         # the kill path then terminates exactly this session's recorded
-        # in-container PID, leaving the shared container running.
-        pidfile = container_pidfile(session) if container_profile.stop_template else None
-        agent_argv = wrap_agent_for_container(agent_argv, session=session, pidfile=pidfile)
+        # workload PID, leaving the shared resource running.
+        pidfile = runtime_pidfile(session) if runtime.stop_command else None
+        agent_argv = wrap_agent_for_runtime(agent_argv, session=session, pidfile=pidfile)
     final_cmd = exec_prefix + agent_argv
     socket_path = tmux_socket_path(cfg, launch_user)
     socket_parent = str(Path(socket_path).parent)
     ensure_socket_parent = tuple(
-        command_prefix_for_user(launch_user) + ["mkdir", "-p", socket_parent]
+        command_prefix(cfg, launch_user, interactive=True) + ["mkdir", "-p", socket_parent]
     )
     base = configured_tmux_base(cfg, launch_user)
     # uxon-managed tmux options (3.5.0). The chain must ride the SAME
@@ -413,12 +415,15 @@ def _build_tmux_launch_request(
         launch_profile=pending_record.launch_profile,
         agent=pending_record.agent,
         launch_user=pending_record.launch_user,
-        container_profile=pending_record.container_profile,
-        container_profile_fingerprint=pending_record.container_profile_fingerprint,
-        container=pending_record.container,
-        container_id=getattr(container_identity, "id", ""),
-        container_cgroup=getattr(container_identity, "cgroup", ""),
-        container_epoch=getattr(container_identity, "epoch", ""),
+        execution_backend=pending_record.execution_backend,
+        execution_fingerprint=pending_record.execution_fingerprint,
+        runtime=pending_record.runtime,
+        runtime_kind=pending_record.runtime_kind,
+        runtime_fingerprint=pending_record.runtime_fingerprint,
+        runtime_resource=pending_record.runtime_resource,
+        runtime_id=getattr(runtime_identity, "id", ""),
+        runtime_cgroup=getattr(runtime_identity, "cgroup", ""),
+        runtime_epoch=getattr(runtime_identity, "epoch", ""),
     )
     if mode == "switch":
         switch = tuple(base + ["switch-client", "-t", session])
@@ -446,7 +451,8 @@ def build_managed_tmux_launch_request(
     *,
     resolved_profile: ResolvedLaunchProfile,
     server_running: bool = False,
-    include_container_identity: bool = True,
+    include_runtime_identity: bool = True,
+    active_sessions: tuple[SessionInfo, ...] | list[SessionInfo] = (),
 ) -> tuple[LaunchRequest, launch_records.PendingLaunchRecord]:
     socket_path = tmux_socket_path(cfg, resolved_profile.launch_user)
     pending = launch_records.pending_from_resolved(
@@ -462,8 +468,9 @@ def build_managed_tmux_launch_request(
         branch,
         resolved_profile=resolved_profile,
         server_running=server_running,
-        include_container_identity=include_container_identity,
+        include_runtime_identity=include_runtime_identity,
         pending_record=pending,
+        active_sessions=active_sessions,
     )
     return req, pending
 
@@ -479,9 +486,12 @@ def pending_record_from_request(req: LaunchRequest) -> launch_records.PendingLau
         launch_profile=managed.launch_profile,
         agent=managed.agent,
         launch_user=managed.launch_user,
-        container_profile=managed.container_profile,
-        container_profile_fingerprint=managed.container_profile_fingerprint,
-        container=managed.container,
+        execution_backend=managed.execution_backend,
+        execution_fingerprint=managed.execution_fingerprint,
+        runtime=managed.runtime,
+        runtime_kind=managed.runtime_kind,
+        runtime_fingerprint=managed.runtime_fingerprint,
+        runtime_resource=managed.runtime_resource,
     )
 
 
@@ -509,9 +519,9 @@ def prepare_managed_launch(
         launch_records.finalize_pending_record(
             pending,
             metadata,
-            container_id=managed.container_id,
-            container_cgroup=managed.container_cgroup,
-            container_epoch=managed.container_epoch,
+            runtime_id=managed.runtime_id,
+            runtime_cgroup=managed.runtime_cgroup,
+            runtime_epoch=managed.runtime_epoch,
             override_dir=record_dir,
         )
     except BaseException:
@@ -542,6 +552,7 @@ def launch_in_tmux(
     *,
     resolved_profile: ResolvedLaunchProfile | None = None,
     server_running: bool = False,
+    active_sessions: tuple[SessionInfo, ...] | list[SessionInfo] = (),
 ) -> int:
     import shlex
 
@@ -558,6 +569,7 @@ def launch_in_tmux(
             branch,
             resolved_profile=resolved_profile,
             server_running=server_running,
+            active_sessions=active_sessions,
         )
         pending = None
     else:
@@ -569,6 +581,7 @@ def launch_in_tmux(
             branch,
             resolved_profile=resolved_profile,
             server_running=server_running,
+            active_sessions=active_sessions,
         )
     if args.dry_run:
         print(f"launch_user={shlex.quote(launch_user)}")

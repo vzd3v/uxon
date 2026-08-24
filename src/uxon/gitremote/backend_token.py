@@ -20,13 +20,15 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from uxon.domain.config import Config
 from uxon.domain.git_profiles import GitRemoteProfile
-from uxon.gitremote.backend_gh import BackendError, default_run, sudo_prefix
+from uxon.gitremote.backend_gh import BackendError, default_run, execution_prefix
 
 # ── Token file I/O (under creds_user) ────────────────────────────────
 
 
 def read_token(
+    cfg: Config,
     token_file: str,
     effective_creds_user: str,
     current_user: str,
@@ -40,7 +42,7 @@ def read_token(
     Raises :class:`BackendError` if reading fails. The returned string is
     stripped of trailing whitespace.
     """
-    prefix = sudo_prefix(effective_creds_user, current_user)
+    prefix = execution_prefix(cfg, effective_creds_user)
     res = run(prefix + ["cat", "--", token_file])
     if res.returncode != 0:
         stderr = res.stderr.strip() or "unknown error"
@@ -124,6 +126,7 @@ def _api_error_message(resp: HttpResponse, fallback: str) -> str:
 
 
 def preflight(
+    cfg: Config,
     profile: GitRemoteProfile,
     repo_name: str,
     effective_creds_user: str,
@@ -135,7 +138,7 @@ def preflight(
     """Verify: token readable; token valid; owner is either the token
     owner or an org visible to it; target repo doesn't exist yet.
     """
-    token = read_token(profile.token_file, effective_creds_user, current_user, run=run)
+    token = read_token(cfg, profile.token_file, effective_creds_user, current_user, run=run)
     try:
         _preflight_with_token(profile, repo_name, token, http=http)
     finally:
@@ -198,6 +201,7 @@ def _preflight_with_token(
 
 
 def create_remote(
+    cfg: Config,
     profile: GitRemoteProfile,
     repo_name: str,
     project_dir: str,  # noqa: ARG001 — unused here; kept for interface symmetry with gh
@@ -214,7 +218,7 @@ def create_remote(
     if dry_run:
         return profile.ssh_remote_url(repo_name)
 
-    token = read_token(profile.token_file, effective_creds_user, current_user, run=run)
+    token = read_token(cfg, profile.token_file, effective_creds_user, current_user, run=run)
     try:
         return _create_with_token(profile, repo_name, token, http=http)
     finally:

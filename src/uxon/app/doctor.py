@@ -22,12 +22,13 @@ import uxon.app.repeat as repeat_app
 from uxon.domain.config import Config
 from uxon.domain.session import SessionInfo
 from uxon.infra import config_loader, identity, sessions_probe, tmux, version_probe
+from uxon.infra import execution as execution_infra
 from uxon.infra.run import run_query
 
 
-def user_can_write_dir(path: str, target_user: str) -> bool:
+def user_can_write_dir(cfg: Config, path: str, target_user: str) -> bool:
     cp = run_query(
-        identity.command_prefix_for_user(target_user)
+        identity.command_prefix_for_user(cfg, target_user)
         + [
             "python3",
             "-c",
@@ -51,14 +52,14 @@ def doctor_issues(
     from uxon.domain.authz import is_under_allowed_roots
 
     issues: list[str] = []
-    if cfg.default_launch_mode == "fixed" and not cfg.runtime_user:
-        issues.append("default_launch_mode is 'fixed' but runtime_user is empty")
+    if cfg.default_launch_mode == "fixed" and not cfg.default_launch_user:
+        issues.append("default_launch_mode is 'fixed' but default_launch_user is empty")
     if not is_under_allowed_roots(cfg, cfg.new_project_root):
         issues.append(f"new_project_root {cfg.new_project_root} is outside allowed_roots")
     socket_parent = str(Path(socket_path).parent)
     if not os.path.isdir(socket_parent):
         issues.append(f"tmux socket parent does not exist yet: {socket_parent}")
-    elif not user_can_write_dir(socket_parent, launch_user):
+    elif not user_can_write_dir(cfg, socket_parent, launch_user):
         issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
     if tmux_path is None:
         issues.append(f"'tmux' is not resolvable for {launch_user}")
@@ -67,7 +68,7 @@ def doctor_issues(
             cfg.launch.profiles[pid].agent
             for pid in cfg.launch.effective_enabled_profiles
             if pid in cfg.launch.profiles
-            and not cfg.launch.profiles[pid].container_profile
+            and cfg.launch.profiles[pid].runtime == "direct"
             and (cfg.launch.profiles[pid].launch_user or launch_user) == launch_user
         )
     )
@@ -84,6 +85,11 @@ def doctor_issues(
         issues.append(
             "legacy default-socket uxon sessions exist while the dedicated uxon socket has none"
         )
+    from uxon.infra.execution import launch_compatibility_error
+
+    execution_error = launch_compatibility_error(cfg, launch_user, current_sessions)
+    if execution_error:
+        issues.append(execution_error)
     if (
         caller_user != launch_user
         and launch_user not in cfg.session_users
@@ -111,7 +117,7 @@ def do_doctor(
     _, config_sources = config_loader.resolve_config_layers(cwd)
     socket_path = tmux.tmux_socket_path(cfg, launch_user)
     # Single-round-trip probe for tmux + every catalogued agent.
-    report = uxon_probes.probe_host(launch_user, cfg.agents)
+    report = uxon_probes.probe_host(cfg, launch_user, cfg.agents)
     tmux_path = report.tmux.path
     # Doctor shows every catalogued agent regardless of strict/auto mode —
     # the operator wants to see the full landscape ("is X installed?")
@@ -135,6 +141,7 @@ def do_doctor(
             # ``version_args = []`` → operator opted out of the version line.
             return aid, uxon_agents.AgentAvailability(status="ok", path=agent_paths.get(aid))
         return aid, uxon_agents._probe_one(
+            cfg,
             spec.binary,
             launch_user,
             version_args=spec.version_args,
@@ -147,6 +154,7 @@ def do_doctor(
             availability[aid] = result
     current_sessions = sessions_probe.collect_sessions([launch_user], cfg)
     legacy_sessions = sessions_probe.collect_sessions_for_user(
+        cfg,
         launch_user,
         cfg.session_prefix,
         socket_path=None,
@@ -165,7 +173,8 @@ def do_doctor(
         legacy_sessions,
     )
     launch_profile_rows = _doctor_launch_profile_rows(cfg, caller_user, launch_user, agent_paths)
-    container_profile_rows = _doctor_container_profile_rows(cfg, cwd, caller_user)
+    runtime_rows = _doctor_runtime_rows(cfg, cwd, caller_user)
+    execution_rows = _doctor_execution_rows(cfg, caller_user)
 
     if json_output:
         agents_block: dict[str, dict[str, Any]] = {}
@@ -192,10 +201,11 @@ def do_doctor(
                 "socket": socket_path,
                 "socket_parent": socket_parent,
                 "socket_parent_exists": Path(socket_parent).is_dir(),
-                "socket_parent_writable": user_can_write_dir(socket_parent, launch_user),
+                "socket_parent_writable": user_can_write_dir(cfg, socket_parent, launch_user),
             },
             "agents": agents_block,
             "launch_profiles": launch_profile_rows,
+            "execution_backends": execution_rows,
             "current_socket_sessions": build_session_records(
                 current_sessions, session_prefix=cfg.session_prefix
             ),
@@ -206,7 +216,7 @@ def do_doctor(
             "git_remote_profiles": _doctor_git_profile_rows(cfg, launch_user)
             if cfg.git_remote_profiles
             else [],
-            "container_profiles": container_profile_rows,
+            "runtimes": runtime_rows,
             "issues": list(issues),
         }
         if probe_remote:
@@ -244,7 +254,8 @@ def do_doctor(
     print(f"tmux_socket_parent={Path(socket_path).parent}")
     print(f"tmux_socket_parent_exists={'yes' if Path(socket_path).parent.is_dir() else 'no'}")
     print(
-        f"tmux_socket_parent_writable={'yes' if user_can_write_dir(str(Path(socket_path).parent), launch_user) else 'no'}"
+        "tmux_socket_parent_writable="
+        f"{'yes' if user_can_write_dir(cfg, str(Path(socket_path).parent), launch_user) else 'no'}"
     )
     # Per-agent status block.
     for aid in doctor_agent_ids:
@@ -261,8 +272,15 @@ def do_doctor(
     for row in launch_profile_rows:
         print(
             f"- {row['id']}  agent={row['agent']}  launch_user={row['launch_user']}  "
-            f"container_profile={row['container_profile'] or '-'}  "
-            f"host_agent={'not-required' if row['containerized'] else row['host_agent_path'] or 'missing'}"
+            f"runtime={row['runtime'] or '-'}  "
+            f"host_agent={'not-required' if row['uses_runtime'] else row['host_agent_path'] or 'missing'}"
+        )
+    print(f"execution_backends={len(execution_rows)}:")
+    for row in execution_rows:
+        print(
+            f"- launch_user={row['launch_user']}  backend={row['backend']}  "
+            f"kind={row['kind']}  status={row['status']}  "
+            f"fingerprint={row['fingerprint'][:12]}  changes={row['change_policy']}"
         )
     print(f"current_socket_sessions={len(current_sessions)}")
     if current_sessions:
@@ -283,18 +301,16 @@ def do_doctor(
             print(f"- {row}")
     else:
         print("git_remote_profiles=0")
-    if container_profile_rows:
-        print(f"container_profiles={len(container_profile_rows)}:")
-        for row in container_profile_rows:
+    if runtime_rows:
+        print(f"runtimes={len(runtime_rows)}:")
+        for row in runtime_rows:
             print(
                 f"- launch_profile={row['launch_profile']}  "
-                f"container_profile={row['container_profile']}  "
-                f"resolved_name={row['resolved_name'] or '-'}  "
-                f"is_running={row['is_running']}  exists={row['exists']}"
+                f"runtime={row['runtime']}  "
+                f"resource={row['runtime_resource'] or '-'}  "
+                f"ready={row['ready']}  exists={row['exists']}"
             )
-            print(
-                "- host agent binaries absent from PATH are EXPECTED (provisioned in the container)"
-            )
+            print("- host agent binaries absent from PATH may be expected for this runtime")
             for warning in row["warnings"]:
                 print(f"- warn: {warning}")
     # Audit-channel report (Bug 2) — operator-visible verification of
@@ -348,14 +364,16 @@ def _doctor_launch_profile_rows(
         if profile is None:
             continue
         selected_user = profile.launch_user or identity.resolve_launch_user(cfg, caller_user)
-        container_profile = profile.container_profile
+        runtime = profile.runtime
+        runtime_kind = cfg.runtimes[runtime].kind
         rows.append(
             {
                 "id": pid,
                 "agent": profile.agent,
                 "launch_user": selected_user,
-                "container_profile": container_profile or None,
-                "containerized": bool(container_profile),
+                "runtime": runtime or None,
+                "runtime_kind": runtime_kind,
+                "uses_runtime": runtime_kind != "direct",
                 "host_agent_path": (
                     agent_paths.get(profile.agent) if selected_user == default_launch_user else None
                 ),
@@ -364,43 +382,41 @@ def _doctor_launch_profile_rows(
     return rows
 
 
-def _doctor_container_profile_rows(
+def _doctor_runtime_rows(
     cfg: Config,
     cwd: str,
     caller_user: str,
 ) -> list[dict[str, Any]]:
-    """Build non-raising diagnostics for enabled containerized launch profiles."""
+    """Build non-raising diagnostics for enabled command-runtime profiles."""
 
-    from uxon.domain.container import (
+    from uxon.domain.runtime import (
         apply_path_map,
         path_map_under_prefix,
-        resolve_profile_container_name,
+        resolve_runtime_resource_name,
     )
     from uxon.domain.session import slugify
-    from uxon.infra import container as container_infra
+    from uxon.infra import runtime as runtime_infra
 
     rows: list[dict[str, Any]] = []
     project_slug = slugify(Path(cwd).name)
     for launch_profile_id in cfg.launch.effective_enabled_profiles:
         launch_profile = cfg.launch.profiles.get(launch_profile_id)
-        if launch_profile is None or not launch_profile.container_profile:
+        if launch_profile is None or launch_profile.runtime == "direct":
             continue
-        profile = cfg.container_profiles.get(launch_profile.container_profile)
+        profile = cfg.runtimes.get(launch_profile.runtime)
         launch_user = launch_profile.launch_user or identity.resolve_launch_user(cfg, caller_user)
         warnings: list[str] = []
         name = ""
         name_error = ""
         is_running, exists = ("?", "?")
         if profile is None:
-            warnings.append(
-                f"container profile {launch_profile.container_profile!r} is not configured"
-            )
+            warnings.append(f"runtime {launch_profile.runtime!r} is not configured")
         else:
             try:
                 # Validate the mapped cwd: a non-absolute or ``..`` result
                 # raises SystemExit (caught below → name_error).
                 apply_path_map(cwd, profile.path_map)
-                name = resolve_profile_container_name(
+                name = resolve_runtime_resource_name(
                     profile,
                     user=launch_user,
                     launch_profile=launch_profile.id,
@@ -410,7 +426,8 @@ def _doctor_container_profile_rows(
             except SystemExit as exc:
                 name_error = str(getattr(exc, "uxon_msg", exc))
             if name:
-                is_running, exists = container_infra.probe_container_state_for_profile(
+                is_running, exists = runtime_infra.probe_runtime_state_for_profile(
+                    cfg,
                     profile,
                     name,
                     launch_user,
@@ -418,19 +435,19 @@ def _doctor_container_profile_rows(
                     agent=launch_profile.agent,
                     project_slug=project_slug,
                 )
-            if not profile.stop_template:
+            if not profile.stop_command:
                 warnings.append(
-                    "stop_template is unset: the in-container agent is not reaped on kill "
-                    "(it orphans); set stop_template on the container profile"
+                    "stop_command is unset: the workload agent is not reaped on kill "
+                    "(it orphans); set stop_command on the workload runtime"
                 )
             if profile.path_map and not path_map_under_prefix(cwd, profile.path_map):
                 warnings.append(
                     f"path_map is set but the current directory {cwd} is under none of its "
-                    "host prefixes — launches from here may hit an unmapped path inside the container"
+                    "host prefixes — launches may hit an unmapped path inside the runtime"
                 )
             definition_under_mount = ""
             if profile.path_map:
-                for token in profile.create_template:
+                for token in profile.create_command:
                     candidate = (
                         token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
                     )
@@ -441,22 +458,47 @@ def _doctor_container_profile_rows(
                         break
             if definition_under_mount:
                 warnings.append(
-                    f"create_template references {definition_under_mount}, which is under a "
+                    f"create_command references {definition_under_mount}, which is under a "
                     "path_map host prefix (inside the agent-writable bind mount). Move the "
-                    "container definition to an operator-owned path outside the mount"
+                    "runtime definition to an operator-owned path outside the mount"
                 )
         rows.append(
             {
                 "launch_profile": launch_profile_id,
                 "agent": launch_profile.agent,
                 "launch_user": launch_user,
-                "container_profile": launch_profile.container_profile,
-                "resolved_name": name,
-                "name_error": name_error or None,
-                "is_running": is_running,
+                "runtime": launch_profile.runtime,
+                "runtime_resource": name,
+                "resource_error": name_error or None,
+                "ready": is_running,
                 "exists": exists,
                 "host_agent_absence_expected": True,
                 "warnings": warnings,
+            }
+        )
+    return rows
+
+
+def _doctor_execution_rows(cfg: Config, caller_user: str) -> list[dict[str, Any]]:
+    """Probe each effective launch user's configured execution backend once."""
+    users = {
+        profile.launch_user or identity.resolve_launch_user(cfg, caller_user)
+        for profile_id in cfg.launch.effective_enabled_profiles
+        if (profile := cfg.launch.profiles.get(profile_id)) is not None
+    }
+    rows: list[dict[str, Any]] = []
+    for user in sorted(users):
+        result = execution_infra.probe(cfg, user)
+        backend = cfg.execution.backend_for_user(user)
+        rows.append(
+            {
+                "launch_user": user,
+                "backend": backend.id,
+                "kind": backend.kind,
+                "fingerprint": backend.fingerprint,
+                "status": "ok" if result.ok else "error",
+                "error": result.error,
+                "change_policy": "drain-with-old-config",
             }
         )
     return rows
@@ -511,7 +553,7 @@ def _doctor_git_profile_rows(cfg: Config, launch_user: str) -> list[str]:
     current_user = identity.process_user()
     for p in cfg.git_remote_profiles:
         creds_user = p.creds_user or launch_user
-        status = _probe_git_profile(p, creds_user, current_user)
+        status = _probe_git_profile(cfg, p, creds_user, current_user)
         token_bit = f" token_file={p.token_file}" if p.auth == "token" else ""
         rows.append(
             f"{p.name}  host={p.host}  owner={p.owner}  auth={p.auth}  "
@@ -520,19 +562,16 @@ def _doctor_git_profile_rows(cfg: Config, launch_user: str) -> list[str]:
     return rows
 
 
-def _probe_git_profile(profile, creds_user: str, current_user: str) -> str:
+def _probe_git_profile(cfg: Config, profile, creds_user: str, current_user: str) -> str:
     """Non-destructive probe for ``uxon doctor``. Doesn't touch GitHub."""
     # sudo reachability under creds_user
     if creds_user and creds_user != current_user:
-        probe = run_query(
-            ["sudo", "-n", "-u", creds_user, "--", "true"],
-            timeout=0.5,
-        )
-        if probe.returncode != 0:
-            return f"warn:passwordless sudo to {creds_user} unavailable"
+        probe = execution_infra.probe(cfg, creds_user)
+        if not probe.ok:
+            return f"warn:execution backend {probe.backend} cannot reach {creds_user}"
 
     prefix = (
-        ["sudo", "-n", "-u", creds_user, "--"] if creds_user and creds_user != current_user else []
+        execution_infra.command_prefix(cfg, creds_user, interactive=False) if creds_user else []
     )
     if profile.auth == "gh":
         which = run_query(

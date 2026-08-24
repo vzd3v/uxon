@@ -11,11 +11,11 @@ lives in ``uxon.infra.probes`` since 0.5.x).
 
 from __future__ import annotations
 
-import os
-import pwd
 import subprocess
 from dataclasses import dataclass
 
+from uxon.domain.config import Config
+from uxon.infra.execution import command_prefix
 from uxon.infra.run import run_query
 
 # ── Availability probe ───────────────────────────────────────────────
@@ -34,11 +34,8 @@ PROBE_TIMEOUT_SEC = (
 )
 
 
-def _current_user() -> str:
-    return pwd.getpwuid(os.getuid()).pw_name
-
-
 def _probe_one(
+    cfg: Config,
     binary: str,
     launch_user: str | None,
     *,
@@ -64,7 +61,7 @@ def _probe_one(
     """
     timeout = PROBE_TIMEOUT_SEC if timeout_override is None else timeout_override
     ver = list(version_args)
-    if launch_user and launch_user != _current_user():
+    if launch_user:
         # Match the login-env semantics that ``command_prefix_for_user``
         # in ``uxon.cli`` uses for the actual launch (``sudo -iu``). The
         # ``-i`` loads the target user's login shell so ``PATH`` picks
@@ -73,7 +70,7 @@ def _probe_one(
         # Without ``-i``, sudo's ``secure_path`` hides them and the
         # probe reports "missing" for agents that the launch can
         # actually run.
-        cmd = ["sudo", "-niu", launch_user, "--", binary, *ver]
+        cmd = command_prefix(cfg, launch_user, interactive=False) + [binary, *ver]
     else:
         cmd = [binary, *ver]
     try:

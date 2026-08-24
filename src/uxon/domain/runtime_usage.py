@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: MIT
-"""Pure host-side container-telemetry resolvers (no I/O).
+"""Pure host-side workload-telemetry resolvers (no I/O).
 
-Phase-2 observability attributes an in-container agent's CPU/RAM back to its
-tmux session. The mechanism (locked by
-``docs/decisions/2026-06-15-container-identity-resolution.md``):
+Observability attributes a workload agent's CPU/RAM back to its tmux session:
 
-1. Each enabled session carries the host-side cgroup path of its container in
-   the ``UXON_CONTAINER_CGROUP`` session-env marker (stashed at launch).
-2. ``/sys/fs/cgroup/<cgroup-path>/cgroup.procs`` lists **all** in-container
+1. Each command-runtime session carries its host-side cgroup path in
+   the ``UXON_RUNTIME_CGROUP`` session-env marker (stashed at launch).
+2. ``/sys/fs/cgroup/<cgroup-path>/cgroup.procs`` lists all workload
    host PIDs (pid1 plus children / ``--init``-reparented descendants).
-3. For ≥2 sessions sharing one container, ``/proc/<hostpid>/environ`` carries
+3. For ≥2 sessions sharing one resource, ``/proc/<hostpid>/environ`` carries
    the per-session ``UXON_SESSION`` marker that splits the shared PID set.
 
 This module holds the **pure** logic only — the parsers and the grouping /
@@ -22,10 +20,10 @@ subprocess per the layering rule.
 
 from __future__ import annotations
 
-# Agent-process environment marker (also defined in :mod:`uxon.domain.container`
+# Agent-process environment marker (also defined in :mod:`uxon.domain.runtime`
 # as ``SESSION_ENV``; re-stated here as the parse key so this pure module needs
 # no cross-import). Host-side telemetry reads it from ``/proc/<pid>/environ`` to
-# attribute each in-container host PID to its tmux session.
+# attribute each workload host PID to its tmux session.
 _SESSION_ENV_KEY = "UXON_SESSION"
 
 
@@ -60,7 +58,7 @@ def parse_environ_session(environ_blob: str) -> str:
 
     ``/proc/<pid>/environ`` is NUL-separated ``KEY=value`` entries. Returns
     the session name, or ``""`` when the marker is absent (a non-uxon process
-    sharing the container, or one launched before the marker existed). Never
+    sharing the workload, or one launched before the marker existed). Never
     raises.
     """
     for entry in environ_blob.split("\0"):
@@ -105,7 +103,7 @@ def sum_usage_for_pids(
     snapshot) contributes nothing. Negative values are clamped to zero,
     mirroring the OS-level pane-walk path. Returns ``(rss_kib, cpu_pct)``.
 
-    ``cgroup.procs`` already lists the full in-container process set including
+    ``cgroup.procs`` already lists the full workload process set including
     ``--init``-reparented descendants, so no child-walk is needed here — the
     cgroup is the authoritative membership boundary.
     """
@@ -125,9 +123,9 @@ def group_pids_by_session(
     cgroup_pids: list[int],
     pid_to_session: dict[int, str],
 ) -> dict[str, list[int]]:
-    """Split a container's host PIDs into per-session sets (AC-P1.6).
+    """Split a workload resource's host PIDs into per-session sets (AC-P1.6).
 
-    ``cgroup_pids`` is the container's full host-PID set (from
+    ``cgroup_pids`` is the resource's full host-PID set (from
     ``cgroup.procs``); ``pid_to_session`` maps each readable PID to its
     ``UXON_SESSION`` marker (from ``/proc/<pid>/environ``). Returns
     ``{session: [pids]}`` for every non-empty marker seen, so each session's
@@ -136,7 +134,7 @@ def group_pids_by_session(
 
     A PID with no marker (empty value, or absent from ``pid_to_session``
     because its ``environ`` was unreadable) is dropped: it belongs to no known
-    session. The per-container degrade (every sharing session shows the shared
+    session. The per-resource degrade (every sharing session shows the shared
     total) is the caller's fallback when the marker read fails wholesale — it
     is *not* expressed here, where a clean per-session split is the goal.
     """
@@ -154,10 +152,10 @@ def per_session_usage(
     pid_to_session: dict[int, str],
     proc_rows: dict[int, tuple[int, int, float]],
 ) -> dict[str, tuple[int, float]]:
-    """Per-session ``(rss_kib, cpu_pct)`` for one container's PID set.
+    """Per-session ``(rss_kib, cpu_pct)`` for one resource's PID set.
 
     Composes :func:`group_pids_by_session` + :func:`sum_usage_for_pids`. The
-    pure core of the ≥2-sessions-per-container split: each session keyed by its
+    pure core of the ≥2-sessions-per-resource split: each session keyed by its
     ``UXON_SESSION`` marker gets the sum over only its own PIDs.
     """
     groups = group_pids_by_session(cgroup_pids, pid_to_session)

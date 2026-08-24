@@ -22,6 +22,7 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass, field
 
+from uxon.domain.config import Config
 from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.gitremote.backend_gh import BackendError, RunResult, default_run
 from uxon.gitremote.backend_gh import create_remote as gh_create_remote
@@ -30,6 +31,7 @@ from uxon.gitremote.backend_gh import preflight as gh_preflight
 from uxon.gitremote.backend_token import create_remote as token_create_remote
 from uxon.gitremote.backend_token import describe_command as token_describe
 from uxon.gitremote.backend_token import preflight as token_preflight
+from uxon.infra.execution import command_prefix
 
 STAGES = ("preflight", "local_init", "remote_create", "remote_config", "push")
 
@@ -57,17 +59,17 @@ class CreationResult:
 # ── Local git ops (under launch_user) ────────────────────────────────
 
 
-def _launch_prefix(launch_user: str, current_user: str) -> list[str]:
+def _launch_prefix(cfg: Config, launch_user: str) -> list[str]:
     """Shell prefix for running ``git`` as launch_user. We use ``sudo
     -iu`` here (not ``-n -u``) to match the rest of uxon's launch flow.
     """
-    if not launch_user or launch_user == current_user:
+    if not launch_user:
         return []
-    return ["sudo", "-iu", launch_user, "--"]
+    return command_prefix(cfg, launch_user, interactive=True)
 
 
-def _git_cmd(launch_user: str, current_user: str, project_dir: str, *args: str) -> list[str]:
-    return _launch_prefix(launch_user, current_user) + [
+def _git_cmd(cfg: Config, launch_user: str, project_dir: str, *args: str) -> list[str]:
+    return _launch_prefix(cfg, launch_user) + [
         "git",
         "-C",
         project_dir,
@@ -76,13 +78,14 @@ def _git_cmd(launch_user: str, current_user: str, project_dir: str, *args: str) 
 
 
 def _has_git_dir(
+    cfg: Config,
     project_dir: str,
     launch_user: str,
     current_user: str,
     *,
     run=default_run,
 ) -> bool:
-    res = run(_launch_prefix(launch_user, current_user) + ["test", "-d", f"{project_dir}/.git"])
+    res = run(_launch_prefix(cfg, launch_user) + ["test", "-d", f"{project_dir}/.git"])
     return res.returncode == 0
 
 
@@ -98,6 +101,7 @@ def _run_or_raise(cmd: list[str], stage: str, *, run=default_run, timeout: int =
 
 
 def _local_init(
+    cfg: Config,
     project_dir: str,
     launch_user: str,
     current_user: str,
@@ -108,10 +112,10 @@ def _local_init(
     commands executed (for --dry-run reporting).
     """
     commands = [
-        _git_cmd(launch_user, current_user, project_dir, "init", "-b", "main"),
+        _git_cmd(cfg, launch_user, project_dir, "init", "-b", "main"),
         _git_cmd(
+            cfg,
             launch_user,
-            current_user,
             project_dir,
             "commit",
             "--allow-empty",
@@ -125,6 +129,7 @@ def _local_init(
 
 
 def _wire_remote_and_push(
+    cfg: Config,
     project_dir: str,
     launch_user: str,
     current_user: str,
@@ -136,11 +141,9 @@ def _wire_remote_and_push(
     both under launch_user. Raises :class:`CreationError` with a
     distinct stage for each step so operators see which one failed.
     """
-    remote_add = _git_cmd(
-        launch_user, current_user, project_dir, "remote", "add", "origin", ssh_url
-    )
+    remote_add = _git_cmd(cfg, launch_user, project_dir, "remote", "add", "origin", ssh_url)
     _run_or_raise(remote_add, "remote_config", run=run)
-    push = _git_cmd(launch_user, current_user, project_dir, "push", "-u", "origin", "main")
+    push = _git_cmd(cfg, launch_user, project_dir, "push", "-u", "origin", "main")
     _run_or_raise(push, "push", run=run)
     return [shlex.join(remote_add), shlex.join(push)]
 
@@ -156,6 +159,7 @@ def resolve_creds_user(profile: GitRemoteProfile, launch_user: str) -> str:
 
 
 def create_project_remote(
+    cfg: Config,
     profile: GitRemoteProfile,
     repo_name: str,
     project_dir: str,
@@ -177,7 +181,7 @@ def create_project_remote(
     effective_creds_user = resolve_creds_user(profile, launch_user)
     commands_trace: list[str] = []
 
-    if _has_git_dir(project_dir, launch_user, current_user, run=run):
+    if _has_git_dir(cfg, project_dir, launch_user, current_user, run=run):
         raise CreationError(
             f"{project_dir}/.git already exists; refusing to re-initialize",
             stage="local_init",
@@ -186,7 +190,7 @@ def create_project_remote(
     # 1. Preflight (backend-specific)
     try:
         if profile.auth == "gh":
-            gh_preflight(profile, repo_name, effective_creds_user, current_user, run=run)
+            gh_preflight(cfg, profile, repo_name, effective_creds_user, current_user, run=run)
         elif profile.auth == "token":
             if http is None:
                 from uxon.gitremote.backend_token import default_http as _default_http
@@ -195,6 +199,7 @@ def create_project_remote(
             else:
                 http_impl = http
             token_preflight(
+                cfg,
                 profile,
                 repo_name,
                 effective_creds_user,
@@ -210,11 +215,11 @@ def create_project_remote(
     if dry_run:
         # Report what we *would* do.
         trace = [
-            shlex.join(_git_cmd(launch_user, current_user, project_dir, "init", "-b", "main")),
+            shlex.join(_git_cmd(cfg, launch_user, project_dir, "init", "-b", "main")),
             shlex.join(
                 _git_cmd(
+                    cfg,
                     launch_user,
-                    current_user,
                     project_dir,
                     "commit",
                     "--allow-empty",
@@ -226,7 +231,9 @@ def create_project_remote(
         if profile.auth == "gh":
             trace.append(
                 shlex.join(
-                    gh_describe(profile, repo_name, project_dir, effective_creds_user, current_user)
+                    gh_describe(
+                        cfg, profile, repo_name, project_dir, effective_creds_user, current_user
+                    )
                 )
             )
         else:
@@ -234,8 +241,8 @@ def create_project_remote(
         trace.append(
             shlex.join(
                 _git_cmd(
+                    cfg,
                     launch_user,
-                    current_user,
                     project_dir,
                     "remote",
                     "add",
@@ -247,8 +254,8 @@ def create_project_remote(
         trace.append(
             shlex.join(
                 _git_cmd(
+                    cfg,
                     launch_user,
-                    current_user,
                     project_dir,
                     "push",
                     "-u",
@@ -265,7 +272,7 @@ def create_project_remote(
 
     # 2. Local init
     try:
-        commands_trace.extend(_local_init(project_dir, launch_user, current_user, run=run))
+        commands_trace.extend(_local_init(cfg, project_dir, launch_user, current_user, run=run))
     except CreationError:
         raise
     except Exception as exc:  # pragma: no cover — very defensive
@@ -276,6 +283,7 @@ def create_project_remote(
     try:
         if profile.auth == "gh":
             ssh_url = gh_create_remote(
+                cfg,
                 profile,
                 repo_name,
                 project_dir,
@@ -288,6 +296,7 @@ def create_project_remote(
 
             http_impl = http or _default_http
             ssh_url = token_create_remote(
+                cfg,
                 profile,
                 repo_name,
                 project_dir,
@@ -301,7 +310,7 @@ def create_project_remote(
 
     # 4. Wire remote URL and push (always under launch_user).
     commands_trace.extend(
-        _wire_remote_and_push(project_dir, launch_user, current_user, ssh_url, run=run)
+        _wire_remote_and_push(cfg, project_dir, launch_user, current_user, ssh_url, run=run)
     )
 
     return CreationResult(profile_name=profile.name, ssh_url=ssh_url, commands=commands_trace)

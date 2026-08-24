@@ -68,59 +68,45 @@ def normalize_repeat_mode(value: Any) -> str:
     return mode
 
 
-def normalize_agent_args(value: Any) -> list[str]:
-    """Accept a list of strings (agent default_args); ignore missing keys."""
-    if value is None:
-        return []
-    return normalize_string_list(value)
+def toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return toml_bool(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        return toml_string(value)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return "[" + ", ".join(toml_string(item) for item in value) + "]"
+    raise ValueError(f"unsupported TOML value: {value!r}")
 
 
-VALID_AGENT_IDS = ("claude", "codex", "cursor")
-
-# [container] argv-list keys (rendered as TOML arrays) and the scalar keys.
-CONTAINER_ARGV_KEYS = (
-    "exec_template",
-    "is_running_cmd",
-    "exists_cmd",
-    "start_template",
-    "create_template",
-)
-
-
-def render_container(container: Any, lines: list[str]) -> None:
-    """Append a ``[container]`` block to ``lines`` when present.
-
-    Argv-list keys render as TOML string arrays (the security invariant —
-    a command is a list of tokens, never a shell string); scalars render
-    inline. ``path_map`` becomes a ``[container.path_map]`` table. Absent
-    keys are simply omitted (the loader supplies the disabled defaults).
-    """
-    if container is None:
-        return
-    if not isinstance(container, dict):
-        raise ValueError("'container' must be an object")
-    lines.append("[container]")
-    if "enabled" in container:
-        lines.append(f"enabled = {toml_bool(bool(container['enabled']))}")
-    for key in ("name", "name_template", "on_missing", "on_missing_mode"):
-        if container.get(key):
-            lines.append(f"{key} = {toml_string(str(container[key]))}")
-    for key in CONTAINER_ARGV_KEYS:
-        if key in container:
-            rendered = toml_string_list(normalize_string_list(container[key]))
-            lines.append(f"{key} = " + rendered[0])
-            lines.extend(rendered[1:])
+def render_table(path: str, table: Any, lines: list[str], *, array: bool = False) -> None:
+    """Render a JSON object as a TOML table without shell-string coercion."""
+    if not isinstance(table, dict):
+        raise ValueError(f"'{path}' must be an object")
+    lines.append(f"[[{path}]]" if array else f"[{path}]")
+    children: list[tuple[str, Any]] = []
+    for key, value in table.items():
+        if isinstance(value, dict) or (
+            isinstance(value, list) and value and isinstance(value[0], dict)
+        ):
+            children.append((str(key), value))
+        else:
+            lines.append(f"{toml_string(str(key))} = {toml_value(value)}")
     lines.append("")
-    path_map = normalize_mapping(container.get("path_map", {}))
-    if path_map:
-        lines.append("[container.path_map]")
-        for host_prefix in sorted(path_map):
-            lines.append(f"{toml_string(host_prefix)} = {toml_string(path_map[host_prefix])}")
-        lines.append("")
+    for key, value in children:
+        child_path = f"{path}.{key}"
+        if isinstance(value, list):
+            if not all(isinstance(item, dict) for item in value):
+                raise ValueError(f"'{child_path}' must be a list of objects")
+            for item in value:
+                render_table(child_path, item, lines, array=True)
+        else:
+            render_table(child_path, value, lines)
 
 
 def render_config(payload: dict[str, Any]) -> str:
-    runtime_user = str(payload.get("runtime_user", "")).strip()
+    default_launch_user = str(payload.get("default_launch_user", "")).strip()
     default_launch_mode = str(payload.get("default_launch_mode", "caller")).strip()
     enable_all_users_list = bool(payload.get("enable_all_users_list", False))
     session_prefix = str(payload.get("session_prefix", "uxon-")).strip() or "uxon-"
@@ -132,40 +118,34 @@ def render_config(payload: dict[str, Any]) -> str:
     repeat_noninteractive_mode = normalize_repeat_mode(
         payload.get("repeat_noninteractive_mode", "fail")
     )
-    tmux_socket_template = str(payload.get("tmux_socket_template", "/tmp/uxon-{user}.sock")).strip()
+    tmux_socket_template = str(
+        payload.get("tmux_socket_template", "/tmp/uxon-{user}-{execution_backend}.sock")
+    ).strip()
 
-    # Agent configuration (replaces legacy default_claude_args).
     agents_payload = payload.get("agents", {})
     if not isinstance(agents_payload, dict):
         raise ValueError("'agents' must be an object")
-    agents_enabled: list[str] = normalize_string_list(agents_payload.get("enabled", ["claude"]))
-    if not agents_enabled:
-        raise ValueError("agents.enabled must not be empty")
-    for aid in agents_enabled:
-        if aid not in VALID_AGENT_IDS:
-            raise ValueError(f"unknown agent id in agents.enabled: {aid!r}")
-    agents_default: str = str(agents_payload.get("default", agents_enabled[0])).strip()
-    if agents_default not in agents_enabled:
-        raise ValueError(
-            f"agents.default={agents_default!r} is not in agents.enabled={agents_enabled}"
-        )
-    per_agent_args: dict[str, list[str]] = {}
-    for aid in VALID_AGENT_IDS:
-        sub = agents_payload.get(aid, {})
-        if not isinstance(sub, dict):
-            raise ValueError(f"'agents.{aid}' must be an object")
-        per_agent_args[aid] = normalize_agent_args(sub.get("default_args"))
+    launch_payload = payload.get("launch", {})
+    execution_payload = payload.get("execution", {})
+    runtimes_payload = payload.get("runtimes", {})
+    for key, value in (
+        ("launch", launch_payload),
+        ("execution", execution_payload),
+        ("runtimes", runtimes_payload),
+    ):
+        if not isinstance(value, dict):
+            raise ValueError(f"'{key}' must be an object")
 
     if default_launch_mode not in {"fixed", "caller"}:
         raise ValueError("default_launch_mode must be 'fixed' or 'caller'")
-    if default_launch_mode == "fixed" and not runtime_user:
-        raise ValueError("runtime_user is required when default_launch_mode is 'fixed'")
+    if default_launch_mode == "fixed" and not default_launch_user:
+        raise ValueError("default_launch_user is required when default_launch_mode is 'fixed'")
     if not tmux_socket_template:
         raise ValueError("tmux_socket_template must not be empty")
 
     lines: list[str] = []
-    if runtime_user:
-        lines.append(f"runtime_user = {toml_string(runtime_user)}")
+    if default_launch_user:
+        lines.append(f"default_launch_user = {toml_string(default_launch_user)}")
     lines.append(f"default_launch_mode = {toml_string(default_launch_mode)}")
     lines.append(f"enable_all_users_list = {toml_bool(enable_all_users_list)}")
     lines.append(f"session_prefix = {toml_string(session_prefix)}")
@@ -180,22 +160,18 @@ def render_config(payload: dict[str, Any]) -> str:
     lines.append(f"repeat_noninteractive_mode = {toml_string(repeat_noninteractive_mode)}")
     lines.append(f"tmux_socket_template = {toml_string(tmux_socket_template)}")
     lines.append("")
-    # Nested [agents] tables.
-    lines.append("[agents]")
-    lines.append("enabled = " + toml_string_list(agents_enabled)[0])
-    lines.extend(toml_string_list(agents_enabled)[1:])
-    lines.append(f"default = {toml_string(agents_default)}")
-    lines.append("")
-    for aid in VALID_AGENT_IDS:
-        lines.append(f"[agents.{aid}]")
-        lines.append("default_args = " + toml_string_list(per_agent_args[aid])[0])
-        lines.extend(toml_string_list(per_agent_args[aid])[1:])
-        lines.append("")
+    for table_name, table in (
+        ("agents", agents_payload),
+        ("launch", launch_payload),
+        ("execution", execution_payload),
+        ("runtimes", runtimes_payload),
+    ):
+        if table:
+            render_table(table_name, table, lines)
     lines.append("[launch_user_by_caller]")
     for caller in sorted(launch_user_by_caller):
         lines.append(f"{toml_string(caller)} = {toml_string(launch_user_by_caller[caller])}")
     lines.append("")
-    render_container(payload.get("container"), lines)
     return "\n".join(lines)
 
 

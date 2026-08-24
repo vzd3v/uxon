@@ -234,7 +234,7 @@ class WorkerCoordinator:
                 by_user: dict[str, set[str]] = {}
                 for profile in profiles.values():
                     agents = by_user.setdefault(profile.launch_user, set())
-                    if not profile.container_profile:
+                    if profile.runtime == "direct":
                         agents.add(profile.agent)
                 for user, agent_ids in by_user.items():
                     catalog = {
@@ -242,12 +242,14 @@ class WorkerCoordinator:
                         for aid in sorted(agent_ids)
                         if aid in self._cfg.agents
                     }
-                    reports[user] = uxon_probes.probe_host(user, catalog)
+                    reports[user] = uxon_probes.probe_host(self._cfg, user, catalog)
             else:
                 # Compatibility path for old tests/fixtures that construct a
                 # TuiConfig without launch_profiles.
                 target_user = self._cfg.launch_user or uxon_probes._current_user()
-                reports[target_user] = uxon_probes.probe_host(target_user, self._cfg.agents)
+                reports[target_user] = uxon_probes.probe_host(
+                    self._cfg, target_user, self._cfg.agents
+                )
         except Exception as exc:  # pragma: no cover — defensive
             self._post_message(
                 _HostReportUpdated(
@@ -279,10 +281,10 @@ class WorkerCoordinator:
                             error="tmux not found on PATH",
                         )
                     continue
-                if profile.container_profile:
+                if profile.runtime != "direct":
                     availability[pid] = uxon_agents.AgentAvailability(
                         status="ok",
-                        path=f"container:{profile.container_profile}",
+                        path=f"runtime:{profile.runtime}",
                     )
                     continue
                 status = report.agents.get(profile.agent)

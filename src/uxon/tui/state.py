@@ -41,7 +41,7 @@ def should_show_agents_unavailable(
     spec's named surface.
 
     The live launch gate (``resolve_launch_profile``) suppresses host-presence
-    on a per-profile ``container_profile`` basis; that selection is not known at
+    on a per-profile ``runtime`` basis; that selection is not known at
     modal-eval time, so this predicate does not branch on it.
     """
     if already_shown:
@@ -294,8 +294,8 @@ def launch_profile_list_label(
             details.append(profile.agent)
         if show_launch_user and profile.launch_user:
             details.append(profile.launch_user)
-        if profile.container_profile:
-            details.append(f"container:{profile.container_profile}")
+        if profile.runtime != "direct":
+            details.append(f"runtime:{profile.runtime}")
         if details:
             label += "  " + " · ".join(details)
     if availability_obj is not None and getattr(availability_obj, "status", None) == "pending":

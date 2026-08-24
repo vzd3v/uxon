@@ -21,10 +21,11 @@ from uxon.domain.config import (
     validate_repeat_mode,
     validate_worktree_base,
 )
-from uxon.domain.container import (
-    ContainerProfile,
-    validate_container_profile,
-    validate_path_map,
+from uxon.domain.execution import (
+    LOCAL_PROBE_TIMEOUT_SECONDS,
+    ExecutionBackendSpec,
+    ExecutionConfig,
+    validate_execution_config,
 )
 from uxon.domain.launch_profiles import (
     GitRemotePolicy,
@@ -33,6 +34,11 @@ from uxon.domain.launch_profiles import (
     LaunchProfile,
     builtin_launch_profiles,
     validate_tmux_safe_id,
+)
+from uxon.domain.runtime import (
+    WorkloadRuntimeSpec,
+    validate_path_map,
+    validate_runtime,
 )
 from uxon.errors import fail
 from uxon.infra import demo, events, version_probe
@@ -205,24 +211,31 @@ def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
     return catalog
 
 
-_REMOVED_CONTAINER_KEYS = {
+_REMOVED_RUNTIME_KEYS = {
     "enabled",
-    "name_template",
-    "exec_template",
-    "is_running_cmd",
-    "exists_cmd",
-    "start_template",
-    "create_template",
-    "stop_template",
-    "resolve_cmd",
+    "resource_name_template",
+    "exec_prefix",
+    "ready_command",
+    "exists_command",
+    "start_command",
+    "create_command",
+    "stop_command",
+    "identity_command",
     "on_missing",
-    "on_missing_mode",
+    "approval",
     "name",
     "path_map",
 }
 
 
 def reject_removed_operator_keys(raw_repo: dict[str, Any]) -> None:
+    if "runtime_user" in raw_repo:
+        fail("config key 'runtime_user' was replaced by 'default_launch_user'")
+    if "container" in raw_repo:
+        fail(
+            "config table '[container]' was replaced by '[runtimes.<id>]'; "
+            "launch profiles now select it with runtime = '<id>'"
+        )
     if "default_claude_args" in raw_repo:
         fail(
             "config key 'default_claude_args' was replaced by "
@@ -242,15 +255,6 @@ def reject_removed_operator_keys(raw_repo: dict[str, Any]) -> None:
                     f"config key 'agents.{key}' was removed. Use "
                     "'[launch] enabled_profiles/default_profile' and "
                     "'[launch.profiles.<id>] agent = ...' instead."
-                )
-    container_tbl = raw_repo.get("container")
-    if isinstance(container_tbl, dict):
-        for key in sorted(_REMOVED_CONTAINER_KEYS):
-            if key in container_tbl:
-                fail(
-                    f"config key 'container.{key}' was removed. Use "
-                    "'[container.profiles.<id>]' and reference it from "
-                    "'launch.profiles.<id>.container_profile' instead."
                 )
 
 
@@ -278,37 +282,136 @@ def _argv_list_from(tbl: dict[str, Any], key: str, *, source: str) -> tuple[str,
     return tuple(raw)
 
 
-def build_container_profiles(container_tbl: dict[str, Any]) -> dict[str, ContainerProfile]:
-    profiles_tbl = container_tbl.get("profiles", {})
-    if not isinstance(profiles_tbl, dict):
-        fail("'container.profiles' must be a TOML table")
-    out: dict[str, ContainerProfile] = {}
-    for cid, raw in profiles_tbl.items():
-        validate_tmux_safe_id(str(cid), what="container profile id")
+def build_execution_config(execution_tbl: dict[str, Any]) -> ExecutionConfig:
+    """Parse the operator-owned target-user execution boundary."""
+    source = "execution"
+    default_backend = _string_value(
+        execution_tbl, "default_backend", source=source, default="local", strip=True
+    )
+    by_user_raw = execution_tbl.get("backend_by_launch_user", {})
+    if not isinstance(by_user_raw, dict):
+        fail("execution.backend_by_launch_user must be a TOML table")
+    by_user: dict[str, str] = {}
+    for user, backend_id in by_user_raw.items():
+        if not isinstance(backend_id, str):
+            fail(f"execution.backend_by_launch_user.{user} must be a string")
+        by_user[str(user).strip()] = backend_id.strip()
+
+    backends: dict[str, ExecutionBackendSpec] = {
+        "local": ExecutionBackendSpec(
+            id="local", kind="local", probe_timeout_seconds=LOCAL_PROBE_TIMEOUT_SECONDS
+        )
+    }
+    backends_raw = execution_tbl.get("backends", {})
+    if not isinstance(backends_raw, dict):
+        fail("execution.backends must be a TOML table")
+    if "local" in backends_raw:
+        fail("execution.backends.local is built in and cannot be configured")
+    for backend_id, raw in backends_raw.items():
+        validate_tmux_safe_id(str(backend_id), what="execution backend id")
         if not isinstance(raw, dict):
-            fail(f"'container.profiles.{cid}' must be a TOML table")
-        source = f"container.profiles.{cid}"
+            fail(f"execution.backends.{backend_id} must be a TOML table")
+        backend_source = f"execution.backends.{backend_id}"
+        kind = _string_value(raw, "kind", source=backend_source, strip=True)
+        if kind != "command":
+            fail(f"{backend_source}.kind must be 'command'")
+        timeout_raw = raw.get("probe_timeout_seconds", 5.0)
+        try:
+            timeout = float(timeout_raw)
+        except (TypeError, ValueError):
+            fail(f"{backend_source}.probe_timeout_seconds must be a number")
+        backends[str(backend_id)] = ExecutionBackendSpec(
+            id=str(backend_id),
+            kind="command",
+            command_prefix=_argv_list_from(raw, "command_prefix", source=backend_source),
+            probe_command=_argv_list_from(raw, "probe_command", source=backend_source),
+            probe_timeout_seconds=timeout,
+        )
+    return validate_execution_config(
+        ExecutionConfig(
+            default_backend=default_backend,
+            backend_by_launch_user=by_user,
+            backends=backends,
+        )
+    )
+
+
+def build_runtimes(runtime_tbl: dict[str, Any]) -> dict[str, WorkloadRuntimeSpec]:
+    out: dict[str, WorkloadRuntimeSpec] = {
+        "direct": WorkloadRuntimeSpec(id="direct", kind="direct")
+    }
+    if "direct" in runtime_tbl:
+        fail("runtimes.direct is built in and cannot be configured")
+    for cid, raw in runtime_tbl.items():
+        validate_tmux_safe_id(str(cid), what="runtime id")
+        if not isinstance(raw, dict):
+            fail(f"'runtimes.{cid}' must be a TOML table")
+        source = f"runtimes.{cid}"
+        kind = _string_value(raw, "kind", source=source, strip=True)
+        if kind != "command":
+            fail(f"{source}.kind must be 'command'")
         path_map_raw = raw.get("path_map", {})
         if not isinstance(path_map_raw, dict):
-            fail(f"{source}.path_map must be a TOML table of host_prefix -> container_prefix")
-        profile = ContainerProfile(
+            fail(f"{source}.path_map must be a TOML table of host_prefix -> runtime_prefix")
+        readiness = raw.get("readiness", {})
+        identity = raw.get("identity", {})
+        session = raw.get("session", {})
+        timeouts = raw.get("timeouts", {})
+        for table_name, table in (
+            ("readiness", readiness),
+            ("identity", identity),
+            ("session", session),
+            ("timeouts", timeouts),
+        ):
+            if not isinstance(table, dict):
+                fail(f"{source}.{table_name} must be a TOML table")
+
+        def _timeout(
+            key: str,
+            default: float,
+            *,
+            _timeouts: dict[str, Any] = timeouts,
+            _source: str = source,
+        ) -> float:
+            try:
+                return float(_timeouts.get(key, default))
+            except (TypeError, ValueError):
+                fail(f"{_source}.timeouts.{key} must be a number")
+            raise AssertionError("unreachable")
+
+        profile = WorkloadRuntimeSpec(
             id=str(cid),
-            runtime_namespace=_string_value(raw, "runtime_namespace", source=source, strip=True),  # type: ignore[arg-type]
-            name_template=_string_value(raw, "name_template", source=source),
-            exec_template=_argv_list_from(raw, "exec_template", source=source),
-            is_running_cmd=_argv_list_from(raw, "is_running_cmd", source=source),
-            exists_cmd=_argv_list_from(raw, "exists_cmd", source=source),
-            start_template=_argv_list_from(raw, "start_template", source=source),
-            create_template=_argv_list_from(raw, "create_template", source=source),
-            stop_template=_argv_list_from(raw, "stop_template", source=source),
-            resolve_cmd=_argv_list_from(raw, "resolve_cmd", source=source),
-            on_missing=_string_value(raw, "on_missing", source=source, default="off", strip=True),  # type: ignore[arg-type]
-            on_missing_mode=_string_value(
-                raw, "on_missing_mode", source=source, default="prompt", strip=True
+            kind="command",
+            resource_scope=_string_value(
+                raw, "resource_scope", source=source, default="global", strip=True
             ),  # type: ignore[arg-type]
+            resource_name_template=_string_value(raw, "resource_name_template", source=source),
+            exec_prefix=_argv_list_from(raw, "exec_prefix", source=source),
+            ready_command=_argv_list_from(readiness, "ready_command", source=f"{source}.readiness"),
+            exists_command=_argv_list_from(
+                readiness, "exists_command", source=f"{source}.readiness"
+            ),
+            start_command=_argv_list_from(readiness, "start_command", source=f"{source}.readiness"),
+            create_command=_argv_list_from(
+                readiness, "create_command", source=f"{source}.readiness"
+            ),
+            stop_command=_argv_list_from(session, "stop_command", source=f"{source}.session"),
+            identity_command=_argv_list_from(
+                identity, "resolve_command", source=f"{source}.identity"
+            ),
+            on_missing=_string_value(
+                readiness, "on_missing", source=f"{source}.readiness", default="fail", strip=True
+            ),  # type: ignore[arg-type]
+            approval=_string_value(
+                readiness, "approval", source=f"{source}.readiness", default="prompt", strip=True
+            ),  # type: ignore[arg-type]
+            telemetry=_string_value(raw, "telemetry", source=source, default="none", strip=True),  # type: ignore[arg-type]
+            probe_timeout_seconds=_timeout("probe_seconds", 10.0),
+            prepare_timeout_seconds=_timeout("prepare_seconds", 120.0),
+            stop_timeout_seconds=_timeout("stop_seconds", 10.0),
             path_map=validate_path_map({str(k): str(v) for k, v in path_map_raw.items()}),
         )
-        out[str(cid)] = validate_container_profile(profile)
+        out[str(cid)] = validate_runtime(profile)
     return out
 
 
@@ -334,7 +437,7 @@ def build_launch_config(
     launch_tbl: dict[str, Any],
     *,
     agents: dict[str, AgentSpec],
-    container_profiles: dict[str, ContainerProfile],
+    runtimes: dict[str, WorkloadRuntimeSpec],
     git_remote_profile_names: set[str],
 ) -> LaunchConfig:
     profiles = builtin_launch_profiles(agents)
@@ -360,9 +463,9 @@ def build_launch_config(
             fail(f"{source}.agent is required")
         if agent not in agents:
             fail(f"{source}.agent={agent!r} is not in the configured agent catalog")
-        container_profile = _string_value(raw, "container_profile", source=source, strip=True)
-        if container_profile and container_profile not in container_profiles:
-            fail(f"{source}.container_profile={container_profile!r} is not configured")
+        runtime = _string_value(raw, "runtime", source=source, default="direct", strip=True)
+        if runtime not in runtimes:
+            fail(f"{source}.runtime={runtime!r} is not configured")
         policy = _parse_git_policy(raw, source=source)
         _validate_git_names(
             policy.allowed_profiles,
@@ -374,7 +477,7 @@ def build_launch_config(
             agent=agent,
             display_name=_string_value(raw, "display_name", source=source),
             launch_user=_string_value(raw, "launch_user", source=source, strip=True),
-            container_profile=container_profile,
+            runtime=runtime,
             git_remote=policy,
         )
 
@@ -467,19 +570,6 @@ def build_launch_config(
     )
 
 
-def _argv_list(tbl: dict[str, Any], key: str) -> tuple[str, ...]:
-    """Read an operator ``[container]`` argv template (list of strings).
-
-    Templates are argv **lists**, never shell strings — a non-list (or a
-    list with a non-string element) is rejected so a `"docker exec …"`
-    string can't slip through as one opaque token.
-    """
-    raw = tbl.get(key, [])
-    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
-        fail(f"'container.{key}' must be a list of strings (an argv list, not a shell string)")
-    return tuple(raw)
-
-
 def load_config(cwd: str) -> Config:
     from uxon.domain import git_profiles as uxon_git_profiles
 
@@ -488,7 +578,9 @@ def load_config(cwd: str) -> Config:
     # keys surface an error instead of being masked.
     _raw_repo = load_toml(repo_config_path())
     reject_removed_operator_keys(_raw_repo)
-    runtime_user = str(merged.get("runtime_user", DEFAULT_CONFIG["runtime_user"])).strip()
+    default_launch_user = str(
+        merged.get("default_launch_user", DEFAULT_CONFIG["default_launch_user"])
+    ).strip()
     default_launch_mode = str(
         merged.get("default_launch_mode", DEFAULT_CONFIG["default_launch_mode"])
     ).strip()
@@ -509,7 +601,7 @@ def load_config(cwd: str) -> Config:
         fail("session_users must be a TOML array")
     session_users = normalize_user_list([str(x) for x in session_users_raw])
     if not session_users:
-        session_users = [runtime_user] if runtime_user else []
+        session_users = [default_launch_user] if default_launch_user else []
     enable_all_users_list = bool(
         merged.get("enable_all_users_list", DEFAULT_CONFIG["enable_all_users_list"])
     )
@@ -528,6 +620,10 @@ def load_config(cwd: str) -> Config:
     # Merged catalog (defaults ⊕ operator config). The valid-id set is
     # derived dynamically from its keys — there is no static VALID_AGENT_IDS.
     agents = build_agent_catalog(agents_tbl)
+    execution_tbl = merged.get("execution", DEFAULT_CONFIG["execution"])
+    if not isinstance(execution_tbl, dict):
+        fail("'execution' must be a TOML table")
+    execution = build_execution_config(execution_tbl)
     try:
         git_remote_profiles = uxon_git_profiles.load_profiles(
             merged.get("git_remote_profiles", DEFAULT_CONFIG["git_remote_profiles"])
@@ -536,10 +632,10 @@ def load_config(cwd: str) -> Config:
         fail(str(exc))
     git_remote_profile_names = {profile.name for profile in git_remote_profiles}
 
-    container_tbl = merged.get("container", DEFAULT_CONFIG["container"])
-    if not isinstance(container_tbl, dict):
-        fail("'container' must be a TOML table")
-    container_profiles = build_container_profiles(container_tbl)
+    runtime_tbl = merged.get("runtimes", DEFAULT_CONFIG["runtimes"])
+    if not isinstance(runtime_tbl, dict):
+        fail("'runtimes' must be a TOML table")
+    runtimes = build_runtimes(runtime_tbl)
 
     launch_tbl = merged.get("launch", DEFAULT_CONFIG["launch"])
     if not isinstance(launch_tbl, dict):
@@ -547,7 +643,7 @@ def load_config(cwd: str) -> Config:
     launch = build_launch_config(
         launch_tbl,
         agents=agents,
-        container_profiles=container_profiles,
+        runtimes=runtimes,
         git_remote_profile_names=git_remote_profile_names,
     )
 
@@ -739,7 +835,7 @@ def load_config(cwd: str) -> Config:
         tmux_scope_tables[_scope] = dict(_sub)
 
     return Config(
-        runtime_user=runtime_user,
+        default_launch_user=default_launch_user,
         default_launch_mode=default_launch_mode,
         enable_all_users_list=enable_all_users_list,
         launch_user_by_caller=launch_user_by_caller,
@@ -749,7 +845,8 @@ def load_config(cwd: str) -> Config:
         legacy_session_prefixes=legacy_session_prefixes,
         agents=agents,
         launch=launch,
-        container_profiles=container_profiles,
+        execution=execution,
+        runtimes=runtimes,
         new_project_root=new_project_root,
         repeat_noninteractive_mode=repeat_noninteractive_mode,
         tmux_socket_template=tmux_socket_template,

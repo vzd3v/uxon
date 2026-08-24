@@ -6,9 +6,13 @@ import subprocess
 import unittest
 from unittest import mock
 
+from helpers import make_config
+
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG
 from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.infra import probes
+
+_CFG = make_config()
 
 
 class ResolvPathsLocalTests(unittest.TestCase):
@@ -78,53 +82,47 @@ class ResolvePathsRemoteTests(unittest.TestCase):
     """Tests for _resolve_paths_remote (cross-user probe via sudo)."""
 
     def test_resolve_empty_list(self) -> None:
-        result = probes._resolve_paths_remote([], "user")
+        result = probes._resolve_paths_remote(_CFG, [], "user")
         self.assertEqual(result, {})
 
     def test_resolve_sudo_success(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.run_query") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[],
                 returncode=0,
                 stdout="tmux\t/usr/bin/tmux\nclaude\t/home/user/.npm/claude\n",
                 stderr="",
             )
-            result = probes._resolve_paths_remote(["tmux", "claude"], "otheruser")
+            result = probes._resolve_paths_remote(_CFG, ["tmux", "claude"], "otheruser")
         self.assertEqual(
             result,
             {"tmux": "/usr/bin/tmux", "claude": "/home/user/.npm/claude"},
         )
-        # Verify the sudo call. ``-H`` (no ``-i``) avoids the double
-        # shell-wrap that ate ``$c`` inside the for-loop script; the
-        # inner ``sh -lc`` still gives login-shell PATH semantics.
+        # Verify the command crosses the centralized non-interactive local backend.
         args = run.call_args[0][0]
         self.assertIn("sudo", args)
-        self.assertIn("-n", args)
-        self.assertIn("-H", args)
-        self.assertIn("-u", args)
-        self.assertNotIn("-iu", args)
-        self.assertNotIn("-i", args)
+        self.assertIn("-niu", args)
         self.assertIn("otheruser", args)
 
     def test_resolve_sudo_nonzero_exit(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.run_query") as run:
             run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="", stderr="sudo: no NOPASSWD"
             )
-            result = probes._resolve_paths_remote(["tmux", "claude"], "otheruser")
+            result = probes._resolve_paths_remote(_CFG, ["tmux", "claude"], "otheruser")
         # Non-zero exit (e.g., no NOPASSWD) → all are None.
         self.assertEqual(result, {"tmux": None, "claude": None})
 
     def test_resolve_sudo_timeout(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.run_query") as run:
             run.side_effect = subprocess.TimeoutExpired(cmd=["sudo"], timeout=2.0)
-            result = probes._resolve_paths_remote(["tmux"], "otheruser")
+            result = probes._resolve_paths_remote(_CFG, ["tmux"], "otheruser")
         self.assertEqual(result, {"tmux": None})
 
     def test_resolve_sudo_not_found(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
+        with mock.patch("uxon.infra.probes.run_query") as run:
             run.side_effect = FileNotFoundError("no sudo")
-            result = probes._resolve_paths_remote(["tmux"], "otheruser")
+            result = probes._resolve_paths_remote(_CFG, ["tmux"], "otheruser")
         self.assertEqual(result, {"tmux": None})
 
 
@@ -179,7 +177,7 @@ class ProbeHostTests(unittest.TestCase):
                 "cursor-agent": None,
             }
             with mock.patch("uxon.infra.probes._current_user", return_value="devuser"):
-                report = probes.probe_host("devuser", DEFAULT_AGENT_CATALOG)
+                report = probes.probe_host(_CFG, "devuser", DEFAULT_AGENT_CATALOG)
 
         self.assertEqual(report.launch_user, "devuser")
         self.assertEqual(report.tmux.path, "/usr/bin/tmux")
@@ -196,7 +194,7 @@ class ProbeHostTests(unittest.TestCase):
                 "cursor-agent": "/home/otheruser/.cursor/cursor-agent",
             }
             with mock.patch("uxon.infra.probes._current_user", return_value="devuser"):
-                report = probes.probe_host("otheruser", DEFAULT_AGENT_CATALOG)
+                report = probes.probe_host(_CFG, "otheruser", DEFAULT_AGENT_CATALOG)
 
         self.assertEqual(report.launch_user, "otheruser")
         self.assertEqual(report.tmux.path, "/usr/bin/tmux")

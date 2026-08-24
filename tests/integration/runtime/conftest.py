@@ -74,13 +74,13 @@ def _runtime_usable(binary: str) -> bool:
 class Runtime:
     """A usable container runtime plus the names this test owns.
 
-    ``binary`` is ``docker`` or ``podman``; ``container_name`` is a
+    ``binary`` is ``docker`` or ``podman``; ``runtime_name`` is a
     process/uuid-suffixed unique name so a crashed prior run can never
     block a rerun and parallel runs never collide.
     """
 
     binary: str
-    container_name: str
+    runtime_name: str
 
 
 @pytest.fixture(params=RUNTIMES)
@@ -97,7 +97,7 @@ def runtime(request: pytest.FixtureRequest) -> Iterator[Runtime]:
     # Unique per run: pid + a uuid shard. Stays within the runtime name
     # charset (leading alnum, then alnum/dash/underscore/dot).
     name = f"uxon-it-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    rt = Runtime(binary=binary, container_name=name)
+    rt = Runtime(binary=binary, runtime_name=name)
     try:
         yield rt
     finally:
@@ -106,7 +106,7 @@ def runtime(request: pytest.FixtureRequest) -> Iterator[Runtime]:
 
 def _teardown(rt: Runtime) -> None:
     """Remove anything the suite created for ``rt`` (idempotent, quiet)."""
-    for argv in ([rt.binary, "rm", "-f", rt.container_name],):
+    for argv in ([rt.binary, "rm", "-f", rt.runtime_name],):
         subprocess.run(
             argv,
             stdout=subprocess.DEVNULL,
@@ -149,14 +149,14 @@ exec sleep 300
 """
 
 # Stock base + bind mount only — no build. Exercises the
-# create_template = ["<runtime>", "compose", "up", "-d"] path. PID 1 idles
+# create_command = ["<runtime>", "compose", "up", "-d"] path. PID 1 idles
 # on ``tail`` (not ``sleep``) so the agent's ``sleep`` is unambiguous in
 # ``<runtime> top`` — the container stays up across the agent's reap.
 COMPOSE_TEMPLATE = """\
 services:
   agent:
     image: {image}
-    container_name: {name}
+    runtime_name: {name}
     command: ["tail", "-f", "/dev/null"]
     volumes:
       - {project_dir}:/work
@@ -165,7 +165,7 @@ services:
 """
 
 
-def write_project(project_dir: Path, _container_name: str) -> Path:
+def write_project(project_dir: Path, _runtime_name: str) -> Path:
     """Materialize the synthetic project and stub agent.
 
     Returns the stub path (bind-mounted to ``/usr/local/bin/claude``).

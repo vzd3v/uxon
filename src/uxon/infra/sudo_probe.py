@@ -37,7 +37,9 @@ import subprocess
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
+from uxon.domain.config import Config
 from uxon.domain.sudo import SudoCapability
+from uxon.infra.execution import probe as probe_execution
 from uxon.infra.run import run_query
 
 __all__ = ["SudoCapability", "probe_sudo_capability"]
@@ -55,7 +57,7 @@ batches; widening this is cheap if a deployment has many session
 users, but the per-probe ceiling already bounds the total wall time."""
 
 
-def _probe_one_user(target: str) -> tuple[str, bool]:
+def _probe_one_user(cfg: Config, target: str) -> tuple[str, bool]:
     """Run ``sudo -niu <target> -- true`` once. Returns (target, ok).
 
     ``-n`` makes sudo non-interactive (no prompt). ``-i`` runs the
@@ -66,13 +68,10 @@ def _probe_one_user(target: str) -> tuple[str, bool]:
     defend against) cannot be mistaken for a flag.
     """
     try:
-        cp = run_query(
-            ["sudo", "-niu", target, "--", "true"],
-            timeout=PROBE_TIMEOUT_SEC,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+        result = probe_execution(cfg, target)
+    except (subprocess.TimeoutExpired, OSError, SystemExit):
         return target, False
-    return target, cp.returncode == 0
+    return target, result.ok
 
 
 def _probe_root() -> bool:
@@ -106,7 +105,7 @@ def _self_user() -> str:
     return pwd.getpwuid(os.getuid()).pw_name
 
 
-def probe_sudo_capability(candidates: Iterable[str]) -> SudoCapability:
+def probe_sudo_capability(cfg: Config, candidates: Iterable[str]) -> SudoCapability:
     """Probe per-target sudo reachability + root NOPASSWD, in parallel.
 
     ``candidates`` is the list of OS users to probe — typically
@@ -140,7 +139,7 @@ def probe_sudo_capability(candidates: Iterable[str]) -> SudoCapability:
     # need the root probe — keep min workers at 1.
     workers = max(1, min(MAX_WORKERS, len(unique_targets) + 1))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        user_futures = [pool.submit(_probe_one_user, u) for u in unique_targets]
+        user_futures = [pool.submit(_probe_one_user, cfg, u) for u in unique_targets]
         root_future = pool.submit(_probe_root)
         for fut in user_futures:
             user, ok = fut.result()

@@ -17,18 +17,18 @@ from typing import Any, Literal
 
 from uxon.domain.authz import canonical
 from uxon.domain.config import Config
-from uxon.domain.container import (
-    CONTAINER_CGROUP_ENV,
-    CONTAINER_NAME_ENV,
-    ContainerProfile,
+from uxon.domain.format import fmt_epoch
+from uxon.domain.runtime import (
+    RUNTIME_CGROUP_ENV,
+    RUNTIME_RESOURCE_ENV,
+    WorkloadRuntimeSpec,
 )
-from uxon.domain.container_usage import (
+from uxon.domain.runtime_usage import (
     parse_cgroup_procs,
     parse_sudo_environ_lines,
     per_session_usage,
     sum_usage_for_pids,
 )
-from uxon.domain.format import fmt_epoch
 from uxon.domain.session import (
     SessionInfo,
     compatible_indexed_sessions,
@@ -38,38 +38,43 @@ from uxon.domain.session import (
 from uxon.errors import fail
 from uxon.infra import demo, tmux
 from uxon.infra.config_loader import normalize_user_list
-from uxon.infra.container import CONTAINER_CMD_TIMEOUT_SEC
 from uxon.infra.launch_records import LAUNCH_NONCE_ENV, TmuxSessionMetadata, read_verified_record
 from uxon.infra.process import run_cmd
 from uxon.infra.run import run_query
+from uxon.infra.runtime import RUNTIME_CMD_TIMEOUT_SEC
 
 
 def enrich_session_usage(
+    cfg: Config,
     sessions: list[SessionInfo],
     *,
-    container_profiles: dict[str, ContainerProfile] | None = None,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None = None,
     launch_user: str = "",
 ) -> None:
     """Fill each session's ``cpu_pct`` / ``rss_kib`` from a single ``ps`` table.
 
-    A **non-container** session (empty ``UXON_CONTAINER`` marker) takes the
-    unchanged pane-PID child-walk — the byte-for-byte pre-container path, with
+    A direct-runtime session takes the unchanged pane-PID child-walk, with
     **zero** added subprocess or ``/proc`` read (AC-P0.4). Every new
-    branch below is gated on a non-empty ``session.container`` marker, so a
-    deployment with no container sessions never reaches the container code.
+    branch below is gated on a non-empty ``session.runtime_resource`` marker, so a
+    deployment with no command-runtime sessions never reaches workload telemetry.
 
-    A **container** session is attributed from its container's cgroup
-    membership (``container_cgroup`` → ``cgroup.procs``) rather than the pane
-    walk (the pane's child is the runtime client, not the in-container agent).
-    Per-distinct-container work is done once (AC-P1.5): the cgroup read, the
+    A command-runtime session is attributed from its resource's cgroup
+    membership (``runtime_cgroup`` → ``cgroup.procs``) rather than the pane
+    walk (the pane's child is the runtime client, not the workload agent).
+    Per-distinct-resource work is done once (AC-P1.5): the cgroup read, the
     optional privileged ``environ`` split, and — only when the cgroup is empty —
-    the ``is_running_cmd`` liveness probe. Any unresolvable piece degrades that
+    the ``ready_command`` liveness probe. Any unresolvable piece degrades that
     session to ``0``/``—`` (AC-P1.3), never raising.
     """
     if not sessions:
         return
 
-    cp = run_query(["ps", "-eo", "pid=,ppid=,rss=,%cpu="])
+    from uxon.infra.execution import wrap_command
+
+    ps_cmd = ["ps", "-eo", "pid=,ppid=,rss=,%cpu="]
+    cp = run_query(
+        wrap_command(cfg, launch_user, ps_cmd, interactive=False) if launch_user else ps_cmd
+    )
     if cp.returncode != 0:
         return
 
@@ -89,20 +94,21 @@ def enrich_session_usage(
         proc_rows[pid] = (ppid, rss_kib, cpu_pct)
         children.setdefault(ppid, []).append(pid)
 
-    # Partition: marker-carrying sessions take the container path, the rest the
+    # Partition: marker-carrying sessions take the runtime path, the rest the
     # unchanged pane walk. The split itself reads only the already-populated
-    # ``container`` field — no I/O — so the off-invariant holds (AC-P0.4).
-    container_sessions = [s for s in sessions if s.container]
+    # ``runtime_resource`` field — no I/O — so the off-invariant holds.
+    runtime_sessions = [s for s in sessions if s.runtime_resource]
     for session in sessions:
-        if session.container:
+        if session.runtime_resource:
             continue
         _enrich_via_pane_walk(session, proc_rows, children)
 
-    if container_sessions:
-        _enrich_container_sessions(
-            container_sessions,
+    if runtime_sessions:
+        _enrich_runtime_sessions(
+            cfg,
+            runtime_sessions,
             proc_rows,
-            container_profiles=container_profiles,
+            runtimes=runtimes,
             launch_user=launch_user,
         )
 
@@ -133,52 +139,54 @@ def _enrich_via_pane_walk(
     session.cpu_pct = total_cpu_pct
 
 
-def _enrich_container_sessions(
-    container_sessions: list[SessionInfo],
+def _enrich_runtime_sessions(
+    cfg: Config,
+    runtime_sessions: list[SessionInfo],
     proc_rows: dict[int, tuple[int, int, float]],
     *,
-    container_profiles: dict[str, ContainerProfile] | None,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None,
     launch_user: str,
 ) -> None:
-    """Attribute in-container CPU/RAM for the marker-carrying sessions.
+    """Attribute workload CPU/RAM for the marker-carrying sessions.
 
     Work is bounded by the number of **distinct cgroups** (AC-P1.5): each
     cgroup's ``cgroup.procs`` is read once; the per-session ``UXON_SESSION``
     split (a single privileged ``environ`` batch) runs only when ≥2 sessions
-    share one cgroup; the ``is_running_cmd`` liveness probe runs only when a
+    share one cgroup; the ``ready_command`` liveness probe runs only when a
     cgroup is empty/unresolvable.
     """
     # Group the marker-carrying sessions by their stashed cgroup path. A
-    # session with an empty ``container_cgroup`` (identity unresolved at launch,
+    # session with an empty ``runtime_cgroup`` (identity unresolved at launch,
     # the degrade) gets no cgroup attribution — it falls to the down/zero path.
     by_cgroup: dict[str, list[SessionInfo]] = {}
     down_probe_groups: dict[tuple[str, str], list[SessionInfo]] = {}
-    for session in container_sessions:
+    for session in runtime_sessions:
         # Default to 0/— first; the cgroup path overwrites on success.
         session.cpu_pct = 0.0
         session.rss_kib = 0
-        identity_state = _container_identity_state(
-            session, container_profiles=container_profiles, launch_user=launch_user
+        identity_state = _runtime_identity_state(
+            cfg, session, runtimes=runtimes, launch_user=launch_user
         )
-        if identity_state == "current" and session.container_cgroup:
-            by_cgroup.setdefault(session.container_cgroup, []).append(session)
+        if identity_state == "current" and session.runtime_cgroup:
+            by_cgroup.setdefault(session.runtime_cgroup, []).append(session)
         elif identity_state == "unresolved":
             _append_down_probe_group(down_probe_groups, session)
 
     for cgroup_path, group in by_cgroup.items():
         cgroup_pids = _read_cgroup_procs(cgroup_path)
         if not cgroup_pids:
-            # Empty/absent cgroup → the container is stopped or its path went
+            # Empty/absent cgroup → the workload is stopped or its path went
             # stale (restart). Confirm with the operator's liveness probe,
-            # bounded once per distinct container, only here.
-            _mark_container_down(
+            # bounded once per distinct resource, only here.
+            _mark_runtime_down(
+                cfg,
                 group,
-                container_profiles=container_profiles,
+                runtimes=runtimes,
                 launch_user=launch_user,
             )
             continue
         if len(group) == 1:
-            # One session per container: cgroup.procs IS that session's set —
+            # One session per resource: cgroup.procs IS that session's set —
             # no environ read needed (the common case, fully unprivileged).
             rss_kib, cpu_pct = sum_usage_for_pids(cgroup_pids, proc_rows)
             group[0].rss_kib = rss_kib
@@ -188,7 +196,7 @@ def _enrich_container_sessions(
         # ``UXON_SESSION`` marker (privileged environ read, batched once).
         pid_to_session = _read_pid_sessions(cgroup_pids)
         if pid_to_session is None:
-            # No privilege / unreadable → degrade to the per-container SHARED
+            # No privilege / unreadable → degrade to the per-resource SHARED
             # figure: every sharing session shows the summed total (AC-P1.6
             # degrade), never an error.
             shared_rss, shared_cpu = sum_usage_for_pids(cgroup_pids, proc_rows)
@@ -207,9 +215,10 @@ def _enrich_container_sessions(
             session.cpu_pct = cpu_pct
 
     for group in down_probe_groups.values():
-        _mark_container_down(
+        _mark_runtime_down(
+            cfg,
             group,
-            container_profiles=container_profiles,
+            runtimes=runtimes,
             launch_user=launch_user,
         )
 
@@ -217,67 +226,69 @@ def _enrich_container_sessions(
 def _append_down_probe_group(
     down_probe_groups: dict[tuple[str, str], list[SessionInfo]], session: SessionInfo
 ) -> None:
-    if not session.container_profile or not session.container:
+    if not session.runtime or not session.runtime_resource:
         return
-    down_probe_groups.setdefault((session.container_profile, session.container), []).append(session)
+    down_probe_groups.setdefault((session.runtime, session.runtime_resource), []).append(session)
 
 
-def _mark_container_down(
+def _mark_runtime_down(
+    cfg: Config,
     group: list[SessionInfo],
     *,
-    container_profiles: dict[str, ContainerProfile] | None,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None,
     launch_user: str,
 ) -> None:
-    """Flag a group's sessions container-down iff ``is_running_cmd`` confirms it.
+    """Flag a group's sessions runtime-down iff ``ready_command`` confirms it.
 
     Called only when the cgroup is empty/unresolvable. The liveness probe runs
-    once per distinct container (AC-P1.5). The session's container profile is
-    looked up via ``container_profiles``; without an ``is_running_cmd`` template
+    once per distinct resource (AC-P1.5). The session's runtime is
+    looked up via ``runtimes``; without an ``ready_command`` template
     (or with no profile threaded in) uxon cannot confirm down-state, so the
     sessions stay at the already-set ``0``/``—`` degrade rather than asserting a
     "down" it cannot verify.
     """
-    name = group[0].container
-    if container_profiles is not None and group[0].container_profile:
-        profile = container_profiles.get(group[0].container_profile)
-        if profile is None or not profile.is_running_cmd:
+    name = group[0].runtime_resource
+    if runtimes is not None and group[0].runtime:
+        profile = runtimes.get(group[0].runtime)
+        if profile is None or not profile.ready_command:
             return
-        from uxon.infra.container import probe_container_state_for_profile
+        from uxon.infra.runtime import probe_runtime_state_for_profile
 
-        if probe_container_state_for_profile(profile, name, launch_user)[0] == "no":
+        if probe_runtime_state_for_profile(cfg, profile, name, launch_user)[0] == "no":
             for session in group:
-                session.container_down = True
+                session.runtime_down = True
         return
 
 
-ContainerIdentityState = Literal["current", "unresolved", "stale"]
+RuntimeIdentityState = Literal["current", "unresolved", "stale"]
 
 
-def _container_identity_state(
+def _runtime_identity_state(
+    cfg: Config,
     session: SessionInfo,
     *,
-    container_profiles: dict[str, ContainerProfile] | None,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None,
     launch_user: str,
-) -> ContainerIdentityState:
+) -> RuntimeIdentityState:
     if not session.launch_record_verified:
         return "stale"
-    if not session.container_profile or not session.container:
+    if not session.runtime or not session.runtime_resource:
         return "stale"
-    if not session.container_id or not session.container_epoch:
+    if not session.runtime_id or not session.runtime_epoch:
         return "stale"
-    if container_profiles is None:
+    if runtimes is None:
         return "stale"
-    profile = container_profiles.get(session.container_profile)
+    profile = runtimes.get(session.runtime)
     if profile is None:
         return "stale"
-    if profile.fingerprint != session.container_profile_fingerprint:
+    if profile.fingerprint != session.runtime_fingerprint:
         return "stale"
-    from uxon.infra.container import current_container_identity_for_profile
+    from uxon.infra.runtime import current_runtime_identity_for_profile
 
-    live = current_container_identity_for_profile(profile, session.container, launch_user)
+    live = current_runtime_identity_for_profile(cfg, profile, session.runtime_resource, launch_user)
     if live is None:
         return "unresolved"
-    if live.id == session.container_id and live.epoch == session.container_epoch:
+    if live.id == session.runtime_id and live.epoch == session.runtime_epoch:
         return "current"
     return "stale"
 
@@ -287,7 +298,7 @@ def _read_cgroup_procs(cgroup_path: str) -> list[int]:
 
     ``cgroup_path`` is the kernel-reported path stashed at launch (leading-slash
     rooted at the cgroup v2 mount). World-readable, unprivileged. Any read
-    failure (absent path = stopped container, permission, race) → ``[]``
+    failure (absent path = stopped workload, permission, race) → ``[]``
     (degrade) — never raises.
     """
     rel = cgroup_path.lstrip("/")
@@ -303,10 +314,10 @@ def _read_pid_sessions(pids: list[int]) -> dict[int, str] | None:
 
     ``/proc/<pid>/environ`` is not readable unprivileged under the distro
     default ``ptrace_scope=1`` (decision doc), so this issues a SINGLE
-    non-interactive ``sudo -n`` shell-out per distinct container (NOT per
+    non-interactive ``sudo -n`` shell-out per distinct resource (NOT per
     session — AC-P1.5) that emits ``<pid> <UXON_SESSION value>`` lines, parsed
     host-side. Returns ``None`` on ANY failure (no sudo grant, non-zero,
-    timeout, OSError) so the caller degrades to the per-container shared figure
+    timeout, OSError) so the caller degrades to the per-resource shared figure
     — never raises, never blocks the refresh.
 
     The helper reads each ``/proc/<pid>/environ`` and ``tr``-translates NULs to
@@ -330,7 +341,7 @@ def _read_pid_sessions(pids: list[int]) -> dict[int, str] | None:
     try:
         cp = run_query(
             ["sudo", "-n", "sh", "-c", script],
-            timeout=CONTAINER_CMD_TIMEOUT_SEC,
+            timeout=RUNTIME_CMD_TIMEOUT_SEC,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -340,12 +351,13 @@ def _read_pid_sessions(pids: list[int]) -> dict[int, str] | None:
 
 
 def collect_sessions_for_user(
+    cfg: Config,
     user: str,
     session_prefix: str,
     socket_path: str | None,
     *,
     legacy_prefixes: tuple[str, ...] = (),
-    container_profiles: dict[str, ContainerProfile] | None = None,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None = None,
 ) -> list[SessionInfo]:
     # Demo-mode short-circuit: when ``UXON_DEMO_HOSTS`` is set, bypass
     # tmux entirely and read the synthetic-local envelope. Returning
@@ -362,18 +374,18 @@ def collect_sessions_for_user(
     # remote aggregator). Use the non-interactive sudo prefix so a
     # missing NOPASSWD grant returns non-zero immediately rather than
     # blocking on a hidden password prompt.
-    base = tmux.tmux_base(user, socket_path, nonint=True)
+    base = tmux.tmux_base(cfg, user, socket_path, nonint=True)
     probe = run_query(base + ["list-sessions"])
     if probe.returncode != 0:
         return []
 
     # Environment markers are diagnostic only. The finalized launch record is
-    # the authority for profile, agent, and container identity.
+    # the authority for profile, agent, and workload identity.
     fmt = (
         "#{session_name}\t#{session_id}\t#{session_attached}\t#{session_windows}"
         "\t#{session_created}\t#{session_activity}"
-        "\t#{E:" + LAUNCH_NONCE_ENV + "}\t#{E:" + CONTAINER_NAME_ENV + "}"
-        "\t#{E:" + CONTAINER_CGROUP_ENV + "}"
+        "\t#{E:" + LAUNCH_NONCE_ENV + "}\t#{E:" + RUNTIME_RESOURCE_ENV + "}"
+        "\t#{E:" + RUNTIME_CGROUP_ENV + "}"
     )
     rows = run_cmd(base + ["list-sessions", "-F", fmt]).stdout.splitlines()
     sessions: list[SessionInfo] = []
@@ -390,8 +402,8 @@ def collect_sessions_for_user(
             created_ts,
             activity_ts,
             launch_nonce,
-            container_marker,
-            _container_cgroup_marker,
+            runtime_marker,
+            _runtime_cgroup_marker,
         ) = parts
         if not any(name.startswith(p) for p in known_prefixes):
             continue
@@ -459,20 +471,24 @@ def collect_sessions_for_user(
                 launch_nonce=launch_nonce,
                 launch_record_verified=record is not None,
                 launch_user=str(record.get("launch_user", "")) if record else "",
-                container_profile=str(record.get("container_profile", "")) if record else "",
-                container_profile_fingerprint=(
-                    str(record.get("container_profile_fingerprint", "")) if record else ""
+                execution_backend=(str(record.get("execution_backend", "")) if record else ""),
+                execution_fingerprint=(
+                    str(record.get("execution_fingerprint", "")) if record else ""
                 ),
-                container=str(record.get("container", "")) if record else "",
-                container_cgroup=str(record.get("container_cgroup", "")) if record else "",
-                container_id=str(record.get("container_id", "")) if record else "",
-                container_epoch=str(record.get("container_epoch", "")) if record else "",
-                container_marker=container_marker,
+                runtime=str(record.get("runtime", "")) if record else "",
+                runtime_kind=str(record.get("runtime_kind", "")) if record else "",
+                runtime_fingerprint=(str(record.get("runtime_fingerprint", "")) if record else ""),
+                runtime_resource=str(record.get("runtime_resource", "")) if record else "",
+                runtime_cgroup=str(record.get("runtime_cgroup", "")) if record else "",
+                runtime_id=str(record.get("runtime_id", "")) if record else "",
+                runtime_epoch=str(record.get("runtime_epoch", "")) if record else "",
+                runtime_marker=runtime_marker,
             )
         )
     enrich_session_usage(
+        cfg,
         sessions,
-        container_profiles=container_profiles,
+        runtimes=runtimes,
         launch_user=user,
     )
     return sessions
@@ -483,11 +499,12 @@ def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
     for user in normalize_user_list(users):
         sessions.extend(
             collect_sessions_for_user(
+                cfg,
                 user,
                 cfg.session_prefix,
                 tmux.tmux_socket_path(cfg, user),
                 legacy_prefixes=cfg.legacy_session_prefixes,
-                container_profiles=cfg.container_profiles,
+                runtimes=cfg.runtimes,
             )
         )
     return sessions
@@ -628,6 +645,7 @@ def legacy_compatible_sessions(
     cfg: Config, launch_user: str, stem: str, compatibility_root: str
 ) -> list[SessionInfo]:
     sessions = collect_sessions_for_user(
+        cfg,
         launch_user,
         cfg.session_prefix,
         socket_path=None,
@@ -646,7 +664,7 @@ def legacy_compatible_sessions(
 
 def legacy_socket_conflict_hint(cfg: Config, launch_user: str, existing: list[SessionInfo]) -> str:
     attach_cmd = shlex.join(
-        tmux.tmux_base(launch_user) + ["attach-session", "-t", existing[0].name]
+        tmux.tmux_base(cfg, launch_user) + ["attach-session", "-t", existing[0].name]
     )
     session_names = ", ".join(session.name for session in existing)
     return (

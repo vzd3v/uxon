@@ -140,8 +140,8 @@ class ListJsonTests(unittest.TestCase):
         boxed.profile = "claude_box"
         boxed.agent = "claude"
         boxed.launch_record_verified = True
-        boxed.container_profile = "box_a"
-        boxed.container = "uxon-box-a"
+        boxed.runtime = "box_a"
+        boxed.runtime_resource = "uxon-box-a"
 
         data = listing_app._list_data(
             cfg, [same_agent_a, same_agent_b, boxed], ["u-vz"], all_users=False
@@ -151,8 +151,8 @@ class ListJsonTests(unittest.TestCase):
             [(r["profile"], r["agent"]) for r in records],
             [("claude_fast", "claude"), ("claude_safe", "claude"), ("claude_box", "claude")],
         )
-        self.assertEqual(records[2]["container_profile"], "box_a")
-        self.assertEqual(records[2]["container"], "uxon-box-a")
+        self.assertEqual(records[2]["runtime"], "box_a")
+        self.assertEqual(records[2]["runtime_resource"], "uxon-box-a")
 
     def test_empty_sessions_emits_empty_list(self) -> None:
         cfg = _make_config()
@@ -168,6 +168,7 @@ class ListJsonTests(unittest.TestCase):
     def test_collect_sessions_uses_verified_launch_record_fields(self) -> None:
         from uxon.infra import sessions_probe
 
+        cfg = _make_config()
         list_row = "\t".join(
             [
                 "uxon-demo@claude_fast",
@@ -186,12 +187,12 @@ class ListJsonTests(unittest.TestCase):
             "profile": "claude_fast",
             "agent": "claude",
             "launch_user": "alice",
-            "container_profile": "box",
-            "container_profile_fingerprint": "fp",
-            "container": "record-box",
-            "container_id": "cid-1",
-            "container_cgroup": "/record.scope",
-            "container_epoch": "1000",
+            "runtime": "box",
+            "runtime_fingerprint": "fp",
+            "runtime_resource": "record-box",
+            "runtime_id": "cid-1",
+            "runtime_cgroup": "/record.scope",
+            "runtime_epoch": "1000",
         }
         with (
             mock.patch(
@@ -209,22 +210,23 @@ class ListJsonTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe.enrich_session_usage"),
         ):
             [session] = sessions_probe.collect_sessions_for_user(
-                "alice", "uxon-", "/tmp/uxon-alice.sock"
+                cfg, "alice", "uxon-", "/tmp/uxon-alice.sock"
             )
 
         self.assertEqual(session.profile, "claude_fast")
         self.assertEqual(session.agent, "claude")
         self.assertEqual(session.launch_user, "alice")
-        self.assertEqual(session.container_profile, "box")
-        self.assertEqual(session.container, "record-box")
-        self.assertEqual(session.container_id, "cid-1")
-        self.assertEqual(session.container_cgroup, "/record.scope")
-        self.assertEqual(session.container_epoch, "1000")
-        self.assertEqual(session.container_marker, "env-box")
+        self.assertEqual(session.runtime, "box")
+        self.assertEqual(session.runtime_resource, "record-box")
+        self.assertEqual(session.runtime_id, "cid-1")
+        self.assertEqual(session.runtime_cgroup, "/record.scope")
+        self.assertEqual(session.runtime_epoch, "1000")
+        self.assertEqual(session.runtime_marker, "env-box")
 
     def test_collect_sessions_without_record_uses_suffix_display_only(self) -> None:
         from uxon.infra import sessions_probe
 
+        cfg = _make_config()
         list_row = "\t".join(
             [
                 "uxon-demo@claude_fast",
@@ -255,15 +257,15 @@ class ListJsonTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe.enrich_session_usage"),
         ):
             [session] = sessions_probe.collect_sessions_for_user(
-                "alice", "uxon-", "/tmp/uxon-alice.sock"
+                cfg, "alice", "uxon-", "/tmp/uxon-alice.sock"
             )
 
         self.assertEqual(session.profile, "claude_fast")
         self.assertEqual(session.agent, "")
         self.assertFalse(session.launch_record_verified)
-        self.assertEqual(session.container, "")
-        self.assertEqual(session.container_profile, "")
-        self.assertEqual(session.container_marker, "env-box")
+        self.assertEqual(session.runtime_resource, "")
+        self.assertEqual(session.runtime, "")
+        self.assertEqual(session.runtime_marker, "env-box")
 
 
 class KillJsonTests(unittest.TestCase):

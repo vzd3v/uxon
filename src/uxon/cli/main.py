@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action in {"attach", "list", "kill", "kill-all"}:
         from uxon.infra import probes as uxon_probes
 
-        report = uxon_probes.probe_host(launch_user, cfg.agents)
+        report = uxon_probes.probe_host(cfg, launch_user, cfg.agents)
         if report.tmux.path is None:
             from uxon.errors import fail
 

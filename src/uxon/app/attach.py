@@ -144,7 +144,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if target_user != launch_user:
         from uxon.infra.sudo_probe import probe_sudo_capability
 
-        caps = probe_sudo_capability([target_user])
+        caps = probe_sudo_capability(cfg, [target_user])
         if target_user not in caps.reachable_users:
             _audit.audit(
                 _attach_event,
@@ -170,7 +170,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             extra={"profile": "", "agent": ""},
         )
         base = tmux.configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
-        full = ["sudo", "-niu", target_user, "--", *base]
+        full = base
         if args.dry_run:
             print(f"attach_user={shlex.quote(target_user)}")
             print(f"socket={shlex.quote(tmux.tmux_socket_path(cfg, target_user))}")
@@ -208,6 +208,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
     if not sessions:
         legacy = sessions_probe.collect_sessions_for_user(
+            cfg,
             launch_user,
             cfg.session_prefix,
             socket_path=None,

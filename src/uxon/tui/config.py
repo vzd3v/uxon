@@ -21,8 +21,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from uxon.app.launch import ContainerGate
+    from uxon.app.launch import RuntimeGate
     from uxon.domain.agents import AgentSpec
+    from uxon.domain.execution import ExecutionConfig
     from uxon.domain.launch_request import LaunchRequest
     from uxon.infra.remote_hosts import RemoteHost
     from uxon.tui.refresh import SourceSpec
@@ -68,6 +69,7 @@ class TuiConfig:
     launch_auto_mode: bool
 
     agents: dict[str, AgentSpec]
+    execution: ExecutionConfig
 
     # ── Cadence knobs ────────────────────────────────────────────────
     tui_refresh_interval_seconds: float
@@ -100,7 +102,7 @@ class TuiConfig:
     on_launch_cwd: Callable[..., LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
-    on_container_gate: Callable[[str, str, str], ContainerGate | None]
+    on_runtime_gate: Callable[[str, str, str], RuntimeGate | None]
     on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]]
     on_git_remote_options: Callable[[str, str, str], tuple[list[tuple[str, str]], str]]
     on_probe_worktrees: Callable[[str], list]
@@ -137,6 +139,7 @@ class TuiConfig:
             launch_profiles=dict(ctx.launch_profiles),
             launch_auto_mode=ctx.launch_auto_mode,
             agents=dict(ctx.agents),
+            execution=ctx.execution,
             tui_refresh_interval_seconds=float(ctx.tui_refresh_interval_seconds),
             tui_ssh_refresh_interval_seconds=float(ctx.tui_ssh_refresh_interval_seconds),
             tui_render_debounce_ms=int(ctx.tui_render_debounce_ms),
@@ -163,7 +166,7 @@ class TuiConfig:
             on_launch_cwd=ctx.on_launch_cwd,
             on_launch_new=ctx.on_launch_new,
             on_launch_existing=ctx.on_launch_existing,
-            on_container_gate=ctx.on_container_gate,
+            on_runtime_gate=ctx.on_runtime_gate,
             on_probe_existing_sessions=ctx.on_probe_existing_sessions,
             on_git_remote_options=ctx.on_git_remote_options,
             on_probe_worktrees=ctx.on_probe_worktrees,

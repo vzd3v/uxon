@@ -6,7 +6,7 @@ are assertable without docker/podman:
 * exec-site wrap shape (AC-B1) + disabled parity (AC-B6),
 * deterministic name resolution per (user, project dir) (AC-B2),
 * ``path_map`` longest-prefix container path (AC-B3),
-* the ``on_missing`` × ``on_missing_mode`` policy matrix with probe results
+* the ``on_missing`` × ``approval`` policy matrix with probe results
   mocked at the subprocess boundary (AC-B4),
 * name / path / ``.format`` safety incl. hostile-dir-name cases (AC-B8),
 * the ``[container].enabled`` kill caveat (Security MEDIUM-2).
@@ -24,51 +24,53 @@ import uxon.app.launch_profile as launch_profile_app
 from uxon.domain.agents import default_agent_catalog
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
-from uxon.domain.container import (
-    CONTAINER_CGROUP_ENV,
-    CONTAINER_EPOCH_ENV,
-    CONTAINER_ID_ENV,
-    CONTAINER_NAME_ENV,
-    SESSION_ENV,
-    ContainerProfile,
-    apply_path_map,
-    container_pidfile,
-    decide_container_action,
-    is_valid_container_name,
-    render_stop_template,
-    resolve_profile_container_name,
-    validate_container_name,
-    validate_container_profile,
-    validate_path_map,
-    wrap_agent_for_container,
-)
 from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.domain.launch_profiles import (
-    ContainerContext,
-    ContainerIdentity,
     LaunchConfig,
     LaunchProfile,
     ResolvedLaunchProfile,
+    RuntimeContext,
+    RuntimeIdentity,
     builtin_launch_profiles,
+)
+from uxon.domain.runtime import (
+    RUNTIME_CGROUP_ENV,
+    RUNTIME_EPOCH_ENV,
+    RUNTIME_ID_ENV,
+    RUNTIME_RESOURCE_ENV,
+    SESSION_ENV,
+    WorkloadRuntimeSpec,
+    apply_path_map,
+    decide_runtime_action,
+    is_valid_runtime_resource,
+    render_stop_command,
+    resolve_runtime_resource_name,
+    runtime_pidfile,
+    validate_path_map,
+    validate_runtime,
+    validate_runtime_resource,
+    wrap_agent_for_runtime,
 )
 
 
-def _cfg(profile: ContainerProfile | None = None, **overrides) -> Config:
+def _cfg(profile: WorkloadRuntimeSpec | None = None, **overrides) -> Config:
     """Minimal Config carrying an optional container profile (other fields inert).
 
     When ``profile`` is given it is registered as ``"box"`` and the ``claude``
-    launch profile is wired to use it (``container_profile="box"``), so the
+    launch profile is wired to use it (``runtime="box"``), so the
     profile-based launch/teardown/doctor paths resolve a container context.
     """
     agents = default_agent_catalog()
     profiles = builtin_launch_profiles(agents)
-    container_profiles: dict[str, ContainerProfile] = {}
+    runtimes: dict[str, WorkloadRuntimeSpec] = {
+        "direct": WorkloadRuntimeSpec(id="direct", kind="direct")
+    }
     if profile is not None:
-        container_profiles["box"] = profile
-        profiles["claude"] = LaunchProfile(id="claude", agent="claude", container_profile="box")
+        runtimes["box"] = profile
+        profiles["claude"] = LaunchProfile(id="claude", agent="claude", runtime="box")
     launch = LaunchConfig(default_profile="claude", profiles=profiles)
     base = dict(
-        runtime_user="",
+        default_launch_user="",
         default_launch_mode="caller",
         enable_all_users_list=False,
         launch_user_by_caller={},
@@ -89,7 +91,7 @@ def _cfg(profile: ContainerProfile | None = None, **overrides) -> Config:
         tmux_append_server_options={},
         agents=agents,
         launch=launch,
-        container_profiles=container_profiles,
+        runtimes=runtimes,
     )
     base.update(overrides)
     return Config(**base)
@@ -103,36 +105,36 @@ def _resolved(
     mode: str = "yolo",
     target_dir: str = "/srv/projects/myapp",
 ):
-    from uxon.domain.container import apply_path_map, resolve_profile_container_name
+    from uxon.domain.runtime import apply_path_map, resolve_runtime_resource_name
     from uxon.domain.session import slugify
 
     profile = cfg.launch.profiles[profile_id]
     context = None
-    if profile.container_profile:
-        container_profile = cfg.container_profiles[profile.container_profile]
-        dir_token = apply_path_map(target_dir, container_profile.path_map)
-        context = ContainerContext(
-            profile_id=container_profile.id,
-            name=resolve_profile_container_name(
-                container_profile,
+    if profile.runtime != "direct":
+        runtime = cfg.runtimes[profile.runtime]
+        dir_token = apply_path_map(target_dir, runtime.path_map)
+        context = RuntimeContext(
+            runtime_id=runtime.id,
+            resource=resolve_runtime_resource_name(
+                runtime,
                 user=launch_user,
                 launch_profile=profile.id,
                 agent=profile.agent,
                 project_slug=slugify(target_dir.rsplit("/", 1)[-1]),
             ),
-            dir_token=dir_token,
-            profile_fingerprint=container_profile.fingerprint,
+            runtime_dir=dir_token,
+            fingerprint=runtime.fingerprint,
         )
     return ResolvedLaunchProfile(
         profile=profile,
         agent=cfg.agents[profile.agent],
         launch_user=launch_user,
         mode_id=mode,
-        container=context,
+        runtime_context=context,
     )
 
 
-_EXEC = ("docker", "exec", "-it", "-w", "{dir}", "{name}")
+_EXEC = ("docker", "exec", "-it", "-w", "{runtime_dir}", "{resource}")
 
 
 def _managed_create_cmd(req):
@@ -143,39 +145,39 @@ def _managed_create_cmd(req):
 class NameResolutionTests(unittest.TestCase):
     """AC-B2 — same container per (user, project dir), never per-session."""
 
-    def test_name_template_expands_project_slug(self) -> None:
-        profile = ContainerProfile(
-            id="box", runtime_namespace="per_user", name_template="proj-{project_slug}"
+    def test_resource_name_template_expands_project_slug(self) -> None:
+        profile = WorkloadRuntimeSpec(
+            id="box", resource_scope="per_user", resource_name_template="proj-{project_slug}"
         )
         self.assertEqual(
-            resolve_profile_container_name(
+            resolve_runtime_resource_name(
                 profile, user="dana", launch_profile="claude", agent="claude", project_slug="myapp"
             ),
             "proj-myapp",
         )
 
     def test_same_dir_same_name_different_dir_differs(self) -> None:
-        profile = ContainerProfile(
-            id="box", runtime_namespace="per_user", name_template="proj-{project_slug}"
+        profile = WorkloadRuntimeSpec(
+            id="box", resource_scope="per_user", resource_name_template="proj-{project_slug}"
         )
-        a1 = resolve_profile_container_name(
+        a1 = resolve_runtime_resource_name(
             profile, user="dana", launch_profile="claude", agent="claude", project_slug="myapp"
         )
-        a2 = resolve_profile_container_name(
+        a2 = resolve_runtime_resource_name(
             profile, user="dana", launch_profile="claude", agent="claude", project_slug="myapp"
         )
-        b = resolve_profile_container_name(
+        b = resolve_runtime_resource_name(
             profile, user="dana", launch_profile="claude", agent="claude", project_slug="other"
         )
         self.assertEqual(a1, a2)
         self.assertNotEqual(a1, b)
 
     def test_user_placeholder(self) -> None:
-        profile = ContainerProfile(
-            id="box", runtime_namespace="per_user", name_template="{user}-box"
+        profile = WorkloadRuntimeSpec(
+            id="box", resource_scope="per_user", resource_name_template="{user}-box"
         )
         self.assertEqual(
-            resolve_profile_container_name(
+            resolve_runtime_resource_name(
                 profile, user="dana", launch_profile="claude", agent="claude", project_slug="x"
             ),
             "dana-box",
@@ -183,7 +185,7 @@ class NameResolutionTests(unittest.TestCase):
 
 
 class PathMapTests(unittest.TestCase):
-    """AC-B3 — {dir} is the container-side path; allowed_roots stays host-side."""
+    """AC-B3 — {runtime_dir} is the container-side path; allowed_roots stays host-side."""
 
     def test_no_map_returns_host_path(self) -> None:
         self.assertEqual(apply_path_map("/srv/projects/myapp", ()), "/srv/projects/myapp")
@@ -196,13 +198,13 @@ class PathMapTests(unittest.TestCase):
         pm = validate_path_map({"/srv/projects/myapp": "/work"})
         self.assertEqual(apply_path_map("/srv/projects/myapp", pm), "/work")
 
-    def test_resolve_container_applies_path_map_to_dir(self) -> None:
-        # Profile path: apply_path_map + resolve_profile_container_name are
+    def test_resolve_runtime_applies_path_map_to_dir(self) -> None:
+        # Profile path: apply_path_map + resolve_runtime_resource_name are
         # the pure halves the removed tmux.resolve_container composed.
-        profile = ContainerProfile(
+        profile = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
             path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
         )
         dir_token = apply_path_map("/srv/projects/myapp", profile.path_map)
@@ -253,15 +255,15 @@ class ExecWrapTests(unittest.TestCase):
         self.assertNotIn("sh", cmd)
         self.assertEqual(cmd[idx:], ["claude", "--dangerously-skip-permissions"])
 
-    def test_enabled_prepends_exec_template(self) -> None:
-        c = ContainerProfile(
+    def test_enabled_prepends_exec_prefix(self) -> None:
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
         )
         req = self._build(_cfg(c))
-        # exec_template(resolved) + the per-session wrapper + agent argv, in
+        # exec_prefix(resolved) + the per-session wrapper + agent argv, in
         # order. After the hoist, EVERY enabled session is wrapped (to export
         # UXON_SESSION), so the resolved exec prefix is the leading 6 tokens.
         cmd = list(_managed_create_cmd(req))
@@ -276,12 +278,12 @@ class ExecWrapTests(unittest.TestCase):
             ["claude", "--dangerously-skip-permissions"],
         )
 
-    def test_enabled_with_path_map_uses_container_dir(self) -> None:
-        c = ContainerProfile(
+    def test_enabled_with_path_map_uses_runtime_dir(self) -> None:
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
             path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
         )
         req = self._build(_cfg(c))
@@ -290,22 +292,22 @@ class ExecWrapTests(unittest.TestCase):
         self.assertIn("/work", cmd)
         self.assertNotIn("/srv/projects/myapp", cmd[cmd.index("docker") :])
 
-    def test_stop_template_stashes_name_and_wraps_agent(self) -> None:
+    def test_stop_command_stashes_name_and_wraps_agent(self) -> None:
         # Teardown opt-in (AC-B5): the new-session argv stashes the resolved
         # name in the session env and the agent is wrapped so it exports the
         # per-session marker AND records its in-container PID, while the exec
         # prefix is unchanged.
-        c = ContainerProfile(
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
-            stop_template=("docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile})"),
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
+            stop_command=("docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile})"),
         )
         cmd = list(_managed_create_cmd(self._build(_cfg(c))))
         # ``-e UXON_CONTAINER=proj-myapp`` rides the new-session argv.
         self.assertIn("-e", cmd)
-        self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
+        self.assertIn(f"{RUNTIME_RESOURCE_ENV}=proj-myapp", cmd)
         # The agent is wrapped: exec prefix, then ``sh -c '…' uxon-agent claude …``.
         tail = cmd[cmd.index("docker") :]
         self.assertEqual(
@@ -321,26 +323,26 @@ class ExecWrapTests(unittest.TestCase):
             tail[tail.index("uxon-agent") + 1 :], ["claude", "--dangerously-skip-permissions"]
         )
 
-    def test_enabled_without_stop_template_carries_marker_but_no_pidfile(self) -> None:
-        # After the hoist: enabled + no stop_template (+ no resolve_cmd, the
+    def test_enabled_without_stop_command_carries_marker_but_no_pidfile(self) -> None:
+        # After the hoist: enabled + no stop_command (+ no identity_command, the
         # default) still carries ``-e UXON_CONTAINER=<bare name>`` and wraps the
         # agent to export ``UXON_SESSION``, but does NOT write a pidfile, and the
-        # identity vars are ABSENT (resolve_cmd unset → degrade path).
-        c = ContainerProfile(
+        # identity vars are ABSENT (identity_command unset → degrade path).
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
         )
         cmd = list(_managed_create_cmd(self._build(_cfg(c))))
         # Bare-name marker rides the session env.
         self.assertIn("-e", cmd)
-        self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
-        # Identity vars absent without resolve_cmd (degrade).
+        self.assertIn(f"{RUNTIME_RESOURCE_ENV}=proj-myapp", cmd)
+        # Identity vars absent without identity_command (degrade).
         joined = " ".join(cmd)
-        self.assertNotIn(CONTAINER_ID_ENV, joined)
-        self.assertNotIn(CONTAINER_CGROUP_ENV, joined)
-        self.assertNotIn(CONTAINER_EPOCH_ENV, joined)
+        self.assertNotIn(RUNTIME_ID_ENV, joined)
+        self.assertNotIn(RUNTIME_CGROUP_ENV, joined)
+        self.assertNotIn(RUNTIME_EPOCH_ENV, joined)
         # The agent IS wrapped to export the per-session marker, with NO pidfile.
         tail = cmd[cmd.index("docker") :]
         self.assertEqual(tail[6:8], ["sh", "-c"])
@@ -351,28 +353,28 @@ class ExecWrapTests(unittest.TestCase):
         )
 
     def test_resolved_identity_rides_separate_session_env_vars(self) -> None:
-        # When resolve_cmd resolves a non-empty identity, the id / cgroup /
+        # When identity_command resolves a non-empty identity, the id / cgroup /
         # epoch ride SEPARATE ``-e`` vars; ``UXON_CONTAINER`` keeps the bare name.
-        from uxon.infra.container import ContainerIdentity
+        from uxon.infra.runtime import RuntimeIdentity
 
-        c = ContainerProfile(
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
-            resolve_cmd=("inspect", "{name}"),
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
+            identity_command=("inspect", "{resource}"),
         )
-        ident = ContainerIdentity(
+        ident = RuntimeIdentity(
             id="abc123", cgroup="/sys/fs/cgroup/x.scope", epoch="2026-06-15T00:00:00Z"
         )
         with mock.patch(
-            "uxon.infra.container.resolve_container_identity_for_profile", return_value=ident
+            "uxon.infra.runtime.resolve_runtime_identity_for_profile", return_value=ident
         ):
             cmd = list(_managed_create_cmd(self._build(_cfg(c))))
-        self.assertIn(f"{CONTAINER_NAME_ENV}=proj-myapp", cmd)
-        self.assertIn(f"{CONTAINER_ID_ENV}=abc123", cmd)
-        self.assertIn(f"{CONTAINER_CGROUP_ENV}=/sys/fs/cgroup/x.scope", cmd)
-        self.assertIn(f"{CONTAINER_EPOCH_ENV}=2026-06-15T00:00:00Z", cmd)
+        self.assertIn(f"{RUNTIME_RESOURCE_ENV}=proj-myapp", cmd)
+        self.assertIn(f"{RUNTIME_ID_ENV}=abc123", cmd)
+        self.assertIn(f"{RUNTIME_CGROUP_ENV}=/sys/fs/cgroup/x.scope", cmd)
+        self.assertIn(f"{RUNTIME_EPOCH_ENV}=2026-06-15T00:00:00Z", cmd)
 
 
 class NameSafetyTests(unittest.TestCase):
@@ -381,39 +383,39 @@ class NameSafetyTests(unittest.TestCase):
     def test_hostile_leading_dot_slug_rejected(self) -> None:
         # A project dir slugifying to ``.--x`` keeps the leading dot — reject.
         with self.assertRaises(SystemExit):
-            validate_container_name(".--x")
+            validate_runtime_resource(".--x")
 
     def test_all_dot_name_rejected(self) -> None:
         with self.assertRaises(SystemExit):
-            validate_container_name("...")
+            validate_runtime_resource("...")
 
     def test_leading_underscore_rejected(self) -> None:
         with self.assertRaises(SystemExit):
-            validate_container_name("_box")
+            validate_runtime_resource("_box")
 
     def test_leading_dash_rejected(self) -> None:
         # An option-looking token must never reach ``docker exec … <name>``.
         with self.assertRaises(SystemExit):
-            validate_container_name("-rm")
+            validate_runtime_resource("-rm")
 
     def test_over_128_chars_rejected(self) -> None:
         with self.assertRaises(SystemExit):
-            validate_container_name("a" * 129)
+            validate_runtime_resource("a" * 129)
 
     def test_safe_name_accepted(self) -> None:
-        self.assertEqual(validate_container_name("proj-myapp_1.2"), "proj-myapp_1.2")
+        self.assertEqual(validate_runtime_resource("proj-myapp_1.2"), "proj-myapp_1.2")
 
     def test_resolved_hostile_dir_name_rejected_end_to_end(self) -> None:
         # Directory basename "-evil" slugifies (strip('-')) to "evil" — safe;
         # ".evil" keeps the dot → unsafe. Prove the post-expansion check fires
         # on the profile name resolution path.
-        profile = ContainerProfile(
-            id="box", runtime_namespace="per_user", name_template="{project_slug}"
+        profile = WorkloadRuntimeSpec(
+            id="box", resource_scope="per_user", resource_name_template="{project_slug}"
         )
         from uxon.domain.session import slugify
 
         with self.assertRaises(SystemExit):
-            resolve_profile_container_name(
+            resolve_runtime_resource_name(
                 profile,
                 user="dana",
                 launch_profile="claude",
@@ -423,7 +425,7 @@ class NameSafetyTests(unittest.TestCase):
 
 
 class PathSafetyTests(unittest.TestCase):
-    """AC-B8 — path_map / {dir} must be absolute, normalized, ``..``-free."""
+    """AC-B8 — path_map / {runtime_dir} must be absolute, normalized, ``..``-free."""
 
     def test_path_map_value_with_dotdot_rejected(self) -> None:
         with self.assertRaises(SystemExit):
@@ -434,21 +436,21 @@ class PathSafetyTests(unittest.TestCase):
             validate_path_map({"relative": "/work"})
 
     def test_path_map_value_literal_not_formatted(self) -> None:
-        # A ``{name}`` in a path_map value must be a literal, never expanded —
+        # A ``{resource}`` in a path_map value must be a literal, never expanded —
         # it is a non-absolute string, so it is simply rejected (not run).
         with self.assertRaises(SystemExit):
-            validate_path_map({"/srv": "{name}"})
+            validate_path_map({"/srv": "{resource}"})
 
 
 class FormatGuardTests(unittest.TestCase):
     """AC-B8 — a bad placeholder fails with a clear message, not a traceback."""
 
-    def test_unknown_placeholder_in_name_template(self) -> None:
-        profile = ContainerProfile(
-            id="box", runtime_namespace="per_user", name_template="proj-{bogus}"
+    def test_unknown_placeholder_in_resource_name_template(self) -> None:
+        profile = WorkloadRuntimeSpec(
+            id="box", resource_scope="per_user", resource_name_template="proj-{bogus}"
         )
         with self.assertRaises(SystemExit) as ctx:
-            resolve_profile_container_name(
+            resolve_runtime_resource_name(
                 profile, user="dana", launch_profile="claude", agent="claude", project_slug="x"
             )
         # ``fail`` stashes the human message on ``.uxon_msg`` (str() is the code).
@@ -460,29 +462,29 @@ class DecideActionTests(unittest.TestCase):
 
     def test_running_always_execs(self) -> None:
         for on_missing in ("off", "start", "create"):
-            action, _ = decide_container_action(running=True, exists=True, on_missing=on_missing)
+            action, _ = decide_runtime_action(running=True, exists=True, on_missing=on_missing)
             self.assertEqual(action, "exec")
 
     def test_stopped_needs_start_capability(self) -> None:
         self.assertEqual(
-            decide_container_action(running=False, exists=True, on_missing="off")[0], "fail"
+            decide_runtime_action(running=False, exists=True, on_missing="off")[0], "fail"
         )
         self.assertEqual(
-            decide_container_action(running=False, exists=True, on_missing="start")[0], "start"
+            decide_runtime_action(running=False, exists=True, on_missing="start")[0], "start"
         )
         self.assertEqual(
-            decide_container_action(running=False, exists=True, on_missing="create")[0], "start"
+            decide_runtime_action(running=False, exists=True, on_missing="create")[0], "start"
         )
 
     def test_absent_needs_create_capability(self) -> None:
         self.assertEqual(
-            decide_container_action(running=False, exists=False, on_missing="off")[0], "fail"
+            decide_runtime_action(running=False, exists=False, on_missing="off")[0], "fail"
         )
         self.assertEqual(
-            decide_container_action(running=False, exists=False, on_missing="start")[0], "fail"
+            decide_runtime_action(running=False, exists=False, on_missing="start")[0], "fail"
         )
         self.assertEqual(
-            decide_container_action(running=False, exists=False, on_missing="create")[0], "create"
+            decide_runtime_action(running=False, exists=False, on_missing="create")[0], "create"
         )
 
 
@@ -495,7 +497,7 @@ class AsUserShellOutTests(unittest.TestCase):
     """
 
     def _captured_argv(self, fn) -> list[str]:
-        from uxon.infra import container as container_infra
+        from uxon.infra import runtime as runtime_infra
 
         captured: dict[str, list[str]] = {}
 
@@ -511,28 +513,32 @@ class AsUserShellOutTests(unittest.TestCase):
         # Force the cross-user path: pretend uxon runs as someone else so the
         # ``sudo -iu``/``-niu`` prefix is emitted (same-user would be empty).
         with (
-            mock.patch.object(container_infra.subprocess, "run", side_effect=fake_run),
+            mock.patch.object(runtime_infra.subprocess, "run", side_effect=fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="root"),
         ):
             fn()
         return captured["argv"]
 
     def test_probe_argv_is_prefixed_for_launch_user(self) -> None:
-        from uxon.infra import container as container_infra
+        from uxon.infra import runtime as runtime_infra
 
         argv = self._captured_argv(
-            lambda: container_infra._probe_exit_ok(["docker", "top", "box"], "dana")
+            lambda: runtime_infra._probe_exit_ok(_cfg(), ["docker", "top", "box"], "dana", 10.0)
         )
         # Non-interactive prefix (no TTY) for probes, then the operator argv.
         self.assertEqual(argv[:4], ["sudo", "-niu", "dana", "--"])
         self.assertEqual(argv[-3:], ["docker", "top", "box"])
 
     def test_prepare_argv_runs_in_host_dir_as_launch_user(self) -> None:
-        from uxon.infra import container as container_infra
+        from uxon.infra import runtime as runtime_infra
 
         argv = self._captured_argv(
-            lambda: container_infra._run_prepare(
-                ["docker", "compose", "up", "-d"], "/srv/projects/app", "dana"
+            lambda: runtime_infra._run_prepare(
+                _cfg(),
+                ["docker", "compose", "up", "-d"],
+                "/srv/projects/app",
+                "dana",
+                10.0,
             )
         )
         # Interactive prefix for the launch-time start/create.
@@ -544,60 +550,68 @@ class AsUserShellOutTests(unittest.TestCase):
         self.assertEqual(argv[-4:], ["docker", "compose", "up", "-d"])
 
     def test_probe_permission_error_fails_cleanly(self) -> None:
-        from uxon.infra import container as container_infra
+        from uxon.infra import runtime as runtime_infra
 
         with (
             mock.patch.object(
-                container_infra.subprocess, "run", side_effect=PermissionError("denied")
+                runtime_infra.subprocess, "run", side_effect=PermissionError("denied")
             ),
             mock.patch("uxon.infra.identity.process_user", return_value="dana"),
             self.assertRaises(SystemExit),
         ):
-            container_infra._probe_exit_ok(["docker", "top", "box"], "dana")
+            runtime_infra._probe_exit_ok(_cfg(), ["docker", "top", "box"], "dana", 10.0)
 
 
 class IdentityParseTests(unittest.TestCase):
     """Phase 1 identity resolution — parsers and the resolver degrade, never raise."""
 
     def test_resolve_identity_degrades_on_bad_template(self) -> None:
-        # AC-P1.3 / AC-P3.5 degrade-never-block: a misconfigured resolve_cmd
+        # AC-P1.3 / AC-P3.5 degrade-never-block: a misconfigured identity_command
         # template must yield EMPTY_IDENTITY, never abort the launch with the
         # render_template SystemExit (it sits on the launch hot path).
-        from uxon.infra import container as container_infra
-        from uxon.infra.container import EMPTY_IDENTITY
+        from uxon.infra import runtime as runtime_infra
+        from uxon.infra.runtime import EMPTY_IDENTITY
 
-        profile = ContainerProfile(
+        profile = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
             # Single-brace ``{.Id}`` is an invalid format token (the
             # documented form doubles braces) → render_profile_template fail()s.
-            resolve_cmd=("docker", "inspect", "--format", "{.Id}", "{name}"),
+            identity_command=("docker", "inspect", "--format", "{.Id}", "{resource}"),
         )
         cfg = _cfg(profile)
         resolved = _resolved(cfg, "dana", target_dir="/srv/projects/myapp")
-        ident = container_infra.resolve_container_identity_for_profile(
+        ident = runtime_infra.resolve_runtime_identity_for_profile(
             cfg, "/srv/projects/myapp", resolved
         )
         self.assertIs(ident, EMPTY_IDENTITY)
 
-    def test_parse_resolve_output_first_line_three_tokens(self) -> None:
-        from uxon.infra.container import parse_resolve_output
+    def test_parse_runtime_identity_output_json_contract(self) -> None:
+        from uxon.infra.runtime import parse_runtime_identity_output
 
         self.assertEqual(
-            parse_resolve_output("\n  abc123 4242 2026-06-15T00:00:00Z \nextra\n"),
-            ("abc123", "4242", "2026-06-15T00:00:00Z"),
+            parse_runtime_identity_output(
+                '{"id":"abc123","host_pid":4242,"epoch":"2026-06-15T00:00:00Z"}'
+            ),
+            RuntimeIdentity(id="abc123", host_pid=4242, epoch="2026-06-15T00:00:00Z"),
         )
 
-    def test_parse_resolve_output_degrades_on_bad_shape(self) -> None:
-        from uxon.infra.container import parse_resolve_output
+    def test_parse_runtime_identity_output_degrades_on_bad_shape(self) -> None:
+        from uxon.infra.runtime import parse_runtime_identity_output
 
-        for bad in ("", "   ", "only-two tokens", "abc notapid 123"):
-            self.assertIsNone(parse_resolve_output(bad))
+        for bad in (
+            "",
+            "[]",
+            '{"id":"abc","host_pid":"4242","epoch":"e"}',
+            '{"id":"abc","host_pid":0,"epoch":"e"}',
+            '{"id":"","host_pid":42,"epoch":"e"}',
+        ):
+            self.assertIsNone(parse_runtime_identity_output(bad))
 
     def test_parse_proc_cgroup_v2_prefers_unified_line(self) -> None:
-        from uxon.infra.container import parse_proc_cgroup
+        from uxon.infra.runtime import parse_proc_cgroup
 
         v2 = "0::/system.slice/docker-abc.scope\n"
         self.assertEqual(parse_proc_cgroup(v2), "/system.slice/docker-abc.scope")
@@ -605,7 +619,7 @@ class IdentityParseTests(unittest.TestCase):
         self.assertEqual(parse_proc_cgroup("0::/a:b/c"), "/a:b/c")
 
     def test_parse_proc_cgroup_v1_falls_back_to_a_controller_line(self) -> None:
-        from uxon.infra.container import parse_proc_cgroup
+        from uxon.infra.runtime import parse_proc_cgroup
 
         v1 = "12:pids:/docker/abc\n11:memory:/docker/abc\n"
         self.assertEqual(parse_proc_cgroup(v1), "/docker/abc")
@@ -617,16 +631,14 @@ class TeardownPrimitiveTests(unittest.TestCase):
 
     def test_pidfile_is_deterministic_per_session_and_sanitized(self) -> None:
         # Same session → same path; different sessions → different paths.
-        self.assertEqual(container_pidfile("uxon-app@claude"), container_pidfile("uxon-app@claude"))
+        self.assertEqual(runtime_pidfile("uxon-app@claude"), runtime_pidfile("uxon-app@claude"))
         self.assertNotEqual(
-            container_pidfile("uxon-app@claude-2"), container_pidfile("uxon-app@claude")
+            runtime_pidfile("uxon-app@claude-2"), runtime_pidfile("uxon-app@claude")
         )
         # Worktree/index variants of one container resolve to distinct files.
-        self.assertNotEqual(
-            container_pidfile("uxon-app@codex"), container_pidfile("uxon-app@claude")
-        )
+        self.assertNotEqual(runtime_pidfile("uxon-app@codex"), runtime_pidfile("uxon-app@claude"))
         # Unsafe characters collapse to ``_`` (path safe to embed in sh -c).
-        pf = container_pidfile("uxon-a b/c@claude")
+        pf = runtime_pidfile("uxon-a b/c@claude")
         self.assertTrue(pf.startswith("/tmp/uxon-"))
         self.assertNotIn(" ", pf)
         self.assertNotIn("/", pf[len("/tmp/") :])
@@ -634,7 +646,7 @@ class TeardownPrimitiveTests(unittest.TestCase):
     def test_wrap_exports_session_and_optionally_records_pid(self) -> None:
         # With a pidfile (teardown opted in): export the per-session marker AND
         # record the in-container PID, then exec the agent.
-        wrapped = wrap_agent_for_container(
+        wrapped = wrap_agent_for_runtime(
             ["claude", "--flag"], session="uxon-app@claude", pidfile="/tmp/uxon-s.pid"
         )
         self.assertEqual(wrapped[:2], ["sh", "-c"])
@@ -644,41 +656,41 @@ class TeardownPrimitiveTests(unittest.TestCase):
         # $0 sentinel then the agent argv, untouched and still a token list.
         self.assertEqual(wrapped[3:], ["uxon-agent", "claude", "--flag"])
         # Without a pidfile (no teardown): export only, no PID record.
-        bare = wrap_agent_for_container(["claude"], session="uxon-app@claude", pidfile=None)
+        bare = wrap_agent_for_runtime(["claude"], session="uxon-app@claude", pidfile=None)
         self.assertIn(f"export {SESSION_ENV}=uxon-app@claude", bare[2])
         self.assertNotIn("echo $$", bare[2])
         self.assertIn('exec "$@"', bare[2])
         self.assertEqual(bare[3:], ["uxon-agent", "claude"])
 
-    def test_render_stop_template_fills_per_token(self) -> None:
-        out = render_stop_template(
-            ("docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile})"),
-            name="proj-app",
+    def test_render_stop_command_fills_per_token(self) -> None:
+        out = render_stop_command(
+            ("docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile})"),
+            resource="proj-app",
             pidfile="/tmp/uxon-s.pid",
         )
         self.assertEqual(
             out, ["docker", "exec", "proj-app", "sh", "-c", "kill $(cat /tmp/uxon-s.pid)"]
         )
 
-    def test_is_valid_container_name_matches_charset(self) -> None:
-        self.assertTrue(is_valid_container_name("proj-app_1.2"))
+    def test_is_valid_runtime_resource_matches_charset(self) -> None:
+        self.assertTrue(is_valid_runtime_resource("proj-app_1.2"))
         # Non-raising rejects (kill path degrades to skip-teardown, never aborts).
         for bad in ("", "-leading", ".dot", "_under", "bad name", "a" * 129):
-            self.assertFalse(is_valid_container_name(bad))
+            self.assertFalse(is_valid_runtime_resource(bad))
 
 
 class ContainerUsageResolverTests(unittest.TestCase):
     """Pure host-side telemetry resolvers (host-free, fed fabricated input)."""
 
     def test_parse_cgroup_procs_dedupes_and_skips_noise(self) -> None:
-        from uxon.domain.container_usage import parse_cgroup_procs
+        from uxon.domain.runtime_usage import parse_cgroup_procs
 
         # One PID per line; blanks + non-numeric skipped; first-seen dedupe.
         self.assertEqual(parse_cgroup_procs("12\n34\n\n12\nfoo\n56\n"), [12, 34, 56])
         self.assertEqual(parse_cgroup_procs(""), [])
 
     def test_parse_environ_session_extracts_marker(self) -> None:
-        from uxon.domain.container_usage import parse_environ_session
+        from uxon.domain.runtime_usage import parse_environ_session
 
         blob = "PATH=/bin\0UXON_SESSION=uxon-proj@claude\0HOME=/root\0"
         self.assertEqual(parse_environ_session(blob), "uxon-proj@claude")
@@ -686,13 +698,13 @@ class ContainerUsageResolverTests(unittest.TestCase):
         self.assertEqual(parse_environ_session("PATH=/bin\0TERM=xterm\0"), "")
 
     def test_parse_sudo_environ_lines_maps_pid_to_session(self) -> None:
-        from uxon.domain.container_usage import parse_sudo_environ_lines
+        from uxon.domain.runtime_usage import parse_sudo_environ_lines
 
         out = parse_sudo_environ_lines("10 uxon-a@claude\n11 uxon-b@claude\nbad\n12 \n")
         self.assertEqual(out, {10: "uxon-a@claude", 11: "uxon-b@claude", 12: ""})
 
     def test_sum_usage_clamps_and_skips_missing(self) -> None:
-        from uxon.domain.container_usage import sum_usage_for_pids
+        from uxon.domain.runtime_usage import sum_usage_for_pids
 
         # pid → (ppid, rss_kib, cpu_pct). 99 is absent (exited); -5 clamped.
         proc_rows = {1: (0, 100, 5.0), 2: (1, 200, 10.0), 3: (1, -5, -1.0)}
@@ -702,7 +714,7 @@ class ContainerUsageResolverTests(unittest.TestCase):
 
     def test_per_session_split_isolates_runaway(self) -> None:
         """AC-P1.6: a busy PID in session A never sums into session B."""
-        from uxon.domain.container_usage import per_session_usage
+        from uxon.domain.runtime_usage import per_session_usage
 
         cgroup_pids = [1, 2, 3, 4]
         # 1,2 → session A (one a runaway); 3 → session B; 4 unmarked (init).
@@ -720,7 +732,7 @@ class ContainerUsageResolverTests(unittest.TestCase):
         self.assertLess(usage["uxon-b@claude"][1], 50)
 
     def test_per_session_split_degrades_to_empty_on_missing_markers(self) -> None:
-        from uxon.domain.container_usage import group_pids_by_session, per_session_usage
+        from uxon.domain.runtime_usage import group_pids_by_session, per_session_usage
 
         # No PID carries a marker (environ unreadable) → no per-session group.
         self.assertEqual(group_pids_by_session([1, 2], {1: "", 2: ""}), {})
@@ -743,31 +755,31 @@ class TelemetryEnrichTests(unittest.TestCase):
             setattr(s, k, v)
         return s
 
-    def _profile(self, *, running: bool = False) -> ContainerProfile:
-        return ContainerProfile(
+    def _profile(self, *, running: bool = False) -> WorkloadRuntimeSpec:
+        return WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="cbox",
-            exec_template=("docker", "exec", "{name}"),
-            is_running_cmd=("docker", "top", "{name}") if running else (),
-            resolve_cmd=("docker", "inspect", "{name}"),
+            resource_scope="per_user",
+            resource_name_template="cbox",
+            exec_prefix=("docker", "exec", "{resource}"),
+            ready_command=("docker", "top", "{resource}") if running else (),
+            identity_command=("docker", "inspect", "{resource}"),
         )
 
-    def _record_session(self, name: str, profile: ContainerProfile, **kw):
+    def _record_session(self, name: str, profile: WorkloadRuntimeSpec, **kw):
         values = dict(
-            container="cbox",
-            container_cgroup="/c.scope",
+            runtime_resource="cbox",
+            runtime_cgroup="/c.scope",
             launch_record_verified=True,
             launch_user="u-vz",
-            container_profile=profile.id,
-            container_profile_fingerprint=profile.fingerprint,
-            container_id="cid-1",
-            container_epoch="1000",
+            runtime=profile.id,
+            runtime_fingerprint=profile.fingerprint,
+            runtime_id="cid-1",
+            runtime_epoch="1000",
         )
         values.update(kw)
         return self._session(name, **values)
 
-    def test_non_container_session_uses_pane_walk_and_touches_nothing(self) -> None:
+    def test_non_runtime_session_uses_pane_walk_and_touches_nothing(self) -> None:
         """AC-P0.4: a no-marker session adds no subprocess / /proc / sudo read."""
         from pathlib import Path
 
@@ -779,7 +791,7 @@ class TelemetryEnrichTests(unittest.TestCase):
             mock.patch.object(Path, "read_text") as read_text,
         ):
             run.return_value = self._ps_completed()
-            sessions_probe.enrich_session_usage([s])
+            sessions_probe.enrich_session_usage(_cfg(), [s])
         # Exactly one subprocess (the single ps); no /proc read; the walk
         # summed pane 111 + child 222.
         self.assertEqual(run.call_count, 1)
@@ -788,13 +800,13 @@ class TelemetryEnrichTests(unittest.TestCase):
         self.assertEqual(s.rss_kib, 4096 + 2048)
         self.assertEqual(s.cpu_pct, 4.0)
 
-    def test_single_container_session_sums_cgroup_no_environ(self) -> None:
+    def test_single_runtime_session_sums_cgroup_no_environ(self) -> None:
         """One session per container: cgroup.procs IS its set — no sudo read."""
         from uxon.infra import sessions_probe
 
         profile = self._profile()
         s = self._record_session(
-            "uxon-c@claude", profile, container_cgroup="/system.slice/docker-c.scope"
+            "uxon-c@claude", profile, runtime_cgroup="/system.slice/docker-c.scope"
         )
 
         def fake_run(cmd, *a, **k):
@@ -804,21 +816,21 @@ class TelemetryEnrichTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe.subprocess.run", side_effect=fake_run) as run,
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
-                return_value=ContainerIdentity(
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
+                return_value=RuntimeIdentity(
                     id="cid-1", cgroup="/system.slice/docker-c.scope", epoch="1000"
                 ),
             ),
         ):
             sessions_probe.enrich_session_usage(
-                [s], container_profiles={"box": profile}, launch_user="u-vz"
+                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
             )
         # No sudo environ batch (single session) — only the ps call.
         self.assertEqual(run.call_count, 1)
         self.assertEqual(s.rss_kib, 8192 + 1024)
         self.assertEqual(s.cpu_pct, 110.0)
 
-    def test_shared_container_splits_per_session_when_privileged(self) -> None:
+    def test_shared_runtime_splits_per_session_when_privileged(self) -> None:
         """AC-P1.6: ≥2 sessions share a cgroup → split by UXON_SESSION."""
         from uxon.infra import sessions_probe
 
@@ -835,17 +847,17 @@ class TelemetryEnrichTests(unittest.TestCase):
                 return_value={900: "uxon-a@claude", 901: "uxon-b@claude"},
             ),
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
-                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
+                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
             ),
         ):
             sessions_probe.enrich_session_usage(
-                [a, b], container_profiles={"box": profile}, launch_user="u-vz"
+                _cfg(profile), [a, b], runtimes={"box": profile}, launch_user="u-vz"
             )
         self.assertEqual((a.rss_kib, a.cpu_pct), (8192, 50.0))
         self.assertEqual((b.rss_kib, b.cpu_pct), (1024, 60.0))
 
-    def test_shared_container_degrades_to_shared_total_without_privilege(self) -> None:
+    def test_shared_runtime_degrades_to_shared_total_without_privilege(self) -> None:
         from uxon.infra import sessions_probe
 
         profile = self._profile()
@@ -858,20 +870,20 @@ class TelemetryEnrichTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
             mock.patch("uxon.infra.sessions_probe._read_pid_sessions", return_value=None),
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
-                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
+                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
             ),
         ):
             sessions_probe.enrich_session_usage(
-                [a, b], container_profiles={"box": profile}, launch_user="u-vz"
+                _cfg(profile), [a, b], runtimes={"box": profile}, launch_user="u-vz"
             )
         # Both show the summed total (the documented degrade), not zero.
         shared = (8192 + 1024, 110.0)
         self.assertEqual((a.rss_kib, a.cpu_pct), shared)
         self.assertEqual((b.rss_kib, b.cpu_pct), shared)
 
-    def test_empty_cgroup_marks_container_down_when_probe_says_stopped(self) -> None:
-        """AC-P1.8: empty cgroup + is_running_cmd non-zero → container_down."""
+    def test_empty_cgroup_marks_runtime_down_when_probe_says_stopped(self) -> None:
+        """AC-P1.8: empty cgroup + ready_command non-zero → runtime_down."""
         from uxon.infra import sessions_probe
 
         profile = self._profile(running=True)
@@ -882,21 +894,21 @@ class TelemetryEnrichTests(unittest.TestCase):
             ),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
-                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
+                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
             ),
             mock.patch(
-                "uxon.infra.container.probe_container_state_for_profile", return_value=("no", "yes")
+                "uxon.infra.runtime.probe_runtime_state_for_profile", return_value=("no", "yes")
             ),
         ):
             sessions_probe.enrich_session_usage(
-                [s], container_profiles={"box": profile}, launch_user="u-vz"
+                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
             )
-        self.assertTrue(s.container_down)
+        self.assertTrue(s.runtime_down)
         self.assertEqual(s.cpu_pct, 0.0)
         self.assertEqual(s.rss_kib, 0)
 
-    def test_unresolved_live_identity_marks_container_down_when_probe_says_stopped(
+    def test_unresolved_live_identity_marks_runtime_down_when_probe_says_stopped(
         self,
     ) -> None:
         from uxon.infra import sessions_probe
@@ -909,24 +921,24 @@ class TelemetryEnrichTests(unittest.TestCase):
             ),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs") as read_cgroup,
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
                 return_value=None,
             ),
             mock.patch(
-                "uxon.infra.container.probe_container_state_for_profile",
+                "uxon.infra.runtime.probe_runtime_state_for_profile",
                 return_value=("no", "yes"),
             ) as probe,
         ):
             sessions_probe.enrich_session_usage(
-                [s], container_profiles={"box": profile}, launch_user="u-vz"
+                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
             )
         read_cgroup.assert_not_called()
         probe.assert_called_once()
-        self.assertTrue(s.container_down)
+        self.assertTrue(s.runtime_down)
         self.assertEqual(s.cpu_pct, 0.0)
         self.assertEqual(s.rss_kib, 0)
 
-    def test_empty_cgroup_running_container_degrades_to_zero_not_down(self) -> None:
+    def test_empty_cgroup_running_runtime_degrades_to_zero_not_down(self) -> None:
         from uxon.infra import sessions_probe
 
         profile = self._profile(running=True)
@@ -937,19 +949,19 @@ class TelemetryEnrichTests(unittest.TestCase):
             ),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
-                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
+                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
             ),
             mock.patch(
-                "uxon.infra.container.probe_container_state_for_profile",
+                "uxon.infra.runtime.probe_runtime_state_for_profile",
                 return_value=("yes", "yes"),
             ),
         ):
             sessions_probe.enrich_session_usage(
-                [s], container_profiles={"box": profile}, launch_user="u-vz"
+                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
             )
         # Running but empty cgroup (race / unresolved path) → 0/—, not "down".
-        self.assertFalse(s.container_down)
+        self.assertFalse(s.runtime_down)
         self.assertEqual(s.cpu_pct, 0.0)
 
     def test_empty_cgroup_unknown_profile_probe_degrades_to_zero_not_down(self) -> None:
@@ -963,18 +975,18 @@ class TelemetryEnrichTests(unittest.TestCase):
             ),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
-                return_value=ContainerIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
+                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
             ),
             mock.patch(
-                "uxon.infra.container.probe_container_state_for_profile",
+                "uxon.infra.runtime.probe_runtime_state_for_profile",
                 return_value=("?", "?"),
             ),
         ):
             sessions_probe.enrich_session_usage(
-                [s], container_profiles={"box": profile}, launch_user="u-vz"
+                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
             )
-        self.assertFalse(s.container_down)
+        self.assertFalse(s.runtime_down)
         self.assertEqual(s.cpu_pct, 0.0)
 
 
@@ -989,20 +1001,20 @@ class ContainerRenderTests(unittest.TestCase):
             setattr(s, k, v)
         return s
 
-    def test_tui_cmd_shows_agent_for_container_session(self) -> None:
+    def test_tui_cmd_shows_agent_for_runtime_session(self) -> None:
         from uxon.domain.session import to_tui_session
 
-        s = self._session(container="cbox", active_cmd="docker", agent="claude")
+        s = self._session(runtime_resource="cbox", active_cmd="docker", agent="claude")
         tui = to_tui_session(s, "uxon-")
         self.assertEqual(tui.cmd, "claude")  # not "docker"
 
-    def test_tui_cmd_unchanged_for_non_container_session(self) -> None:
+    def test_tui_cmd_unchanged_for_non_runtime_session(self) -> None:
         from uxon.domain.session import to_tui_session
 
-        s = self._session(container="", active_cmd="vim", agent="claude")
+        s = self._session(runtime_resource="", active_cmd="vim", agent="claude")
         self.assertEqual(to_tui_session(s, "uxon-").cmd, "vim")
 
-    def test_list_shows_down_and_agent_for_container_down_session(self) -> None:
+    def test_list_shows_down_and_agent_for_runtime_down_session(self) -> None:
         import io
         from contextlib import redirect_stdout
 
@@ -1011,7 +1023,7 @@ class ContainerRenderTests(unittest.TestCase):
         from uxon.app.listing import print_list
 
         s = self._session(
-            container="cbox", container_down=True, active_cmd="docker", agent="claude"
+            runtime_resource="cbox", runtime_down=True, active_cmd="docker", agent="claude"
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -1021,7 +1033,7 @@ class ContainerRenderTests(unittest.TestCase):
         self.assertIn("claude", out)  # cmd shows the agent id
 
     def test_dashboard_cpu_cell_renders_down_marker(self) -> None:
-        from uxon.tui.dashboard.columns import CONTAINER_DOWN_CELL, format_cpu, format_ram
+        from uxon.tui.dashboard.columns import RUNTIME_DOWN_CELL, format_cpu, format_ram
         from uxon.tui.dashboard.row import SessionRow
 
         row = SessionRow(
@@ -1039,10 +1051,10 @@ class ContainerRenderTests(unittest.TestCase):
             last_attached_epoch=None,
             cmd="claude",
             path="/srv",
-            container_down=True,
+            runtime_down=True,
         )
-        self.assertEqual(format_cpu(row).plain, CONTAINER_DOWN_CELL)
-        self.assertEqual(format_ram(row), CONTAINER_DOWN_CELL)
+        self.assertEqual(format_cpu(row).plain, RUNTIME_DOWN_CELL)
+        self.assertEqual(format_ram(row), RUNTIME_DOWN_CELL)
 
 
 class ContainerGatingTests(unittest.TestCase):
@@ -1057,13 +1069,13 @@ class ContainerGatingTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _container_launch() -> LaunchConfig:
+    def _runtime_launch() -> LaunchConfig:
         agents = default_agent_catalog()
         profiles = builtin_launch_profiles(agents)
         profiles["claude_box"] = LaunchProfile(
             id="claude_box",
             agent="claude",
-            container_profile="box",
+            runtime="box",
         )
         return LaunchConfig(
             enabled_profiles=("claude_box",),
@@ -1074,13 +1086,13 @@ class ContainerGatingTests(unittest.TestCase):
     def test_host_absent_binary_does_not_fail_under_container(self) -> None:
         # AC-P2.1: explicit container profile + host-absent binary →
         # resolves anyway (no host-presence gate).
-        c = ContainerProfile(
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="p-{project_slug}",
-            exec_template=_EXEC,
+            resource_scope="per_user",
+            resource_name_template="p-{project_slug}",
+            exec_prefix=_EXEC,
         )
-        cfg = _cfg(c, launch=self._container_launch())
+        cfg = _cfg(c, launch=self._runtime_launch())
         resolved = launch_profile_app.resolve_launch_profile(
             cfg,
             "dana",
@@ -1104,21 +1116,21 @@ class ContainerGatingTests(unittest.TestCase):
                 report=self._report(claude_path=None),
             )
 
-    def test_auto_mode_ignores_operator_container_profile(self) -> None:
+    def test_auto_mode_ignores_operator_runtime(self) -> None:
         # Auto-mode considers shipped OS-user-only profiles only; an operator
         # container profile is not auto-enabled.
-        c = ContainerProfile(
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="p-{project_slug}",
-            exec_template=_EXEC,
+            resource_scope="per_user",
+            resource_name_template="p-{project_slug}",
+            exec_prefix=_EXEC,
         )
         agents = default_agent_catalog()
         profiles = builtin_launch_profiles(agents)
         profiles["claude_box"] = LaunchProfile(
             id="claude_box",
             agent="claude",
-            container_profile="box",
+            runtime="box",
         )
         cfg = _cfg(c, launch=LaunchConfig(profiles=profiles))
         resolved = launch_profile_app.resolve_launch_profile(
@@ -1132,74 +1144,74 @@ class ContainerGatingTests(unittest.TestCase):
         self.assertEqual(resolved.profile.id, "claude")
 
 
-class PlanContainerProfileMatrixTests(unittest.TestCase):
-    """AC-B4 -- plan_container_launch_for_profile action -> prepare matrix.
+class PlanWorkloadRuntimeSpecMatrixTests(unittest.TestCase):
+    """AC-B4 -- plan_runtime_launch_for_profile action -> prepare matrix.
 
     The subprocess probe boundary (_probe_exit_ok) is mocked, so this exercises
     the orchestration the deleted legacy PlanMatrixTests covered: probe order,
-    decide_container_action gating on on_missing, and prepare_cmd / message
+    decide_runtime_action gating on on_missing, and prepare_command / message
     rendering -- without docker.
     """
 
     @staticmethod
-    def _profile(*, on_missing: str) -> ContainerProfile:
-        return ContainerProfile(
+    def _profile(*, on_missing: str) -> WorkloadRuntimeSpec:
+        return WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="box-{project_slug}",
-            exec_template=("docker", "exec", "-w", "{dir}", "{name}"),
-            is_running_cmd=("docker", "top", "{name}"),
-            exists_cmd=("docker", "inspect", "{name}"),
-            start_template=("docker", "start", "{name}"),
-            create_template=("docker", "create", "{name}"),
+            resource_scope="per_user",
+            resource_name_template="box-{project_slug}",
+            exec_prefix=("docker", "exec", "-w", "{runtime_dir}", "{resource}"),
+            ready_command=("docker", "top", "{resource}"),
+            exists_command=("docker", "inspect", "{resource}"),
+            start_command=("docker", "start", "{resource}"),
+            create_command=("docker", "create", "{resource}"),
             on_missing=on_missing,  # type: ignore[arg-type]
             path_map=(),
         )
 
-    def _plan(self, profile: ContainerProfile, probes):
-        from uxon.infra.container import plan_container_launch_for_profile
+    def _plan(self, profile: WorkloadRuntimeSpec, probes):
+        from uxon.infra.runtime import plan_runtime_launch_for_profile
 
         cfg = _cfg(profile)
         resolved = _resolved(cfg, "alice")
-        with mock.patch("uxon.infra.container._probe_exit_ok", side_effect=probes):
-            return plan_container_launch_for_profile(cfg, "/srv/projects/myapp", resolved)
+        with mock.patch("uxon.infra.runtime._probe_exit_ok", side_effect=probes):
+            return plan_runtime_launch_for_profile(cfg, "/srv/projects/myapp", resolved)
 
-    def test_running_container_execs_with_no_prepare(self):
+    def test_running_runtime_execs_with_no_prepare(self):
         plan = self._plan(self._profile(on_missing="start"), [True])
         self.assertEqual(plan.action, "exec")
         self.assertEqual(plan.reason, "running")
-        self.assertEqual(plan.prepare_cmd, ())
-        self.assertEqual(plan.message, "Container 'box-myapp' is running")
+        self.assertEqual(plan.prepare_command, ())
+        self.assertEqual(plan.message, "Runtime resource 'box-myapp' is ready")
 
     def test_stopped_with_start_policy_renders_start_prepare(self):
         plan = self._plan(self._profile(on_missing="start"), [False, True])
         self.assertEqual(plan.action, "start")
         self.assertEqual(plan.reason, "stopped")
-        self.assertEqual(plan.prepare_cmd, ("docker", "start", "box-myapp"))
+        self.assertEqual(plan.prepare_command, ("docker", "start", "box-myapp"))
         self.assertIn("stopped", plan.message)
 
     def test_stopped_with_off_policy_fails(self):
         plan = self._plan(self._profile(on_missing="off"), [False, True])
         self.assertEqual(plan.action, "fail")
         self.assertEqual(plan.reason, "stopped")
-        self.assertEqual(plan.prepare_cmd, ())
+        self.assertEqual(plan.prepare_command, ())
         self.assertIn("does not permit starting", plan.message)
 
     def test_absent_with_create_policy_renders_create_prepare(self):
         plan = self._plan(self._profile(on_missing="create"), [False, False])
         self.assertEqual(plan.action, "create")
         self.assertEqual(plan.reason, "absent")
-        self.assertEqual(plan.prepare_cmd, ("docker", "create", "box-myapp"))
+        self.assertEqual(plan.prepare_command, ("docker", "create", "box-myapp"))
         self.assertIn("does not exist", plan.message)
 
     def test_absent_with_start_policy_fails(self):
         plan = self._plan(self._profile(on_missing="start"), [False, False])
         self.assertEqual(plan.action, "fail")
         self.assertEqual(plan.reason, "absent")
-        self.assertEqual(plan.prepare_cmd, ())
+        self.assertEqual(plan.prepare_command, ())
 
 
-class ContainerProfileRuntimeTests(unittest.TestCase):
+class WorkloadRuntimeSpecRuntimeTests(unittest.TestCase):
     """P3 — launch runtime decisions come from the resolved container profile."""
 
     @staticmethod
@@ -1207,17 +1219,17 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
         cid: str,
         *,
         namespace: str = "per_user",
-        name_template: str = "box-{project_slug}",
+        resource_name_template: str = "box-{project_slug}",
         path_map=(),
-    ) -> ContainerProfile:
-        return ContainerProfile(
+    ) -> WorkloadRuntimeSpec:
+        return WorkloadRuntimeSpec(
             id=cid,
-            runtime_namespace=namespace,  # type: ignore[arg-type]
-            name_template=name_template,
-            exec_template=("docker", "exec", "-w", "{dir}", "{name}"),
-            is_running_cmd=("docker", "top", "{name}"),
-            exists_cmd=("docker", "inspect", "{name}"),
-            start_template=("docker", "start", "{name}"),
+            resource_scope=namespace,  # type: ignore[arg-type]
+            resource_name_template=resource_name_template,
+            exec_prefix=("docker", "exec", "-w", "{runtime_dir}", "{resource}"),
+            ready_command=("docker", "top", "{resource}"),
+            exists_command=("docker", "inspect", "{resource}"),
+            start_command=("docker", "start", "{resource}"),
             on_missing="start",
             path_map=path_map,
         )
@@ -1233,7 +1245,7 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
     def _cfg_profiles(
         self,
         launch_profiles: dict[str, LaunchProfile],
-        container_profiles: dict[str, ContainerProfile],
+        runtimes: dict[str, WorkloadRuntimeSpec],
         *,
         enabled: tuple[str, ...],
         default: str,
@@ -1248,13 +1260,11 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
                 default_profile=default,
                 profiles=profiles,
             ),
-            container_profiles=container_profiles,
+            runtimes=runtimes,
         )
 
     def test_prepare_and_agent_probe_use_pinned_launch_user_and_profile(self) -> None:
-        profile = LaunchProfile(
-            id="claude_box", agent="claude", launch_user="alice", container_profile="box"
-        )
+        profile = LaunchProfile(id="claude_box", agent="claude", launch_user="alice", runtime="box")
         cfg = self._cfg_profiles(
             {"claude_box": profile},
             {"box": self._profile("box", path_map=validate_path_map({"/srv/projects": "/work"}))},
@@ -1270,31 +1280,33 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
             report=self._report(launch_user="alice", claude_path=None),
         )
         self.assertEqual(resolved.launch_user, "alice")
-        assert resolved.container_context is not None
-        self.assertEqual(resolved.container_context.name, "box-myapp")
-        self.assertEqual(resolved.container_context.dir_token, "/work/myapp")
+        assert resolved.runtime_context is not None
+        self.assertEqual(resolved.runtime_context.resource, "box-myapp")
+        self.assertEqual(resolved.runtime_context.runtime_dir, "/work/myapp")
 
         from uxon.app import launch as launch_app
-        from uxon.infra import container as container_infra
+        from uxon.infra import runtime as runtime_infra
 
         probes = iter([False, True])
         with (
             mock.patch.object(
-                container_infra, "_probe_exit_ok", side_effect=lambda c, u: next(probes)
+                runtime_infra, "_probe_exit_ok", side_effect=lambda *_args: next(probes)
             ),
-            mock.patch.object(container_infra, "_run_prepare") as run_prepare,
-            mock.patch.object(container_infra, "probe_agent_in_container") as probe_agent,
+            mock.patch.object(runtime_infra, "_run_prepare") as run_prepare,
+            mock.patch.object(runtime_infra, "probe_agent_in_runtime") as probe_agent,
         ):
-            launch_app.ensure_container_ready(cfg, "/srv/projects/myapp", resolved)
+            launch_app.ensure_runtime_ready(cfg, "/srv/projects/myapp", resolved)
         run_prepare.assert_called_once_with(
-            ["docker", "start", "box-myapp"], "/srv/projects/myapp", "alice"
+            cfg,
+            ["docker", "start", "box-myapp"],
+            "/srv/projects/myapp",
+            "alice",
+            120.0,
         )
         probe_agent.assert_called_once_with(cfg, "/srv/projects/myapp", resolved)
 
-    def test_tui_gate_probes_agent_for_running_container_profile(self) -> None:
-        profile = LaunchProfile(
-            id="claude_box", agent="claude", launch_user="alice", container_profile="box"
-        )
+    def test_tui_gate_probes_agent_for_running_runtime(self) -> None:
+        profile = LaunchProfile(id="claude_box", agent="claude", launch_user="alice", runtime="box")
         cfg = self._cfg_profiles(
             {"claude_box": profile},
             {"box": self._profile("box")},
@@ -1311,20 +1323,18 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
         )
 
         from uxon.app import launch as launch_app
-        from uxon.infra import container as container_infra
+        from uxon.infra import runtime as runtime_infra
 
         with (
-            mock.patch.object(container_infra, "_probe_exit_ok", return_value=True),
-            mock.patch.object(container_infra, "probe_agent_in_container") as probe_agent,
+            mock.patch.object(runtime_infra, "_probe_exit_ok", return_value=True),
+            mock.patch.object(runtime_infra, "probe_agent_in_runtime") as probe_agent,
         ):
-            gate = launch_app.decide_container_gate(cfg, "/srv/projects/myapp", resolved)
+            gate = launch_app.decide_runtime_gate(cfg, "/srv/projects/myapp", resolved)
         self.assertIsNone(gate)
         probe_agent.assert_called_once_with(cfg, "/srv/projects/myapp", resolved)
 
-    def test_agent_probe_runs_inside_container_not_on_host(self) -> None:
-        profile = LaunchProfile(
-            id="claude_box", agent="claude", launch_user="alice", container_profile="box"
-        )
+    def test_agent_probe_runs_inside_runtime_not_on_host(self) -> None:
+        profile = LaunchProfile(id="claude_box", agent="claude", launch_user="alice", runtime="box")
         cfg = self._cfg_profiles(
             {"claude_box": profile},
             {"box": self._profile("box")},
@@ -1339,14 +1349,14 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
             "normal",
             report=self._report(launch_user="alice", claude_path=None),
         )
-        from uxon.infra import container as container_infra
+        from uxon.infra import runtime as runtime_infra
 
         cp = mock.Mock(returncode=0, stdout="", stderr="")
         with (
             mock.patch("uxon.infra.identity.process_user", return_value="root"),
-            mock.patch.object(container_infra, "run_query", return_value=cp) as run_query,
+            mock.patch.object(runtime_infra, "run_query", return_value=cp) as run_query,
         ):
-            container_infra.probe_agent_in_container(cfg, "/srv/projects/myapp", resolved)
+            runtime_infra.probe_agent_in_runtime(cfg, "/srv/projects/myapp", resolved)
         argv = run_query.call_args.args[0]
         self.assertEqual(argv[:4], ["sudo", "-niu", "alice", "--"])
         self.assertIn("docker", argv)
@@ -1356,16 +1366,12 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
     def test_global_namespace_rejects_distinct_profile_name_collision(self) -> None:
         cfg = self._cfg_profiles(
             {
-                "one": LaunchProfile(
-                    id="one", agent="claude", launch_user="alice", container_profile="c1"
-                ),
-                "two": LaunchProfile(
-                    id="two", agent="claude", launch_user="bob", container_profile="c2"
-                ),
+                "one": LaunchProfile(id="one", agent="claude", launch_user="alice", runtime="c1"),
+                "two": LaunchProfile(id="two", agent="claude", launch_user="bob", runtime="c2"),
             },
             {
-                "c1": self._profile("c1", namespace="global", name_template="shared"),
-                "c2": self._profile("c2", namespace="global", name_template="shared"),
+                "c1": self._profile("c1", namespace="global", resource_name_template="shared"),
+                "c2": self._profile("c2", namespace="global", resource_name_template="shared"),
             },
             enabled=("one", "two"),
             default="one",
@@ -1384,16 +1390,12 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
     def test_per_user_namespace_rejects_same_user_collision(self) -> None:
         cfg = self._cfg_profiles(
             {
-                "one": LaunchProfile(
-                    id="one", agent="claude", launch_user="alice", container_profile="c1"
-                ),
-                "two": LaunchProfile(
-                    id="two", agent="claude", launch_user="alice", container_profile="c2"
-                ),
+                "one": LaunchProfile(id="one", agent="claude", launch_user="alice", runtime="c1"),
+                "two": LaunchProfile(id="two", agent="claude", launch_user="alice", runtime="c2"),
             },
             {
-                "c1": self._profile("c1", name_template="shared"),
-                "c2": self._profile("c2", name_template="shared"),
+                "c1": self._profile("c1", resource_name_template="shared"),
+                "c2": self._profile("c2", resource_name_template="shared"),
             },
             enabled=("one", "two"),
             default="one",
@@ -1408,17 +1410,17 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
                 report=self._report(launch_user="alice", claude_path=None),
             )
 
-    def test_same_container_profile_id_is_intentional_sharing(self) -> None:
+    def test_same_runtime_id_is_intentional_sharing(self) -> None:
         cfg = self._cfg_profiles(
             {
                 "one": LaunchProfile(
-                    id="one", agent="claude", launch_user="alice", container_profile="shared"
+                    id="one", agent="claude", launch_user="alice", runtime="shared"
                 ),
                 "two": LaunchProfile(
-                    id="two", agent="claude", launch_user="alice", container_profile="shared"
+                    id="two", agent="claude", launch_user="alice", runtime="shared"
                 ),
             },
-            {"shared": self._profile("shared", name_template="shared")},
+            {"shared": self._profile("shared", resource_name_template="shared")},
             enabled=("one", "two"),
             default="one",
         )
@@ -1430,69 +1432,69 @@ class ContainerProfileRuntimeTests(unittest.TestCase):
             "normal",
             report=self._report(launch_user="alice", claude_path=None),
         )
-        assert resolved.container_context is not None
-        self.assertEqual(resolved.container_context.profile_id, "shared")
+        assert resolved.runtime_context is not None
+        self.assertEqual(resolved.runtime_context.runtime_id, "shared")
 
     def test_placeholder_validation_names_field_and_placeholder(self) -> None:
         bad = self._profile("box")
-        bad = ContainerProfile(
+        bad = WorkloadRuntimeSpec(
             **{
                 **bad.__dict__,
-                "exec_template": ("docker", "exec", "{bogus}", "{name}"),
+                "exec_prefix": ("docker", "exec", "{bogus}", "{resource}"),
             }
         )
         with self.assertRaises(SystemExit) as ctx:
-            validate_container_profile(bad)
+            validate_runtime(bad)
         msg = getattr(ctx.exception, "uxon_msg", "")
-        self.assertIn("exec_template", msg)
+        self.assertIn("exec_prefix", msg)
         self.assertIn("bogus", msg)
 
-    def test_container_profile_fingerprint_includes_profile_id(self) -> None:
-        one = self._profile("one", name_template="{container_profile}-{project_slug}")
-        two = self._profile("two", name_template="{container_profile}-{project_slug}")
+    def test_runtime_fingerprint_includes_profile_id(self) -> None:
+        one = self._profile("one", resource_name_template="{runtime}-{project_slug}")
+        two = self._profile("two", resource_name_template="{runtime}-{project_slug}")
 
         self.assertNotEqual(one.fingerprint, two.fingerprint)
 
 
-class ContainerTeardownAuditTests(unittest.TestCase):
+class RuntimeTeardownAuditTests(unittest.TestCase):
     """AC-P3.2 / AC-P3.5 — teardown audit emit + PID-recycle stale guard."""
 
-    def _cfg_with_stop(self, resolve_cmd=()):
-        c = ContainerProfile(
+    def _cfg_with_stop(self, identity_command=()):
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
-            stop_template=("docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile})"),
-            resolve_cmd=resolve_cmd,
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
+            stop_command=("docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile})"),
+            identity_command=identity_command,
         )
         return _cfg(c)
 
     def _record_session(self, cfg: Config):
         from helpers import make_session
 
-        profile = cfg.container_profiles["box"]
+        profile = cfg.runtimes["box"]
         s = make_session("uxon-x@claude", user="dana")
         s.profile = "claude"
         s.agent = "claude"
         s.launch_record_verified = True
         s.launch_user = "dana"
-        s.container = "proj-myapp"
-        s.container_profile = profile.id
-        s.container_profile_fingerprint = profile.fingerprint
-        s.container_id = "cid-1"
-        s.container_epoch = "1000"
+        s.runtime_resource = "proj-myapp"
+        s.runtime = profile.id
+        s.runtime_fingerprint = profile.fingerprint
+        s.runtime_id = "cid-1"
+        s.runtime_epoch = "1000"
         return s
 
     def test_prepare_captures_launch_epoch(self) -> None:
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
-        teardown = kill_app.prepare_container_teardown(cfg, self._record_session(cfg))
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
+        teardown = kill_app.prepare_runtime_teardown(cfg, self._record_session(cfg))
         assert teardown is not None
-        self.assertEqual(teardown.name, "proj-myapp")
-        self.assertEqual(teardown.container_profile, "box")
-        self.assertEqual(teardown.container_id, "cid-1")
+        self.assertEqual(teardown.resource, "proj-myapp")
+        self.assertEqual(teardown.runtime, "box")
+        self.assertEqual(teardown.runtime_id, "cid-1")
         self.assertEqual(teardown.launch_epoch, "1000")
 
     def test_missing_record_skips_prepare_with_warning(self) -> None:
@@ -1500,146 +1502,146 @@ class ContainerTeardownAuditTests(unittest.TestCase):
 
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
         s = make_session("uxon-x@claude", user="dana")
-        s.container_marker = "proj-myapp"
+        s.runtime_marker = "proj-myapp"
         with mock.patch("uxon.app.kill.eprint") as eprint:
-            teardown = kill_app.prepare_container_teardown(cfg, s)
+            teardown = kill_app.prepare_runtime_teardown(cfg, s)
         self.assertIsNone(teardown)
         self.assertIn("no verified launch record", eprint.call_args.args[0])
 
-    def test_missing_container_profile_skips_prepare(self) -> None:
+    def test_missing_runtime_skips_prepare(self) -> None:
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
         s = self._record_session(cfg)
-        s.container_profile = ""
+        s.runtime = ""
         with mock.patch("uxon.app.kill.eprint") as eprint:
-            teardown = kill_app.prepare_container_teardown(cfg, s)
+            teardown = kill_app.prepare_runtime_teardown(cfg, s)
         self.assertIsNone(teardown)
-        self.assertIn("missing container profile", eprint.call_args.args[0])
+        self.assertIn("missing workload runtime", eprint.call_args.args[0])
 
     def test_fingerprint_mismatch_skips_prepare(self) -> None:
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
         s = self._record_session(cfg)
-        s.container_profile_fingerprint = "old"
+        s.runtime_fingerprint = "old"
         with mock.patch("uxon.app.kill.eprint") as eprint:
-            teardown = kill_app.prepare_container_teardown(cfg, s)
+            teardown = kill_app.prepare_runtime_teardown(cfg, s)
         self.assertIsNone(teardown)
-        self.assertIn("container profile changed", eprint.call_args.args[0])
+        self.assertIn("workload runtime changed", eprint.call_args.args[0])
 
     def test_missing_saved_identity_skips_prepare(self) -> None:
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
         s = self._record_session(cfg)
-        s.container_id = ""
+        s.runtime_id = ""
         with mock.patch("uxon.app.kill.eprint") as eprint:
-            teardown = kill_app.prepare_container_teardown(cfg, s)
+            teardown = kill_app.prepare_runtime_teardown(cfg, s)
         self.assertIsNone(teardown)
-        self.assertIn("missing container identity", eprint.call_args.args[0])
+        self.assertIn("missing runtime resource identity", eprint.call_args.args[0])
 
     def test_stale_teardown_emits_stale_and_skips_kill(self) -> None:
         # AC-P3.2/P3.5: live epoch != stashed epoch → emit outcome=stale and do
         # NOT run the stop command (the recorded PID would be a recycled one).
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
-        profile = cfg.container_profiles["box"]
-        teardown = kill_app.ContainerTeardown(
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
+        profile = cfg.runtimes["box"]
+        teardown = kill_app.RuntimeTeardown(
             stop_cmd=["docker", "exec", "c", "true"],
-            name="proj-myapp",
-            container_profile="box",
-            container_id="cid-1",
-            profile_fingerprint=profile.fingerprint,
+            resource="proj-myapp",
+            runtime="box",
+            runtime_id="cid-1",
+            runtime_fingerprint=profile.fingerprint,
             launch_epoch="1000",
         )
         with (
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
-                return_value=ContainerIdentity(id="cid-2", epoch="2000"),
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
+                return_value=RuntimeIdentity(id="cid-2", epoch="2000"),
             ),
-            mock.patch("uxon.infra.container.run_teardown") as run_td,
+            mock.patch("uxon.infra.runtime.run_teardown") as run_td,
             mock.patch("uxon.infra.audit.audit") as audit,
         ):
-            kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
+            kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
         run_td.assert_not_called()
         audit.assert_called_once()
-        self.assertEqual(audit.call_args.args[0], "container.teardown")
+        self.assertEqual(audit.call_args.args[0], "runtime.session_stop")
         self.assertEqual(audit.call_args.kwargs["outcome"], "stale")
-        self.assertEqual(audit.call_args.kwargs["container"], "proj-myapp")
-        self.assertEqual(audit.call_args.kwargs["container_profile"], "box")
+        self.assertEqual(audit.call_args.kwargs["runtime_resource"], "proj-myapp")
+        self.assertEqual(audit.call_args.kwargs["runtime"], "box")
 
     def test_matching_epoch_teardown_runs_and_emits_ok(self) -> None:
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
-        profile = cfg.container_profiles["box"]
-        teardown = kill_app.ContainerTeardown(
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
+        profile = cfg.runtimes["box"]
+        teardown = kill_app.RuntimeTeardown(
             stop_cmd=["docker", "exec", "c", "true"],
-            name="proj-myapp",
-            container_profile="box",
-            container_id="cid-1",
-            profile_fingerprint=profile.fingerprint,
+            resource="proj-myapp",
+            runtime="box",
+            runtime_id="cid-1",
+            runtime_fingerprint=profile.fingerprint,
             launch_epoch="1000",
         )
         with (
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile",
-                return_value=ContainerIdentity(id="cid-1", epoch="1000"),
+                "uxon.infra.runtime.current_runtime_identity_for_profile",
+                return_value=RuntimeIdentity(id="cid-1", epoch="1000"),
             ),
-            mock.patch("uxon.infra.container.run_teardown", return_value=(True, "")) as run_td,
+            mock.patch("uxon.infra.runtime.run_teardown", return_value=(True, "")) as run_td,
             mock.patch("uxon.infra.audit.audit") as audit,
         ):
-            kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
+            kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
         run_td.assert_called_once()
         self.assertEqual(audit.call_args.kwargs["outcome"], "ok")
 
     def test_missing_current_profile_skips_teardown(self) -> None:
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
-        profile = cfg.container_profiles["box"]
-        cfg.container_profiles.clear()
-        teardown = kill_app.ContainerTeardown(
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
+        profile = cfg.runtimes["box"]
+        cfg.runtimes.clear()
+        teardown = kill_app.RuntimeTeardown(
             stop_cmd=["docker", "exec", "c", "true"],
-            name="proj-myapp",
-            container_profile="box",
-            container_id="cid-1",
-            profile_fingerprint=profile.fingerprint,
+            resource="proj-myapp",
+            runtime="box",
+            runtime_id="cid-1",
+            runtime_fingerprint=profile.fingerprint,
             launch_epoch="1000",
         )
         with (
-            mock.patch("uxon.infra.container.run_teardown") as run_td,
+            mock.patch("uxon.infra.runtime.run_teardown") as run_td,
             mock.patch("uxon.infra.audit.audit") as audit,
         ):
-            kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
+            kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
         run_td.assert_not_called()
         self.assertEqual(audit.call_args.kwargs["outcome"], "missing_profile")
 
     def test_unresolved_live_identity_skips_kill(self) -> None:
         from uxon.app import kill as kill_app
 
-        cfg = self._cfg_with_stop(resolve_cmd=("inspect", "{name}"))
-        profile = cfg.container_profiles["box"]
-        teardown = kill_app.ContainerTeardown(
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
+        profile = cfg.runtimes["box"]
+        teardown = kill_app.RuntimeTeardown(
             stop_cmd=["docker", "exec", "c", "true"],
-            name="proj-myapp",
-            container_profile="box",
-            container_id="cid-1",
-            profile_fingerprint=profile.fingerprint,
+            resource="proj-myapp",
+            runtime="box",
+            runtime_id="cid-1",
+            runtime_fingerprint=profile.fingerprint,
             launch_epoch="1000",
         )
         with (
             mock.patch(
-                "uxon.infra.container.current_container_identity_for_profile", return_value=None
+                "uxon.infra.runtime.current_runtime_identity_for_profile", return_value=None
             ),
-            mock.patch("uxon.infra.container.run_teardown", return_value=(True, "")) as run_td,
+            mock.patch("uxon.infra.runtime.run_teardown", return_value=(True, "")) as run_td,
             mock.patch("uxon.infra.audit.audit") as audit,
         ):
-            kill_app.run_container_teardown(cfg, teardown, "dana", "uxon-x@claude")
+            kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
         run_td.assert_not_called()
         self.assertEqual(audit.call_args.kwargs["outcome"], "identity_unresolved")
 
@@ -1648,7 +1650,7 @@ class WorktreePathMapGateTests(unittest.TestCase):
     """AC-P4.1 — unmapped worktree path fails fast; empty path_map carve-out."""
 
     def test_path_map_under_prefix_predicate(self) -> None:
-        from uxon.domain.container import path_map_under_prefix
+        from uxon.domain.runtime import path_map_under_prefix
 
         pm = validate_path_map({"/srv/projects": "/work"})
         self.assertTrue(path_map_under_prefix("/srv/projects/myapp", pm))
@@ -1660,11 +1662,11 @@ class WorktreePathMapGateTests(unittest.TestCase):
     def test_unmapped_worktree_path_fails(self) -> None:
         from uxon.app import launch as launch_app
 
-        c = ContainerProfile(
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="p-{project_slug}",
-            exec_template=_EXEC,
+            resource_scope="per_user",
+            resource_name_template="p-{project_slug}",
+            exec_prefix=_EXEC,
             path_map=validate_path_map({"/srv/mapped": "/work"}),
         )
         cfg = _cfg(c)
@@ -1694,11 +1696,11 @@ class WorktreePathMapGateTests(unittest.TestCase):
         # the function returns without touching a real repo.
         from uxon.app import launch as launch_app
 
-        c = ContainerProfile(
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="p-{project_slug}",
-            exec_template=_EXEC,
+            resource_scope="per_user",
+            resource_name_template="p-{project_slug}",
+            exec_prefix=_EXEC,
         )
         cfg = _cfg(c)
         sentinel = object()
@@ -1729,42 +1731,40 @@ class WorktreePathMapGateTests(unittest.TestCase):
 class DoctorContainerSectionTests(unittest.TestCase):
     """AC-P5 — doctor container-profile rows: probes, expected-absence note, warnings."""
 
-    def _rows(self, c: ContainerProfile, probe: tuple[str, str]) -> list[dict[str, Any]]:
-        from uxon.app.doctor import _doctor_container_profile_rows
+    def _rows(self, c: WorkloadRuntimeSpec, probe: tuple[str, str]) -> list[dict[str, Any]]:
+        from uxon.app.doctor import _doctor_runtime_rows
 
         cfg = _cfg(c)
-        with mock.patch(
-            "uxon.infra.container.probe_container_state_for_profile", return_value=probe
-        ):
-            return _doctor_container_profile_rows(cfg, "/srv/projects/myapp", "dana")
+        with mock.patch("uxon.infra.runtime.probe_runtime_state_for_profile", return_value=probe):
+            return _doctor_runtime_rows(cfg, "/srv/projects/myapp", "dana")
 
-    def test_section_warns_on_unset_stop_template(self) -> None:
-        c = ContainerProfile(
+    def test_section_warns_on_unset_stop_command(self) -> None:
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
-            is_running_cmd=("docker", "inspect", "{name}"),
-            exists_cmd=("docker", "inspect", "{name}"),
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
+            ready_command=("docker", "inspect", "{resource}"),
+            exists_command=("docker", "inspect", "{resource}"),
         )
         rows = self._rows(c, ("yes", "yes"))
         self.assertEqual(len(rows), 1)
         row = rows[0]
-        self.assertEqual(row["container_profile"], "box")
-        self.assertEqual(row["resolved_name"], "proj-myapp")
-        self.assertEqual(row["is_running"], "yes")
+        self.assertEqual(row["runtime"], "box")
+        self.assertEqual(row["runtime_resource"], "proj-myapp")
+        self.assertEqual(row["ready"], "yes")
         self.assertTrue(row["host_agent_absence_expected"])
-        self.assertTrue(any("stop_template" in w for w in row["warnings"]))
+        self.assertTrue(any("stop_command" in w for w in row["warnings"]))
 
     def test_section_warns_on_definition_under_mount(self) -> None:
-        # AC-P5.4: create_template path token under a path_map host prefix.
-        c = ContainerProfile(
+        # AC-P5.4: create_command path token under a path_map host prefix.
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
-            stop_template=("docker", "exec", "{name}", "true"),
-            create_template=("docker", "compose", "-f", "/srv/projects/myapp/compose.yml", "up"),
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
+            stop_command=("docker", "exec", "{resource}", "true"),
+            create_command=("docker", "compose", "-f", "/srv/projects/myapp/compose.yml", "up"),
             path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
         )
         rows = self._rows(c, ("no", "no"))
@@ -1775,13 +1775,13 @@ class DoctorContainerSectionTests(unittest.TestCase):
         )
 
     def test_section_clean_when_hardened(self) -> None:
-        c = ContainerProfile(
+        c = WorkloadRuntimeSpec(
             id="box",
-            runtime_namespace="per_user",
-            name_template="proj-{project_slug}",
-            exec_template=_EXEC,
-            stop_template=("docker", "exec", "{name}", "true"),
-            create_template=("docker", "compose", "-f", "/operator/compose.yml", "up"),
+            resource_scope="per_user",
+            resource_name_template="proj-{project_slug}",
+            exec_prefix=_EXEC,
+            stop_command=("docker", "exec", "{resource}", "true"),
+            create_command=("docker", "compose", "-f", "/operator/compose.yml", "up"),
             path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
         )
         rows = self._rows(c, ("yes", "yes"))

@@ -2,7 +2,7 @@
 """The single sanctioned primitive for background (non-interactive) spawns.
 
 Every piece of background work that shells out — probes, queries, git,
-container/remote commands — must go through :func:`run_query`. It detaches the
+runtime/remote commands — must go through :func:`run_query`. It detaches the
 child from uxon's controlling terminal *by construction* so the child can never
 flush the TUI's pending keystrokes.
 

@@ -397,7 +397,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
             "2 codex",
         )
 
-    def test_launch_profile_list_label_keeps_distinct_agent_and_container(self) -> None:
+    def test_launch_profile_list_label_keeps_distinct_agent_and_runtime(self) -> None:
         from uxon.tui.state import launch_profile_list_label
 
         self.assertEqual(
@@ -409,11 +409,11 @@ class LaunchOptionsStateTests(unittest.TestCase):
                     label="Claude work",
                     agent="claude",
                     launch_user="agent1",
-                    container_profile="box",
+                    runtime="box",
                 ),
                 self._avail("pending"),
             ),
-            "1 Claude work  claude_work · claude · agent1 · container:box  (checking…)",
+            "1 Claude work  claude_work · claude · agent1 · runtime:box  (checking…)",
         )
 
     def test_launch_profile_users_differ_only_when_visible_users_differ(self) -> None:
