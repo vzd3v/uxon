@@ -48,11 +48,6 @@ class TuiConfig:
     why structural equality between two :class:`TuiConfig` instances is
     deliberately not part of the contract.
 
-    Tuple-of-pairs is used for ``git_remote_profile_options`` because
-    a frozen container with ``list`` would fail at construction time
-    in any code path that re-uses the same options across instances —
-    and because tuples make identity-stability assertions across
-    :meth:`from_context` calls meaningful.
     """
 
     # ── Core identity ────────────────────────────────────────────────
@@ -80,10 +75,8 @@ class TuiConfig:
     remote_hosts: tuple[RemoteHost, ...]
     refresh_sources: tuple[SourceSpec, ...]
 
-    # ── Git-remote display options ───────────────────────────────────
+    # ── Git-remote policy ────────────────────────────────────────────
     git_create_enabled: bool
-    default_git_remote_profile: str
-    git_remote_profile_options: tuple[tuple[str, str], ...]
 
     # ── Callbacks (injected by ``tui.context_builder.build_tui_context``) ──
     on_attach: Callable[[str, str], LaunchRequest]
@@ -146,10 +139,6 @@ class TuiConfig:
             remote_hosts=tuple(ctx.remote_hosts),
             refresh_sources=tuple(ctx.refresh_sources or ()),
             git_create_enabled=ctx.git_create_enabled,
-            default_git_remote_profile=ctx.default_git_remote_profile,
-            git_remote_profile_options=tuple(
-                (name, desc) for (name, desc) in ctx.git_remote_profile_options
-            ),
             on_attach=ctx.on_attach,
             on_kill=ctx.on_kill,
             on_kill_all=ctx.on_kill_all,

@@ -361,7 +361,7 @@ class AuditSendTests(_BaseAuditTests):
         self.assertEqual(evt["subcmd"], "run")
         self.assertEqual(evt["profiles_enabled"], ["claude"])
 
-    def test_correlation_id_threaded_through(self) -> None:
+    def test_common_correlation_id_threads_through_runtime_event(self) -> None:
         recorded: list[bytes] = []
         with (
             patch.object(au, "_detect_sink", return_value="syslog"),
@@ -370,7 +370,7 @@ class AuditSendTests(_BaseAuditTests):
             patch.dict("os.environ", {"USER": "tester"}, clear=False),
         ):
             au.set_correlation_id("uuid-1234")
-            au.audit("list.remote.out", scope="own")
+            au.audit("runtime.prepare", action="start", runtime_resource="sandbox-a")
 
         text = recorded[0].decode("utf-8")
         idx = text.index("@cee: ") + len("@cee: ")
@@ -378,7 +378,7 @@ class AuditSendTests(_BaseAuditTests):
         self.assertEqual(evt["correlation_id"], "uuid-1234")
 
     def test_outcome_error_threaded_through(self) -> None:
-        # Spec line 207: outcome ∈ {ok, denied, error, not_found}.
+        # Outcome is one of the closed audit-schema values.
         # When the caller passes outcome="error" (failure-path emits
         # for session.kill / session.new / session.attach.dispatch), the value
         # must thread through into the wire payload — the default-arg

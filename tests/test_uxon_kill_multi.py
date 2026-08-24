@@ -2,12 +2,12 @@
 
 The spec lives in ``CHANGELOG.md`` for 3.4.0:
 
-- ``--user <name>``: per-target sudo gating, single-target probe;
+- ``--user <name>``: per-target execution gating, single-target probe;
   unreachable target emits the stable ``uxon-error: not-reachable``
   tag and exits 1.
 - ``--host <alias>``: SSH-routed dispatch to a configured
   ``[[remote_hosts]]`` peer. The peer's own ``uxon kill`` does the
-  per-target sudo gating; the local side never speaks the peer's
+  per-target execution gating; the local side never speaks the peer's
   user table. ``--force`` is always passed on the wire.
 - Bulk kill (``kill-all``) stays strictly local; that constraint is
   not under test here, only the per-session kill paths.
@@ -107,7 +107,7 @@ class KillUserLocalTests(unittest.TestCase):
         target = _make_session("uxon-demo@claude", user="alice")
         args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
         completed = mock.Mock(returncode=0, stdout="", stderr="")
-        caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
+        caps = SudoCapability(reachable_users=frozenset({"alice"}))
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
             mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
@@ -130,7 +130,7 @@ class KillUserLocalTests(unittest.TestCase):
     def test_user_other_unreachable_emits_error_tag(self) -> None:
         cfg = _make_config()
         args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
-        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        caps = SudoCapability()
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch("uxon.infra.process.run_cmd") as run,
@@ -154,7 +154,7 @@ class KillUserLocalTests(unittest.TestCase):
             dry_run=True,
             json_output=True,
         )
-        caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
+        caps = SudoCapability(reachable_users=frozenset({"alice"}))
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
             mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
@@ -183,7 +183,7 @@ class KillUserLocalTests(unittest.TestCase):
             user="alice",
             dry_run=True,
         )
-        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        caps = SudoCapability()
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch("uxon.infra.process.run_cmd") as run,
@@ -200,7 +200,7 @@ class KillUserLocalTests(unittest.TestCase):
     def test_json_without_force_or_dry_run_fails(self) -> None:
         cfg = _make_config()
         args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", json_output=True)
-        caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
+        caps = SudoCapability(reachable_users=frozenset({"alice"}))
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False),
@@ -342,7 +342,7 @@ class KillEnvironmentClassificationTests(unittest.TestCase):
     def test_ssh_environment_does_not_reclassify_denied_kill(self) -> None:
         cfg = _make_config()
         args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
-        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        caps = SudoCapability()
         recorded: list[tuple[str, dict]] = []
 
         def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
@@ -459,7 +459,15 @@ class KillHostRemoteTests(unittest.TestCase):
             host="box-b",
             dry_run=True,
         )
-        with mock.patch.object(kill_app.subprocess, "run") as srun:
+        recorded: list[tuple[str, dict[str, object]]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with (
+            mock.patch.object(kill_app.subprocess, "run") as srun,
+            mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
+        ):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = kill_app.do_kill(args, cfg, "u-vz")
@@ -471,6 +479,10 @@ class KillHostRemoteTests(unittest.TestCase):
         self.assertIn("ssh-b", out)
         self.assertIn("kill demo@claude --force", out)
         self.assertIn("demo@claude", out)
+        [event] = [fields for name, fields in recorded if name == "kill.remote.out"]
+        self.assertEqual(event["outcome"], "ok")
+        self.assertIs(event["dry_run"], True)
+        self.assertNotIn("rc", event)
 
     def test_host_with_user_appends_user_flag(self) -> None:
         cfg = self._cfg_with_host()
@@ -561,12 +573,20 @@ class KillHostRemoteTests(unittest.TestCase):
         cfg = self._cfg_with_host()
         args = ParsedArgs(action="kill", target_id="demo@claude", host="bogus", force=True)
         err = io.StringIO()
-        with redirect_stderr(err):
+        recorded: list[tuple[str, dict[str, object]]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with redirect_stderr(err), mock.patch("uxon.infra.audit.audit", side_effect=fake_audit):
             with self.assertRaises(SystemExit) as ctx:
                 kill_app.do_kill(args, cfg, "u-vz")
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("configured:", err.getvalue())
         self.assertIn("box-b", err.getvalue())
+        [event] = [fields for name, fields in recorded if name == "kill.remote.out"]
+        self.assertEqual(event["outcome"], "not_found")
+        self.assertNotIn("rc", event)
 
     def test_host_no_remote_hosts_exits_2(self) -> None:
         cfg = _make_config()  # no remote_hosts
@@ -580,9 +600,17 @@ class KillHostRemoteTests(unittest.TestCase):
         cp = mock.Mock(
             returncode=1,
             stdout="",
-            stderr="uxon-error: not-reachable (cannot sudo -n -H -u alice; ...)\n",
+            stderr="uxon-error: not-reachable (execution backend cannot reach alice)\n",
         )
-        with mock.patch.object(kill_app.subprocess, "run", return_value=cp):
+        recorded: list[tuple[str, dict[str, object]]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with (
+            mock.patch.object(kill_app.subprocess, "run", return_value=cp),
+            mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
+        ):
             err = io.StringIO()
             out = io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
@@ -590,6 +618,9 @@ class KillHostRemoteTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         # Peer's stderr surfaced unwrapped — the error tag must be parseable.
         self.assertIn("uxon-error: not-reachable", err.getvalue())
+        [event] = [fields for name, fields in recorded if name == "kill.remote.out"]
+        self.assertEqual(event["outcome"], "error")
+        self.assertEqual(event["rc"], 1)
 
     def test_host_ssh_timeout_returns_1(self) -> None:
         cfg = self._cfg_with_host()

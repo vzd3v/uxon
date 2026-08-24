@@ -26,6 +26,24 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def source_checkout_root() -> Path | None:
+    """Return the Uxon checkout containing this imported module, if any.
+
+    A wheel may be installed below an unrelated Git worktree. Merely asking
+    Git for the nearest repository would then report the consumer project's
+    commit. The checkout is trusted only when its source-tree module is the
+    exact file Python imported.
+    """
+    root = repo_root()
+    expected_module = root / "src" / "uxon" / "infra" / "version_probe.py"
+    try:
+        if not expected_module.samefile(Path(__file__)):
+            return None
+    except OSError:
+        return None
+    return root
+
+
 def read_repo_version() -> str:
     # Single source of truth: ``__version__`` in ``src/uxon/__init__.py``.
     # Hatch reads the same string at build time, so wheels and dev
@@ -38,7 +56,10 @@ def read_repo_version() -> str:
 
 
 def read_git_commit_short() -> str | None:
-    root = str(repo_root())
+    checkout = source_checkout_root()
+    if checkout is None:
+        return None
+    root = str(checkout)
     cp = run_query(
         ["git", "-c", f"safe.directory={root}", "-C", root, "rev-parse", "--short", "HEAD"],
     )
@@ -49,7 +70,10 @@ def read_git_commit_short() -> str | None:
 
 
 def repo_is_dirty() -> bool:
-    root = str(repo_root())
+    checkout = source_checkout_root()
+    if checkout is None:
+        return False
+    root = str(checkout)
     refresh = run_query(
         ["git", "-c", f"safe.directory={root}", "-C", root, "update-index", "-q", "--refresh"],
     )

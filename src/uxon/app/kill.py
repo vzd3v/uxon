@@ -488,7 +488,7 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
 
     Looks up the configured peer, optionally confirms with the user
     locally, then dispatches the kill to the peer over SSH. The
-    peer's own ``uxon kill`` does the per-target sudo gating, so
+    peer's own ``uxon kill`` does the target execution gating, so
     the local side does not need to know the peer's user table —
     this matches the design constraint that bulk destructive ops
     stay local while per-session kill may cross hosts.
@@ -501,6 +501,9 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     confirmation is a UI gesture, not a wire concern; the peer
     must not re-prompt.
     """
+    import uuid as _uuid
+
+    from uxon.infra import audit as _audit
     from uxon.infra.remote.collector import (
         DEFAULT_CONNECT_TIMEOUT_SEC,
         DEFAULT_TOTAL_TIMEOUT_SEC,
@@ -509,10 +512,34 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
     from uxon.infra.remote_hosts import find_host
 
+    corr_id = str(_uuid.uuid4())
+    _audit.set_correlation_id(corr_id)
     if not cfg.remote_hosts:
+        _audit.audit(
+            "kill.remote.out",
+            outcome="not_found",
+            peer_name=args.host or "",
+            ssh_alias="",
+            target_user=args.user,
+            target_session=args.target_id,
+            force=args.force,
+            dry_run=args.dry_run,
+            correlation_id=corr_id,
+        )
         fail("no [[remote_hosts]] configured; --host requires at least one peer")
     target_host = find_host(cfg.remote_hosts, args.host or "")
     if target_host is None:
+        _audit.audit(
+            "kill.remote.out",
+            outcome="not_found",
+            peer_name=args.host or "",
+            ssh_alias="",
+            target_user=args.user,
+            target_session=args.target_id,
+            force=args.force,
+            dry_run=args.dry_run,
+            correlation_id=corr_id,
+        )
         names = ", ".join(h.name for h in cfg.remote_hosts) or "<none>"
         fail(f"unknown --host {args.host!r}; configured: {names}")
 
@@ -536,12 +563,6 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     # Correlation-id append must precede the join.  ``_do_kill_remote``
     # uses ``run_query`` (not ``os.execvp``), so process replacement is not
     # a concern and the dispatch event can be emitted immediately before it.
-    import uuid as _uuid
-
-    from uxon.infra import audit as _audit
-
-    corr_id = str(_uuid.uuid4())
-    _audit.set_correlation_id(corr_id)
     remote_cmd_parts.extend(["--audit-correlation-id", shlex.quote(corr_id)])
     remote_cmd = " ".join(remote_cmd_parts)
     ssh_argv = build_peer_ssh_argv(
@@ -647,7 +668,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     from uxon.infra import audit as _audit
 
     # Remote dispatch: --host routes to a configured peer over SSH.
-    # Per-target sudo gating happens on the peer (its own ``uxon kill``
+    # Per-target execution gating happens on the peer (its own ``uxon kill``
     # runs the probe), so the local side does not need to know the
     # peer's user table. Bulk kill stays strictly local.
     if args.host is not None:
@@ -661,7 +682,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # Local cross-user kill: --user X where X != launch_user requires
     # per-target NOPASSWD. Probe once for the single target (the same
     # probe machinery the TUI uses on startup, but a single-target
-    # subset). Matches the TUI's per-target sudo gating.
+    # subset). Matches the TUI's per-target execution gating.
     target_user = args.user or launch_user
     if target_user != launch_user:
         from uxon.infra.sudo_probe import probe_sudo_capability
@@ -686,8 +707,8 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             # honest answer is "this would fail" rather than a faked
             # would-kill envelope.
             eprint(
-                f"uxon-error: not-reachable (cannot sudo -n -H -u {target_user}; "
-                "check /etc/sudoers.d for a NOPASSWD rule for this target)"
+                f"uxon-error: not-reachable (execution backend cannot reach {target_user}; "
+                "check the selected backend helper and target policy)"
             )
             return 1
 
@@ -899,7 +920,9 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             if args.dry_run:
                 if not args.json_output:
                     print(f"dry-run: {shlex.join(full)}")
-                results.append({"name": s.name, "action": "would-kill"})
+                results.append(
+                    {"name": s.name, "action": "would-kill", "cleanup_outcome": "not_run"}
+                )
                 continue
             # Capture teardown before the kill, reap the orphan after it.
             teardown = prepare_runtime_teardown(cfg, s)
@@ -910,21 +933,20 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             if ok:
                 killed += 1
                 cleanup_ok = finish_killed_session(cfg, s, teardown, target_user=launch_user)
-                if cleanup_ok:
-                    action = "killed"
-                else:
-                    action = "killed-cleanup-failed"
+                action = "killed"
+                cleanup_outcome = "ok" if cleanup_ok else "error"
+                if not cleanup_ok:
                     cleanup_failed += 1
             else:
                 failed += 1
+                cleanup_outcome = "not_run"
             if not args.json_output:
                 if action == "killed":
-                    print(f"killed: {s.name}")
-                elif action == "killed-cleanup-failed":
-                    print(f"killed: {s.name} (post-kill cleanup failed)")
+                    suffix = "" if cleanup_outcome == "ok" else " (post-kill cleanup failed)"
+                    print(f"killed: {s.name}{suffix}")
                 else:
                     print(f"failed: {s.name}")
-            results.append({"name": s.name, "action": action})
+            results.append({"name": s.name, "action": action, "cleanup_outcome": cleanup_outcome})
     except BaseException:
         failed += 1
         raise

@@ -118,6 +118,8 @@ def fetch_remote_snapshot(
 
     correlation_id = str(uuid.uuid4())
 
+    final_rc: int | None = None
+
     def _finalize(snap: RemoteSnapshot) -> RemoteSnapshot:
         from uxon.infra import audit as _audit
 
@@ -129,6 +131,7 @@ def fetch_remote_snapshot(
             scope="own" if snap.scope_limited else "all-users",
             from_cache=snap.from_cache,
             correlation_id=correlation_id,
+            **({"rc": final_rc} if final_rc is not None else {}),
             **({"error": snap.error[:256]} if snap.error else {}),
         )
         return snap
@@ -151,8 +154,8 @@ def fetch_remote_snapshot(
         max(1, _math.ceil(host.total_timeout)) if host.total_timeout is not None else total_timeout
     )
 
-    def _run_one(all_users: bool) -> tuple[str | None, str | None, str]:
-        """Run one ssh attempt. Returns ``(error, payload, stderr)``."""
+    def _run_one(all_users: bool) -> tuple[str | None, str | None, str, int | None]:
+        """Run one SSH attempt and return error, payload, stderr, and rc."""
         argv = _build_fetch_argv(
             host,
             connect_timeout=eff_connect,
@@ -171,13 +174,13 @@ def fetch_remote_snapshot(
             # and operator-supplied command_template hosts.
             if ssh_multiplex != "off":
                 recover_wedged_master(host)
-            return f"ssh timeout after {eff_total}s", None, ""
+            return f"ssh timeout after {eff_total}s", None, "", 124
         except FileNotFoundError:
-            return "ssh not installed on local host", None, ""
+            return "ssh not installed on local host", None, "", 127
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:  # pragma: no cover — defensive only
-            return f"{exc.__class__.__name__}: {exc}", None, ""
+            return f"{exc.__class__.__name__}: {exc}", None, "", None
         if cp.returncode != 0:
             stderr = (cp.stderr or "").strip()
             err = (
@@ -185,10 +188,10 @@ def fetch_remote_snapshot(
                 if stderr
                 else f"ssh exited {cp.returncode}"
             )
-            return err, None, stderr
-        return None, cp.stdout, ""
+            return err, None, stderr, cp.returncode
+        return None, cp.stdout, "", 0
 
-    error, payload, stderr = _run_one(all_users=True)
+    error, payload, stderr, final_rc = _run_one(all_users=True)
     scope_limited = False
     # Fallback: peer rejected ``--all-users`` (its
     # ``enable_all_users_list = false``). Retry with own-only so
@@ -197,7 +200,7 @@ def fetch_remote_snapshot(
     # ``ALL_USERS_DISABLED_MARKER``; anything else is a hard error.
     if error is not None and ALL_USERS_DISABLED_MARKER in stderr:
         scope_limited = True
-        error, payload, _ = _run_one(all_users=False)
+        error, payload, _, final_rc = _run_one(all_users=False)
 
     if error is None and payload is not None:
         sessions, scope_skipped, host_stats, parse_err = parse_envelope(payload)

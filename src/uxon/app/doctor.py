@@ -549,7 +549,7 @@ def _doctor_git_profile_rows(cfg: Config, launch_user: str) -> list[str]:
 
 def _probe_git_profile(cfg: Config, profile, creds_user: str, current_user: str) -> str:
     """Non-destructive probe for ``uxon doctor``. Doesn't touch GitHub."""
-    # sudo reachability under creds_user
+    # Target-backend reachability under creds_user.
     if creds_user and creds_user != current_user:
         probe = execution_infra.probe(cfg, creds_user)
         if not probe.ok:

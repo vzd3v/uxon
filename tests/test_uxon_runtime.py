@@ -83,7 +83,6 @@ def _cfg(profile: WorkloadRuntimeSpec | None = None, **overrides) -> Config:
         tmux_socket_template="/tmp/uxon-{user}.sock",
         tui_refresh_interval_seconds=2.0,
         git_create_enabled=False,
-        default_git_remote_profile="",
         git_remote_profiles=[],
         tmux_manage_options=False,
         tmux_options={},

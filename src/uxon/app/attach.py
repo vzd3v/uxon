@@ -18,7 +18,7 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
 
     Looks up the configured peer, builds an interactive ssh argv via
     :func:`build_peer_ssh_argv`, and execvp's it. Peer's own
-    ``uxon attach --user`` runs the per-target sudo probe, so the
+    ``uxon attach --user`` runs the target execution probe, so the
     local side does not need to know the peer's user table.
 
     The wire command always passes ``--user`` (even when it equals
@@ -27,21 +27,30 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     its own gating. ``--user`` was made required at parse time
     (:func:`_parse_attach_extras`).
     """
+    import uuid as _uuid
+
+    from uxon.infra import audit as _audit
     from uxon.infra.remote.collector import DEFAULT_CONNECT_TIMEOUT_SEC
     from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
     from uxon.infra.remote_hosts import find_host
 
+    corr_id = str(_uuid.uuid4())
+    _audit.set_correlation_id(corr_id)
     peer = find_host(cfg.remote_hosts, args.host or "")
     if peer is None:
+        _audit.audit(
+            "attach.remote.out.dispatch",
+            outcome="not_found",
+            peer_name=args.host or "",
+            ssh_alias="",
+            target_user=args.user,
+            target_session=args.target_id,
+            dry_run=args.dry_run,
+            correlation_id=corr_id,
+        )
         names = ", ".join(h.name for h in cfg.remote_hosts) or "(none)"
         fail(f"unknown --host {args.host!r}; configured: {names}")
     assert args.user is not None  # parser-enforced
-    import uuid as _uuid
-
-    from uxon.infra import audit as _audit
-
-    corr_id = str(_uuid.uuid4())
-    _audit.set_correlation_id(corr_id)
     # ``target_id`` MUST come first after the verb: peer-side
     # ``parse_subcommand`` reads ``argv[1]`` as the target, with flags
     # tail-parsed afterwards.  Putting flags first makes the peer parse
@@ -97,7 +106,7 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     from uxon.infra import audit as _audit
 
     # Remote dispatch: --host routes to a configured peer over SSH.
-    # Per-target sudo gating happens on the peer (peer's own
+    # Per-target execution gating happens on the peer (peer's own
     # 'uxon attach' runs the probe), so the local side does not need
     # to know the peer's user table. Mirrors do_kill --host.
     #
@@ -125,8 +134,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 dry_run=args.dry_run,
             )
             eprint(
-                f"uxon-error: not-reachable (cannot sudo -n -H -u {target_user}; "
-                "check /etc/sudoers.d for a NOPASSWD rule for this target)"
+                f"uxon-error: not-reachable (execution backend cannot reach {target_user}; "
+                "check the selected backend helper and target policy)"
             )
             return 1
         sessions = sessions_probe.collect_sessions([target_user], cfg)
@@ -141,6 +150,14 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         base = tmux.configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
         full = base
         if args.dry_run:
+            _audit.audit(
+                attach_event,
+                session=target.name,
+                target_user=target_user,
+                profile=target.profile,
+                agent=target.agent,
+                dry_run=True,
+            )
             print(f"attach_user={shlex.quote(target_user)}")
             print(f"socket={shlex.quote(tmux.tmux_socket_path(cfg, target_user))}")
             print(f"session={shlex.quote(target.name)}")

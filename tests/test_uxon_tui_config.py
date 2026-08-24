@@ -51,8 +51,6 @@ def _mk_ctx(**overrides) -> TuiContext:
         ssh_multiplex="off",
         fetch_concurrency=8,
         git_create_enabled=True,
-        default_git_remote_profile="github",
-        git_remote_profile_options=[("github", "github.com via gh")],
         on_attach=lambda u, n: LaunchRequest(cmd=("/bin/true",), label="attach"),
         on_kill=lambda u, n: None,
         on_kill_all=lambda: None,
@@ -97,8 +95,6 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertEqual(cfg.remote_hosts, ())
         self.assertEqual(cfg.refresh_sources, (spec,))
         self.assertTrue(cfg.git_create_enabled)
-        self.assertEqual(cfg.default_git_remote_profile, "github")
-        self.assertEqual(cfg.git_remote_profile_options, (("github", "github.com via gh"),))
 
         # Callable identity is preserved (callbacks pass through by reference).
         self.assertIs(cfg.on_attach, ctx.on_attach)
@@ -169,7 +165,6 @@ class FrozenSemanticsTests(unittest.TestCase):
         cfg = TuiConfig.from_context(_mk_ctx())
         self.assertIsInstance(cfg.remote_hosts, tuple)
         self.assertIsInstance(cfg.refresh_sources, tuple)
-        self.assertIsInstance(cfg.git_remote_profile_options, tuple)
 
 
 class IdentityStabilityTests(unittest.TestCase):

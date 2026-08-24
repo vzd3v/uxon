@@ -169,7 +169,7 @@ class UxonTests(unittest.TestCase):
             agents = default_agent_catalog()
         default_profile = overrides.pop("default_profile", "claude")
         enabled_profiles = tuple(overrides.pop("enabled_profiles", ()))
-        git_default = str(overrides.get("default_git_remote_profile", ""))
+        git_default = str(overrides.pop("profile_git_default", ""))
         git_allowed = tuple(
             profile.name
             for profile in overrides.get("git_remote_profiles", [])  # type: ignore[union-attr]
@@ -198,7 +198,6 @@ class UxonTests(unittest.TestCase):
             tmux_socket_template="/tmp/uxon-{user}.sock",
             tui_refresh_interval_seconds=2.0,
             git_create_enabled=False,
-            default_git_remote_profile="",
             git_remote_profiles=[],
             # Minimal baseline: tmux managed options OFF/empty so launch-argv
             # tests stay focused on the core invocation. The tmux tests opt in
@@ -295,7 +294,7 @@ class UxonTests(unittest.TestCase):
             agents = default_agent_catalog()
         default_profile = kw.get("default_profile", "claude")
         enabled_profiles = tuple(kw.get("enabled_profiles", ()))
-        git_default = str(kw.get("default_git_remote_profile", ""))
+        git_default = str(kw.get("profile_git_default", ""))
         git_allowed = tuple(profile.name for profile in kw.get("git_remote_profiles", []))
         launch = kw.get(
             "launch",
@@ -321,7 +320,6 @@ class UxonTests(unittest.TestCase):
             tmux_socket_template=kw.get("tmux_socket_template", "/tmp/uxon-{user}.sock"),
             tui_refresh_interval_seconds=kw.get("tui_refresh_interval_seconds", 2.0),
             git_create_enabled=kw.get("git_create_enabled", False),
-            default_git_remote_profile=kw.get("default_git_remote_profile", ""),
             git_remote_profiles=kw.get("git_remote_profiles", []),
             tmux_manage_options=kw.get("tmux_manage_options", False),
             tmux_options=kw.get("tmux_options", {}),
@@ -1071,7 +1069,7 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config(
             allowed_roots=["/srv/repos"],
             git_create_enabled=True,
-            default_git_remote_profile="prof-a",
+            profile_git_default="prof-a",
             git_remote_profiles=uxon_git_profiles.load_profiles([profile]),
         )
         args = ParsedArgs(
@@ -1148,7 +1146,7 @@ class UxonTests(unittest.TestCase):
 
         cfg = self.make_config(
             git_create_enabled=True,
-            default_git_remote_profile="prof-a",
+            profile_git_default="prof-a",
             git_remote_profiles=uxon_git_profiles.load_profiles(
                 [
                     {
@@ -2841,7 +2839,6 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
             tmux_socket_template="/tmp/uxon-{user}.sock",
             tui_refresh_interval_seconds=2.0,
             git_create_enabled=False,
-            default_git_remote_profile="",
             git_remote_profiles=[],
             # Minimal baseline: tmux managed options OFF/empty so launch-argv
             # tests stay focused on the core invocation. The tmux tests opt in
@@ -3149,7 +3146,6 @@ class CliPreflightTests(unittest.TestCase):
             tmux_socket_template="/tmp/uxon-{user}.sock",
             tui_refresh_interval_seconds=2.0,
             git_create_enabled=False,
-            default_git_remote_profile="",
             git_remote_profiles=[],
         )
 

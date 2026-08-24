@@ -1,9 +1,7 @@
 """Per-target sudo capability probe.
 
 Returns a *capability set*: which subset of ``session_users`` the caller
-can actually reach through its configured execution backend, plus a separate flag
-for whether the caller has root NOPASSWD (used for settings-write
-gating, where there's no per-user target).
+can actually reach through its configured execution backend.
 
 Design constraints:
 
@@ -40,7 +38,6 @@ from concurrent.futures import ThreadPoolExecutor
 from uxon.domain.config import Config
 from uxon.domain.sudo import SudoCapability
 from uxon.infra.execution import probe as probe_execution
-from uxon.infra.run import run_query
 
 __all__ = ["SudoCapability", "probe_sudo_capability"]
 
@@ -66,25 +63,6 @@ def _probe_one_user(cfg: Config, target: str) -> tuple[str, bool]:
     return target, result.ok
 
 
-def _probe_root() -> bool:
-    """Run ``sudo -n true``. Returns True iff exit 0.
-
-    Distinct from the per-target probe: this asks "can I run *anything*
-    as root without a password?", which is the property the Settings
-    screen needs to ``sudo tee`` a root-owned config file.
-    """
-    if os.geteuid() == 0:
-        return True
-    try:
-        cp = run_query(
-            ["sudo", "-n", "true"],
-            timeout=PROBE_TIMEOUT_SEC,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return cp.returncode == 0
-
-
 def _self_user() -> str:
     """Return the OS user this process is running as.
 
@@ -96,7 +74,7 @@ def _self_user() -> str:
 
 
 def probe_sudo_capability(cfg: Config, candidates: Iterable[str]) -> SudoCapability:
-    """Probe per-target sudo reachability + root NOPASSWD, in parallel.
+    """Probe per-target execution reachability in parallel.
 
     ``candidates`` is the list of OS users to probe — typically
     ``cfg.session_users`` minus the caller. The caller's own username
@@ -124,20 +102,14 @@ def probe_sudo_capability(cfg: Config, candidates: Iterable[str]) -> SudoCapabil
         unique_targets.append(u)
 
     reachable: set[str] = set()
-    # Fan out: per-user probes + the root probe, all in one pool.
-    # Pool size is bounded; if there are zero candidates we still
-    # need the root probe — keep min workers at 1.
-    workers = max(1, min(MAX_WORKERS, len(unique_targets) + 1))
+    workers = min(MAX_WORKERS, len(unique_targets))
+    if workers == 0:
+        return SudoCapability()
     with ThreadPoolExecutor(max_workers=workers) as pool:
         user_futures = [pool.submit(_probe_one_user, cfg, u) for u in unique_targets]
-        root_future = pool.submit(_probe_root)
         for fut in user_futures:
             user, ok = fut.result()
             if ok:
                 reachable.add(user)
-        can_root = root_future.result()
 
-    return SudoCapability(
-        reachable_users=frozenset(reachable),
-        can_root=can_root,
-    )
+    return SudoCapability(reachable_users=frozenset(reachable))

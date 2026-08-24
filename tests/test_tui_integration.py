@@ -81,7 +81,7 @@ ctx = uxon_tui.TuiContext(
     current_user="u-den",
     agents=DEFAULT_AGENT_CATALOG,
     sudo_caps=SudoCapability(
-        reachable_users=frozenset({"_synthetic_"}), can_root=True
+        reachable_users=frozenset({"_synthetic_"})
     ),
     other_sessions=[],
 )

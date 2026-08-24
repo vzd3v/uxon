@@ -90,7 +90,7 @@ def build_tui_context(
         # Skeleton ctx skips the per-target probe — it's the fast first
         # frame, and the real probe runs below when the worker calls
         # back with skeleton=False.
-        sudo_caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        sudo_caps = SudoCapability()
         own: list[SessionInfo] = []
         other: list[SessionInfo] = []
         skipped_users: tuple[str, ...] = ()
@@ -113,8 +113,7 @@ def build_tui_context(
                     continue
                 other.extend(_uxon_demo_ctx.load_demo_local_sessions(_demo_dir, _u))
             sudo_caps = SudoCapability(
-                reachable_users=frozenset(u for u in scope_users if u != launch_user),
-                can_root=False,
+                reachable_users=frozenset(u for u in scope_users if u != launch_user)
             )
             skipped_users = ()
         else:
@@ -208,14 +207,6 @@ def build_tui_context(
     on_setting_remove = _wrap_tui_callback(bridge.on_setting_remove, _CbErr)
     on_setting_save_mapping = _wrap_tui_callback(bridge.on_setting_save_mapping, _CbErr)
     get_git_remote_profile_rows = _wrap_tui_callback(bridge.get_git_remote_profile_rows, _CbErr)
-
-    git_profile_options = [
-        (
-            p.name,
-            f"{p.host}/{p.owner}  via {p.creds_user or launch_user} [{p.auth}]",
-        )
-        for p in cfg.git_remote_profiles
-    ]
 
     # Reflects whether the "new session in current folder" row should be
     # enabled — same predicate the click handler will apply, so the row
@@ -470,8 +461,6 @@ def build_tui_context(
         on_setting_save_mapping=on_setting_save_mapping,
         get_git_remote_profile_rows=get_git_remote_profile_rows,
         git_create_enabled=cfg.git_create_enabled,
-        default_git_remote_profile=cfg.default_git_remote_profile,
-        git_remote_profile_options=git_profile_options,
         refresh_sources=refresh_sources,
         remote_hosts=list(cfg.remote_hosts),
         tui_table_columns=cfg.tui_table_columns,
