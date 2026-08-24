@@ -19,6 +19,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Wire schema 3, launch-record schema 2, and audit schema 2 replace container-specific fields/events with `execution_backend`, `runtime`, `runtime_kind`, `runtime_resource`, `runtime.prepare`, and `runtime.session_stop`.
 - `uxon doctor --json` now reports `execution_backends` and `runtimes`; launch-profile rows expose `runtime_kind` and `uses_runtime`.
 - Audit: the `cli.start` event's `agents_enabled` field is renamed `profiles_enabled` and now lists launch-profile ids (it listed agent ids). Update audit/SIEM queries that filter on `agents_enabled`.
+- Removed configuration fields, including `tui.table.default_sort_by`, are rejected as unknown in v4.
 
 ### Added
 - Generic command runtimes with deterministic resources, path mapping, readiness/start/create policy, optional cgroup telemetry, identity resolution, and safe per-session teardown.
@@ -69,7 +70,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - TUI surfaces probe failures (sudo missing, NOPASSWD misconfig, etc.) via the "agents unavailable" modal with the error and install hints, instead of leaving the agent list silently empty.
 - Adaptive render scheduler — bursty refresh-source landings now coalesce into a single repaint instead of triggering one dispatch each. Leading edge fires immediately (first paint / sparse arrivals stay snappy); subsequent requests within a 300 ms window batch into one trailing render, capped at 1 s after the first request in the batch. A render returning `False` (e.g. modal on top) preserves the dirty state so the next request re-fires immediately.
 - Per-host status line in `by_host` view compacted: `6 sess · 4 attached · cpu Σ25% · mem 6304 MiB / 15992 MiB` → `6/4 sess · cpu 25% · mem 6.3/16G`. Session/attached counts fold into one column, the Σ glyph is gone, memory renders in GiB with one decimal.
-- Sort is now a hard contract, not a setting: locals first (own then other-user), then `[[remote_hosts]]` declaration order, with within-block ranking by last-attach desc then name asc. The removed `tui.table.default_sort_by` key is rejected.
+- Sort is now a hard contract, not a setting: locals first (own then other-user), then `[[remote_hosts]]` declaration order, with within-block ranking by last-attach desc then name asc. The old `tui.table.default_sort_by` value is silently ignored in this tagged release.
 - Attached state is shown by a glyph in the NAME column — `●` filled when attached, `○` hollow otherwise — instead of a bold green name.
 - NAME column drops the `@<agent>` suffix (the agent has its own column already). The disambiguator index `-N` is preserved so siblings stay distinct, e.g. `proj@claude-2` renders as `proj-2`.
 - Quit is `q` / `й` only. `Esc` is a scoped cancel (clear search, close modal, leave field) and never quits the TUI.

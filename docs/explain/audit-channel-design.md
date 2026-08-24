@@ -31,10 +31,9 @@ see [`guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-a
 ## What's recorded
 
 Every event carries the same envelope: `v` (schema version), `event`
-(name), `outcome` (`ok` / `denied` / `error` / `not_found`), `ts`
+(name), `outcome` (`ok` / `denied` / `error` / `not_found` / `skipped`), `ts`
 (ISO-8601 UTC ms), `host`, `uxon_version`, kernel-backed
-`process_user` / `process_uid`, `pid` / `ppid`, `subcmd`, plus
-`ssh_client` only on peer-inbound events. Per-event extra fields
+`process_user` / `process_uid`, `pid` / `ppid`, and `subcmd`. Per-event extra fields
 are listed in [`reference/audit-events.md`](../reference/audit-events.md).
 
 The event alphabet covers:
@@ -44,28 +43,27 @@ The event alphabet covers:
 - Session state changes (`session.new`, `session.attach.dispatch`,
   `session.ended`, `session.kill`, `session.kill_all`).
 - Local enumeration (`list.peek`).
-- Cross-host pairs (`attach.remote.{out,in}.dispatch`,
-  `kill.remote.{out,in}`, `list.remote.in`).
+- Cross-host dispatch/completion (`attach.remote.out.dispatch`,
+  `kill.remote.out`, `list.remote.out`) plus the target host's normal local event.
 - Git-remote creation (`git.remote.create`).
 
 Launch and kill emit a terminal success or failure. Attach replaces the
 uxon process image, so it emits a dispatch event: `ok` means the tmux or SSH
 client was handed off, not that the later interactive session succeeded.
 
-## Local vs. peer-side: `replaces` semantics
+## Cross-host truthfulness
 
 When a gesture crosses an SSH boundary, two events are emitted —
 one per side:
 
-- **Caller side** emits caller-side events (`attach.remote.out.dispatch`,
-  `kill.remote.out`). No `list.remote.out` exists; the local
-  enumeration emits `list.peek` instead.
-- **Peer side**, detected by `SSH_CONNECTION` in env, emits
-  peer-side events instead of the local equivalent.
-  `attach.remote.in.dispatch` replaces `session.attach.dispatch`,
-  `kill.remote.in` replaces `session.kill`, `list.remote.in`
-  replaces `list.peek` — never both. This keeps the cross-host
-  audit trail at one record per side, no double-counting.
+- **Initiating host** emits `attach.remote.out.dispatch`,
+  `kill.remote.out`, or `list.remote.out`.
+- **Target host** emits `session.attach.dispatch`, `session.kill`, or
+  `list.peek`, exactly as it does for a direct invocation.
+
+The shared `correlation_id` joins these records. Uxon does not infer transport
+provenance from `SSH_CONNECTION` or any other caller-controlled environment
+variable.
 
 ## Cross-host correlation
 

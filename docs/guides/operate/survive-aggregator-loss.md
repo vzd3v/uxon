@@ -33,9 +33,9 @@ The aggregator carries:
 - `~/.local/state/uxon/remote/<peer>.json` snapshots — the cache
   fallback for the TUI when a peer is briefly unreachable. This
   is **safe to lose**: a fresh aggregator just refetches.
-- The **caller side** of `correlation_id` pairs for in-flight
-  remote gestures — orphaned. The peer-side `attach.remote.in.dispatch` or
-  `kill.remote.in` event carries the same id but has no matching caller event to join
+- The **initiator side** of `correlation_id` pairs for in-flight
+  remote gestures — orphaned. The target-side `session.attach.dispatch` or
+  `session.kill` event carries the same id but has no matching initiator event to join
   against. Acceptable for incident triage; impossible to
   reconstruct after the fact unless you had central log
   forwarding catching both sides on the way out.
@@ -141,8 +141,7 @@ recoverable:
   in your infra repo / dotfiles repo.
 - Keep the aggregator's `/etc/uxon/config.toml` in version control
   if it's nontrivial. The `[[remote_hosts]]` blocks can be
-  rendered from JSON via
-  `install/render_uxon_config.py`.
+  rendered from JSON via `uxon config render`.
 - Use a hardware-backed SSH key rather than one on disk
   (Secretive on macOS, YubiKey FIDO2 on Linux/cross-platform)
   — when the laptop dies the key dies with it; when only the
