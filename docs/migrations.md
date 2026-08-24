@@ -70,7 +70,7 @@ find /srv/projects -name .uxon.toml -print
 
 Review each file before deleting it.
 
-### Container profiles replace singleton `[container]`
+### Workload runtimes replace singleton `[container]`
 
 Old singleton container config:
 
@@ -81,21 +81,37 @@ name_template = "uxon-{user}-{project_slug}"
 exec_template = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
 ```
 
-New profile-scoped config:
+New v4 runtime config:
 
 ```toml
 [launch.profiles.claude_box]
 agent = "claude"
-container_profile = "workbox"
+runtime = "workbox"
 
-[container.profiles.workbox]
-runtime_namespace = "per_user"
-name_template = "uxon-{user}-{launch_profile}-{project_slug}"
-exec_template = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
+[runtimes.workbox]
+kind = "command"
+resource_scope = "per_user"
+resource_name_template = "uxon-{user}-{launch_profile}-{project_slug}"
+exec_prefix = ["docker", "exec", "-w", "{runtime_dir}", "-i", "{resource}"]
 ```
 
-A launch is containerized only when the selected launch profile names
-`container_profile`.
+A launch uses the built-in `direct` runtime unless its selected launch profile
+names another `runtime`. The old `[container]`, `container_profile`,
+`runtime_namespace`, `name_template`, and `exec_template` names are rejected.
+
+### Execution backends own target-user commands
+
+v4 routes every target-user command family through `[execution]`: tmux server,
+list/attach/kill, git/worktrees/filesystem, probes, workload lifecycle, and
+agent launch. `local` preserves the normal host/sudo behavior. Command backends
+use one `command_prefix` plus a bounded `probe_command`.
+
+The default socket is now `/tmp/uxon-{user}-{execution_backend}.sock`. Drain
+all sessions before changing a backend definition or id. A same-id definition
+change blocks new launches on fingerprint mismatch but keeps list/attach/kill
+available. An id change selects a new socket; restore the old config and drain
+if the new boundary cannot reach the old one. `{execution_fingerprint}` is an
+optional hard-separation placeholder, not automatic drain.
 
 ### GitHub repo creation is profile-scoped
 

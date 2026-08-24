@@ -1,18 +1,16 @@
 # Isolation model: OS users, composing with containers
 
 `uxon` runs agents as dedicated low-privilege Linux users
-(`<user>-agent`) via `sudo -iu`. This is `uxon`'s isolation
-default — but it is **orthogonal to whether the agent process is
-also containerised**, not an alternative to it. This page explains
-the OS-user model, why it is the default, how it composes with a
-container, and what kind of host it is *not* suitable for.
+(`<user>-agent`) through the built-in `local` execution backend. This default
+is orthogonal to an operator-managed host namespace and to the selected
+workload runtime. This page explains how those layers compose.
 
 `uxon` is not in the business of choosing your isolation primitive.
-It pairs an OS account to a developer and execs the agent under it;
-if the operator also wants the agent inside a container, `uxon`
-wraps selected launch profiles with a configured container profile and
-the two layers stack. The question is never "OS users *or* containers"
-— it is "OS users, and optionally a container on top".
+It pairs an OS account to a developer. `[execution]` may wrap the complete
+target-user command family in an operator-owned namespace; importantly, the
+tmux server itself enters that boundary. A launch profile may then select a
+generic `[runtimes.<id>]` workload adapter. The layers stack: user identity →
+execution boundary → optional workload runtime.
 
 ## What "paired-account" means
 
@@ -119,10 +117,10 @@ trust what runs.
   `hidepid=2` is mounted — see
   [`guides/harden/enable-hidepid-correctly.md`](../guides/harden/enable-hidepid-correctly.md)).
 - Same systemd, same loginds, same DNS resolver, same firewall.
-- Per-user `tmux` socket at `/tmp/uxon-<user>.sock` — only that
+- Per-user/backend tmux socket at `/tmp/uxon-<user>-<backend>.sock` — only that
   user's processes can attach.
 - Per-user home, per-user `~/.claude/` config / cache, per-user
-  `~/.gitconfig`. A team-shared launch user (`runtime_user =
+  `~/.gitconfig`. A team-shared launch user (`default_launch_user =
   "team-agent"`, mode (b) in
   [`start/team-1-bootstrap.md`](../start/team-1-bootstrap.md))
   collapses these into one shared home and shares the blast

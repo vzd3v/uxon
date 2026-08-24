@@ -162,7 +162,7 @@ For fleet-wide queries see
   using mode (a) (paired-account). `session_users` lists the
   *launch users* (the `*-agent` accounts), not the shell users.
 - **Forgetting `[launch_user_by_caller]`** — the new developer
-  ends up running as `runtime_user` (the fallback) instead of
+  ends up running as `default_launch_user` (the fallback) instead of
   their own paired account.
 
 ## Related

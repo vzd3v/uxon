@@ -151,7 +151,7 @@ orphan above is the agent that has already outlived its session, not
 the live one.
 
 `uxon` closes this when the launch record names a container profile
-with `stop_template`: the kill reaps the agent process by the
+with `session.stop_command`: the kill reaps the agent process by the
 per-session PID the launch wrapper recorded (the container itself is
 left running). **Confirm it worked:**
 
@@ -159,7 +159,7 @@ left running). **Confirm it worked:**
 sudo -niu <user>-agent docker top <container-name>    # the agent's process should be gone
 ```
 
-If `stop_template` is **not** set — or the session used a PATH-wrapper
+If `session.stop_command` is **not** set — or the session used a PATH-wrapper
 that `uxon` is unaware of — the agent orphans and you must stop it
 yourself; the bluntest sure thing is to stop the container:
 
@@ -169,7 +169,7 @@ sudo -niu <user>-agent docker top <container-name>    # errors once stopped
 ```
 
 `uxon` never stops or removes a user's container for you — only the
-agent *process* it launched, and only when `stop_template` is set.
+agent *process* it launched, and only when `session.stop_command` is set.
 
 ## Revoke whatever it had access to
 

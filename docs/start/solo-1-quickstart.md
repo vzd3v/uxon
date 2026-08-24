@@ -85,7 +85,7 @@ sudo install -d -o wes-agent -g wes-agent /srv/projects
 
 ```toml
 default_launch_mode = "fixed"
-runtime_user        = "wes-agent"
+default_launch_user        = "wes-agent"
 session_users       = ["wes-agent"]
 allowed_roots       = ["/srv/projects"]
 new_project_root    = "/srv/projects"
