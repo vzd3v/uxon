@@ -129,10 +129,6 @@ class TuiContext:
     launch_profiles: dict[str, LaunchProfileOption] = field(default_factory=dict)
     launch_auto_mode: bool = False
 
-    # Compatibility fields for older bare TuiContext fixtures. New TUI launch
-    # surfaces read the profile fields above.
-    enabled_agents: tuple[str, ...] = ()
-    default_agent: str = ""
     # Merged agent catalog (``cfg.agents``), threaded so the TUI's mode
     # helpers and screens read it as data instead of the old module-level
     # literal. ``default_factory=dict`` keeps bare-``TuiContext`` test

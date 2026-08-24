@@ -112,9 +112,9 @@ nadia = "nadia-agent"
 liam   = "liam-agent"
 ethan = "ethan-agent"
 
-[agents]
-enabled = ["claude"]
-default = "claude"
+[launch]
+enabled_profiles = ["claude"]
+default_profile = "claude"
 ```
 
 If you don't want a fallback launch user (i.e. unmapped callers

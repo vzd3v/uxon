@@ -2,7 +2,7 @@
 
 Pushed by :class:`UxonApp` after the async availability probe completes
 and finds zero usable agents. In strict-whitelist mode the constructor
-receives the configured ``enabled_agents`` tuple and the body lists
+receives the configured ``enabled_profiles`` tuple and the body lists
 each with its install hint. In auto-mode the tuple is empty (no
 configured whitelist) and the body falls back to listing every
 catalogued agent (the threaded ``agents`` catalog) — the operator just
@@ -44,14 +44,14 @@ class AgentsUnavailableScreen(CardModal[None]):
 
     def __init__(
         self,
-        enabled_agents: tuple[str, ...],
+        enabled_profiles: tuple[str, ...],
         *,
         agents: dict[str, Any] | None = None,
         launch_profiles: dict[str, Any] | None = None,
         error: str = "",
     ) -> None:
         super().__init__()
-        self._enabled_agents = tuple(enabled_agents)
+        self._enabled_profiles = tuple(enabled_profiles)
         self._agents: dict[str, Any] = dict(agents or {})
         self._launch_profiles: dict[str, Any] = dict(launch_profiles or {})
         self._error = error
@@ -60,7 +60,7 @@ class AgentsUnavailableScreen(CardModal[None]):
         self.body_text: str = self._render_body()
 
     def _render_body(self) -> str:
-        ids: tuple[str, ...] = self._enabled_agents or tuple(self._agents)
+        ids: tuple[str, ...] = self._enabled_profiles or tuple(self._agents)
         lines: list[str] = []
         for aid in ids:
             profile = self._launch_profiles.get(aid)
@@ -86,21 +86,21 @@ class AgentsUnavailableScreen(CardModal[None]):
                 "dismiss this message, then press 'r'."
             )
             footer = "After the probe succeeds the agent list will populate."
-        elif self._enabled_agents:
+        elif self._enabled_profiles:
             title = "No agents installed"
             intro = (
                 "uxon could not find any of the configured agents on PATH.\n"
                 "Install at least one, dismiss this message, then press 'r'."
             )
-            footer = "Configured in config.toml → [agents] enabled"
+            footer = "Configured in config.toml → [launch] enabled_profiles"
         else:
             title = "No agents installed"
             intro = (
-                "uxon is in auto-mode (no [agents].enabled in config) and "
+                "uxon is in auto-mode (no [launch].enabled_profiles in config) and "
                 "found no known agent installed.\n"
                 "Install one of the below, dismiss this message, then press 'r'."
             )
-            footer = "Pin a strict subset via [agents] enabled in config.toml"
+            footer = "Pin a strict subset via [launch].enabled_profiles in config.toml"
         with self.card():
             yield Static(title, classes="title")
             yield Static(intro)

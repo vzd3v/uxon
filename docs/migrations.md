@@ -64,6 +64,12 @@ default_profile = "codex"
 After migrating, delete stale `.uxon.toml` files so operators do not
 mistake them for live policy.
 
+```bash
+find /srv/projects -name .uxon.toml -print
+```
+
+Review each file before deleting it.
+
 ### Container profiles replace singleton `[container]`
 
 Old singleton container config:

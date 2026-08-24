@@ -27,34 +27,9 @@ if TYPE_CHECKING:
     from .dashboard.ui_state import MainScreenUiState
 
 
-def effective_agents(
-    *,
-    configured: tuple[str, ...],
-    available_ids: tuple[str, ...],
-    catalog_ids: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Return the agent ids the user can actually launch.
-
-    - ``configured`` non-empty → strict whitelist; return as-is.
-    - ``configured`` empty → auto-mode; return every ``catalog_ids`` entry
-      that ``available_ids`` reports as installed for ``launch_user``.
-
-    ``catalog_ids`` is the merged-catalog id order (``cfg.agents`` keys),
-    threaded in so this pure helper never reaches a module-level literal.
-
-    Empty/absent ``[agents].enabled`` in repo config and ``[]`` are
-    treated identically — both mean "auto-detect from what is
-    installed". Explicit "disable everything" is not supported (YAGNI:
-    nobody installs uxon to forbid launching).
-    """
-    if configured:
-        return configured
-    return tuple(aid for aid in catalog_ids if aid in available_ids)
-
-
 def should_show_agents_unavailable(
     *,
-    enabled_agents: tuple[str, ...],
+    enabled_profiles: tuple[str, ...],
     availability: Mapping[str, Any],
     already_shown: bool,
 ) -> bool:
@@ -71,45 +46,45 @@ def should_show_agents_unavailable(
     """
     if already_shown:
         return False
-    if not enabled_agents:
+    if not enabled_profiles:
         return False
 
     resolved = all(
         aid in availability and getattr(availability[aid], "status", "pending") != "pending"
-        for aid in enabled_agents
+        for aid in enabled_profiles
     )
     if not resolved:
         return False
 
     return all(
         getattr(availability[aid], "status", None) in ("missing", "timeout")
-        for aid in enabled_agents
+        for aid in enabled_profiles
     )
 
 
 def compute_all_missing(
     *,
-    enabled_agents: tuple[str, ...],
+    enabled_profiles: tuple[str, ...],
     availability: Mapping[str, Any],
 ) -> bool:
-    """Return True when every enabled agent has a resolved missing/timeout status.
+    """Return True when every enabled profile has a resolved missing/timeout status.
 
     Distinct from :func:`should_show_agents_unavailable` because the
     transition-based push gate (``should_push_agents_unavailable``)
     needs the raw "is this state all-missing now" predicate,
     decoupled from the previously-shown latch.
     """
-    if not enabled_agents:
+    if not enabled_profiles:
         return False
     resolved = all(
         aid in availability and getattr(availability[aid], "status", "pending") != "pending"
-        for aid in enabled_agents
+        for aid in enabled_profiles
     )
     if not resolved:
         return False
     return all(
         getattr(availability[aid], "status", None) in ("missing", "timeout")
-        for aid in enabled_agents
+        for aid in enabled_profiles
     )
 
 
@@ -179,14 +154,14 @@ class LaunchCommitDecision:
 
 def visible_agent_ids(
     *,
-    enabled_agents: tuple[str, ...],
+    enabled_profiles: tuple[str, ...],
     availability: Mapping[str, Any],
     catalog_ids: tuple[str, ...],
     auto_mode: bool = False,
 ) -> tuple[str, ...]:
     """Profile ids the LaunchOptions screen should expose.
 
-    Strict mode (``enabled_agents`` non-empty): the configured profile list,
+    Strict mode (``enabled_profiles`` non-empty): the configured profile list,
     minus any with a resolved ``missing``/``timeout`` status. Pending
     entries stay visible so the row renders as "(checking…)" rather
     than vanishing mid-probe.
@@ -195,10 +170,10 @@ def visible_agent_ids(
     (merged-catalog order) that has resolved to ``ok`` in ``availability``.
     No "missing" rows.
     """
-    if enabled_agents and not auto_mode:
+    if enabled_profiles and not auto_mode:
         return tuple(
             aid
-            for aid in enabled_agents
+            for aid in enabled_profiles
             if availability.get(aid) is None
             or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
         )
@@ -211,8 +186,8 @@ def visible_agent_ids(
 
 def update_launch_options_after_availability(
     *,
-    enabled_agents: tuple[str, ...],
-    default_agent: str,
+    enabled_profiles: tuple[str, ...],
+    default_profile: str,
     availability: Mapping[str, Any],
     current_agent: str,
     active_panel: str,
@@ -220,7 +195,7 @@ def update_launch_options_after_availability(
     auto_mode: bool = False,
 ) -> LaunchOptionsUpdate:
     visible = visible_agent_ids(
-        enabled_agents=enabled_agents,
+        enabled_profiles=enabled_profiles,
         availability=availability,
         catalog_ids=catalog_ids,
         auto_mode=auto_mode,
@@ -230,14 +205,14 @@ def update_launch_options_after_availability(
             visible_agents=(),
             single_agent=True,
             active_panel="mode",
-            current_agent=current_agent or default_agent,
+            current_agent=current_agent or default_profile,
             dismiss=True,
         )
     single = len(visible) <= 1
     if current_agent in visible:
         next_agent = current_agent
-    elif default_agent in visible:
-        next_agent = default_agent
+    elif default_profile in visible:
+        next_agent = default_profile
     else:
         next_agent = visible[0]
     return LaunchOptionsUpdate(
@@ -251,21 +226,23 @@ def update_launch_options_after_availability(
 
 def launch_options_state(
     *,
-    enabled_agents: tuple[str, ...],
-    default_agent: str,
+    enabled_profiles: tuple[str, ...],
+    default_profile: str,
     availability: Mapping[str, Any],
     catalog_ids: tuple[str, ...] = (),
     auto_mode: bool = False,
 ) -> LaunchOptionsState:
     visible = visible_agent_ids(
-        enabled_agents=enabled_agents,
+        enabled_profiles=enabled_profiles,
         availability=availability,
         catalog_ids=catalog_ids,
         auto_mode=auto_mode,
     )
     single = len(visible) <= 1
     current = (
-        default_agent if default_agent in visible else (visible[0] if visible else default_agent)
+        default_profile
+        if default_profile in visible
+        else (visible[0] if visible else default_profile)
     )
     return LaunchOptionsState(
         visible_agents=visible,

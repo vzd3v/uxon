@@ -550,12 +550,6 @@ def load_config(cwd: str) -> Config:
         container_profiles=container_profiles,
         git_remote_profile_names=git_remote_profile_names,
     )
-    enabled = (
-        tuple(dict.fromkeys(launch.profiles[pid].agent for pid in launch.enabled_profiles))
-        if launch.enabled_profiles
-        else ()
-    )
-    default_agent = launch.profiles[launch.default_profile].agent if launch.default_profile else ""
 
     new_project_root = canonical(
         str(merged.get("new_project_root", DEFAULT_CONFIG["new_project_root"]))
@@ -753,8 +747,6 @@ def load_config(cwd: str) -> Config:
         allowed_roots=allowed_roots,
         session_prefix=session_prefix,
         legacy_session_prefixes=legacy_session_prefixes,
-        enabled_agents=enabled,
-        default_agent=default_agent,
         agents=agents,
         launch=launch,
         container_profiles=container_profiles,

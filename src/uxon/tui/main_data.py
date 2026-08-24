@@ -2,7 +2,7 @@
 
 Each call to ``on_refresh()`` produces a fresh :class:`MainData` —
 fields like ``sessions``, ``server_status`` and ``cwd_short`` change
-on every tick, while configuration (``enabled_agents``, callbacks,
+on every tick, while configuration (``enabled_profiles``, callbacks,
 remote-hosts registry) and async-source state (``link_health``,
 ``remote_snapshots``) live elsewhere.
 

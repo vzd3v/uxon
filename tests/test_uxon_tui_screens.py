@@ -370,7 +370,7 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
         ctx = _mk_ctx(
             on_container_gate=lambda *a: gate,
             on_probe_existing_sessions=lambda *a: (),
-            enabled_agents=["claude"],
+            enabled_profiles=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
         )
         app = UxonApp(ctx, probe_agents=False)
@@ -590,8 +590,8 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
                 "pending-label",
                 lambda: LaunchOptionsScreen(
                     _mk_ctx(
-                        enabled_agents=("claude",),
-                        default_agent="claude",
+                        enabled_profiles=("claude",),
+                        default_profile="claude",
                         agent_availability={"claude": self._make_avail("pending")},
                     )
                 ),
@@ -619,8 +619,8 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         ctx = _mk_ctx(
-            enabled_agents=("claude", "cursor"),
-            default_agent="claude",
+            enabled_profiles=("claude", "cursor"),
+            default_profile="claude",
             agent_availability={
                 "claude": self._make_avail("ok"),
                 "cursor": self._make_avail("ok"),
@@ -681,8 +681,8 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
         def with_ws():
             return LaunchOptionsScreen(
                 _mk_ctx(
-                    enabled_agents=("claude",),
-                    default_agent="claude",
+                    enabled_profiles=("claude",),
+                    default_profile="claude",
                     agent_availability={"claude": self._make_avail("ok")},
                 ),
                 workspaces=self._workspaces(),
@@ -692,8 +692,8 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
         def without_ws():
             return LaunchOptionsScreen(
                 _mk_ctx(
-                    enabled_agents=("claude",),
-                    default_agent="claude",
+                    enabled_profiles=("claude",),
+                    default_profile="claude",
                     agent_availability={"claude": self._make_avail("ok")},
                 )
             )
@@ -739,8 +739,8 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
+            enabled_profiles=("claude",),
+            default_profile="claude",
             agent_availability={"claude": self._make_avail("ok")},
         )
 
@@ -792,8 +792,8 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
+            enabled_profiles=("claude",),
+            default_profile="claude",
             agent_availability={"claude": self._make_avail("ok")},
         )
 
@@ -844,8 +844,8 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
+            enabled_profiles=("claude",),
+            default_profile="claude",
             agent_availability={"claude": self._make_avail("ok")},
         )
 
@@ -871,8 +871,8 @@ class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
+            enabled_profiles=("claude",),
+            default_profile="claude",
             agent_availability={"claude": self._make_avail("ok")},
         )
 
@@ -935,8 +935,8 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         base = dict(
-            enabled_agents=("claude",),
-            default_agent="claude",
+            enabled_profiles=("claude",),
+            default_profile="claude",
             cwd="/srv/work",
             cwd_short="work",
             cwd_writable=True,
@@ -1043,8 +1043,8 @@ class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         base = dict(
-            enabled_agents=("claude",),
-            default_agent="claude",
+            enabled_profiles=("claude",),
+            default_profile="claude",
             new_project_root="/srv/work",
             existing_projects=[("proj", "2026-05-01")],
             on_probe_worktrees=lambda cwd: probed,

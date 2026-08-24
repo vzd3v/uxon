@@ -3,7 +3,7 @@
 The TUI's state is split across three containers:
 
 * **Configuration** — values fixed for the lifetime of the App
-  (``enabled_agents``, refresh cadences, callbacks, the
+  (``enabled_profiles``, refresh cadences, callbacks, the
   ``remote_hosts`` registry, …). Lives in :class:`TuiConfig`.
 * **Async slots** — per-source state mutated by message-loop
   handlers. Lives in :class:`uxon.tui.state.TuiState`.
@@ -67,9 +67,6 @@ class TuiConfig:
     launch_profiles: dict[str, LaunchProfileOption]
     launch_auto_mode: bool
 
-    # Compatibility aliases for old fixtures; new launch UI reads profiles.
-    enabled_agents: tuple[str, ...]
-    default_agent: str
     agents: dict[str, AgentSpec]
 
     # ── Cadence knobs ────────────────────────────────────────────────
@@ -139,8 +136,6 @@ class TuiConfig:
             default_profile=ctx.default_profile,
             launch_profiles=dict(ctx.launch_profiles),
             launch_auto_mode=ctx.launch_auto_mode,
-            enabled_agents=tuple(ctx.enabled_agents),
-            default_agent=ctx.default_agent,
             agents=dict(ctx.agents),
             tui_refresh_interval_seconds=float(ctx.tui_refresh_interval_seconds),
             tui_ssh_refresh_interval_seconds=float(ctx.tui_ssh_refresh_interval_seconds),

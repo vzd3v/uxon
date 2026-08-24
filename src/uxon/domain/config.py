@@ -139,11 +139,6 @@ class Config:
     allowed_roots: list[str]
     session_prefix: str
     legacy_session_prefixes: tuple[str, ...]
-    # Temporary runtime compatibility fields until P2 replaces launch call
-    # sites with resolved launch profiles. They are derived from [launch], not
-    # accepted as [agents] config keys.
-    enabled_agents: tuple[str, ...]
-    default_agent: str
     new_project_root: str
     repeat_noninteractive_mode: str
     tmux_socket_template: str

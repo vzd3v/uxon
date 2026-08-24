@@ -110,13 +110,13 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         # ``_rebuild_agent_list`` re-reads on every probe-result
         # dispatch so the modal reflects fresh data without a re-open.
         opts = launch_options_state(
-            enabled_agents=self._enabled_profiles(),
-            default_agent=self._default_profile(),
+            enabled_profiles=self._enabled_profiles(),
+            default_profile=self._default_profile(),
             availability=self._availability_now(),
             catalog_ids=self._catalog_profile_ids(),
             auto_mode=self._launch_auto_mode(),
         )
-        self._visible_agents = list(opts.visible_agents)
+        self._visible_agents = opts.visible_agents
         self._single_agent = opts.single_agent
         self._active_panel = opts.active_panel
         self._current_agent = opts.current_agent
@@ -148,16 +148,16 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         return self.cfg.agent_availability
 
     def _enabled_profiles(self) -> tuple[str, ...]:
-        return tuple(getattr(self.cfg, "enabled_profiles", ()) or self.cfg.enabled_agents)
+        return self.cfg.enabled_profiles
 
     def _default_profile(self) -> str:
-        return str(getattr(self.cfg, "default_profile", "") or self.cfg.default_agent)
+        return self.cfg.default_profile
 
     def _launch_profiles(self) -> dict:
-        return dict(getattr(self.cfg, "launch_profiles", {}) or {})
+        return dict(self.cfg.launch_profiles)
 
     def _launch_auto_mode(self) -> bool:
-        return bool(getattr(self.cfg, "launch_auto_mode", False)) or not self._enabled_profiles()
+        return self.cfg.launch_auto_mode
 
     def _catalog_profile_ids(self) -> tuple[str, ...]:
         profiles = self._enabled_profiles()
@@ -309,7 +309,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         if lv.id != "agent-list":
             return
         idx = lv.index or 0
-        new_agent = pick_visible_agent(tuple(self._visible_agents), idx, self._current_agent)
+        new_agent = pick_visible_agent(self._visible_agents, idx, self._current_agent)
         if new_agent == self._current_agent:
             return
         self._current_agent = new_agent
@@ -373,15 +373,15 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         """
         avail = self._availability_now()
         update = update_launch_options_after_availability(
-            enabled_agents=self._enabled_profiles(),
-            default_agent=self._default_profile(),
+            enabled_profiles=self._enabled_profiles(),
+            default_profile=self._default_profile(),
             availability=avail,
             current_agent=self._current_agent,
             active_panel=self._active_panel,
             catalog_ids=self._catalog_profile_ids(),
             auto_mode=self._launch_auto_mode(),
         )
-        visible = list(update.visible_agents)
+        visible = update.visible_agents
         self._visible_agents = visible
         self._single_agent = update.single_agent
         self._active_panel = update.active_panel

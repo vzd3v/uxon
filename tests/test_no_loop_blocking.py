@@ -301,7 +301,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
         ctx = _mk_ctx(
             on_launch_cwd=on_launch_cwd,
             on_probe_existing_sessions=lambda *a: (),
-            enabled_agents=["claude"],
+            enabled_profiles=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
         )
         app = UxonApp(ctx, probe_agents=False)
@@ -357,7 +357,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
         ctx = _mk_ctx(
             on_launch_cwd=on_launch_cwd,
             on_probe_existing_sessions=lambda *a: (),
-            enabled_agents=["claude"],
+            enabled_profiles=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
         )
         app = UxonApp(ctx, probe_agents=False)

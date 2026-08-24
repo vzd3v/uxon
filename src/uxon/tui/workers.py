@@ -260,7 +260,7 @@ class WorkerCoordinator:
         # Strict profile mode: surface exactly the enabled profile ids,
         # marking absent host binaries as missing. Auto-mode: surface only
         # profiles that are actually launchable.
-        configured = self._cfg.enabled_profiles or self._cfg.enabled_agents
+        configured = self._cfg.enabled_profiles
         availability: dict = {}
         if self._cfg.launch_profiles:
             for pid in configured:
@@ -295,27 +295,14 @@ class WorkerCoordinator:
                         status="missing", error=f"{binary} not found on PATH"
                     )
         else:
+            # No launch profiles populated (operator removed every
+            # built-in and defined none): fall back to reporting every
+            # agent the host probe discovered so auto-mode still surfaces
+            # a usable choice.
             report = next(iter(reports.values()))
-            configured_agents = self._cfg.enabled_agents
-            if configured_agents:
-                for aid in configured_agents:
-                    status = report.agents.get(aid)
-                    if status is not None and status.path is not None:
-                        availability[aid] = uxon_agents.AgentAvailability(
-                            status="ok", path=status.path
-                        )
-                    else:
-                        spec = self._cfg.agents.get(aid)
-                        binary = spec.binary if spec is not None else aid
-                        availability[aid] = uxon_agents.AgentAvailability(
-                            status="missing", error=f"{binary} not found on PATH"
-                        )
-            else:
-                for aid, status in report.agents.items():
-                    if status.path is not None:
-                        availability[aid] = uxon_agents.AgentAvailability(
-                            status="ok", path=status.path
-                        )
+            for aid, status in report.agents.items():
+                if status.path is not None:
+                    availability[aid] = uxon_agents.AgentAvailability(status="ok", path=status.path)
         self._post_message(
             _HostReportUpdated(
                 availability=availability,

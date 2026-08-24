@@ -455,8 +455,6 @@ def build_tui_context(
         default_profile=cfg.launch.default_profile,
         launch_profiles=launch_profile_options,
         launch_auto_mode=cfg.launch.auto_mode,
-        enabled_agents=cfg.enabled_agents,
-        default_agent=cfg.default_agent,
         agents=dict(cfg.agents),
         launch_user=launch_user,
         agent_availability=agent_availability,
