@@ -39,7 +39,17 @@ from uxon.domain.launch_profiles import (
     builtin_launch_profiles,
 )
 from uxon.errors import fail
-from uxon.infra import config_loader, git, identity, sessions_probe, tmux, version_probe
+from uxon.infra import (
+    config_loader,
+    git,
+    identity,
+    sessions_probe,
+    tmux,
+    version_probe,
+)
+from uxon.infra import (
+    execution as execution_infra,
+)
 
 
 def _managed_create_cmd(req):
@@ -138,6 +148,18 @@ class UxonTests(unittest.TestCase):
         patcher = mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        facts_patcher = mock.patch(
+            "uxon.infra.execution.path_facts",
+            side_effect=lambda _cfg, _user, path: execution_infra.PathFacts(
+                path=str(path),
+                exists=True,
+                directory=True,
+                writable=True,
+                nearest_existing_ancestor=str(path),
+            ),
+        )
+        facts_patcher.start()
+        self.addCleanup(facts_patcher.stop)
 
     def make_config(self, **overrides) -> Config:
         agents = overrides.get("agents")
@@ -350,9 +372,8 @@ class UxonTests(unittest.TestCase):
             return {}
 
         with mock.patch.object(version_probe, "repo_root", return_value=tmp_path):
-            with mock.patch("uxon.infra.config_loader.canonical", side_effect=lambda v: str(v)):
-                with mock.patch("uxon.infra.config_loader.load_toml", side_effect=fake_load_toml):
-                    return config_loader.load_config(str(cwd))
+            with mock.patch("uxon.infra.config_loader.load_toml", side_effect=fake_load_toml):
+                return config_loader.load_config(str(cwd))
 
     def test_load_config_reads_new_multi_user_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -558,6 +579,20 @@ class UxonTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     self._write_and_load_cfg(source, tmpdir)
                 self.assertIn("unknown key", getattr(raised.exception, "uxon_msg", ""))
+
+    def test_load_config_rejects_boolean_coercion(self) -> None:
+        cases = (
+            'enable_all_users_list = "false"\n',
+            "git_create_enabled = 1\n",
+            '[audit]\nenabled = "yes"\n',
+            "[tmux]\nmanage_options = 0\n",
+            '[agents.claude]\n[[agents.claude.mode]]\nid = "normal"\ndangerous = "no"\n',
+        )
+        for source in cases:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as tmpdir:
+                with self.assertRaises(SystemExit) as raised:
+                    self._write_and_load_cfg(source, tmpdir)
+                self.assertIn("must be", getattr(raised.exception, "uxon_msg", ""))
 
     def test_load_config_rejects_unknown_launch_profile_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1281,7 +1316,7 @@ class UxonTests(unittest.TestCase):
         attach.assert_called_once()
         plan.assert_not_called()  # attach decision → no worktree creation
         audit.assert_called_once_with(
-            "session.attach",
+            "session.attach.dispatch",
             session="uxon-demo-feature-x@claude",
             target_user="u-vz",
             profile="claude",
@@ -1604,7 +1639,8 @@ class UxonTests(unittest.TestCase):
         with (
             self._stub_socket_path(),
             mock.patch(
-                "uxon.infra.launch_records.state_dir", return_value=Path("/control/records")
+                "uxon.infra.launch_records.default_launch_record_dir",
+                return_value=Path("/control/records"),
             ),
         ):
             req = tmux._build_tmux_launch_request(
@@ -1649,7 +1685,7 @@ class UxonTests(unittest.TestCase):
             req = tmux._build_tmux_attach_request(target, cfg, "u-vz")
         self.assertIsNone(req.managed)
 
-    def test_launch_in_tmux_cli_still_calls_execvp_after_mkdir(self) -> None:
+    def test_launch_in_tmux_cli_delegates_managed_prelaunch_before_execvp(self) -> None:
         cfg = self.make_config()
         args = ParsedArgs(action="run", agent_args=[])
         resolved = _resolved_for_test(cfg)
@@ -1665,7 +1701,7 @@ class UxonTests(unittest.TestCase):
                             None,
                             resolved_profile=resolved,
                         )
-        run_cmd.assert_called_once()
+        run_cmd.assert_not_called()
         prepare.assert_called_once()
         execvp.assert_called_once()
 
@@ -1705,7 +1741,7 @@ class UxonTests(unittest.TestCase):
 
         calls: list[tuple[str, ...]] = []
 
-        def fake_run_cmd(cmd, check=True):
+        def fake_run_cmd(cmd, check=True, **_kwargs):
             calls.append(tuple(cmd))
             if len(calls) == 2:
                 return CP(stdout="$1\t123\tuxon-demo@claude\tnonce\n")
@@ -1725,7 +1761,7 @@ class UxonTests(unittest.TestCase):
 
         self.assertIn(managed.kill_cmd, calls)
         fail_pending.assert_called_once_with(
-            pending, override_dir=Path("/tmp/uxon-launch-records-test")
+            pending, override_dir=Path("/tmp/uxon-launch-records-test"), shared=False
         )
 
     def test_managed_launch_releases_only_after_record_finalization(self) -> None:
@@ -1752,7 +1788,11 @@ class UxonTests(unittest.TestCase):
             agent=pending.agent,
             launch_user=pending.launch_user,
         )
-        req = tmux.LaunchRequest(cmd=("tmux", "attach"), managed=managed)
+        req = tmux.LaunchRequest(
+            cmd=("tmux", "attach"),
+            prelaunch=(("mkdir", "-p", "/tmp/uxon"),),
+            managed=managed,
+        )
         events: list[str] = []
 
         def fake_run(cmd, check=True, **kwargs):
@@ -1779,7 +1819,14 @@ class UxonTests(unittest.TestCase):
 
         self.assertEqual(
             events,
-            ["record-pending", "new-session", "display-message", "record-finalized", "wait-for"],
+            [
+                "record-pending",
+                "-p",
+                "new-session",
+                "display-message",
+                "record-finalized",
+                "wait-for",
+            ],
         )
 
     def test_managed_launch_name_conflict_fails_pending_record(self) -> None:
@@ -1823,7 +1870,7 @@ class UxonTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 tmux.prepare_managed_launch(req, pending)
         fail_pending.assert_called_once_with(
-            pending, override_dir=Path("/tmp/uxon-launch-records-test")
+            pending, override_dir=Path("/tmp/uxon-launch-records-test"), shared=False
         )
 
     def test_launch_bootstrap_waits_for_release_before_exec(self) -> None:
@@ -1832,7 +1879,11 @@ class UxonTests(unittest.TestCase):
         with (
             mock.patch(
                 "uxon.infra.launch_bootstrap.run_query",
-                side_effect=[subprocess.TimeoutExpired(["tmux"], 0.01), mock.Mock(returncode=0)],
+                side_effect=[
+                    subprocess.TimeoutExpired(["tmux"], 0.01),
+                    mock.Mock(returncode=0),
+                    mock.Mock(returncode=0),
+                ],
             ) as run,
             mock.patch.object(launch_bootstrap.os, "execvp") as execvp,
         ):
@@ -1857,6 +1908,7 @@ class UxonTests(unittest.TestCase):
                 "uxon.infra.launch_bootstrap.run_query",
                 side_effect=[
                     subprocess.TimeoutExpired(["tmux"], 0.01),
+                    OSError("tmux disappeared"),
                     OSError("tmux disappeared"),
                 ],
             ),
@@ -1912,7 +1964,7 @@ class UxonTests(unittest.TestCase):
                 override_dir=Path(tmp) / "records",
             )
         assert payload is not None
-        self.assertEqual(payload["launch_profile"], "claude")
+        self.assertEqual(payload["profile"], "claude")
         self.assertEqual(payload["agent"], "claude")
         self.assertEqual(payload["launch_user"], "dana_agent")
         self.assertEqual(payload["runtime"], "box")
@@ -1975,16 +2027,31 @@ class UxonTests(unittest.TestCase):
 
     def test_launch_target_rejects_nonexistent_directory(self) -> None:
         cfg = self.make_config(allowed_roots=[])
-        self.assertFalse(
-            launch_app.is_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here"),
+        facts = execution_infra.PathFacts(
+            path="/no/such/dir/here",
+            exists=False,
+            directory=False,
+            writable=False,
+            nearest_existing_ancestor="/",
         )
-        with self.assertRaises(SystemExit):
-            launch_app.ensure_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here")
+        with mock.patch("uxon.infra.execution.path_facts", return_value=facts):
+            self.assertFalse(
+                launch_app.is_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here"),
+            )
+            with self.assertRaises(SystemExit):
+                launch_app.ensure_launch_target_allowed(cfg, "u-ed", "/no/such/dir/here")
 
     def test_launch_target_rejects_unwritable_directory(self) -> None:
         cfg = self.make_config(allowed_roots=[])
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=False):
+            facts = execution_infra.PathFacts(
+                path=tmp,
+                exists=True,
+                directory=True,
+                writable=False,
+                nearest_existing_ancestor=tmp,
+            )
+            with mock.patch("uxon.infra.execution.path_facts", return_value=facts):
                 self.assertFalse(launch_app.is_launch_target_allowed(cfg, "u-ed", tmp))
                 with self.assertRaises(SystemExit):
                     launch_app.ensure_launch_target_allowed(cfg, "u-ed", tmp)
@@ -2053,7 +2120,10 @@ class UxonTests(unittest.TestCase):
             (root / "beta").mkdir()
             (root / ".hidden").mkdir()  # dot-prefixed must be skipped
             (root / "not_a_dir.txt").write_text("x")
-            entries = context_builder._list_existing_projects(str(root))
+            cfg = self.make_config(new_project_root=str(root), allowed_roots=[str(root)])
+            entries = context_builder._list_existing_projects(
+                cfg, identity.process_user(), str(root)
+            )
         names = [n for n, _ in entries]
         self.assertEqual(names, ["alpha", "beta"])
         for _, mtime in entries:
@@ -2062,7 +2132,10 @@ class UxonTests(unittest.TestCase):
 
     def test_list_existing_projects_missing_root_returns_empty(self) -> None:
         self.assertEqual(
-            context_builder._list_existing_projects("/nonexistent/path/for/uxon/test"), []
+            context_builder._list_existing_projects(
+                self.make_config(), identity.process_user(), "/nonexistent/path/for/uxon/test"
+            ),
+            [],
         )
 
     def test_wrap_tui_callback_passes_return_value(self) -> None:
@@ -2113,18 +2186,21 @@ class UxonTests(unittest.TestCase):
             self.assertEqual(tmux.tmux_host_socket(), "/tmp/uxon-u-vz.sock")
 
     def test_tmux_nesting_mode_execvp_when_not_in_tmux(self) -> None:
+        cfg = self.make_config()
         with mock.patch("uxon.infra.tmux.tmux_host_socket", return_value=None):
-            self.assertEqual(tmux.tmux_nesting_mode("/tmp/uxon-u-vz.sock"), "execvp")
+            self.assertEqual(tmux.tmux_nesting_mode(cfg, "u-vz", "/tmp/uxon-u-vz.sock"), "execvp")
 
     def test_tmux_nesting_mode_switch_when_same_socket(self) -> None:
+        cfg = self.make_config()
         with mock.patch("uxon.infra.tmux.tmux_host_socket", return_value="/tmp/uxon-u-vz.sock"):
-            self.assertEqual(tmux.tmux_nesting_mode("/tmp/uxon-u-vz.sock"), "switch")
+            self.assertEqual(tmux.tmux_nesting_mode(cfg, "u-vz", "/tmp/uxon-u-vz.sock"), "switch")
 
     def test_tmux_nesting_mode_fails_when_foreign_socket(self) -> None:
+        cfg = self.make_config()
         with mock.patch("uxon.infra.tmux.tmux_host_socket", return_value="/tmp/tmux-1000/default"):
             with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
                 with self.assertRaises(SystemExit) as ctx:
-                    tmux.tmux_nesting_mode("/tmp/uxon-u-vz.sock")
+                    tmux.tmux_nesting_mode(cfg, "u-vz", "/tmp/uxon-u-vz.sock")
         self.assertNotEqual(ctx.exception.code, 0)
         self.assertIn("different socket", stderr.getvalue())
 
@@ -2673,7 +2749,7 @@ class NonintGitResolverTests(unittest.TestCase):
             root = git.git_repo_root_nonint_as_user(
                 _make_config(), "/srv/work/myapp/sub", "dana_agent"
             )
-        self.assertEqual(root, domain_authz.canonical("/srv/work/myapp"))
+        self.assertEqual(root, "/srv/work/myapp")
         # The resolver uses the non-interactive (``sudo -n``) prefix — assert
         # it is the leading prefix of the issued argv. (cli.py composes the
         # non-interactive flags as ``-niu``, so the prefix is checked as a
@@ -2716,7 +2792,7 @@ class NonintGitResolverTests(unittest.TestCase):
             root = git.git_common_dir_root_as_user(
                 _make_config(), "/srv/work/myapp/.uxon/worktrees/feat", "dana_agent"
             )
-        self.assertEqual(root, domain_authz.canonical("/srv/work/myapp"))
+        self.assertEqual(root, "/srv/work/myapp")
 
 
 class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
@@ -2782,7 +2858,8 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         args = ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
         resolved = _resolved_for_test(cfg, launch_user="u-vz")
 
-        with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
+        facts = execution_infra.PathFacts("/srv/repos", True, True, True, "/srv/repos")
+        with mock.patch("uxon.infra.execution.path_facts", return_value=facts):
             with mock.patch.object(new_app, "canonical", side_effect=lambda v: str(v), create=True):
                 with mock.patch.object(os, "getcwd", return_value="/home/u-vz"):
                     with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
@@ -2812,7 +2889,8 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         args = ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
         resolved = _resolved_for_test(cfg, launch_user="u-vz")
 
-        with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=False):
+        facts = execution_infra.PathFacts("/srv/repos", True, True, False, "/srv/repos")
+        with mock.patch("uxon.infra.execution.path_facts", return_value=facts):
             with mock.patch.object(new_app, "canonical", side_effect=lambda v: str(v), create=True):
                 with mock.patch.object(new_app, "eprint"):
                     with mock.patch.object(
@@ -2829,7 +2907,8 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         args = ParsedArgs(action="new", target_id="demo", dry_run=True, agent_args=[])
         resolved = _resolved_for_test(cfg, launch_user="u-vz")
 
-        with mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True):
+        facts = execution_infra.PathFacts("/home/u-vz", True, True, True, "/home/u-vz")
+        with mock.patch("uxon.infra.execution.path_facts", return_value=facts):
             with mock.patch.object(new_app, "canonical", side_effect=lambda v: str(v), create=True):
                 with mock.patch.object(new_app, "eprint"):
                     with mock.patch.object(
@@ -3380,10 +3459,11 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         add = [c for c in calls if "worktree" in c and "add" in c]
         self.assertTrue(add)
         self.assertIn("-b", add[0])
-        # BOTH worktree.create AND session.new emitted (§4.6, B3).
+        # Worktree creation is complete; session.new is emitted only after
+        # the managed tmux launch record is finalized and released.
         names = [e for e, _ in events]
         self.assertIn("worktree.create", names)
-        self.assertIn("session.new", names)
+        self.assertNotIn("session.new", names)
         wc = dict(events[names.index("worktree.create")][1])
         self.assertEqual(wc.get("branch"), "feature/auth")
         self.assertEqual(wc.get("project"), repo)
@@ -3392,10 +3472,6 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
         self.assertEqual(wc.get("agent"), "claude")
         self.assertEqual(wc.get("session"), "uxon-myapp-feature-auth@claude")
         self.assertTrue(wc.get("path", "").endswith("/.uxon/worktrees/feature-auth"))
-        sn = dict(events[names.index("session.new")][1])
-        self.assertEqual(sn.get("session"), "uxon-myapp-feature-auth@claude")
-        self.assertEqual(sn.get("branch"), "feature/auth")
-        self.assertEqual(sn.get("project"), wc.get("path"))
 
     def test_worktree_root_outside_allowed_roots_rejected(self) -> None:
         # B1 / §2.3 / §9 "gating failure → clear error": a worktree_root

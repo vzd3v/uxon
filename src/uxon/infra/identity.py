@@ -1,22 +1,19 @@
 # SPDX-License-Identifier: MIT
-"""Caller / launch-user identity + sudo command prefixes.
+"""Caller / launch-user identity policy.
 
 Resolves who the process is running as, who sessions should launch as,
-and builds the ``sudo -iu`` / ``sudo -niu`` prefixes the launch and
-listing paths wrap their commands with. Impure: reads ``pwd``, ``os``
-env/uid, and probes the filesystem.
+and validates which users are reachable. Impure: reads ``pwd``, ``os``
+environment/uid, and probes the filesystem.
 """
 
 from __future__ import annotations
 
 import os
 import pwd
-import subprocess
 import sys
 
 from uxon.domain.config import Config
 from uxon.infra.config_loader import normalize_user_list
-from uxon.infra.run import run_query
 
 
 def process_user() -> str:
@@ -50,15 +47,12 @@ def resolve_all_session_users(cfg: Config, current_launch_user: str) -> list[str
 
 
 def command_prefix_for_user(cfg: Config, target_user: str) -> list[str]:
-    """Interactive sudo prefix used by the launch path.
+    """Interactive execution prefix used by the launch path.
 
     Used by ``run`` / ``new`` / ``attach`` and the launch-time
-    helpers that run while a TTY is available — sudo's ``-i`` runs the
-    target's login shell so PATH / HOME / nvm / direnv set up the same
-    way they would for a real interactive login. Without ``-n``, an
-    unreachable target prompts for a password (or fails with a clear
-    "a password is required" message), which is the correct UX at
-    launch time.
+    helpers that run while a TTY is available. The built-in local backend
+    preserves argv with ``sudo -H -u USER --``; it does not source a login
+    shell. A command backend supplies its one configured argv prefix.
 
     For background work where no TTY exists — listing, probing, the
     TUI's session-collection passes — use
@@ -71,7 +65,7 @@ def command_prefix_for_user(cfg: Config, target_user: str) -> list[str]:
 
 
 def nonint_command_prefix_for_user(cfg: Config, target_user: str) -> list[str]:
-    """Non-interactive sudo prefix for listing / probing / TUI polling.
+    """Non-interactive execution prefix for listing / probing / TUI polling.
 
     Same as :func:`command_prefix_for_user` but adds ``-n`` so sudo
     refuses to prompt. Used wherever the caller does not have a TTY
@@ -91,26 +85,18 @@ def probe_cwd_writable(cfg: Config, target_user: str, target_dir: str) -> bool:
     Same-user fast path uses ``os.access`` so the TUI common case
     (no sudo, uxon running as the launch user) is instant. Cross-user
     case shells out via :func:`command_prefix_for_user` so the same
-    ``sudo -iu`` mechanism that actually launches the agent is what
+    ``sudo -H -u`` mechanism that actually launches the agent is what
     gates the row — if sudo isn't available the probe correctly
     returns False, matching the launch behaviour. Treated as a yes/no:
     any subprocess error is "no".
     """
-    if not os.path.isdir(target_dir):
-        return False
-    from uxon.infra.execution import resolve_target
-
-    if process_user() == target_user and resolve_target(cfg, target_user).backend.kind == "local":
-        return os.access(target_dir, os.W_OK | os.X_OK)
-    cmd = nonint_command_prefix_for_user(cfg, target_user) + ["test", "-w", target_dir]
     try:
-        cp = run_query(
-            cmd,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        from uxon.infra.execution import path_facts
+
+        facts = path_facts(cfg, target_user, target_dir)
+    except SystemExit:
         return False
-    return cp.returncode == 0
+    return facts.directory and facts.writable
 
 
 def is_interactive_tty() -> bool:

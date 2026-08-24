@@ -1,8 +1,8 @@
 """Token backend for git-remote-on-new-project.
 
 Reads a fine-grained Personal Access Token (PAT) from ``profile.token_file``
-under ``creds_user`` (via ``sudo -n -u <user> cat --``) and calls the
-provider's REST API directly. The token value is held only for the
+and calls the provider's REST API inside the selected execution backend. The
+token value is held only for the
 duration of each API call and is never written to stdout, stderr, logs,
 or exception messages — if it appears, we redact to ``***``.
 

@@ -62,14 +62,9 @@ def _probe_one(
     timeout = PROBE_TIMEOUT_SEC if timeout_override is None else timeout_override
     ver = list(version_args)
     if launch_user:
-        # Match the login-env semantics that ``command_prefix_for_user``
-        # in ``uxon.cli`` uses for the actual launch (``sudo -iu``). The
-        # ``-i`` loads the target user's login shell so ``PATH`` picks
-        # up npm-global / nvm / ``~/.local/bin`` entries where agents
-        # like ``claude`` and ``cursor-agent`` are typically installed.
-        # Without ``-i``, sudo's ``secure_path`` hides them and the
-        # probe reports "missing" for agents that the launch can
-        # actually run.
+        # Use the same execution boundary as launch. The local backend does
+        # not source a login shell; operators should configure an absolute
+        # agent binary when the inherited PATH does not contain it.
         cmd = command_prefix(cfg, launch_user, interactive=False) + [binary, *ver]
     else:
         cmd = [binary, *ver]

@@ -122,11 +122,11 @@ class AttachCrossUserTests(unittest.TestCase):
 
     def test_peer_inbound_unreachable_emits_attach_remote_in_denied(self) -> None:
         # Spec lines 207-209: state-changing events emit on success AND
-        # failure.  Spec line 299: ``attach.remote.in`` *replaces*
-        # ``session.attach`` on the peer side.  Combined: a peer
+        # failure. ``attach.remote.in.dispatch`` *replaces*
+        # ``session.attach.dispatch`` on the peer side. Combined: a peer
         # receiving an attach for an unreachable target must record
-        # ``attach.remote.in outcome=denied`` (not a stale ``ok``, and
-        # not a suppressed ``session.attach``).  Regression for the
+        # ``attach.remote.in.dispatch outcome=denied`` (not a stale ``ok``, and
+        # not a suppressed ``session.attach.dispatch``). Regression for the
         # pre-fix bug where the peer-inbound branch unconditionally
         # emitted ``outcome=ok`` at the top of ``do_attach`` and
         # suppressed every downstream failure-path emit.
@@ -151,11 +151,11 @@ class AttachCrossUserTests(unittest.TestCase):
             rc = attach_app.do_attach(args, cfg, "u-vz")
 
         self.assertEqual(rc, 1)
-        # Exactly one attach.remote.in emit, with outcome=denied.  No
-        # phantom ``ok`` may slip in, and no ``session.attach`` may be
+        # Exactly one attach.remote.in.dispatch emit, with outcome=denied. No
+        # phantom ``ok`` may slip in, and no ``session.attach.dispatch`` may be
         # emitted in parallel (``replaces`` semantics).
-        rin_emits = [e for e in recorded if e[0] == "attach.remote.in"]
-        local_emits = [e for e in recorded if e[0] == "session.attach"]
+        rin_emits = [e for e in recorded if e[0] == "attach.remote.in.dispatch"]
+        local_emits = [e for e in recorded if e[0] == "session.attach.dispatch"]
         self.assertEqual(local_emits, [])
         self.assertEqual(len(rin_emits), 1)
         self.assertEqual(rin_emits[0][1]["outcome"], "denied")

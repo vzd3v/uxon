@@ -15,23 +15,25 @@ from uxon.domain.host_report import HostReport
 
 USAGE = """Usage:
   uxon                              (interactive session picker if TTY, else this help)
-  uxon [run] [-w <branch>] [--dry-run] [--profile <id>] [--mode <id>] [claude-flags...]
+  uxon -h | --help
+  uxon -V | --version
+  uxon [run] [-w <branch>] [--dry-run] [--profile <id>] [--mode <id>] [agent-flags...]
   uxon new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--profile <id>] [--mode <id>]
                  [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
-                 [claude-flags...]
-  uxon doctor
-  uxon list [--all-users]
-  uxon version
-  uxon attach <id>
+                 [agent-flags...]
+  uxon doctor [--remote] [--json]
+  uxon list [--all-users] [--host <name>|--all-hosts] [--json]
+  uxon version [--json]
+  uxon attach <id> [--user <name>] [--host <alias>] [--dry-run]
   uxon kill <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]
-  uxon kill-all [--force] [--dry-run]
-  uxon --killall [--force] [--dry-run]
-  uxon -l [--all-users]
-  uxon -a <id>
+  uxon kill-all [--force] [--dry-run] [--json]
+  uxon --killall [--force] [--dry-run] [--json]
+  uxon -l [--all-users] [--host <name>|--all-hosts] [--json]
+  uxon -a <id> [--user <name>] [--host <alias>] [--dry-run]
   uxon -k <id> [--user <name>] [--host <alias>] [--force] [--dry-run] [--json]
   uxon -n <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--profile <id>] [--mode <id>]
                 [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
-                [claude-flags...]
+                [agent-flags...]
 
 Notes:
   - Without '-w', 'new' creates <new_project_root>/<name> (default ~/projects) and runs there.

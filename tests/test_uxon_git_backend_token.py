@@ -95,7 +95,7 @@ class ReadTokenTests(unittest.TestCase):
         self.assertEqual(got, SECRET)
         self.assertEqual(
             runner.calls[0],
-            ["sudo", "-niu", "erin", "--", "cat", "--", "/tmp/t"],
+            ["/usr/bin/sudo", "-n", "-H", "-u", "erin", "--", "cat", "--", "/tmp/t"],
         )
 
     def test_empty_file_fails(self) -> None:

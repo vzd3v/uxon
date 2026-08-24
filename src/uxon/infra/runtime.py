@@ -124,8 +124,8 @@ class RuntimePlan:
 def _as_user_in_dir(prefix: list[str], cmd: list[str], host_dir: str | None) -> list[str]:
     """Prepend the as-user ``prefix`` to ``cmd``, optionally cd'd to ``host_dir``.
 
-    The launch user's prefix is ``sudo -iu`` (login shell), which resets cwd
-    to the target's ``$HOME`` — so a plain ``subprocess(cwd=…)`` would be
+    An execution prefix may choose a different working directory, including
+    the target's ``$HOME``, so a plain ``subprocess(cwd=…)`` would be
     overridden cross-user. Mirror the git helpers' ``sh -c`` wrapping to cd
     into the HOST project dir first (``exec "$@"`` keeps the operator argv a
     list of tokens — never re-parsed by the shell, preserving the argv-list
@@ -279,7 +279,12 @@ def current_runtime_identity_for_profile(
     identity = parse_runtime_identity_output(cp.stdout)
     if identity is None:
         return None
-    cgroup = _read_proc_cgroup(str(identity.host_pid)) if profile.telemetry == "cgroup" else ""
+    if profile.telemetry == "cgroup":
+        from uxon.infra.runtime_telemetry import read_process_cgroup
+
+        cgroup = read_process_cgroup(cfg, launch_user, identity.host_pid)
+    else:
+        cgroup = ""
     return RuntimeIdentity(
         id=identity.id,
         host_pid=identity.host_pid,
@@ -485,22 +490,6 @@ def run_prepare(cfg: Config, plan: RuntimePlan, target_dir: str, launch_user: st
     )
 
 
-def _read_proc_cgroup(init_pid: str) -> str:
-    """Read host-side ``/proc/<init_pid>/cgroup`` and parse out the path → "".
-
-    The init PID's cgroup is the runtime resource's exact cgroup (kernel view, no
-    runtime-layout assumptions). The file is world-readable; uxon reads it
-    directly (it is already privileged). Any read/parse failure → "" (degrade).
-    """
-    from pathlib import Path
-
-    try:
-        content = Path(f"/proc/{init_pid}/cgroup").read_text()
-    except OSError:
-        return ""
-    return parse_proc_cgroup(content)
-
-
 def resolve_runtime_identity_for_profile(
     cfg: Config,
     target_dir: str,
@@ -533,7 +522,12 @@ def resolve_runtime_identity_for_profile(
     identity = parse_runtime_identity_output(cp.stdout)
     if identity is None:
         return EMPTY_IDENTITY
-    cgroup = _read_proc_cgroup(str(identity.host_pid)) if profile.telemetry == "cgroup" else ""
+    if profile.telemetry == "cgroup":
+        from uxon.infra.runtime_telemetry import read_process_cgroup
+
+        cgroup = read_process_cgroup(cfg, resolved.launch_user, identity.host_pid)
+    else:
+        cgroup = ""
     return RuntimeIdentity(
         id=identity.id,
         host_pid=identity.host_pid,

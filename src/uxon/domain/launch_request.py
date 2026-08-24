@@ -25,6 +25,9 @@ class ManagedTmuxLaunch:
     launch_profile: str
     agent: str
     launch_user: str
+    project: str = ""
+    branch: str = ""
+    record_shared: bool = False
     execution_backend: str = "local"
     execution_fingerprint: str = ""
     runtime: str = "direct"

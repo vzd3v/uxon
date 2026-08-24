@@ -10,12 +10,11 @@ reading stay single-responsibility.
 
 from __future__ import annotations
 
+import os
 import shlex
-import subprocess
 from pathlib import Path
 from typing import Any, Literal
 
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.format import fmt_epoch
 from uxon.domain.runtime import (
@@ -23,12 +22,7 @@ from uxon.domain.runtime import (
     RUNTIME_RESOURCE_ENV,
     WorkloadRuntimeSpec,
 )
-from uxon.domain.runtime_usage import (
-    parse_cgroup_procs,
-    parse_sudo_environ_lines,
-    per_session_usage,
-    sum_usage_for_pids,
-)
+from uxon.domain.runtime_usage import per_session_usage, sum_usage_for_pids
 from uxon.domain.session import (
     SessionInfo,
     compatible_indexed_sessions,
@@ -41,11 +35,26 @@ from uxon.infra.config_loader import normalize_user_list
 from uxon.infra.launch_records import (
     LAUNCH_NONCE_ENV,
     TmuxSessionMetadata,
+    garbage_collect_records,
     read_verified_record,
 )
 from uxon.infra.process import run_cmd
 from uxon.infra.run import run_query
-from uxon.infra.runtime import RUNTIME_CMD_TIMEOUT_SEC
+
+
+def _gc_launch_records(
+    cfg: Config,
+    launch_user: str,
+    socket_path: str,
+    live: set[tuple[str, str, str]],
+) -> None:
+    garbage_collect_records(
+        live,
+        socket_path=socket_path,
+        override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
+        shared=bool(cfg.launch_record_dir),
+        launch_user=launch_user,
+    )
 
 
 def enrich_session_usage(
@@ -177,7 +186,7 @@ def _enrich_runtime_sessions(
             _append_down_probe_group(down_probe_groups, session)
 
     for cgroup_path, group in by_cgroup.items():
-        cgroup_pids = _read_cgroup_procs(cgroup_path)
+        cgroup_pids = _read_cgroup_procs(cfg, launch_user, cgroup_path)
         if not cgroup_pids:
             # Empty/absent cgroup → the workload is stopped or its path went
             # stale (restart). Confirm with the operator's liveness probe,
@@ -198,7 +207,7 @@ def _enrich_runtime_sessions(
             continue
         # ≥2 sessions share this cgroup → split by the per-process
         # ``UXON_SESSION`` marker (privileged environ read, batched once).
-        pid_to_session = _read_pid_sessions(cgroup_pids)
+        pid_to_session = _read_pid_sessions(cfg, launch_user, cgroup_pids)
         if pid_to_session is None:
             # No privilege / unreadable → degrade to the per-resource SHARED
             # figure: every sharing session shows the summed total (AC-P1.6
@@ -297,61 +306,20 @@ def _runtime_identity_state(
     return "stale"
 
 
-def _read_cgroup_procs(cgroup_path: str) -> list[int]:
-    """Read ``/sys/fs/cgroup/<cgroup_path>/cgroup.procs`` → host PIDs (or []).
+def _read_cgroup_procs(cfg: Config, launch_user: str, cgroup_path: str) -> list[int]:
+    """Read one runtime cgroup from inside the selected execution boundary."""
+    from uxon.infra.runtime_telemetry import read_cgroup_members
 
-    ``cgroup_path`` is the kernel-reported path stashed at launch (leading-slash
-    rooted at the cgroup v2 mount). World-readable, unprivileged. Any read
-    failure (absent path = stopped workload, permission, race) → ``[]``
-    (degrade) — never raises.
-    """
-    rel = cgroup_path.lstrip("/")
-    try:
-        content = Path("/sys/fs/cgroup") / rel / "cgroup.procs"
-        return parse_cgroup_procs(content.read_text())
-    except OSError:
-        return []
+    return read_cgroup_members(cfg, launch_user, cgroup_path)
 
 
-def _read_pid_sessions(pids: list[int]) -> dict[int, str] | None:
-    """Batched privileged read of ``UXON_SESSION`` for ``pids`` → map, or None.
-
-    ``/proc/<pid>/environ`` is not readable unprivileged under the distro
-    default ``ptrace_scope=1`` (decision doc), so this issues a SINGLE
-    non-interactive ``sudo -n`` shell-out per distinct resource (NOT per
-    session — AC-P1.5) that emits ``<pid> <UXON_SESSION value>`` lines, parsed
-    host-side. Returns ``None`` on ANY failure (no sudo grant, non-zero,
-    timeout, OSError) so the caller degrades to the per-resource shared figure
-    — never raises, never blocks the refresh.
-
-    The helper reads each ``/proc/<pid>/environ`` and ``tr``-translates NULs to
-    newlines, greps the marker, and prints ``<pid> <value>``; a PID whose
-    environ is unreadable or carries no marker is simply omitted (maps to "").
-    """
+def _read_pid_sessions(cfg: Config, launch_user: str, pids: list[int]) -> dict[int, str] | None:
+    """Read workload markers inside the selected execution boundary."""
     if not pids:
         return {}
-    pid_list = " ".join(str(p) for p in pids)
-    # Pure POSIX sh: for each pid, pull UXON_SESSION out of its NUL-delimited
-    # environ and print "<pid> <value>". Unreadable environ / absent marker →
-    # no line for that pid. ``2>/dev/null`` keeps a single unreadable pid from
-    # polluting the parsed output.
-    script = (
-        "for p in " + pid_list + "; do "
-        'v=$(tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null '
-        "| sed -n 's/^UXON_SESSION=//p' | head -n1); "
-        'if [ -n "$v" ]; then echo "$p $v"; fi; '
-        "done"
-    )
-    try:
-        cp = run_query(
-            ["sudo", "-n", "sh", "-c", script],
-            timeout=RUNTIME_CMD_TIMEOUT_SEC,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if cp.returncode != 0:
-        return None
-    return parse_sudo_environ_lines(cp.stdout)
+    from uxon.infra.runtime_telemetry import read_session_markers
+
+    return read_session_markers(cfg, launch_user, pids)
 
 
 def collect_sessions_for_user(
@@ -380,6 +348,8 @@ def collect_sessions_for_user(
     # blocking on a hidden password prompt.
     server = tmux.probe_tmux_server(cfg, user, socket_path)
     if server.state == "absent":
+        if socket_path is not None:
+            _gc_launch_records(cfg, user, socket_path, set())
         return []
     if server.state == "unreachable":
         location = socket_path or "the default socket"
@@ -396,6 +366,7 @@ def collect_sessions_for_user(
     )
     rows = run_cmd(base + ["list-sessions", "-F", fmt]).stdout.splitlines()
     sessions: list[SessionInfo] = []
+    live_record_keys: set[tuple[str, str, str]] = set()
     known_prefixes = (session_prefix, *legacy_prefixes)
     for row in rows:
         parts = row.split("\t")
@@ -414,6 +385,8 @@ def collect_sessions_for_user(
         ) = parts
         if not any(name.startswith(p) for p in known_prefixes):
             continue
+        if socket_path is not None and launch_nonce:
+            live_record_keys.add((socket_path, name, launch_nonce))
 
         pane_fmt = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
         pane_result = run_cmd(base + ["list-panes", "-t", name, "-F", pane_fmt], check=False)
@@ -456,6 +429,10 @@ def collect_sessions_for_user(
                     name=name,
                     launch_nonce=launch_nonce,
                 ),
+                override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
+                require_owner=not bool(cfg.launch_record_dir),
+                shared=bool(cfg.launch_record_dir),
+                launch_user=user,
             )
         sessions.append(
             SessionInfo(
@@ -470,13 +447,10 @@ def collect_sessions_for_user(
                 active_cmd=active_cmd,
                 active_path=active_path,
                 agent=str(record.get("agent", "")) if record else "",
-                profile=(
-                    str(record.get("profile") or record.get("launch_profile") or _profile)
-                    if record
-                    else _profile
-                ),
+                profile=str(record.get("profile") or _profile) if record else _profile,
                 legacy=_legacy,
                 tmux_session_id=session_id,
+                tmux_session_created=created_ts,
                 launch_nonce=launch_nonce,
                 launch_record_verified=record is not None,
                 launch_user=str(record.get("launch_user", "")) if record else "",
@@ -494,6 +468,8 @@ def collect_sessions_for_user(
                 runtime_marker=runtime_marker,
             )
         )
+    if socket_path is not None:
+        _gc_launch_records(cfg, user, socket_path, live_record_keys)
     enrich_session_usage(
         cfg,
         sessions,
@@ -614,15 +590,15 @@ def _resolve_or_audit_not_found(
 
     The audit contract enumerates
     ``outcome ∈ {"ok", "denied", "error", "not_found"}`` for
-    ``session.attach``, ``session.kill``, and their peer-inbound
-    replacements ``attach.remote.in`` / ``kill.remote.in``. Without
+    ``session.attach.dispatch``, ``session.kill``, and their peer-inbound
+    replacements ``attach.remote.in.dispatch`` / ``kill.remote.in``. Without
     this wrapper the ``not_found`` outcome would never appear, because
     :func:`resolve_session` raises :class:`SystemExit` via :func:`fail`
     before any caller-side audit fires.
 
     ``session_field`` selects the key under which the identifier is
-    recorded: ``"session"`` for ``session.attach`` / ``session.kill``,
-    ``"target_session"`` for ``attach.remote.in`` / ``kill.remote.in``
+    recorded: ``"session"`` for ``session.attach.dispatch`` / ``session.kill``,
+    ``"target_session"`` for ``attach.remote.in.dispatch`` / ``kill.remote.in``
     (peer-inbound branches — the spec uses different field names on
     the two sides of the wire).
 
@@ -720,9 +696,11 @@ def probe_tui_compatible_sessions(
     rather than always deriving from the basename is the fix that keeps
     the attach guard reliable across repos.
     """
-    target_canonical = canonical(target_dir)
-    session_stem = stem if stem is not None else session_stem_for_path(target_canonical)
-    root = canonical(compatibility_root) if compatibility_root is not None else target_canonical
+    target_lexical = os.path.normpath(target_dir)
+    session_stem = stem if stem is not None else session_stem_for_path(target_lexical)
+    root = (
+        os.path.normpath(compatibility_root) if compatibility_root is not None else target_lexical
+    )
     sessions = collect_sessions([launch_user], cfg)
     matches = compatible_indexed_sessions(
         session_stem,

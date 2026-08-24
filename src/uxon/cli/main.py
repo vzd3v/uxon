@@ -16,7 +16,6 @@ import sys
 import uxon.app.listing as listing_app
 from uxon.cli.dispatch import dispatch
 from uxon.cli.parsing import parse_args
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.errors import eprint
 from uxon.infra import config_loader, identity, version_probe
@@ -55,7 +54,7 @@ def do_interactive(cfg: Config, caller_user: str, launch_user: str) -> int:
     # must stay out of ``import uxon.cli`` (latency invariant #7).
     from uxon.tui.context_builder import build_tui_context
 
-    cwd = canonical(os.getcwd())
+    cwd = os.path.normpath(os.path.abspath(os.getcwd()))
     # Hand the TUI a skeleton ctx so the first frame paints immediately;
     # the real ctx is loaded by a worker once the app is mounted.
     ctx = build_tui_context(cfg, caller_user, launch_user, cwd, skeleton=True)

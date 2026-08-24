@@ -14,7 +14,7 @@ import os
 import re
 from dataclasses import dataclass
 
-from uxon.domain.authz import canonical, is_under
+from uxon.domain.authz import is_under
 from uxon.domain.format import compact_time, format_cpu_pct, format_rss_kib
 from uxon.errors import fail
 
@@ -42,6 +42,7 @@ class SessionInfo:
     profile: str = ""  # launch profile id from record, or suffix display fallback
     legacy: bool = False  # True iff name uses a non-current (legacy) prefix
     tmux_session_id: str = ""
+    tmux_session_created: str = ""
     launch_nonce: str = ""
     launch_record_verified: bool = False
     launch_user: str = ""
@@ -258,7 +259,9 @@ def allocate_session_name(
 def session_path_compatible(active_path: str, repo_root: str) -> bool:
     if not active_path:
         return True
-    active = canonical(active_path)
+    # Both sides are already target-boundary paths. Host-side resolution here
+    # would reinterpret them through the controller's mount namespace.
+    active = os.path.normpath(active_path)
     return is_under(active, repo_root)
 
 

@@ -8,7 +8,8 @@ import os
 
 
 def main() -> int:
-    result = {"euid": os.geteuid(), "egid": os.getegid()}
+    egid = os.getegid()
+    result = {"euid": os.geteuid(), "egid": egid, "groups": sorted({egid, *os.getgroups()})}
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 

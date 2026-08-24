@@ -54,11 +54,11 @@ from uxon.domain.runtime import (
 
 
 def _cfg(profile: WorkloadRuntimeSpec | None = None, **overrides) -> Config:
-    """Minimal Config carrying an optional container profile (other fields inert).
+    """Minimal Config carrying an optional workload runtime (other fields inert).
 
     When ``profile`` is given it is registered as ``"box"`` and the ``claude``
     launch profile is wired to use it (``runtime="box"``), so the
-    profile-based launch/teardown/doctor paths resolve a container context.
+    profile-based launch/teardown/doctor paths resolve a runtime context.
     """
     agents = default_agent_catalog()
     profiles = builtin_launch_profiles(agents)
@@ -511,7 +511,7 @@ class AsUserShellOutTests(unittest.TestCase):
             return _CP()
 
         # Force the cross-user path: pretend uxon runs as someone else so the
-        # ``sudo -iu``/``-niu`` prefix is emitted (same-user would be empty).
+        # argv-preserving sudo prefix is emitted (same-user would be empty).
         with (
             mock.patch.object(runtime_infra.subprocess, "run", side_effect=fake_run),
             mock.patch("uxon.infra.identity.process_user", return_value="root"),
@@ -526,7 +526,7 @@ class AsUserShellOutTests(unittest.TestCase):
             lambda: runtime_infra._probe_exit_ok(_cfg(), ["docker", "top", "box"], "dana", 10.0)
         )
         # Non-interactive prefix (no TTY) for probes, then the operator argv.
-        self.assertEqual(argv[:4], ["sudo", "-niu", "dana", "--"])
+        self.assertEqual(argv[:6], ["/usr/bin/sudo", "-n", "-H", "-u", "dana", "--"])
         self.assertEqual(argv[-3:], ["docker", "top", "box"])
 
     def test_prepare_argv_runs_in_host_dir_as_launch_user(self) -> None:
@@ -542,11 +542,11 @@ class AsUserShellOutTests(unittest.TestCase):
             )
         )
         # Interactive prefix for the launch-time start/create.
-        self.assertEqual(argv[:4], ["sudo", "-iu", "dana", "--"])
+        self.assertEqual(argv[:5], ["/usr/bin/sudo", "-H", "-u", "dana", "--"])
         # cd into the HOST dir, then exec the operator argv as separate tokens
         # (argv-list invariant: never re-parsed by the shell).
-        self.assertEqual(argv[4], "sh")
-        self.assertIn("cd /srv/projects/app", argv[6])
+        self.assertEqual(argv[5], "sh")
+        self.assertIn("cd /srv/projects/app", argv[7])
         self.assertEqual(argv[-4:], ["docker", "compose", "up", "-d"])
 
     def test_probe_permission_error_fails_cleanly(self) -> None:
@@ -787,7 +787,7 @@ class TelemetryEnrichTests(unittest.TestCase):
 
         s = self._session("uxon-plain@claude", pane_pids=(111,))
         with (
-            mock.patch("uxon.infra.sessions_probe.subprocess.run") as run,
+            mock.patch("uxon.infra.sessions_probe.run_query") as run,
             mock.patch.object(Path, "read_text") as read_text,
         ):
             run.return_value = self._ps_completed()
@@ -813,7 +813,7 @@ class TelemetryEnrichTests(unittest.TestCase):
             return self._ps_completed()  # only the ps table
 
         with (
-            mock.patch("uxon.infra.sessions_probe.subprocess.run", side_effect=fake_run) as run,
+            mock.patch("uxon.infra.sessions_probe.run_query", side_effect=fake_run) as run,
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
             mock.patch(
                 "uxon.infra.runtime.current_runtime_identity_for_profile",
@@ -838,9 +838,7 @@ class TelemetryEnrichTests(unittest.TestCase):
         a = self._record_session("uxon-a@claude", profile)
         b = self._record_session("uxon-b@claude", profile)
         with (
-            mock.patch(
-                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
-            ),
+            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
             mock.patch(
                 "uxon.infra.sessions_probe._read_pid_sessions",
@@ -864,9 +862,7 @@ class TelemetryEnrichTests(unittest.TestCase):
         a = self._record_session("uxon-a@claude", profile)
         b = self._record_session("uxon-b@claude", profile)
         with (
-            mock.patch(
-                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
-            ),
+            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
             mock.patch("uxon.infra.sessions_probe._read_pid_sessions", return_value=None),
             mock.patch(
@@ -889,9 +885,7 @@ class TelemetryEnrichTests(unittest.TestCase):
         profile = self._profile(running=True)
         s = self._record_session("uxon-c@claude", profile)
         with (
-            mock.patch(
-                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
-            ),
+            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
             mock.patch(
                 "uxon.infra.runtime.current_runtime_identity_for_profile",
@@ -916,9 +910,7 @@ class TelemetryEnrichTests(unittest.TestCase):
         profile = self._profile(running=True)
         s = self._record_session("uxon-c@claude", profile)
         with (
-            mock.patch(
-                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
-            ),
+            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs") as read_cgroup,
             mock.patch(
                 "uxon.infra.runtime.current_runtime_identity_for_profile",
@@ -944,9 +936,7 @@ class TelemetryEnrichTests(unittest.TestCase):
         profile = self._profile(running=True)
         s = self._record_session("uxon-c@claude", profile)
         with (
-            mock.patch(
-                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
-            ),
+            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
             mock.patch(
                 "uxon.infra.runtime.current_runtime_identity_for_profile",
@@ -970,9 +960,7 @@ class TelemetryEnrichTests(unittest.TestCase):
         profile = self._profile(running=True)
         s = self._record_session("uxon-c@claude", profile)
         with (
-            mock.patch(
-                "uxon.infra.sessions_probe.subprocess.run", return_value=self._ps_completed()
-            ),
+            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
             mock.patch(
                 "uxon.infra.runtime.current_runtime_identity_for_profile",
@@ -1084,7 +1072,7 @@ class ContainerGatingTests(unittest.TestCase):
         )
 
     def test_host_absent_binary_does_not_fail_under_container(self) -> None:
-        # AC-P2.1: explicit container profile + host-absent binary →
+        # AC-P2.1: explicit workload runtime + host-absent binary →
         # resolves anyway (no host-presence gate).
         c = WorkloadRuntimeSpec(
             id="box",
@@ -1118,7 +1106,7 @@ class ContainerGatingTests(unittest.TestCase):
 
     def test_auto_mode_ignores_operator_runtime(self) -> None:
         # Auto-mode considers shipped OS-user-only profiles only; an operator
-        # container profile is not auto-enabled.
+        # workload runtime is not auto-enabled.
         c = WorkloadRuntimeSpec(
             id="box",
             resource_scope="per_user",
@@ -1212,7 +1200,7 @@ class PlanWorkloadRuntimeSpecMatrixTests(unittest.TestCase):
 
 
 class WorkloadRuntimeSpecRuntimeTests(unittest.TestCase):
-    """P3 — launch runtime decisions come from the resolved container profile."""
+    """P3 — launch decisions come from the resolved workload runtime."""
 
     @staticmethod
     def _profile(
@@ -1358,7 +1346,7 @@ class WorkloadRuntimeSpecRuntimeTests(unittest.TestCase):
         ):
             runtime_infra.probe_agent_in_runtime(cfg, "/srv/projects/myapp", resolved)
         argv = run_query.call_args.args[0]
-        self.assertEqual(argv[:4], ["sudo", "-niu", "alice", "--"])
+        self.assertEqual(argv[:6], ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"])
         self.assertIn("docker", argv)
         self.assertIn("box-myapp", argv)
         self.assertEqual(argv[-1], "claude")
@@ -1497,7 +1485,7 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         self.assertEqual(teardown.runtime_id, "cid-1")
         self.assertEqual(teardown.launch_epoch, "1000")
 
-    def test_missing_record_skips_prepare_with_warning(self) -> None:
+    def test_missing_record_blocks_runtime_kill(self) -> None:
         from helpers import make_session
 
         from uxon.app import kill as kill_app
@@ -1505,10 +1493,9 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
         s = make_session("uxon-x@claude", user="dana")
         s.runtime_marker = "proj-myapp"
-        with mock.patch("uxon.app.kill.eprint") as eprint:
-            teardown = kill_app.prepare_runtime_teardown(cfg, s)
-        self.assertIsNone(teardown)
-        self.assertIn("no verified launch record", eprint.call_args.args[0])
+        with self.assertRaises(SystemExit) as raised:
+            kill_app.prepare_runtime_teardown(cfg, s)
+        self.assertIn("no authoritative launch record", getattr(raised.exception, "uxon_msg", ""))
 
     def test_missing_runtime_skips_prepare(self) -> None:
         from uxon.app import kill as kill_app
@@ -1731,8 +1718,8 @@ class WorktreePathMapGateTests(unittest.TestCase):
         self.assertIs(req, sentinel)
 
 
-class DoctorContainerSectionTests(unittest.TestCase):
-    """AC-P5 — doctor container-profile rows: probes, expected-absence note, warnings."""
+class DoctorRuntimeSectionTests(unittest.TestCase):
+    """AC-P5 — doctor runtime rows: probes, expected-absence note, warnings."""
 
     def _rows(self, c: WorkloadRuntimeSpec, probe: tuple[str, str]) -> list[dict[str, Any]]:
         from uxon.app.doctor import _doctor_runtime_rows

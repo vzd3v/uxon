@@ -23,7 +23,7 @@ RuntimeKind = Literal["direct", "command"]
 # launch to kill. Set on the tmux session via ``new-session -e`` and read
 # back with ``show-environment -t <session>`` when tearing the agent down.
 # The name (operator-chosen, not a secret) is the one fact the kill path
-# cannot recompute: ``sudo -i`` resets the pane cwd to the agent's home, so
+# cannot recompute: an execution backend may set a different working directory, so
 # the launch directory — and thus the {project_slug}-derived resource — is not
 # reliably recoverable from the live session.
 RUNTIME_RESOURCE_ENV = "UXON_RUNTIME_RESOURCE"

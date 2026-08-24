@@ -53,6 +53,30 @@ def _teardown_skip(session_name: str, reason: str) -> None:
     eprint(f"uxon: runtime session stop for {session_name} skipped: {reason}")
 
 
+def cleanup_launch_record(cfg: Config, target: SessionInfo) -> None:
+    """Remove the authoritative record after the exact tmux session is gone."""
+    if not target.launch_record_verified:
+        return
+    from pathlib import Path
+
+    from uxon.infra.launch_records import TmuxSessionMetadata, delete_verified_record
+
+    removed = delete_verified_record(
+        tmux.tmux_socket_path(cfg, target.user),
+        TmuxSessionMetadata(
+            session_id=target.tmux_session_id,
+            created=target.tmux_session_created,
+            name=target.name,
+            launch_nonce=target.launch_nonce,
+        ),
+        override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
+        shared=bool(cfg.launch_record_dir),
+        launch_user=target.user,
+    )
+    if not removed:
+        fail(f"unable to verify launch record cleanup for {target.name!r}")
+
+
 def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardown | None:
     """Prepare the workload session stop, or return ``None``.
 
@@ -78,15 +102,18 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
     server to talk to. Kill the session first, then reap the orphan the
     severed exec leaves behind.
 
-    Self-contained and non-raising: any failure (no stop_command, name
-    unreadable/invalid, bad template) degrades to None, and the kill proceeds
-    regardless (orphaning is no worse than the pre-teardown behaviour).
+    Missing or invalid optional runtime teardown data degrades to ``None`` so
+    the mandatory tmux kill path remains available. A runtime-managed session
+    without its authoritative launch record fails closed before tmux mutation:
+    Uxon cannot safely reconstruct that workload's teardown identity.
     """
     if not target.runtime_resource and not target.runtime_marker:
         return None
     if not target.launch_record_verified:
-        _teardown_skip(target.name, "no verified launch record")
-        return None
+        fail(
+            f"refusing to kill workload session {target.name!r}: "
+            "no authoritative launch record is available"
+        )
     if not target.runtime:
         _teardown_skip(target.name, "missing workload runtime")
         return None
@@ -371,16 +398,6 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     _audit.set_correlation_id(corr_id)
     remote_cmd_parts.extend(["--audit-correlation-id", shlex.quote(corr_id)])
     remote_cmd = " ".join(remote_cmd_parts)
-    _audit.audit(
-        "kill.remote.out",
-        peer_name=target_host.name,
-        ssh_alias=target_host.ssh_alias,
-        target_user=args.user,
-        target_session=args.target_id,
-        force=args.force,
-        dry_run=args.dry_run,
-        correlation_id=corr_id,
-    )
     ssh_argv = build_peer_ssh_argv(
         command_template=target_host.command_template,
         extra_ssh_options=target_host.extra_ssh_options,
@@ -394,6 +411,16 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     )
 
     if args.dry_run:
+        _audit.audit(
+            "kill.remote.out",
+            peer_name=target_host.name,
+            ssh_alias=target_host.ssh_alias,
+            target_user=args.user,
+            target_session=args.target_id,
+            force=args.force,
+            dry_run=True,
+            correlation_id=corr_id,
+        )
         if args.json_output:
             listing_app._emit_json_with_host(
                 "kill",
@@ -453,6 +480,17 @@ def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
     if cp.returncode != 0:
         _emit_kill_remote_error("non-zero ssh rc", cp.returncode)
         return 1
+    _audit.audit(
+        "kill.remote.out",
+        peer_name=target_host.name,
+        ssh_alias=target_host.ssh_alias,
+        target_user=args.user,
+        target_session=args.target_id,
+        force=args.force,
+        dry_run=False,
+        correlation_id=corr_id,
+        rc=0,
+    )
     return 0
 
 
@@ -516,7 +554,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             # honest answer is "this would fail" rather than a faked
             # would-kill envelope.
             eprint(
-                f"uxon-error: not-reachable (cannot sudo -niu {target_user}; "
+                f"uxon-error: not-reachable (cannot sudo -n -H -u {target_user}; "
                 "check /etc/sudoers.d for a NOPASSWD rule for this target)"
             )
             return 1
@@ -582,6 +620,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         )
         if teardown:
             run_runtime_teardown(cfg, teardown, target_user, target.name)
+        cleanup_launch_record(cfg, target)
         _audit.audit(
             _kill_event,
             session=target.name,
@@ -658,6 +697,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     )
     if teardown:
         run_runtime_teardown(cfg, teardown, launch_user, target.name)
+    cleanup_launch_record(cfg, target)
     _audit.audit(
         _kill_event,
         session=target.name,
@@ -736,6 +776,8 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         ok = cp.returncode == 0
         if ok and teardown:
             run_runtime_teardown(cfg, teardown, launch_user, s.name)
+        if ok:
+            cleanup_launch_record(cfg, s)
         if not args.json_output:
             print(f"killed: {s.name}" if ok else f"failed: {s.name}")
         results.append({"name": s.name, "action": "killed" if ok else "failed"})

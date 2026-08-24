@@ -386,7 +386,7 @@ class CollectSessionsDemoHookTests(unittest.TestCase):
 
             with (
                 mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: str(d)}, clear=False),
-                mock.patch.object(sessions_probe.subprocess, "run", side_effect=boom),
+                mock.patch.object(sessions_probe, "run_query", side_effect=boom),
             ):
                 got = sessions_probe.collect_sessions_for_user(
                     make_config(), "alice", "uxon-", None

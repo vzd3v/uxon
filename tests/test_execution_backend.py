@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,8 +37,10 @@ from uxon.infra import (
     tmux_server_probe,
 )
 from uxon.infra.execution import (
+    DirectoryEntry,
     ExecutionProbe,
     canonicalize_path,
+    list_directories,
     probe,
     resolve_target,
     wrap_command,
@@ -89,7 +92,15 @@ def test_local_binary_probe_uses_argv_safe_nonlogin_sudo() -> None:
         ) as run,
     ):
         assert probes._resolve_paths_remote(cfg, ["tmux"], "alice")["tmux"] == "/usr/bin/tmux"
-    assert run.call_args.args[0][:7] == ["sudo", "-n", "-H", "-u", "alice", "--", "sh"]
+    assert run.call_args.args[0][:7] == [
+        "/usr/bin/sudo",
+        "-n",
+        "-H",
+        "-u",
+        "alice",
+        "--",
+        "sh",
+    ]
     assert "-i" not in run.call_args.args[0]
 
 
@@ -100,7 +111,7 @@ def test_execution_template_rejects_nonliteral_user_expansion(token: str) -> Non
         validate_execution_config(cfg.execution)
 
 
-def test_backend_probe_verifies_target_uid_and_gid() -> None:
+def test_backend_probe_verifies_target_uid_gid_and_groups() -> None:
     cfg = _command_cfg()
     with (
         mock.patch(
@@ -109,8 +120,11 @@ def test_backend_probe_verifies_target_uid_and_gid() -> None:
         ),
         mock.patch(
             "uxon.infra.execution.run_query",
-            return_value=_cp(stdout=json.dumps({"euid": 1001, "egid": 1001})),
+            return_value=_cp(
+                stdout=json.dumps({"euid": 1001, "egid": 1001, "groups": [1001, 2000]})
+            ),
         ) as run,
+        mock.patch("uxon.infra.execution.os.getgrouplist", return_value=[2000, 1001]),
     ):
         result = probe(cfg, "alice")
     assert result.ok
@@ -120,6 +134,24 @@ def test_backend_probe_verifies_target_uid_and_gid() -> None:
         "--",
         mock.ANY,
     ]
+
+
+def test_backend_probe_rejects_wrong_supplementary_groups() -> None:
+    cfg = _command_cfg()
+    with (
+        mock.patch(
+            "uxon.infra.execution.pwd.getpwnam",
+            return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001),
+        ),
+        mock.patch("uxon.infra.execution.os.getgrouplist", return_value=[1001, 2000]),
+        mock.patch(
+            "uxon.infra.execution.run_query",
+            return_value=_cp(stdout=json.dumps({"euid": 1001, "egid": 1001, "groups": [1001]})),
+        ),
+    ):
+        result = probe(cfg, "alice")
+    assert not result.ok
+    assert "did not enter target user" in result.error
 
 
 def test_command_backend_returns_authoritative_canonical_path() -> None:
@@ -135,6 +167,24 @@ def test_command_backend_returns_authoritative_canonical_path() -> None:
     assert argv[-2:] == ["--path", "/outside/projects/demo"]
 
 
+def test_command_backend_lists_target_directories_inside_boundary() -> None:
+    cfg = _command_cfg()
+    payload = {
+        "ok": True,
+        "entries": [{"name": "demo", "mtime": 123}],
+        "error": "",
+    }
+    with mock.patch(
+        "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
+    ) as run:
+        assert list_directories(cfg, "alice", "/inside/projects") == (
+            DirectoryEntry(name="demo", mtime=123),
+        )
+    argv = run.call_args.args[0]
+    assert argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+    assert argv[-4:] == ["--mode", "list-directories", "--path", "/inside/projects"]
+
+
 def test_local_intended_path_rejects_symlink_component(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
@@ -142,6 +192,16 @@ def test_local_intended_path_rejects_symlink_component(tmp_path: Path) -> None:
     link.symlink_to(real, target_is_directory=True)
     with pytest.raises(SystemExit):
         canonicalize_path(make_config(), "alice", str(link / "new"), intended=True)
+
+    broken = tmp_path / "broken"
+    broken.symlink_to("missing-target")
+    with pytest.raises(SystemExit):
+        canonicalize_path(make_config(), "alice", str(broken), intended=True)
+
+    with pytest.raises(SystemExit):
+        canonicalize_path(
+            make_config(), "alice", str(tmp_path / "missing" / ".." / "new"), intended=True
+        )
 
 
 def test_doctor_reports_fixed_backend_probe() -> None:
@@ -178,10 +238,13 @@ def test_tmux_server_list_attach_and_kill_share_the_boundary() -> None:
     assert list(attach.cmd[: len(prefix)]) == prefix
     assert "attach-session" in attach.cmd
 
-    with mock.patch(
-        "uxon.infra.tmux.run_query",
-        return_value=_cp(stdout=json.dumps({"state": "absent", "sessions": [], "error": ""})),
-    ) as run:
+    with (
+        mock.patch(
+            "uxon.infra.tmux.run_query",
+            return_value=_cp(stdout=json.dumps({"state": "absent", "sessions": [], "error": ""})),
+        ) as run,
+        mock.patch("uxon.infra.sessions_probe.garbage_collect_records"),
+    ):
         assert sessions_probe.collect_sessions_for_user(cfg, "alice", "uxon-", socket) == []
     assert run.call_args.args[0][: len(prefix)] == prefix
     assert run.call_args.args[0][-2:] == ["--socket", socket]
@@ -192,6 +255,32 @@ def test_tmux_server_list_attach_and_kill_share_the_boundary() -> None:
         session.name,
     ]
     assert kill[: len(prefix)] == prefix
+
+
+def test_nested_controller_tmux_cannot_cross_a_command_boundary() -> None:
+    cfg = _command_cfg()
+    with (
+        mock.patch("uxon.infra.tmux.tmux_host_socket", return_value="/tmp/controller.sock"),
+        pytest.raises(SystemExit),
+    ):
+        tmux.tmux_nesting_mode(cfg, "alice", "/tmp/controller.sock")
+
+
+def test_runtime_telemetry_uses_the_execution_boundary() -> None:
+    from uxon.infra.runtime_telemetry import read_cgroup_members
+
+    cfg = _command_cfg()
+    payload = {"ok": True, "pids": [101, 102], "error": ""}
+    with mock.patch(
+        "uxon.infra.runtime_telemetry.run_query",
+        return_value=_cp(stdout=json.dumps(payload)),
+    ) as run:
+        assert read_cgroup_members(cfg, "alice", "/demo.scope") == [101, 102]
+    assert run.call_args.args[0][:3] == [
+        "/usr/local/libexec/fake-boundary",
+        "alice",
+        "--",
+    ]
 
 
 def test_unreachable_tmux_server_is_not_reported_as_empty() -> None:
@@ -232,18 +321,39 @@ def test_git_fs_binary_and_runtime_commands_are_nested_under_boundary(tmp_path: 
     cfg = _command_cfg()
     prefix = ["/usr/local/libexec/fake-boundary", "alice", "--"]
 
-    with mock.patch("uxon.infra.git.run_query", return_value=_cp(stdout="/srv/repo\n")) as run:
+    with (
+        mock.patch("uxon.infra.git.run_query", return_value=_cp(stdout="/srv/repo\n")) as run,
+        mock.patch(
+            "uxon.infra.execution.run_query",
+            return_value=_cp(stdout=json.dumps({"ok": True, "path": "/srv/repo", "error": ""})),
+        ) as path_run,
+    ):
         assert git.git_repo_root_nonint_as_user(cfg, "/srv/repo/sub", "alice") == "/srv/repo"
     assert run.call_args.args[0][: len(prefix)] == prefix
     assert "git" in run.call_args.args[0]
+    assert path_run.call_args.args[0][: len(prefix)] == prefix
 
     with (
-        mock.patch("uxon.infra.identity.process_user", return_value="alice"),
-        mock.patch("uxon.infra.identity.run_query", return_value=_cp()) as run,
+        mock.patch(
+            "uxon.infra.execution.run_query",
+            return_value=_cp(
+                stdout=json.dumps(
+                    {
+                        "ok": True,
+                        "path": str(tmp_path),
+                        "exists": True,
+                        "directory": True,
+                        "writable": True,
+                        "nearest_existing_ancestor": str(tmp_path),
+                        "error": "",
+                    }
+                )
+            ),
+        ) as run,
     ):
         assert identity.probe_cwd_writable(cfg, "alice", str(tmp_path))
     assert run.call_args.args[0][: len(prefix)] == prefix
-    assert run.call_args.args[0][-3:] == ["test", "-w", str(tmp_path)]
+    assert run.call_args.args[0][-2:] == ["--path", str(tmp_path)]
 
     with mock.patch("uxon.infra.agents.run_query", return_value=_cp(stdout="1.0\n")) as run:
         assert agents._probe_one(cfg, "claude", "alice").status == "ok"
@@ -419,3 +529,113 @@ def test_command_backend_can_own_a_tmux_server_inside_existing_netns() -> None:
         assert name in out.splitlines()
     finally:
         subprocess.run(base + ["kill-server"], capture_output=True, check=False)
+
+
+def test_shared_launch_record_dir_is_group_readable_and_launch_user_cannot_write(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "records"
+    directory.mkdir(mode=0o2770)
+    directory.chmod(0o2770)
+    real_lstat = os.lstat
+    control_gid = os.getegid()
+
+    def root_owned_lstat(path):
+        result = real_lstat(path)
+        if Path(path) == directory:
+            values = list(result)
+            values[0] = stat.S_IFDIR | 0o2770
+            values[4] = 0
+            values[5] = control_gid
+            return os.stat_result(values)
+        return result
+
+    pending = launch_records.PendingLaunchRecord(
+        socket_path="/run/uxon/alice.sock",
+        session_name="uxon-demo@claude",
+        launch_nonce="abcdefghijklmnop",
+        launch_profile="claude",
+        agent="claude",
+        launch_user="alice",
+    )
+    with (
+        mock.patch("uxon.infra.launch_records.os.lstat", side_effect=root_owned_lstat),
+        mock.patch(
+            "uxon.infra.launch_records.pwd.getpwnam",
+            return_value=SimpleNamespace(pw_gid=2000),
+        ),
+        mock.patch("uxon.infra.launch_records.os.getgrouplist", return_value=[2000]),
+        mock.patch("uxon.infra.launch_records._has_posix_acl", return_value=False),
+    ):
+        path = launch_records.create_pending_record(pending, override_dir=directory, shared=True)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_shared_launch_record_dir_rejects_launch_user_in_control_group(tmp_path: Path) -> None:
+    directory = tmp_path / "records"
+    directory.mkdir(mode=0o2770)
+    directory.chmod(0o2770)
+    metadata = SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=0, st_gid=2000)
+    real_lstat = os.lstat
+
+    def shared_lstat(path):
+        return metadata if Path(path) == directory else real_lstat(path)
+
+    pending = launch_records.PendingLaunchRecord(
+        socket_path="/run/uxon/alice.sock",
+        session_name="uxon-demo@claude",
+        launch_nonce="abcdefghijklmnop",
+        launch_profile="claude",
+        agent="claude",
+        launch_user="alice",
+    )
+    with (
+        mock.patch("uxon.infra.launch_records.os.lstat", side_effect=shared_lstat),
+        mock.patch("uxon.infra.launch_records.os.geteuid", return_value=0),
+        mock.patch(
+            "uxon.infra.launch_records.pwd.getpwnam",
+            return_value=SimpleNamespace(pw_gid=2000),
+        ),
+        mock.patch("uxon.infra.launch_records.os.getgrouplist", return_value=[2000]),
+        mock.patch("uxon.infra.launch_records._has_posix_acl", return_value=False),
+        pytest.raises(SystemExit, match="2"),
+    ):
+        launch_records.create_pending_record(pending, override_dir=directory, shared=True)
+
+
+def test_launch_record_gc_is_scoped_to_one_tmux_socket(tmp_path: Path) -> None:
+    records: list[tuple[launch_records.PendingLaunchRecord, Path]] = []
+    for socket, nonce in (
+        ("/run/uxon/alice.sock", "abcdefghijklmnop"),
+        ("/run/uxon/bob.sock", "ponmlkjihgfedcba"),
+    ):
+        pending = launch_records.PendingLaunchRecord(
+            socket_path=socket,
+            session_name="uxon-demo@claude",
+            launch_nonce=nonce,
+            launch_profile="claude",
+            agent="claude",
+            launch_user=getpass.getuser(),
+        )
+        launch_records.create_pending_record(pending, override_dir=tmp_path)
+        path = launch_records.finalize_pending_record(
+            pending,
+            launch_records.TmuxSessionMetadata(
+                session_id=f"${len(records) + 1}",
+                created="1",
+                name=pending.session_name,
+                launch_nonce=nonce,
+            ),
+            override_dir=tmp_path,
+        )
+        records.append((pending, path))
+
+    removed = launch_records.garbage_collect_records(
+        set(),
+        socket_path=records[0][0].socket_path,
+        override_dir=tmp_path,
+        now=10**12,
+    )
+    assert removed == 1
+    assert not records[0][1].exists()
+    assert records[1][1].exists()
