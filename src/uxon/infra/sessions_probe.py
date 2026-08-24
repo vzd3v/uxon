@@ -635,7 +635,7 @@ def legacy_compatible_sessions(
     )
     return compatible_indexed_sessions(
         stem,
-        cfg.launch.default_profile or cfg.default_agent,
+        cfg.launch.default_profile,
         compatibility_root,
         sessions,
         prefix=cfg.session_prefix,

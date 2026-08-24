@@ -141,19 +141,19 @@ class UxonTests(unittest.TestCase):
             from uxon.domain.agents import default_agent_catalog
 
             agents = default_agent_catalog()
-        old_default_agent = overrides.get("default_agent", "claude")
-        old_enabled_agents = tuple(overrides.get("enabled_agents", ()))
+        default_profile = overrides.pop("default_profile", "claude")
+        enabled_profiles = tuple(overrides.pop("enabled_profiles", ()))
         git_default = str(overrides.get("default_git_remote_profile", ""))
         git_allowed = tuple(
             profile.name
             for profile in overrides.get("git_remote_profiles", [])  # type: ignore[union-attr]
         )
-        launch = overrides.get(
+        launch = overrides.pop(
             "launch",
             _launch_for_test(
                 agents,
-                default_profile=old_default_agent,
-                enabled_profiles=old_enabled_agents,
+                default_profile=default_profile,
+                enabled_profiles=enabled_profiles,
                 git_default=git_default,
                 git_allowed=git_allowed,
             ),
@@ -167,8 +167,6 @@ class UxonTests(unittest.TestCase):
             allowed_roots=["/srv/repos"],
             session_prefix="uxon-",
             legacy_session_prefixes=(),
-            enabled_agents=("claude",),
-            default_agent="claude",
             new_project_root="/srv/repos",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
@@ -242,16 +240,16 @@ class UxonTests(unittest.TestCase):
             from uxon.domain.agents import default_agent_catalog
 
             agents = default_agent_catalog()
-        old_default_agent = kw.get("default_agent", "claude")
-        old_enabled_agents = tuple(kw.get("enabled_agents", ()))
+        default_profile = kw.get("default_profile", "claude")
+        enabled_profiles = tuple(kw.get("enabled_profiles", ()))
         git_default = str(kw.get("default_git_remote_profile", ""))
         git_allowed = tuple(profile.name for profile in kw.get("git_remote_profiles", []))
         launch = kw.get(
             "launch",
             _launch_for_test(
                 agents,
-                default_profile=old_default_agent,
-                enabled_profiles=old_enabled_agents,
+                default_profile=default_profile,
+                enabled_profiles=enabled_profiles,
                 git_default=git_default,
                 git_allowed=git_allowed,
             ),
@@ -265,8 +263,6 @@ class UxonTests(unittest.TestCase):
             allowed_roots=kw.get("allowed_roots", ["/srv"]),
             session_prefix=kw.get("session_prefix", "uxon-"),
             legacy_session_prefixes=kw.get("legacy_session_prefixes", ()),
-            enabled_agents=kw.get("enabled_agents", ("claude",)),
-            default_agent=kw.get("default_agent", "claude"),
             new_project_root=kw.get("new_project_root", "/srv/agentdev"),
             repeat_noninteractive_mode=kw.get("repeat_noninteractive_mode", "fail"),
             tmux_socket_template=kw.get("tmux_socket_template", "/tmp/uxon-{user}.sock"),
@@ -385,8 +381,8 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(cfg.session_users, ["dana_agent", "erin"])
         self.assertEqual(cfg.launch_user_by_caller, {"erin": "dana_agent"})
         self.assertEqual(cfg.agents["claude"].default_args, ("--model", "sonnet"))
-        self.assertEqual(cfg.enabled_agents, ("claude",))
-        self.assertEqual(cfg.default_agent, "claude")
+        self.assertEqual(cfg.launch.enabled_profiles, ("claude",))
+        self.assertEqual(cfg.launch.default_profile, "claude")
         self.assertEqual(cfg.repeat_noninteractive_mode, "attach")
         self.assertEqual(cfg.tmux_socket_template, "/tmp/uxon-{user}-{uid}.sock")
 
@@ -867,8 +863,8 @@ class UxonTests(unittest.TestCase):
         """No ``[agents]`` block → auto-mode: empty enabled / default."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("", tmpdir)
-        self.assertEqual(cfg.enabled_agents, ())
-        self.assertEqual(cfg.default_agent, "")
+        self.assertEqual(cfg.launch.enabled_profiles, ())
+        self.assertEqual(cfg.launch.default_profile, "")
         self.assertEqual(cfg.agents["claude"].default_args, ())
 
     def test_load_config_empty_enabled_is_auto_mode(self) -> None:
@@ -882,8 +878,8 @@ class UxonTests(unittest.TestCase):
                 + "\n",
                 tmpdir,
             )
-        self.assertEqual(cfg.enabled_agents, ())
-        self.assertEqual(cfg.default_agent, "")
+        self.assertEqual(cfg.launch.enabled_profiles, ())
+        self.assertEqual(cfg.launch.default_profile, "")
         self.assertEqual(cfg.launch.effective_enabled_profiles, ("claude", "codex", "cursor"))
 
     def test_load_config_multi_launch_profile(self) -> None:
@@ -903,8 +899,8 @@ class UxonTests(unittest.TestCase):
                 + "\n",
                 tmpdir,
             )
-        self.assertEqual(cfg.enabled_agents, ("claude", "cursor"))
-        self.assertEqual(cfg.default_agent, "cursor")
+        self.assertEqual(cfg.launch.enabled_profiles, ("claude", "cursor"))
+        self.assertEqual(cfg.launch.default_profile, "cursor")
         self.assertEqual(cfg.agents["claude"].default_args, ("--verbose",))
 
     def test_load_config_rejects_legacy_flat_key(self) -> None:
@@ -1808,7 +1804,7 @@ class UxonTests(unittest.TestCase):
                 with mock.patch.object(Path, "open", spy_open):
                     cfg = config_loader.load_config(str(cwd))
 
-        self.assertEqual(cfg.default_agent, "")
+        self.assertEqual(cfg.launch.default_profile, "")
         self.assertNotIn(project_cfg, opened)
 
     # ── is_launch_target_allowed / ensure_launch_target_allowed ──────
@@ -2376,7 +2372,7 @@ class UxonTests(unittest.TestCase):
         self.assertEqual(p.agent_args, ["--some-claude-flag", "x"])
 
     def test_launch_builder_cursor_yolo(self) -> None:
-        cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
+        cfg = self.make_config(enabled_profiles=("cursor",), default_profile="cursor")
         args = ParsedArgs(action="run", permission_mode="yolo")
         resolved = _resolved_for_test(cfg, profile="cursor", mode="yolo")
         with self._stub_socket_path():
@@ -2393,7 +2389,7 @@ class UxonTests(unittest.TestCase):
         self.assertIn("--yolo", create)
 
     def test_launch_builder_cursor_auto_errors(self) -> None:
-        cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
+        cfg = self.make_config(enabled_profiles=("cursor",), default_profile="cursor")
         args = ParsedArgs(action="run", profile="cursor", permission_mode="auto")
         resolved = _resolved_for_test(cfg, profile="cursor", mode="auto")
         with self._stub_socket_path():
@@ -2408,7 +2404,7 @@ class UxonTests(unittest.TestCase):
                 )
 
     def test_launch_builder_codex_full_auto(self) -> None:
-        cfg = self.make_config(enabled_agents=("codex",), default_agent="codex")
+        cfg = self.make_config(enabled_profiles=("codex",), default_profile="codex")
         args = ParsedArgs(action="run", profile="codex", permission_mode="auto")
         resolved = _resolved_for_test(cfg, profile="codex", mode="auto")
         with self._stub_socket_path():
@@ -2443,7 +2439,7 @@ class UxonTests(unittest.TestCase):
 
     def test_launch_builder_branch_allowed_for_non_claude_agent(self) -> None:
         # The old "-w is only supported for claude" guard is gone.
-        cfg = self.make_config(enabled_agents=("codex",), default_agent="codex")
+        cfg = self.make_config(enabled_profiles=("codex",), default_profile="codex")
         args = ParsedArgs(action="run", profile="codex", permission_mode="normal")
         resolved = _resolved_for_test(cfg, profile="codex", mode="normal")
         with self._stub_socket_path():
@@ -2461,7 +2457,7 @@ class UxonTests(unittest.TestCase):
         # Full-stack check: parser accepts --mode without knowing the resolved
         # agent; the launch builder rejects an id the resolved agent lacks,
         # listing the agent's valid modes.
-        cfg = self.make_config(enabled_agents=("cursor",), default_agent="cursor")
+        cfg = self.make_config(enabled_profiles=("cursor",), default_profile="cursor")
         parsed = parse_run_like(["--mode", "auto"], "run")
         self.assertEqual(parsed.permission_mode, "auto")
         self.assertIsNone(parsed.profile)  # not explicitly set
@@ -2585,9 +2581,7 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
             allowed_roots=[],
             session_prefix="uxon-",
             legacy_session_prefixes=(),
-            enabled_agents=("claude",),
-            default_agent="claude",
-            new_project_root="/srv/work",
+            new_project_root="/srv/repos",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
             tui_refresh_interval_seconds=2.0,
@@ -2896,8 +2890,6 @@ class CliPreflightTests(unittest.TestCase):
             allowed_roots=["/srv/repos"],
             session_prefix="uxon-",
             legacy_session_prefixes=(),
-            enabled_agents=("claude",),
-            default_agent="claude",
             new_project_root="/srv/repos",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",

@@ -26,8 +26,6 @@ def make_config(**overrides: object) -> Config:
         "allowed_roots": ["/srv/repos"],
         "session_prefix": "uxon-",
         "legacy_session_prefixes": (),
-        "enabled_agents": ("claude",),
-        "default_agent": "claude",
         "new_project_root": "/srv/repos",
         "repeat_noninteractive_mode": "fail",
         "tmux_socket_template": "/tmp/uxon-{user}.sock",

@@ -336,7 +336,7 @@ class UxonApp(App):
         if self.ctx.loading:
             self._worker_coord.kick_initial_sources()
         # Kick off background host probe (tmux + all known agents).
-        # Probes every CATALOG agent regardless of cfg.enabled_agents
+        # Probes every CATALOG agent regardless of cfg.enabled_profiles
         # so auto-mode (empty enabled list) sees what is installed for
         # ``launch_user``.
         if self.probe_agents:
@@ -622,10 +622,10 @@ class UxonApp(App):
             self.call_later(top._rebuild_agent_list)
 
         availability = self.state.agent_availability.value or {}
-        configured = self.cfg.enabled_profiles or self.cfg.enabled_agents
+        configured = self.cfg.enabled_profiles
         if configured:
             current_all_missing = compute_all_missing(
-                enabled_agents=configured,
+                enabled_profiles=configured,
                 availability=availability,
             )
             modal_arg: tuple[str, ...] = tuple(configured)
@@ -665,8 +665,7 @@ class UxonApp(App):
         Strict mode: every enabled agent has a non-pending entry.
         Auto-mode: the host probe has landed at least once.
         """
-        configured = self.cfg.enabled_agents
-        configured = self.cfg.enabled_profiles or configured
+        configured = self.cfg.enabled_profiles
         if not configured:
             return self._host_probe_landed
         availability = self.state.agent_availability.value or {}

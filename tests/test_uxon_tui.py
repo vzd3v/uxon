@@ -145,16 +145,16 @@ class TuiContextShapeTests(unittest.TestCase):
 class AgentsUnavailableGateStateTests(unittest.TestCase):
     def test_gate_false_when_already_shown(self) -> None:
         result = should_show_agents_unavailable(
-            enabled_agents=("claude",),
+            enabled_profiles=("claude",),
             availability={"claude": type("Avail", (), {"status": "missing"})()},
             already_shown=True,
         )
         self.assertFalse(result)
 
-    def test_gate_false_without_enabled_agents(self) -> None:
+    def test_gate_false_without_enabled_profiles(self) -> None:
         self.assertFalse(
             should_show_agents_unavailable(
-                enabled_agents=(),
+                enabled_profiles=(),
                 availability={},
                 already_shown=False,
             )
@@ -162,7 +162,7 @@ class AgentsUnavailableGateStateTests(unittest.TestCase):
 
     def test_gate_false_until_every_agent_resolved(self) -> None:
         result = should_show_agents_unavailable(
-            enabled_agents=("claude", "codex"),
+            enabled_profiles=("claude", "codex"),
             availability={"claude": type("Avail", (), {"status": "missing"})()},
             already_shown=False,
         )
@@ -170,7 +170,7 @@ class AgentsUnavailableGateStateTests(unittest.TestCase):
 
     def test_gate_false_when_any_agent_is_ok(self) -> None:
         result = should_show_agents_unavailable(
-            enabled_agents=("claude", "codex"),
+            enabled_profiles=("claude", "codex"),
             availability={
                 "claude": type("Avail", (), {"status": "ok"})(),
                 "codex": type("Avail", (), {"status": "missing"})(),
@@ -181,7 +181,7 @@ class AgentsUnavailableGateStateTests(unittest.TestCase):
 
     def test_gate_true_when_all_agents_missing_or_timeout(self) -> None:
         result = should_show_agents_unavailable(
-            enabled_agents=("claude", "codex"),
+            enabled_profiles=("claude", "codex"),
             availability={
                 "claude": type("Avail", (), {"status": "missing"})(),
                 "codex": type("Avail", (), {"status": "timeout"})(),
@@ -193,12 +193,12 @@ class AgentsUnavailableGateStateTests(unittest.TestCase):
 
 class ComputeAllMissingTests(unittest.TestCase):
     def test_false_without_enabled(self) -> None:
-        self.assertFalse(compute_all_missing(enabled_agents=(), availability={}))
+        self.assertFalse(compute_all_missing(enabled_profiles=(), availability={}))
 
     def test_false_when_pending(self) -> None:
         self.assertFalse(
             compute_all_missing(
-                enabled_agents=("claude",),
+                enabled_profiles=("claude",),
                 availability={"claude": type("A", (), {"status": "pending"})()},
             )
         )
@@ -206,7 +206,7 @@ class ComputeAllMissingTests(unittest.TestCase):
     def test_false_when_any_ok(self) -> None:
         self.assertFalse(
             compute_all_missing(
-                enabled_agents=("claude", "codex"),
+                enabled_profiles=("claude", "codex"),
                 availability={
                     "claude": type("A", (), {"status": "ok"})(),
                     "codex": type("A", (), {"status": "missing"})(),
@@ -217,7 +217,7 @@ class ComputeAllMissingTests(unittest.TestCase):
     def test_true_when_all_missing(self) -> None:
         self.assertTrue(
             compute_all_missing(
-                enabled_agents=("claude", "codex"),
+                enabled_profiles=("claude", "codex"),
                 availability={
                     "claude": type("A", (), {"status": "missing"})(),
                     "codex": type("A", (), {"status": "timeout"})(),
@@ -298,7 +298,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
 
     def test_visible_agents_include_pending_ok_and_unknown(self) -> None:
         visible = visible_agent_ids(
-            enabled_agents=("claude", "codex", "cursor"),
+            enabled_profiles=("claude", "codex", "cursor"),
             availability={
                 "claude": self._avail("ok"),
                 "codex": self._avail("pending"),
@@ -309,7 +309,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
 
     def test_visible_agents_exclude_missing_and_timeout(self) -> None:
         visible = visible_agent_ids(
-            enabled_agents=("claude", "codex", "cursor"),
+            enabled_profiles=("claude", "codex", "cursor"),
             availability={
                 "claude": self._avail("missing"),
                 "codex": self._avail("timeout"),
@@ -321,8 +321,8 @@ class LaunchOptionsStateTests(unittest.TestCase):
 
     def test_initial_agent_prefers_default_when_visible(self) -> None:
         state = launch_options_state(
-            enabled_agents=("claude", "codex"),
-            default_agent="codex",
+            enabled_profiles=("claude", "codex"),
+            default_profile="codex",
             availability={},
         )
         self.assertEqual(
@@ -337,8 +337,8 @@ class LaunchOptionsStateTests(unittest.TestCase):
 
     def test_initial_agent_falls_back_to_first_visible(self) -> None:
         state = launch_options_state(
-            enabled_agents=("claude", "codex"),
-            default_agent="claude",
+            enabled_profiles=("claude", "codex"),
+            default_profile="claude",
             availability={"claude": self._avail("missing")},
         )
         self.assertEqual(state.current_agent, "codex")
@@ -445,8 +445,8 @@ class LaunchOptionsStateTests(unittest.TestCase):
 
     def test_launch_update_all_missing_dismisses(self) -> None:
         update = update_launch_options_after_availability(
-            enabled_agents=("claude", "codex"),
-            default_agent="claude",
+            enabled_profiles=("claude", "codex"),
+            default_profile="claude",
             availability={
                 "claude": self._avail("missing"),
                 "codex": self._avail("timeout"),
@@ -467,8 +467,8 @@ class LaunchOptionsStateTests(unittest.TestCase):
 
     def test_launch_update_two_to_one_switches_to_mode_panel(self) -> None:
         update = update_launch_options_after_availability(
-            enabled_agents=("claude", "cursor"),
-            default_agent="claude",
+            enabled_profiles=("claude", "cursor"),
+            default_profile="claude",
             availability={
                 "claude": self._avail("missing"),
                 "cursor": self._avail("ok"),
@@ -484,8 +484,8 @@ class LaunchOptionsStateTests(unittest.TestCase):
 
     def test_launch_update_pending_agent_stays_visible(self) -> None:
         update = update_launch_options_after_availability(
-            enabled_agents=("claude", "cursor"),
-            default_agent="claude",
+            enabled_profiles=("claude", "cursor"),
+            default_profile="claude",
             availability={
                 "claude": self._avail("pending"),
                 "cursor": self._avail("ok"),

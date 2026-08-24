@@ -42,7 +42,7 @@ class AgentsUnavailableScreenTests(unittest.TestCase):
         from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
         screen = AgentsUnavailableScreen(
-            enabled_agents=("claude", "codex", "cursor"),
+            enabled_profiles=("claude", "codex", "cursor"),
             agents=DEFAULT_AGENT_CATALOG,
         )
         text = screen.body_text
@@ -71,8 +71,8 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
         ctx = _mk_ctx(
-            enabled_agents=("claude", "codex"),
-            default_agent="claude",
+            enabled_profiles=("claude", "codex"),
+            default_profile="claude",
         )
 
         app = UxonApp(ctx, probe_agents=False)
@@ -86,7 +86,7 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
             avail.update(
                 {
                     aid: uxon_agents.AgentAvailability(status="missing", error="not found")
-                    for aid in ctx.enabled_agents
+                    for aid in ctx.enabled_profiles
                 }
             )
             app.post_message(_AgentAvailabilityUpdated())
@@ -107,7 +107,7 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.messages import _HostReportUpdated
         from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
 
-        ctx = _mk_ctx(enabled_agents=("claude",), default_agent="claude")
+        ctx = _mk_ctx(enabled_profiles=("claude",), default_profile="claude")
 
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:

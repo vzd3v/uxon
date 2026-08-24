@@ -185,7 +185,7 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
                     msg.availability["claude"],  # type: ignore[index]
                     uxon_agents.AgentAvailability(status="ok", path="/usr/bin/claude"),
                 )
-                # ``ctx`` here uses the new default empty enabled_agents,
+                # ``ctx`` here uses the new default empty enabled_profiles,
                 # so the worker is in auto-mode: only installed agents
                 # are surfaced in the availability dict (no "missing"
                 # entries).

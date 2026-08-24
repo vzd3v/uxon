@@ -44,8 +44,8 @@ def _mk_ctx(**overrides) -> TuiContext:
         cwd_writable=True,
         current_user="dana_agent",
         launch_user="dana_agent",
-        enabled_agents=("claude", "codex"),
-        default_agent="claude",
+        enabled_profiles=("claude", "codex"),
+        default_profile="claude",
         tui_refresh_interval_seconds=2.5,
         tui_ssh_refresh_interval_seconds=11.0,
         ssh_multiplex="off",
@@ -88,8 +88,8 @@ class FromContextRoundTripTests(unittest.TestCase):
 
         self.assertEqual(cfg.current_user, "dana_agent")
         self.assertEqual(cfg.launch_user, "dana_agent")
-        self.assertEqual(cfg.enabled_agents, ("claude", "codex"))
-        self.assertEqual(cfg.default_agent, "claude")
+        self.assertEqual(cfg.enabled_profiles, ("claude", "codex"))
+        self.assertEqual(cfg.default_profile, "claude")
         self.assertEqual(cfg.tui_refresh_interval_seconds, 2.5)
         self.assertEqual(cfg.tui_ssh_refresh_interval_seconds, 11.0)
         self.assertEqual(cfg.ssh_multiplex, "off")

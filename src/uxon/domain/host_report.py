@@ -26,7 +26,7 @@ class HostReport:
 
     ``agents`` carries one entry per ``CATALOG`` id; consumers decide
     which subset is "in scope" (the strict whitelist from
-    ``[agents].enabled`` if non-empty, or the auto-mode set of all
+    ``[launch].enabled_profiles`` if non-empty, or the auto-mode set of all
     installed agents otherwise). The previous ``enabled``/``detected``
     split was tied to the now-removed detected-agents banner.
     """

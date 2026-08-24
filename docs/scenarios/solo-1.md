@@ -31,7 +31,7 @@ sessions on it.
 - **Auto-create a GitHub repo on `uxon new`** —
   [`guides/customise/configure-github-on-new-project.md`](../guides/customise/configure-github-on-new-project.md)
 - **Move old project-local overrides into operator config** —
-  [`guides/customise/remove-project-uxon-toml.md`](../guides/customise/remove-project-uxon-toml.md)
+  [`migrations.md`](../migrations.md#move-project-uxontoml-policy-into-path-rules)
 - **Tune dashboard refresh on a slow link** —
   [`guides/customise/tune-refresh-cadence.md`](../guides/customise/tune-refresh-cadence.md)
 - **Work in a git worktree** —

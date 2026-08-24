@@ -2,7 +2,7 @@
 """Tests for ``do_doctor`` parallel agent probes.
 
 Probes run in a ThreadPoolExecutor with ``timeout_override=2.0``;
-output order follows ``cfg.enabled_agents`` regardless of arrival order.
+output order follows ``cfg.agents`` regardless of arrival order.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ _USER = pwd.getpwuid(os.getuid()).pw_name
 
 
 class DoctorParallelProbeTests(unittest.TestCase):
-    """``do_doctor`` parallelises ``_probe_one`` across ``cfg.enabled_agents``."""
+    """``do_doctor`` parallelises ``_probe_one`` across ``cfg.agents``."""
 
     def _stub_cfg(self):
         from uxon.domain.config import Config
@@ -34,8 +34,6 @@ class DoctorParallelProbeTests(unittest.TestCase):
             allowed_roots=[],
             session_prefix="uxon-",
             legacy_session_prefixes=(),
-            enabled_agents=("claude", "codex", "cursor"),
-            default_agent="claude",
             new_project_root="/tmp",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
@@ -240,8 +238,6 @@ class DoctorRemoteFlagTests(unittest.TestCase):
             allowed_roots=[],
             session_prefix="uxon-",
             legacy_session_prefixes=(),
-            enabled_agents=("claude",),
-            default_agent="claude",
             new_project_root="/tmp",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
@@ -446,8 +442,6 @@ class DoctorAuditLineTests(unittest.TestCase):
             allowed_roots=[],
             session_prefix="uxon-",
             legacy_session_prefixes=(),
-            enabled_agents=("claude",),
-            default_agent="claude",
             new_project_root="/tmp",
             repeat_noninteractive_mode="fail",
             tmux_socket_template="/tmp/uxon-{user}.sock",
