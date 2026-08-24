@@ -15,14 +15,14 @@ The TUI's ⚙ Settings screen rewrites repo config in place via a
 `tomlkit` round-trip, preserving comments and formatting.
 
 Project-owned `.uxon.toml` files are not read. Runtime policy,
-launch profiles, path rules, agents, containers, and git credentials
+launch profiles, path rules, agents, execution backends, runtimes, and git credentials
 are operator-owned.
 
 ## Top-level keys
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
-| `runtime_user` | string | `""` | Launch user when `default_launch_mode = "fixed"`. |
+| `default_launch_user` | string | `""` | Launch user when `default_launch_mode = "fixed"`. |
 | `default_launch_mode` | `"caller"` / `"fixed"` | `"caller"` | Launch-user resolution for callers without a mapping. |
 | `launch_user_by_caller` | table | `{}` | Per-caller override (`<caller> = <launch user>`). |
 | `session_users` | array | `[]` | Users scanned by `list --all-users` and the TUI superuser block. |
@@ -31,7 +31,7 @@ are operator-owned.
 | `new_project_root` | string | `~/projects` | Base directory for `uxon new <name>`. Must be inside `allowed_roots`. |
 | `session_prefix` | string | `"uxon-"` | TMUX session-name prefix for new sessions. |
 | `legacy_session_prefixes` | array | `[]` | Extra prefixes recognised by `list`/`attach`/`kill`. Never used to create new sessions. |
-| `tmux_socket_template` | string | `/tmp/uxon-{user}.sock` | Per-user socket path. Placeholders: `{user}`, `{uid}`. |
+| `tmux_socket_template` | string | `/tmp/uxon-{user}-{execution_backend}.sock` | Socket path. Placeholders: `{user}`, `{uid}`, `{execution_backend}`, `{execution_fingerprint}`. |
 | `tui_refresh_interval_seconds` | number | `2.0` | Local-tmux refresh cadence. |
 | `tui_ssh_refresh_interval_seconds` | number | `10.0` | Cadence for SSH-driven streams: the `ssh-link` probe (visible inside SSH) and the per-peer remote-sessions poller (when `[[remote_hosts]]` is configured). |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback when `uxon new` finds an existing matching session. |
@@ -46,7 +46,7 @@ are operator-owned.
 
 Launch profiles are the runnable choices. Agents remain the
 binary/mode catalog; a launch profile selects an agent and may pin a
-launch user, a container profile, and git-remote credentials.
+launch user, a workload runtime, and git-remote credentials.
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
@@ -61,8 +61,8 @@ Profile ids must match `[a-z][a-z0-9_]*` and contain no `:` or `.`.
 |---|---|---|---|
 | `agent` | string | — | Required agent catalog id. |
 | `display_name` | string | `""` | Optional human label. |
-| `launch_user` | string | `""` | Optional OS-user override. Empty uses `launch_user_by_caller` / `default_launch_mode` / `runtime_user`. |
-| `container_profile` | string | `""` | Optional `[container.profiles.<id>]`. Empty means no container. |
+| `launch_user` | string | `""` | Optional OS-user override. Empty uses `launch_user_by_caller` / `default_launch_mode` / `default_launch_user`. |
+| `runtime` | string | `"direct"` | Workload runtime id from `[runtimes.<id>]`; `direct` is built in. |
 | `allowed_git_remote_profiles` | array | `[]` | Git remote profiles this launch profile may use. Empty means this launch profile cannot create remote repos. |
 | `default_git_remote_profile` | string | `""` | Default for `--git-remote default`; must be listed in `allowed_git_remote_profiles`. |
 
@@ -75,7 +75,7 @@ default_profile = "claude_work"
 agent = "claude"
 display_name = "Claude work"
 launch_user = "wes-claude-agent"
-container_profile = "claude_work"
+runtime = "claude_work"
 allowed_git_remote_profiles = ["work"]
 default_git_remote_profile = "work"
 ```
@@ -160,81 +160,69 @@ flags     = ["--auto-approve"]
 dangerous = true
 ```
 
-**File-only.** The `[agents.<id>]` catalog and launch/container profile
+**File-only.** The agent catalog, execution backends, and runtime
 tables are edited in `config.toml` directly. They are not exposed on
 the TUI ⚙ Settings screen, which covers scalar keys only.
 
-## `[container.profiles.<id>]` table
+## `[execution]` table
 
-A launch is containerized only when its launch profile names a
-`container_profile`. Container profile ids must match
-`[a-z][a-z0-9_]*` and contain no `:` or `.`.
+The execution backend is the complete target-user boundary. It wraps tmux
+server creation, list/attach/kill, git and worktrees, filesystem and agent
+probes, runtime lifecycle, and workload launch. `local` is built in.
 
 | Key | Type | Default | Purpose |
 |---|---|---|---|
-| `runtime_namespace` | `"global"` / `"per_user"` | — | Required. Whether container names are shared globally or per launch user. |
-| `name_template` | string | — | Required. Placeholders: `{user}`, `{launch_profile}`, `{container_profile}`, `{agent}`, `{project_slug}`. |
-| `exec_template` | array | — | Required argv prefix prepended to the agent command. Placeholders include `{name}` and `{dir}`. |
-| `is_running_cmd` | array | `[]` | Probe argv; exit 0 means running. |
-| `exists_cmd` | array | `[]` | Probe argv; exit 0 means exists but may be stopped. |
-| `on_missing` | `"off"` / `"start"` / `"create"` | `"off"` | Capability gate when the container is not running. |
-| `on_missing_mode` | `"prompt"` / `"auto"` | `"prompt"` | TUI confirmation policy for permitted start/create. |
-| `start_template` | array | `[]` | Argv that starts a stopped container. Required when `on_missing` is `start` or `create`. |
-| `create_template` | array | `[]` | Argv that creates an absent container. Required when `on_missing` is `create`. |
-| `resolve_cmd` | array | `[]` | Argv that resolves stable container identity. Required when `stop_template` is set. |
-| `stop_template` | array | `[]` | Argv run on kill to terminate this session's in-container agent. Placeholders include `{name}` and `{pidfile}`. Requires `resolve_cmd`. |
-| `path_map` | table | `{}` | Host path prefix to container path prefix; longest host prefix wins. |
+| `execution.default_backend` | string | `"local"` | Backend for users without an override. |
+| `execution.backend_by_launch_user` | table | `{}` | `<launch user> = <backend id>` overrides. |
+| `execution.backends.<id>.kind` | `"command"` | — | Required for configured backends. |
+| `execution.backends.<id>.command_prefix` | array | — | Prefix for every target-user command. Supports `{user}`. |
+| `execution.backends.<id>.probe_command` | array | — | Bounded health-probe argv. Supports `{user}`. |
+| `execution.backends.<id>.probe_timeout_seconds` | number | `5.0` | Positive probe timeout. |
 
-Runtime command templates may use `{user}`, `{launch_profile}`,
-`{container_profile}`, `{agent}`, `{project_slug}`, `{name}`, and
-`{dir}`. `stop_template` may use `{pidfile}` instead of `{dir}`.
+Changing a backend definition while its tmux server is live is unsafe. uxon
+records the fingerprint and blocks new launches on mismatch while leaving
+list/attach/kill available. Drain sessions before editing `[execution]`.
+Changing a backend id changes the default socket; if the new boundary cannot
+reach the old socket, restore the old config, drain, then change it. Optional
+`{execution_fingerprint}` is hard separation, not automatic drain: old sessions
+can remain running and become undiscoverable.
 
-The container is resolved deterministically per **(launch user,
-project directory)** — the same container is reused across sessions,
-never one per session. uxon **never** stops or removes the container
-*itself*; it only execs, (when `on_missing` permits) starts or creates
-one, and — when `stop_template` is set — terminates the agent *process*
-it launched.
+## `[runtimes.<id>]` table
 
-**Not-ready flow.** uxon runs `is_running_cmd`; if it isn't running it
-runs `exists_cmd` to tell *stopped* from *absent*, then applies
-`on_missing`. Within the TUI, `on_missing_mode = "prompt"` shows a
-confirm ("Container `<name>` is stopped — start and launch?") before any
-start/create; `auto` runs it straight. One exception: the
-**new-project** and **new-worktree** launches create the project
-directory as part of the launch, so the container can only be readied
-*after* that — those two paths use auto-if-permitted (no prompt) even in
-the TUI.
+`direct` is built in. A command runtime is an operator-owned workload adapter;
+a container engine is one possible implementation. Runtime ids must match
+`[a-z][a-z0-9_]*`.
 
-The resolved name is validated after expansion
-(`[A-Za-z0-9][A-Za-z0-9_.-]*`, ≤128 chars, no leading `-`/`.`/`_`);
-`path_map` keys/values and the post-map `{dir}` must be absolute,
-normalized, and `..`-free.
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `kind` | `"command"` | — | Required. |
+| `resource_scope` | `"global"` / `"per_user"` | `"global"` | Whether resources are shared across launch users. |
+| `resource_name_template` | string | — | Required workload resource template. |
+| `exec_prefix` | array | — | Required argv prefix prepended to the agent. |
+| `telemetry` | `"none"` / `"cgroup"` | `"none"` | Optional cgroup attribution. |
+| `readiness.ready_command` | array | `[]` | Exit 0 only when ready. |
+| `readiness.exists_command` | array | `[]` | Exit 0 when the resource exists. |
+| `readiness.on_missing` | `"fail"` / `"start"` / `"create"` | `"fail"` | Missing-resource capability. |
+| `readiness.approval` | `"prompt"` / `"auto"` | `"prompt"` | TUI confirmation policy. |
+| `readiness.start_command` | array | `[]` | Required for `start` and `create`. |
+| `readiness.create_command` | array | `[]` | Required for `create`. |
+| `identity.resolve_command` | array | `[]` | Prints JSON with `id`, positive `host_pid`, and `epoch`; required with `session.stop_command`. |
+| `session.stop_command` | array | `[]` | Best-effort per-session workload teardown. |
+| `timeouts.probe_seconds` | number | `10.0` | Probe timeout. |
+| `timeouts.prepare_seconds` | number | `120.0` | Start/create timeout. |
+| `timeouts.stop_seconds` | number | `10.0` | Teardown timeout. |
+| `path_map` | table | `{}` | Host prefix to runtime prefix; longest match wins. |
 
-**Auth provisioning — operator-owned, no passthrough.** uxon does not
-install the agent and does **not** forward host credentials into the
-container; there is deliberately **no** `env_passthrough` or
-credential-forwarding key. Auth is provisioned *into* the container by
-the operator — via the image or `create_template` — using file-based
-secrets and short-lived, narrowly-scoped tokens. Forwarding host
-environment variables (`-e NAME`) would push secrets into
-`/proc/<pid>/environ` inside the container, the exact exposure the
-hardening guide warns against. See
-[Provision auth safely](../guides/harden/harden-a-container.md#provision-auth-safely).
+Templates support `{user}`, `{launch_profile}`, `{runtime}`, `{agent}`, and
+`{project_slug}`; command templates add `{resource}` and `{runtime_dir}`, while
+`session.stop_command` adds `{pidfile}`. Resource names and mapped paths are
+validated after expansion.
 
-**Teardown.** `tmux kill-session` only severs uxon's client-side exec;
-the in-container agent does **not** die on that disconnect under docker
-or podman — it orphans. Set `stop_template` to reap it: at launch uxon
-wraps the agent so it records its in-container PID into the per-session
-`{pidfile}`, and on kill it runs `stop_template` to terminate exactly
-that PID (precise even when one shared container hosts many sessions —
-indexed re-runs, worktrees, different agents), leaving the container
-running. Order is kill-then-reap: the session is killed first, then the
-orphaned process is terminated, so the kill never races tmux's own
-pane-exit teardown. Teardown is best-effort — a failure prints a note
-and never blocks the kill. If `stop_template` is **omitted**, the agent
-orphans and every surface that reports a kill appends a one-line
-reminder to stop it yourself or configure `stop_template`.
+Every lifecycle command traverses the selected execution backend. The tmux
+server also runs inside that execution boundary; only the agent workload gets
+the additional runtime prefix. Runtime auth is operator-provisioned: uxon has
+no environment or credential passthrough. Teardown is best effort and an
+identity/fingerprint mismatch fails safe rather than killing an unrelated PID.
 
 ## `[tui.table]` table
 

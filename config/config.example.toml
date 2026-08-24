@@ -28,6 +28,24 @@
 default_launch_mode = "caller"
 session_prefix      = "uxon-"
 
+# The execution backend owns the complete target-user command boundary:
+# tmux server/list/attach/kill, git/worktrees/filesystem, probes, runtime
+# lifecycle, and agent launch. ``local`` is built in. A command backend is
+# useful for a host namespace or another operator-owned isolation boundary.
+# Drain all sessions for a backend before changing its definition. Changing
+# a backend id selects a different default tmux socket.
+#
+# tmux_socket_template = "/tmp/uxon-{user}-{execution_backend}.sock"
+# [execution]
+# default_backend = "host_netns"
+# [execution.backend_by_launch_user]
+# wes-agent = "host_netns"
+# [execution.backends.host_netns]
+# kind = "command"
+# command_prefix = ["sudo", "ip", "netns", "exec", "agent-egress"]
+# probe_command = ["sudo", "ip", "netns", "exec", "agent-egress", "true"]
+# probe_timeout_seconds = 5.0
+
 # Required only for `uxon new <name>` (project scaffolding). Leave
 # both unset to use just `uxon run` and the TUI's "New session in
 # current folder" — those gate on write access and accept any
@@ -63,7 +81,7 @@ default_args = []
 # with the block below:
 #
 # default_launch_mode = "fixed"
-# runtime_user        = "wes-agent"
+# default_launch_user        = "wes-agent"
 # session_users       = ["wes-agent"]
 # allowed_roots       = ["/srv/projects"]
 # new_project_root    = "/srv/projects"
@@ -92,7 +110,7 @@ default_args = []
 #     One <user>-agent per developer.
 #
 # default_launch_mode   = "fixed"
-# runtime_user          = "team-agent"   # fallback for unmapped callers
+# default_launch_user          = "team-agent"   # fallback for unmapped callers
 # session_users         = ["nadia-agent", "liam-agent", "ethan-agent"]
 # enable_all_users_list = true
 # allowed_roots         = ["/srv/projects"]
@@ -107,7 +125,7 @@ default_args = []
 #     Useful when the agent needs shared workspace/state across devs.
 #
 # default_launch_mode = "fixed"
-# runtime_user        = "team-agent"
+# default_launch_user        = "team-agent"
 # session_users       = ["team-agent"]
 # allowed_roots       = ["/srv/projects"]
 # new_project_root    = "/srv/projects"
@@ -302,67 +320,73 @@ default_args = []
 # syslog_facility = "user"
 
 
-# ─── Container profiles ───────────────────────────────────────────
-# docs/reference/configuration.md ([container.profiles.<id>])
+# ─── Workload runtimes ───────────────────────────────────────────
+# docs/reference/configuration.md ([runtimes.<id>])
 #
-# A launch is containerized only when its launch profile names a
-# ``container_profile``. uxon models NO runtime semantics: every
+# A launch uses an isolated workload only when its launch profile names a
+# non-direct ``runtime``. uxon models no engine-specific semantics: every
 # command below is an argv LIST you supply verbatim — never a shell
-# string. ``{name}`` is the resolved container name; ``{dir}`` is the
-# container-side working directory after ``path_map``.
+# string. ``{resource}`` is the resolved workload name; ``{runtime_dir}``
+# is the working directory after ``path_map``.
 #
-# The container is chosen deterministically per (launch user, project
-# directory) — the SAME container is reused across sessions, never one
+# The resource is chosen deterministically per (launch user, project
+# directory) — the same resource is reused across sessions, never one
 # per session.
 #
-# ``on_missing`` gates what uxon may do when the container is not
-# running: ``off`` (default) execs only — a stopped/absent container
+# ``on_missing`` gates what uxon may do when the resource is not
+# running: ``fail`` (default) execs only — a stopped/absent resource
 # fails with an actionable message; ``start`` also starts a stopped
 # one; ``create`` also creates an absent one. uxon NEVER stops or
-# removes the container itself — only ``stop_template`` (below)
-# terminates the agent *process*. ``on_missing_mode`` is ``prompt``
+# removes the resource itself — only ``stop_command`` (below)
+# terminates the agent process. ``approval`` is ``prompt``
 # (the TUI shows a confirm before any start/create) or ``auto`` (act
 # without asking, when permitted). The CLI is non-interactive and
 # always acts auto-if-permitted.
 #
-# Probe semantics matter: ``is_running_cmd`` must exit 0 ONLY when the
-# container is RUNNING. ``docker inspect`` exits 0 for a STOPPED
-# container too, so use ``docker top`` (exits non-zero unless running).
-# ``exists_cmd`` exits 0 when the container exists (running or stopped).
+# Probe semantics matter: ``ready_command`` must exit 0 only when the
+# workload is ready. ``exists_command`` exits 0 when it exists.
 #
-# Teardown (``stop_template``) is the mirror of the exec wrap. ``tmux
-# kill-session`` only severs uxon's client-side exec; the in-container
-# agent orphans under docker AND podman. So at launch uxon wraps the
-# agent to record its in-container PID in ``{pidfile}`` (one per
-# session — the container is shared across many sessions), and on
-# ``uxon kill`` it runs ``stop_template`` to terminate exactly that PID
-# and leave the shared container running. Requires ``sh`` in the image.
-# Omit ``stop_template`` to keep the old behaviour (agent orphans; uxon
+# Teardown is the mirror of the exec wrap. ``tmux kill-session`` may only
+# sever the client-side exec, so uxon records the workload PID in
+# ``{pidfile}`` and can run ``stop_command`` to terminate that process.
+# Omit ``stop_command`` when the runtime guarantees normal process cleanup;
+# otherwise the agent may orphan and uxon
 # prints a reminder at every kill).
 #
 # [launch.profiles.claude_container]
 # agent = "claude"
-# container_profile = "workbox"
+# runtime = "workbox"
 #
-# [container.profiles.workbox]
-# runtime_namespace = "per_user"   # global | per_user
-# exec_template     = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
-# name_template     = "uxon-{user}-{launch_profile}-{project_slug}"
-# is_running_cmd    = ["docker", "top", "{name}"]
-# exists_cmd        = ["docker", "container", "inspect", "{name}"]
-# on_missing        = "off"        # off | start | create
-# on_missing_mode   = "prompt"     # prompt | auto
-# start_template    = ["docker", "start", "{name}"]
+# [runtimes.workbox]
+# kind = "command"
+# resource_scope = "per_user"   # global | per_user
+# resource_name_template = "uxon-{user}-{launch_profile}-{project_slug}"
+# exec_prefix = ["docker", "exec", "-w", "{runtime_dir}", "-i", "{resource}"]
+# telemetry = "cgroup"          # none | cgroup
+#
+# [runtimes.workbox.readiness]
+# on_missing = "fail"           # fail | start | create
+# approval = "prompt"           # prompt | auto
+# ready_command = ["docker", "top", "{resource}"]
+# exists_command = ["docker", "container", "inspect", "{resource}"]
+# start_command = ["docker", "start", "{resource}"]
+# create_command = ["docker", "compose", "up", "-d"]
+#
+# [runtimes.workbox.identity]
+# resolve_command = ["docker", "inspect", "--format", '{"id":"{{.Id}}","host_pid":{{.State.Pid}},"epoch":"{{.State.StartedAt}}"}', "{resource}"]
+#
+# [runtimes.workbox.session]
 # # Reap this session's agent on kill ({pidfile} is uxon-supplied,
-# # unique per session); the container itself is left running:
-# resolve_cmd      = ["docker", "inspect", "--format", "{{{{.Id}}}} {{{{.State.Pid}}}} {{{{.State.StartedAt}}}}", "{name}"]
-# stop_template    = ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
-# # Define the container in a compose.yml next to the project and let
-# # uxon bring it up — create_template runs in the host project dir:
-# create_template  = ["docker", "compose", "up", "-d"]
+# # unique per session); the resource itself is left running:
+# stop_command = ["docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
+#
+# [runtimes.workbox.timeouts]
+# probe_seconds = 10.0
+# prepare_seconds = 120.0
+# stop_seconds = 10.0
 #
 # Translate the host working directory to a container path (longest
 # matching host prefix wins; no match → host path verbatim):
 #
-# [container.profiles.workbox.path_map]
+# [runtimes.workbox.path_map]
 # "/srv/projects" = "/work"

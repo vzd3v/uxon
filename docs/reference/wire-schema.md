@@ -9,7 +9,7 @@ schema is part of the public contract.
 
 ```json
 {
-  "schema_version": "2",
+  "schema_version": "3",
   "uxon_version": "<emitter version>",
   "kind": "list" | "doctor" | "version" | "kill" | "kill-all",
   "data": { ... kind-specific },
@@ -52,8 +52,10 @@ schema is part of the public contract.
         "short_id": "myproj@claude_work",
         "profile": "claude_work",
         "agent": "claude",
-        "container_profile": "",
-        "container": "",
+        "execution_backend": "local",
+        "runtime": "direct",
+        "runtime_kind": "direct",
+        "runtime_resource": "",
         "attached": false,
         "windows": "1",
         "created": "2026-05-07T09:11:24Z",
@@ -64,7 +66,7 @@ schema is part of the public contract.
         "active_path": "/srv/projects/myproj",
         "cpu_pct": 1.4,
         "rss_kib": 2408192,
-        "container_down": false,
+        "runtime_down": false,
         "legacy": false
       }
     ]
@@ -88,12 +90,12 @@ schema is part of the public contract.
   fallback.
 - `agent` — underlying agent id from the verified launch record, or
   `""` for unmanaged sessions.
-- `container_profile` / `container` — verified container profile id
-  and resolved container name. Empty strings mean host-only or
-  unmanaged.
-- `container_down` — `true` when a record-backed container session's
-  container is known to be stopped or unresolved during liveness
-  probing.
+- `execution_backend` — verified target-user execution backend id.
+- `runtime` / `runtime_kind` / `runtime_resource` — verified workload
+  runtime id, implementation kind, and resolved resource. Direct and unmanaged
+  sessions carry empty resource values.
+- `runtime_down` — `true` when a record-backed workload resource is known to
+  be stopped or unresolved during liveness probing.
 
 ## `kind = "doctor"`
 
@@ -106,14 +108,15 @@ schema is part of the public contract.
     "config_paths": ["config/config.toml"],
     "allowed_roots": ["/srv/projects"],
     "new_project_root": "/srv/projects",
-    "tmux": {"path": "/usr/bin/tmux", "socket": "/tmp/uxon-nadia-agent.sock"},
+    "tmux": {"path": "/usr/bin/tmux", "socket": "/tmp/uxon-nadia-agent-local.sock"},
     "agents": {"claude": {"path": "...", "status": "ok", "version": "...", "error": null}},
     "launch_profiles": [...],
+    "execution_backends": [...],
     "current_socket_sessions": [...],
     "legacy_default_socket_sessions": [...],
     "git_create_enabled": true,
     "git_remote_profiles": [...],
-    "container_profiles": [...],
+    "runtimes": [...],
     "audit": {"enabled": true, "sink": "journal"},
     "issues": [...],
     "remote_hosts": [...]   // only when --remote was passed
@@ -128,6 +131,10 @@ invoked; the default `uxon doctor` does zero SSH I/O.
 or `"none"`. The human `uxon doctor` text output uppercases this
 to `journald-native` / `syslog` / `no-sink` for readability — the
 JSON envelope keeps the raw value.
+
+Each `execution_backends` row includes `change_policy =
+"drain-with-old-config"`. Backend edits are never an automatic drain; restore
+the old definition first when it is required to reach the old tmux server.
 
 ## `kind = "version"`
 

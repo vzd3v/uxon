@@ -101,7 +101,7 @@ most teams the per-target grant is the right default.
 
 ```toml
 default_launch_mode   = "fixed"
-runtime_user          = "team-agent"      # fallback for unmapped callers
+default_launch_user          = "team-agent"      # fallback for unmapped callers
 session_users         = ["nadia-agent", "liam-agent", "ethan-agent"]
 enable_all_users_list = true
 allowed_roots         = ["/srv/projects"]
@@ -118,7 +118,7 @@ default_profile = "claude"
 ```
 
 If you don't want a fallback launch user (i.e. unmapped callers
-should fail outright), drop `runtime_user` — `uxon` then refuses
+should fail outright), drop `default_launch_user` — `uxon` then refuses
 to launch for callers that aren't in `[launch_user_by_caller]`.
 
 ## Step 6 — Verify
@@ -176,7 +176,7 @@ need shared workspace / cache across developers.
 
 ```toml
 default_launch_mode = "fixed"
-runtime_user        = "team-agent"
+default_launch_user        = "team-agent"
 session_users       = ["team-agent"]
 allowed_roots       = ["/srv/projects"]
 new_project_root    = "/srv/projects"
@@ -202,7 +202,7 @@ For any of the three modes:
 
 1. `launch_user_by_caller[<caller>]` if set;
 2. else, `default_launch_mode = "caller"` → caller is the launch user;
-3. else → `runtime_user`.
+3. else → `default_launch_user`.
 
 ## Where next
 

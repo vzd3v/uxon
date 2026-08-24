@@ -1,5 +1,5 @@
 {
-  "runtime_user": "wes-agent",
+  "default_launch_user": "wes-agent",
   "default_launch_mode": "fixed",
   "enable_all_users_list": false,
   "session_prefix": "uxon-",
@@ -8,26 +8,38 @@
   "session_users": ["wes-agent"],
   "new_project_root": "/srv/projects",
   "repeat_noninteractive_mode": "fail",
-  "tmux_socket_template": "/tmp/uxon-{user}.sock",
+  "tmux_socket_template": "/tmp/uxon-{user}-{execution_backend}.sock",
   "agents": {
-    "enabled": ["claude"],
-    "default": "claude",
     "claude": { "default_args": [] },
     "codex":  { "default_args": [] },
     "cursor": { "default_args": [] }
   },
+  "launch": {
+    "enabled_profiles": ["claude_workbox"],
+    "default_profile": "claude_workbox",
+    "profiles": {
+      "claude_workbox": {
+        "agent": "claude",
+        "runtime": "workbox"
+      }
+    }
+  },
+  "execution": {
+    "default_backend": "local"
+  },
   "launch_user_by_caller": {},
-  "container": {
-    "enabled": false,
-    "name_template": "uxon-{user}-{project_slug}",
-    "exec_template": ["docker", "exec", "-w", "{dir}", "-i", "{name}"],
-    "is_running_cmd": ["docker", "top", "{name}"],
-    "exists_cmd": ["docker", "container", "inspect", "{name}"],
-    "on_missing": "off",
-    "on_missing_mode": "prompt",
-    "start_template": ["docker", "start", "{name}"],
-    "stop_template": ["docker", "exec", "{name}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"],
-    "create_template": ["docker", "compose", "up", "-d"],
-    "path_map": { "/srv/projects": "/work" }
+  "runtimes": {
+    "workbox": {
+      "kind": "command",
+      "resource_scope": "per_user",
+      "resource_name_template": "uxon-{user}-{launch_profile}-{project_slug}",
+      "exec_prefix": ["docker", "exec", "-w", "{runtime_dir}", "-i", "{resource}"],
+      "readiness": {
+        "ready_command": ["docker", "top", "{resource}"],
+        "exists_command": ["docker", "container", "inspect", "{resource}"],
+        "on_missing": "fail"
+      },
+      "path_map": { "/srv/projects": "/work" }
+    }
   }
 }

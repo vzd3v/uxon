@@ -71,7 +71,7 @@ outside its corner.
 ## Reference
 
 - [`reference/cli.md`](../reference/cli.md) — every flag, including `--user`, `--all-users`, `kill --user`.
-- [`reference/configuration.md`](../reference/configuration.md) — `runtime_user`, `launch_user_by_caller`, `session_users`, `enable_all_users_list`, `allowed_roots`.
+- [`reference/configuration.md`](../reference/configuration.md) — `default_launch_user`, `launch_user_by_caller`, `session_users`, `enable_all_users_list`, `allowed_roots`.
 - [`reference/audit-events.md`](../reference/audit-events.md) — the event alphabet and outcome semantics.
 
 ## Worth understanding once

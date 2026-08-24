@@ -318,7 +318,7 @@ read path in `src/uxon/infra/config_loader.py`.
 
 The nested structures — the agent catalog (`[agents.<id>]`
 array-of-modes), `[launch.profiles.<id>]`, `[[launch.path_rules]]`,
-and `[container.profiles.<id>]` argv-list templates — are
+`[execution]`, and `[runtimes.<id>]` argv-list templates — are
 **file-only**: `SettingSpec` cannot model array-of-tables or dynamic
 keys, so they are edited in the config file directly and are not on
 the ⚙ Settings screen. Their canonical reference is

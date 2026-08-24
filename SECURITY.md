@@ -130,12 +130,12 @@ The trust boundaries are:
   `NOPASSWD: ALL` entry, or a `<lead> ALL=(<dev-shell-user>) NOPASSWD: ALL`
   that defeats the paired-account model, is the operator's
   responsibility.
-- **Container / VM isolation between users.** uxon is a thin
-  wrapper over `tmux` + `sudo` + `ssh`. It can prepend an
-  operator-supplied container exec prefix (`[container]`), but it
-  models no runtime semantics and does not configure cgroups,
+- **Namespace / container / VM isolation policy.** uxon can route the complete
+  target-user command boundary through an operator-supplied `[execution]`
+  command prefix and can prepend a `[runtimes.<id>]` workload prefix. It does
+  not create or harden those boundaries, and does not configure cgroups,
   AppArmor, seccomp, kernel namespaces, or per-UID network policies
-  — the container definition is the operator's to harden (see
+  — the namespace/runtime definition is the operator's to harden (see
   [Why OS users, and where containers fit](#why-os-users-and-where-containers-fit)).
 - **tmux configuration.** uxon can apply a small set of tmux `set`
   options (mouse, OSC-52 passthrough, extended keys,
@@ -239,7 +239,7 @@ if the container *definition* does not itself re-grant host access.
 A `--privileged` container, host namespaces (`--network=host` /
 `--pid=host`), broad bind mounts (`-v /:/host`), or mounting the
 runtime socket all undo it. uxon cannot enforce this — the
-operator-supplied `create_template` is opaque by design — so a safe
+operator-supplied `create_command` is opaque by design — so a safe
 container definition is an operator responsibility, not a property
 uxon guarantees.
 

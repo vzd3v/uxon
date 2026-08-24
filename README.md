@@ -39,6 +39,12 @@ Aggregation is client-side: the lead's TUI fans out over SSH.
 No daemon, no database, no central server to deploy. Each host
 stays independently configured and independently authorised.
 
+Two composable boundaries cover advanced deployments. `[execution]` owns every
+target-user command, including the tmux server itself, and can enter an
+operator-managed host namespace. A launch profile may then select a generic
+`[runtimes.<id>]` workload adapter; containers are one implementation. See the
+[configuration reference](docs/reference/configuration.md).
+
 ## Install
 
 Requires **Python 3.11+**, `tmux`, and Linux.

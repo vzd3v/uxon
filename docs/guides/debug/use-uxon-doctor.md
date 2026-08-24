@@ -94,16 +94,16 @@ container profiles:
 - no container warnings
 ```
 
-It resolves the container name, runs your `exists_cmd` / `is_running_cmd`
+It resolves the runtime resource, runs `exists_command` / `ready_command`
 once against that representative target (best-effort — a wedged daemon
 shows `?`, never an abort), and surfaces these warnings:
 
-- **`stop_template` unset** — the in-container agent is not reaped on
-  kill (it orphans); set `stop_template` on the container profile so
+- **`stop_command` unset** — the workload agent is not reaped on
+  kill (it orphans); set `session.stop_command` on the runtime so
   uxon terminates it for you.
 - **`path_map` doesn't cover the current directory** — launches from
   here may hit a path the container has no mount for.
-- **`create_template` definition under a mapped path** — the container
+- **`create_command` definition under a mapped path** — the runtime
   definition (compose / Dockerfile) resolves to a path inside the
   agent-writable bind mount, so a misbehaving agent could edit it to
   escape the container. Move it to an operator-owned path outside the
