@@ -31,6 +31,7 @@ this set.
 | `process_uid`   | int     | UID corresponding to `process_user`. Environment variables cannot override it.                         |
 | `pid` / `ppid`  | int     | Emitter process and its parent.                                                                         |
 | `subcmd`        | string  | The `uxon` subcommand under which the event fired (`attach`, `kill`, `run`, …).                         |
+| `correlation_id` | string | Optional UUIDv4 joining related events across process, runtime, or host boundaries.                    |
 
 On the journald native sink each envelope field is reachable as a
 first-class `FIELD=value` selector (uppercased — journald wire
@@ -73,10 +74,10 @@ eventually exited successfully.
 | `session.kill_all`   | `uxon kill-all` or TUI `D`.                                                                              | `target_users` (list), `attempted_count`, `killed_count`, `failed_count`, `cleanup_failed_count` (ints), `dry_run` | `ok`, `error`                    |
 | `runtime.prepare` | uxon started or created the selected workload resource before launch. A ready resource is a no-op. | `action` (`start` \| `create`), `runtime_resource`; `error` and `error_type` only on error | `ok`, `error` |
 | `runtime.session_stop` | uxon ran the selected runtime's `session.stop_command`, or safely skipped it. | `runtime`, `runtime_resource`, `action` (`stop` \| `skip`), `session`, `target_user`, typed `reason` on a safe skip, `error` only on execution error | `ok`, `error`, `skipped` |
-| `attach.remote.out.dispatch` | This host resolved a peer attach and dispatched SSH. | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `dry_run`, `correlation_id` | `ok`, `not_found` |
-| `kill.remote.out`    | Local `uxon kill --host` / TUI `d` on a remote row (caller side).                                         | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `force`, `dry_run`, `correlation_id`, `rc` (int) + `error` (string ≤256 chars) on `outcome=error` | `ok`, `error`                    |
+| `attach.remote.out.dispatch` | This host resolved a peer attach and dispatched SSH. | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `dry_run` | `ok`, `not_found` |
+| `kill.remote.out`    | Local `uxon kill --host` / TUI `d` on a remote row (caller side).                                         | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `force`, `dry_run`; `rc` when SSH ran, plus `error` (string ≤256 chars) on `outcome=error` | `ok`, `error`, `not_found`                    |
 | `list.peek`          | This host enumerated sessions (`uxon list`, `--all-users`, or TUI). | `scope_users` (list), `scope_skipped` (list) | `ok`, `denied` |
-| `list.remote.out`    | This host completed a peer list request. | `peer_name`, `ssh_alias`, `scope` (`own` \| `all-users`), `from_cache`, `correlation_id`; `error` only on error | `ok`, `error` |
+| `list.remote.out`    | This host completed a peer list request. | `peer_name`, `ssh_alias`, `scope` (`own` \| `all-users`), `from_cache`; final SSH `rc` when a process ran, `error` only on error | `ok`, `error` |
 | `git.remote.create`  | `uxon new --git-remote <profile>` reached the external-repo create step. | `profile` (launch profile id), `git_remote_profile`, `repo`, `creds_user`, `launch_user`, `rc` | `ok`, `error` |
 | `config.error`       | Startup config load failed and `main()` is about to exit non-zero.                                       | `path`, `error` (first 256 chars)                                                                                            | `error`                          |
 | `config.render`      | `uxon config render` completed or rejected its input. | `input` (`stdin` \| `file`), `output` (`stdout` \| `file`); `error_type` only on error. Paths and payload values are excluded. | `ok`, `error` |
@@ -98,9 +99,10 @@ one per side:
 
 For each remote gesture the caller generates a UUIDv4 and passes it
 to the peer via an internal CLI flag (`--audit-correlation-id
-<uuid>`, hidden from `--help`).  Both sides emit it under
-`correlation_id`, so a single `journalctl … CORRELATION_ID=<uuid>`
-query returns the full pair across the two hosts. A mismatched peer rejects
+<uuid>`, hidden from `--help`). The optional envelope field is inherited by
+target-side runtime events as well as the initiating and target operation
+events. A single `journalctl … CORRELATION_ID=<uuid>` query returns the full
+chain across the two hosts. A mismatched peer rejects
 the SSH invocation outright — silent fallback
 would lose the correlation property exactly when an operator is
 debugging across hosts.

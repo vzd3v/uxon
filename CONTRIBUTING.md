@@ -89,15 +89,14 @@ full picture. Quick list:
 - **All key handling goes through `BINDINGS`.** No `on_key` overrides
   on screen classes; a drift guard test refuses the PR otherwise.
 - **Config writes use `tomlkit`** — round-trip preserves comments and
-  formatting. CLI read paths stay on stdlib `tomllib`.
+  formatting. CLI read paths stay on stdlib `tomllib`; non-root TUI settings
+  are read-only.
 - **One launch builder.** `uxon` is the single place that builds agent
-  command lines (`_build_tmux_launch_request` in `src/uxon/cli.py`).
+  command lines (`_build_tmux_launch_request` in `src/uxon/infra/tmux.py`).
   Don't add direct agent exec calls anywhere else.
-- **Module boundaries.** `src/uxon/cli.py` may import from sibling
-  modules in `src/uxon/*`; those modules never import from `cli`. UI
-  files under `src/uxon/tui/` must not import `subprocess`/`pwd` or
-  touch the filesystem directly — push that through callbacks on
-  `TuiContext`.
+- **Module boundaries.** `domain` stays pure, `infra` does not import the TUI,
+  and target-user commands cross `infra.execution`. TUI blocking work goes
+  through off-loop callbacks rather than direct subprocess or filesystem I/O.
 
 ## Tests
 
@@ -116,11 +115,12 @@ full picture. Quick list:
 
 ## Adding a config key
 
-1. Extend `DEFAULT_CONFIG`, `Config`, and `load_config` in
-   `src/uxon/cli.py`.
+1. Extend `DEFAULT_CONFIG` / `Config` in `src/uxon/domain/config.py`, the public
+   key/type schema in `src/uxon/domain/config_schema.py`, and parsing in
+   `src/uxon/infra/config_loader.py`.
 2. Add validation if the value space is constrained.
 3. Add a matching `SettingSpec` in
-   `src/uxon/settings.py::SETTINGS_SPECS` so the TUI Settings screen
+   `src/uxon/infra/settings.py::SETTINGS_SPECS` so the TUI Settings screen
    exposes it.
 4. Document it in [`docs/reference/configuration.md`](docs/reference/configuration.md)
    (use case + the reference table).

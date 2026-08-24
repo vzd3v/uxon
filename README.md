@@ -32,7 +32,7 @@ deployment, one tool:
 - **A team across several hosts.** Same supervision property
   per host; per-peer authority (each host's `sudoers` is the
   authority on that host); cross-host audit correlation via
-  UUID `correlation_id` joining caller-side and peer-side
+  UUID `correlation_id` joining initiating-host and target-host
   events.
 
 Aggregation is client-side: the lead's TUI fans out over SSH.

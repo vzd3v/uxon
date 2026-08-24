@@ -100,8 +100,8 @@ curl -fsSL https://... | bash       # claude / codex / cursor installer
 exit
 ```
 
-The TUI auto-detects newly-installed agents on the next launch
-and offers a one-keypress enable in the agent banner.
+Refresh or reopen the TUI after installation. In strict mode, add the
+corresponding launch profile to the operator-owned `enabled_profiles` list.
 
 ## Step 7 — Tell the developer
 

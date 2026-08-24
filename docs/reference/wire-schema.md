@@ -77,10 +77,8 @@ schema is part of the public contract.
 - `all_users` — `true` when invoked with `--all-users` (or peer
   invoked with the same flag through the aggregator).
 - `scope_users` — the *reachable* subset of `session_users` (only
-  users the caller can `sudo -n -H -u USER --` to without a password).
-- `scope_skipped` — users in `session_users` that the caller
-  cannot sudo into. Optional — older peers omit it; treat
-  missing/null as `[]`.
+  users whose selected execution backend passes the fixed target probe).
+- `scope_skipped` — configured session users whose target probe failed.
 - `legacy` — `true` when the session lives under one of
   `legacy_session_prefixes` rather than the active `session_prefix`.
 - `windows` — kept as a string (tmux emits it as text via
@@ -213,16 +211,18 @@ result** of the call rather than the audit-record shape.
     "socket": "/tmp/uxon-nadia-agent-local.sock",
     "dry_run": false,
     "sessions": [
-      {"name": "uxon-foo@claude",  "action": "killed"},
-      {"name": "uxon-bar@codex",   "action": "failed"}
+      {"name": "uxon-foo@claude",  "action": "killed", "cleanup_outcome": "ok"},
+      {"name": "uxon-bar@codex",   "action": "failed", "cleanup_outcome": "not_run"}
     ]
   }
 }
 ```
 
 `sessions[].action` is `"killed"`, `"would-kill"`, or
-`"failed"`. An empty `sessions` array means there were no
-matching sessions to reap.
+`"failed"`. `sessions[].cleanup_outcome` is `"ok"`, `"error"`, or
+`"not_run"`; a cleanup failure does not rewrite a successful tmux kill into a
+different action. An empty `sessions` array means there were no matching
+sessions to reap.
 
 `kill-all --json` requires `--force` or `--dry-run`.
 
