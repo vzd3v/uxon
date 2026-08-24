@@ -33,9 +33,11 @@ Per-event extras:
 - **Launching a session** → the launch profile, the underlying
   agent (`claude` / `codex` / `cursor`), the absolute project path,
   the worktree branch if any, the session name.
-- **Attaching** → the session name, the target user.
-- **Killing** → the session name, the target user, whether
-  it was forced or a dry-run.
+- **Attaching** → the session name, target user, `profile` and `agent` for a
+  resolved local session, and `dry_run`.
+- **Killing** → the session name, target user, `profile` and `agent` for a
+  resolved local session, `force`, `dry_run`, the tmux/SSH `rc` when recorded,
+  and a bounded `error` summary on failure.
 - **Cross-host** → the peer's name and SSH alias, final SSH return code when a
   process ran, cache/scope status for remote listing, a bounded error summary
   on failure, and a UUID `correlation_id` joining related operation and runtime

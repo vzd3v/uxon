@@ -85,15 +85,17 @@ eventually exited successfully.
 ### Cross-host events
 
 When a gesture crosses an SSH boundary (`uxon attach --host`,
-`uxon kill --host`, `uxon list --host`), two events are emitted —
-one per side:
+`uxon kill --host`, `uxon list --host`), its audit chain contains:
 
-- The initiating host emits `attach.remote.out.dispatch`, `kill.remote.out`,
-  or `list.remote.out`.
-- The target host emits the same truthful local operation event it would emit
-  for a direct invocation: `session.attach.dispatch`, `session.kill`, or
-  `list.peek`. Environment variables such as `SSH_CONNECTION` never classify
-  an event or assert authenticated transport provenance.
+- One initiating-host event for the overall gesture:
+  `attach.remote.out.dispatch`, `kill.remote.out`, or `list.remote.out`.
+- One target-host local event for each peer command attempt that reaches Uxon:
+  `session.attach.dispatch`, `session.kill`, or `list.peek`. Remote listing may
+  retry without `--all-users` after a policy denial, producing a denied and a
+  successful `list.peek` in the same chain. A transport failure before Uxon
+  starts produces no target event. Environment variables such as
+  `SSH_CONNECTION` never classify an event or assert authenticated transport
+  provenance.
 
 ### Cross-host correlation
 

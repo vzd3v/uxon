@@ -5,12 +5,8 @@ The pure schema, name/path resolution, and the policy decision live in
 :mod:`uxon.domain.runtime` and the resolution helpers in
 :mod:`uxon.infra.tmux`. This module only shells out — the two exit-code
 probes (``ready_command`` / ``exists_command``) and the ``start``/``create``
-templates — each under its own bounded timeout so a stalled backend cannot
-block a uxon launch indefinitely.
-
-This timeout is deliberately **separate from** the 0.5 s passwordless-sudo
-detector (``detect_root_nopasswd``) because backend readiness and a sudo
-grant are independent capabilities.
+templates — each under its own bounded timeout so a stalled workload runtime
+cannot block a uxon launch indefinitely.
 
 Every shell-out runs **as the launch user** — the same identity the agent
 execs under at ``_build_tmux_launch_request`` (wrapped in

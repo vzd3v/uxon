@@ -16,15 +16,16 @@ SSH and shows everything in one TUI.
   silent peer is empty or unreachable.
 - Cross-host audit correlation: the initiating host emits
   `attach.remote.out.dispatch` / `kill.remote.out`; the target host emits
-  `session.attach.dispatch` / `session.kill`.
-  Caller and peer events share a UUID `correlation_id`. One
+  `session.attach.dispatch` / `session.kill` for each command attempt that
+  reaches Uxon. Caller and peer events share a UUID `correlation_id`. One
   `journalctl … CORRELATION_ID=<uuid>` query (against a central
-  collector) returns the full pair.
+  collector) returns the full attempt chain.
 - **Per-peer authority.** Cross-host operation does not delegate
-  trust between peers — each peer's `sudoers` is evaluated
-  independently. Revoking a lead's reach on host B is an edit to
-  host B's `sudoers`; touching the central config or the lead's
-  laptop changes nothing on host B.
+  trust between peers — each peer's execution policy is evaluated
+  independently (`sudoers` for the built-in local backend). A reused SSH
+  credential can still reach every peer that accepts it; revoke a compromised
+  credential on each peer or at its issuer, as well as removing the peer's
+  local grants.
 - Bulk destructive actions stay strictly local — there is no
   `kill-all --host`. Reaping every agent on a peer is the
   operator's deliberate SSH gesture.

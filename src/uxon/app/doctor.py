@@ -5,14 +5,11 @@ Impure: probes the host (subprocess), resolves command paths, reads config
 sources, optionally SSHes to remote peers under ``--remote``.
 
 Default ``uxon doctor`` performs zero remote SSH I/O; remote probes run only
-under ``--remote`` (:func:`_doctor_remote_rows`). :func:`detect_root_nopasswd`
-keeps its tight 0.5s timeout — do not add probes that can exceed it.
+under ``--remote`` (:func:`_doctor_remote_rows`).
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -581,35 +578,3 @@ def _probe_git_profile(cfg: Config, profile, creds_user: str, current_user: str)
             return f"warn:token_file unreadable under {creds_user}"
         return "ok"
     return "warn:unknown auth"
-
-
-def detect_root_nopasswd() -> bool:
-    """Fast non-interactive check for *root* NOPASSWD.
-
-    Returns True if:
-      - the process is already root (euid==0), or
-      - `sudo -n true` succeeds within a short timeout (NOPASSWD or cached credential).
-
-    We probe with `sudo -n true` rather than `sudo -n -v`: `-v` validates the
-    user's credential cache and, in non-interactive mode, fails with "a
-    password is required" when the cache is empty — even for users who have
-    `NOPASSWD: ALL` in sudoers. Running a trivial command under `-n` honors
-    NOPASSWD correctly.
-
-    Timeout is intentionally tight (0.5s) so the TUI never blocks on startup.
-    False on timeout / OSError / non-zero exit.
-
-    Used for the Settings-screen writability gate (fixed ``sudo install`` of a
-    root-owned config file). The "see other users' sessions" gate is
-    now per-target — see :func:`uxon.infra.sudo_probe.probe_sudo_capability`.
-    """
-    if os.geteuid() == 0:
-        return True
-    try:
-        cp = run_query(
-            ["sudo", "-n", "true"],
-            timeout=0.5,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return cp.returncode == 0

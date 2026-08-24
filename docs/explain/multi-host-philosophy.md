@@ -29,10 +29,11 @@ something `uxon` schedules over a fan-out.
 ## Per-peer authority
 
 Cross-host operation does not delegate trust between peers. Each
-peer evaluates its own `sudoers` independently against the SSH
-user that lands on it. To revoke a lead's reach on host B you
-edit `/etc/sudoers.d/` on host B — touching the central config or
-the lead's laptop does not change what host B accepts.
+peer evaluates its own execution policy independently against the SSH
+user that lands on it (`sudoers` for the built-in local backend). A reused SSH
+credential can still reach every peer that accepts it. Revoke a compromised
+credential on each accepting peer or at its issuer, and remove the
+corresponding local grants.
 
 This is the deliberate property that lets a team-N fleet stay
 operationally simple: every host remains independently

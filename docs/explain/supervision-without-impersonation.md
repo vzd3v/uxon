@@ -88,15 +88,15 @@ in a refactor:
 
 The same property holds per host, independently. Cross-host
 operation does not delegate trust between peers. Each peer
-evaluates its own `sudoers` against the SSH user landing on
-that peer; there is no shared-secret handshake, no central
-authority, no certificate chain `uxon` installs across the
-fleet.
+evaluates its own execution policy against the SSH user landing on that peer
+(`sudoers` for the built-in local backend); there is no shared-secret
+handshake, no central authority, no certificate chain `uxon` installs across
+the fleet.
 
-A grant on host A does **not** propagate to host B. To revoke a
-lead's reach on host B you edit `/etc/sudoers.d/` on host B —
-touching the central config or the lead's machine doesn't
-change what host B accepts.
+A grant on host A does **not** propagate to host B. The same SSH credential
+can nevertheless reach every peer that accepts it. Revoke a compromised
+credential on each accepting peer or at its issuer, and remove the
+corresponding local grants.
 
 This is the source of the team·N model: each host stays the
 authority on its own users.
