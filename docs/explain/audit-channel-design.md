@@ -32,8 +32,8 @@ see [`guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-a
 
 Every event carries the same envelope: `v` (schema version), `event`
 (name), `outcome` (`ok` / `denied` / `error` / `not_found`), `ts`
-(ISO-8601 UTC ms), `host`, `uxon_version`, `caller_user`,
-`caller_uid`, `launch_user`, `pid` / `ppid`, `subcmd`, plus
+(ISO-8601 UTC ms), `host`, `uxon_version`, kernel-backed
+`process_user` / `process_uid`, `pid` / `ppid`, `subcmd`, plus
 `ssh_client` only on peer-inbound events. Per-event extra fields
 are listed in [`reference/audit-events.md`](../reference/audit-events.md).
 
@@ -76,7 +76,7 @@ flag (hidden from `--help`). Both sides emit it under
 `journalctl … CORRELATION_ID=<uuid>` query returns the full pair
 across the two hosts.
 
-This is the **headline 3.3.0 feature**, but it pays off only if
+This pays off only if
 both hosts' journalds are queryable from one console — i.e. if
 there's a central collector. Per-host `journalctl` works for spot
 checks, but chasing an incident across 5+ hosts at 3am without
@@ -100,6 +100,7 @@ contract — peers must run the same major version.
 | `denied` | Policy / ACL gate refused (sudo unreachable, `enable_all_users_list = false`, …). |
 | `error` | Operation failed for reasons other than policy (subprocess non-zero, exception, ssh fail). |
 | `not_found` | Named target did not exist (session id unknown, peer alias unknown). |
+| `skipped` | Optional cleanup was safely withheld after an identity/config mismatch. |
 
 This is deliberately a closed alphabet so query patterns stay
 stable: `OUTCOME != "ok"` is a complete sweep of what didn't go
@@ -131,9 +132,9 @@ harmless to flip off; for any team scenario it should stay on.
 
 ## Privacy
 
-The audit channel records `caller_user` (the human) and
-`launch_user` (the agent account) on every event. Developers
-should know what's recorded and where it goes — see
+The envelope records the kernel login identity. State-changing events add
+their concrete `target_user` or `target_users` field. Developers should know
+what is recorded and where it goes — see
 [`privacy.md`](../privacy.md) for a one-page disclosure operators
 can share with their team.
 

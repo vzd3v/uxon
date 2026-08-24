@@ -206,7 +206,7 @@ is not a compliance-grade archive.
 
 ## Privacy
 
-Forwarding events to a central collector means `caller_user`
+Forwarding events to a central collector means `process_user`
 values for every developer's gestures end up in one place. Some
 teams need to disclose this — see
 [`privacy.md`](../../privacy.md) for a one-page disclosure

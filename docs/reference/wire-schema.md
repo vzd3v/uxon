@@ -105,7 +105,7 @@ schema is part of the public contract.
   "data": {
     "caller_user": "nadia",
     "launch_user": "nadia-agent",
-    "config_paths": ["config/config.toml"],
+    "config_paths": ["/etc/uxon/config.toml"],
     "allowed_roots": ["/srv/projects"],
     "new_project_root": "/srv/projects",
     "tmux": {"path": "/usr/bin/tmux", "socket": "/tmp/uxon-nadia-agent-local.sock"},
@@ -142,7 +142,7 @@ fixed target UID/GID probe fails. The fingerprint is diagnostic only.
 {
   "kind": "version",
   "data": {
-    "uxon_version": "3.5.0",
+    "uxon_version": "4.0.0",
     "commit": "5a50ec3",
     "commit_dirty": false
   }

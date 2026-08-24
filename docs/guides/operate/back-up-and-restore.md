@@ -12,7 +12,7 @@ small explicit backup policy.
 | `/srv/projects/<user>/...` (or `~/projects/...`) | `<user>-agent` | **Yes** | Active developer work, often uncommitted between agent runs. |
 | `~/.gitconfig` (each `<user>-agent`) | `<user>-agent` | Yes | Identity for git commits made by the agent. |
 | `~/.claude/` (each `<user>-agent`) | `<user>-agent` | Optional | Cached agent config + history. Restorable via re-login. |
-| `config/config.toml` (host's `uxon` config) | root or admin | **Yes** | Drives the whole host. Render from JSON if you have one. |
+| `/etc/uxon/config.toml` (host's `uxon` config) | root or admin | **Yes** | Drives the whole host. Render from JSON if you have one. |
 | `/etc/sudoers.d/uxon-*` | root | **Yes** | Per-developer grants. Easy to forget when restoring. |
 | `~/.local/state/uxon/` (any user) | per-user | No | Dismissed-banner state, debug logs, metrics. Recreated. |
 | `~/.local/state/uxon/remote/<peer>.json` (aggregator) | aggregator user | No | Cache fallback. Refetched on next poll. |
@@ -35,7 +35,7 @@ For a team·1 host with `/srv/projects` as the project root:
 sudo tar czf /backup/srv-projects-$(date +%F).tar.gz /srv/projects/
 sudo tar czf /backup/uxon-config-$(date +%F).tar.gz \
   /etc/sudoers.d/uxon-* \
-  /opt/uxon/checkout/config/config.toml \
+  /etc/uxon/config.toml \
   /etc/passwd /etc/shadow /etc/group
 # (or your distro's group/shadow snapshot equivalent)
 ```
@@ -82,7 +82,8 @@ sudo tar xzf /backup/srv-projects-LATEST.tar.gz -C /
 # 4. Restore uxon config + sudoers.
 sudo tar xzf /backup/uxon-config-LATEST.tar.gz -C /
 sudo visudo -c                                  # syntax check
-# Place config.toml under your install's config path.
+# Verify the restored config is root-owned and mode 0644.
+sudo stat -c '%U:%G %a' /etc/uxon/config.toml
 
 # 5. Verify.
 uxon doctor
@@ -111,7 +112,7 @@ If the corruption was inside a git repo, `git reflog` /
 The aggregator carries minimal state — see
 [`survive-aggregator-loss.md`](survive-aggregator-loss.md). The
 backup-relevant pieces are `~/.ssh/config` (or its `uxon`
-snippet) and the aggregator's own `config/config.toml`. Track
+snippet) and the aggregator's own `/etc/uxon/config.toml`. Track
 both in your dotfiles / infra repo rather than relying on
 backups.
 

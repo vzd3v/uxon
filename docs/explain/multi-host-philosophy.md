@@ -86,7 +86,7 @@ The collector consumes the same versioned envelope `uxon list
 
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "3",
   "uxon_version": "<peer's version>",
   "kind": "list",
   "data": { ... }
@@ -108,7 +108,7 @@ users for the SSH user — same per-target sudo gate as the local
 TUI. Two requirements must hold on the peer for cross-user
 sessions to come back over the wire:
 
-1. The peer's `config.toml` sets `enable_all_users_list = true`.
+1. The peer's `/etc/uxon/config.toml` sets `enable_all_users_list = true`.
 2. The SSH user has passwordless sudo (per-target NOPASSWD or
    root NOPASSWD) to the launch users in the peer's
    `session_users`.
@@ -130,8 +130,8 @@ it to the peer via an internal `--audit-correlation-id <uuid>`
 flag (hidden from `--help`). Both sides emit it under
 `correlation_id`, so a single
 `journalctl … CORRELATION_ID=<uuid>` query returns the full
-pair. Older peers without the flag reject the SSH invocation
-outright — silent fallback would lose the correlation property
+pair. A mismatched peer rejects the SSH invocation outright — silent fallback
+would lose the correlation property
 exactly when an operator is debugging across hosts.
 
 For why this matters and how to make it pay off across the

@@ -58,7 +58,7 @@ pipelines or assertion-based health checks in CI.
 **Verify after onboarding a developer:**
 
 ```bash
-sudo -n -H -u nadia -- env -u SUDO_USER uxon doctor  # caller=nadia, launch=nadia-agent
+sudo -n -H -u nadia -- uxon doctor  # process identity comes from loginuid/real UID
 ```
 
 **Spot-check the fleet from cron:**

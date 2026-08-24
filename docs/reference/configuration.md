@@ -7,11 +7,11 @@ to set a key — see the [scenario hubs](../scenarios/solo-1.md), the
 
 ## Config file
 
-`uxon` reads the operator-owned repo config:
-`<repo>/config/config.toml`. `config/config.example.toml` is the
-tracked starting point.
+`uxon` reads one optional, host-wide operator file:
+`/etc/uxon/config.toml`. There is no environment, XDG, checkout, or project
+fallback. `config/config.example.toml` is the source template to install there.
 
-The TUI's ⚙ Settings screen rewrites repo config in place via a
+The TUI's ⚙ Settings screen atomically installs a root-owned `0644` file via a
 `tomlkit` round-trip, preserving comments and formatting.
 
 Project-owned `.uxon.toml` files are not read. Runtime policy,
@@ -225,7 +225,7 @@ controller but no launch user. Shared records are `0640`; the launch user must
 not be able to create, replace, or delete them.
 
 Finalized records are removed after a verified successful kill. Enumeration
-garbage-collects at most 1,024 records per pass for the socket being inspected:
+garbage-collects at most 1,024 records per pass across the whole record store:
 pending records after 10 minutes and finalized records after 7 days when no
 matching live session exists. Records contain session/profile/runtime identifiers
 and timestamps, so treat the directory as operational metadata with the same
@@ -402,7 +402,6 @@ touching `xkb`.
 | `UXON_LOG_DIR` | Overrides the directory used for the developer-facing `debug` and `metrics` channels (off by default; gated on `UXON_DEBUG` / `UXON_METRICS=1`). Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. The audit channel goes to journald/syslog regardless of this variable. |
 | `UXON_DEBUG` | Comma-separated topic list enabling the `debug` JSONL channel (e.g. `tui,startup,tui-table`). Off by default. |
 | `UXON_METRICS` | When set to `1`, writes per-fetch latency rows to `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files). |
-| `SUDO_USER` | Honoured when `uxon` is invoked via `sudo` to identify the real caller. |
 | `SSH_CONNECTION` | Inspected by `audit.py` to detect peer-inbound invocations and switch local events to `*.remote.in`. |
 
 ## Rendering config from JSON (multi-host fleets)
@@ -410,7 +409,7 @@ touching `xkb`.
 ```bash
 python3 install/render_uxon_config.py \
   --config-json examples/uxon-config.json \
-  --output config/config.toml
+  --output /etc/uxon/config.toml
 ```
 
 The renderer imports uxon's installed schema and accepts the complete public

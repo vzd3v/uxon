@@ -98,7 +98,7 @@ lets the lead `sudo -H -u nadia --` and become the developer
 (weakening the supervision-without-impersonation property). In
 most teams the per-target grant is the right default.
 
-## Step 5 — `config/config.toml`
+## Step 5 — `/etc/uxon/config.toml`
 
 ```toml
 default_launch_mode   = "fixed"

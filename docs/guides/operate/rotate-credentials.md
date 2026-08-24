@@ -30,7 +30,7 @@ prefix so rotation reaches the same credential filesystem as uxon.
 # 2. Stage the new token under creds_user.
 #    Find creds_user from the matching profile in config.toml:
 PROFILE=acme-org
-CREDS_USER=$(grep -A 4 "name *= *\"$PROFILE\"" /opt/uxon/checkout/config/config.toml \
+CREDS_USER=$(grep -A 4 "name *= *\"$PROFILE\"" /etc/uxon/config.toml \
              | awk -F'"' '/creds_user/ {print $2; exit}')
 NEW_TOKEN=ghp_...
 sudo -n -H -u "$CREDS_USER" -- \
@@ -86,10 +86,10 @@ This is **per `<user>-agent` account, per host** — there is no
 central rotation `uxon` can drive. For a team box with
 3 developers × 5 hosts, plan for a 15-minute pass per provider.
 
-The audit channel does not record the API key itself (sanitised
-out of `flags`). It does record `cli.start` flags lists; if you
-ever passed a key on the command line by mistake, grep
-`flags` to spot it and rotate immediately.
+The audit channel does not record the API key itself. `cli.start` records only
+parsed Uxon option names; option values and forwarded agent arguments are
+excluded. Shell history and the selected agent's own logs have separate
+retention and must be reviewed under their own policy.
 
 ## SSH key rotation
 
