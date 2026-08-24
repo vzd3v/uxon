@@ -24,6 +24,7 @@ class ManagedTmuxLaunch:
     launch_profile: str
     agent: str
     launch_user: str
+    execution_state_probe_cmd: tuple[str, ...] = ()
     execution_backend: str = "local"
     execution_fingerprint: str = ""
     runtime: str = "direct"

@@ -41,7 +41,7 @@ from uxon.domain.runtime import (
     validate_runtime,
 )
 from uxon.errors import fail
-from uxon.infra import demo, events, version_probe
+from uxon.infra import demo, version_probe
 
 try:
     import tomllib
@@ -105,6 +105,7 @@ def _parse_modes(aid: str, raw_modes: Any) -> tuple[PermissionMode, ...]:
         fail(f"'agents.{aid}.mode' must be an array of tables")
     modes: list[PermissionMode] = []
     for m in raw_modes:
+        _reject_unknown_keys(m, {"id", "label", "flags", "dangerous"}, source=f"agents.{aid}.mode")
         mid = m.get("id")
         if not isinstance(mid, str) or not mid:
             fail(f"'agents.{aid}.mode' entry requires a non-empty string 'id'")
@@ -158,6 +159,11 @@ def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
         sub = agents_tbl.get(aid, {})
         if not isinstance(sub, dict):
             fail(f"'agents.{aid}' must be a TOML table")
+        _reject_unknown_keys(
+            sub,
+            {"binary", "version_args", "install_hint", "default_args", "mode"},
+            source=f"agents.{aid}",
+        )
 
         binary = sub.get("binary")
         if binary is None:
@@ -211,51 +217,15 @@ def build_agent_catalog(agents_tbl: dict[str, Any]) -> dict[str, AgentSpec]:
     return catalog
 
 
-_REMOVED_RUNTIME_KEYS = {
-    "enabled",
-    "resource_name_template",
-    "exec_prefix",
-    "ready_command",
-    "exists_command",
-    "start_command",
-    "create_command",
-    "stop_command",
-    "identity_command",
-    "on_missing",
-    "approval",
-    "name",
-    "path_map",
-}
+def _reject_unknown_keys(raw: dict[str, Any], allowed: set[str], *, source: str) -> None:
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        fail(f"{source}: unknown key(s) {unknown!r}; expected one of {sorted(allowed)!r}")
 
 
-def reject_removed_operator_keys(raw_repo: dict[str, Any]) -> None:
-    if "runtime_user" in raw_repo:
-        fail("config key 'runtime_user' was replaced by 'default_launch_user'")
-    if "container" in raw_repo:
-        fail(
-            "config table '[container]' was replaced by '[runtimes.<id>]'; "
-            "launch profiles now select it with runtime = '<id>'"
-        )
-    if "default_claude_args" in raw_repo:
-        fail(
-            "config key 'default_claude_args' was replaced by "
-            "'[agents.claude] default_args = [...]'. "
-            "Update config/config.toml accordingly."
-        )
-    if "default_git_remote_profile" in raw_repo:
-        fail(
-            "config key 'default_git_remote_profile' moved under launch profiles. "
-            "Set launch.profiles.<id>.default_git_remote_profile instead."
-        )
-    agents_tbl = raw_repo.get("agents")
-    if isinstance(agents_tbl, dict):
-        for key in ("enabled", "default"):
-            if key in agents_tbl:
-                fail(
-                    f"config key 'agents.{key}' was removed. Use "
-                    "'[launch] enabled_profiles/default_profile' and "
-                    "'[launch.profiles.<id>] agent = ...' instead."
-                )
+def validate_operator_schema(raw_repo: dict[str, Any]) -> None:
+    """Reject unknown operator keys before defaults can mask them."""
+    _reject_unknown_keys(raw_repo, set(DEFAULT_CONFIG), source="config")
 
 
 def _string_list(value: Any, *, source: str) -> tuple[str, ...]:
@@ -285,6 +255,11 @@ def _argv_list_from(tbl: dict[str, Any], key: str, *, source: str) -> tuple[str,
 def build_execution_config(execution_tbl: dict[str, Any]) -> ExecutionConfig:
     """Parse the operator-owned target-user execution boundary."""
     source = "execution"
+    _reject_unknown_keys(
+        execution_tbl,
+        {"default_backend", "state_dir", "backend_by_launch_user", "backends"},
+        source=source,
+    )
     default_backend = _string_value(
         execution_tbl, "default_backend", source=source, default="local", strip=True
     )
@@ -312,6 +287,15 @@ def build_execution_config(execution_tbl: dict[str, Any]) -> ExecutionConfig:
         if not isinstance(raw, dict):
             fail(f"execution.backends.{backend_id} must be a TOML table")
         backend_source = f"execution.backends.{backend_id}"
+        _reject_unknown_keys(
+            raw,
+            {
+                "kind",
+                "command_prefix",
+                "probe_timeout_seconds",
+            },
+            source=backend_source,
+        )
         kind = _string_value(raw, "kind", source=backend_source, strip=True)
         if kind != "command":
             fail(f"{backend_source}.kind must be 'command'")
@@ -324,12 +308,12 @@ def build_execution_config(execution_tbl: dict[str, Any]) -> ExecutionConfig:
             id=str(backend_id),
             kind="command",
             command_prefix=_argv_list_from(raw, "command_prefix", source=backend_source),
-            probe_command=_argv_list_from(raw, "probe_command", source=backend_source),
             probe_timeout_seconds=timeout,
         )
     return validate_execution_config(
         ExecutionConfig(
             default_backend=default_backend,
+            state_dir=_string_value(execution_tbl, "state_dir", source=source, strip=True),
             backend_by_launch_user=by_user,
             backends=backends,
         )
@@ -347,6 +331,22 @@ def build_runtimes(runtime_tbl: dict[str, Any]) -> dict[str, WorkloadRuntimeSpec
         if not isinstance(raw, dict):
             fail(f"'runtimes.{cid}' must be a TOML table")
         source = f"runtimes.{cid}"
+        _reject_unknown_keys(
+            raw,
+            {
+                "kind",
+                "resource_scope",
+                "resource_name_template",
+                "exec_prefix",
+                "readiness",
+                "identity",
+                "session",
+                "timeouts",
+                "telemetry",
+                "path_map",
+            },
+            source=source,
+        )
         kind = _string_value(raw, "kind", source=source, strip=True)
         if kind != "command":
             fail(f"{source}.kind must be 'command'")
@@ -365,6 +365,25 @@ def build_runtimes(runtime_tbl: dict[str, Any]) -> dict[str, WorkloadRuntimeSpec
         ):
             if not isinstance(table, dict):
                 fail(f"{source}.{table_name} must be a TOML table")
+        _reject_unknown_keys(
+            readiness,
+            {
+                "ready_command",
+                "exists_command",
+                "start_command",
+                "create_command",
+                "on_missing",
+                "approval",
+            },
+            source=f"{source}.readiness",
+        )
+        _reject_unknown_keys(identity, {"resolve_command"}, source=f"{source}.identity")
+        _reject_unknown_keys(session, {"stop_command"}, source=f"{source}.session")
+        _reject_unknown_keys(
+            timeouts,
+            {"probe_seconds", "prepare_seconds", "stop_seconds"},
+            source=f"{source}.timeouts",
+        )
 
         def _timeout(
             key: str,
@@ -440,6 +459,11 @@ def build_launch_config(
     runtimes: dict[str, WorkloadRuntimeSpec],
     git_remote_profile_names: set[str],
 ) -> LaunchConfig:
+    _reject_unknown_keys(
+        launch_tbl,
+        {"enabled_profiles", "default_profile", "profiles", "path_rules"},
+        source="launch",
+    )
     profiles = builtin_launch_profiles(agents)
     builtin_profile_ids = set(profiles)
     enabled_profiles = _string_list(
@@ -458,6 +482,18 @@ def build_launch_config(
                 "set launch.enabled_profiles to name it explicitly"
             )
         source = f"launch.profiles.{pid}"
+        _reject_unknown_keys(
+            raw,
+            {
+                "agent",
+                "display_name",
+                "launch_user",
+                "runtime",
+                "allowed_git_remote_profiles",
+                "default_git_remote_profile",
+            },
+            source=source,
+        )
         agent = _string_value(raw, "agent", source=source, strip=True)
         if not agent:
             fail(f"{source}.agent is required")
@@ -500,6 +536,17 @@ def build_launch_config(
     enabled_set = set(effective_enabled)
     for index, raw in enumerate(path_rules_raw):
         source = f"launch.path_rules[{index}]"
+        _reject_unknown_keys(
+            raw,
+            {
+                "path_prefix",
+                "allowed_profiles",
+                "default_profile",
+                "allowed_git_remote_profiles",
+                "default_git_remote_profile",
+            },
+            source=source,
+        )
         prefix = raw.get("path_prefix")
         if not isinstance(prefix, str) or not prefix.strip():
             fail(f"{source}.path_prefix must be a non-empty absolute path")
@@ -577,7 +624,7 @@ def load_config(cwd: str) -> Config:
     # Load raw repo data (before merge with defaults) so the removed flat
     # keys surface an error instead of being masked.
     _raw_repo = load_toml(repo_config_path())
-    reject_removed_operator_keys(_raw_repo)
+    validate_operator_schema(_raw_repo)
     default_launch_user = str(
         merged.get("default_launch_user", DEFAULT_CONFIG["default_launch_user"])
     ).strip()
@@ -689,9 +736,11 @@ def load_config(cwd: str) -> Config:
     tui_tbl = merged.get("tui", {})
     if not isinstance(tui_tbl, dict):
         fail("'tui' must be a TOML table")
+    _reject_unknown_keys(tui_tbl, {"table", "search", "color_palette"}, source="tui")
     tui_table_tbl = tui_tbl.get("table", {})
     if not isinstance(tui_table_tbl, dict):
         fail("'tui.table' must be a TOML table")
+    _reject_unknown_keys(tui_table_tbl, {"columns", "default_view"}, source="tui.table")
     tui_table_columns_raw = tui_table_tbl.get("columns")
     if tui_table_columns_raw is None or tui_table_columns_raw == []:
         # Absent or explicit empty list → "use REGISTRY defaults".
@@ -700,21 +749,6 @@ def load_config(cwd: str) -> Config:
         fail("tui.table.columns must be a list of column ids")
     else:
         tui_table_columns = tuple(str(x) for x in tui_table_columns_raw)
-    # ``tui.table.default_sort_by`` was removed in 3.4 (sort is now a
-    # hard contract — locals → cfg-order remotes → recency). Any value
-    # carried over from older configs is silently ignored; emit one
-    # ``UXON_DEBUG=tui`` line so operators can spot the fossil.
-    if "default_sort_by" in tui_table_tbl:
-        try:
-            events.debug(
-                "tui",
-                reason="ignored_default_sort_by",
-                id=str(tui_table_tbl.get("default_sort_by", "")),
-            )
-        except Exception:
-            # Telemetry, not a correctness path.
-            pass
-
     tui_table_default_view_raw = tui_table_tbl.get("default_view", "flat")
     if tui_table_default_view_raw not in ("by_host", "flat"):
         fail(
@@ -726,6 +760,7 @@ def load_config(cwd: str) -> Config:
     tui_search_tbl = tui_tbl.get("search", {})
     if not isinstance(tui_search_tbl, dict):
         fail("'tui.search' must be a TOML table")
+    _reject_unknown_keys(tui_search_tbl, {"fields"}, source="tui.search")
     fields_raw = tui_search_tbl.get("fields", ["name", "user"])
     allowed = {"name", "user", "host", "path", "cmd"}
     if not isinstance(fields_raw, list) or not all(f in allowed for f in fields_raw):
@@ -745,6 +780,7 @@ def load_config(cwd: str) -> Config:
     local_host_tbl = merged.get("local_host", {})
     if not isinstance(local_host_tbl, dict):
         fail("'local_host' must be a TOML table")
+    _reject_unknown_keys(local_host_tbl, {"color"}, source="local_host")
     local_host_color = str(local_host_tbl.get("color", "green"))
     if not local_host_color:
         fail("local_host.color must be non-empty")
@@ -805,12 +841,18 @@ def load_config(cwd: str) -> Config:
     audit_tbl = merged.get("audit", DEFAULT_CONFIG["audit"])
     if not isinstance(audit_tbl, dict):
         fail("'audit' must be a TOML table")
+    _reject_unknown_keys(audit_tbl, {"enabled", "syslog_facility"}, source="audit")
     audit_enabled = bool(audit_tbl.get("enabled", True))
     audit_syslog_facility = str(audit_tbl.get("syslog_facility", "user"))
 
     tmux_tbl = merged.get("tmux", DEFAULT_CONFIG["tmux"])
     if not isinstance(tmux_tbl, dict):
         fail("'tmux' must be a TOML table")
+    _reject_unknown_keys(
+        tmux_tbl,
+        {"manage_options", "options", "server_options", "append_server_options"},
+        source="tmux",
+    )
     # Off by default (matches DEFAULT_CONFIG): nothing is applied until the
     # operator sets ``manage_options = true``. ``merged`` is seeded from
     # DEFAULT_CONFIG, so the recommended scope tables are present-but-dormant —

@@ -176,7 +176,8 @@ def run_runtime_teardown(
         _teardown_skip(session_name, f"workload runtime {teardown.runtime!r} is unavailable")
         _audit.audit(
             "runtime.session_stop",
-            outcome="missing_profile",
+            outcome="error",
+            reason="missing_profile",
             runtime=teardown.runtime,
             runtime_resource=teardown.resource,
             action="skip",
@@ -188,7 +189,8 @@ def run_runtime_teardown(
         _teardown_skip(session_name, "workload runtime changed since launch")
         _audit.audit(
             "runtime.session_stop",
-            outcome="fingerprint_mismatch",
+            outcome="error",
+            reason="fingerprint_mismatch",
             runtime=teardown.runtime,
             runtime_resource=teardown.resource,
             action="skip",
@@ -203,7 +205,8 @@ def run_runtime_teardown(
         _teardown_skip(session_name, "live runtime resource identity could not be resolved")
         _audit.audit(
             "runtime.session_stop",
-            outcome="identity_unresolved",
+            outcome="error",
+            reason="identity_unresolved",
             runtime=teardown.runtime,
             runtime_resource=teardown.resource,
             action="skip",
@@ -218,7 +221,8 @@ def run_runtime_teardown(
         )
         _audit.audit(
             "runtime.session_stop",
-            outcome="stale",
+            outcome="error",
+            reason="stale_identity",
             runtime=teardown.runtime,
             runtime_resource=teardown.resource,
             action="skip",

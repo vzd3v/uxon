@@ -174,7 +174,7 @@ above closes this:
   (it is a shared resource; `uxon` never stops or removes it). If the
   container restarted since launch, `uxon` recognises that the recorded
   PID is no longer the agent and **skips** the stop command (audited as
-  `outcome=stale`) rather than killing an unrelated process.
+  `outcome=error reason=stale_identity`) rather than killing an unrelated process.
 
 Teardown is **best-effort**: if it fails (no `sh` in the image, daemon
 unreachable, …) `uxon` prints a note and the kill still completes. If

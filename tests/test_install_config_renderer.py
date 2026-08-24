@@ -6,6 +6,8 @@ import importlib.util
 import tomllib
 from pathlib import Path
 
+import pytest
+
 
 def _renderer():
     path = Path(__file__).resolve().parent.parent / "install" / "render_uxon_config.py"
@@ -29,11 +31,17 @@ def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
         },
         "execution": {
             "default_backend": "netns",
+            "state_dir": "/run/uxon/state",
             "backends": {
                 "netns": {
                     "kind": "command",
-                    "command_prefix": ["ip", "netns", "exec", "agent"],
-                    "probe_command": ["ip", "netns", "exec", "agent", "true"],
+                    "command_prefix": [
+                        "sudo",
+                        "-n",
+                        "/usr/local/libexec/uxon-exec",
+                        "{user}",
+                        "--",
+                    ],
                 }
             },
         },
@@ -53,3 +61,17 @@ def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
     assert parsed["launch"]["profiles"]["claude_box"]["runtime"] == "box"
     assert parsed["runtimes"]["box"]["path_map"]["/srv/projects"] == "/work"
     assert "container" not in parsed
+
+
+def test_renderer_rejects_unknown_keys_at_nested_levels() -> None:
+    renderer = _renderer()
+    with pytest.raises(ValueError, match="unknown key"):
+        renderer.render_config(
+            {
+                "launch": {
+                    "profiles": {
+                        "custom": {"agent": "claude", "unknown_policy": True},
+                    }
+                }
+            }
+        )

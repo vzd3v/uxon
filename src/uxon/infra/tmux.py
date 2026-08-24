@@ -289,7 +289,12 @@ def _build_tmux_launch_request(
             session_name=session,
             resolved=resolved_profile,
         )
-    record_dir = str(launch_records.state_dir())
+    state_path = launch_records.execution_state_dir(cfg, launch_user)
+    record_dir = str(state_path)
+    execution_state_probe_cmd = launch_records.execution_state_probe_command(
+        cfg, launch_user, state_path
+    )
+    exact_record_path = launch_records.record_path(pending_record, override_dir=state_path)
     # Workload-runtime wrap (off by default): the operator's opaque
     # ``exec_prefix`` enters the selected resource. Direct runtime keeps
     # ``exec_prefix`` empty and preserves the host agent argv. The
@@ -304,8 +309,6 @@ def _build_tmux_launch_request(
         f"{launch_records.LAUNCH_NONCE_ENV}={pending_record.launch_nonce}",
         "-e",
         f"{launch_records.LAUNCH_AGENT_ENV}={resolved_profile.agent.id}",
-        "-e",
-        f"{launch_records.LAUNCH_RECORD_DIR_ENV}={record_dir}",
     ]
     runtime_identity = None
     if resolved_profile.runtime_context is not None:
@@ -381,6 +384,8 @@ def _build_tmux_launch_request(
         session,
         "--nonce",
         pending_record.launch_nonce,
+        "--record-path",
+        str(exact_record_path),
         "--",
         *final_cmd,
     ]
@@ -412,6 +417,7 @@ def _build_tmux_launch_request(
         record_session=session,
         record_nonce=pending_record.launch_nonce,
         record_dir=record_dir,
+        execution_state_probe_cmd=execution_state_probe_cmd,
         launch_profile=pending_record.launch_profile,
         agent=pending_record.agent,
         launch_user=pending_record.launch_user,
@@ -504,6 +510,15 @@ def prepare_managed_launch(
     if pending is None:
         pending = pending_record_from_request(req)
     record_dir = Path(managed.record_dir)
+    launch_records.prepare_execution_state(pending, directory=record_dir)
+    if managed.execution_state_probe_cmd:
+        visible = process.run_cmd(list(managed.execution_state_probe_cmd), check=False)
+        if visible.returncode != 0:
+            detail = (visible.stderr or visible.stdout or "").strip()
+            fail(
+                f"execution backend {managed.execution_backend!r} cannot access execution state "
+                f"at {record_dir}" + (f": {detail}" if detail else "")
+            )
     launch_records.create_pending_record(pending, override_dir=record_dir)
     cp = process.run_cmd(list(managed.create_cmd), check=False)
     if cp.returncode != 0:

@@ -13,7 +13,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import platformdirs
 
@@ -26,11 +26,11 @@ LAUNCH_AGENT_ENV = "UXON_AGENT"
 RUNTIME_ENV = "UXON_RUNTIME"
 RUNTIME_FINGERPRINT_ENV = "UXON_RUNTIME_FINGERPRINT"
 
-LAUNCH_RECORD_DIR_ENV = "UXON_LAUNCH_RECORD_DIR"
-_STORE_ENV = LAUNCH_RECORD_DIR_ENV
 _RECORD_VERSION = 2
-_STORE_MODE = 0o711
 _RECORD_MODE = 0o644
+
+if TYPE_CHECKING:
+    from uxon.infra.execution import ExecutionConfigured
 
 
 @dataclass(frozen=True)
@@ -64,9 +64,6 @@ def new_launch_nonce() -> str:
 def state_dir(*, override: Path | None = None) -> Path:
     if override is not None:
         return override
-    configured = os.environ.get(_STORE_ENV)
-    if configured:
-        return Path(configured)
     # The bootstrap runs as the launch user, so the default store must be
     # readable/traversable by that user while remaining control-plane-owned and
     # not writable by it. Per-user runtime/state directories are commonly 0700,
@@ -74,6 +71,33 @@ def state_dir(*, override: Path | None = None) -> Path:
     if os.name == "posix":
         return Path(tempfile.gettempdir()) / f"uxon-launch-records-{os.geteuid()}"
     return Path(platformdirs.user_state_dir("uxon", appauthor=False)) / "launch-records"
+
+
+def execution_state_dir(cfg: ExecutionConfigured, launch_user: str) -> Path:
+    backend = cfg.execution.backend_for_user(launch_user)
+    if backend.kind == "command":
+        return Path(cfg.execution.state_dir)
+    return state_dir()
+
+
+def execution_state_probe_command(
+    cfg: ExecutionConfigured, launch_user: str, directory: Path
+) -> tuple[str, ...]:
+    from uxon.infra.execution import wrap_command
+
+    backend = cfg.execution.backend_for_user(launch_user)
+    if backend.kind == "local":
+        return ()
+    return tuple(wrap_command(cfg, launch_user, ["test", "-x", str(directory)], interactive=False))
+
+
+def prepare_execution_state(record: PendingLaunchRecord, *, directory: Path) -> Path:
+    return _ensure_store_ready(
+        override_dir=directory,
+        launch_user=record.launch_user,
+        requires_control_plane=record.runtime_kind != "direct"
+        or _uid_for_user(record.launch_user) != os.geteuid(),
+    )
 
 
 def pending_from_resolved(
@@ -257,6 +281,33 @@ def wait_for_finalized_record(
     return None
 
 
+def wait_for_finalized_record_path(
+    record_path: Path,
+    socket_path: str,
+    session_name: str,
+    launch_nonce: str,
+    *,
+    timeout_seconds: float = 60.0,
+    poll_seconds: float = 0.05,
+) -> dict[str, Any] | None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            payload = _read_json(record_path, require_owner=False)
+        except (FileNotFoundError, PermissionError, OSError, ValueError):
+            payload = None
+        if payload is not None and (
+            payload.get("version") == _RECORD_VERSION
+            and payload.get("status") == "finalized"
+            and payload.get("socket_path") == socket_path
+            and payload.get("session_name") == session_name
+            and payload.get("launch_nonce") == launch_nonce
+        ):
+            return payload
+        time.sleep(poll_seconds)
+    return None
+
+
 def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
     return {
         "version": _RECORD_VERSION,
@@ -294,29 +345,9 @@ def _ensure_store_ready(
 
 
 def _ensure_private_dir(path: Path) -> None:
-    if not path.is_absolute():
-        fail(f"launch record directory must be absolute: {path}")
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current = current / part
-        try:
-            st = os.lstat(current)
-        except FileNotFoundError:
-            current.mkdir(mode=_STORE_MODE)
-            st = os.lstat(current)
-        if stat.S_ISLNK(st.st_mode):
-            fail(f"launch record path must not contain symlinks: {current}")
-        if not stat.S_ISDIR(st.st_mode):
-            fail(f"launch record path component is not a directory: {current}")
-        if st.st_uid not in (0, os.geteuid()):
-            fail(f"launch record directory is not owned by the control plane: {current}")
-        mode = stat.S_IMODE(st.st_mode)
-        if current == path and mode != _STORE_MODE:
-            os.chmod(current, _STORE_MODE)
-            st = os.lstat(current)
-            mode = stat.S_IMODE(st.st_mode)
-        if mode & 0o022 and not mode & stat.S_ISVTX:
-            fail(f"launch record path component is writable by other users: {current}")
+    from uxon.infra.execution_state import ensure_state_dir
+
+    ensure_state_dir(path)
 
 
 def _write_new_json(path: Path, payload: dict[str, Any]) -> None:

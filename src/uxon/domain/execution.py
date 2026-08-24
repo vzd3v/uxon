@@ -19,7 +19,6 @@ class ExecutionBackendSpec:
     id: str
     kind: Literal["local", "command"]
     command_prefix: tuple[str, ...] = ()
-    probe_command: tuple[str, ...] = ()
     probe_timeout_seconds: float = 5.0
 
     @property
@@ -28,7 +27,6 @@ class ExecutionBackendSpec:
             "id": self.id,
             "kind": self.kind,
             "command_prefix": self.command_prefix,
-            "probe_command": self.probe_command,
             "probe_timeout_seconds": self.probe_timeout_seconds,
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -38,6 +36,7 @@ class ExecutionBackendSpec:
 @dataclass(frozen=True)
 class ExecutionConfig:
     default_backend: str = "local"
+    state_dir: str = ""
     backend_by_launch_user: dict[str, str] = field(default_factory=dict)
     backends: dict[str, ExecutionBackendSpec] = field(
         default_factory=lambda: {
@@ -60,6 +59,19 @@ class ExecutionConfig:
 class ExecutionTarget:
     user: str
     backend: ExecutionBackendSpec
+
+
+@dataclass(frozen=True)
+class ExecutionIdentity:
+    euid: int
+    egid: int
+    groups: tuple[int, ...]
+    namespaces: tuple[tuple[str, int], ...]
+    cgroup: str
+    capabilities: tuple[tuple[str, str], ...]
+    no_new_privs: int
+    state_dev: int
+    state_ino: int
 
 
 def _validate_token(token: str, *, source: str) -> None:
@@ -99,14 +111,34 @@ def validate_execution_config(config: ExecutionConfig) -> ExecutionConfig:
             continue
         if backend.kind != "command":
             fail(f"execution.backends.{backend_id}.kind must be 'command'")
-        for key, argv in (
-            ("command_prefix", backend.command_prefix),
-            ("probe_command", backend.probe_command),
-        ):
+        for key, argv in (("command_prefix", backend.command_prefix),):
             if not argv:
                 fail(f"execution.backends.{backend_id}.{key} must not be empty")
+            if not any("{user}" in token for token in argv):
+                fail(f"execution.backends.{backend_id}.{key} must include {{user}}")
             for token in argv:
                 _validate_token(token, source=f"execution.backends.{backend_id}.{key}")
+        prefix = backend.command_prefix
+        helper_index = 3 if prefix[:3] == ("sudo", "-n", "--") else 0
+        if len(prefix) < helper_index + 3 or not prefix[helper_index].startswith("/"):
+            fail(
+                f"execution.backends.{backend_id}.command_prefix must invoke a fixed absolute "
+                "helper, optionally through 'sudo -n --'"
+            )
+        if prefix[-2:] != ("{user}", "--") or prefix.count("{user}") != 1:
+            fail(
+                f"execution.backends.{backend_id}.command_prefix must end with "
+                "'{user} --' target-user framing"
+            )
         if backend.probe_timeout_seconds <= 0:
             fail(f"execution.backends.{backend_id}.probe_timeout_seconds must be greater than 0")
+    has_command_backend = any(backend.kind == "command" for backend in config.backends.values())
+    if has_command_backend:
+        state_dir = config.state_dir
+        if not state_dir or not state_dir.startswith("/"):
+            fail(
+                "execution.state_dir must be an absolute path when command backends are configured"
+            )
+        if state_dir != state_dir.rstrip("/") or ".." in state_dir.split("/"):
+            fail("execution.state_dir must be an absolute normalized path without '..'")
     return config

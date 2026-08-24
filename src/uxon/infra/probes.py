@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from uxon.domain.host_report import BinaryStatus, HostReport
-from uxon.infra.execution import ExecutionConfigured, command_prefix, resolve_target
+from uxon.infra.execution import ExecutionConfigured, binary_probe_prefix, resolve_target
 from uxon.infra.run import run_query
 
 if TYPE_CHECKING:
@@ -107,7 +107,7 @@ def _resolve_paths_remote(
 
     try:
         cp = run_query(
-            command_prefix(cfg, launch_user, interactive=False) + ["sh", "-lc", script],
+            binary_probe_prefix(cfg, launch_user) + ["sh", "-lc", script],
             timeout=PROBE_TIMEOUT_SEC,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):

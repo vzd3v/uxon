@@ -242,7 +242,6 @@ def _build_prefix() -> dict[str, Any]:
         launch_user = ""
 
     prefix: dict[str, Any] = {
-        "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "host": socket.gethostname(),
         "uxon_version": _uxon_version,
         "caller_user": caller_user,
@@ -410,7 +409,12 @@ def audit(event: str, *, outcome: str = "ok", **fields: Any) -> None:
         if ts.endswith("+00:00"):
             ts = ts[:-6] + "Z"
 
-        payload_fields: dict[str, Any] = {"v": 1, "event": event, "outcome": outcome, "ts": ts}
+        payload_fields: dict[str, Any] = {
+            "v": AUDIT_SCHEMA_VERSION,
+            "event": event,
+            "outcome": outcome,
+            "ts": ts,
+        }
         payload_fields.update(_prefix)
         if _correlation_id and "correlation_id" not in fields:
             payload_fields["correlation_id"] = _correlation_id

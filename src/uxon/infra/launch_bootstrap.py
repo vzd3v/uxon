@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from uxon.infra import launch_records
 
@@ -15,18 +16,19 @@ def wait_then_exec(
     socket_path: str,
     session_name: str,
     launch_nonce: str,
+    record_path: str,
     agent_argv: list[str],
     timeout_seconds: float = 60.0,
 ) -> int:
     if not agent_argv:
         print("uxon: missing launch command", file=sys.stderr)
         return 2
-    record = launch_records.wait_for_finalized_record(
+    record = launch_records.wait_for_finalized_record_path(
+        Path(record_path),
         socket_path,
         session_name,
         launch_nonce,
         timeout_seconds=timeout_seconds,
-        require_owner=False,
     )
     if record is None:
         print("uxon: launch record was not finalized in time", file=sys.stderr)
@@ -40,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--socket", required=True)
     parser.add_argument("--session", required=True)
     parser.add_argument("--nonce", required=True)
+    parser.add_argument("--record-path", required=True)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("agent_argv", nargs=argparse.REMAINDER)
     ns = parser.parse_args(argv)
@@ -50,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         socket_path=ns.socket,
         session_name=ns.session,
         launch_nonce=ns.nonce,
+        record_path=ns.record_path,
         agent_argv=agent_argv,
         timeout_seconds=ns.timeout,
     )

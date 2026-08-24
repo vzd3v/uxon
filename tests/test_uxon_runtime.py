@@ -1570,7 +1570,8 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         run_td.assert_not_called()
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "runtime.session_stop")
-        self.assertEqual(audit.call_args.kwargs["outcome"], "stale")
+        self.assertEqual(audit.call_args.kwargs["outcome"], "error")
+        self.assertEqual(audit.call_args.kwargs["reason"], "stale_identity")
         self.assertEqual(audit.call_args.kwargs["runtime_resource"], "proj-myapp")
         self.assertEqual(audit.call_args.kwargs["runtime"], "box")
 
@@ -1619,7 +1620,8 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         ):
             kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
         run_td.assert_not_called()
-        self.assertEqual(audit.call_args.kwargs["outcome"], "missing_profile")
+        self.assertEqual(audit.call_args.kwargs["outcome"], "error")
+        self.assertEqual(audit.call_args.kwargs["reason"], "missing_profile")
 
     def test_unresolved_live_identity_skips_kill(self) -> None:
         from uxon.app import kill as kill_app
@@ -1643,7 +1645,8 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         ):
             kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
         run_td.assert_not_called()
-        self.assertEqual(audit.call_args.kwargs["outcome"], "identity_unresolved")
+        self.assertEqual(audit.call_args.kwargs["outcome"], "error")
+        self.assertEqual(audit.call_args.kwargs["reason"], "identity_unresolved")
 
 
 class WorktreePathMapGateTests(unittest.TestCase):

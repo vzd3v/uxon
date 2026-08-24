@@ -104,7 +104,7 @@ names another `runtime`. The old `[container]`, `container_profile`,
 v4 routes every target-user command family through `[execution]`: tmux server,
 list/attach/kill, git/worktrees/filesystem, probes, workload lifecycle, and
 agent launch. `local` preserves the normal host/sudo behavior. Command backends
-use one `command_prefix` plus a bounded `probe_command`.
+use one `command_prefix`; uxon supplies the bounded attestation command.
 
 The default socket is now `/tmp/uxon-{user}-{execution_backend}.sock`. Drain
 all sessions before changing a backend definition or id. A same-id definition
