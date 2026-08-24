@@ -19,9 +19,9 @@ from uxon.infra.run import run_query
 def repo_root() -> Path:
     """Best-effort path to the repo root for in-tree dev runs.
 
-    For pipx / `uv tool` / wheel installs this points into site-packages
-    and the resulting paths (``/etc/uxon/config.toml`` etc.) won't exist —
-    callers must tolerate missing files.
+    For pipx / `uv tool` / wheel installs this points into site-packages,
+    which is normally not a git checkout. Callers must tolerate unavailable
+    commit and dirty-state metadata.
     """
     return Path(__file__).resolve().parents[3]
 

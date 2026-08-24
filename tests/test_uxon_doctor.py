@@ -429,7 +429,7 @@ class DoctorRemoteFlagTests(unittest.TestCase):
 
 
 class DoctorAuditLineTests(unittest.TestCase):
-    """``uxon doctor`` reports audit-channel status (Bug 2)."""
+    """``uxon doctor`` reports audit-channel status."""
 
     def _stub_cfg(self):
         from uxon.domain.config import Config

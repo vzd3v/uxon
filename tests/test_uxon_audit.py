@@ -64,7 +64,7 @@ class PrefixConstructionTests(_BaseAuditTests):
         self.assertEqual(prefix["host"], "host1")
         self.assertNotIn("ssh_client", prefix)
 
-    def test_ssh_client_recorded_when_env_present(self) -> None:
+    def test_ssh_connection_does_not_classify_or_extend_identity(self) -> None:
         env = {"SSH_CONNECTION": "10.0.0.7 51234 192.168.1.5 22", "USER": "bob"}
         with (
             patch.dict("os.environ", env, clear=True),
@@ -75,7 +75,7 @@ class PrefixConstructionTests(_BaseAuditTests):
             ),
         ):
             prefix = au._build_prefix()
-        self.assertEqual(prefix["ssh_client"], "10.0.0.7 51234 192.168.1.5 22")
+        self.assertNotIn("ssh_client", prefix)
         self.assertEqual(prefix["process_user"], "login-user")
 
     def test_subcmd_in_prefix_after_configure(self) -> None:
@@ -370,7 +370,7 @@ class AuditSendTests(_BaseAuditTests):
             patch.dict("os.environ", {"USER": "tester"}, clear=False),
         ):
             au.set_correlation_id("uuid-1234")
-            au.audit("list.remote.in", scope="own")
+            au.audit("list.remote.out", scope="own")
 
         text = recorded[0].decode("utf-8")
         idx = text.index("@cee: ") + len("@cee: ")

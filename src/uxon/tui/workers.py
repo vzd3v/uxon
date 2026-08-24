@@ -230,26 +230,20 @@ class WorkerCoordinator:
         try:
             reports = {}
             profiles = self._cfg.launch_profiles
-            if profiles:
-                by_user: dict[str, set[str]] = {}
-                for profile in profiles.values():
-                    agents = by_user.setdefault(profile.launch_user, set())
-                    if profile.runtime == "direct":
-                        agents.add(profile.agent)
-                for user, agent_ids in by_user.items():
-                    catalog = {
-                        aid: self._cfg.agents[aid]
-                        for aid in sorted(agent_ids)
-                        if aid in self._cfg.agents
-                    }
-                    reports[user] = uxon_probes.probe_host(self._cfg, user, catalog)
-            else:
-                # Compatibility path for old tests/fixtures that construct a
-                # TuiConfig without launch_profiles.
-                target_user = self._cfg.launch_user or uxon_probes._current_user()
-                reports[target_user] = uxon_probes.probe_host(
-                    self._cfg, target_user, self._cfg.agents
-                )
+            if not profiles:
+                raise ValueError("TUI requires at least one validated launch profile")
+            by_user: dict[str, set[str]] = {}
+            for profile in profiles.values():
+                agents = by_user.setdefault(profile.launch_user, set())
+                if profile.runtime == "direct":
+                    agents.add(profile.agent)
+            for user, agent_ids in by_user.items():
+                catalog = {
+                    aid: self._cfg.agents[aid]
+                    for aid in sorted(agent_ids)
+                    if aid in self._cfg.agents
+                }
+                reports[user] = uxon_probes.probe_host(self._cfg, user, catalog)
         except Exception as exc:  # pragma: no cover — defensive
             self._post_message(
                 _HostReportUpdated(
@@ -264,47 +258,37 @@ class WorkerCoordinator:
         # profiles that are actually launchable.
         configured = self._cfg.enabled_profiles
         availability: dict = {}
-        if self._cfg.launch_profiles:
-            for pid in configured:
-                profile = self._cfg.launch_profiles.get(pid)
-                if profile is None:
-                    if not self._cfg.launch_auto_mode:
-                        availability[pid] = uxon_agents.AgentAvailability(
-                            status="missing", error="unknown launch profile"
-                        )
-                    continue
-                report = reports.get(profile.launch_user)
-                if report is None or report.tmux.path is None:
-                    if not self._cfg.launch_auto_mode:
-                        availability[pid] = uxon_agents.AgentAvailability(
-                            status="missing",
-                            error="tmux not found on PATH",
-                        )
-                    continue
-                if profile.runtime != "direct":
+        for pid in configured:
+            profile = self._cfg.launch_profiles.get(pid)
+            if profile is None:
+                if not self._cfg.launch_auto_mode:
                     availability[pid] = uxon_agents.AgentAvailability(
-                        status="ok",
-                        path=f"runtime:{profile.runtime}",
+                        status="missing", error="unknown launch profile"
                     )
-                    continue
-                status = report.agents.get(profile.agent)
-                if status is not None and status.path is not None:
-                    availability[pid] = uxon_agents.AgentAvailability(status="ok", path=status.path)
-                elif not self._cfg.launch_auto_mode:
-                    spec = self._cfg.agents.get(profile.agent)
-                    binary = spec.binary if spec is not None else profile.agent
+                continue
+            report = reports.get(profile.launch_user)
+            if report is None or report.tmux.path is None:
+                if not self._cfg.launch_auto_mode:
                     availability[pid] = uxon_agents.AgentAvailability(
-                        status="missing", error=f"{binary} not found on PATH"
+                        status="missing",
+                        error="tmux not found on PATH",
                     )
-        else:
-            # No launch profiles populated (operator removed every
-            # built-in and defined none): fall back to reporting every
-            # agent the host probe discovered so auto-mode still surfaces
-            # a usable choice.
-            report = next(iter(reports.values()))
-            for aid, status in report.agents.items():
-                if status.path is not None:
-                    availability[aid] = uxon_agents.AgentAvailability(status="ok", path=status.path)
+                continue
+            if profile.runtime != "direct":
+                availability[pid] = uxon_agents.AgentAvailability(
+                    status="ok",
+                    path=f"runtime:{profile.runtime}",
+                )
+                continue
+            status = report.agents.get(profile.agent)
+            if status is not None and status.path is not None:
+                availability[pid] = uxon_agents.AgentAvailability(status="ok", path=status.path)
+            elif not self._cfg.launch_auto_mode:
+                spec = self._cfg.agents.get(profile.agent)
+                binary = spec.binary if spec is not None else profile.agent
+                availability[pid] = uxon_agents.AgentAvailability(
+                    status="missing", error=f"{binary} not found on PATH"
+                )
         self._post_message(
             _HostReportUpdated(
                 availability=availability,

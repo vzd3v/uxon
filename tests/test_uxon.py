@@ -1737,7 +1737,7 @@ class UxonTests(unittest.TestCase):
             create_cmd=("tmux", "new-session", "-d", "-s", pending.session_name),
             query_cmd=("tmux", "display-message", "-p"),
             release_cmd=("tmux", "wait-for", "-S", "uxon-launch-nonce-release"),
-            kill_cmd=("tmux", "kill-session", "-t", pending.session_name),
+            rollback_kill_prefix=("tmux", "kill-session", "-t"),
             record_socket=pending.socket_path,
             record_session=pending.session_name,
             record_nonce=pending.launch_nonce,
@@ -1776,7 +1776,7 @@ class UxonTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 tmux.prepare_managed_launch(req, pending)
 
-        self.assertIn(managed.kill_cmd, calls)
+        self.assertIn((*managed.rollback_kill_prefix, "$1"), calls)
         fail_pending.assert_called_once_with(
             pending, override_dir=Path("/tmp/uxon-launch-records-test"), shared=False
         )
@@ -1796,7 +1796,7 @@ class UxonTests(unittest.TestCase):
             create_cmd=("tmux", "new-session"),
             query_cmd=("tmux", "display-message"),
             release_cmd=("tmux", "wait-for", "-S", "uxon-launch-abcdefghijklmnop-release"),
-            kill_cmd=("tmux", "kill-session"),
+            rollback_kill_prefix=("tmux", "kill-session", "-t"),
             record_socket=pending.socket_path,
             record_session=pending.session_name,
             record_nonce=pending.launch_nonce,
@@ -1861,7 +1861,7 @@ class UxonTests(unittest.TestCase):
             create_cmd=("tmux", "new-session", "-d", "-s", pending.session_name),
             query_cmd=("tmux", "display-message", "-p"),
             release_cmd=("tmux", "wait-for", "-S", "uxon-launch-nonce-release"),
-            kill_cmd=("tmux", "kill-session", "-t", pending.session_name),
+            rollback_kill_prefix=("tmux", "kill-session", "-t"),
             record_socket=pending.socket_path,
             record_session=pending.session_name,
             record_nonce=pending.launch_nonce,
@@ -3127,17 +3127,7 @@ class CliPreflightTests(unittest.TestCase):
                 # Should not have failed; list doesn't require agents.
                 self.assertEqual(rc, 0)
 
-    def test_peer_inbound_list_all_users_disabled_emits_remote_in_denied(self) -> None:
-        # Spec lines 207-209: state-changing events emit on success AND
-        # failure paths.  Spec line 306: peer-inbound list emits
-        # ``list.remote.in`` instead of ``list.peek``.  Combined: a
-        # peer that refuses ``--all-users`` (because
-        # ``enable_all_users_list = false``) must record exactly one
-        # ``list.remote.in outcome=denied``, no parallel ``list.peek``,
-        # and no stale ``outcome=ok`` from a top-of-block emit.
-        # Regression for the pre-fix bug where the peer-inbound branch
-        # emitted ``outcome=ok`` *before* the gate check, then ``fail``
-        # raised SystemExit unaudited.
+    def test_ssh_environment_does_not_reclassify_denied_list(self) -> None:
         from uxon.infra import audit as uxon_audit
 
         recorded: list[tuple[str, dict]] = []
@@ -3177,15 +3167,10 @@ class CliPreflightTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     main(["list", "--all-users"])
 
-        list_emits = [e for e in recorded if e[0] in ("list.remote.in", "list.peek")]
-        peek_emits = [e for e in list_emits if e[0] == "list.peek"]
-        rin_emits = [e for e in list_emits if e[0] == "list.remote.in"]
-        # ``replaces`` semantics: on the peer-inbound path, no
-        # ``list.peek`` may be emitted alongside.
-        self.assertEqual(peek_emits, [])
-        self.assertEqual(len(rin_emits), 1)
-        self.assertEqual(rin_emits[0][1]["outcome"], "denied")
-        self.assertEqual(rin_emits[0][1]["scope"], "all-users")
+        list_emits = [e for e in recorded if e[0] == "list.peek"]
+        self.assertEqual(len(list_emits), 1)
+        self.assertEqual(list_emits[0][0], "list.peek")
+        self.assertEqual(list_emits[0][1]["outcome"], "denied")
 
 
 class DoInteractiveTextualMissingTests(unittest.TestCase):

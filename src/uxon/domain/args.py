@@ -22,6 +22,7 @@ USAGE = """Usage:
                  [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
                  [agent-flags...]
   uxon doctor [--remote] [--json]
+  uxon config render --config-json <path|-> [--output <path|->]
   uxon list [--all-users] [--host <name>|--all-hosts] [--json]
   uxon version [--json]
   uxon attach <id> [--user <name>] [--host <alias>] [--dry-run]
@@ -56,7 +57,7 @@ Notes:
 """
 
 
-SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version", "doctor"}
+SUBCOMMANDS = {"run", "list", "attach", "kill", "kill-all", "new", "version", "doctor", "config"}
 
 
 @dataclass
@@ -78,6 +79,8 @@ class ParsedArgs:
     host: str | None = None  # --host <name>: route 'list' / 'kill' to one configured remote peer
     all_hosts: bool = False  # --all-hosts: aggregate local + every configured remote peer
     user: str | None = None  # --user <name>: target a different launch user (kill)
+    config_json: str | None = None
+    output: str | None = None
     # Internal peer-protocol flag — propagated by callers to peers so a
     # cross-host operation appears in both audit trails with the same UUID.
     # Stripped from argv by :func:`uxon.infra.audit.extract_correlation_id` before
@@ -112,5 +115,7 @@ def owned_option_flags(args: ParsedArgs) -> list[str]:
         (args.host is not None, "--host"),
         (args.all_hosts, "--all-hosts"),
         (args.user is not None, "--user"),
+        (args.config_json is not None, "--config-json"),
+        (args.output is not None, "--output"),
     )
     return [name for enabled, name in fields if enabled]

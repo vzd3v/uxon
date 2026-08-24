@@ -581,7 +581,6 @@ def _resolve_or_audit_not_found(
     *,
     audit_event: str | None,
     target_user: str,
-    session_field: str = "session",
     extra: dict[str, Any] | None = None,
 ) -> SessionInfo:
     """Resolve a session and, on no-match failure, emit the ``not_found``
@@ -589,17 +588,10 @@ def _resolve_or_audit_not_found(
 
     The audit contract enumerates
     ``outcome ∈ {"ok", "denied", "error", "not_found"}`` for
-    ``session.attach.dispatch``, ``session.kill``, and their peer-inbound
-    replacements ``attach.remote.in.dispatch`` / ``kill.remote.in``. Without
-    this wrapper the ``not_found`` outcome would never appear, because
+    ``session.attach.dispatch`` and ``session.kill``. Without this wrapper the
+    ``not_found`` outcome would never appear, because
     :func:`resolve_session` raises :class:`SystemExit` via :func:`fail`
     before any caller-side audit fires.
-
-    ``session_field`` selects the key under which the identifier is
-    recorded: ``"session"`` for ``session.attach.dispatch`` / ``session.kill``,
-    ``"target_session"`` for ``attach.remote.in.dispatch`` / ``kill.remote.in``
-    (peer-inbound branches — the spec uses different field names on
-    the two sides of the wire).
 
     Pass ``audit_event=None`` to skip the emit entirely.
     """
@@ -616,7 +608,7 @@ def _resolve_or_audit_not_found(
         from uxon.infra import audit as _audit
 
         fields: dict[str, Any] = {
-            session_field: identifier or "",
+            "session": identifier or "",
             "target_user": target_user,
         }
         if extra:

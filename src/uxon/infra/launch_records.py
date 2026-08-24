@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import pwd
@@ -11,6 +12,7 @@ import re
 import secrets
 import stat
 import time
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,7 @@ _SHARED_RECORD_MODE = 0o640
 _STALE_FINALIZED_SECONDS = 7 * 24 * 60 * 60
 _STALE_PENDING_SECONDS = 10 * 60
 _MAX_GC_RECORDS = 1024
+_GC_CURSOR_VERSION = 1
 _NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
 
@@ -295,29 +298,50 @@ def garbage_collect_records(
     *,
     override_dir: Path | None = None,
     shared: bool = False,
-    launch_user: str = "",
+    launch_user: str,
     now: float | None = None,
 ) -> int:
-    """Remove bounded, old records which no longer identify a live session.
+    """Remove bounded old records for one authoritatively enumerated user.
 
-    Collection is store-wide so records left by a retired socket template do
-    not survive forever merely because current probes use a different socket.
+    The persisted per-user cursor rotates across every ``.json`` record, so
+    unrelated or live entries cannot permanently starve later stale records.
+    Records for any other launch user are never deleted. Within the selected
+    user's scope, an expired record from a drained retired socket is eligible.
     """
+    if not launch_user:
+        fail("launch-record collection requires a launch user")
     directory = _ensure_store_ready(
         override_dir=override_dir, shared=shared, launch_user=launch_user
     )
     current = time.time() if now is None else now
     removed = 0
     try:
-        entries = sorted(directory.iterdir(), key=lambda item: item.name)[:_MAX_GC_RECORDS]
+        entries = sorted(
+            (path for path in directory.iterdir() if path.suffix == ".json"),
+            key=lambda item: item.name,
+        )
     except OSError:
         return 0
+    if not entries:
+        return 0
     shared_gid = os.lstat(directory).st_gid if shared else None
-    for path in entries:
-        if path.suffix != ".json":
-            continue
+    cursor_path = _gc_cursor_path(directory, launch_user)
+    last_name = _read_gc_cursor(
+        cursor_path,
+        require_owner=not shared,
+        shared_gid=shared_gid,
+    )
+    if last_name is None:
+        return 0
+    names = [path.name for path in entries]
+    start = bisect_right(names, last_name) if last_name else 0
+    ordered = entries[start:] + entries[:start]
+    batch = ordered[:_MAX_GC_RECORDS]
+    for path in batch:
         try:
             payload = _read_json(path, require_owner=not shared, shared_gid=shared_gid)
+            if payload.get("launch_user") != launch_user:
+                continue
             key = (
                 str(payload.get("socket_path", "")),
                 str(payload.get("session_name", "")),
@@ -332,7 +356,40 @@ def garbage_collect_records(
             removed += 1
         except (OSError, TypeError, ValueError):
             continue
+    try:
+        _replace_json(
+            cursor_path,
+            {"version": _GC_CURSOR_VERSION, "last_name": batch[-1].name},
+            shared=shared,
+            shared_gid=shared_gid,
+        )
+    except OSError:
+        pass
     return removed
+
+
+def _gc_cursor_path(directory: Path, launch_user: str) -> Path:
+    key = hashlib.sha256(launch_user.encode("utf-8")).hexdigest()[:24]
+    return directory / f".gc-cursor-{key}"
+
+
+def _read_gc_cursor(
+    path: Path,
+    *,
+    require_owner: bool,
+    shared_gid: int | None,
+) -> str | None:
+    try:
+        payload = _read_json(path, require_owner=require_owner, shared_gid=shared_gid)
+    except FileNotFoundError:
+        return ""
+    except (PermissionError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    if payload.get("version") != _GC_CURSOR_VERSION or not isinstance(
+        payload.get("last_name"), str
+    ):
+        return None
+    return payload["last_name"]
 
 
 def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:

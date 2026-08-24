@@ -31,7 +31,6 @@ this set.
 | `process_uid`   | int     | UID corresponding to `process_user`. Environment variables cannot override it.                         |
 | `pid` / `ppid`  | int     | Emitter process and its parent.                                                                         |
 | `subcmd`        | string  | The `uxon` subcommand under which the event fired (`attach`, `kill`, `run`, …).                         |
-| `ssh_client`    | string  | Present **only** on peer-inbound emits, copied from `SSH_CONNECTION`.  Absent locally.                  |
 
 On the journald native sink each envelope field is reachable as a
 first-class `FIELD=value` selector (uppercased — journald wire
@@ -64,40 +63,36 @@ eventually exited successfully.
 
 | Event                | When it fires                                                                                            | Extra fields beyond envelope                                                                                                  | Outcomes observed                |
 |----------------------|----------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|----------------------------------|
-| `cli.start`          | Non-TUI subcommand startup, after argv parse.  Skipped for `--help`, `--version`, and the bare-TUI invocation (which emits `tui.open` instead). | `flags` (names of parsed Uxon-owned options only; values and forwarded agent args are excluded), `profiles_enabled` (launch profile ids), `enable_all_users_list` (bool), `audit_enabled` (bool, always `true`), `allowed_roots_count` (int), `remote_hosts_count` (int) | `ok` |
+| `cli.start`          | Non-TUI subcommand startup, after argv parse. Skipped for `--help`, `--version`, and the bare-TUI invocation (which emits `tui.open` instead). | `flags` always (parsed Uxon-owned option names only; values and forwarded agent args excluded). Config-loaded commands also include `profiles_enabled`, `enable_all_users_list`, `audit_enabled`, `allowed_roots_count`, `remote_hosts_count`; config rendering intentionally does not load those settings. | `ok` |
 | `tui.open`           | TUI process started (`uxon` with no args on a TTY).                                                      | (envelope only)                                                                                                              | `ok`                             |
 | `session.new`        | Managed launch record was finalized and fsynced, then the pane was released. Dry runs emit after planning without creating a session. | `profile` (launch profile id), `agent` (underlying agent id), `target_user`, `project` (abs path), `branch` (or empty), `session`, `dry_run`; `error` and `error_type` only on `outcome=error` | `ok`, `error`                    |
 | `worktree.create`    | uxon created a git worktree (`-w` / TUI new-worktree). Emitted **in addition to** the launched session's `session.new`. | `profile` (launch profile id), `agent`, `project` (repo root, abs path), `branch`, `path` (worktree dir), `base` (`local` \| `remote`), `session`          | `ok`                             |
-| `session.attach.dispatch` | Local `uxon attach` or TUI Enter resolved the target and dispatched the tmux client. | `session`, `target_user` | `ok`, `denied`, `not_found` |
+| `session.attach.dispatch` | This host resolved an attach target and dispatched the tmux client. | `session`, `target_user`, `profile`, `agent`, `dry_run` | `ok`, `denied`, `not_found` |
 | `session.ended`      | A wrapped subprocess (TUI launch) returned.                                                              | `session`, `rc`, `wall_seconds`, `error` (string ≤256 chars; only on `outcome=error`)                                       | `ok`, `error`                    |
 | `session.kill`       | Local `uxon kill` or TUI `d` on a local row.                                                             | `session`, `target_user`, `profile`, `agent`, `force` (bool), `dry_run`; `rc` when tmux fails, or a generic `error` when post-kill cleanup fails | `ok`, `denied`, `error`, `not_found` |
-| `session.kill_all`   | `uxon kill-all` or TUI `D`.                                                                              | `target_users` (list), `killed_count` (int), `dry_run`                                                                       | `ok`, `error`                    |
-| `runtime.prepare` | uxon started or created the selected workload resource before launch. A ready resource is a no-op. | `action` (`start` \| `create`), `runtime_resource`, `error` (only on error) | `ok`, `error` |
+| `session.kill_all`   | `uxon kill-all` or TUI `D`.                                                                              | `target_users` (list), `attempted_count`, `killed_count`, `failed_count`, `cleanup_failed_count` (ints), `dry_run` | `ok`, `error`                    |
+| `runtime.prepare` | uxon started or created the selected workload resource before launch. A ready resource is a no-op. | `action` (`start` \| `create`), `runtime_resource`; `error` and `error_type` only on error | `ok`, `error` |
 | `runtime.session_stop` | uxon ran the selected runtime's `session.stop_command`, or safely skipped it. | `runtime`, `runtime_resource`, `action` (`stop` \| `skip`), `session`, `target_user`, typed `reason` on a safe skip, `error` only on execution error | `ok`, `error`, `skipped` |
-| `attach.remote.out.dispatch` | Local TUI/CLI resolved a peer attach and dispatched SSH (caller side). | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `correlation_id` | `ok`, `not_found` |
-| `attach.remote.in.dispatch` | Peer's `uxon attach` resolved and dispatched tmux. Replaces `session.attach.dispatch` on the peer. | `target_user`, `target_session`, `correlation_id` | `ok`, `denied`, `not_found` |
+| `attach.remote.out.dispatch` | This host resolved a peer attach and dispatched SSH. | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `dry_run`, `correlation_id` | `ok`, `not_found` |
 | `kill.remote.out`    | Local `uxon kill --host` / TUI `d` on a remote row (caller side).                                         | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `force`, `dry_run`, `correlation_id`, `rc` (int) + `error` (string ≤256 chars) on `outcome=error` | `ok`, `error`                    |
-| `kill.remote.in`     | Peer's own `uxon kill` invoked over SSH (peer side).  Replaces `session.kill` on peer.                    | `session`, `target_user`, `force`, `dry_run`, `correlation_id`                                                              | `ok`, `denied`, `error`, `not_found` |
-| `list.peek`          | Local enumeration of *other* users' sessions (`uxon list --all-users` / TUI with the gate enabled).      | `scope_users` (list), `scope_skipped` (list)                                                                                 | `ok`                             |
-| `list.remote.in`     | Peer's own `uxon list --json` invoked over SSH.  Replaces `list.peek` on peer.                            | `scope` (`own` \| `all-users`), `correlation_id`                                                                             | `ok`, `denied`                   |
-| `git.remote.create`  | `uxon new --git-remote <profile>` reached the external-repo create step.                                 | `profile` (launch profile id), `git_remote_profile`, `repo`, `creds_user`, `rc`                                               | `ok`, `error`                    |
+| `list.peek`          | This host enumerated sessions (`uxon list`, `--all-users`, or TUI). | `scope_users` (list), `scope_skipped` (list) | `ok`, `denied` |
+| `list.remote.out`    | This host completed a peer list request. | `peer_name`, `ssh_alias`, `scope` (`own` \| `all-users`), `from_cache`, `correlation_id`; `error` only on error | `ok`, `error` |
+| `git.remote.create`  | `uxon new --git-remote <profile>` reached the external-repo create step. | `profile` (launch profile id), `git_remote_profile`, `repo`, `creds_user`, `launch_user`, `rc` | `ok`, `error` |
 | `config.error`       | Startup config load failed and `main()` is about to exit non-zero.                                       | `path`, `error` (first 256 chars)                                                                                            | `error`                          |
+| `config.render`      | `uxon config render` completed or rejected its input. | `input` (`stdin` \| `file`), `output` (`stdout` \| `file`); `error_type` only on error. Paths and payload values are excluded. | `ok`, `error` |
 
-### Local vs peer-side: `replaces` semantics
+### Cross-host events
 
 When a gesture crosses an SSH boundary (`uxon attach --host`,
 `uxon kill --host`, `uxon list --host`), two events are emitted —
 one per side:
 
-- **Caller side** emits `attach.remote.out.dispatch` or `kill.remote.out`.
-  No `list.remote.out` exists; the local
-  enumeration emits `list.peek` instead.
-- **Peer side**, detected by `SSH_CONNECTION` in the env, emits
-  `attach.remote.in.dispatch`, `kill.remote.in`, or `list.remote.in`.
-  `attach.remote.in.dispatch`
-  replaces `session.attach.dispatch`, `kill.remote.in` replaces `session.kill`,
-  `list.remote.in` replaces `list.peek` — never both.  This keeps the
-  cross-host audit trail at one record per side, no double-counting.
+- The initiating host emits `attach.remote.out.dispatch`, `kill.remote.out`,
+  or `list.remote.out`.
+- The target host emits the same truthful local operation event it would emit
+  for a direct invocation: `session.attach.dispatch`, `session.kill`, or
+  `list.peek`. Environment variables such as `SSH_CONNECTION` never classify
+  an event or assert authenticated transport provenance.
 
 ### Cross-host correlation
 

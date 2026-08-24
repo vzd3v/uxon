@@ -208,7 +208,7 @@ from uxon import tui as uxon_tui
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG
 from uxon.infra import agents as uxon_agents
 from uxon.infra import probes as uxon_probes
-from uxon.tui.context import LaunchRequest
+from uxon.tui.context import LaunchProfileOption, LaunchRequest
 
 MARKER = {marker_path!r}
 uxon_agents.probe_agents = lambda *args, **kwargs: {{}}
@@ -256,6 +256,13 @@ ctx = uxon_tui.TuiContext(
     cwd_writable=True,
     current_user="u-den",
     agents=DEFAULT_AGENT_CATALOG,
+    enabled_profiles=("claude",),
+    default_profile="claude",
+    launch_profiles={{
+        "claude": LaunchProfileOption(
+            id="claude", label="Claude", agent="claude", launch_user="u-den"
+        )
+    }},
     on_launch_cwd=fake_launch_cwd,
     on_launch_new=fake_launch_new,
     on_refresh=lambda: ctx,

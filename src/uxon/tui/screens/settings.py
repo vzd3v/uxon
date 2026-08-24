@@ -167,7 +167,13 @@ class SettingsScreen(Screen):
             self.app.push_screen(GitRemotesScreen(rows))
             return
         entry = self._selected_entry()
-        if entry is None or not entry.editable:
+        if entry is None:
+            return
+        if not entry.editable:
+            self.app.notify(
+                "Settings are read-only; use 'uxon config render' and explicit sudo install.",
+                severity="warning",
+            )
             return
         kind = entry.spec.kind
 
@@ -195,7 +201,13 @@ class SettingsScreen(Screen):
 
     def action_reset(self) -> None:
         entry = self._selected_entry()
-        if entry is None or not entry.editable:
+        if entry is None:
+            return
+        if not entry.editable:
+            self.app.notify(
+                "Settings are read-only; use 'uxon config render' and explicit sudo install.",
+                severity="warning",
+            )
             return
         try:
             self.cbs.remove_setting(entry.spec.key)

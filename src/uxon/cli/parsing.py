@@ -240,6 +240,31 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
 
 def parse_subcommand(argv: list[str]) -> ParsedArgs:
     cmd = argv[0]
+    if cmd == "config":
+        if len(argv) < 2 or argv[1] != "render":
+            fail("config requires the 'render' action")
+        config_json: str | None = None
+        output: str | None = None
+        i = 2
+        while i < len(argv):
+            token = argv[i]
+            if token not in {"--config-json", "--output"}:
+                fail(f"unknown args for config render: {token}")
+            i += 1
+            if i >= len(argv):
+                fail(f"{token} requires a path or '-'")
+            if not argv[i]:
+                fail(f"{token} requires a non-empty path or '-'")
+            if token == "--config-json":
+                if config_json is not None:
+                    fail("--config-json may be specified only once")
+                config_json = argv[i]
+            else:
+                output = argv[i]
+            i += 1
+        if config_json is None:
+            fail("config render requires --config-json <path|->")
+        return ParsedArgs(action="config-render", config_json=config_json, output=output)
     if cmd == "version":
         json_out = "--json" in argv[1:]
         extras = [a for a in argv[1:] if a != "--json"]

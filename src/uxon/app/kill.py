@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import shlex
 import subprocess
 import sys
@@ -394,29 +393,73 @@ def _complete_kill(
     """Run post-kill cleanup and emit exactly one terminal kill event."""
     from uxon.infra import audit as _audit
 
-    failure: BaseException | None = None
-    if teardown is not None:
-        try:
-            run_runtime_teardown(cfg, teardown, target_user, target.name)
-        except BaseException as exc:  # audit/cleanup must not erase kill truth
-            failure = exc
-    try:
-        cleanup_launch_record(cfg, target)
-    except BaseException as exc:
-        failure = failure or exc
+    cleanup_ok = finish_killed_session(cfg, target, teardown, target_user=target_user)
     _audit.audit(
         audit_event,
-        outcome="error" if failure is not None else "ok",
+        outcome="ok" if cleanup_ok else "error",
         session=target.name,
         target_user=target_user,
         profile=target.profile,
         agent=target.agent,
         force=force,
         dry_run=dry_run,
-        **({"error": "post-kill cleanup failed"} if failure is not None else {}),
+        **({"error": "post-kill cleanup failed"} if not cleanup_ok else {}),
     )
-    if failure is not None:
+    if not cleanup_ok:
         fail("tmux session was killed, but post-kill cleanup failed", 1)
+
+
+def finish_killed_session(
+    cfg: Config,
+    target: SessionInfo,
+    teardown: RuntimeTeardown | None,
+    *,
+    target_user: str,
+) -> bool:
+    """Complete runtime/record cleanup after a proven tmux kill.
+
+    Returns a truthful aggregate status and never raises, allowing single and
+    bulk callers to guarantee their one terminal audit event.
+    """
+    cleanup_ok = True
+    if teardown is not None:
+        try:
+            run_runtime_teardown(cfg, teardown, target_user, target.name)
+        except BaseException:  # cleanup must not erase the proven tmux kill
+            cleanup_ok = False
+    try:
+        cleanup_launch_record(cfg, target)
+    except BaseException:
+        cleanup_ok = False
+    return cleanup_ok
+
+
+def emit_kill_all_completion(
+    *,
+    target_users: list[str],
+    attempted_count: int,
+    killed_count: int,
+    failed_count: int,
+    cleanup_failed_count: int,
+    dry_run: bool,
+) -> None:
+    """Emit one truthful terminal event for a completed or aborted bulk kill."""
+    from uxon.infra import audit as _audit
+
+    _audit.audit(
+        "session.kill_all",
+        outcome=(
+            "ok"
+            if failed_count == 0 and killed_count == attempted_count and cleanup_failed_count == 0
+            else "error"
+        ),
+        target_users=target_users,
+        attempted_count=attempted_count,
+        killed_count=killed_count,
+        failed_count=failed_count,
+        cleanup_failed_count=cleanup_failed_count,
+        dry_run=dry_run,
+    )
 
 
 def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
@@ -607,24 +650,13 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # Per-target sudo gating happens on the peer (its own ``uxon kill``
     # runs the probe), so the local side does not need to know the
     # peer's user table. Bulk kill stays strictly local.
-    #
-    # Checked *before* the SSH_CONNECTION peer-inbound branch: a chained
-    # ``ssh peer1 "uxon kill --host peer2 …"`` invocation is the
-    # caller-side dispatch leg, not a peer-inbound terminus.
     if args.host is not None:
         return _do_kill_remote(args, cfg)
 
-    # Peer-inbound branch. Same shape as ``do_attach``.
-    # ``correlation_id`` is auto-injected by ``audit()`` from module
-    # state (the parser layer set it via ``set_correlation_id`` after
-    # popping ``--audit-correlation-id`` from argv).
-    # ``kill.remote.in`` *replaces* ``session.kill`` for the peer-side
-    # branch. State-changing events emit on both success and failure paths,
-    # so every emit point selects the peer event. ``kill.remote.in`` shares the
-    # ``session`` key with
-    # ``session.kill`` — only the event name differs, no field rename.
-    peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    _kill_event: str = "kill.remote.in" if peer_inbound else "session.kill"
+    # The target host records the actual local kill. A correlation id may join
+    # it to the initiating host's ``kill.remote.out`` event, but never changes
+    # event classification.
+    kill_event = "session.kill"
 
     # Local cross-user kill: --user X where X != launch_user requires
     # per-target NOPASSWD. Probe once for the single target (the same
@@ -638,7 +670,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         reachable = target_user in caps.reachable_users
         if not reachable:
             _audit.audit(
-                _kill_event,
+                kill_event,
                 outcome="denied",
                 session=args.target_id or "",
                 target_user=target_user,
@@ -667,7 +699,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             args.target_id,
             sessions,
             cfg,
-            audit_event=_kill_event,
+            audit_event=kill_event,
             target_user=target_user,
             extra={"force": args.force, "dry_run": args.dry_run, "profile": "", "agent": ""},
         )
@@ -681,7 +713,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         ]
         if args.dry_run:
             _audit.audit(
-                _kill_event,
+                kill_event,
                 session=target.name,
                 target_user=target_user,
                 profile=target.profile,
@@ -710,7 +742,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         teardown = prepare_runtime_teardown(cfg, target)
         run_kill_session(
             full,
-            audit_event=_kill_event,
+            audit_event=kill_event,
             session=target.name,
             target_user=target_user,
             profile=target.profile,
@@ -722,7 +754,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             cfg,
             target,
             teardown,
-            audit_event=_kill_event,
+            audit_event=kill_event,
             target_user=target_user,
             force=args.force,
             dry_run=args.dry_run,
@@ -750,14 +782,14 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         args.target_id,
         sessions,
         cfg,
-        audit_event=_kill_event,
+        audit_event=kill_event,
         target_user=launch_user,
         extra={"force": args.force, "dry_run": args.dry_run, "profile": "", "agent": ""},
     )
     full = tmux.configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
     if args.dry_run:
         _audit.audit(
-            _kill_event,
+            kill_event,
             session=target.name,
             target_user=launch_user,
             profile=target.profile,
@@ -784,7 +816,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     teardown = prepare_runtime_teardown(cfg, target)
     run_kill_session(
         full,
-        audit_event=_kill_event,
+        audit_event=kill_event,
         session=target.name,
         target_user=launch_user,
         profile=target.profile,
@@ -796,7 +828,7 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         cfg,
         target,
         teardown,
-        audit_event=_kill_event,
+        audit_event=kill_event,
         target_user=launch_user,
         force=args.force,
         dry_run=args.dry_run,
@@ -820,12 +852,12 @@ def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
     if not sessions:
-        from uxon.infra import audit as _audit
-
-        _audit.audit(
-            "session.kill_all",
+        emit_kill_all_completion(
             target_users=[launch_user],
+            attempted_count=0,
             killed_count=0,
+            failed_count=0,
+            cleanup_failed_count=0,
             dry_run=args.dry_run,
         )
         if args.json_output:
@@ -857,24 +889,54 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         if response.strip() != "kill-all":
             fail("cancelled", 130)
     results: list[dict[str, Any]] = []
-    for s in sessions:
-        full = tmux.configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
-        if args.dry_run:
+    attempted = 0
+    killed = 0
+    failed = 0
+    cleanup_failed = 0
+    try:
+        for s in sessions:
+            full = tmux.configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
+            if args.dry_run:
+                if not args.json_output:
+                    print(f"dry-run: {shlex.join(full)}")
+                results.append({"name": s.name, "action": "would-kill"})
+                continue
+            # Capture teardown before the kill, reap the orphan after it.
+            teardown = prepare_runtime_teardown(cfg, s)
+            cp = process.run_cmd(full, check=False)
+            attempted += 1
+            ok = cp.returncode == 0
+            action = "failed"
+            if ok:
+                killed += 1
+                cleanup_ok = finish_killed_session(cfg, s, teardown, target_user=launch_user)
+                if cleanup_ok:
+                    action = "killed"
+                else:
+                    action = "killed-cleanup-failed"
+                    cleanup_failed += 1
+            else:
+                failed += 1
             if not args.json_output:
-                print(f"dry-run: {shlex.join(full)}")
-            results.append({"name": s.name, "action": "would-kill"})
-            continue
-        # Capture teardown before the kill, reap the orphan after it.
-        teardown = prepare_runtime_teardown(cfg, s)
-        cp = process.run_cmd(full, check=False)
-        ok = cp.returncode == 0
-        if ok and teardown:
-            run_runtime_teardown(cfg, teardown, launch_user, s.name)
-        if ok:
-            cleanup_launch_record(cfg, s)
-        if not args.json_output:
-            print(f"killed: {s.name}" if ok else f"failed: {s.name}")
-        results.append({"name": s.name, "action": "killed" if ok else "failed"})
+                if action == "killed":
+                    print(f"killed: {s.name}")
+                elif action == "killed-cleanup-failed":
+                    print(f"killed: {s.name} (post-kill cleanup failed)")
+                else:
+                    print(f"failed: {s.name}")
+            results.append({"name": s.name, "action": action})
+    except BaseException:
+        failed += 1
+        raise
+    finally:
+        emit_kill_all_completion(
+            target_users=[launch_user],
+            attempted_count=attempted,
+            killed_count=killed,
+            failed_count=failed,
+            cleanup_failed_count=cleanup_failed,
+            dry_run=args.dry_run,
+        )
     if args.json_output:
         listing_app._emit_json(
             "kill-all",
@@ -885,15 +947,4 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 "sessions": results,
             },
         )
-    from uxon.infra import audit as _audit
-
-    killed = sum(1 for r in results if r["action"] == "killed")
-    attempted = sum(1 for r in results if r["action"] in ("killed", "failed"))
-    _audit.audit(
-        "session.kill_all",
-        outcome="ok" if killed == attempted else "error",
-        target_users=[launch_user],
-        killed_count=killed,
-        dry_run=args.dry_run,
-    )
     return 0
