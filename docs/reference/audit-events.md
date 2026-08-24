@@ -120,6 +120,6 @@ table.  See [`configuration.md`](configuration.md) for the
 ## Schema stability
 
 The envelope and event alphabet are versioned by the `v` field
-(currently `1`).  Within a major release line `uxon` will not remove
+(currently `2`).  Within a major release line `uxon` will not remove
 events or rename fields; new events and new optional fields may be
 added.  Breaking schema changes bump the major version and `v`.

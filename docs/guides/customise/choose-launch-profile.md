@@ -5,7 +5,7 @@ default, or route one project tree to a different runtime.
 
 Launch profiles are the runnable choices. Each profile selects an
 agent from the catalog and can optionally pin a launch user, a
-container profile, and the GitHub repo-creation profiles it may use.
+workload runtime, and the GitHub repo-creation profiles it may use.
 
 ## Pick a default profile
 
@@ -74,7 +74,7 @@ With `launch.enabled_profiles` empty or absent, `uxon` uses the
 shipped built-in profiles `claude`, `codex`, and `cursor`, each mapped
 to the same-named agent. On host-only launches it probes the launch
 user's PATH and picks the first built-in profile whose agent is
-installed. Containerized profiles are explicit config entries and must
+installed. Command-runtime profiles are explicit config entries and must
 be enabled by the operator.
 
 ## Reference

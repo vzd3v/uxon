@@ -185,10 +185,9 @@ your central collector before deleting the account.
 
 ## Common mistakes
 
-- **Deleting `nadia-agent` while live sessions are open.** The
-  `tmux` socket at `/tmp/uxon-nadia-agent.sock` lives on; the
-  agent's child processes inherit a deleted UID. Reap first,
-  then delete.
+- **Deleting `nadia-agent` while live sessions are open.** Its tmux server may
+  remain alive on the configured execution backend and its children inherit a
+  deleted UID. Reap through uxon first, then delete the account.
 - **Leaving `nadia-agent` in `session_users` after the sudoers
   fragment is gone.** The TUI shows the user as unreachable
   (`(N/M users reachable)` on the section header) — cosmetic but

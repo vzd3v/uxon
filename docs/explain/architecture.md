@@ -17,6 +17,8 @@ TUI session picker.
 There is no daemon. There is no database. State lives in:
 - `tmux` sessions on a per-user dedicated socket;
 - `config/config.toml` (operator-owned host config);
+- controller-local finalized launch records under the caller's XDG state
+  directory;
 - the host's platform log channel (journald native or `/dev/log`
   syslog), for the `audit` channel;
 - `${XDG_STATE_HOME:-~/.local/state}/uxon/`, for the developer-facing
@@ -82,23 +84,33 @@ examples/
 tests/                        unittest.TestCase, run via `pytest -n auto`.
 ```
 
-Per-file detail (every module's role, the exact import boundaries)
-lives in the agent-facing code map under `docs/agents/`.
-
 ## Data flow
 
 ```
-caller user                                       launch user
-─────────────                                    ──────────────
-$ uxon run             ──▶  parse args      ──▶  sudo -iu <launch_user> tmux ...
-                                                                  │
-                                                                  ▼
-                                                          fork(claude|codex|cursor)
-                            ┌──────────┐                          │
-$ uxon                  ──▶  │ TUI loop │──── attach ──────────────┘
-(no args, TTY)              │ (textual)│
-                            └──────────┘
+caller → policy/path resolution → execution backend → tmux server
+                                                   └→ launch bootstrap
+                                                      └→ workload runtime
+                                                         └→ agent
 ```
+
+The execution backend wraps every command that targets the launch user,
+including tmux server creation, list/attach/kill, filesystem and git probes,
+credential operations, and workload lifecycle. A command backend is one argv
+prefix; `local` is built in. The tmux server itself crosses this boundary, so a
+later tmux `new-window` or `run-shell` cannot escape it.
+
+The workload runtime is a separate inner layer. `direct` executes the agent
+unchanged; a configured command runtime prepends its `exec_prefix` only to the
+final workload argv. The launch bootstrap stays outside that inner runtime.
+
+Managed detached creation uses tmux's one-shot `wait-for` channel for ordering:
+uxon creates a pane blocked on a random release channel, reads the live tmux
+metadata, atomically finalizes and fsyncs the controller-local launch record,
+then signals the channel once. Only then does the bootstrap `exec` the runtime
+and agent argv. The channel is nonce-scoped ordering, not an authorization
+boundary; another process with access to the same tmux server can signal it.
+Ambiguous release failures are not retried: uxon kills the exact new session and
+removes its pending record.
 
 The TUI runs **inside** a re-entrant outer loop. When the user picks
 an action, the TUI calls `App.exit()` returning a `LaunchRequest`.
@@ -267,18 +279,19 @@ import-linter contracts):
 - **Config writes use `tomlkit`.** The round-trip writer in
   `src/uxon/infra/settings_toml.py` preserves comments and
   formatting. CLI read paths stay on stdlib `tomllib`.
-- **One tmux socket per launch user.** No code path silently falls
-  back to the default socket.
+- **One tmux socket per launch user and execution backend.** No code path
+  silently falls back to the default socket, and unreachable is distinct from
+  absent.
 
 ## Session naming
 
 ```
-uxon-<stem>@<agent>           plain sessions
-uxon-<repo>-<branch>@<agent>  worktree sessions
+uxon-<stem>@<profile>           plain sessions
+uxon-<repo>-<branch>@<profile>  worktree sessions
 ```
 
-Parallels append `-2`, `-3`, … *after* the agent suffix:
-`uxon-myproj@codex-2`. The default prefix is `uxon-`, configurable
+Parallels append `-2`, `-3`, … *after* the launch-profile suffix:
+`uxon-myproj@codex_safe-2`. The default prefix is `uxon-`, configurable
 via `session_prefix`. Names matching any prefix listed in
 `legacy_session_prefixes` are recognised by `list` / `attach` /
 `kill` (so existing sessions stay reachable across renames) but

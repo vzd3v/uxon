@@ -219,7 +219,9 @@ Prints:
 - `repeat_noninteractive_mode` and any env override;
 - `tmux` and agent binary paths for the launch user;
 - enabled launch profiles, their underlying agents, launch users,
-  container profiles, and host-agent status;
+  workload runtimes, and host-agent status;
+- execution backend id, kind, static config fingerprint, and fixed UID/GID
+  probe status for each effective launch user;
 - dedicated `tmux` socket details;
 - current sessions on the dedicated socket;
 - any sessions on the default `tmux` socket that match
@@ -232,6 +234,10 @@ Prints:
   `warn:<reason>` — passwordless sudo to `creds_user`, presence of
   `gh`, login status or token-file readability);
 - a list of detected configuration issues.
+
+An absent tmux server is a healthy empty state. A socket or execution backend
+that exists but cannot be queried is an explicit diagnostic error; it is never
+reported as zero sessions.
 
 **`--remote`** probes every configured `[[remote_hosts]]` peer
 once and reports reachability, latency, and session count. Default
