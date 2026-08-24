@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+AUDIT_COMMON_OPTIONAL_FIELDS = frozenset({"correlation_id"})
+
 AUDIT_EVENT_FIELDS: dict[str, frozenset[str]] = {
     "attach.remote.out.dispatch": frozenset(
-        {"peer_name", "ssh_alias", "target_user", "target_session", "dry_run", "correlation_id"}
+        {"peer_name", "ssh_alias", "target_user", "target_session", "dry_run"}
     ),
     "cli.start": frozenset(
         {
@@ -32,13 +34,10 @@ AUDIT_EVENT_FIELDS: dict[str, frozenset[str]] = {
             "dry_run",
             "rc",
             "error",
-            "correlation_id",
         }
     ),
     "list.peek": frozenset({"scope_users", "scope_skipped"}),
-    "list.remote.out": frozenset(
-        {"peer_name", "ssh_alias", "scope", "from_cache", "error", "correlation_id"}
-    ),
+    "list.remote.out": frozenset({"peer_name", "ssh_alias", "scope", "from_cache", "rc", "error"}),
     "runtime.prepare": frozenset({"action", "runtime_resource", "error", "error_type"}),
     "runtime.session_stop": frozenset(
         {"runtime", "runtime_resource", "action", "reason", "session", "target_user", "error"}
@@ -77,4 +76,22 @@ AUDIT_EVENT_FIELDS: dict[str, frozenset[str]] = {
     ),
 }
 
-AUDIT_EVENT_OUTCOMES = frozenset({"ok", "error", "denied", "not_found", "skipped"})
+AUDIT_EVENT_OUTCOMES: dict[str, frozenset[str]] = {
+    "attach.remote.out.dispatch": frozenset({"ok", "not_found"}),
+    "cli.start": frozenset({"ok"}),
+    "config.error": frozenset({"error"}),
+    "config.render": frozenset({"ok", "error"}),
+    "git.remote.create": frozenset({"ok", "error"}),
+    "kill.remote.out": frozenset({"ok", "error", "not_found"}),
+    "list.peek": frozenset({"ok", "denied"}),
+    "list.remote.out": frozenset({"ok", "error"}),
+    "runtime.prepare": frozenset({"ok", "error"}),
+    "runtime.session_stop": frozenset({"ok", "error", "skipped"}),
+    "session.attach.dispatch": frozenset({"ok", "denied", "not_found"}),
+    "session.ended": frozenset({"ok", "error"}),
+    "session.kill": frozenset({"ok", "denied", "error", "not_found"}),
+    "session.kill_all": frozenset({"ok", "error"}),
+    "session.new": frozenset({"ok", "error"}),
+    "tui.open": frozenset({"ok"}),
+    "worktree.create": frozenset({"ok"}),
+}

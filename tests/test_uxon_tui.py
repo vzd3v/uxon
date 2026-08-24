@@ -87,7 +87,6 @@ def _ctx(**overrides) -> uxon_tui.TuiContext:
     if has_sudo is not None and "sudo_caps" not in base:
         base["sudo_caps"] = SudoCapability(
             reachable_users=frozenset({"_synthetic_reachable_"} if has_sudo else set()),
-            can_root=bool(has_sudo),
         )
     return uxon_tui.TuiContext(**base)
 

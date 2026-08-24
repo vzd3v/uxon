@@ -32,7 +32,6 @@ def make_config(**overrides: object) -> Config:
         "launch_record_dir": "",
         "tui_refresh_interval_seconds": 2.0,
         "git_create_enabled": False,
-        "default_git_remote_profile": "",
         "git_remote_profiles": [],
         "agents": agents,
         "launch": LaunchConfig(default_profile="claude", profiles=builtin_launch_profiles(agents)),

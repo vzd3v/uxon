@@ -594,7 +594,39 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         [event] = [fields for name, fields in recorded if name == "list.remote.out"]
         self.assertEqual(event["outcome"], "ok")
         self.assertEqual(event["correlation_id"], _CORRELATION_ID)
+        self.assertEqual(event["rc"], 0)
         self.assertIn(_CORRELATION_ID, run.call_args.args[0][-1])
+
+    def test_all_users_retry_emits_one_event_with_final_rc(self) -> None:
+        recorded: list[tuple[str, dict[str, object]]] = []
+        attempts = iter(
+            [
+                mock.Mock(
+                    returncode=2,
+                    stdout="",
+                    stderr="uxon-error: all-users-disabled",
+                ),
+                mock.Mock(returncode=0, stdout=_good_envelope([]), stderr=""),
+            ]
+        )
+
+        def runner(*_args: Any, **_kwargs: Any) -> Any:
+            return next(attempts)
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with TemporaryDirectory() as tmp:
+            with (
+                _patch_run_query(runner) as run,
+                mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
+            ):
+                snap = fetch_remote_snapshot(_host(), override_state_dir=Path(tmp))
+        self.assertTrue(snap.scope_limited)
+        self.assertEqual(run.call_count, 2)
+        [event] = [fields for name, fields in recorded if name == "list.remote.out"]
+        self.assertEqual(event["outcome"], "ok")
+        self.assertEqual(event["rc"], 0)
 
     def test_ssh_nonzero_exit_falls_back_to_cache(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -638,14 +670,23 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def _raise_timeout(*_args: Any, **_kwargs: Any) -> Any:
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=10)
 
+        recorded: list[tuple[str, dict[str, object]]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
         with TemporaryDirectory() as tmp, _patch_run_query(_raise_timeout):
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-            )
+            with mock.patch("uxon.infra.audit.audit", side_effect=fake_audit):
+                snap = fetch_remote_snapshot(
+                    _host(),
+                    override_state_dir=Path(tmp),
+                )
             assert snap.error is not None
             self.assertIn("timeout", snap.error)
             self.assertEqual(snap.sessions, [])
+        [event] = [fields for name, fields in recorded if name == "list.remote.out"]
+        self.assertEqual(event["outcome"], "error")
+        self.assertEqual(event["rc"], 124)
 
     def test_ssh_not_installed_captured(self) -> None:
         def _raise_fnf(*_args: Any, **_kwargs: Any) -> Any:

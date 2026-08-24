@@ -210,23 +210,20 @@ class TuiBridge:
         from uxon.infra.remote_hosts import find_host
         from uxon.tui.context import CallbackError
 
+        corr_id = str(_uuid.uuid4())
         peer = find_host(self.cfg.remote_hosts, host_name)
         if peer is None:
+            _audit.audit(
+                "attach.remote.out.dispatch",
+                outcome="not_found",
+                peer_name=host_name,
+                ssh_alias="",
+                target_user=user,
+                target_session=name,
+                dry_run=False,
+                correlation_id=corr_id,
+            )
             raise CallbackError(f"unknown remote host: {host_name}")
-        # Pass correlation_id explicitly via kwargs rather than seeding
-        # ``_audit._correlation_id``: the TUI process is long-lived, and a
-        # left-behind global would leak into subsequent local audit events
-        # (next attach dispatch / session.kill picked up the stale UUID).
-        corr_id = str(_uuid.uuid4())
-        _audit.audit(
-            "attach.remote.out.dispatch",
-            peer_name=peer.name,
-            ssh_alias=peer.ssh_alias,
-            target_user=user,
-            target_session=name,
-            dry_run=False,
-            correlation_id=corr_id,
-        )
         # target first (see _do_attach_remote for rationale).
         remote_cmd = (
             f"{shlex.quote(peer.remote_uxon)} attach {shlex.quote(name)} "
@@ -246,6 +243,18 @@ class TuiBridge:
             # the TUI handoff at ``unix_wait_for_peer``.
             ssh_multiplex="off",
             ssh_control_persist_seconds=self.cfg.ssh_control_persist_seconds,
+        )
+        # Pass correlation_id explicitly rather than seeding the process-global
+        # value: the TUI outlives this dispatch. Emit only after argv planning
+        # succeeds so outcome=ok means a concrete handoff request exists.
+        _audit.audit(
+            "attach.remote.out.dispatch",
+            peer_name=peer.name,
+            ssh_alias=peer.ssh_alias,
+            target_user=user,
+            target_session=name,
+            dry_run=False,
+            correlation_id=corr_id,
         )
         return LaunchRequest(cmd=tuple(argv), label=f"attach {name}@{host_name}")
 
@@ -275,13 +284,24 @@ class TuiBridge:
         from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
         from uxon.infra.remote_hosts import find_host
 
+        corr_id = str(_uuid.uuid4())
         peer = find_host(self.cfg.remote_hosts, host_name)
         if peer is None:
+            _audit.audit(
+                "kill.remote.out",
+                outcome="not_found",
+                peer_name=host_name,
+                ssh_alias="",
+                target_user=user,
+                target_session=name,
+                force=True,
+                dry_run=False,
+                correlation_id=corr_id,
+            )
             fail(f"unknown remote host: {host_name}", 1)
         # See on_remote_attach: TUI process outlives the dispatch, so we
         # avoid the module-level correlation_id global to keep state from
         # bleeding into the next local emit.
-        corr_id = str(_uuid.uuid4())
         # target first (see _do_attach_remote for rationale).
         remote_cmd = (
             f"{shlex.quote(peer.remote_uxon)} kill {shlex.quote(name)} --force "

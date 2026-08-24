@@ -16,7 +16,7 @@ from uxon.infra import config_loader, identity, sessions_probe, version_probe
 
 
 def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], list[str]]:
-    """Probe per-target sudo and split ``session_users`` into reachable / skipped.
+    """Probe target execution backends and split users into reachable/skipped.
 
     Returns ``(scope_users, scope_skipped)``:
 
@@ -30,7 +30,7 @@ def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], 
       was filtered.
 
     The launch user itself is always in ``scope_users`` and never in
-    ``scope_skipped``: there's no sudo step for "see my own
+    ``scope_skipped``: there's no cross-user backend step for "see my own
     sessions".
     """
     from uxon.infra.sudo_probe import probe_sudo_capability
@@ -48,13 +48,13 @@ def _emit_scope_skipped_hint(scope_skipped: list[str] | None) -> None:
     """Print a single-line stderr hint when ``--all-users`` filtered users.
 
     Format mirrors the spec:
-    ``# 2 users skipped (no sudo): carol_agent, dave_agent``.
+    ``# 2 users skipped (unreachable): carol_agent, dave_agent``.
     No-op when the skipped list is empty / None — stdout stays
     parseable and human output stays uncluttered.
     """
     if not scope_skipped:
         return
-    eprint(f"# {len(scope_skipped)} users skipped (no sudo): {', '.join(scope_skipped)}")
+    eprint(f"# {len(scope_skipped)} users skipped (unreachable): {', '.join(scope_skipped)}")
 
 
 def _list_data(
@@ -72,7 +72,7 @@ def _list_data(
     scoped, whether ``--all-users`` was on, and the session prefix
     that ``short_id`` was stripped against.
 
-    ``scope_skipped`` (optional) is the per-target-sudo "users in
+    ``scope_skipped`` (optional) is the per-target-backend "users in
     ``session_users`` we probed but couldn't reach" list. It is
     omitted from the envelope when ``None`` so single-user listings
     stay byte-identical to their previous shape; callers that
@@ -138,7 +138,7 @@ def _list_data_from_records(
     only delta is the envelope-level ``host`` field set by the
     caller.
 
-    ``scope_skipped`` (optional) propagates the per-target-sudo
+    ``scope_skipped`` (optional) propagates the per-target-backend
     skipped-users list through; omitted when ``None`` to keep the
     envelope shape stable for callers that don't pass it.
     """

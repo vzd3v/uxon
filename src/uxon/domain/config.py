@@ -152,7 +152,6 @@ class Config:
     tmux_socket_template: str
     tui_refresh_interval_seconds: float
     git_create_enabled: bool
-    default_git_remote_profile: str
     git_remote_profiles: list[GitRemoteProfile]  # parsed once in load_config
     launch_record_dir: str = ""
     tui_ssh_refresh_interval_seconds: float = 10.0

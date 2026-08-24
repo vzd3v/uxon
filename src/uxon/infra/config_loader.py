@@ -831,7 +831,6 @@ def _parse_config_or_fail(raw: dict[str, Any]) -> Config:
         fail("fetch_concurrency must be greater than 0")
 
     git_create_enabled = merged.get("git_create_enabled", DEFAULT_CONFIG["git_create_enabled"])
-    default_git_remote_profile = ""
 
     from uxon.infra import remote_hosts as uxon_remote_hosts
 
@@ -900,7 +899,6 @@ def _parse_config_or_fail(raw: dict[str, Any]) -> Config:
         tui_refresh_interval_seconds=tui_refresh_interval_seconds,
         tui_ssh_refresh_interval_seconds=tui_ssh_refresh_interval_seconds,
         git_create_enabled=git_create_enabled,
-        default_git_remote_profile=default_git_remote_profile,
         git_remote_profiles=git_remote_profiles,
         remote_hosts=remote_hosts,
         ssh_multiplex=ssh_multiplex,

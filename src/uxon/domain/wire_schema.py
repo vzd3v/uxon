@@ -31,7 +31,7 @@ to parse rather than guess.
 List-data optional fields (forward-compatible additions, no version bump):
 
 - ``data.scope_skipped`` (``list[str]``): users in ``session_users``
-  that the producer probed for sudo reachability and could *not* reach
+  whose selected execution backend did *not* pass the target probe
   via ``sudo -n -H -u <U>``. ``data.scope_users`` is the *reachable*
   subset; the union ``scope_users ∪ scope_skipped`` is the set of
   candidates actually probed. Users in ``session_users`` that were
@@ -203,7 +203,7 @@ class RemoteSnapshot:
             badges the section header with ``(own only)`` so the
             operator knows the per-peer view is partial. Default
             ``False`` — fresh peers serve the all-users view.
-        scope_skipped: Users the peer probed for sudo reachability
+        scope_skipped: Users whose target execution probe failed
             and could not reach. Absence on a same-major peer is treated
             as ``[]``.
         host_stats: Optional snapshot of host-level metrics

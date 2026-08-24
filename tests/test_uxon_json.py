@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 from helpers import make_config as _make_config
@@ -34,7 +36,7 @@ from helpers import make_session as _make_session
 import uxon.app.kill as kill_app
 import uxon.app.listing as listing_app
 from uxon.cli.parsing import parse_args
-from uxon.domain.args import ParsedArgs
+from uxon.domain.args import USAGE, ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
 from uxon.infra import version_probe
@@ -56,6 +58,7 @@ class JsonFlagParsingTests(unittest.TestCase):
         self.assertTrue(parse_args(["version", "--json"]).json_output)
         self.assertTrue(parse_args(["-V", "--json"]).json_output)
         self.assertTrue(parse_args(["--version", "--json"]).json_output)
+        self.assertIn("uxon (-V | --version) [--json]", USAGE)
 
     def test_doctor_subcommand(self) -> None:
         self.assertTrue(parse_args(["doctor", "--json"]).json_output)
@@ -112,6 +115,18 @@ class VersionJsonTests(unittest.TestCase):
             data = version_probe._version_data()
         self.assertIsNone(data["commit"])
         self.assertFalse(data["commit_dirty"])
+
+    def test_wheel_inside_foreign_worktree_never_reports_consumer_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            foreign_python = Path(tmp) / "consumer" / ".venv" / "lib" / "python3.11"
+            foreign_python.mkdir(parents=True)
+            with (
+                mock.patch.object(version_probe, "repo_root", return_value=foreign_python),
+                mock.patch.object(version_probe, "run_query") as run,
+            ):
+                self.assertIsNone(version_probe.read_git_commit_short())
+                self.assertFalse(version_probe.repo_is_dirty())
+        run.assert_not_called()
 
 
 class ListJsonTests(unittest.TestCase):
@@ -353,6 +368,10 @@ class KillAllJsonTests(unittest.TestCase):
         self.assertEqual(
             actions, [("uxon-a@claude", "would-kill"), ("uxon-b@claude", "would-kill")]
         )
+        self.assertEqual(
+            [row["cleanup_outcome"] for row in env["data"]["sessions"]],
+            ["not_run", "not_run"],
+        )
         self.assertTrue(env["data"]["dry_run"])
 
     def test_json_without_force_or_dry_run_refuses(self) -> None:
@@ -388,6 +407,30 @@ class KillAllJsonTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         env = json.loads(buf.getvalue())
         self.assertEqual(env["data"]["sessions"][0]["action"], "failed")
+        self.assertEqual(env["data"]["sessions"][0]["cleanup_outcome"], "not_run")
+
+    def test_cleanup_failure_keeps_killed_action_and_reports_cleanup_outcome(self) -> None:
+        cfg = _make_config()
+        target = _make_session("uxon-a@claude")
+        args = ParsedArgs(action="kill-all", force=True, json_output=True)
+        with (
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-u-vz.sock"),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch(
+                "uxon.infra.process.run_cmd",
+                return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+            ),
+            mock.patch("uxon.app.kill.prepare_runtime_teardown", return_value=None),
+            mock.patch("uxon.app.kill.finish_killed_session", return_value=False),
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = kill_app.do_kill_all(args, cfg, "u-vz")
+        self.assertEqual(rc, 0)
+        [result] = json.loads(buf.getvalue())["data"]["sessions"]
+        self.assertEqual(result["action"], "killed")
+        self.assertEqual(result["cleanup_outcome"], "error")
 
 
 class HostFlagParsingTests(unittest.TestCase):

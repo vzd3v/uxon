@@ -113,10 +113,8 @@ class TuiContext:
     cwd_writable: bool | None = None
 
     current_user: str = ""
-    # Per-target sudo capability. ``reachable_users`` gates the "Other
-    # users' sessions" block + ``kill-all-reachable`` action;
-    # ``can_root`` gates visibility of the operator Settings screen; entries
-    # remain read-only unless the Uxon process itself is root.
+    # Per-target execution capability. ``reachable_users`` gates the "Other
+    # users' sessions" block and ``kill-all-reachable`` action.
     sudo_caps: SudoCapability = field(default_factory=SudoCapability)
     # Users in ``session_users`` the per-target probe could not reach.
     # Surfaced in the TUI's "(N/M users reachable)" hint and on
@@ -250,11 +248,8 @@ class TuiContext:
         [str, str, str, str, str], tuple[ExistingSessionChoice, ...]
     ] = lambda worktree_path, repo_root, branch, profile_id, mode_id: ()
 
-    # Git remote on new project — display only. The TUI never edits these.
+    # Git remote on new project.
     git_create_enabled: bool = False
-    default_git_remote_profile: str = ""
-    # Each entry: (profile_name, description string like "github.com/<owner> via <creds_user> [gh]")
-    git_remote_profile_options: list[tuple[str, str]] = field(default_factory=list)
 
     # Settings (superuser-visible). The TUI delegates all file I/O through these.
     get_settings_entries: Callable[[], list] = lambda: []

@@ -107,7 +107,7 @@ class AttachCrossUserTests(unittest.TestCase):
         args = ParsedArgs(action="attach", target_id="demo@claude", user="alice")
         from uxon.domain.sudo import SudoCapability
 
-        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        caps = SudoCapability()
         buf = io.StringIO()
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
@@ -125,7 +125,7 @@ class AttachCrossUserTests(unittest.TestCase):
 
         cfg = self._cfg()
         args = ParsedArgs(action="attach", target_id="demo@claude", user="alice")
-        caps = SudoCapability(reachable_users=frozenset(), can_root=False)
+        caps = SudoCapability()
         recorded: list[tuple[str, dict]] = []
 
         def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
@@ -153,16 +153,22 @@ class AttachCrossUserTests(unittest.TestCase):
         args = ParsedArgs(action="attach", target_id="demo@claude", user="alice", dry_run=True)
         from uxon.domain.sudo import SudoCapability
 
-        caps = SudoCapability(reachable_users=frozenset({"alice"}), can_root=False)
+        caps = SudoCapability(reachable_users=frozenset({"alice"}))
         buf = io.StringIO()
+        recorded: list[tuple[str, dict[str, object]]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
         with (
             mock.patch("uxon.infra.sudo_probe.probe_sudo_capability", return_value=caps),
             mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
             mock.patch("uxon.infra.tmux.tmux_socket_path", return_value="/tmp/uxon-alice.sock"),
             mock.patch("uxon.infra.identity.process_user", return_value="u-vz"),
             mock.patch("uxon.infra.sessions_probe.resolve_session") as rs,
+            mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
         ):
-            rs.return_value = mock.Mock(name="demo@claude")
+            rs.return_value = mock.Mock(name="demo@claude", profile="claude_fast", agent="claude")
             rs.return_value.name = "demo@claude"
             with redirect_stdout(buf):
                 rc = attach_app.do_attach(args, cfg, "u-vz")
@@ -171,6 +177,12 @@ class AttachCrossUserTests(unittest.TestCase):
         self.assertIn("sudo", out)
         self.assertIn("alice", out)
         self.assertIn("tmux", out)
+        [event] = [fields for name, fields in recorded if name == "session.attach.dispatch"]
+        self.assertEqual(event["outcome"], "ok")
+        self.assertEqual(event["target_user"], "alice")
+        self.assertEqual(event["profile"], "claude_fast")
+        self.assertEqual(event["agent"], "claude")
+        self.assertIs(event["dry_run"], True)
 
 
 class AttachHostRemoteTests(unittest.TestCase):
@@ -241,8 +253,19 @@ class AttachHostRemoteTests(unittest.TestCase):
             host="unknown",
             user="alice",
         )
-        with self.assertRaises(SystemExit):
+        recorded: list[tuple[str, dict[str, object]]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with (
+            mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
+            self.assertRaises(SystemExit),
+        ):
             attach_app.do_attach(args, cfg, "u-vz")
+        [event] = [fields for name, fields in recorded if name == "attach.remote.out.dispatch"]
+        self.assertEqual(event["outcome"], "not_found")
+        self.assertEqual(event["peer_name"], "unknown")
 
 
 class OnRemoteAttachCallbackTests(unittest.TestCase):

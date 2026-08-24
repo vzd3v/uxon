@@ -42,7 +42,6 @@ class DoctorParallelProbeTests(unittest.TestCase):
             tmux_socket_template="/tmp/uxon-{user}.sock",
             tui_refresh_interval_seconds=2.0,
             git_create_enabled=False,
-            default_git_remote_profile="",
             git_remote_profiles=[],
         )
 
@@ -246,7 +245,6 @@ class DoctorRemoteFlagTests(unittest.TestCase):
             tmux_socket_template="/tmp/uxon-{user}.sock",
             tui_refresh_interval_seconds=2.0,
             git_create_enabled=False,
-            default_git_remote_profile="",
             git_remote_profiles=[],
             remote_hosts=remote_hosts or [],
         )
@@ -448,7 +446,6 @@ class DoctorAuditLineTests(unittest.TestCase):
             tmux_socket_template="/tmp/uxon-{user}.sock",
             tui_refresh_interval_seconds=2.0,
             git_create_enabled=False,
-            default_git_remote_profile="",
             git_remote_profiles=[],
         )
 

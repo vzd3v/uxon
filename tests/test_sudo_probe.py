@@ -1,6 +1,6 @@
 """Tests for ``uxon.infra.sudo_probe``.
 
-Pin the per-target sudo probe contract that the TUI superuser
+Pin the per-target execution probe contract that the TUI supervision
 block, ``uxon list --all-users``, and the multi-host aggregator
 all depend on. Pure unit tests — no real ``sudo`` is invoked; the
 ``subprocess.run`` calls inside :mod:`uxon.infra.sudo_probe` are stubbed
@@ -31,7 +31,7 @@ _CFG = make_config()
 
 @contextmanager
 def _stubbed_run(stub):
-    """Route both target-user and root probes through one deterministic stub."""
+    """Route target-user probes through one deterministic stub."""
     with (
         mock.patch("uxon.infra.execution.run_query", side_effect=stub),
         mock.patch(
@@ -39,7 +39,6 @@ def _stubbed_run(stub):
             return_value=mock.Mock(pw_uid=1000, pw_gid=1000),
         ),
         mock.patch("uxon.infra.execution.os.getgrouplist", return_value=[1000]),
-        mock.patch("uxon.infra.sudo_probe.run_query", side_effect=stub),
     ):
         yield
 
@@ -57,10 +56,6 @@ class _SudoStub:
       - the sentinel string ``"timeout"`` to raise ``TimeoutExpired``
       - the sentinel string ``"oserror"`` to raise ``OSError``
 
-    ``root`` controls the ``sudo -n true`` (no ``-u``) probe: int rc
-    or one of the sentinel strings. Default rc=1 (root NOPASSWD
-    unavailable) so most tests don't have to opt out explicitly.
-
     The stub records every observed argv on ``self.calls`` so tests
     can assert on flag plumbing (``-n``, ``-i``, ``-u <user>``,
     ``--``, probe module).
@@ -69,10 +64,8 @@ class _SudoStub:
     def __init__(
         self,
         per_user: dict[str, int | str] | None = None,
-        root: int | str = 1,
     ) -> None:
         self.per_user = dict(per_user or {})
-        self.root = root
         self.calls: list[list[str]] = []
 
     def __call__(self, argv, **kwargs):
@@ -82,9 +75,6 @@ class _SudoStub:
             user = argv[4]
             outcome = self.per_user.get(user, 1)
             return self._dispatch(outcome, argv, probe=True)
-        # Root probe: ["sudo", "-n", "true"]
-        if argv == ["sudo", "-n", "true"]:
-            return self._dispatch(self.root, argv)
         raise AssertionError(f"unexpected argv to sudo stub: {argv!r}")
 
     @staticmethod
@@ -102,15 +92,14 @@ class _SudoStub:
 class ProbeReturnsCapabilitySnapshot(unittest.TestCase):
     """Smoke: the probe returns a SudoCapability with the right shape."""
 
-    def test_empty_candidate_list_only_runs_root_probe(self) -> None:
-        stub = _SudoStub(root=0)
+    def test_empty_candidate_list_runs_no_probe(self) -> None:
+        stub = _SudoStub()
         with _stubbed_run(stub):
             with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
                 caps = probe_sudo_capability(_CFG, [])
         self.assertIsInstance(caps, SudoCapability)
         self.assertEqual(caps.reachable_users, frozenset())
-        self.assertTrue(caps.can_root)
-        self.assertEqual(stub.calls, [["sudo", "-n", "true"]])
+        self.assertEqual(stub.calls, [])
 
 
 class ReachableUsersAreFiltered(unittest.TestCase):
@@ -124,7 +113,6 @@ class ReachableUsersAreFiltered(unittest.TestCase):
             with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
                 caps = probe_sudo_capability(_CFG, ["alice_agent", "bob_agent", "carol_agent"])
         self.assertEqual(caps.reachable_users, frozenset({"alice_agent", "bob_agent"}))
-        self.assertFalse(caps.can_root)
 
     def test_timeout_means_not_reachable(self) -> None:
         stub = _SudoStub(per_user={"alice_agent": "timeout", "bob_agent": 0})
@@ -200,13 +188,6 @@ class ProbeArgvShape(unittest.TestCase):
             ],
         )
 
-    def test_root_probe_uses_n_true_no_dash_u(self) -> None:
-        stub = _SudoStub(root=0)
-        with _stubbed_run(stub):
-            with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
-                probe_sudo_capability(_CFG, [])
-        self.assertIn(["sudo", "-n", "true"], stub.calls)
-
     def test_probe_calls_have_finite_timeouts(self) -> None:
         captured: list[dict] = []
 
@@ -220,7 +201,7 @@ class ProbeArgvShape(unittest.TestCase):
 
         # ``run_query`` owns terminal isolation; this layer must give every
         # probe the finite timeout that bounds startup.
-        self.assertGreaterEqual(len(captured), 2)
+        self.assertEqual(len(captured), 1)
         for kwargs in captured:
             self.assertIn("timeout", kwargs)
             self.assertEqual(kwargs["timeout"], PROBE_TIMEOUT_SEC)
@@ -237,8 +218,6 @@ class ParallelismBoundedByPool(unittest.TestCase):
 
         def stub_run(argv, **kwargs):
             time.sleep(per_user_sleep)
-            if argv == ["sudo", "-n", "true"]:
-                return _fake_completed(0)
             return _fake_completed(0, stdout='{"euid":1000,"egid":1000,"groups":[1000]}')
 
         candidates = [f"user{i}_agent" for i in range(MAX_WORKERS)]
@@ -252,46 +231,6 @@ class ParallelismBoundedByPool(unittest.TestCase):
         # One batch worth of latency, with a generous safety margin
         # for slow CI: serial would be 1.6s, parallel is ~0.2-0.3s.
         self.assertLess(elapsed, 0.8)
-
-
-class CanRootDecoupledFromReachable(unittest.TestCase):
-    """``can_root`` is independent of ``reachable_users``."""
-
-    def test_root_nopasswd_alone(self) -> None:
-        stub = _SudoStub(per_user={}, root=0)
-        with _stubbed_run(stub):
-            with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
-                caps = probe_sudo_capability(_CFG, [])
-        self.assertTrue(caps.can_root)
-        self.assertEqual(caps.reachable_users, frozenset())
-
-    def test_per_target_only_no_root(self) -> None:
-        stub = _SudoStub(per_user={"alice_agent": 0}, root=1)
-        with _stubbed_run(stub):
-            with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
-                caps = probe_sudo_capability(_CFG, ["alice_agent"])
-        self.assertFalse(caps.can_root)
-        self.assertEqual(caps.reachable_users, frozenset({"alice_agent"}))
-
-    def test_no_sudo_at_all(self) -> None:
-        stub = _SudoStub(per_user={"alice_agent": 1}, root=1)
-        with _stubbed_run(stub):
-            with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
-                caps = probe_sudo_capability(_CFG, ["alice_agent"])
-        self.assertFalse(caps.can_root)
-        self.assertEqual(caps.reachable_users, frozenset())
-
-    def test_root_probe_short_circuits_on_uid_zero(self) -> None:
-        # When the process is already root (euid==0) we don't need
-        # to actually shell out for the root probe — the function
-        # short-circuits to True. Per-target probes still run.
-        stub = _SudoStub(per_user={"alice_agent": 0})
-        with _stubbed_run(stub):
-            with mock.patch("uxon.infra.sudo_probe._self_user", return_value="root"):
-                with mock.patch("uxon.infra.sudo_probe.os.geteuid", return_value=0):
-                    caps = probe_sudo_capability(_CFG, ["alice_agent"])
-        self.assertTrue(caps.can_root)
-        self.assertNotIn(["sudo", "-n", "true"], stub.calls)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from uxon.domain.host_report import HostReport
 USAGE = """Usage:
   uxon                              (interactive session picker if TTY, else this help)
   uxon -h | --help
-  uxon -V | --version
+  uxon (-V | --version) [--json]
   uxon [run] [-w <branch>] [--dry-run] [--profile <id>] [--mode <id>] [agent-flags...]
   uxon new <name> [-w <branch>] [--attach-existing|--new-session] [--dry-run] [--profile <id>] [--mode <id>]
                  [--git-remote <profile>|default | --no-git] [--git-visibility private|public]
