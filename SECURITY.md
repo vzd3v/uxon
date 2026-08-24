@@ -4,8 +4,8 @@
 
 | Version | Status         |
 |---------|----------------|
-| 3.x     | Security fixes |
-| < 3.0   | Unsupported    |
+| 4.x     | Security fixes |
+| < 4.0   | Unsupported    |
 
 ## Reporting a vulnerability
 
@@ -114,10 +114,11 @@ The trust boundaries are:
    logs it, and never echoes it in `--dry-run` output.
 
 5. **Config writes.** The TUI Settings screen rewrites
-   `config/config.toml` in place via a `tomlkit` round-trip. If the
-   file is not directly writable, uxon shells out to `sudo tee`.
-   The new content is staged in a temporary file and then atomically
-   replaced.
+   `/etc/uxon/config.toml` via a `tomlkit` round-trip. Root stages a
+   mode-`0644` sibling and atomically replaces the file; an unprivileged
+   controller passes the rendered bytes to a fixed non-interactive
+   `sudo install -o root -g root -m 0644` command. The destination remains
+   root-owned.
 
 6. **Launch records.** Managed runtime teardown trusts a finalized controller-side
    record, not pane environment alone. The default record store is private to one
@@ -153,8 +154,7 @@ The trust boundaries are:
   terminal-features) to the sessions it launches, layered on top of
   each launch user's own tmux config — off by default, enabled with
   `tmux.manage_options = true`. The option values come only from
-  the resolved `config.toml` (the shipped defaults or the operator's
-  override), and a rejected option fails the launch rather than
+  `/etc/uxon/config.toml`, and a rejected option fails the launch rather than
   starting a degraded session. uxon never edits the user's
   `~/.tmux.conf` or any file.
 - **Centralised RBAC, SSO, or audit infrastructure.** uxon is the
@@ -311,6 +311,6 @@ uxon guarantees.
   on `sudo -n -H -u USER --` probes; turning it off reduces probe traffic and
   the chance of accidental visibility.
 
-- **Restrict write access to `config/config.toml` to
-  administrators.** The TUI's `sudo tee` fallback is a
-  convenience, not an authorisation model.
+- **Restrict write access to `/etc/uxon/config.toml` to
+  administrators.** TUI writes use a fixed `sudo install` command, but
+  sudoers remains the authorisation boundary.

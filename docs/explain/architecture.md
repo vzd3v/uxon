@@ -16,7 +16,7 @@ TUI session picker.
 
 There is no daemon. There is no database. State lives in:
 - `tmux` sessions on a per-user dedicated socket;
-- `config/config.toml` (operator-owned host config);
+- `/etc/uxon/config.toml` (operator-owned host config);
 - controller-local finalized launch records under the caller's XDG state
   directory;
 - the host's platform log channel (journald native or `/dev/log`
@@ -319,7 +319,7 @@ behaviour depends on Textual lifecycle.
 
 ## Configuration
 
-One operator-owned runtime config is read: `config/config.toml`.
+One operator-owned runtime config is read: `/etc/uxon/config.toml`.
 Project-owned `.uxon.toml` files are ignored; path-specific launch
 policy lives in `[[launch.path_rules]]`.
 

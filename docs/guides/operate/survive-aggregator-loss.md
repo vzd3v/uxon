@@ -53,11 +53,11 @@ uv tool install uxon                          # match the fleet's version
 cp /backup/uxon-aggregator/.ssh/config ~/.ssh/
 cp /backup/uxon-aggregator/.ssh/id_ed25519* ~/.ssh/
 chmod 600 ~/.ssh/id_ed25519*
-mkdir -p ~/uxon-aggregator
-cp /backup/uxon-aggregator/config.toml ~/uxon-aggregator/config/
+sudo install -d -o root -g root -m 0755 /etc/uxon
+sudo install -o root -g root -m 0644 \
+  /backup/uxon-aggregator/config.toml /etc/uxon/config.toml
 
 # Verify:
-cd ~/uxon-aggregator
 uxon doctor --remote        # full fleet probe
 uxon                        # TUI opens; HOST column lists every peer
 ```
@@ -81,8 +81,8 @@ remove the peer from the aggregator's view.
 ssh <peer> uxon kill-all --force      # if you own the peer
 # (or coordinate with the developers using it)
 
-# 2. Remove the [[remote_hosts]] block from the aggregator's
-#    config.toml. The TUI picks it up on next refresh (r) or
+# 2. Remove the [[remote_hosts]] block from
+#    /etc/uxon/config.toml. The TUI picks it up on next refresh (r) or
 #    relaunch.
 
 # 3. Delete the cached snapshot — it's safe to leave but tidy
@@ -139,7 +139,7 @@ recoverable:
 
 - Track `~/.ssh/config` (or the `~/.ssh/config.d/uxon` snippet)
   in your infra repo / dotfiles repo.
-- Keep the aggregator's `config/config.toml` in version control
+- Keep the aggregator's `/etc/uxon/config.toml` in version control
   if it's nontrivial. The `[[remote_hosts]]` blocks can be
   rendered from JSON via
   `install/render_uxon_config.py`.

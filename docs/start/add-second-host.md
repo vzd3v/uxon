@@ -58,7 +58,7 @@ For bastion / kubectl-exec / docker-exec patterns see
 
 ## Step 2 — `[[remote_hosts]]` on the aggregator
 
-In the aggregator's `config/config.toml`:
+In the aggregator's `/etc/uxon/config.toml`:
 
 ```toml
 [[remote_hosts]]

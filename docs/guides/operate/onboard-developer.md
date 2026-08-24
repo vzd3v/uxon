@@ -58,7 +58,7 @@ ACL schemes see
 
 ## Step 4 — Add to `session_users`
 
-Edit `config/config.toml` on the host:
+Edit `/etc/uxon/config.toml` on the host:
 
 ```toml
 session_users = ["nadia-agent", "liam-agent", "ethan-agent", "maya-agent"]
@@ -145,7 +145,7 @@ every host.
 ## Audit footprint
 
 Every step the new developer takes is recorded in the audit
-channel under `caller_user=maya`. To review their activity later:
+channel under `process_user=maya`. To review their activity later:
 
 ```bash
 journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=maya --since today

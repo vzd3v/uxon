@@ -139,7 +139,7 @@ profiles, not as a fault.
 
 Project-owned `.uxon.toml` files are not read. Container selection,
 path mapping, and all executed runtime templates are operator-owned
-config in `config/config.toml`.
+config in `/etc/uxon/config.toml`.
 
 ## Observability
 

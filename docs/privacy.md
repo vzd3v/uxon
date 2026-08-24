@@ -19,14 +19,14 @@ local to your host.
 
 Every event carries:
 
-- Your shell username (`caller_user`) and UID (`caller_uid`).
-- The agent account that ran the gesture (`launch_user`,
-  e.g. `nadia-agent` if you're `nadia`).
+- The kernel audit login identity (`process_user`, `process_uid`). Uxon ignores
+  `USER` and `SUDO_*` when constructing this audit identity.
+- The concrete target account on events that act on one or more users
+  (`target_user` / `target_users`).
 - A timestamp, the host's hostname, and the `uxon` version.
 - The subcommand (`run`, `attach`, `kill`, …) and a
-  **sanitised** flag list — secret-shaped flags
-  (`--token`, `--password`, `--secret`) have their values
-  redacted; other flags are recorded verbatim.
+  list of parsed Uxon option names. Option values, forwarded agent flags,
+  prompts, and credentials are never included in `cli.start`.
 
 Per-event extras:
 
@@ -87,14 +87,14 @@ For team setups, the audit channel exists for three reasons:
    to each and grepping by hand.
 3. **Attribution under supervision.** When the team lead can
    attach to your agent's session, the audit trail records
-   that attach as the lead's gesture (`caller_user=lead`,
+   that attach as the lead's gesture (`process_user=lead`,
    `target_user=nadia-agent`) — not yours. You're never
    credited (or blamed) for the lead's actions.
 
 ## Disabling
 
 Operators can disable the channel host-wide via
-`audit.enabled = false` in `config.toml`. There's no per-user
+`audit.enabled = false` in `/etc/uxon/config.toml`. There's no per-user
 opt-out; if your team's policy requires audit, the operator
 sets it on. If you want a personal `uxon` (solo·1) without the
 trail, set `audit.enabled = false` in your own config.

@@ -60,7 +60,7 @@ sudo rm /etc/sudoers.d/uxon-nadia-agent
 sudo visudo -c                            # verify nothing else broke
 ```
 
-Update `config/config.toml`:
+Update `/etc/uxon/config.toml`:
 
 ```diff
 - session_users = ["nadia-agent", "liam-agent", "ethan-agent"]
@@ -183,7 +183,7 @@ journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=nadia --since today
 
 ## Audit footprint
 
-The audit trail under `caller_user=nadia` is preserved (journald
+The audit trail under `process_user=nadia` is preserved (journald
 holds it according to the host's retention policy). For
 compliance-shaped teams, freeze the journal export or ship it to
 your central collector before deleting the account.

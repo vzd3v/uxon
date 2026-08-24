@@ -126,7 +126,10 @@ scenario block at the bottom for team / multi-host setups:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vzd3v/uxon/main/config/config.example.toml \
-  -o ./config.toml
+  -o /tmp/uxon-config.toml
+sudo install -d -o root -g root -m 0755 /etc/uxon
+sudo install -o root -g root -m 0644 /tmp/uxon-config.toml \
+  /etc/uxon/config.toml
 ```
 
 You'll need at least one of `claude`, `codex`, or `cursor-agent`

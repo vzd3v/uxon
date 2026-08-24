@@ -34,8 +34,8 @@ uxon run --profile codex_safe
 uxon new myproj --profile claude_work
 ```
 
-`--profile` selects the launch profile for that invocation. The old
-`--agent` selector is removed; passing it fails with a migration hint.
+`--profile` selects the launch profile for that invocation. Other flags are
+forwarded to the selected agent, so `--agent` has no special meaning to Uxon.
 
 ## Route a path to a profile
 

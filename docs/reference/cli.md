@@ -335,19 +335,12 @@ default). An unknown id fails listing the agent's valid modes. The
 TUI offers the same modes as a list and asks explicitly before
 every launch.
 
-## Removed flags
-
-| Flag | Replacement |
-|------|-------------|
-| `--agent <id>` | Use `--profile <id>`. Agents are now binary/mode catalog entries; launch profiles are the runnable choices. |
-
 ## Environment variables
 
 | Variable | Effect |
 |----------|--------|
 | `UXON_REPEAT_NONINTERACTIVE_POLICY` | Overrides `repeat_noninteractive_mode` per invocation (`fail` / `attach` / `new`). |
-| `UXON_LOG_DIR` | Overrides the TUI event-log directory. Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. |
-| `SUDO_USER` | Honoured when `uxon` is invoked via `sudo` to identify the real caller. |
+| `UXON_LOG_DIR` | Overrides the opt-in TUI debug/metrics directory. Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. |
 
 ## Exit codes
 

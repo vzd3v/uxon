@@ -1,360 +1,108 @@
-# Migration notes
+# Migrate to Uxon 4.0
 
-Per-version upgrade notes for changes that need operator
-attention beyond a routine `pipx upgrade`. For the full release
-log see [`CHANGELOG.md`](../CHANGELOG.md).
+Uxon 4.0 is intentionally breaking. Upgrade every controller and peer in one
+rollout; mixed wire majors are unsupported.
 
-## 4.0.0
+## Install the host-wide config
 
-### Launch profiles replace agent selectors
+Uxon reads only `/etc/uxon/config.toml`. There is no checkout, XDG,
+environment-variable, or project fallback.
 
-`uxon` now launches a **profile**. Agents remain the binary/mode
-catalog used by profiles.
-
-Old strict agent selector:
-
-```toml
-[agents]
-enabled = ["claude", "codex"]
-default = "claude"
+```bash
+sudo install -d -o root -g root -m 0755 /etc/uxon
+sudo install -o root -g root -m 0644 config/config.example.toml \
+  /etc/uxon/config.toml
 ```
 
-New launch profiles:
+Move any operator-owned settings from the previous checkout config into this
+file. Move project `.uxon.toml` policy into `[[launch.path_rules]]`, then remove
+those project files so they cannot be mistaken for active policy.
+
+## Replace agent selection with launch profiles
+
+The user-facing selector is `--profile`; `--agent` is now an ordinary argument
+forwarded to the selected agent.
 
 ```toml
 [launch]
-enabled_profiles = ["claude", "codex"]
-default_profile = "claude"
-```
+enabled_profiles = ["claude_work", "codex_safe"]
+default_profile = "claude_work"
 
-The built-in `claude`, `codex`, and `cursor` launch profiles map to
-the same-named agents. To define a named runtime lane:
-
-```toml
 [launch.profiles.claude_work]
 agent = "claude"
-display_name = "Claude work"
-launch_user = "wes-agent"
+launch_user = "team-agent"
+runtime = "direct"
 ```
 
-Use `uxon run --profile <id>` and `uxon new <name> --profile <id>`.
-`--agent <id>` is removed and fails with a migration hint.
+Replace removed `agents.enabled`, `agents.default`, per-project agent defaults,
+and top-level git-remote defaults with launch-profile policy. Unknown fields are
+rejected at every config level.
 
-### Move project `.uxon.toml` policy into path rules
+## Replace container configuration with workload runtimes
 
-Project-owned `.uxon.toml` files are no longer read.
+Container engines are one implementation of a generic workload runtime.
 
-Old project default:
+| 3.x concept | 4.0 concept |
+|---|---|
+| `[container]` / container profile | `[runtimes.<id>]` |
+| `container_profile` | `launch.profiles.<id>.runtime` |
+| `name_template` | `resource_name_template` |
+| `exec_template` | `exec_prefix` |
+| `runtime_namespace` | `resource_scope` |
+| `probe/start/create` | `readiness.ready_command/start_command/create_command` |
+| `stop_template` | `session.stop_command` plus mandatory `identity.resolve_command` |
+
+The old keys are not translated. They fail as unknown fields.
+
+## Configure execution backends explicitly
+
+The built-in `local` backend preserves argv and uses
+`sudo -H -u USER --` for interactive cross-user work and
+`sudo -n -H -u USER --` for non-interactive probes.
+
+A command backend supplies one argv template containing exactly one `{user}`.
+Use a fixed, root-owned helper which enters the intended execution boundary,
+drops to the target user, preserves argv, and returns the fixed UID/GID/group
+probe unchanged.
 
 ```toml
-# /srv/projects/billing/.uxon.toml
-[agents]
-default = "codex"
+[execution]
+default_backend = "boundary"
+
+[execution.backends.boundary]
+kind = "command"
+command_prefix = ["/usr/local/libexec/uxon-exec", "{user}", "--"]
+probe_timeout_seconds = 3.0
 ```
 
-New operator-owned path rule:
+Drain sessions before changing a command helper, backend mapping, or socket
+template. Uxon records the static backend fingerprint for diagnosis but cannot
+prove lifecycle continuity across an operator-managed boundary.
 
-```toml
-[[launch.path_rules]]
-path_prefix = "/srv/projects/billing"
-allowed_profiles = ["codex"]
-default_profile = "codex"
-```
+## Provision launch records for multi-controller hosts
 
-After migrating, delete stale `.uxon.toml` files so operators do not
-mistake them for live policy.
+The default launch-record store is controller-private. If several trusted
+controller accounts supervise the same sessions, provision one root-owned
+setgid directory, exclude launch users from its group, and set
+`launch_record_dir` explicitly.
 
 ```bash
-find /srv/projects -name .uxon.toml -print
+sudo install -d -o root -g uxon-control -m 2770 /var/lib/uxon/launch-records
 ```
-
-Review each file before deleting it.
-
-### Workload runtimes replace singleton `[container]`
-
-Old singleton container config:
 
 ```toml
-[container]
-enabled = true
-name_template = "uxon-{user}-{project_slug}"
-exec_template = ["docker", "exec", "-w", "{dir}", "-i", "{name}"]
+launch_record_dir = "/var/lib/uxon/launch-records"
 ```
 
-New v4 runtime config:
+## Roll out
 
-```toml
-[launch.profiles.claude_box]
-agent = "claude"
-runtime = "workbox"
+1. Drain active sessions with the old installation.
+2. Install Uxon 4.x and `/etc/uxon/config.toml` on every host.
+3. Run `uxon doctor --json` locally on each host.
+4. Upgrade all peers before re-enabling multi-host operations; wire schema 3
+   rejects a different major.
+5. Start one session per execution backend/runtime combination, verify list,
+   attach, kill, launch-record cleanup, and audit events.
 
-[runtimes.workbox]
-kind = "command"
-resource_scope = "per_user"
-resource_name_template = "uxon-{user}-{launch_profile}-{project_slug}"
-exec_prefix = ["docker", "exec", "-w", "{runtime_dir}", "-i", "{resource}"]
-```
-
-A launch uses the built-in `direct` runtime unless its selected launch profile
-names another `runtime`. The old `[container]`, `container_profile`,
-`runtime_namespace`, `name_template`, and `exec_template` names are rejected.
-
-### Execution backends own target-user commands
-
-v4 routes every target-user command family through `[execution]`: tmux server,
-list/attach/kill, git/worktrees/filesystem, probes, workload lifecycle, and
-agent launch. `local` preserves the normal host/sudo behavior. Command backends
-use one `command_prefix`; uxon supplies a fixed target UID/GID probe.
-
-The default socket is now `/tmp/uxon-{user}-{execution_backend}.sock`. Drain
-all sessions before changing a backend definition or id. The operator-owned
-helper is responsible for keeping the old execution boundary reachable until
-that drain is complete; uxon reports an unreachable server but cannot migrate
-or retire an external boundary. `{execution_fingerprint}` is an optional socket
-template placeholder, not a lifecycle guarantee.
-
-### GitHub repo creation is profile-scoped
-
-The global `default_git_remote_profile` key is removed. Put git
-remote policy on each launch profile, and optionally narrow it in a
-matching path rule.
-
-```toml
-git_create_enabled = true
-
-[launch.profiles.claude]
-agent = "claude"
-allowed_git_remote_profiles = ["work"]
-default_git_remote_profile = "work"
-```
-
-`uxon new --git-remote default` uses the selected launch profile's
-effective default.
-
-### Runtime rollout
-
-This is a coordinated major upgrade.
-
-- Drain or kill pre-upgrade managed sessions before switching the
-  host config. Live old sessions do not carry the new launch-record
-  authority and should not be mixed with new profile-suffixed sessions.
-- Upgrade all peers in a multi-host fleet together. The JSON wire
-  schema is now `schema_version = "3"`; mixed-version fleets are not
-  supported.
-- New sessions are named `<prefix><stem>@<profile>[-N]`. The suffix is
-  a launch profile id, not necessarily an agent id.
-- For same-UID host-only launches, launch records are authority for
-  `uxon`'s own repeat/list/kill behavior, not a security boundary
-  against that same Unix user.
-- Tmux environment markers are diagnostic. Teardown and telemetry use
-  the finalized launch record and will not substitute a different
-  workload runtime when records are missing, stale, or mismatched.
-
-## 3.5.0
-
-### uxon-managed tmux options (opt-in)
-
-- **uxon can set a few tmux options on the sessions it
-  launches** — but this is **off by default**, so an upgrade to
-  3.5.0 changes nothing until you opt in. A recommended set —
-  `mouse on` and `allow-passthrough on` (`set -g`),
-  `extended-keys on` (`set -s`), and
-  `terminal-features xterm*:extkeys` (`set -as`) — ships built-in;
-  when enabled it is applied when uxon brings up a launch user's
-  tmux server, layered on top of that user's own tmux config,
-  without editing any file. Note `mouse on` changes terminal
-  text-selection behaviour (use Shift-select for native
-  copy/paste in many terminals).
-- **Enable or override.** Set `tmux.manage_options = true` in
-  `config.toml` (also editable from the superuser settings
-  screen) to apply the recommended set — the scope tables ship
-  built-in, so the toggle alone is enough. To customise, write
-  your own `[tmux.options]` / `[tmux.server_options]` /
-  `[tmux.append_server_options]` tables — override is **per
-  scope**, so omitted scopes keep their recommended defaults.
-  Once enabled, edits to the `-g`/`-s` scopes (e.g. `mouse`) take
-  effect on the next launch or re-attach; edits to
-  `[tmux.append_server_options]` take effect after a
-  `tmux kill-server` (the server's options are set once at its
-  birth). See
-  [`reference/configuration.md`](reference/configuration.md)
-  (`[tmux]` managed options).
-- **Fail-fast.** When enabled, a rejected option aborts the
-  launch (no session is created) rather than starting a degraded
-  session — the shipped defaults are verified to apply cleanly,
-  so only an operator's own bad option trips this.
-
-## 3.4.0
-
-### Dashboard views, search, and a hard sort contract
-
-- **Sort is no longer configurable.** Rows now appear in a
-  fixed order: locals first (own then other-user), then
-  remotes in `[[remote_hosts]]` declaration order, with
-  within-block ranking by last-attach descending then name
-  ascending. The `tui.table.default_sort_by` key is silently
-  ignored on load (one `UXON_DEBUG=tui` line per occurrence) —
-  no error, no fallback. The `s` / `S` cycle bindings are gone.
-- **`tui.table.default_view` (new)** — `"flat"` (default) is a
-  single ranked list across the fleet; `"by_host"` shows a
-  per-host tab strip and status bar. Toggle at runtime with
-  `v`. An active search forces `flat` until the query is
-  cleared. ←/→ on the dashboard cycles between hosts: tabs
-  in `by_host`, `(host, own/other)` transitions in `flat`.
-  The `[` / `]` shortcut is gone.
-- **Search bar.** Summoned on demand — hidden by default, press
-  `s` (or `/`) from anywhere to reveal it. `Esc` clears the query
-  and returns focus to the summoning widget. Configure searchable
-  fields via `tui.search.fields` (default `["name", "user"]`).
-- **`PATH` and `CMD` columns hidden by default.** For
-  uxon-launched sessions `CMD` only echoed the agent name (already
-  shown in the AGENT column). Operators who relied on either column
-  must now list `"path"` / `"cmd"` in `tui.table.columns` to opt
-  back in.
-
-### Block colour and attach indicator
-
-- **Per-host block colour.** Each remote host gets a hue
-  applied to its tab, status-bar name token, and rows. Pin a
-  hue with `[[remote_hosts]] color = "..."`; otherwise the
-  TUI auto-cycles through `tui.color_palette` (default
-  `["cyan", "blue"]`). Local rows take `local_host.color`
-  (default `"green"`).
-- **Attached state shown by glyph.** `●` filled when attached,
-  `○` hollow otherwise — replacing the previous bold-green
-  name colour.
-
-### Keymap
-
-- **`Esc` no longer quits.** Quit is `q` / `й` only. `Esc`
-  is a scoped cancel: clear search, close modal, leave field.
-  Operators who muscle-memoried `Esc → quit` should rebind in
-  their head.
-- **Layout-invariant twins.** Every dashboard key has a
-  JCUKEN twin (`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `v`/`м`)
-  so the keymap survives a Russian keyboard layout without
-  touching `xkb`.
-
-### SSH multiplex
-
-- **`ssh_control_persist_seconds` (new)** — `ControlPersist`
-  lifetime in seconds. Default `300` (was a hard-coded `60`).
-  Must be `> 0`; to disable multiplexing entirely set
-  `ssh_multiplex = "off"` rather than zeroing this out.
-
-### Peer protocol
-
-- **`host_stats` envelope field (additive).** The `list` JSON
-  envelope now carries an optional `host_stats` block (CPU /
-  RAM / loadavg / uptime / kernel) used by the aggregator's
-  per-host status bar. The wire schema version stays `"1"` —
-  3.3.0 peers continue to aggregate cleanly, the field is
-  silently absent in their output.
-
-## 3.3.0
-
-### Audit channel — new sink
-
-The 3.3.0 release introduces a dedicated audit channel and
-removes the per-day TUI event-log file.
-
-- **TUI event log removed.** The per-day JSONL file at
-  `${XDG_STATE_HOME:-~/.local/state}/uxon/tui-{user}-{date}.log`
-  is no longer written. Application-level audit now goes to the
-  platform log channel (journald native, `/dev/log` syslog
-  fallback). Query via `journalctl SYSLOG_IDENTIFIER=uxon` on
-  systemd hosts; on syslog-only hosts `grep '@cee:' /var/log/syslog`.
-  Old `tui-*.log` files left in place — no automatic cleanup.
-  Operators remove the old directory manually if desired.
-- **`uxon.tui.LOG_DIR` import removed.** Out-of-tree consumers
-  that imported `from uxon.tui import LOG_DIR` will fail at
-  import. The constant still lives in `uxon.tui.events.LOG_DIR`
-  as an internal detail of the developer-facing `debug` /
-  `metrics` channels.
-
-### Multi-host
-
-- `[[remote_hosts]]` config table-array. Configure peers; aggregate over SSH.
-- `uxon list --host`, `uxon list --all-hosts`.
-- `uxon attach --host <alias> --user <name>` / `uxon kill --host <alias> [--user <name>]`.
-- `uxon doctor --remote` probes every peer once.
-- TUI session dashboard mounts local + remote rows in one table
-  with a `HOST` column.
-- Per-host overrides: `interval`, `connect_timeout`, `total_timeout`,
-  `extra_ssh_options`, `command_template`.
-- `ssh_multiplex = "auto"` (default) / `"off"`.
-- `fetch_concurrency = 16` (default).
-- Per-host circuit breaker: 3 consecutive failures open the peer
-  for one interval; exponential backoff (factor 2.0, cap 60 s).
-
-### Peer protocol
-
-- `list`, `attach`, `kill` now accept an internal
-  `--audit-correlation-id <uuid>` flag (hidden from `--help`).
-- **All peers in a fleet must run the same major version.**
-  Silent fallback would lose the correlation property exactly
-  when an operator is debugging across hosts. Drain procedure
-  in
-  [`guides/operate/roll-fleet-upgrade.md`](guides/operate/roll-fleet-upgrade.md).
-
-### TUI dashboard
-
-- Single sortable table mounting local own, local other-user
-  (with sudo), and remote rows. The dedicated remote-sessions
-  section is gone.
-- `kill ALL uxon sessions` action renamed to
-  `kill all reachable users`; confirmation phrase is now
-  `kill-all-reachable` (was `kill-all-global`).
-- The `k` keybinding (remote-only kill) is removed. `d` covers
-  all kills now — local rows and remote rows alike.
-- `s` cycles dashboard sort (cpu → ram → last → name); `S`
-  toggles direction.
-- `[tui.table]` config block (columns, default_sort_by).
-
-## 1.x → 2.0
-
-- **Defaults moved.** `allowed_roots` defaults to `[]` and
-  `new_project_root` defaults to `~/projects`. Existing
-  deployments override both — no action required if your
-  `config.toml` already sets them.
-- **Log directory default.** The developer-facing `debug` and
-  `metrics` channels default to `${XDG_STATE_HOME:-~/.local/state}/uxon`.
-  Set `UXON_LOG_DIR=/old/path/here` in the launch user's
-  environment to preserve the previous location. (Audit events
-  go to journald / syslog regardless — `UXON_LOG_DIR` only ever
-  scoped the developer channels.)
-- **Internal agent material untracked.** Internal agent-only
-  working files are no longer tracked in git. Operators do not
-  need to do anything.
-
-## Multi-agent config schema (1.3)
-
-The flat `default_claude_args` key is removed. Config uses
-nested tables:
-
-```toml
-[agents]
-enabled = ["claude", "cursor"]
-default = "claude"
-
-[agents.claude]
-default_args = []
-
-[agents.codex]
-default_args = []
-
-[agents.cursor]
-default_args = []
-```
-
-Manual migration per host: replace the flat
-`default_claude_args = [...]` line with the nested `[agents]`
-tables, include only agents installed on that host in
-`enabled`, then run `uxon doctor` to verify. If the flat
-`default_claude_args` key is still present on load, `uxon` fails
-with a clear error pointing here.
-
-## Related
-
-- [`CHANGELOG.md`](../CHANGELOG.md) — full per-version log.
-- [`guides/operate/roll-fleet-upgrade.md`](guides/operate/roll-fleet-upgrade.md) — rolling-upgrade procedure for team·N.
+For exact keys see [configuration](reference/configuration.md); for operational
+commands see the [CLI reference](reference/cli.md).

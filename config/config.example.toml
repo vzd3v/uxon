@@ -206,8 +206,8 @@ default_args = []
 # ``default_view`` picks the initial dashboard layout. ``flat``
 # (default) is a single ranked list across the fleet; ``by_host``
 # shows a per-host tab strip and status bar. Toggle at runtime
-# with ``v``. (The legacy ``default_sort_by`` key is silently
-# ignored — sort is a fixed contract, see configuration.md.)
+# with ``v``. Sort is a fixed contract; unknown keys such as the removed
+# ``default_sort_by`` are rejected (see configuration.md).
 #
 # [tui.table]
 # columns      = ["name", "user", "cpu", "ram", "last"]

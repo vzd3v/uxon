@@ -43,7 +43,7 @@ If you want `uxon new <name>` (project scaffolding), set up the
 project root once:
 
 ```toml
-# config/config.toml
+# /etc/uxon/config.toml
 allowed_roots    = ["~/projects"]
 new_project_root = "~/projects"
 ```
@@ -81,7 +81,7 @@ sudo chmod 440 /etc/sudoers.d/uxon-wes-agent
 sudo install -d -o wes-agent -g wes-agent /srv/projects
 ```
 
-`config/config.toml`:
+`/etc/uxon/config.toml`:
 
 ```toml
 default_launch_mode = "fixed"

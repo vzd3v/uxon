@@ -143,7 +143,7 @@ Full keybinding list:
 | `codex`  | `codex` | `--full-auto` | `--dangerously-bypass-approvals-and-sandbox` | `npm i -g @openai/codex` |
 | `cursor` | `cursor-agent` | (not supported) | `--yolo` | `curl https://cursor.com/install -fsSL \| bash` |
 
-Expose launch profiles in `config/config.toml`:
+Expose launch profiles in `/etc/uxon/config.toml`:
 
 ```toml
 [launch]
