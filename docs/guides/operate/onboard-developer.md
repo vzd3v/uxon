@@ -94,7 +94,7 @@ fleet.
 ## Step 6 — Install agents for `*-agent`
 
 ```bash
-sudo -iu maya-agent
+sudo -H -u maya-agent -- /bin/bash
 # inside maya-agent's shell:
 curl -fsSL https://... | bash       # claude / codex / cursor installer
 exit

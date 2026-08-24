@@ -18,6 +18,10 @@ live sessions.
 
 ## GitHub PAT rotation (`auth = "token"`)
 
+The commands below use the built-in local backend. With a command execution
+backend, run the file-write/move and `gh` argv through its configured helper
+prefix so rotation reaches the same credential filesystem as uxon.
+
 ```bash
 # 1. Generate a new fine-grained PAT at GitHub.
 #    Required scope: 'repo'. Optionally 'read:org' if your profile
@@ -29,11 +33,11 @@ PROFILE=acme-org
 CREDS_USER=$(grep -A 4 "name *= *\"$PROFILE\"" /opt/uxon/checkout/config/config.toml \
              | awk -F'"' '/creds_user/ {print $2; exit}')
 NEW_TOKEN=ghp_...
-sudo -niu "$CREDS_USER" \
+sudo -n -H -u "$CREDS_USER" -- \
   bash -c "umask 077 && printf '%s\n' '$NEW_TOKEN' > ~/.secrets/uxon-${PROFILE}.token.new"
 
 # 3. Atomically swap.
-sudo -niu "$CREDS_USER" mv ~/.secrets/uxon-${PROFILE}.token.new \
+sudo -n -H -u "$CREDS_USER" -- mv ~/.secrets/uxon-${PROFILE}.token.new \
                             ~/.secrets/uxon-${PROFILE}.token
 
 # 4. Verify by dry-run.
@@ -53,7 +57,7 @@ project-create step does).
 ## `gh auth` token rotation (`auth = "gh"`)
 
 ```bash
-sudo -iu <creds_user>
+sudo -H -u <creds_user> -- /bin/bash
 gh auth refresh         # interactive; or `gh auth logout && gh auth login`
 exit
 

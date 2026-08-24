@@ -32,6 +32,7 @@ are operator-owned.
 | `session_prefix` | string | `"uxon-"` | TMUX session-name prefix for new sessions. |
 | `legacy_session_prefixes` | array | `[]` | Extra prefixes recognised by `list`/`attach`/`kill`. Never used to create new sessions. |
 | `tmux_socket_template` | string | `/tmp/uxon-{user}-{execution_backend}.sock` | Socket path. Placeholders: `{user}`, `{uid}`, `{execution_backend}`, `{execution_fingerprint}`. |
+| `launch_record_dir` | string | `""` | Authoritative launch-record directory. Empty uses the controller's private XDG state directory. Set an absolute, pre-provisioned shared directory only for multi-controller supervision; see [Launch records](#launch-records). |
 | `tui_refresh_interval_seconds` | number | `2.0` | Local-tmux refresh cadence. |
 | `tui_ssh_refresh_interval_seconds` | number | `10.0` | Cadence for SSH-driven streams: the `ssh-link` probe (visible inside SSH) and the per-peer remote-sessions poller (when `[[remote_hosts]]` is configured). |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback when `uxon new` finds an existing matching session. |
@@ -112,7 +113,7 @@ declares a brand-new one. The shipped presets are `claude`, `codex`,
 
 | Key | Type | Default | Purpose |
 |---|---|---|---|
-| `agents.<id>.binary` | string | the agent `<id>` | Executable name resolved on the launch user's `PATH`. |
+| `agents.<id>.binary` | string | the agent `<id>` | Executable name resolved on the execution backend's inherited `PATH`, or an absolute executable path. uxon does not source a login shell. |
 | `agents.<id>.version_args` | array | `["--version"]` | Argv passed by `uxon doctor` to read the version. `[]` ⇒ doctor shows no version line for this agent. |
 | `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of this agent. |
 | `agents.<id>.install_hint` | string | `""` | Message shown by `doctor` / the agent picker when the binary is missing. |
@@ -196,7 +197,8 @@ probe_timeout_seconds = 5.0
 The helper should validate the target user, enter the boundary, establish the
 target UID/GID and supplementary groups, and `execve` the appended argv without
 a shell. It must preserve the TTY and child exit status/signals. Keep the helper
-and its parent directories non-writable by launch users.
+and its parent directories non-writable by launch users. Configure the helper's
+PATH explicitly or use absolute agent binaries; uxon never sources a login shell.
 
 uxon does not create, migrate, or drain an operator-managed execution boundary.
 Keep the boundary reachable while its tmux server has sessions, and drain those
@@ -204,6 +206,30 @@ sessions before changing the helper or backend mapping. An unreachable socket
 or backend is reported as an error, never as an empty session list. The static
 backend fingerprint in diagnostics and launch records describes config; it is
 not a lifecycle or continuity guarantee.
+
+## Launch records
+
+Every managed tmux session has a controller-side record. The record binds the
+tmux session id, creation time and launch nonce to its launch profile, execution
+backend and workload runtime. It is finalized and fsynced before the pane is
+released. The record path is never passed into the execution backend or workload.
+
+With `launch_record_dir = ""`, records are private to one controller under its
+XDG state directory (`0700` directory, `0600` files). Use this default when one
+controller account owns supervision.
+
+Multiple trusted controller accounts must use one explicitly provisioned
+directory, for example `/var/lib/uxon/launch-records`. It must be root-owned,
+mode `2770`, have no POSIX access ACL, and use a control group containing every
+controller but no launch user. Shared records are `0640`; the launch user must
+not be able to create, replace, or delete them.
+
+Finalized records are removed after a verified successful kill. Enumeration
+garbage-collects at most 1,024 records per pass for the socket being inspected:
+pending records after 10 minutes and finalized records after 7 days when no
+matching live session exists. Records contain session/profile/runtime identifiers
+and timestamps, so treat the directory as operational metadata with the same
+retention and access controls as audit data.
 
 ## `[runtimes.<id>]` table
 
@@ -387,11 +413,11 @@ python3 install/render_uxon_config.py \
   --output config/config.toml
 ```
 
-The JSON renderer accepts the same strict `launch`, `execution`, and `runtimes`
-tables as TOML. `git_create_enabled`, launch-profile git policy, and
-`[[git_remote_profiles]]` remain file-only because they reference credential
-domains, `creds_user`, and `token_file` values. Hand-edit those in
-`config.toml`.
+The renderer imports uxon's installed schema and accepts the complete public
+config surface with the same strict keys and types as TOML. It rejects unknown
+fields and never coerces booleans or scalars. A payload containing
+`git_remote_profiles.token_file` paths is operationally sensitive even though it
+contains no token value; protect and remove that input file accordingly.
 
 For the multi-host operating model see
 [`explain/multi-host-philosophy.md`](../explain/multi-host-philosophy.md).

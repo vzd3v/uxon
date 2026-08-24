@@ -92,7 +92,7 @@ sudo usermod -aG uxon_agents liam-agent
 ```
 
 `pam_limits` is applied at PAM session start (i.e. at
-`sudo -iu <user>-agent` time). Existing sessions don't pick up
+`sudo -H -u <user>-agent --` time). Existing sessions don't pick up
 limit changes; new sessions do.
 
 ## What to size
@@ -144,7 +144,7 @@ the interaction.
 Synthetic load test once limits are in place:
 
 ```bash
-sudo -niu nadia-agent bash -c 'stress-ng --vm 4 --vm-bytes 4G --timeout 60s'
+sudo -n -H -u nadia-agent -- bash -c 'stress-ng --vm 4 --vm-bytes 4G --timeout 60s'
 # In another shell:
 systemctl status user-$(id -u nadia-agent).slice
 # Expect: memory.high reached, processes throttled rather than OOM'd

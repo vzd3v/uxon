@@ -9,16 +9,16 @@ outside its corner.
 ## What you get
 
 - Each developer keeps their own shell user; agents run as a
-  paired `<user>-agent` account via `sudo -iu`. A yolo-mode run
+  paired `<user>-agent` account via `sudo -H -u USER --`. A yolo-mode run
   blasts only inside `<user>-agent`, not the developer's `$HOME`.
 - The lead's TUI mounts every developer's sessions in one
   dashboard with a `USER` column, gated on the lead's per-target
-  `sudo -niu` reach. Attach (`Enter`) and kill (`d`) work
+  `sudo -n -H -u USER --` reach. Attach (`Enter`) and kill (`d`) work
   uniformly across own and other-user rows.
 - **Supervision without impersonation.** A grant
   `lead ALL=(nadia-agent,liam-agent) NOPASSWD: ALL` lets the lead
   attach to and reap Nadia's and Liam's agent sessions but does
-  *not* grant `sudo -iu nadia` — the lead never becomes the
+  *not* grant `sudo -H -u nadia --` — the lead never becomes the
   developer. Anything tied to the developer's identity (SSH keys
   with passphrase prompt, `gh` / `aws` sessions, unlocked browser
   profile) stays out of reach via this path.

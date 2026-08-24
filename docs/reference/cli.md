@@ -23,17 +23,17 @@ flagged in each section.
   agent binary verbatim.
 - All subcommands honour the launch-user resolution described in
   [`scenarios/team-1.md`](../scenarios/team-1.md) and run `tmux` /
-  `git` / `mkdir` under the launch user via `sudo -iu` when
+  `git` / `mkdir` under the launch user via `sudo -H -u USER --` when
   caller ≠ launch user.
-- Every state-changing subcommand emits one audit event per
-  invocation (success or failure) to the platform log channel —
+- Every state-changing subcommand emits one terminal event; exec-based attach
+  emits a dispatch event immediately before process replacement —
   see [`audit-events.md`](audit-events.md) for which event each
   command fires and the fields it carries.
 
 ## `uxon` (no arguments)
 
 - With a TTY: opens the interactive TUI.
-- Without a TTY: prints usage and exits with code `2`.
+- Without a TTY: prints usage and exits with code `0`.
 
 ## `uxon run [-w <branch>] [--dry-run] [--profile <id>] [--mode <id>] [agent-flags...]`
 
@@ -85,7 +85,7 @@ attach, current command, and path.
 
 - Default scope: the current launch user only.
 - `--all-users`: scope `session_users` from config — but only the
-  **reachable** subset (users the caller can `sudo -niu` to without
+  **reachable** subset (users the caller can `sudo -n -H -u USER --` to without
   a password). Unreachable users are listed once on stderr as
   `# N user(s) skipped (no sudo): <names>`; stdout stays parseable.
   In `--json`, the same names are surfaced in the new field
@@ -121,7 +121,7 @@ If `$TMUX` names the **same** socket as `uxon` for the launch user,
 launch user on the same host. `<name>` is the OS account that owns
 the tmux socket (typically `<dev>-agent` in the recommended
 paired-account setup). Requires per-target NOPASSWD
-(`sudo -niu <name>`) — the same gating the TUI applies to its
+(`sudo -n -H -u <name> --`) — the same gating the TUI applies to its
 superuser block. Probed once for the single target; an unreachable
 target fails fast with the stable error tag `uxon-error:
 not-reachable` on stderr and exit code `1`. Passing `--user <self>`
@@ -134,7 +134,7 @@ delegates the per-target sudo gate to the peer's own
 `uxon attach --user`). Wire command:
 `ssh <alias> uxon attach <id> --user <name>` with an
 `--audit-correlation-id <uuid>` internal flag so caller-side
-(`attach.remote.out`) and peer-side (`attach.remote.in`) audit
+(`attach.remote.out.dispatch`) and peer-side (`attach.remote.in.dispatch`) audit
 events join. The interactive attach always opens a fresh ssh
 connection — `ControlMaster`/`ControlPath` are stripped from the
 default template regardless of `ssh_multiplex`, so a wedged poller
@@ -158,7 +158,7 @@ recommended paired-account setup), not the developer's shell user.
 The grant `<caller> ALL=(<name>) NOPASSWD: ALL` lets the caller
 sudo into `<name>`, but does not give them any access to the
 developer's personal account. Requires per-target NOPASSWD
-(`sudo -niu <name>`) — exactly the same gating the TUI applies to
+(`sudo -n -H -u <name> --`) — exactly the same gating the TUI applies to
 the "superuser" block. Probed once for the single target; an
 unreachable target fails fast with the stable error tag
 `uxon-error: not-reachable` on stderr and exit code `1`. Passing

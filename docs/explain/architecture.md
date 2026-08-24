@@ -76,7 +76,7 @@ src/uxon/                     Python package (pipx / uv tool / pip installable).
                               non-TUI subcommands `list` / `doctor` / `version`).
 install/
   install_uxon.py             Multi-host venv-and-symlink installer.
-  render_uxon_config.py       JSON-to-TOML config renderer.
+  render_uxon_config.py       Thin entry point for the package JSON-to-TOML renderer.
 config/
   config.example.toml         Tracked example. Real config.toml is gitignored.
 examples/

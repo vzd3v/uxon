@@ -41,30 +41,28 @@ The event alphabet covers:
 
 - CLI lifecycle (`cli.start`, `config.error`).
 - TUI lifecycle (`tui.open`).
-- Session state changes (`session.new`, `session.attach`,
+- Session state changes (`session.new`, `session.attach.dispatch`,
   `session.ended`, `session.kill`, `session.kill_all`).
 - Local enumeration (`list.peek`).
-- Cross-host pairs (`attach.remote.{out,in}`,
+- Cross-host pairs (`attach.remote.{out,in}.dispatch`,
   `kill.remote.{out,in}`, `list.remote.in`).
 - Git-remote creation (`git.remote.create`).
 
-**State-changing events emit on both success and failure.** A
-refused / errored / not-found gesture is more interesting to an
-auditor than a successful one, so the failure path always lands a
-record with the appropriate `outcome`. Querying `OUTCOME != "ok"`
-is a complete sweep of everything that didn't go through.
+Launch and kill emit a terminal success or failure. Attach replaces the
+uxon process image, so it emits a dispatch event: `ok` means the tmux or SSH
+client was handed off, not that the later interactive session succeeded.
 
 ## Local vs. peer-side: `replaces` semantics
 
 When a gesture crosses an SSH boundary, two events are emitted —
 one per side:
 
-- **Caller side** emits `*.remote.out` (`attach.remote.out`,
+- **Caller side** emits caller-side events (`attach.remote.out.dispatch`,
   `kill.remote.out`). No `list.remote.out` exists; the local
   enumeration emits `list.peek` instead.
 - **Peer side**, detected by `SSH_CONNECTION` in env, emits
-  `*.remote.in` instead of the local equivalent.
-  `attach.remote.in` replaces `session.attach`,
+  peer-side events instead of the local equivalent.
+  `attach.remote.in.dispatch` replaces `session.attach.dispatch`,
   `kill.remote.in` replaces `session.kill`, `list.remote.in`
   replaces `list.peek` — never both. This keeps the cross-host
   audit trail at one record per side, no double-counting.
@@ -127,7 +125,7 @@ harmless to flip off; for any team scenario it should stay on.
 - **Not for compliance certification.** `uxon`'s audit is
   application-level value-add — which session, which agent,
   which project, correlation across hosts. Privileged operations
-  (`sudo -iu …`) appear in `sudo`'s own audit trail
+  (the argv-preserving `sudo -H -u … --` boundary) appear in `sudo`'s own audit trail
   (`auth.log` / journald), which is the OS-level source of truth
   for who-did-what.
 

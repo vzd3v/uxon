@@ -157,9 +157,9 @@ itself. `cursor` has no `auto` mode.
 `uxon doctor` probes the agent catalog and prints each path,
 version, and status.
 
-Launch profiles can optionally run agents **inside a container**,
-composed on top of the paired account — see
-[`docs/reference/configuration.md`](docs/reference/configuration.md#runtimesid-table).
+Launch profiles can optionally wrap agents in a generic workload runtime,
+composed on top of the execution backend — see
+[`[runtimes.<id>]`](docs/reference/configuration.md#runtimesid-table).
 
 ## Versioning
 

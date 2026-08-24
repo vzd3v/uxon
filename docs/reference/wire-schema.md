@@ -77,7 +77,7 @@ schema is part of the public contract.
 - `all_users` — `true` when invoked with `--all-users` (or peer
   invoked with the same flag through the aggregator).
 - `scope_users` — the *reachable* subset of `session_users` (only
-  users the caller can `sudo -niu` to without a password).
+  users the caller can `sudo -n -H -u USER --` to without a password).
 - `scope_skipped` — users in `session_users` that the caller
   cannot sudo into. Optional — older peers omit it; treat
   missing/null as `[]`.
@@ -234,7 +234,7 @@ messages:
 
 | Tag | Meaning |
 |---|---|
-| `uxon-error: not-reachable` | Caller cannot `sudo -niu <user>` (no NOPASSWD). Exit code 1. |
+| `uxon-error: not-reachable` | Caller cannot `sudo -n -H -u <user> --` (no NOPASSWD). Exit code 1. |
 | `uxon-error: all-users-disabled` | Peer's config has `enable_all_users_list = false`. Exit code 1. The aggregator detects this tag and falls back to own-only `list --json`, stamping the snapshot with `scope_limited = true`. |
 
 Anything else on stderr is treated as a generic SSH/peer failure
