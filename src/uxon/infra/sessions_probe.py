@@ -38,7 +38,12 @@ from uxon.domain.session import (
 from uxon.errors import fail
 from uxon.infra import demo, tmux
 from uxon.infra.config_loader import normalize_user_list
-from uxon.infra.launch_records import LAUNCH_NONCE_ENV, TmuxSessionMetadata, read_verified_record
+from uxon.infra.launch_records import (
+    LAUNCH_NONCE_ENV,
+    TmuxSessionMetadata,
+    execution_state_dir,
+    read_verified_record,
+)
 from uxon.infra.process import run_cmd
 from uxon.infra.run import run_query
 from uxon.infra.runtime import RUNTIME_CMD_TIMEOUT_SEC
@@ -447,6 +452,7 @@ def collect_sessions_for_user(
                     name=name,
                     launch_nonce=launch_nonce,
                 ),
+                override_dir=execution_state_dir(cfg, user),
             )
         sessions.append(
             SessionInfo(

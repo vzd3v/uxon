@@ -38,12 +38,12 @@ session_prefix      = "uxon-"
 # tmux_socket_template = "/tmp/uxon-{user}-{execution_backend}.sock"
 # [execution]
 # default_backend = "host_netns"
+# state_dir = "/var/lib/uxon/execution-state"
 # [execution.backend_by_launch_user]
 # wes-agent = "host_netns"
 # [execution.backends.host_netns]
 # kind = "command"
-# command_prefix = ["sudo", "ip", "netns", "exec", "agent-egress"]
-# probe_command = ["sudo", "ip", "netns", "exec", "agent-egress", "true"]
+# command_prefix = ["sudo", "-n", "/usr/local/libexec/uxon-exec", "{user}", "--"]
 # probe_timeout_seconds = 5.0
 
 # Required only for `uxon new <name>` (project scaffolding). Leave

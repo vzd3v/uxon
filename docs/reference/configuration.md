@@ -173,19 +173,26 @@ probes, runtime lifecycle, and workload launch. `local` is built in.
 | Key | Type | Default | Purpose |
 |---|---|---|---|
 | `execution.default_backend` | string | `"local"` | Backend for users without an override. |
+| `execution.state_dir` | absolute path | — | Control-plane-owned state shared with every command backend. Required when a command backend is configured. |
 | `execution.backend_by_launch_user` | table | `{}` | `<launch user> = <backend id>` overrides. |
 | `execution.backends.<id>.kind` | `"command"` | — | Required for configured backends. |
 | `execution.backends.<id>.command_prefix` | array | — | Prefix for every target-user command. Supports `{user}`. |
-| `execution.backends.<id>.probe_command` | array | — | Bounded health-probe argv. Supports `{user}`. |
 | `execution.backends.<id>.probe_timeout_seconds` | number | `5.0` | Positive probe timeout. |
 
-Changing a backend definition while its tmux server is live is unsafe. uxon
-records the fingerprint and blocks new launches on mismatch while leaving
-list/attach/kill available. Drain sessions before editing `[execution]`.
-Changing a backend id changes the default socket; if the new boundary cannot
-reach the old socket, restore the old config, drain, then change it. Optional
-`{execution_fingerprint}` is hard separation, not automatic drain: old sessions
-can remain running and become undiscoverable.
+`command_prefix` must call a fixed, root-owned helper as
+`<helper> {user} -- <argv...>`. The helper must validate the user against an
+operator allowlist, enter the configured host boundary, drop supplementary
+groups/GID/UID, set `no_new_privs`, and `execve` the received argv without a
+shell. It must preserve the caller's TTY and return the child exit status and
+signals. The helper and every directory containing it must be non-writable by
+launch users. Raw `sudo ip netns exec ...` is not a valid boundary because it
+does not establish the target identity.
+
+uxon runs a fixed internal attestation through the exact prefix. It verifies
+the effective identity, namespaces, cgroup/security context, and shared state
+directory before using the backend; the operator cannot replace this probe.
+`state_dir` must resolve to the same filesystem object inside and outside the
+boundary and must not be writable by launch users.
 
 ## `[runtimes.<id>]` table
 

@@ -62,6 +62,22 @@ class GitRemoteProfile:
 
 
 def _validate_profile(raw: dict, index: int, seen_names: set[str]) -> GitRemoteProfile:
+    known_keys = {
+        "name",
+        "host",
+        "owner",
+        "auth",
+        "creds_user",
+        "token_file",
+        "visibility",
+    }
+    unknown = sorted(set(raw) - known_keys)
+    if unknown:
+        raise ProfileError(
+            f"git_remote_profiles[{index}]: unknown key(s) {unknown!r}; "
+            f"expected one of {sorted(known_keys)!r}"
+        )
+
     def _req(field: str) -> str:
         value = raw.get(field)
         if not isinstance(value, str) or not value.strip():

@@ -509,21 +509,10 @@ class UxonTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._write_and_load_cfg('worktree_base = "origin"\n', tmpdir)
 
-    def test_load_config_tui_table_default_sort_by_ignored_with_debug_log(self) -> None:
-        # ``tui.table.default_sort_by`` was removed in 3.4 — sort is
-        # now a hard contract. Any value carried over from older
-        # configs is silently ignored; the loader emits one
-        # ``UXON_DEBUG=tui`` line so operators can spot the fossil.
-        from uxon.infra import events as _events
-
-        seen: list[tuple[str, dict]] = []
-
-        def _spy(topic: str, **fields: object) -> None:
-            seen.append((topic, dict(fields)))
-
+    def test_load_config_rejects_unknown_nested_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.object(_events, "debug", _spy):
-                cfg = self._write_and_load_cfg(
+            with self.assertRaises(SystemExit) as raised:
+                self._write_and_load_cfg(
                     textwrap.dedent("""
                         [tui.table]
                         default_sort_by = "ram"
@@ -531,12 +520,41 @@ class UxonTests(unittest.TestCase):
                     + "\n",
                     tmpdir,
                 )
-        self.assertFalse(hasattr(cfg, "tui_table_default_sort_by"))
-        self.assertEqual(len(seen), 1)
-        topic, fields = seen[0]
-        self.assertEqual(topic, "tui")
-        self.assertEqual(fields.get("reason"), "ignored_default_sort_by")
-        self.assertEqual(fields.get("id"), "ram")
+        self.assertIn("unknown key", getattr(raised.exception, "uxon_msg", ""))
+
+    def test_load_config_reads_command_execution_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._write_and_load_cfg(
+                textwrap.dedent("""
+                    [execution]
+                    default_backend = "boundary"
+                    state_dir = "/var/lib/uxon/execution-state"
+
+                    [execution.backends.boundary]
+                    kind = "command"
+                    command_prefix = ["sudo", "-n", "--", "/usr/local/libexec/uxon-exec", "{user}", "--"]
+                    probe_timeout_seconds = 3.0
+                """).strip()
+                + "\n",
+                tmpdir,
+            )
+        backend = cfg.execution.backends["boundary"]
+        self.assertEqual(cfg.execution.state_dir, "/var/lib/uxon/execution-state")
+        self.assertEqual(backend.probe_timeout_seconds, 3.0)
+
+    def test_load_config_rejects_unknown_launch_profile_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(SystemExit) as raised:
+                self._write_and_load_cfg(
+                    textwrap.dedent("""
+                        [launch.profiles.custom]
+                        agent = "claude"
+                        unknown_policy = true
+                    """).strip()
+                    + "\n",
+                    tmpdir,
+                )
+        self.assertIn("unknown key", getattr(raised.exception, "uxon_msg", ""))
 
     def test_load_config_reads_git_remote_profiles_and_launch_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1560,7 +1578,9 @@ class UxonTests(unittest.TestCase):
         resolved = _resolved_for_test(cfg, mode="yolo")
         with (
             self._stub_socket_path(),
-            mock.patch("uxon.infra.launch_records.state_dir", return_value=Path("/tmp/records")),
+            mock.patch(
+                "uxon.infra.launch_records.execution_state_dir", return_value=Path("/tmp/records")
+            ),
         ):
             req = tmux._build_tmux_launch_request(
                 "/srv/repos/demo",
@@ -1571,7 +1591,8 @@ class UxonTests(unittest.TestCase):
                 resolved_profile=resolved,
             )
         create = list(_managed_create_cmd(req))
-        self.assertIn("UXON_LAUNCH_RECORD_DIR=/tmp/records", create)
+        self.assertIn("--record-path", create)
+        self.assertNotIn("UXON_CONTROL_STATE_DIR=/tmp/records", create)
 
     def test_build_tmux_launch_request_requires_resolved_profile(self) -> None:
         cfg = self.make_config()
@@ -1660,6 +1681,7 @@ class UxonTests(unittest.TestCase):
             return CP()
 
         with (
+            mock.patch("uxon.infra.launch_records.prepare_execution_state"),
             mock.patch("uxon.infra.launch_records.create_pending_record"),
             mock.patch(
                 "uxon.infra.launch_records.finalize_pending_record",
@@ -1709,6 +1731,7 @@ class UxonTests(unittest.TestCase):
             stderr = "duplicate session"
 
         with (
+            mock.patch("uxon.infra.launch_records.prepare_execution_state"),
             mock.patch("uxon.infra.launch_records.create_pending_record"),
             mock.patch("uxon.infra.launch_records.fail_pending_record") as fail_pending,
             mock.patch("uxon.infra.process.run_cmd", return_value=CP()),
@@ -1730,6 +1753,7 @@ class UxonTests(unittest.TestCase):
                 socket_path="/tmp/sock",
                 session_name="uxon-demo@claude",
                 launch_nonce="nonce",
+                record_path="/tmp/control-state/record.json",
                 agent_argv=["claude"],
                 timeout_seconds=0.01,
             )

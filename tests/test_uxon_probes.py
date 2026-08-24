@@ -101,7 +101,7 @@ class ResolvePathsRemoteTests(unittest.TestCase):
         # Verify the command crosses the centralized non-interactive local backend.
         args = run.call_args[0][0]
         self.assertIn("sudo", args)
-        self.assertIn("-niu", args)
+        self.assertEqual(args[:6], ["sudo", "-n", "-H", "-u", "otheruser", "--"])
         self.assertIn("otheruser", args)
 
     def test_resolve_sudo_nonzero_exit(self) -> None:

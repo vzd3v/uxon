@@ -53,10 +53,6 @@ journald additionally stamps its own metadata for free (`_PID`,
 | `denied`    | A policy / ACL gate refused the operation (sudo unreachable, `enable_all_users_list = false`, …). |
 | `error`     | The operation failed for a reason other than policy (subprocess non-zero, exception, ssh fail).   |
 | `not_found` | The named target did not exist (session id unknown, peer alias unknown).                          |
-| `stale` | A `runtime.session_stop` was skipped because the resource restarted; its recorded PID may name an unrelated process. |
-| `missing_profile` | A `runtime.session_stop` was skipped because the referenced runtime is no longer configured. |
-| `fingerprint_mismatch` | A `runtime.session_stop` was skipped because the runtime definition changed since launch. |
-| `identity_unresolved` | A `runtime.session_stop` was skipped because the live workload identity could not be resolved. |
 
 **State-changing events emit on both success and failure.**  A refused
 or errored attach / kill / launch is more interesting to an auditor
@@ -77,7 +73,7 @@ sweep of everything that didn't go through.
 | `session.kill`       | Local `uxon kill` or TUI `d` on a local row.                                                             | `session`, `target_user`, `force` (bool), `dry_run`, `rc` (int; only on `outcome=error`)                                    | `ok`, `denied`, `error`, `not_found` |
 | `session.kill_all`   | `uxon kill-all` or TUI `D`.                                                                              | `target_users` (list), `killed_count` (int), `dry_run`                                                                       | `ok`, `error`                    |
 | `runtime.prepare` | uxon started or created the selected workload resource before launch. A ready resource is a no-op. | `action` (`start` \| `create`), `runtime_resource`, `error` (only on error) | `ok`, `error` |
-| `runtime.session_stop` | uxon ran the selected runtime's `session.stop_command`, or safely skipped it. | `runtime`, `runtime_resource`, `action` (`stop` \| `skip`), `session`, `target_user`, `error` (only on error) | `ok`, `error`, `stale`, `missing_profile`, `fingerprint_mismatch`, `identity_unresolved` |
+| `runtime.session_stop` | uxon ran the selected runtime's `session.stop_command`, or safely skipped it. | `runtime`, `runtime_resource`, `action` (`stop` \| `skip`), `session`, `target_user`, `reason` (`missing_profile` \| `fingerprint_mismatch` \| `identity_unresolved` \| `stale_identity`, only on a safe skip), `error` (only on execution error) | `ok`, `error` |
 | `attach.remote.out`  | Local TUI/CLI dispatching a peer attach over SSH (caller side of the wire).                              | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `correlation_id`                                                  | `ok`, `error`                    |
 | `attach.remote.in`   | Peer's own `uxon attach` invoked over SSH (peer side of the wire).  Replaces `session.attach` on peer.   | `target_user`, `target_session`, `correlation_id`                                                                            | `ok`, `denied`, `error`, `not_found` |
 | `kill.remote.out`    | Local `uxon kill --host` / TUI `d` on a remote row (caller side).                                         | `peer_name`, `ssh_alias`, `target_user`, `target_session`, `force`, `dry_run`, `correlation_id`, `rc` (int) + `error` (string ≤256 chars) on `outcome=error` | `ok`, `error`                    |
