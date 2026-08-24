@@ -15,16 +15,18 @@ import os
 import re
 import subprocess
 
+from uxon.domain.config import Config
 from uxon.domain.format import (
     _compact_duration,
     _format_bytes,
     _pct,
 )
 from uxon.domain.status import LinkHealthStatus, ServerStatus
+from uxon.infra.execution import filesystem_usage
 from uxon.infra.run import run_query
 
 
-def read_server_status(disk_path: str) -> ServerStatus:
+def read_server_status(cfg: Config, launch_user: str, disk_path: str) -> ServerStatus:
     load = ""
     cpu = ""
     try:
@@ -53,14 +55,13 @@ def read_server_status(disk_path: str) -> ServerStatus:
 
     disk = ""
     try:
-        path = disk_path if os.path.exists(disk_path) else "/"
-        st = os.statvfs(path)
-        total = st.f_blocks * st.f_frsize
-        available = st.f_bavail * st.f_frsize
+        usage = filesystem_usage(cfg, launch_user, disk_path)
+        total = usage.total
+        available = usage.available
         used = total - available
         if total > 0 and used >= 0:
             disk = f"{_format_bytes(used)}/{_format_bytes(total)} {_pct(used, total)}"
-    except OSError:
+    except (OSError, SystemExit):
         pass
 
     uptime = ""

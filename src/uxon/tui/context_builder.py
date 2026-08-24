@@ -264,7 +264,7 @@ def build_tui_context(
         server_status = ServerStatus()
     else:
         existing_projects = _list_existing_projects(cfg, launch_user, cfg.new_project_root)
-        server_status = host_status_probe.read_server_status(cfg.new_project_root)
+        server_status = host_status_probe.read_server_status(cfg, launch_user, cfg.new_project_root)
 
     # Pluggable refresh sources. PR1 ships a single source that wraps
     # ``on_refresh()`` so the existing kick-refresh path runs through the
