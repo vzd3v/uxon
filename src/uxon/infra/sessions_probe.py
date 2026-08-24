@@ -41,7 +41,6 @@ from uxon.infra.config_loader import normalize_user_list
 from uxon.infra.launch_records import (
     LAUNCH_NONCE_ENV,
     TmuxSessionMetadata,
-    execution_state_dir,
     read_verified_record,
 )
 from uxon.infra.process import run_cmd
@@ -379,10 +378,13 @@ def collect_sessions_for_user(
     # remote aggregator). Use the non-interactive sudo prefix so a
     # missing NOPASSWD grant returns non-zero immediately rather than
     # blocking on a hidden password prompt.
-    base = tmux.tmux_base(cfg, user, socket_path, nonint=True)
-    probe = run_query(base + ["list-sessions"])
-    if probe.returncode != 0:
+    server = tmux.probe_tmux_server(cfg, user, socket_path)
+    if server.state == "absent":
         return []
+    if server.state == "unreachable":
+        location = socket_path or "the default socket"
+        fail(f"tmux server for {user!r} is unreachable at {location}: {server.error}")
+    base = tmux.tmux_base(cfg, user, socket_path, nonint=True)
 
     # Environment markers are diagnostic only. The finalized launch record is
     # the authority for profile, agent, and workload identity.
@@ -414,9 +416,11 @@ def collect_sessions_for_user(
             continue
 
         pane_fmt = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
-        pane_rows = run_cmd(
-            base + ["list-panes", "-t", name, "-F", pane_fmt], check=False
-        ).stdout.splitlines()
+        pane_result = run_cmd(base + ["list-panes", "-t", name, "-F", pane_fmt], check=False)
+        if pane_result.returncode != 0:
+            detail = (pane_result.stderr or pane_result.stdout or "tmux list-panes failed").strip()
+            fail(f"unable to inspect tmux session {name!r}: {detail}")
+        pane_rows = pane_result.stdout.splitlines()
         pane_pids: list[int] = []
         active_pid: int | None = None
         active_cmd = ""
@@ -452,7 +456,6 @@ def collect_sessions_for_user(
                     name=name,
                     launch_nonce=launch_nonce,
                 ),
-                override_dir=execution_state_dir(cfg, user),
             )
         sessions.append(
             SessionInfo(

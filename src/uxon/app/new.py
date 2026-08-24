@@ -231,6 +231,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         report=args.host_report,
     )
     launch_user = resolved.launch_user
+    project_dir = resolved.canonical_target
     if args.git_remote and not cfg.git_create_enabled:
         fail(
             "git_create_enabled=false in config; either flip it on in "
@@ -255,6 +256,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             git_remote_selector=args.git_remote,
         )
         launch_user = resolved.launch_user
+        target_dir = resolved.canonical_target
     session_stem = session_stem_for_path(target_dir)
     compatibility_root = target_dir
     target_desc = target_dir

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG, AgentSpec, PermissionMode
-from uxon.domain.authz import canonical
+from uxon.domain.authz import canonical, lexical_absolute
 from uxon.domain.config import (
     DEFAULT_CONFIG,
     Config,
@@ -257,7 +257,7 @@ def build_execution_config(execution_tbl: dict[str, Any]) -> ExecutionConfig:
     source = "execution"
     _reject_unknown_keys(
         execution_tbl,
-        {"default_backend", "state_dir", "backend_by_launch_user", "backends"},
+        {"default_backend", "backend_by_launch_user", "backends"},
         source=source,
     )
     default_backend = _string_value(
@@ -313,7 +313,6 @@ def build_execution_config(execution_tbl: dict[str, Any]) -> ExecutionConfig:
     return validate_execution_config(
         ExecutionConfig(
             default_backend=default_backend,
-            state_dir=_string_value(execution_tbl, "state_dir", source=source, strip=True),
             backend_by_launch_user=by_user,
             backends=backends,
         )
@@ -554,7 +553,7 @@ def build_launch_config(
             fail(f"{source}.path_prefix must be an absolute path")
         if os.path.normpath(prefix) != prefix or ".." in prefix.split("/"):
             fail(f"{source}.path_prefix must be an absolute normalized path without '..'")
-        path_prefix = canonical(prefix)
+        path_prefix = lexical_absolute(prefix)
         allowed = _string_list(raw.get("allowed_profiles"), source=f"{source}.allowed_profiles")
         if not allowed:
             fail(f"{source}.allowed_profiles must be a non-empty list")
@@ -657,9 +656,15 @@ def load_config(cwd: str) -> Config:
     if not isinstance(legacy_raw, list) or not all(isinstance(p, str) for p in legacy_raw):
         fail("legacy_session_prefixes must be a list of strings")
     legacy_session_prefixes = tuple(p for p in legacy_raw if p and p != session_prefix)
-    allowed_roots = [
-        canonical(p) for p in merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])
-    ]
+    allowed_roots_raw = merged.get("allowed_roots", DEFAULT_CONFIG["allowed_roots"])
+    if not isinstance(allowed_roots_raw, list) or not all(
+        isinstance(path, str) for path in allowed_roots_raw
+    ):
+        fail("allowed_roots must be a list of absolute paths")
+    try:
+        allowed_roots = [lexical_absolute(path) for path in allowed_roots_raw]
+    except ValueError as exc:
+        fail(f"allowed_roots: {exc}")
 
     agents_tbl = merged.get("agents", {})
     if not isinstance(agents_tbl, dict):

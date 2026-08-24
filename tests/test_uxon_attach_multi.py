@@ -88,6 +88,10 @@ class AttachCrossUserTests(unittest.TestCase):
         args = ParsedArgs(action="attach", target_id="demo@claude", user="u-vz", dry_run=True)
         with (
             mock.patch("uxon.infra.sessions_probe.collect_sessions") as cs,
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_sessions_for_user",
+                return_value=[],
+            ),
             mock.patch("uxon.infra.sessions_probe.resolve_session") as rs,
             mock.patch.object(attach_app, "attach_session", return_value=0) as att,
         ):

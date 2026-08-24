@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import getpass
-import tempfile
 import threading
 import unittest
 
@@ -96,19 +95,17 @@ class GuardUnitTests(unittest.IsolatedAsyncioTestCase):
             kind="command",
             command_prefix=("/usr/local/libexec/test-boundary", "{user}", "--"),
         )
-        with tempfile.TemporaryDirectory() as state_dir:
-            cfg = make_config(
-                execution=ExecutionConfig(
-                    default_backend="boundary",
-                    state_dir=state_dir,
-                    backends={
-                        "local": ExecutionConfig().backends["local"],
-                        "boundary": backend,
-                    },
-                )
+        cfg = make_config(
+            execution=ExecutionConfig(
+                default_backend="boundary",
+                backends={
+                    "local": ExecutionConfig().backends["local"],
+                    "boundary": backend,
+                },
             )
-            with self.assertRaises(EventLoopBlockedError):
-                execution.probe(cfg, getpass.getuser())
+        )
+        with self.assertRaises(EventLoopBlockedError):
+            execution.probe(cfg, getpass.getuser())
 
 
 def _mk_ctx(**overrides):

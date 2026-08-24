@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import getpass
-import hashlib
 import json
 import os
 import shutil
@@ -25,10 +24,20 @@ from uxon.domain.execution import (
 )
 from uxon.domain.launch_profiles import LaunchProfile, ResolvedLaunchProfile, RuntimeContext
 from uxon.domain.runtime import WorkloadRuntimeSpec
-from uxon.infra import agents, git, identity, probes, runtime, sessions_probe, tmux
+from uxon.infra import (
+    agents,
+    git,
+    identity,
+    launch_records,
+    probes,
+    runtime,
+    sessions_probe,
+    tmux,
+    tmux_server_probe,
+)
 from uxon.infra.execution import (
     ExecutionProbe,
-    ensure_launch_compatible,
+    canonicalize_path,
     probe,
     resolve_target,
     wrap_command,
@@ -48,7 +57,6 @@ def _command_cfg(
     )
     execution = ExecutionConfig(
         default_backend=backend_id,
-        state_dir="/run/uxon/control-state",
         backends={
             "local": ExecutionConfig().backends["local"],
             backend_id: backend,
@@ -92,48 +100,17 @@ def test_execution_template_rejects_nonliteral_user_expansion(token: str) -> Non
         validate_execution_config(cfg.execution)
 
 
-def test_backend_probe_attests_identity_and_shared_state(tmp_path: Path) -> None:
-    state_dir = tmp_path / "state"
+def test_backend_probe_verifies_target_uid_and_gid() -> None:
     cfg = _command_cfg()
-    cfg.execution = ExecutionConfig(
-        default_backend="boundary",
-        state_dir=str(state_dir),
-        backends=cfg.execution.backends,
-    )
-
-    def fake_run(cmd: list[str], *, timeout: float):
-        assert timeout == 1.25
-        sentinel = Path(cmd[cmd.index("--sentinel") + 1])
-        state = Path(cmd[cmd.index("--state-dir") + 1])
-        metadata = state.stat()
-        payload = {
-            "ok": True,
-            "identity": {
-                "euid": 1001,
-                "egid": 1001,
-                "groups": [1001],
-                "namespaces": {name: 1 for name in ("mnt", "uts", "ipc", "net", "pid")},
-                "cgroup": "0::/test.slice",
-                "capabilities": {
-                    name: "0000000000000000"
-                    for name in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
-                },
-                "no_new_privs": 1,
-                "state_dev": metadata.st_dev,
-                "state_ino": metadata.st_ino,
-                "state_writable": False,
-            },
-            "sentinel_sha256": hashlib.sha256(sentinel.read_bytes()).hexdigest(),
-            "sentinel_writable": False,
-        }
-        return _cp(stdout=json.dumps(payload))
-
     with (
         mock.patch(
             "uxon.infra.execution.pwd.getpwnam",
             return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001),
         ),
-        mock.patch("uxon.infra.execution.run_query", side_effect=fake_run) as run,
+        mock.patch(
+            "uxon.infra.execution.run_query",
+            return_value=_cp(stdout=json.dumps({"euid": 1001, "egid": 1001})),
+        ) as run,
     ):
         result = probe(cfg, "alice")
     assert result.ok
@@ -145,7 +122,29 @@ def test_backend_probe_attests_identity_and_shared_state(tmp_path: Path) -> None
     ]
 
 
-def test_doctor_exposes_old_config_drain_policy() -> None:
+def test_command_backend_returns_authoritative_canonical_path() -> None:
+    cfg = _command_cfg()
+    payload = {"ok": True, "path": "/inside/projects/demo", "error": ""}
+    with mock.patch(
+        "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
+    ) as run:
+        result = canonicalize_path(cfg, "alice", "/outside/projects/demo", intended=False)
+    assert result == "/inside/projects/demo"
+    argv = run.call_args.args[0]
+    assert argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+    assert argv[-2:] == ["--path", "/outside/projects/demo"]
+
+
+def test_local_intended_path_rejects_symlink_component(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    with pytest.raises(SystemExit):
+        canonicalize_path(make_config(), "alice", str(link / "new"), intended=True)
+
+
+def test_doctor_reports_fixed_backend_probe() -> None:
     cfg = _command_cfg()
     profile = cfg.launch.profiles["claude"]
     cfg.launch.profiles["claude"] = LaunchProfile(
@@ -159,7 +158,8 @@ def test_doctor_exposes_old_config_drain_policy() -> None:
     ):
         rows = _doctor_execution_rows(cfg, "operator")
     assert rows[0]["backend"] == "boundary"
-    assert rows[0]["change_policy"] == "drain-with-old-config"
+    assert rows[0]["status"] == "ok"
+    assert "change_policy" not in rows[0]
 
 
 def test_tmux_server_list_attach_and_kill_share_the_boundary() -> None:
@@ -178,12 +178,13 @@ def test_tmux_server_list_attach_and_kill_share_the_boundary() -> None:
     assert list(attach.cmd[: len(prefix)]) == prefix
     assert "attach-session" in attach.cmd
 
-    with (
-        mock.patch("uxon.infra.sessions_probe.run_query", return_value=_cp(returncode=1)) as run,
-    ):
+    with mock.patch(
+        "uxon.infra.tmux.run_query",
+        return_value=_cp(stdout=json.dumps({"state": "absent", "sessions": [], "error": ""})),
+    ) as run:
         assert sessions_probe.collect_sessions_for_user(cfg, "alice", "uxon-", socket) == []
     assert run.call_args.args[0][: len(prefix)] == prefix
-    assert run.call_args.args[0][-1] == "list-sessions"
+    assert run.call_args.args[0][-2:] == ["--socket", socket]
 
     kill = tmux.tmux_base(cfg, "alice", socket, nonint=True) + [
         "kill-session",
@@ -191,6 +192,40 @@ def test_tmux_server_list_attach_and_kill_share_the_boundary() -> None:
         session.name,
     ]
     assert kill[: len(prefix)] == prefix
+
+
+def test_unreachable_tmux_server_is_not_reported_as_empty() -> None:
+    cfg = _command_cfg()
+    socket = "/tmp/uxon-alice-boundary.sock"
+    payload = {"state": "unreachable", "sessions": [], "error": "permission denied"}
+    with (
+        mock.patch("uxon.infra.tmux.run_query", return_value=_cp(stdout=json.dumps(payload))),
+        pytest.raises(SystemExit) as raised,
+    ):
+        sessions_probe.collect_sessions_for_user(cfg, "alice", "uxon-", socket)
+    assert "permission denied" in getattr(raised.value, "uxon_msg", "")
+
+
+def test_fixed_tmux_probe_distinguishes_absent_and_non_socket(tmp_path: Path) -> None:
+    absent = tmux_server_probe.collect(tmp_path / "missing.sock")
+    assert absent == {"state": "absent", "sessions": [], "error": ""}
+
+    regular = tmp_path / "not-a-socket"
+    regular.write_text("not tmux")
+    unreachable = tmux_server_probe.collect(regular)
+    assert unreachable["state"] == "unreachable"
+    assert unreachable["sessions"] == []
+    assert "not a socket" in unreachable["error"]
+
+
+def test_fixed_tmux_probe_preserves_lstat_error() -> None:
+    with mock.patch(
+        "uxon.infra.tmux_server_probe.os.stat",
+        side_effect=PermissionError("permission denied"),
+    ):
+        result = tmux_server_probe.collect(Path("/private/tmux.sock"))
+    assert result["state"] == "unreachable"
+    assert "permission denied" in result["error"]
 
 
 def test_git_fs_binary_and_runtime_commands_are_nested_under_boundary(tmp_path: Path) -> None:
@@ -281,7 +316,14 @@ def test_nested_runtime_never_replaces_execution_boundary() -> None:
     boundary = ["/usr/local/libexec/fake-boundary", "alice", "--"]
     assert create[: len(boundary)] == boundary
     assert create[len(boundary) : len(boundary) + 3] == ["tmux", "-S", socket]
+    for command in (
+        request.managed.query_cmd,
+        request.managed.release_cmd,
+        request.managed.kill_cmd,
+    ):
+        assert list(command[: len(boundary)]) == boundary
     runtime_start = create.index("docker")
+    assert create.index("uxon.infra.launch_bootstrap") < runtime_start
     assert create[runtime_start : runtime_start + 5] == [
         "docker",
         "exec",
@@ -293,21 +335,12 @@ def test_nested_runtime_never_replaces_execution_boundary() -> None:
     assert "claude" in create[runtime_start + 6 :]
 
 
-def test_same_backend_id_change_blocks_launch_but_keeps_socket_addressable() -> None:
+def test_same_backend_id_keeps_socket_address_stable() -> None:
     old_cfg = _command_cfg(command_prefix=("/usr/local/libexec/old-boundary", "{user}", "--"))
     new_cfg = _command_cfg(command_prefix=("/usr/local/libexec/new-boundary", "{user}", "--"))
-    session = make_session(user="alice")
-    session.launch_record_verified = True
-    session.execution_backend = "boundary"
-    session.execution_fingerprint = old_cfg.execution.backends["boundary"].fingerprint
 
     with mock.patch("uxon.infra.tmux.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=1001)):
         assert tmux.tmux_socket_path(old_cfg, "alice") == tmux.tmux_socket_path(new_cfg, "alice")
-    with pytest.raises(SystemExit) as exc:
-        ensure_launch_compatible(new_cfg, "alice", [session])
-    message = str(getattr(exc.value, "uxon_msg", exc.value))
-    assert "Drain them before changing [execution]" in message
-    assert "restore the previous execution config" in message
 
 
 def test_backend_id_change_selects_a_distinct_socket() -> None:
@@ -315,6 +348,24 @@ def test_backend_id_change_selects_a_distinct_socket() -> None:
     second = _command_cfg(backend_id="netns_b")
     with mock.patch("uxon.infra.tmux.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=1001)):
         assert tmux.tmux_socket_path(first, "alice") != tmux.tmux_socket_path(second, "alice")
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+def test_tmux_release_channel_is_sticky_and_nonce_scoped(tmp_path: Path) -> None:
+    socket = tmp_path / "tmux.sock"
+    session = "uxon-handshake-contract"
+    nonce = "abcdefghijklmnop"
+    release = launch_records.handshake_channel(nonce, "release")
+    other = launch_records.handshake_channel("ponmlkjihgfedcba", "release")
+    base = ["tmux", "-S", str(socket)]
+    try:
+        subprocess.run(base + ["new-session", "-d", "-s", session, "sleep", "30"], check=True)
+        subprocess.run(base + ["wait-for", "-S", release], check=True)
+        subprocess.run(base + ["wait-for", release], check=True, timeout=2)
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess.run(base + ["wait-for", other], check=True, timeout=0.1)
+    finally:
+        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
 
 
 def test_target_user_sudo_prefix_is_centralized() -> None:

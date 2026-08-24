@@ -88,6 +88,7 @@ class ResolvedLaunchProfile:
     execution: ExecutionTarget | None = None
     runtime_context: RuntimeContext | None = None
     git_remote: GitRemotePolicy = field(default_factory=GitRemotePolicy)
+    canonical_target: str = ""
 
 
 def validate_tmux_safe_id(value: str, *, what: str) -> str:

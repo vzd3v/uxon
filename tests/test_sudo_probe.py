@@ -11,6 +11,7 @@ sudoers configuration.
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 import unittest
 from contextlib import contextmanager
@@ -33,21 +34,25 @@ def _stubbed_run(stub):
     """Route both target-user and root probes through one deterministic stub."""
     with (
         mock.patch("uxon.infra.execution.run_query", side_effect=stub),
+        mock.patch(
+            "uxon.infra.execution.pwd.getpwnam",
+            return_value=mock.Mock(pw_uid=1000, pw_gid=1000),
+        ),
         mock.patch("uxon.infra.sudo_probe.run_query", side_effect=stub),
     ):
         yield
 
 
-def _fake_completed(rc: int) -> subprocess.CompletedProcess:
+def _fake_completed(rc: int, *, stdout: str = "") -> subprocess.CompletedProcess:
     """Build a CompletedProcess for the stub side of ``subprocess.run``."""
-    return subprocess.CompletedProcess(args=[], returncode=rc)
+    return subprocess.CompletedProcess(args=[], returncode=rc, stdout=stdout, stderr="")
 
 
 class _SudoStub:
     """Stub for ``subprocess.run`` that maps argv shape to a result.
 
     ``per_user`` maps each candidate user name to one of:
-      - an int (returncode for ``sudo -niu <user> -- true``)
+      - an int (returncode for the fixed target-user execution probe)
       - the sentinel string ``"timeout"`` to raise ``TimeoutExpired``
       - the sentinel string ``"oserror"`` to raise ``OSError``
 
@@ -57,7 +62,7 @@ class _SudoStub:
 
     The stub records every observed argv on ``self.calls`` so tests
     can assert on flag plumbing (``-n``, ``-i``, ``-u <user>``,
-    ``--``, ``true``).
+    ``--``, probe module).
     """
 
     def __init__(
@@ -71,24 +76,25 @@ class _SudoStub:
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
-        # Per-target probe: ["sudo", "-niu", "<user>", "--", "true"]
+        # Per-target probe: sudo login boundary + fixed JSON probe module.
         if len(argv) >= 4 and argv[:2] == ["sudo", "-niu"] and argv[3] == "--":
             user = argv[2]
             outcome = self.per_user.get(user, 1)
-            return self._dispatch(outcome, argv)
+            return self._dispatch(outcome, argv, probe=True)
         # Root probe: ["sudo", "-n", "true"]
         if argv == ["sudo", "-n", "true"]:
             return self._dispatch(self.root, argv)
         raise AssertionError(f"unexpected argv to sudo stub: {argv!r}")
 
     @staticmethod
-    def _dispatch(outcome: int | str, argv) -> subprocess.CompletedProcess:
+    def _dispatch(outcome: int | str, argv, *, probe: bool = False) -> subprocess.CompletedProcess:
         if outcome == "timeout":
             raise subprocess.TimeoutExpired(cmd=argv, timeout=PROBE_TIMEOUT_SEC)
         if outcome == "oserror":
             raise OSError("simulated")
         if isinstance(outcome, int):
-            return _fake_completed(outcome)
+            stdout = '{"euid":1000,"egid":1000}' if probe and outcome == 0 else ""
+            return _fake_completed(outcome, stdout=stdout)
         raise AssertionError(f"bad outcome sentinel: {outcome!r}")
 
 
@@ -170,13 +176,26 @@ class SelfIsExcluded(unittest.TestCase):
 class ProbeArgvShape(unittest.TestCase):
     """The exact argv shape matters — sudo is sensitive to flag order."""
 
-    def test_per_target_probe_uses_n_i_u_dashdash_true(self) -> None:
+    def test_per_target_probe_uses_fixed_execution_probe(self) -> None:
         stub = _SudoStub(per_user={"alice_agent": 0})
         with _stubbed_run(stub):
             with mock.patch("uxon.infra.sudo_probe._self_user", return_value="vz"):
                 probe_sudo_capability(_CFG, ["alice_agent"])
         per_user_argvs = [c for c in stub.calls if c[:2] == ["sudo", "-niu"]]
-        self.assertEqual(per_user_argvs, [["sudo", "-niu", "alice_agent", "--", "true"]])
+        self.assertEqual(
+            per_user_argvs,
+            [
+                [
+                    "sudo",
+                    "-niu",
+                    "alice_agent",
+                    "--",
+                    sys.executable,
+                    "-m",
+                    "uxon.infra.execution_probe",
+                ]
+            ],
+        )
 
     def test_root_probe_uses_n_true_no_dash_u(self) -> None:
         stub = _SudoStub(root=0)
@@ -215,7 +234,9 @@ class ParallelismBoundedByPool(unittest.TestCase):
 
         def stub_run(argv, **kwargs):
             time.sleep(per_user_sleep)
-            return _fake_completed(0)
+            if argv == ["sudo", "-n", "true"]:
+                return _fake_completed(0)
+            return _fake_completed(0, stdout='{"euid":1000,"egid":1000}')
 
         candidates = [f"user{i}_agent" for i in range(MAX_WORKERS)]
         with _stubbed_run(stub_run):

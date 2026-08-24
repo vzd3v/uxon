@@ -550,7 +550,7 @@ class TuiBridge:
             target_may_not_exist=False,
         )
         matches = sessions_probe.probe_tui_compatible_sessions(
-            self.cfg, resolved.launch_user, target_dir, resolved.profile.id
+            self.cfg, resolved.launch_user, resolved.canonical_target, resolved.profile.id
         )
         return tuple((s.user, s.name, s.attached == "1") for s in matches)
 
@@ -685,10 +685,10 @@ class TuiBridge:
         matches = sessions_probe.probe_tui_compatible_sessions(
             self.cfg,
             resolved.launch_user,
-            worktree_path,
+            resolved.canonical_target,
             resolved.profile.id,
             stem=session_stem_for_worktree(repo_root, branch),
-            compatibility_root=worktree_path,
+            compatibility_root=resolved.canonical_target,
         )
         return tuple((s.user, s.name, s.attached == "1") for s in matches)
 
@@ -707,7 +707,7 @@ class TuiBridge:
             mode_id,
             target_may_not_exist=False,
         )
-        return launch_app.decide_runtime_gate(self.cfg, target_dir, resolved)
+        return launch_app.decide_runtime_gate(self.cfg, resolved.canonical_target, resolved)
 
     def on_probe_cwd_writable(self) -> bool:
         return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, self.cwd)

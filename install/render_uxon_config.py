@@ -108,7 +108,7 @@ def validate_payload_schema(payload: dict[str, Any]) -> None:
 
     execution = reject_unknown_keys(
         payload.get("execution", {}),
-        {"default_backend", "state_dir", "backend_by_launch_user", "backends"},
+        {"default_backend", "backend_by_launch_user", "backends"},
         source="execution",
     )
     backends = execution.get("backends", {})

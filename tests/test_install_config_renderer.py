@@ -31,13 +31,13 @@ def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
         },
         "execution": {
             "default_backend": "netns",
-            "state_dir": "/run/uxon/state",
             "backends": {
                 "netns": {
                     "kind": "command",
                     "command_prefix": [
-                        "sudo",
+                        "/usr/bin/sudo",
                         "-n",
+                        "--",
                         "/usr/local/libexec/uxon-exec",
                         "{user}",
                         "--",
@@ -75,3 +75,17 @@ def test_renderer_rejects_unknown_keys_at_nested_levels() -> None:
                 }
             }
         )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"container": {"enabled": True}},
+        {"execution": {"state_dir": "/run/uxon"}},
+        {"launch": {"profiles": {"custom": {"agent": "claude", "container_profile": "box"}}}},
+        {"launch": {"profiles": {"custom": {"agent": "claude", "runtime_namespace": "per_user"}}}},
+    ],
+)
+def test_renderer_rejects_removed_v3_isolation_keys_as_unknown(payload: dict) -> None:
+    with pytest.raises(ValueError, match="unknown key"):
+        _renderer().render_config(payload)

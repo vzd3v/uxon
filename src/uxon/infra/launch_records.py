@@ -3,17 +3,15 @@
 
 from __future__ import annotations
 
-import grp
 import json
 import os
-import pwd
+import re
 import secrets
 import stat
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import platformdirs
 
@@ -27,10 +25,9 @@ RUNTIME_ENV = "UXON_RUNTIME"
 RUNTIME_FINGERPRINT_ENV = "UXON_RUNTIME_FINGERPRINT"
 
 _RECORD_VERSION = 2
-_RECORD_MODE = 0o644
-
-if TYPE_CHECKING:
-    from uxon.infra.execution import ExecutionConfigured
+_STORE_MODE = 0o700
+_RECORD_MODE = 0o600
+_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
 
 @dataclass(frozen=True)
@@ -64,40 +61,16 @@ def new_launch_nonce() -> str:
 def state_dir(*, override: Path | None = None) -> Path:
     if override is not None:
         return override
-    # The bootstrap runs as the launch user, so the default store must be
-    # readable/traversable by that user while remaining control-plane-owned and
-    # not writable by it. Per-user runtime/state directories are commonly 0700,
-    # which would deadlock cross-user and isolated-runtime launches.
-    if os.name == "posix":
-        return Path(tempfile.gettempdir()) / f"uxon-launch-records-{os.geteuid()}"
     return Path(platformdirs.user_state_dir("uxon", appauthor=False)) / "launch-records"
 
 
-def execution_state_dir(cfg: ExecutionConfigured, launch_user: str) -> Path:
-    backend = cfg.execution.backend_for_user(launch_user)
-    if backend.kind == "command":
-        return Path(cfg.execution.state_dir)
-    return state_dir()
-
-
-def execution_state_probe_command(
-    cfg: ExecutionConfigured, launch_user: str, directory: Path
-) -> tuple[str, ...]:
-    from uxon.infra.execution import wrap_command
-
-    backend = cfg.execution.backend_for_user(launch_user)
-    if backend.kind == "local":
-        return ()
-    return tuple(wrap_command(cfg, launch_user, ["test", "-x", str(directory)], interactive=False))
-
-
-def prepare_execution_state(record: PendingLaunchRecord, *, directory: Path) -> Path:
-    return _ensure_store_ready(
-        override_dir=directory,
-        launch_user=record.launch_user,
-        requires_control_plane=record.runtime_kind != "direct"
-        or _uid_for_user(record.launch_user) != os.geteuid(),
-    )
+def handshake_channel(launch_nonce: str, phase: str) -> str:
+    """Return a nonce-scoped tmux wait-for channel."""
+    if _NONCE_RE.fullmatch(launch_nonce) is None:
+        fail("invalid launch nonce for tmux handshake")
+    if phase != "release":
+        fail("invalid tmux launch handshake phase")
+    return f"uxon-launch-{launch_nonce}-{phase}"
 
 
 def pending_from_resolved(
@@ -139,12 +112,7 @@ def _record_path(
 
 
 def create_pending_record(record: PendingLaunchRecord, *, override_dir: Path | None = None) -> Path:
-    directory = _ensure_store_ready(
-        override_dir=override_dir,
-        launch_user=record.launch_user,
-        requires_control_plane=record.runtime_kind != "direct"
-        or _uid_for_user(record.launch_user) != os.geteuid(),
-    )
+    directory = _ensure_store_ready(override_dir=override_dir)
     path = record_path(record, override_dir=directory)
     payload = _base_payload(record)
     payload["status"] = "pending"
@@ -165,12 +133,7 @@ def finalize_pending_record(
         fail(f"tmux created unexpected session {metadata.name!r}; expected {record.session_name!r}")
     if metadata.launch_nonce != record.launch_nonce:
         fail("tmux launch nonce mismatch; refusing to trust the created session")
-    directory = _ensure_store_ready(
-        override_dir=override_dir,
-        launch_user=record.launch_user,
-        requires_control_plane=record.runtime_kind != "direct"
-        or _uid_for_user(record.launch_user) != os.geteuid(),
-    )
+    directory = _ensure_store_ready(override_dir=override_dir)
     path = record_path(record, override_dir=directory)
     pending = _read_json(path)
     if pending.get("status") != "pending":
@@ -256,58 +219,6 @@ def read_verified_record(
     return payload
 
 
-def wait_for_finalized_record(
-    socket_path: str,
-    session_name: str,
-    launch_nonce: str,
-    *,
-    timeout_seconds: float = 60.0,
-    poll_seconds: float = 0.05,
-    override_dir: Path | None = None,
-    require_owner: bool = True,
-) -> dict[str, Any] | None:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        record = read_finalized_record(
-            socket_path,
-            session_name,
-            launch_nonce,
-            override_dir=override_dir,
-            require_owner=require_owner,
-        )
-        if record is not None:
-            return record
-        time.sleep(poll_seconds)
-    return None
-
-
-def wait_for_finalized_record_path(
-    record_path: Path,
-    socket_path: str,
-    session_name: str,
-    launch_nonce: str,
-    *,
-    timeout_seconds: float = 60.0,
-    poll_seconds: float = 0.05,
-) -> dict[str, Any] | None:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        try:
-            payload = _read_json(record_path, require_owner=False)
-        except (FileNotFoundError, PermissionError, OSError, ValueError):
-            payload = None
-        if payload is not None and (
-            payload.get("version") == _RECORD_VERSION
-            and payload.get("status") == "finalized"
-            and payload.get("socket_path") == socket_path
-            and payload.get("session_name") == session_name
-            and payload.get("launch_nonce") == launch_nonce
-        ):
-            return payload
-        time.sleep(poll_seconds)
-    return None
-
-
 def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
     return {
         "version": _RECORD_VERSION,
@@ -331,23 +242,35 @@ def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
 def _ensure_store_ready(
     *,
     override_dir: Path | None,
-    launch_user: str,
-    requires_control_plane: bool,
 ) -> Path:
     directory = state_dir(override=override_dir)
     _ensure_private_dir(directory)
-    if requires_control_plane and _user_can_write_dir(_uid_for_user(launch_user), directory):
-        fail(
-            "launch record store is writable by the launch user; "
-            "cross-user and isolated-runtime launches require a separate control-plane store"
-        )
     return directory
 
 
 def _ensure_private_dir(path: Path) -> None:
-    from uxon.infra.execution_state import ensure_state_dir
-
-    ensure_state_dir(path)
+    if not path.is_absolute():
+        fail(f"launch record directory must be absolute: {path}")
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            current.mkdir(mode=_STORE_MODE)
+            metadata = os.lstat(current)
+        if stat.S_ISLNK(metadata.st_mode):
+            fail(f"launch record path must not contain symlinks: {current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            fail(f"launch record path component is not a directory: {current}")
+        if metadata.st_uid not in (0, os.geteuid()):
+            fail(f"launch record directory is not owned by the control plane: {current}")
+        mode = stat.S_IMODE(metadata.st_mode)
+        if current == path and mode != _STORE_MODE:
+            os.chmod(current, _STORE_MODE)
+            mode = stat.S_IMODE(os.lstat(current).st_mode)
+        if mode & 0o022 and not mode & stat.S_ISVTX:
+            fail(f"launch record path component is writable by other users: {current}")
 
 
 def _write_new_json(path: Path, payload: dict[str, Any]) -> None:
@@ -374,6 +297,12 @@ def _replace_json(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     _write_new_json(tmp, payload)
     os.replace(tmp, path)
+    flags = os.O_RDONLY | (os.O_DIRECTORY if hasattr(os, "O_DIRECTORY") else 0)
+    directory_fd = os.open(path.parent, flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _read_json(path: Path, *, require_owner: bool = True) -> dict[str, Any]:
@@ -397,37 +326,3 @@ def _read_json(path: Path, *, require_owner: bool = True) -> dict[str, Any]:
         if close_fd:
             os.close(fd)
         raise
-
-
-def _uid_for_user(user: str) -> int:
-    try:
-        return pwd.getpwnam(user).pw_uid
-    except KeyError:
-        fail(f"unknown launch user for launch record checks: {user}")
-    raise AssertionError("unreachable")
-
-
-def _user_can_write_dir(uid: int, path: Path) -> bool:
-    st = os.stat(path)
-    mode = stat.S_IMODE(st.st_mode)
-    if uid == st.st_uid and mode & 0o200:
-        return True
-    if mode & 0o020 and _user_in_gid(uid, st.st_gid):
-        return True
-    if mode & 0o002:
-        return True
-    return False
-
-
-def _user_in_gid(uid: int, gid: int) -> bool:
-    try:
-        pw = pwd.getpwuid(uid)
-    except KeyError:
-        return False
-    if pw.pw_gid == gid:
-        return True
-    try:
-        group = grp.getgrgid(gid)
-    except KeyError:
-        return False
-    return pw.pw_name in group.gr_mem

@@ -10,6 +10,7 @@ in the composition root for now.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from uxon.domain.config import Config
@@ -17,6 +18,14 @@ from uxon.domain.config import Config
 
 def canonical(path: str) -> str:
     return str(Path(path).expanduser().resolve(strict=False))
+
+
+def lexical_absolute(path: str) -> str:
+    """Normalize an absolute policy path without resolving host-side symlinks."""
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
+        raise ValueError("policy path must be absolute")
+    return os.path.normpath(expanded)
 
 
 def is_under(path: str, base: str) -> bool:

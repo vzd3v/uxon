@@ -11,10 +11,14 @@ agent-exec call site. It reads the agent's spec from the merged catalog
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
+import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from uxon.domain.args import ParsedArgs
 from uxon.domain.authz import canonical
@@ -33,7 +37,65 @@ from uxon.domain.runtime import (
 from uxon.domain.session import SessionInfo, slugify
 from uxon.errors import fail
 from uxon.infra import launch_records, process
-from uxon.infra.execution import command_prefix, ensure_launch_compatible
+from uxon.infra.execution import command_prefix, wrap_command
+from uxon.infra.run import run_query
+
+_LAUNCH_HANDSHAKE_TIMEOUT_SECONDS = 60.0
+
+
+@dataclass(frozen=True)
+class TmuxServerProbe:
+    state: Literal["absent", "running", "unreachable"]
+    sessions: tuple[str, ...] = ()
+    error: str = ""
+
+
+def probe_tmux_server(cfg: Config, target_user: str, socket_path: str | None) -> TmuxServerProbe:
+    """Return the strict result of the fixed probe inside the execution backend."""
+    backend = cfg.execution.backend_for_user(target_user)
+    socket_args = ["--socket", socket_path] if socket_path is not None else ["--default-socket"]
+    cmd = wrap_command(
+        cfg,
+        target_user,
+        [sys.executable, "-m", "uxon.infra.tmux_server_probe", *socket_args],
+        interactive=False,
+    )
+    try:
+        result = run_query(cmd, timeout=backend.probe_timeout_seconds)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return TmuxServerProbe("unreachable", error=str(exc))
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"probe exited {result.returncode}").strip()
+        return TmuxServerProbe("unreachable", error=detail)
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        return TmuxServerProbe("unreachable", error=f"invalid tmux probe JSON: {exc}")
+    if not isinstance(payload, dict) or set(payload) != {"state", "sessions", "error"}:
+        return TmuxServerProbe("unreachable", error="invalid tmux probe result")
+    state = payload.get("state")
+    sessions = payload.get("sessions")
+    error = payload.get("error")
+    if (
+        state not in {"absent", "running", "unreachable"}
+        or not isinstance(sessions, list)
+        or not all(isinstance(value, str) and value for value in sessions)
+        or not isinstance(error, str)
+        or (state == "running" and error)
+        or (state == "absent" and (sessions or error))
+        or (state == "unreachable" and (sessions or not error))
+    ):
+        return TmuxServerProbe("unreachable", error="invalid tmux probe result")
+    return TmuxServerProbe(state, tuple(sessions), error)  # type: ignore[arg-type]
+
+
+def require_tmux_server(cfg: Config, target_user: str, socket_path: str) -> None:
+    result = probe_tmux_server(cfg, target_user, socket_path)
+    if result.state == "running":
+        return
+    if result.state == "absent":
+        fail(f"tmux server for {target_user!r} is absent at {socket_path}")
+    fail(f"tmux server for {target_user!r} is unreachable at {socket_path}: {result.error}")
 
 
 def tmux_base(
@@ -175,25 +237,6 @@ def _tmux_set_chain(cfg: Config, *, server_running: bool = False) -> list[str]:
     return chain
 
 
-def read_session_env(cfg: Config, user: str, session: str, var: str) -> str | None:
-    """Read one session-environment variable from a live tmux ``session``.
-
-    Used by the kill path to recover the workload resource uxon stashed at
-    launch (``new-session -e``). Runs under the non-interactive sudo prefix
-    (the kill path has no TTY). Returns the value, or None when the variable
-    is unset, the session is gone, or tmux errors — every "can't read it"
-    case degrades to "skip teardown", never an abort of the kill.
-    """
-    base = tmux_base(cfg, user, tmux_socket_path(cfg, user), nonint=True)
-    cp = process.run_cmd(base + ["show-environment", "-t", session, var], check=False)
-    if cp.returncode != 0:
-        return None
-    # tmux prints ``VAR=value`` when set, or ``-VAR`` when explicitly unset.
-    line = cp.stdout.strip()
-    prefix = f"{var}="
-    return line[len(prefix) :] if line.startswith(prefix) else None
-
-
 def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
     """Return the LaunchRequest for attaching to an existing session.
 
@@ -270,8 +313,6 @@ def _build_tmux_launch_request(
     if resolved_profile is None:
         fail("internal: launch profile must be resolved before _build_tmux_launch_request")
     launch_user = resolved_profile.launch_user
-    if active_sessions:
-        ensure_launch_compatible(cfg, launch_user, active_sessions)
     spec = resolved_profile.agent
     mode_id = resolved_profile.mode_id
     # Open modes: an unset ``--mode`` resolves to the agent's first (default)
@@ -289,12 +330,7 @@ def _build_tmux_launch_request(
             session_name=session,
             resolved=resolved_profile,
         )
-    state_path = launch_records.execution_state_dir(cfg, launch_user)
-    record_dir = str(state_path)
-    execution_state_probe_cmd = launch_records.execution_state_probe_command(
-        cfg, launch_user, state_path
-    )
-    exact_record_path = launch_records.record_path(pending_record, override_dir=state_path)
+    record_dir = str(launch_records.state_dir())
     # Workload-runtime wrap (off by default): the operator's opaque
     # ``exec_prefix`` enters the selected resource. Direct runtime keeps
     # ``exec_prefix`` empty and preserves the host agent argv. The
@@ -384,8 +420,8 @@ def _build_tmux_launch_request(
         session,
         "--nonce",
         pending_record.launch_nonce,
-        "--record-path",
-        str(exact_record_path),
+        "--timeout",
+        str(_LAUNCH_HANDSHAKE_TIMEOUT_SECONDS),
         "--",
         *final_cmd,
     ]
@@ -408,16 +444,24 @@ def _build_tmux_launch_request(
             + "}",
         ]
     )
+    release_cmd = tuple(
+        base
+        + [
+            "wait-for",
+            "-S",
+            launch_records.handshake_channel(pending_record.launch_nonce, "release"),
+        ]
+    )
     kill_cmd = tuple(base + ["kill-session", "-t", session])
     managed = ManagedTmuxLaunch(
         create_cmd=create_cmd,
         query_cmd=query_cmd,
+        release_cmd=release_cmd,
         kill_cmd=kill_cmd,
         record_socket=socket_path,
         record_session=session,
         record_nonce=pending_record.launch_nonce,
         record_dir=record_dir,
-        execution_state_probe_cmd=execution_state_probe_cmd,
         launch_profile=pending_record.launch_profile,
         agent=pending_record.agent,
         launch_user=pending_record.launch_user,
@@ -510,15 +554,6 @@ def prepare_managed_launch(
     if pending is None:
         pending = pending_record_from_request(req)
     record_dir = Path(managed.record_dir)
-    launch_records.prepare_execution_state(pending, directory=record_dir)
-    if managed.execution_state_probe_cmd:
-        visible = process.run_cmd(list(managed.execution_state_probe_cmd), check=False)
-        if visible.returncode != 0:
-            detail = (visible.stderr or visible.stdout or "").strip()
-            fail(
-                f"execution backend {managed.execution_backend!r} cannot access execution state "
-                f"at {record_dir}" + (f": {detail}" if detail else "")
-            )
     launch_records.create_pending_record(pending, override_dir=record_dir)
     cp = process.run_cmd(list(managed.create_cmd), check=False)
     if cp.returncode != 0:
@@ -539,9 +574,16 @@ def prepare_managed_launch(
             runtime_epoch=managed.runtime_epoch,
             override_dir=record_dir,
         )
+        process.run_cmd(list(managed.release_cmd), check=True)
     except BaseException:
-        process.run_cmd(list(managed.kill_cmd), check=False)
-        launch_records.fail_pending_record(pending, override_dir=record_dir)
+        try:
+            process.run_cmd(list(managed.kill_cmd), check=False)
+        except BaseException:
+            pass
+        try:
+            launch_records.fail_pending_record(pending, override_dir=record_dir)
+        except BaseException:
+            pass
         raise
 
 

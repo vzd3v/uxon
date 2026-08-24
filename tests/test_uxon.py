@@ -80,6 +80,7 @@ def _resolved_for_test(
     profile: str = "claude",
     launch_user: str = "dana_agent",
     mode: str = "normal",
+    canonical_target: str = "/srv/repos/demo",
 ) -> ResolvedLaunchProfile:
     return ResolvedLaunchProfile(
         profile=cfg.launch.profiles[profile],
@@ -87,6 +88,7 @@ def _resolved_for_test(
         launch_user=launch_user,
         mode_id=mode,
         git_remote=cfg.launch.profiles[profile].git_remote,
+        canonical_target=canonical_target,
     )
 
 
@@ -528,19 +530,34 @@ class UxonTests(unittest.TestCase):
                 textwrap.dedent("""
                     [execution]
                     default_backend = "boundary"
-                    state_dir = "/var/lib/uxon/execution-state"
 
                     [execution.backends.boundary]
                     kind = "command"
-                    command_prefix = ["sudo", "-n", "--", "/usr/local/libexec/uxon-exec", "{user}", "--"]
+                    command_prefix = ["/usr/bin/sudo", "-n", "--", "/usr/local/libexec/uxon-exec", "{user}", "--"]
                     probe_timeout_seconds = 3.0
                 """).strip()
                 + "\n",
                 tmpdir,
             )
         backend = cfg.execution.backends["boundary"]
-        self.assertEqual(cfg.execution.state_dir, "/var/lib/uxon/execution-state")
         self.assertEqual(backend.probe_timeout_seconds, 3.0)
+
+    def test_load_config_rejects_removed_v3_isolation_keys_as_unknown(self) -> None:
+        cases = {
+            "top-level container": "[container]\nenabled = true\n",
+            "execution state_dir": '[execution]\nstate_dir = "/run/uxon"\n',
+            "launch container_profile": (
+                '[launch.profiles.custom]\nagent = "claude"\ncontainer_profile = "box"\n'
+            ),
+            "launch runtime_namespace": (
+                '[launch.profiles.custom]\nagent = "claude"\nruntime_namespace = "per_user"\n'
+            ),
+        }
+        for label, source in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmpdir:
+                with self.assertRaises(SystemExit) as raised:
+                    self._write_and_load_cfg(source, tmpdir)
+                self.assertIn("unknown key", getattr(raised.exception, "uxon_msg", ""))
 
     def test_load_config_rejects_unknown_launch_profile_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1046,7 +1063,10 @@ class UxonTests(unittest.TestCase):
         from uxon.gitremote import create as uxon_git_create
 
         with mock.patch.object(uxon_git_create, "create_project_remote", side_effect=fake_create):
-            with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
+            with (
+                mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
+            ):
                 with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0):
                     with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
                         new_app.do_new(args, cfg, "dana_agent")
@@ -1136,7 +1156,12 @@ class UxonTests(unittest.TestCase):
             with mock.patch.object(
                 new_app, "canonical", side_effect=lambda value: str(value), create=True
             ):
-                with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
+                with (
+                    mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                    mock.patch(
+                        "uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]
+                    ),
+                ):
                     with mock.patch.object(
                         new_app, "allocate_session_name", return_value="uxon-demo"
                     ):
@@ -1572,14 +1597,14 @@ class UxonTests(unittest.TestCase):
         self.assertNotIn("-As", create)
         self.assertNotIn("-dA", create)
 
-    def test_managed_launch_exports_record_dir_for_bootstrap(self) -> None:
+    def test_managed_launch_keeps_record_dir_out_of_bootstrap(self) -> None:
         cfg = self.make_config()
         args = ParsedArgs(action="run", permission_mode="yolo")
         resolved = _resolved_for_test(cfg, mode="yolo")
         with (
             self._stub_socket_path(),
             mock.patch(
-                "uxon.infra.launch_records.execution_state_dir", return_value=Path("/tmp/records")
+                "uxon.infra.launch_records.state_dir", return_value=Path("/control/records")
             ),
         ):
             req = tmux._build_tmux_launch_request(
@@ -1591,8 +1616,10 @@ class UxonTests(unittest.TestCase):
                 resolved_profile=resolved,
             )
         create = list(_managed_create_cmd(req))
-        self.assertIn("--record-path", create)
-        self.assertNotIn("UXON_CONTROL_STATE_DIR=/tmp/records", create)
+        self.assertNotIn("--record-path", create)
+        self.assertNotIn("/control/records", create)
+        self.assertEqual(req.managed.record_dir, "/control/records")
+        self.assertEqual(req.managed.release_cmd[-2], "-S")
 
     def test_build_tmux_launch_request_requires_resolved_profile(self) -> None:
         cfg = self.make_config()
@@ -1605,7 +1632,10 @@ class UxonTests(unittest.TestCase):
         cfg = self.make_config()
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         with self._stub_socket_path():
-            with mock.patch.object(attach_app.os, "execvp") as execvp:
+            with (
+                mock.patch.object(attach_app.tmux, "require_tmux_server"),
+                mock.patch.object(attach_app.os, "execvp") as execvp,
+            ):
                 attach_app.attach_session(target, cfg, "u-vz")
         execvp.assert_called_once()
         argv = execvp.call_args[0][1]
@@ -1653,6 +1683,7 @@ class UxonTests(unittest.TestCase):
         managed = tmux.ManagedTmuxLaunch(
             create_cmd=("tmux", "new-session", "-d", "-s", pending.session_name),
             query_cmd=("tmux", "display-message", "-p"),
+            release_cmd=("tmux", "wait-for", "-S", "uxon-launch-nonce-release"),
             kill_cmd=("tmux", "kill-session", "-t", pending.session_name),
             record_socket=pending.socket_path,
             record_session=pending.session_name,
@@ -1681,7 +1712,6 @@ class UxonTests(unittest.TestCase):
             return CP()
 
         with (
-            mock.patch("uxon.infra.launch_records.prepare_execution_state"),
             mock.patch("uxon.infra.launch_records.create_pending_record"),
             mock.patch(
                 "uxon.infra.launch_records.finalize_pending_record",
@@ -1698,6 +1728,60 @@ class UxonTests(unittest.TestCase):
             pending, override_dir=Path("/tmp/uxon-launch-records-test")
         )
 
+    def test_managed_launch_releases_only_after_record_finalization(self) -> None:
+        from uxon.infra import launch_records
+
+        pending = launch_records.PendingLaunchRecord(
+            socket_path="/tmp/uxon-test.sock",
+            session_name="uxon-demo@claude",
+            launch_nonce="abcdefghijklmnop",
+            launch_profile="claude",
+            agent="claude",
+            launch_user="dana_agent",
+        )
+        managed = tmux.ManagedTmuxLaunch(
+            create_cmd=("tmux", "new-session"),
+            query_cmd=("tmux", "display-message"),
+            release_cmd=("tmux", "wait-for", "-S", "uxon-launch-abcdefghijklmnop-release"),
+            kill_cmd=("tmux", "kill-session"),
+            record_socket=pending.socket_path,
+            record_session=pending.session_name,
+            record_nonce=pending.launch_nonce,
+            record_dir="/tmp/uxon-launch-records-test",
+            launch_profile=pending.launch_profile,
+            agent=pending.agent,
+            launch_user=pending.launch_user,
+        )
+        req = tmux.LaunchRequest(cmd=("tmux", "attach"), managed=managed)
+        events: list[str] = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            events.append(cmd[1])
+            stdout = (
+                "$1\t123\tuxon-demo@claude\tabcdefghijklmnop\n"
+                if cmd == list(managed.query_cmd)
+                else ""
+            )
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+        with (
+            mock.patch(
+                "uxon.infra.launch_records.create_pending_record",
+                side_effect=lambda *a, **k: events.append("record-pending"),
+            ),
+            mock.patch(
+                "uxon.infra.launch_records.finalize_pending_record",
+                side_effect=lambda *a, **k: events.append("record-finalized"),
+            ),
+            mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run),
+        ):
+            tmux.prepare_managed_launch(req, pending)
+
+        self.assertEqual(
+            events,
+            ["record-pending", "new-session", "display-message", "record-finalized", "wait-for"],
+        )
+
     def test_managed_launch_name_conflict_fails_pending_record(self) -> None:
         from uxon.infra import launch_records
 
@@ -1712,6 +1796,7 @@ class UxonTests(unittest.TestCase):
         managed = tmux.ManagedTmuxLaunch(
             create_cmd=("tmux", "new-session", "-d", "-s", pending.session_name),
             query_cmd=("tmux", "display-message", "-p"),
+            release_cmd=("tmux", "wait-for", "-S", "uxon-launch-nonce-release"),
             kill_cmd=("tmux", "kill-session", "-t", pending.session_name),
             record_socket=pending.socket_path,
             record_session=pending.session_name,
@@ -1731,7 +1816,6 @@ class UxonTests(unittest.TestCase):
             stderr = "duplicate session"
 
         with (
-            mock.patch("uxon.infra.launch_records.prepare_execution_state"),
             mock.patch("uxon.infra.launch_records.create_pending_record"),
             mock.patch("uxon.infra.launch_records.fail_pending_record") as fail_pending,
             mock.patch("uxon.infra.process.run_cmd", return_value=CP()),
@@ -1742,18 +1826,46 @@ class UxonTests(unittest.TestCase):
             pending, override_dir=Path("/tmp/uxon-launch-records-test")
         )
 
-    def test_launch_bootstrap_waits_for_finalized_record_before_exec(self) -> None:
+    def test_launch_bootstrap_waits_for_release_before_exec(self) -> None:
         from uxon.infra import launch_bootstrap
 
         with (
-            mock.patch("uxon.infra.launch_records.wait_for_finalized_record", return_value=None),
+            mock.patch(
+                "uxon.infra.launch_bootstrap.run_query",
+                side_effect=[subprocess.TimeoutExpired(["tmux"], 0.01), mock.Mock(returncode=0)],
+            ) as run,
             mock.patch.object(launch_bootstrap.os, "execvp") as execvp,
         ):
             rc = launch_bootstrap.wait_then_exec(
                 socket_path="/tmp/sock",
                 session_name="uxon-demo@claude",
-                launch_nonce="nonce",
-                record_path="/tmp/control-state/record.json",
+                launch_nonce="abcdefghijklmnop",
+                agent_argv=["claude"],
+                timeout_seconds=0.01,
+            )
+        self.assertEqual(rc, 124)
+        self.assertEqual(
+            run.call_args_list[-1].args[0][-3:], ["kill-session", "-t", "uxon-demo@claude"]
+        )
+        execvp.assert_not_called()
+
+    def test_launch_bootstrap_timeout_survives_cleanup_failure(self) -> None:
+        from uxon.infra import launch_bootstrap
+
+        with (
+            mock.patch(
+                "uxon.infra.launch_bootstrap.run_query",
+                side_effect=[
+                    subprocess.TimeoutExpired(["tmux"], 0.01),
+                    OSError("tmux disappeared"),
+                ],
+            ),
+            mock.patch.object(launch_bootstrap.os, "execvp") as execvp,
+        ):
+            rc = launch_bootstrap.wait_then_exec(
+                socket_path="/tmp/sock",
+                session_name="uxon-demo@claude",
+                launch_nonce="abcdefghijklmnop",
                 agent_argv=["claude"],
                 timeout_seconds=0.01,
             )
@@ -1781,21 +1893,18 @@ class UxonTests(unittest.TestCase):
                 name=pending.session_name,
                 launch_nonce=pending.launch_nonce,
             )
-            with mock.patch(
-                "uxon.infra.launch_records._uid_for_user", return_value=os.geteuid() + 1
-            ):
-                launch_records.create_pending_record(pending, override_dir=Path(tmp) / "records")
-                launch_records.finalize_pending_record(
-                    pending,
-                    meta,
-                    runtime_id="cid",
-                    runtime_cgroup="/x.slice",
-                    runtime_epoch="1000",
-                    override_dir=Path(tmp) / "records",
-                )
+            launch_records.create_pending_record(pending, override_dir=Path(tmp) / "records")
+            launch_records.finalize_pending_record(
+                pending,
+                meta,
+                runtime_id="cid",
+                runtime_cgroup="/x.slice",
+                runtime_epoch="1000",
+                override_dir=Path(tmp) / "records",
+            )
             record_path = launch_records.record_path(pending, override_dir=Path(tmp) / "records")
-            self.assertEqual(stat.S_IMODE((Path(tmp) / "records").stat().st_mode), 0o711)
-            self.assertEqual(stat.S_IMODE(record_path.stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE((Path(tmp) / "records").stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(record_path.stat().st_mode), 0o600)
             payload = launch_records.read_finalized_record(
                 pending.socket_path,
                 pending.session_name,
@@ -2677,8 +2786,14 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
             with mock.patch.object(new_app, "canonical", side_effect=lambda v: str(v), create=True):
                 with mock.patch.object(os, "getcwd", return_value="/home/u-vz"):
                     with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
-                        with mock.patch.object(
-                            new_app, "allocate_session_name", return_value="uxon-demo"
+                        with (
+                            mock.patch(
+                                "uxon.infra.sessions_probe.legacy_compatible_sessions",
+                                return_value=[],
+                            ),
+                            mock.patch.object(
+                                new_app, "allocate_session_name", return_value="uxon-demo"
+                            ),
                         ):
                             with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0):
                                 with mock.patch.object(
@@ -3209,7 +3324,10 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         cfg = config_loader.load_config("/tmp")
         repo = "/srv/work/myapp"
-        resolved = _resolved_for_test(cfg)
+        resolved = dataclasses.replace(
+            _resolved_for_test(cfg),
+            canonical_target=f"{repo}/.uxon/worktrees/feature-auth",
+        )
         calls: list[list[str]] = []
 
         def fake_run_cmd(cmd, check=True, **kw):
@@ -3730,7 +3848,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
             launch_record_verified=True,
         )
         cfg = config_loader.load_config("/tmp")
-        resolved = _resolved_for_test(cfg, launch_user="dana_agent")
+        resolved = _resolved_for_test(cfg, launch_user="dana_agent", canonical_target=wt)
         with (
             mock.patch.object(
                 tui_bridge.launch_profile_app, "resolve_launch_profile", return_value=resolved
@@ -3750,7 +3868,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
 
     def test_session_probe_uses_resolved_launch_user(self) -> None:
         cfg = config_loader.load_config("/tmp")
-        resolved = _resolved_for_test(cfg, launch_user="profile_user")
+        resolved = _resolved_for_test(cfg, launch_user="profile_user", canonical_target="/srv/work")
         captured: dict[str, str] = {}
 
         def fake_probe(cfg_arg, launch_user, target_dir, profile_id, **kwargs):
@@ -3776,7 +3894,7 @@ class ProbeExistingWorktreeSessionsCallbackTests(unittest.TestCase):
 
     def test_runtime_gate_uses_resolved_launch_user(self) -> None:
         cfg = config_loader.load_config("/tmp")
-        resolved = _resolved_for_test(cfg, launch_user="profile_user")
+        resolved = _resolved_for_test(cfg, launch_user="profile_user", canonical_target="/srv/work")
 
         with (
             mock.patch.object(

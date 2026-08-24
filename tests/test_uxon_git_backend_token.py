@@ -1,14 +1,34 @@
+import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from helpers import make_config
 
 from uxon.domain import git_profiles as gp
+from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
 from uxon.gitremote import backend_gh as gh
 from uxon.gitremote import backend_token as tok
+from uxon.gitremote import token_worker
 
 SECRET = "ghp_SENSITIVE_DO_NOT_LEAK"
 _CFG = make_config()
+
+
+def _command_cfg():
+    backend = ExecutionBackendSpec(
+        id="boundary",
+        kind="command",
+        command_prefix=("/usr/local/libexec/boundary", "--target", "{user}"),
+    )
+    return make_config(
+        execution=ExecutionConfig(
+            default_backend="boundary",
+            backends={"local": ExecutionConfig().backends["local"], "boundary": backend},
+        )
+    )
 
 
 def _profile(**over):
@@ -291,6 +311,49 @@ class NetworkErrorTests(unittest.TestCase):
                 self.assertIn("network error", str(exc).lower())
             else:
                 self.fail("expected BackendError")
+
+
+class CommandBackendWorkerTests(unittest.TestCase):
+    def test_controller_sends_no_token_to_worker_argv_env_or_stdin(self) -> None:
+        cfg = _command_cfg()
+        response = subprocess.CompletedProcess(
+            [], 0, json.dumps({"ok": True, "ssh_url": "git@github.com:vzd3v/r.git"}), ""
+        )
+        with mock.patch("uxon.gitremote.backend_token.run_query", return_value=response) as run:
+            url = tok.create_remote(cfg, _profile(), "r", "/tmp/r", "erin", "dana_agent")
+        self.assertEqual(url, "git@github.com:vzd3v/r.git")
+        argv = run.call_args.args[0]
+        request = run.call_args.kwargs["input"]
+        self.assertEqual(argv[:3], ["/usr/local/libexec/boundary", "--target", "erin"])
+        self.assertNotIn(SECRET, repr((argv, request, run.call_args.kwargs)))
+        self.assertNotIn("env", run.call_args.kwargs)
+
+    def test_worker_redacts_token_echoed_by_http_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text(SECRET)
+            request = {
+                "operation": "preflight",
+                "profile": {
+                    "name": "p",
+                    "host": "github.com",
+                    "owner": "vzd3v",
+                    "auth": "token",
+                    "creds_user": "erin",
+                    "token_file": str(token_file),
+                    "visibility": "private",
+                },
+                "repo_name": "r",
+            }
+            with mock.patch.object(
+                token_worker,
+                "default_http",
+                side_effect=RuntimeError(f"upstream echoed {SECRET}"),
+            ):
+                response = token_worker.execute(request)
+        self.assertFalse(response["ok"])
+        self.assertNotIn(SECRET, json.dumps(response))
+        self.assertIn("***", response["error"])
 
 
 class DescribeCommandTests(unittest.TestCase):

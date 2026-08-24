@@ -276,7 +276,9 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             cfg = _cfg_with_launch(launch, allowed_roots=[tmp])
-            resolved = _resolved(cfg, "claude_sub1", launch_user="alice")
+            resolved = dataclasses.replace(
+                _resolved(cfg, "claude_sub1", launch_user="alice"), canonical_target=tmp
+            )
             captured: dict[str, str] = {}
 
             def fake_launch(target_dir, session, *args, **kwargs):
@@ -291,6 +293,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 ),
                 mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
                 mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
                 mock.patch("uxon.infra.tmux.launch_in_tmux", side_effect=fake_launch),
             ):
                 rc = run_app.do_run(ParsedArgs(action="run", profile="claude_sub1"), cfg, "alice")
@@ -395,7 +398,10 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 git_create_enabled=True,
                 git_remote_profiles=git_profiles.load_profiles([profile]),
             )
-            resolved = _resolved(cfg, "claude", launch_user="alice")
+            resolved = dataclasses.replace(
+                _resolved(cfg, "claude", launch_user="alice"),
+                canonical_target=str(Path(tmp) / "demo"),
+            )
             calls: list[list[str]] = []
 
             def fake_run_cmd(cmd, **kwargs):
@@ -454,7 +460,10 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 git_create_enabled=True,
                 git_remote_profiles=git_profiles.load_profiles([profile]),
             )
-            resolved = _resolved(cfg, "claude", launch_user="alice")
+            resolved = dataclasses.replace(
+                _resolved(cfg, "claude", launch_user="alice"),
+                canonical_target=str(Path(tmp) / "demo"),
+            )
             calls: list[list[str]] = []
 
             def fake_run_cmd(cmd, **kwargs):
@@ -499,7 +508,10 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             cfg = _cfg_with_launch(launch, allowed_roots=[tmp], new_project_root=tmp)
-            resolved = _resolved(cfg, "claude", launch_user="profile_user")
+            resolved = dataclasses.replace(
+                _resolved(cfg, "claude", launch_user="profile_user"),
+                canonical_target=str(Path(tmp) / "demo"),
+            )
 
             def fake_run_cmd(cmd, **kwargs):
                 Path(tmp, "demo").mkdir(exist_ok=True)
@@ -535,6 +547,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
                 mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
                 mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
                 mock.patch.object(tui_planning.launch_app, "ensure_runtime_ready") as ready,
                 mock.patch(
                     "uxon.infra.tmux._build_tmux_launch_request",
@@ -556,7 +569,10 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
             project = Path(tmp) / "demo"
             project.mkdir()
             cfg = _cfg_with_launch(launch, allowed_roots=[tmp], new_project_root=tmp)
-            resolved = _resolved(cfg, "claude", launch_user="profile_user")
+            resolved = dataclasses.replace(
+                _resolved(cfg, "claude", launch_user="profile_user"),
+                canonical_target=str(project),
+            )
 
             with (
                 mock.patch.object(
@@ -567,6 +583,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 mock.patch.object(tui_planning.launch_app, "ensure_launch_target_allowed") as gate,
                 mock.patch("uxon.infra.process.run_cmd") as run_cmd,
                 mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
                 mock.patch(
                     "uxon.infra.tmux._build_tmux_launch_request",
                     return_value=LaunchRequest(cmd=("true",), label="launch x"),
