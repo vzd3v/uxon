@@ -90,6 +90,10 @@ row to knowingly start a parallel one.
 | `x` | Reset selected key to default |
 | `q` | Back to main screen (`Esc` cancels in-flight edits) |
 
+`Enter` and `x` modify values only when the TUI process itself runs as root.
+For a non-root TUI the table is read-only; use `uxon config render` and an
+explicit `sudo install` for host-wide changes.
+
 The edit modal accepts `Esc` to cancel and `↑` / `↓` to focus
 between input and OK button.
 

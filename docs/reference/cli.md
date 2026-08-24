@@ -16,9 +16,9 @@ flagged in each section.
   (`myproj`) when exactly one session matches, legacy-prefix name
   (e.g. `old-myproj` when `old-` is in `legacy_session_prefixes`),
   or active-pane PID.
-- `--dry-run` — print the `tmux` command that would be executed
-  instead of executing it. Available on `run`, `new`, `kill`,
-  `kill-all`.
+- `--dry-run` — print the `tmux` or SSH command that would be executed
+  instead of executing it. Available on `run`, `new`, `attach`, `kill`,
+  and `kill-all`.
 - Unknown flags after `run` / `new` are forwarded to the selected
   agent binary verbatim.
 - All subcommands honour the launch-user resolution described in
@@ -34,6 +34,21 @@ flagged in each section.
 
 - With a TTY: opens the interactive TUI.
 - Without a TTY: prints usage and exits with code `0`.
+
+## `uxon config render --config-json <path|-> [--output <path|->]`
+
+Validate the complete public JSON config schema and render canonical TOML.
+`-` selects stdin or stdout; output defaults to stdout. The command does not
+load `/etc/uxon/config.toml`, so it remains usable to repair an invalid
+installation. It never records payload values or paths in audit events.
+
+For a host-wide install, render unprivileged, inspect the result, then install
+it explicitly:
+
+```bash
+uxon config render --config-json config.json --output /tmp/uxon-config.toml
+sudo install -o root -g root -m 0644 /tmp/uxon-config.toml /etc/uxon/config.toml
+```
 
 ## `uxon run [-w <branch>] [--dry-run] [--profile <id>] [--mode <id>] [agent-flags...]`
 
@@ -133,9 +148,9 @@ is the sole authority on who can attach to what — the local side
 delegates the per-target sudo gate to the peer's own
 `uxon attach --user`). Wire command:
 `ssh <alias> uxon attach <id> --user <name>` with an
-`--audit-correlation-id <uuid>` internal flag so caller-side
-(`attach.remote.out.dispatch`) and peer-side (`attach.remote.in.dispatch`) audit
-events join. The interactive attach always opens a fresh ssh
+`--audit-correlation-id <uuid>` internal flag so the initiating host's
+`attach.remote.out.dispatch` and the target host's
+`session.attach.dispatch` events join. The interactive attach always opens a fresh ssh
 connection — `ControlMaster`/`ControlPath` are stripped from the
 default template regardless of `ssh_multiplex`, so a wedged poller
 master can never hang the TUI handoff.

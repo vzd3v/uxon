@@ -109,7 +109,9 @@ your operator.
 
 Launch records are deleted after a verified successful kill. Bounded garbage
 collection removes abandoned pending records after 10 minutes and finalized
-records after 7 days once their tmux session is no longer live.
+records after 7 days once their tmux session is no longer live. A protected
+per-launch-user cursor stores only the last examined record filename so bounded
+collection eventually covers a large shared store without crossing user scope.
 
 ## Related
 

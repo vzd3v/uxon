@@ -113,12 +113,12 @@ The trust boundaries are:
    holds it in memory only for the duration of the API call, never
    logs it, and never echoes it in `--dry-run` output.
 
-5. **Config writes.** The TUI Settings screen rewrites
-   `/etc/uxon/config.toml` via a `tomlkit` round-trip. Root stages a
-   mode-`0644` sibling and atomically replaces the file; an unprivileged
-   controller passes the rendered bytes to a fixed non-interactive
-   `sudo install -o root -g root -m 0644` command. The destination remains
-   root-owned.
+5. **Config writes.** The TUI Settings screen is read-only for non-root
+   processes. A root-run TUI stages a root-owned mode-`0644` sibling, fsyncs it,
+   atomically replaces `/etc/uxon/config.toml`, and fsyncs the directory.
+   Unprivileged operators use `uxon config render` to a user-owned temporary
+   file, inspect it, then cross the privilege boundary explicitly with
+   `sudo install -o root -g root -m 0644`.
 
 6. **Launch records.** Managed runtime teardown trusts a finalized controller-side
    record, not pane environment alone. The default record store is private to one

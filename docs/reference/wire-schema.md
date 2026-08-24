@@ -197,8 +197,8 @@ non-dry-run remote kill goes through and emits the same
 `kill --json` is non-interactive — refuses to run without
 `--force` or `--dry-run`.
 
-The audit channel records the canonical event (`session.kill` /
-`kill.remote.in` / `kill.remote.out`) with the operational
+The audit channel records `kill.remote.out` on the initiating host and
+`session.kill` on the target host, with the operational
 fields (`session`, `target_user`, `force`, `dry_run`,
 `outcome`); the JSON envelope describes the **operator-facing
 result** of the call rather than the audit-record shape.

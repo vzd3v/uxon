@@ -14,8 +14,9 @@ SSH and shows everything in one TUI.
 - Per-host health badges (`[ok]`, `[cache 12s]`, `[err: …]`,
   `[loading]`) so an operator can tell at a glance whether a
   silent peer is empty or unreachable.
-- Cross-host audit correlation: attach emits `attach.remote.out.dispatch` /
-  `attach.remote.in.dispatch`; kill emits `kill.remote.out` / `kill.remote.in`.
+- Cross-host audit correlation: the initiating host emits
+  `attach.remote.out.dispatch` / `kill.remote.out`; the target host emits
+  `session.attach.dispatch` / `session.kill`.
   Caller and peer events share a UUID `correlation_id`. One
   `journalctl … CORRELATION_ID=<uuid>` query (against a central
   collector) returns the full pair.

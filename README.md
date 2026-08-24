@@ -151,6 +151,10 @@ enabled_profiles = ["claude", "codex"]
 default_profile = "claude"
 ```
 
+Fleet automation can validate and render the full JSON form with
+`uxon config render --config-json config.json`; install the reviewed TOML at
+`/etc/uxon/config.toml` with an explicit root-owned `sudo install`.
+
 `-w <branch>` (worktree) works with any agent; uxon manages the worktree
 itself. `cursor` has no `auto` mode.
 

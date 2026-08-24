@@ -11,8 +11,9 @@ to set a key — see the [scenario hubs](../scenarios/solo-1.md), the
 `/etc/uxon/config.toml`. There is no environment, XDG, checkout, or project
 fallback. `config/config.example.toml` is the source template to install there.
 
-The TUI's ⚙ Settings screen atomically installs a root-owned `0644` file via a
-`tomlkit` round-trip, preserving comments and formatting.
+The TUI's ⚙ Settings screen is read-only for non-root processes. A root-run TUI
+may atomically update the root-owned `0644` file with a comment-preserving
+`tomlkit` round-trip.
 
 Project-owned `.uxon.toml` files are not read. Runtime policy,
 launch profiles, path rules, agents, execution backends, runtimes, and git credentials
@@ -224,12 +225,16 @@ mode `2770`, have no POSIX access ACL, and use a control group containing every
 controller but no launch user. Shared records are `0640`; the launch user must
 not be able to create, replace, or delete them.
 
-Finalized records are removed after a verified successful kill. Enumeration
-garbage-collects at most 1,024 records per pass across the whole record store:
-pending records after 10 minutes and finalized records after 7 days when no
-matching live session exists. Records contain session/profile/runtime identifiers
-and timestamps, so treat the directory as operational metadata with the same
-retention and access controls as audit data.
+Finalized records are removed after a verified successful kill. Each complete
+per-user enumeration garbage-collects only records for that authoritatively
+enumerated `launch_user`, at most 1,024 per pass. A protected per-user rotating
+cursor guarantees eventual examination even in a shared store. Pending records
+expire after 10 minutes and finalized records after 7 days when no matching live
+session exists. Records and cursors contain operational identifiers/timestamps,
+so protect them with the same retention and access controls as audit data.
+Changing `tmux_socket_template` declares the old socket drained for record-GC
+purposes; drain its sessions before the change. Uxon does not rediscover live
+servers at retired socket paths.
 
 ## `[runtimes.<id>]` table
 
@@ -402,19 +407,20 @@ touching `xkb`.
 | `UXON_LOG_DIR` | Overrides the directory used for the developer-facing `debug` and `metrics` channels (off by default; gated on `UXON_DEBUG` / `UXON_METRICS=1`). Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. The audit channel goes to journald/syslog regardless of this variable. |
 | `UXON_DEBUG` | Comma-separated topic list enabling the `debug` JSONL channel (e.g. `tui,startup,tui-table`). Off by default. |
 | `UXON_METRICS` | When set to `1`, writes per-fetch latency rows to `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files). |
-| `SSH_CONNECTION` | Inspected by `audit.py` to detect peer-inbound invocations and switch local events to `*.remote.in`. |
 
 ## Rendering config from JSON (multi-host fleets)
 
 ```bash
-python3 install/render_uxon_config.py \
-  --config-json examples/uxon-config.json \
-  --output /etc/uxon/config.toml
+uxon config render --config-json examples/uxon-config.json --output /tmp/uxon-config.toml
+sudo install -o root -g root -m 0644 /tmp/uxon-config.toml /etc/uxon/config.toml
+rm /tmp/uxon-config.toml
 ```
 
 The renderer imports uxon's installed schema and accepts the complete public
 config surface with the same strict keys and types as TOML. It rejects unknown
-fields and never coerces booleans or scalars. A payload containing
+fields and never coerces booleans or scalars. The TUI settings view is
+read-only for non-root processes; rendering plus explicit `sudo install` is
+the only supported privilege boundary. A payload containing
 `git_remote_profiles.token_file` paths is operationally sensitive even though it
 contains no token value; protect and remove that input file accordingly.
 
