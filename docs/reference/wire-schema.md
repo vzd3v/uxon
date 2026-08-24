@@ -132,9 +132,9 @@ or `"none"`. The human `uxon doctor` text output uppercases this
 to `journald-native` / `syslog` / `no-sink` for readability — the
 JSON envelope keeps the raw value.
 
-Each `execution_backends` row includes `change_policy =
-"drain-with-old-config"`. Backend edits are never an automatic drain; restore
-the old definition first when it is required to reach the old tmux server.
+Each `execution_backends` row carries `launch_user`, `backend`, `kind`, a
+static config `fingerprint`, probe `status`, and an `error` string when the
+fixed target UID/GID probe fails. The fingerprint is diagnostic only.
 
 ## `kind = "version"`
 
@@ -162,7 +162,7 @@ Local kill (own user):
   "data": {
     "target": "uxon-myproj@claude_work",
     "user": "nadia-agent",
-    "socket": "/tmp/uxon-nadia-agent.sock",
+    "socket": "/tmp/uxon-nadia-agent-local.sock",
     "action": "killed",
     "dry_run": false
   }
@@ -210,7 +210,7 @@ result** of the call rather than the audit-record shape.
   "kind": "kill-all",
   "data": {
     "user": "nadia-agent",
-    "socket": "/tmp/uxon-nadia-agent.sock",
+    "socket": "/tmp/uxon-nadia-agent-local.sock",
     "dry_run": false,
     "sessions": [
       {"name": "uxon-foo@claude",  "action": "killed"},
@@ -250,6 +250,6 @@ emits an envelope with empty `sessions` and `from_cache` /
 
 ## Versioning
 
-Within `schema_version = "2"` `uxon` will not remove fields or
+Within `schema_version = "3"` `uxon` will not remove fields or
 rename them; new optional fields may be added. Breaking changes
 bump the major version and the `schema_version`.

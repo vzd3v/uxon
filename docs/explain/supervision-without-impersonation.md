@@ -59,8 +59,8 @@ in a refactor:
 1. **`tmux attach` is read-write by default.** Once an operator
    attaches to a developer's running pane, keypresses go to
    whatever process is in that pane. `uxon` does not enforce
-   read-only attach. For a true read-only audit posture, attach
-   with `tmux attach -r` — see
+   read-only attach. For a true read-only audit posture, keep attach access
+   disabled until uxon exposes a backend-safe read-only mode — see
    [`guides/harden/configure-readonly-attach.md`](../guides/harden/configure-readonly-attach.md).
 
 2. **`ForwardAgent yes` widens the boundary.** If the developer

@@ -22,7 +22,7 @@ outside its corner.
   developer. Anything tied to the developer's identity (SSH keys
   with passphrase prompt, `gh` / `aws` sessions, unlocked browser
   profile) stays out of reach via this path.
-- Per-user `tmux` socket (`/tmp/uxon-<user>.sock`) — no
+- Per-user/backend `tmux` socket (`/tmp/uxon-<user>-<backend>.sock`) — no
   cross-user session leakage.
 - One audit event per substantive operator gesture, going to
   journald (or `/dev/log` syslog fallback). `outcome != "ok"` is
@@ -57,8 +57,8 @@ outside its corner.
   — group / ACL conventions on `/srv/projects` so devs can review
   each other's worktrees without opening the whole tree.
 - [`guides/harden/configure-readonly-attach.md`](../guides/harden/configure-readonly-attach.md)
-  — `tmux attach -r` for instructors and quiet over-the-shoulder
-  reviews.
+  — current limitation and safe non-interactive alternatives for
+  read-only supervision.
 - [`guides/harden/enable-hidepid-correctly.md`](../guides/harden/enable-hidepid-correctly.md)
   — `/proc/<pid>` visibility caveats with the dashboard.
 - [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md)

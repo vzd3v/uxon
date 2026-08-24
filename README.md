@@ -159,7 +159,7 @@ version, and status.
 
 Launch profiles can optionally run agents **inside a container**,
 composed on top of the paired account — see
-[`docs/reference/configuration.md`](docs/reference/configuration.md#containerprofilesid-table).
+[`docs/reference/configuration.md`](docs/reference/configuration.md#runtimesid-table).
 
 ## Versioning
 

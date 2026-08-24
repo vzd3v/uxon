@@ -173,26 +173,37 @@ probes, runtime lifecycle, and workload launch. `local` is built in.
 | Key | Type | Default | Purpose |
 |---|---|---|---|
 | `execution.default_backend` | string | `"local"` | Backend for users without an override. |
-| `execution.state_dir` | absolute path | — | Control-plane-owned state shared with every command backend. Required when a command backend is configured. |
 | `execution.backend_by_launch_user` | table | `{}` | `<launch user> = <backend id>` overrides. |
 | `execution.backends.<id>.kind` | `"command"` | — | Required for configured backends. |
-| `execution.backends.<id>.command_prefix` | array | — | Prefix for every target-user command. Supports `{user}`. |
+| `execution.backends.<id>.command_prefix` | array | — | Prefix for every target-user command. Exactly one `{user}` placeholder is required. |
 | `execution.backends.<id>.probe_timeout_seconds` | number | `5.0` | Positive probe timeout. |
 
-`command_prefix` must call a fixed, root-owned helper as
-`<helper> {user} -- <argv...>`. The helper must validate the user against an
-operator allowlist, enter the configured host boundary, drop supplementary
-groups/GID/UID, set `no_new_privs`, and `execve` the received argv without a
-shell. It must preserve the caller's TTY and return the child exit status and
-signals. The helper and every directory containing it must be non-writable by
-launch users. Raw `sudo ip netns exec ...` is not a valid boundary because it
-does not establish the target identity.
+`command_prefix` is an argv template, not a shell command. It must be nonempty;
+its first element must be an absolute executable path; and `{user}` must appear
+exactly once as the only placeholder. Format conversions and format specs are
+rejected. uxon appends the target command unchanged and runs a fixed internal
+UID/GID probe through the resulting argv before relying on the backend.
 
-uxon runs a fixed internal attestation through the exact prefix. It verifies
-the effective identity, namespaces, cgroup/security context, and shared state
-directory before using the backend; the operator cannot replace this probe.
-`state_dir` must resolve to the same filesystem object inside and outside the
-boundary and must not be writable by launch users.
+A typical deployment uses an operator-owned helper:
+
+```toml
+[execution.backends.host_netns]
+kind = "command"
+command_prefix = ["/usr/bin/sudo", "-n", "--", "/usr/local/libexec/uxon-exec", "{user}", "--"]
+probe_timeout_seconds = 5.0
+```
+
+The helper should validate the target user, enter the boundary, establish the
+target UID/GID and supplementary groups, and `execve` the appended argv without
+a shell. It must preserve the TTY and child exit status/signals. Keep the helper
+and its parent directories non-writable by launch users.
+
+uxon does not create, migrate, or drain an operator-managed execution boundary.
+Keep the boundary reachable while its tmux server has sessions, and drain those
+sessions before changing the helper or backend mapping. An unreachable socket
+or backend is reported as an error, never as an empty session list. The static
+backend fingerprint in diagnostics and launch records describes config; it is
+not a lifecycle or continuity guarantee.
 
 ## `[runtimes.<id>]` table
 
@@ -376,11 +387,10 @@ python3 install/render_uxon_config.py \
   --output config/config.toml
 ```
 
-`git_create_enabled`, launch-profile git policy,
-`[[git_remote_profiles]]`, and container profiles are intentionally
-**not** part of the JSON-to-TOML flow — they reference credential
-domains, runtime argv, `creds_user`, and `token_file` values that
-infra should not hard-code across hosts. Hand-edit them in
+The JSON renderer accepts the same strict `launch`, `execution`, and `runtimes`
+tables as TOML. `git_create_enabled`, launch-profile git policy, and
+`[[git_remote_profiles]]` remain file-only because they reference credential
+domains, `creds_user`, and `token_file` values. Hand-edit those in
 `config.toml`.
 
 For the multi-host operating model see

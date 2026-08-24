@@ -19,6 +19,7 @@ Prints:
 - `repeat_noninteractive_mode` and any env override;
 - `tmux` and agent binary paths for the launch user;
 - enabled launch profiles and their underlying agents;
+- execution backend status for each effective launch user;
 - dedicated `tmux` socket details;
 - current sessions on the dedicated socket;
 - any sessions on the default `tmux` socket that match
@@ -80,18 +81,14 @@ journalctl SYSLOG_IDENTIFIER=uxon --since "10 minutes ago" -o json \
   > /tmp/uxon-recent-audit.jsonl
 ```
 
-## Container diagnostics
+## Workload runtime diagnostics
 
-When a launch profile names a container profile, `uxon doctor` adds
-container details for a representative current-directory target:
+When a launch profile names a command workload runtime, `uxon doctor` adds
+runtime details for a representative current-directory target:
 
 ```
-container profiles:
-- profile=workbox
-- resolved_name=proj-myapp
-- is_running=yes  exists=yes
-- host agent binaries absent from PATH are EXPECTED (provisioned in the container)
-- no container warnings
+runtimes:
+- launch_profile=claude_work runtime=workbox resource=proj-myapp ready=yes exists=yes
 ```
 
 It resolves the runtime resource, runs `exists_command` / `ready_command`
@@ -102,17 +99,17 @@ shows `?`, never an abort), and surfaces these warnings:
   kill (it orphans); set `session.stop_command` on the runtime so
   uxon terminates it for you.
 - **`path_map` doesn't cover the current directory** — launches from
-  here may hit a path the container has no mount for.
+  here may hit a path the workload resource has no mapping for.
 - **`create_command` definition under a mapped path** — the runtime
   definition (compose / Dockerfile) resolves to a path inside the
-  agent-writable bind mount, so a misbehaving agent could edit it to
-  escape the container. Move it to an operator-owned path outside the
+  agent-writable mapped tree, so a misbehaving agent could edit it to
+  change the workload definition. Move it to an operator-owned path outside the
   mount.
 
 A missing agent binary on the host PATH is **not** flagged as a fault
-for a containerized launch profile — the agent is provisioned inside
-the container, not on the host. Container details are absent when no
-enabled launch profile uses a container profile. Also available under
+for a command-runtime launch profile — the agent may be provisioned inside
+the workload resource, not on the host. Runtime details are absent when no
+enabled launch profile uses a command runtime. Also available under
 `uxon doctor --json`.
 
 ## What it does *not* do

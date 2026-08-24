@@ -104,14 +104,14 @@ names another `runtime`. The old `[container]`, `container_profile`,
 v4 routes every target-user command family through `[execution]`: tmux server,
 list/attach/kill, git/worktrees/filesystem, probes, workload lifecycle, and
 agent launch. `local` preserves the normal host/sudo behavior. Command backends
-use one `command_prefix`; uxon supplies the bounded attestation command.
+use one `command_prefix`; uxon supplies a fixed target UID/GID probe.
 
 The default socket is now `/tmp/uxon-{user}-{execution_backend}.sock`. Drain
-all sessions before changing a backend definition or id. A same-id definition
-change blocks new launches on fingerprint mismatch but keeps list/attach/kill
-available. An id change selects a new socket; restore the old config and drain
-if the new boundary cannot reach the old one. `{execution_fingerprint}` is an
-optional hard-separation placeholder, not automatic drain.
+all sessions before changing a backend definition or id. The operator-owned
+helper is responsible for keeping the old execution boundary reachable until
+that drain is complete; uxon reports an unreachable server but cannot migrate
+or retire an external boundary. `{execution_fingerprint}` is an optional socket
+template placeholder, not a lifecycle guarantee.
 
 ### GitHub repo creation is profile-scoped
 
@@ -139,7 +139,7 @@ This is a coordinated major upgrade.
   host config. Live old sessions do not carry the new launch-record
   authority and should not be mixed with new profile-suffixed sessions.
 - Upgrade all peers in a multi-host fleet together. The JSON wire
-  schema is now `schema_version = "2"`; mixed-version fleets are not
+  schema is now `schema_version = "3"`; mixed-version fleets are not
   supported.
 - New sessions are named `<prefix><stem>@<profile>[-N]`. The suffix is
   a launch profile id, not necessarily an agent id.
@@ -147,8 +147,8 @@ This is a coordinated major upgrade.
   `uxon`'s own repeat/list/kill behavior, not a security boundary
   against that same Unix user.
 - Tmux environment markers are diagnostic. Teardown and telemetry use
-  the verified launch record and will not substitute a different
-  container profile when records are missing, stale, or mismatched.
+  the finalized launch record and will not substitute a different
+  workload runtime when records are missing, stale, or mismatched.
 
 ## 3.5.0
 

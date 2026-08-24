@@ -43,9 +43,9 @@ resolves before relying on it.
 This is the right recipe when you want containerisation for **one**
 agent on **one** account without touching shared config.
 
-## Recipe 2 — native container profiles
+## Recipe 2 — a command workload runtime
 
-Container profiles let `uxon` itself wrap selected launch profiles,
+A command runtime lets `uxon` itself wrap selected launch profiles,
 resolve the container per (launch user, project), and — when you
 permit it — start or create a stopped/absent container. The full key reference
 (types, defaults, the trust boundary, the probe-semantics gotcha) is

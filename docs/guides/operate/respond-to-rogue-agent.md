@@ -49,9 +49,9 @@ existing again.
 2. **Suspend** before killing if you want to inspect state. From
    another shell on the same host:
    ```bash
-   # Find the agent's PID inside the pane:
-   sudo -niu <user>-agent tmux -S /tmp/uxon-<user>-agent.sock \
-        list-panes -t <session> -F '#{pane_pid}'
+   # Find the active PID without bypassing the configured execution backend:
+   uxon list --all-users --json \
+     | jq -r '.data.sessions[] | select(.name == "<session>") | .active_pid'
    # Suspend everything in that process tree:
    sudo kill -STOP -- -<pid>           # negative = process group
    ```
@@ -73,16 +73,10 @@ on the local host. There is no fleet-wide equivalent — see
 
 Before killing the suspended session, grab evidence:
 
-**Pane scrollback:**
-
-```bash
-sudo -niu <user>-agent tmux -S /tmp/uxon-<user>-agent.sock \
-     capture-pane -t <session> -pS -32768 \
-  > /tmp/rogue-scrollback-$(date +%s).log
-```
-
-The `-pS -32768` flag dumps the last 32k lines of scrollback to
-stdout. Adjust depth if your `tmux` history-limit is higher.
+**Pane scrollback:** attach with `uxon attach --user <user>-agent <session>`,
+enter tmux copy mode, and save the relevant terminal output with your terminal
+client. uxon does not expose a backend-safe non-interactive `capture-pane`
+command; do not bypass a command execution backend with raw tmux.
 
 **Process tree:**
 
@@ -120,7 +114,7 @@ Once you have what you need:
 
 ```bash
 sudo kill -CONT -- -<pid>            # un-suspend so kill is graceful
-sudo -niu <user>-agent uxon kill <session> --force
+uxon kill --user <user>-agent <session> --force
 # or, in the TUI: d on the row, type kill, Enter.
 ```
 
@@ -150,7 +144,7 @@ row and a stopped container shows a distinct `down` marker. The
 orphan above is the agent that has already outlived its session, not
 the live one.
 
-`uxon` closes this when the launch record names a container profile
+`uxon` closes this when the launch record names a workload runtime
 with `session.stop_command`: the kill reaps the agent process by the
 per-session PID the launch wrapper recorded (the container itself is
 left running). **Confirm it worked:**

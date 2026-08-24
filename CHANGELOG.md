@@ -10,6 +10,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - The interactive TUI now exits when its controlling terminal disappears instead of leaving an orphaned process that can spin at 100% CPU after an SSH or ET disconnect.
+- Session listing now distinguishes an absent tmux server from an unreachable socket or backend and reports the latter instead of silently rendering an empty list.
 
 ### Changed (breaking)
 - Runtime selection moved from `agents.enabled` / `agents.default` and the old global `[container]` block to operator-owned launch profiles and `[runtimes.<id>]`. A launch profile selects `runtime = "direct"` by default; project `.uxon.toml` files are no longer read.
@@ -21,7 +22,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Generic command runtimes with deterministic resources, path mapping, readiness/start/create policy, optional cgroup telemetry, identity resolution, and safe per-session teardown.
-- Backend fingerprints in launch records plus fail-before-launch mismatch checks. Existing list/attach/kill operations remain available so operators can drain before changing a backend.
+- Command execution backends accept one generic argv prefix, verify the effective target UID/GID with a fixed internal probe, canonicalize launch paths inside the boundary, and keep credential-file reads plus token-authenticated HTTP inside that boundary.
+- Managed launches finalize their controller-local launch record before releasing the new tmux pane through a one-shot tmux synchronization channel; no shared record directory is required inside a command backend.
 - A runnable, privileged opt-in network-namespace contract test proves the tmux server itself enters the execution boundary, preventing tmux `new-window` / `run-shell` escapes.
 
 ## [3.7.0] — 2026-06-14

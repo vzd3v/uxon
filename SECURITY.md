@@ -47,10 +47,9 @@ The trust boundaries are:
    - **`tmux attach` is read–write by default.** Once an operator
      attaches to a developer's running pane, keypresses are
      delivered to whatever process is in that pane. uxon does not
-     enforce read-only attach. If a true read-only audit posture
-     is required, attach with `tmux attach -r` (or wrap the
-     superuser action in such an alias) and document that in the
-     team's runbook.
+     expose a backend-safe read-only attach. If a true read-only audit posture
+     is required, keep attach access disabled; invoking tmux directly bypasses
+     the selected execution backend and the uxon attach audit event.
    - **`ForwardAgent yes` widens the boundary.** If the developer
      ran the agent with SSH-agent forwarding into the
      `<user>_agent` account, the agent's process holds a live
@@ -84,10 +83,9 @@ The trust boundaries are:
    not to constrain the developer. A command whitelist would not
    reduce the developer's attack surface; it would break every
    time an agent binary, launcher, or wrapper changed. Lead-side
-   visibility is anchored to the OS account, not to the `uxon`
-   process: the lead's `ALL=(<dev>_agent)` grant lets them
-   `sudo -niu <dev>_agent tmux ls` and attach to whatever is
-   running, prefix-matching or not.
+   visibility is anchored to uxon-managed sessions on the configured execution
+   backend. The lead's `ALL=(<dev>_agent)` grant is what permits the built-in
+   local backend to list, attach, and kill those sessions.
 
 2. **Per-peer authority.** Cross-host operation does not delegate
    trust between peers. Each peer's `sudoers` is evaluated
@@ -137,6 +135,9 @@ The trust boundaries are:
   AppArmor, seccomp, kernel namespaces, or per-UID network policies
   — the namespace/runtime definition is the operator's to harden (see
   [Why OS users, and where containers fit](#why-os-users-and-where-containers-fit)).
+  The fixed execution probe confirms the effective target UID/GID; it does not
+  certify helper hardening, boundary continuity, or lifecycle. uxon cannot
+  migrate or drain an external boundary that the helper no longer reaches.
 - **tmux configuration.** uxon can apply a small set of tmux `set`
   options (mouse, OSC-52 passthrough, extended keys,
   terminal-features) to the sessions it launches, layered on top of
