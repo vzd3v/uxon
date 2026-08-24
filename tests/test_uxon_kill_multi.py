@@ -33,6 +33,7 @@ from uxon.domain.config import Config
 from uxon.domain.sudo import SudoCapability
 from uxon.infra import audit as uxon_audit
 from uxon.infra.remote_hosts import RemoteHost
+from uxon.tui.bridge import TuiBridge
 
 
 class ParseKillFlagsTests(unittest.TestCase):
@@ -335,13 +336,10 @@ class KillUserLocalTests(unittest.TestCase):
         self.assertNotIn("private cleanup detail", str(terminal))
 
 
-class KillPeerInboundTests(unittest.TestCase):
-    """Peer-inbound branch (``SSH_CONNECTION`` set): ``kill.remote.in``
-    replaces ``session.kill`` AND carries the real outcome on every
-    failure path — not the previous always-``ok`` top-of-function emit
-    that swallowed denied / not_found / error signals."""
+class KillEnvironmentClassificationTests(unittest.TestCase):
+    """Transport environment never changes the target operation event."""
 
-    def test_peer_inbound_unreachable_emits_kill_remote_in_denied(self) -> None:
+    def test_ssh_environment_does_not_reclassify_denied_kill(self) -> None:
         cfg = _make_config()
         args = ParsedArgs(action="kill", target_id="demo@claude", user="alice", force=True)
         caps = SudoCapability(reachable_users=frozenset(), can_root=False)
@@ -359,16 +357,83 @@ class KillPeerInboundTests(unittest.TestCase):
             rc = kill_app.do_kill(args, cfg, "u-vz")
 
         self.assertEqual(rc, 1)
-        # Exactly one kill.remote.in emit, denied; no parallel
-        # session.kill (replaces semantics).
-        rin_emits = [e for e in recorded if e[0] == "kill.remote.in"]
         local_emits = [e for e in recorded if e[0] == "session.kill"]
-        self.assertEqual(local_emits, [])
-        self.assertEqual(len(rin_emits), 1)
-        self.assertEqual(rin_emits[0][1]["outcome"], "denied")
-        self.assertEqual(rin_emits[0][1]["session"], "demo@claude")
-        self.assertEqual(rin_emits[0][1]["target_user"], "alice")
-        self.assertEqual(rin_emits[0][1]["force"], True)
+        self.assertEqual(len(local_emits), 1)
+        self.assertEqual(local_emits[0][1]["outcome"], "denied")
+        self.assertEqual(local_emits[0][1]["session"], "demo@claude")
+        self.assertEqual(local_emits[0][1]["target_user"], "alice")
+        self.assertEqual(local_emits[0][1]["force"], True)
+
+
+class KillCleanupAuditFinalizationTests(unittest.TestCase):
+    def _recorded(self) -> tuple[list[tuple[str, dict]], object]:
+        recorded: list[tuple[str, dict]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        return recorded, fake_audit
+
+    def test_cli_bulk_cleanup_failure_has_one_terminal_error(self) -> None:
+        cfg = _make_config()
+        target = _make_session("uxon-demo@claude")
+        recorded, fake_audit = self._recorded()
+        with (
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", return_value=mock.Mock(returncode=0)),
+            mock.patch("uxon.app.kill.prepare_runtime_teardown", return_value=None),
+            mock.patch("uxon.app.kill.finish_killed_session", return_value=False),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(
+                kill_app.do_kill_all(ParsedArgs(action="kill-all", force=True), cfg, "u-vz"),
+                0,
+            )
+        terminal = [fields for event, fields in recorded if event == "session.kill_all"]
+        self.assertEqual(len(terminal), 1)
+        self.assertEqual(terminal[0]["outcome"], "error")
+        self.assertEqual(terminal[0]["cleanup_failed_count"], 1)
+        self.assertEqual(terminal[0]["killed_count"], 1)
+
+    def test_tui_single_cleanup_failure_has_one_terminal_error(self) -> None:
+        cfg = _make_config()
+        target = _make_session("uxon-demo@claude")
+        recorded, fake_audit = self._recorded()
+        bridge = TuiBridge(cfg, "operator", "u-vz", "/srv/repos")
+        with (
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", return_value=mock.Mock(returncode=0)),
+            mock.patch("uxon.app.kill.prepare_runtime_teardown", return_value=None),
+            mock.patch("uxon.app.kill.cleanup_launch_record", side_effect=OSError("private")),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+            self.assertRaises(SystemExit),
+        ):
+            bridge.on_kill("u-vz", target.name)
+        terminal = [fields for event, fields in recorded if event == "session.kill"]
+        self.assertEqual([event["outcome"] for event in terminal], ["error"])
+        self.assertNotIn("private", str(terminal))
+
+    def test_tui_bulk_cleanup_failure_has_one_terminal_error(self) -> None:
+        cfg = _make_config()
+        target = _make_session("uxon-demo@claude")
+        recorded, fake_audit = self._recorded()
+        bridge = TuiBridge(cfg, "operator", "u-vz", "/srv/repos")
+        with (
+            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[target]),
+            mock.patch("uxon.infra.tmux.configured_tmux_base", return_value=["tmux"]),
+            mock.patch("uxon.infra.process.run_cmd", return_value=mock.Mock(returncode=0)),
+            mock.patch("uxon.app.kill.prepare_runtime_teardown", return_value=None),
+            mock.patch("uxon.app.kill.finish_killed_session", return_value=False),
+            mock.patch.object(uxon_audit, "audit", side_effect=fake_audit),
+        ):
+            bridge.on_kill_all()
+        terminal = [fields for event, fields in recorded if event == "session.kill_all"]
+        self.assertEqual(len(terminal), 1)
+        self.assertEqual(terminal[0]["outcome"], "error")
+        self.assertEqual(terminal[0]["cleanup_failed_count"], 1)
 
 
 class KillHostRemoteTests(unittest.TestCase):

@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from uxon.infra import config_loader
-from uxon.infra.run import run_query
 from uxon.infra.settings_toml import set_dotted, update_operator_config_text
 
 # ── Schema ───────────────────────────────────────────────────────────
@@ -34,7 +33,7 @@ class SettingSpec:
 SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec("default_launch_user", "string", "Launch user when default_launch_mode='fixed'."),
     SettingSpec(
-        "default_launch_mode", "enum", "Who runs claude by default.", choices=("caller", "fixed")
+        "default_launch_mode", "enum", "Who runs agents by default.", choices=("caller", "fixed")
     ),
     SettingSpec("enable_all_users_list", "bool", "Allow 'uxon list --all-users'."),
     SettingSpec(
@@ -178,7 +177,10 @@ def resolve_setting_entries(
     operator_data: dict,
     defaults: dict,
 ) -> list[SettingEntry]:
-    """Resolve one entry per editable key from operator data and defaults."""
+    """Resolve settings; only a root-owned Uxon process may edit them."""
+    import os
+
+    can_edit = os.geteuid() == 0
     out: list[SettingEntry] = []
     for spec in settings_specs():
         key = spec.key
@@ -189,20 +191,20 @@ def resolve_setting_entries(
             if operator_val is not _MISSING:
                 value = operator_val
                 source = "operator"
-                editable = True
+                editable = can_edit
             else:
                 value = def_val
                 source = "default"
-                editable = True
+                editable = can_edit
         else:
             if key in operator_data:
                 value = operator_data[key]
                 source = "operator"
-                editable = True
+                editable = can_edit
             else:
                 value = defaults.get(key)
                 source = "default"
-                editable = True
+                editable = can_edit
         out.append(SettingEntry(spec=spec, value=value, source=source, editable=editable))
     return out
 
@@ -214,7 +216,7 @@ _MISSING = object()  # sentinel for dotted-key lookup
 
 
 def write_operator_config_toml(content: str, path: Path | str) -> None:
-    """Atomically install root-owned operator config, directly or via sudo."""
+    """Atomically install root-owned operator config when running as root."""
     import os
     import secrets
 
@@ -227,8 +229,9 @@ def write_operator_config_toml(content: str, path: Path | str) -> None:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 stream.write(content)
                 stream.flush()
+                os.fchown(stream.fileno(), 0, 0)
+                os.fchmod(stream.fileno(), 0o644)
                 os.fsync(stream.fileno())
-            os.chmod(tmp, 0o644)
             os.replace(tmp, path)
             directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
             try:
@@ -242,27 +245,10 @@ def write_operator_config_toml(content: str, path: Path | str) -> None:
                 pass
         return
 
-    result = run_query(
-        [
-            "/usr/bin/sudo",
-            "-n",
-            "/usr/bin/install",
-            "-o",
-            "root",
-            "-g",
-            "root",
-            "-m",
-            "0644",
-            "--",
-            "/dev/stdin",
-            str(path),
-        ],
-        input=content.encode("utf-8"),
-        text=False,
+    raise PermissionError(
+        "operator settings are read-only for non-root processes; "
+        "render with 'uxon config render' and install with sudo"
     )
-    if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"failed to write {path}: {stderr or 'unknown error'}")
 
 
 def persist_operator_config_updates(path: Path | str, updates: dict) -> None:

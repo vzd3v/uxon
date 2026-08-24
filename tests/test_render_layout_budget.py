@@ -56,9 +56,8 @@ Covered ACs:
 The footer-non-blank gate (AC7-class) and the 200-row reorder benchmark
 survive unchanged from the predecessor. Wall-clock p50/p95 in the reorder
 benchmark is **logged** via the ``tui-table-perf`` debug channel and **never
-asserted** (repo no-wall-clock-gate practice). The behaviour ACs (AC3/AC6/
-AC7/AC8/AC11/AC12) live in their own tests / Phase 1's commit; AC10 is the
-manual py-spy gate (not run here).
+asserted** (repo no-wall-clock-gate practice). Behavioural checks live in their
+own focused tests; the manual py-spy gate is not run here.
 """
 
 from __future__ import annotations

@@ -31,7 +31,8 @@ def _textual_available() -> bool:
 
 
 def _mk_ctx(**overrides):
-    from uxon.tui.context import LaunchRequest, TuiContext
+    from uxon.domain.agents import DEFAULT_AGENT_CATALOG
+    from uxon.tui.context import LaunchProfileOption, LaunchRequest, TuiContext
 
     base = dict(
         sessions=[],
@@ -44,6 +45,14 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="dana_agent",
+        agents=DEFAULT_AGENT_CATALOG,
+        enabled_profiles=("claude",),
+        default_profile="claude",
+        launch_profiles={
+            "claude": LaunchProfileOption(
+                id="claude", label="Claude", agent="claude", launch_user="dana_agent"
+            )
+        },
         on_launch_cwd=lambda profile_id, mode_id, target_dir=None: LaunchRequest(
             cmd=("/bin/true",), label="cwd"
         ),
@@ -255,7 +264,7 @@ class ProbeWorkerNoCtxMutationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             uxon_probes.probe_host = original_probe  # type: ignore[assignment]
 
-    async def test_containerized_profile_does_not_require_host_agent_binary(self) -> None:
+    async def test_workload_runtime_profile_does_not_require_host_agent_binary(self) -> None:
         from uxon.domain.agents import DEFAULT_AGENT_CATALOG
         from uxon.domain.host_report import BinaryStatus, HostReport
         from uxon.infra import agents as uxon_agents

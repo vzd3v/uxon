@@ -97,9 +97,8 @@ class FromTuiSessionTests(unittest.TestCase):
 
     def test_local_epochs_default_none_when_iso_missing(self) -> None:
         # Default fixture omits the ISO fields → empty string default →
-        # epoch falls back to None. Defensive case: production paths
-        # always supply ISO, but old fixtures and out-of-tree callers
-        # may not.
+        # epoch falls back to None. Production paths always supply ISO,
+        # but the DTO keeps missing values well-defined.
         row = from_tui_session(_make_tui_session())
         self.assertIsNone(row.created_epoch)
         self.assertIsNone(row.last_attached_epoch)

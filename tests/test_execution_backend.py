@@ -123,7 +123,7 @@ def _managed_request_for_race() -> tuple[tmux.LaunchRequest, launch_records.Pend
         create_cmd=("tmux", "new-session"),
         query_cmd=("tmux", "display-message"),
         release_cmd=("tmux", "wait-for"),
-        kill_cmd=("tmux", "kill-session"),
+        rollback_kill_prefix=("tmux", "kill-session", "-t"),
         record_socket=pending.socket_path,
         record_session=pending.session_name,
         record_nonce=pending.launch_nonce,
@@ -151,7 +151,7 @@ def test_concurrent_create_loser_never_kills_preexisting_session() -> None:
     ):
         tmux.prepare_managed_launch(request, pending)
     assert request.managed is not None
-    assert request.managed.kill_cmd not in calls
+    assert not any(call[:3] == request.managed.rollback_kill_prefix for call in calls)
     assert request.managed.query_cmd not in calls
 
 
@@ -178,7 +178,35 @@ def test_post_create_cleanup_does_not_kill_nonce_mismatch() -> None:
         pytest.raises(RuntimeError),
     ):
         tmux.prepare_managed_launch(request, pending)
-    assert request.managed.kill_cmd not in calls
+    assert not any(call[:3] == request.managed.rollback_kill_prefix for call in calls)
+
+
+def test_post_create_cleanup_targets_immutable_session_id_not_reused_name() -> None:
+    request, pending = _managed_request_for_race()
+    assert request.managed is not None
+    owned = "$1\t100\tuxon-race@claude\towned-nonce\n"
+    responses = iter((_cp(), _cp(stdout=owned), _cp(stdout=owned), _cp()))
+    calls: list[tuple[str, ...]] = []
+
+    def run(cmd, **_kwargs):
+        calls.append(tuple(cmd))
+        return next(responses)
+
+    with (
+        mock.patch("uxon.infra.launch_records.create_pending_record"),
+        mock.patch(
+            "uxon.infra.launch_records.finalize_pending_record",
+            side_effect=RuntimeError("record failed"),
+        ),
+        mock.patch("uxon.infra.launch_records.fail_pending_record"),
+        mock.patch("uxon.infra.process.run_cmd", side_effect=run),
+        pytest.raises(RuntimeError),
+    ):
+        tmux.prepare_managed_launch(request, pending)
+
+    rollback = (*request.managed.rollback_kill_prefix, "$1")
+    assert rollback in calls
+    assert (*request.managed.rollback_kill_prefix, pending.session_name) not in calls
 
 
 def test_local_binary_probe_uses_argv_safe_nonlogin_sudo() -> None:
@@ -562,7 +590,7 @@ def test_nested_runtime_never_replaces_execution_boundary() -> None:
     for command in (
         request.managed.query_cmd,
         request.managed.release_cmd,
-        request.managed.kill_cmd,
+        request.managed.rollback_kill_prefix,
     ):
         assert list(command[: len(boundary)]) == boundary
     runtime_start = create.index("docker")
@@ -736,7 +764,7 @@ def test_shared_launch_record_dir_rejects_launch_user_in_control_group(tmp_path:
         launch_records.create_pending_record(pending, override_dir=directory, shared=True)
 
 
-def test_launch_record_gc_is_store_wide_across_retired_sockets(tmp_path: Path) -> None:
+def test_launch_record_gc_covers_same_user_retired_sockets(tmp_path: Path) -> None:
     records: list[tuple[launch_records.PendingLaunchRecord, Path]] = []
     for socket, nonce in (
         ("/run/uxon/alice.sock", "abcdefghijklmnop"),
@@ -766,8 +794,115 @@ def test_launch_record_gc_is_store_wide_across_retired_sockets(tmp_path: Path) -
     removed = launch_records.garbage_collect_records(
         set(),
         override_dir=tmp_path,
+        launch_user=getpass.getuser(),
         now=10**12,
     )
     assert removed == 2
     assert not records[0][1].exists()
     assert not records[1][1].exists()
+
+
+def test_launch_record_gc_never_deletes_another_users_live_record(tmp_path: Path) -> None:
+    paths: dict[str, Path] = {}
+    for user, nonce in (("alice", "abcdefghijklmnop"), ("bob", "ponmlkjihgfedcba")):
+        pending = launch_records.PendingLaunchRecord(
+            socket_path=f"/run/uxon/{user}.sock",
+            session_name="uxon-demo@claude",
+            launch_nonce=nonce,
+            launch_profile="claude",
+            agent="claude",
+            launch_user=user,
+        )
+        launch_records.create_pending_record(pending, override_dir=tmp_path)
+        paths[user] = launch_records.finalize_pending_record(
+            pending,
+            launch_records.TmuxSessionMetadata(
+                session_id=f"${len(paths) + 1}",
+                created="1",
+                name=pending.session_name,
+                launch_nonce=nonce,
+            ),
+            override_dir=tmp_path,
+        )
+
+    removed = launch_records.garbage_collect_records(
+        set(), override_dir=tmp_path, launch_user="alice", now=10**12
+    )
+    assert removed == 1
+    assert not paths["alice"].exists()
+    assert paths["bob"].exists()
+
+
+@pytest.mark.parametrize("leading_kind", ("other-user", "young"))
+def test_launch_record_gc_cursor_reaches_stale_record_after_full_batch(
+    tmp_path: Path, leading_kind: str
+) -> None:
+    now = 10**12
+    for index in range(1024):
+        payload = {
+            "status": "finalized",
+            "launch_user": "bob" if leading_kind == "other-user" else "alice",
+            "socket_path": "/run/uxon/current.sock",
+            "session_name": f"uxon-live-{index}@claude",
+            "launch_nonce": f"nonce-{index:04d}",
+            "finalized_at": 1 if leading_kind == "other-user" else now,
+        }
+        path = tmp_path / f"{index:04d}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        path.chmod(0o600)
+    stale = tmp_path / "zzzz.json"
+    stale.write_text(
+        json.dumps(
+            {
+                "status": "finalized",
+                "launch_user": "alice",
+                "socket_path": "/run/uxon/retired.sock",
+                "session_name": "uxon-stale@claude",
+                "launch_nonce": "stale-nonce",
+                "finalized_at": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    stale.chmod(0o600)
+
+    first = launch_records.garbage_collect_records(
+        set(), override_dir=tmp_path, launch_user="alice", now=now
+    )
+    assert first == 0
+    assert stale.exists()
+    second = launch_records.garbage_collect_records(
+        set(), override_dir=tmp_path, launch_user="alice", now=now
+    )
+    assert second == 1
+    assert not stale.exists()
+
+
+def test_launch_record_gc_refuses_unsafe_cursor_symlink(tmp_path: Path) -> None:
+    record = tmp_path / "record.json"
+    record.write_text(
+        json.dumps(
+            {
+                "status": "finalized",
+                "launch_user": "alice",
+                "socket_path": "/run/uxon/alice.sock",
+                "session_name": "uxon-demo@claude",
+                "launch_nonce": "abcdefghijklmnop",
+                "finalized_at": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    record.chmod(0o600)
+    victim = tmp_path / "victim"
+    victim.write_text("do not replace", encoding="utf-8")
+    cursor = launch_records._gc_cursor_path(tmp_path, "alice")
+    cursor.symlink_to(victim)
+
+    removed = launch_records.garbage_collect_records(
+        set(), override_dir=tmp_path, launch_user="alice", now=10**12
+    )
+    assert removed == 0
+    assert record.exists()
+    assert cursor.is_symlink()
+    assert victim.read_text(encoding="utf-8") == "do not replace"

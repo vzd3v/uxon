@@ -73,6 +73,13 @@ def main(argv: list[str] | None = None) -> int:
         return int(ex.code) if isinstance(ex.code, int) else (0 if ex.code is None else 2)
     from uxon.infra import audit as _audit
 
+    if args.action == "config-render":
+        from uxon.app.config_render import do_config_render
+
+        _audit.configure(enabled=True, syslog_facility="user", subcmd=args.action)
+        _audit.audit("cli.start", flags=owned_option_flags(args))
+        return do_config_render(args)
+
     try:
         cfg = config_loader.load_config()
     except SystemExit as ex:

@@ -120,16 +120,7 @@ class AttachCrossUserTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("uxon-error: not-reachable", err.getvalue())
 
-    def test_peer_inbound_unreachable_emits_attach_remote_in_denied(self) -> None:
-        # Spec lines 207-209: state-changing events emit on success AND
-        # failure. ``attach.remote.in.dispatch`` *replaces*
-        # ``session.attach.dispatch`` on the peer side. Combined: a peer
-        # receiving an attach for an unreachable target must record
-        # ``attach.remote.in.dispatch outcome=denied`` (not a stale ``ok``, and
-        # not a suppressed ``session.attach.dispatch``). Regression for the
-        # pre-fix bug where the peer-inbound branch unconditionally
-        # emitted ``outcome=ok`` at the top of ``do_attach`` and
-        # suppressed every downstream failure-path emit.
+    def test_ssh_environment_does_not_reclassify_denied_attach(self) -> None:
         from uxon.domain.sudo import SudoCapability
 
         cfg = self._cfg()
@@ -151,16 +142,11 @@ class AttachCrossUserTests(unittest.TestCase):
             rc = attach_app.do_attach(args, cfg, "u-vz")
 
         self.assertEqual(rc, 1)
-        # Exactly one attach.remote.in.dispatch emit, with outcome=denied. No
-        # phantom ``ok`` may slip in, and no ``session.attach.dispatch`` may be
-        # emitted in parallel (``replaces`` semantics).
-        rin_emits = [e for e in recorded if e[0] == "attach.remote.in.dispatch"]
         local_emits = [e for e in recorded if e[0] == "session.attach.dispatch"]
-        self.assertEqual(local_emits, [])
-        self.assertEqual(len(rin_emits), 1)
-        self.assertEqual(rin_emits[0][1]["outcome"], "denied")
-        self.assertEqual(rin_emits[0][1]["target_session"], "demo@claude")
-        self.assertEqual(rin_emits[0][1]["target_user"], "alice")
+        self.assertEqual(len(local_emits), 1)
+        self.assertEqual(local_emits[0][1]["outcome"], "denied")
+        self.assertEqual(local_emits[0][1]["session"], "demo@claude")
+        self.assertEqual(local_emits[0][1]["target_user"], "alice")
 
     def test_cross_user_reachable_dry_run_shows_sudo_prefix(self) -> None:
         cfg = self._cfg()

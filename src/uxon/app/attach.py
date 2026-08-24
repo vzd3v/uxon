@@ -80,6 +80,7 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         ssh_alias=peer.ssh_alias,
         target_user=args.user,
         target_session=args.target_id,
+        dry_run=args.dry_run,
         correlation_id=corr_id,
     )
     if args.dry_run:
@@ -100,30 +101,13 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     # 'uxon attach' runs the probe), so the local side does not need
     # to know the peer's user table. Mirrors do_kill --host.
     #
-    # Checked *before* the SSH_CONNECTION peer-inbound branch: a
-    # caller invoking ``ssh peer1 "uxon attach --host peer2 …"`` is the
-    # caller-side leg dispatching onward, not a peer-inbound terminus,
-    # and must not emit ``attach.remote.in.dispatch``.
     if args.host is not None:
         return _do_attach_remote(args, cfg)
 
-    # Peer-inbound branch. When invoked over SSH the only
-    # signal that this is the peer side of an ``attach.remote.out.dispatch`` is
-    # ``SSH_CONNECTION`` in the env (sudo strips it on the next leg, so
-    # we have to capture it before the sudo execvp below).
-    # ``attach.remote.in.dispatch`` *replaces* ``session.attach.dispatch`` on the
-    # peer side — both names describe the same physical event from
-    # caller-vs-peer POV.
-    #
-    # State-changing events emit on both success and failure paths. Every
-    # ``session.attach.dispatch`` emission point
-    # below switches event name (``attach.remote.in.dispatch``) and identifier-field name
-    # (``target_session`` instead of ``session``) when ``peer_inbound``.
-    # An auditor querying ``EVENT=attach.remote.in.dispatch OUTCOME=denied``
-    # then actually finds the failure.
-    peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    _attach_event: str = "attach.remote.in.dispatch" if peer_inbound else "session.attach.dispatch"
-    _session_field: str = "target_session" if peer_inbound else "session"
+    # The target host always records the actual local operation. Correlation
+    # joins it to an initiating host's remote-dispatch event but is not used to
+    # infer transport provenance.
+    attach_event = "session.attach.dispatch"
 
     target_user = args.user or launch_user
     if target_user != launch_user:
@@ -132,12 +116,13 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         caps = probe_sudo_capability(cfg, [target_user])
         if target_user not in caps.reachable_users:
             _audit.audit(
-                _attach_event,
+                attach_event,
                 outcome="denied",
-                **{_session_field: args.target_id or ""},
+                session=args.target_id or "",
                 target_user=target_user,
                 profile="",
                 agent="",
+                dry_run=args.dry_run,
             )
             eprint(
                 f"uxon-error: not-reachable (cannot sudo -n -H -u {target_user}; "
@@ -149,9 +134,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             args.target_id,
             sessions,
             cfg,
-            audit_event=_attach_event,
+            audit_event=attach_event,
             target_user=target_user,
-            session_field=_session_field,
             extra={"profile": "", "agent": ""},
         )
         base = tmux.configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
@@ -168,11 +152,12 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         # Audit before ``os.execvp`` — once the image is
         # replaced our cached socket is gone.
         _audit.audit(
-            _attach_event,
-            **{_session_field: target.name},
+            attach_event,
+            session=target.name,
             target_user=target_user,
             profile=target.profile,
             agent=target.agent,
+            dry_run=args.dry_run,
         )
         os.execvp(full[0], full)
         return 0
@@ -196,20 +181,20 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         args.target_id,
         sessions,
         cfg,
-        audit_event=_attach_event,
+        audit_event=attach_event,
         target_user=launch_user,
-        session_field=_session_field,
         extra={"profile": "", "agent": ""},
     )
     # Same-user dispatch audit fires once before ``attach_session``'s execvp.
     # Emitting from ``do_attach`` (not ``attach_session``) keeps the
     # call exactly once per CLI invocation.
     _audit.audit(
-        _attach_event,
-        **{_session_field: target.name},
+        attach_event,
+        session=target.name,
         target_user=launch_user,
         profile=target.profile,
         agent=target.agent,
+        dry_run=args.dry_run,
     )
     return attach_session(target, cfg, launch_user, args.dry_run)
 

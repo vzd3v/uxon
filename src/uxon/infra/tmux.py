@@ -457,12 +457,12 @@ def _build_tmux_launch_request(
             launch_records.handshake_channel(pending_record.launch_nonce, "release"),
         ]
     )
-    kill_cmd = tuple(base + ["kill-session", "-t", session])
+    rollback_kill_prefix = tuple(base + ["kill-session", "-t"])
     managed = ManagedTmuxLaunch(
         create_cmd=create_cmd,
         query_cmd=query_cmd,
         release_cmd=release_cmd,
-        kill_cmd=kill_cmd,
+        rollback_kill_prefix=rollback_kill_prefix,
         record_socket=socket_path,
         record_session=session,
         record_nonce=pending_record.launch_nonce,
@@ -640,7 +640,11 @@ def _kill_created_session_if_owned(
             observed.session_id != expected.session_id or observed.created != expected.created
         ):
             return
-        process.run_cmd(list(managed.kill_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS)
+        process.run_cmd(
+            [*managed.rollback_kill_prefix, observed.session_id],
+            check=False,
+            timeout=_TMUX_CONTROL_TIMEOUT_SECONDS,
+        )
     except BaseException:
         return
 

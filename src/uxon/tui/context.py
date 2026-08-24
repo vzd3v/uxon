@@ -115,7 +115,8 @@ class TuiContext:
     current_user: str = ""
     # Per-target sudo capability. ``reachable_users`` gates the "Other
     # users' sessions" block + ``kill-all-reachable`` action;
-    # ``can_root`` gates the Settings-screen privileged write path.
+    # ``can_root`` gates visibility of the operator Settings screen; entries
+    # remain read-only unless the Uxon process itself is root.
     sudo_caps: SudoCapability = field(default_factory=SudoCapability)
     # Users in ``session_users`` the per-target probe could not reach.
     # Surfaced in the TUI's "(N/M users reachable)" hint and on
@@ -255,7 +256,7 @@ class TuiContext:
     # Each entry: (profile_name, description string like "github.com/<owner> via <creds_user> [gh]")
     git_remote_profile_options: list[tuple[str, str]] = field(default_factory=list)
 
-    # Settings (superuser-only). The TUI delegates all file I/O through these.
+    # Settings (superuser-visible). The TUI delegates all file I/O through these.
     get_settings_entries: Callable[[], list] = lambda: []
     on_setting_save: Callable[[str, Any], None] = lambda key, value: None
     on_setting_remove: Callable[[str], None] = lambda key: None

@@ -12,6 +12,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -36,6 +37,7 @@ def _build_fetch_argv(
     *,
     connect_timeout: int,
     all_users: bool,
+    correlation_id: str,
     ssh_multiplex: str,
     ssh_control_persist_seconds: int = 300,
 ) -> list[str]:
@@ -47,11 +49,12 @@ def _build_fetch_argv(
     ``ALL_USERS_DISABLED_MARKER`` fallback path still works because
     ``all_users=False`` rebuilds the argv without ``--all-users``.
     """
-    remote_command = (
+    command = (
         f"{shlex.quote(host.remote_uxon)} list --all-users --json"
         if all_users
         else f"{shlex.quote(host.remote_uxon)} list --json"
     )
+    remote_command = f"{command} --audit-correlation-id {shlex.quote(correlation_id)}"
     return build_peer_ssh_argv(
         command_template=host.command_template,
         extra_ssh_options=host.extra_ssh_options,
@@ -113,6 +116,23 @@ def fetch_remote_snapshot(
             cached_at_epoch=None,
         )
 
+    correlation_id = str(uuid.uuid4())
+
+    def _finalize(snap: RemoteSnapshot) -> RemoteSnapshot:
+        from uxon.infra import audit as _audit
+
+        _audit.audit(
+            "list.remote.out",
+            outcome="error" if snap.error else "ok",
+            peer_name=host.name,
+            ssh_alias=host.ssh_alias,
+            scope="own" if snap.scope_limited else "all-users",
+            from_cache=snap.from_cache,
+            correlation_id=correlation_id,
+            **({"error": snap.error[:256]} if snap.error else {}),
+        )
+        return snap
+
     # Per-host override precedence: ``host.connect_timeout`` /
     # ``host.total_timeout`` (if set) win over the keyword-supplied
     # fleet-global defaults. Sub-second durations are ceil-rounded to
@@ -137,6 +157,7 @@ def fetch_remote_snapshot(
             host,
             connect_timeout=eff_connect,
             all_users=all_users,
+            correlation_id=correlation_id,
             ssh_multiplex=ssh_multiplex,
             ssh_control_persist_seconds=ssh_control_persist_seconds,
         )
@@ -202,7 +223,7 @@ def fetch_remote_snapshot(
                 write_cached_snapshot(snap, override_dir=override_state_dir)
             except OSError:
                 pass
-            return snap
+            return _finalize(snap)
 
     # Failure path: try to fall back to the on-disk cache. The cache
     # carries the previously-observed scope flags so a peer that went
@@ -218,19 +239,23 @@ def fetch_remote_snapshot(
         # :class:`RemoteSnapshot` (e.g. ``host_stats`` in 3.4) doesn't
         # silently get dropped on the failure path the way it did
         # before this refactor.
-        return replace(
-            cached,
-            fetched_at_epoch=fetched_at,
-            from_cache=True,
-            error=error,
+        return _finalize(
+            replace(
+                cached,
+                fetched_at_epoch=fetched_at,
+                from_cache=True,
+                error=error,
+            )
         )
-    return RemoteSnapshot(
-        host_name=host.name,
-        fetched_at_epoch=fetched_at,
-        from_cache=False,
-        error=error,
-        sessions=[],
-        cached_at_epoch=None,
-        scope_limited=scope_limited,
-        scope_skipped=[],
+    return _finalize(
+        RemoteSnapshot(
+            host_name=host.name,
+            fetched_at_epoch=fetched_at,
+            from_cache=False,
+            error=error,
+            sessions=[],
+            cached_at_epoch=None,
+            scope_limited=scope_limited,
+            scope_skipped=[],
+        )
     )

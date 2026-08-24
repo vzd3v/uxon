@@ -24,25 +24,34 @@ DEFAULTS = {
 
 class ResolveSettingEntriesTests(unittest.TestCase):
     def test_default_when_unset(self) -> None:
-        entries = cs.resolve_setting_entries({}, DEFAULTS)
+        with mock.patch("os.geteuid", return_value=0):
+            entries = cs.resolve_setting_entries({}, DEFAULTS)
         by_key = {e.spec.key: e for e in entries}
         self.assertEqual(by_key["default_launch_user"].source, "default")
         self.assertEqual(by_key["default_launch_user"].value, "")
         self.assertTrue(by_key["default_launch_user"].editable)
 
     def test_operator_override(self) -> None:
-        entries = cs.resolve_setting_entries({"default_launch_user": "dana_agent"}, DEFAULTS)
+        with mock.patch("os.geteuid", return_value=0):
+            entries = cs.resolve_setting_entries({"default_launch_user": "dana_agent"}, DEFAULTS)
         by_key = {e.spec.key: e for e in entries}
         self.assertEqual(by_key["default_launch_user"].source, "operator")
         self.assertEqual(by_key["default_launch_user"].value, "dana_agent")
         self.assertTrue(by_key["default_launch_user"].editable)
 
     def test_only_operator_data_is_resolved(self) -> None:
-        entries = cs.resolve_setting_entries({"default_launch_user": "operator"}, DEFAULTS)
+        with mock.patch("os.geteuid", return_value=0):
+            entries = cs.resolve_setting_entries({"default_launch_user": "operator"}, DEFAULTS)
         by_key = {e.spec.key: e for e in entries}
         self.assertEqual(by_key["default_launch_user"].source, "operator")
         self.assertEqual(by_key["default_launch_user"].value, "operator")
         self.assertTrue(by_key["default_launch_user"].editable)
+
+    def test_nonroot_entries_are_read_only(self) -> None:
+        with mock.patch("os.geteuid", return_value=1000):
+            entries = cs.resolve_setting_entries({}, DEFAULTS)
+        self.assertTrue(entries)
+        self.assertTrue(all(not entry.editable for entry in entries))
 
 
 class RenderOperatorConfigTomlTests(unittest.TestCase):
@@ -211,7 +220,7 @@ class PersistOperatorConfigUpdatesTests(unittest.TestCase):
                 '# hello\ndefault_launch_user = "a"\nsession_prefix = "cc-"\n',
                 encoding="utf-8",
             )
-            with mock.patch("os.geteuid", return_value=0):
+            with mock.patch("os.geteuid", return_value=0), mock.patch("os.fchown"):
                 cs.persist_operator_config_updates(path, {"default_launch_user": "b"})
             text = path.read_text(encoding="utf-8")
             self.assertIn("# hello", text)
@@ -222,7 +231,7 @@ class PersistOperatorConfigUpdatesTests(unittest.TestCase):
     def test_fresh_file_creates_minimal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            with mock.patch("os.geteuid", return_value=0):
+            with mock.patch("os.geteuid", return_value=0), mock.patch("os.fchown"):
                 cs.persist_operator_config_updates(path, {"default_launch_user": "z"})
             parsed = tomllib.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(parsed, {"default_launch_user": "z"})
@@ -236,7 +245,7 @@ class RemoveOperatorKeyTests(unittest.TestCase):
                 '# keep me\ndefault_launch_user = "a"\nsession_prefix = "cc-"\n',
                 encoding="utf-8",
             )
-            with mock.patch("os.geteuid", return_value=0):
+            with mock.patch("os.geteuid", return_value=0), mock.patch("os.fchown"):
                 cs.remove_operator_key(path, "default_launch_user")
             text = path.read_text(encoding="utf-8")
             self.assertIn("# keep me", text)
@@ -253,42 +262,17 @@ class WriteOperatorConfigTomlTests(unittest.TestCase):
     def test_root_write_is_atomic_and_mode_0644(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            with mock.patch("os.geteuid", return_value=0):
+            with mock.patch("os.geteuid", return_value=0), mock.patch("os.fchown") as fchown:
                 cs.write_operator_config_toml('default_launch_user = "x"\n', path)
             self.assertEqual(path.read_text(encoding="utf-8"), 'default_launch_user = "x"\n')
             self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            fchown.assert_called_once()
 
-    def test_nonroot_uses_root_owned_install(self) -> None:
+    def test_nonroot_write_is_rejected_without_sudo_helper(self) -> None:
         target = Path("/etc/uxon/config.toml")
-
-        real_run = mock.Mock(return_value=mock.Mock(returncode=0, stderr=b""))
-        with (
-            mock.patch("uxon.infra.settings.run_query", real_run),
-            mock.patch("os.geteuid", return_value=1000),
-        ):
-            cs.write_operator_config_toml("data", target)
-        self.assertEqual(real_run.call_count, 1)
-        cmd = real_run.call_args[0][0]
-        self.assertEqual(
-            cmd,
-            [
-                "/usr/bin/sudo",
-                "-n",
-                "/usr/bin/install",
-                "-o",
-                "root",
-                "-g",
-                "root",
-                "-m",
-                "0644",
-                "--",
-                "/dev/stdin",
-                str(target),
-            ],
-        )
-        # Content goes via stdin (bytes), not the command line.
-        self.assertEqual(real_run.call_args.kwargs["input"], b"data")
-        self.assertFalse(real_run.call_args.kwargs["text"])
+        with mock.patch("os.geteuid", return_value=1000):
+            with self.assertRaisesRegex(PermissionError, "read-only"):
+                cs.write_operator_config_toml("data", target)
 
 
 class LoadSettingsSourceTests(unittest.TestCase):
@@ -342,7 +326,7 @@ class WorktreeSettingsSpecTests(unittest.TestCase):
     def test_worktree_base_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "config.toml"
-            with mock.patch("os.geteuid", return_value=0):
+            with mock.patch("os.geteuid", return_value=0), mock.patch("os.fchown"):
                 cs.persist_operator_config_updates(path, {"worktree_base": "remote"})
                 cs.persist_operator_config_updates(path, {"worktree_root": "/data/wt"})
             text = path.read_text()
@@ -364,7 +348,7 @@ class TmuxManageOptionsSpecTests(unittest.TestCase):
     def test_manage_options_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "config.toml"
-            with mock.patch("os.geteuid", return_value=0):
+            with mock.patch("os.geteuid", return_value=0), mock.patch("os.fchown"):
                 cs.persist_operator_config_updates(path, {"tmux.manage_options": True})
             text = path.read_text()
             parsed = tomllib.loads(text)

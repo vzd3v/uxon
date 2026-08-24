@@ -191,9 +191,6 @@ def _build_prefix() -> dict[str, Any]:
         "pid": os.getpid(),
         "ppid": os.getppid(),
     }
-    ssh_conn = os.environ.get("SSH_CONNECTION")
-    if ssh_conn:
-        prefix["ssh_client"] = ssh_conn
     if _prefix_subcmd:
         prefix["subcmd"] = _prefix_subcmd
     return prefix

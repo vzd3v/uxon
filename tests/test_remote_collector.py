@@ -44,6 +44,8 @@ from uxon.infra.remote.master_recovery import (
 )
 from uxon.infra.remote_hosts import RemoteHost
 
+_CORRELATION_ID = "12345678-1234-1234-1234-123456789abc"
+
 
 def _host(**overrides: object) -> RemoteHost:
     base: dict[str, object] = {
@@ -122,6 +124,7 @@ class BuildFetchArgvTests(unittest.TestCase):
             _host(ssh_alias="edge-eu"),
             connect_timeout=7,
             all_users=True,
+            correlation_id=_CORRELATION_ID,
             ssh_multiplex="auto",
         )
         self.assertEqual(argv[0], "ssh")
@@ -136,7 +139,10 @@ class BuildFetchArgvTests(unittest.TestCase):
         # view; the collector falls back to plain ``list --json`` only
         # when the peer rejects the flag (see
         # ``ALL_USERS_DISABLED_MARKER``).
-        self.assertEqual(argv[-1], "uxon list --all-users --json")
+        self.assertEqual(
+            argv[-1],
+            f"uxon list --all-users --json --audit-correlation-id {_CORRELATION_ID}",
+        )
         # ControlMaster=auto is the default in stage 5+
         self.assertIn("ControlMaster=auto", argv)
 
@@ -145,6 +151,7 @@ class BuildFetchArgvTests(unittest.TestCase):
             _host(remote_uxon="/opt/u xon/uxon"),
             connect_timeout=5,
             all_users=True,
+            correlation_id=_CORRELATION_ID,
             ssh_multiplex="auto",
         )
         # shlex.quote should produce a single-quoted form so the space
@@ -156,6 +163,7 @@ class BuildFetchArgvTests(unittest.TestCase):
             _host(),
             connect_timeout=5,
             all_users=True,
+            correlation_id=_CORRELATION_ID,
             ssh_multiplex="off",
         )
         joined = " ".join(argv)
@@ -168,6 +176,7 @@ class BuildFetchArgvTests(unittest.TestCase):
             _host(extra_ssh_options=("-o", "ProxyJump=bastion")),
             connect_timeout=5,
             all_users=True,
+            correlation_id=_CORRELATION_ID,
             ssh_multiplex="auto",
         )
         # extra_ssh_options come immediately before the alias; alias
@@ -190,11 +199,15 @@ class BuildFetchArgvTests(unittest.TestCase):
             ),
             connect_timeout=5,
             all_users=True,
+            correlation_id=_CORRELATION_ID,
             ssh_multiplex="auto",
         )
         self.assertEqual(argv[0], "kubectl")
         self.assertNotIn("ssh", argv)
-        self.assertEqual(argv[-1], "uxon list --all-users --json")
+        self.assertEqual(
+            argv[-1],
+            f"uxon list --all-users --json --audit-correlation-id {_CORRELATION_ID}",
+        )
 
     def test_command_template_ignores_extra_ssh_options(self) -> None:
         argv = _build_fetch_argv(
@@ -204,19 +217,21 @@ class BuildFetchArgvTests(unittest.TestCase):
             ),
             connect_timeout=5,
             all_users=True,
+            correlation_id=_CORRELATION_ID,
             ssh_multiplex="auto",
         )
         self.assertNotIn("-o", argv)
         self.assertNotIn("ShouldBeIgnored=1", argv)
 
-    def test_all_users_false_uses_legacy_command(self) -> None:
+    def test_all_users_false_uses_own_scope_command(self) -> None:
         argv = _build_fetch_argv(
             _host(),
             connect_timeout=5,
             all_users=False,
+            correlation_id=_CORRELATION_ID,
             ssh_multiplex="auto",
         )
-        self.assertEqual(argv[-1], "uxon list --json")
+        self.assertEqual(argv[-1], f"uxon list --json --audit-correlation-id {_CORRELATION_ID}")
 
 
 class BuildPeerSshArgvTests(unittest.TestCase):
@@ -561,6 +576,25 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
             self.assertEqual(snap.sessions, sessions)
             # Cache should now exist.
             self.assertTrue(snapshot_cache_path("vz-prod1", override_dir=Path(tmp)).exists())
+
+    def test_success_emits_one_correlated_outbound_event(self) -> None:
+        recorded: list[tuple[str, dict[str, object]]] = []
+
+        def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
+            recorded.append((event, {"outcome": outcome, **fields}))
+
+        with TemporaryDirectory() as tmp:
+            runner = self._runner_returning(returncode=0, stdout=_good_envelope([]))
+            with (
+                _patch_run_query(runner) as run,
+                mock.patch("uxon.infra.remote.collector.uuid.uuid4", return_value=_CORRELATION_ID),
+                mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
+            ):
+                fetch_remote_snapshot(_host(), override_state_dir=Path(tmp))
+        [event] = [fields for name, fields in recorded if name == "list.remote.out"]
+        self.assertEqual(event["outcome"], "ok")
+        self.assertEqual(event["correlation_id"], _CORRELATION_ID)
+        self.assertIn(_CORRELATION_ID, run.call_args.args[0][-1])
 
     def test_ssh_nonzero_exit_falls_back_to_cache(self) -> None:
         with TemporaryDirectory() as tmp:

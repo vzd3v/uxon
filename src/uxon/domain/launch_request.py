@@ -17,7 +17,7 @@ class ManagedTmuxLaunch:
     create_cmd: tuple[str, ...]
     query_cmd: tuple[str, ...]
     release_cmd: tuple[str, ...]
-    kill_cmd: tuple[str, ...]
+    rollback_kill_prefix: tuple[str, ...]
     record_socket: str
     record_session: str
     record_nonce: str

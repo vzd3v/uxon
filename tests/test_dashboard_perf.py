@@ -17,9 +17,8 @@ The render-on-demand contract these tests pin (post-reconciler refactor):
   ``debug("tui-table-perf", ...)``, not asserted.
 
 The hard layout/recompose op-count gate (``refresh(layout=True)`` /
-``Footer.recompose`` counters) lives in ``tests/test_render_layout_budget.py``
-(Phase 3). Fixture here is 200 rows × 5 hosts, matching the perf scenario in
-the plan.
+``Footer.recompose`` counters) lives in ``tests/test_render_layout_budget.py``.
+The fixture here is 200 rows × 5 hosts.
 """
 
 from __future__ import annotations

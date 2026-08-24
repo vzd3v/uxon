@@ -579,7 +579,7 @@ class AsUserShellOutTests(unittest.TestCase):
 
 
 class IdentityParseTests(unittest.TestCase):
-    """Phase 1 identity resolution — parsers and the resolver degrade, never raise."""
+    """Identity parsers and the resolver degrade without raising."""
 
     def test_resolve_identity_degrades_on_bad_template(self) -> None:
         # AC-P1.3 / AC-P3.5 degrade-never-block: a misconfigured identity_command

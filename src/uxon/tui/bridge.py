@@ -95,6 +95,7 @@ class TuiBridge:
             target_user=user,
             profile=target.profile,
             agent=target.agent,
+            dry_run=False,
         )
         return tmux._build_tmux_attach_request(target, self.cfg, user)
 
@@ -102,8 +103,6 @@ class TuiBridge:
         # TUI 'k' on a local row runs ``tmux kill-session`` directly
         # via ``run_kill_session`` — emit ``session.kill`` after success so the
         # operation is auditable (mirrors do_kill same-user pattern).
-        from uxon.infra import audit as _audit
-
         fresh = sessions_probe.collect_sessions([user], self.cfg)
         target = sessions_probe._resolve_or_audit_not_found(
             name,
@@ -122,10 +121,9 @@ class TuiBridge:
         # Capture teardown before the kill, reap the orphaned workload
         # agent after kill-session — the same best-effort path as CLI do_kill.
         from uxon.app.kill import (
-            cleanup_launch_record,
+            _complete_kill,
             prepare_runtime_teardown,
             run_kill_session,
-            run_runtime_teardown,
         )
 
         teardown = prepare_runtime_teardown(self.cfg, target)
@@ -139,15 +137,12 @@ class TuiBridge:
             force=True,
             dry_run=False,
         )
-        if teardown:
-            run_runtime_teardown(self.cfg, teardown, user, target.name)
-        cleanup_launch_record(self.cfg, target)
-        _audit.audit(
-            "session.kill",
-            session=target.name,
+        _complete_kill(
+            self.cfg,
+            target,
+            teardown,
+            audit_event="session.kill",
             target_user=user,
-            profile=target.profile,
-            agent=target.agent,
             force=True,
             dry_run=False,
         )
@@ -157,34 +152,44 @@ class TuiBridge:
         # audit shape (``target_users``, ``killed_count``, ``dry_run``)
         # for the single-user case.
         from uxon.app.kill import (
-            cleanup_launch_record,
+            emit_kill_all_completion,
+            finish_killed_session,
             prepare_runtime_teardown,
-            run_runtime_teardown,
         )
-        from uxon.infra import audit as _audit
 
         fresh = sessions_probe.collect_sessions([self.launch_user], self.cfg)
+        attempted = 0
         killed_count = 0
-        for s in fresh:
-            full = tmux.configured_tmux_base(self.cfg, self.launch_user, nonint=True) + [
-                "kill-session",
-                "-t",
-                s.name,
-            ]
-            teardown = prepare_runtime_teardown(self.cfg, s)
-            cp = process.run_cmd(full, check=False)
-            if cp.returncode == 0:
+        failed = 0
+        cleanup_failed = 0
+        try:
+            for s in fresh:
+                full = tmux.configured_tmux_base(self.cfg, self.launch_user, nonint=True) + [
+                    "kill-session",
+                    "-t",
+                    s.name,
+                ]
+                teardown = prepare_runtime_teardown(self.cfg, s)
+                cp = process.run_cmd(full, check=False)
+                attempted += 1
+                if cp.returncode != 0:
+                    failed += 1
+                    continue
                 killed_count += 1
-                if teardown:
-                    run_runtime_teardown(self.cfg, teardown, self.launch_user, s.name)
-                cleanup_launch_record(self.cfg, s)
-        _audit.audit(
-            "session.kill_all",
-            outcome="ok" if killed_count == len(fresh) else "error",
-            target_users=[self.launch_user],
-            killed_count=killed_count,
-            dry_run=False,
-        )
+                if not finish_killed_session(self.cfg, s, teardown, target_user=self.launch_user):
+                    cleanup_failed += 1
+        except BaseException:
+            failed += 1
+            raise
+        finally:
+            emit_kill_all_completion(
+                target_users=[self.launch_user],
+                attempted_count=attempted,
+                killed_count=killed_count,
+                failed_count=failed,
+                cleanup_failed_count=cleanup_failed,
+                dry_run=False,
+            )
 
     def on_remote_attach(self, host_name: str, user: str, name: str) -> LaunchRequest:
         """TUI dispatch: attach to ``name`` belonging to ``user`` on peer ``host_name``.
@@ -219,6 +224,7 @@ class TuiBridge:
             ssh_alias=peer.ssh_alias,
             target_user=user,
             target_session=name,
+            dry_run=False,
             correlation_id=corr_id,
         )
         # target first (see _do_attach_remote for rationale).
@@ -347,43 +353,47 @@ class TuiBridge:
         # Iterate the launch user plus every reachable peer user. An
         # empty ``reachable_users`` collapses to "kill all my own sessions".
         from uxon.app.kill import (
-            cleanup_launch_record,
+            emit_kill_all_completion,
+            finish_killed_session,
             prepare_runtime_teardown,
-            run_runtime_teardown,
         )
 
         reachable = self.sudo_caps.reachable_users if self.sudo_caps else frozenset()
         users = sorted({self.launch_user, *reachable})
         killed_count = 0
         attempted = 0
-        for u in users:
-            fresh = sessions_probe.collect_sessions([u], self.cfg)
-            for s in fresh:
-                full = tmux.configured_tmux_base(self.cfg, u, nonint=True) + [
-                    "kill-session",
-                    "-t",
-                    s.name,
-                ]
-                teardown = prepare_runtime_teardown(self.cfg, s)
-                cp = process.run_cmd(full, check=False)
-                attempted += 1
-                if cp.returncode == 0:
+        failed = 0
+        cleanup_failed = 0
+        try:
+            for u in users:
+                fresh = sessions_probe.collect_sessions([u], self.cfg)
+                for s in fresh:
+                    full = tmux.configured_tmux_base(self.cfg, u, nonint=True) + [
+                        "kill-session",
+                        "-t",
+                        s.name,
+                    ]
+                    teardown = prepare_runtime_teardown(self.cfg, s)
+                    cp = process.run_cmd(full, check=False)
+                    attempted += 1
+                    if cp.returncode != 0:
+                        failed += 1
+                        continue
                     killed_count += 1
-                    if teardown:
-                        run_runtime_teardown(self.cfg, teardown, u, s.name)
-                    cleanup_launch_record(self.cfg, s)
-        # Operationally the most-significant kill_all path: cross-user
-        # bulk kill from the TUI.  Audit emit covers the whole sweep,
-        # not per-session and carries the target-user set plus killed count.
-        from uxon.infra import audit as _audit
-
-        _audit.audit(
-            "session.kill_all",
-            outcome="ok" if killed_count == attempted else "error",
-            target_users=users,
-            killed_count=killed_count,
-            dry_run=False,
-        )
+                    if not finish_killed_session(self.cfg, s, teardown, target_user=u):
+                        cleanup_failed += 1
+        except BaseException:
+            failed += 1
+            raise
+        finally:
+            emit_kill_all_completion(
+                target_users=users,
+                attempted_count=attempted,
+                killed_count=killed_count,
+                failed_count=failed,
+                cleanup_failed_count=cleanup_failed,
+                dry_run=False,
+            )
 
     # ── refresh / link health ──
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 import tomllib
@@ -10,16 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from uxon.cli.main import main
+from uxon.cli.parsing import parse_args
 from uxon.infra.config_loader import parse_config
-
-
-def _renderer():
-    path = Path(__file__).resolve().parent.parent / "install" / "render_uxon_config.py"
-    spec = importlib.util.spec_from_file_location("render_uxon_config", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from uxon.infra.config_renderer import render_config
 
 
 def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
@@ -59,7 +52,7 @@ def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
             }
         },
     }
-    parsed = tomllib.loads(_renderer().render_config(payload))
+    parsed = tomllib.loads(render_config(payload))
     assert parsed["tmux_socket_template"] == "/tmp/uxon-{user}-{execution_backend}.sock"
     assert parsed["execution"]["backends"]["netns"]["kind"] == "command"
     assert parsed["launch"]["profiles"]["claude_box"]["runtime"] == "box"
@@ -68,9 +61,8 @@ def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
 
 
 def test_renderer_rejects_unknown_keys_at_nested_levels() -> None:
-    renderer = _renderer()
     with pytest.raises(ValueError, match="unknown key"):
-        renderer.render_config(
+        render_config(
             {
                 "launch": {
                     "profiles": {
@@ -92,7 +84,7 @@ def test_renderer_rejects_unknown_keys_at_nested_levels() -> None:
 )
 def test_renderer_rejects_removed_v3_isolation_keys_as_unknown(payload: dict) -> None:
     with pytest.raises(ValueError, match="unknown key"):
-        _renderer().render_config(payload)
+        render_config(payload)
 
 
 @pytest.mark.parametrize(
@@ -109,7 +101,7 @@ def test_renderer_rejects_removed_v3_isolation_keys_as_unknown(payload: dict) ->
 )
 def test_renderer_rejects_type_coercion(payload: dict) -> None:
     with pytest.raises(ValueError, match="must be"):
-        _renderer().render_config(payload)
+        render_config(payload)
 
 
 def test_renderer_invalid_json_is_a_clean_cli_error(tmp_path: Path) -> None:
@@ -124,13 +116,37 @@ def test_renderer_invalid_json_is_a_clean_cli_error(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
-    assert "render_uxon_config.py:" in result.stderr
+    assert "uxon: config render failed:" in result.stderr
+
+
+def test_packaged_config_render_command_writes_validated_toml(tmp_path: Path) -> None:
+    payload = tmp_path / "config.json"
+    output = tmp_path / "config.toml"
+    payload.write_text('{"default_launch_mode":"caller"}', encoding="utf-8")
+
+    args = parse_args(["config", "render", "--config-json", str(payload), "--output", str(output)])
+    assert args.action == "config-render"
+    assert main(["config", "render", "--config-json", str(payload), "--output", str(output)]) == 0
+    assert tomllib.loads(output.read_text(encoding="utf-8"))["default_launch_mode"] == "caller"
+
+
+def test_config_render_does_not_load_installed_operator_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = tmp_path / "config.json"
+    payload.write_text("{}", encoding="utf-8")
+
+    def forbidden() -> None:
+        raise AssertionError("installed operator config must not be loaded")
+
+    monkeypatch.setattr("uxon.infra.config_loader.load_config", forbidden)
+    assert main(["config", "render", "--config-json", str(payload)]) == 0
 
 
 def test_renderer_rejects_dynamic_ids_that_could_change_toml_structure() -> None:
     payload = {"agents": {"odd.id": {"binary": "/opt/agent"}}}
     with pytest.raises(ValueError, match="invalid agent id"):
-        _renderer().render_config(payload)
+        render_config(payload)
 
 
 @pytest.mark.parametrize(
@@ -145,5 +161,5 @@ def test_renderer_and_loader_share_semantic_validation(payload: dict) -> None:
     with pytest.raises(ValueError) as loader_error:
         parse_config(payload)
     with pytest.raises(ValueError) as renderer_error:
-        _renderer().render_config(payload)
+        render_config(payload)
     assert str(renderer_error.value) == str(loader_error.value)

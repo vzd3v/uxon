@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Sequence
 from typing import Any
 
@@ -335,10 +334,8 @@ def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
     Dispatches the ``--host`` / ``--all-hosts`` variants to their
     dedicated handlers, then runs the local-listing audit/scope logic
-    (peer-inbound ``list.remote.in`` vs caller-side ``list.peek``, the
-    ``--all-users`` enable gate, and the JSON-vs-human emit). Lifted
-    verbatim from the old ``cli.main`` inline branch so behavior is
-    identical; ``dispatch`` calls this as a thin router target.
+    This owns the ``--all-users`` gate, ``list.peek`` audit, and the
+    JSON-vs-human output contract.
     """
     from uxon.infra import audit as _audit
 
@@ -346,50 +343,25 @@ def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         return _do_list_host(args, cfg)
     if args.all_hosts:
         return _do_list_all_hosts(args, cfg, launch_user)
-    # Peer-inbound branch: a peer-collector invocation arrives with
-    # ``SSH_CONNECTION`` set and neither ``--host`` nor ``--all-hosts``.
-    # Fires *after* those early-returns so a caller-side
-    # ``uxon list --host`` does not double-emit on its own host.
-    # When peer-inbound, ``list.remote.in`` replaces
-    # ``list.peek`` ("instead of"), so we suppress the latter on
-    # this code path.
-    #
-    # Emit ``list.remote.in`` at outcome boundaries so a denied
-    # ``--all-users`` request cannot be recorded as successful.
-    peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    # ``correlation_id`` for ``list.remote.in`` is auto-injected by
-    # ``audit()`` from module state when the parser popped
-    # ``--audit-correlation-id`` off argv. Missing ids are omitted rather
-    # than synthesized.
-    list_scope = "all-users" if args.all_users else "own"
     if args.all_users:
         if not cfg.enable_all_users_list:
             # Stable error tag. The remote-host aggregator's
             # fallback detector greps for this exact substring to
             # decide whether to retry with the own-only ``list
             # --json`` (own-only) command.
-            if peer_inbound:
-                _audit.audit(
-                    "list.remote.in",
-                    outcome="denied",
-                    scope=list_scope,
-                )
-            fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
-        scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
-        # ``list.peek`` / ``list.remote.in`` fires only after the
-        # gate passes — placement ensures we never log a successful
-        # peek for a denied invocation.
-        if peer_inbound:
-            _audit.audit(
-                "list.remote.in",
-                scope=list_scope,
-            )
-        else:
             _audit.audit(
                 "list.peek",
-                scope_users=scope_users,
-                scope_skipped=list(scope_skipped),
+                outcome="denied",
+                scope_users=[],
+                scope_skipped=[],
             )
+            fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
+        scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
+        _audit.audit(
+            "list.peek",
+            scope_users=scope_users,
+            scope_skipped=list(scope_skipped),
+        )
         sessions = sessions_probe.collect_sessions(scope_users, cfg)
         if args.json_output:
             _emit_json(
@@ -406,16 +378,8 @@ def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         rc = print_list(cfg, sessions, scope_users, show_user=True)
         _emit_scope_skipped_hint(scope_skipped)
         return rc
-    # Own-only branch: no gate, single success emit on the peer
-    # side (the local-side ``list`` does not produce a ``list.peek``
-    # for its own user; only ``--all-users`` local enumeration triggers
-    # ``list.peek``).
-    if peer_inbound:
-        _audit.audit(
-            "list.remote.in",
-            scope=list_scope,
-        )
     scope_users = [launch_user]
+    _audit.audit("list.peek", scope_users=scope_users, scope_skipped=[])
     sessions = sessions_probe.collect_sessions(scope_users, cfg)
     if args.json_output:
         _emit_json("list", _list_data(cfg, sessions, scope_users, all_users=False))
