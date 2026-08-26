@@ -35,7 +35,7 @@ session_prefix      = "uxon-"
 # Drain all sessions for a backend before changing its definition. Changing
 # a backend id selects a different default tmux socket.
 #
-# tmux_socket_template = "/tmp/uxon-{user}-{execution_backend}.sock"
+# tmux_socket_template = "/tmp/tmux-{uid}/uxon-{execution_backend}.sock"
 # [execution]
 # default_backend = "host_netns"
 # [execution.backend_by_launch_user]

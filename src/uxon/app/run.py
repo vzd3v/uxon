@@ -129,7 +129,8 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     launch_app.ensure_launch_target_allowed(cfg, launch_user, target_dir)
     session_stem = session_stem_for_path(target_dir)
     compatibility_root = target_dir
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
+    snapshot = sessions_probe.collect_current_session_snapshot(cfg, launch_user)
+    sessions = list(snapshot.sessions)
     session = allocate_session_name(
         session_stem,
         resolved.profile.id,
@@ -147,6 +148,6 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         cfg,
         branch,
         resolved_profile=resolved,
-        server_running=bool(sessions),
+        server_running=snapshot.server_state == "running",
         active_sessions=sessions,
     )

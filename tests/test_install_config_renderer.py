@@ -53,7 +53,7 @@ def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
         },
     }
     parsed = tomllib.loads(render_config(payload))
-    assert parsed["tmux_socket_template"] == "/tmp/uxon-{user}-{execution_backend}.sock"
+    assert parsed["tmux_socket_template"] == "/tmp/tmux-{uid}/uxon-{execution_backend}.sock"
     assert parsed["execution"]["backends"]["netns"]["kind"] == "command"
     assert parsed["launch"]["profiles"]["claude_box"]["runtime"] == "box"
     assert parsed["runtimes"]["box"]["path_map"]["/srv/projects"] == "/work"

@@ -7,8 +7,10 @@ import getpass
 import json
 import os
 import shutil
+import socket as unix_socket
 import stat
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -36,6 +38,7 @@ from uxon.infra import (
     sessions_probe,
     tmux,
     tmux_server_probe,
+    tmux_socket,
 )
 from uxon.infra.execution import (
     DirectoryEntry,
@@ -457,6 +460,26 @@ def test_unreachable_tmux_server_is_not_reported_as_empty() -> None:
     assert "permission denied" in getattr(raised.value, "uxon_msg", "")
 
 
+def test_live_empty_tmux_server_is_preserved_in_session_snapshot() -> None:
+    cfg = _command_cfg()
+    socket = "/tmp/tmux-1001/uxon-boundary.sock"
+    with (
+        mock.patch(
+            "uxon.infra.sessions_probe.tmux.probe_tmux_server",
+            return_value=tmux.TmuxServerProbe("running", sessions=()),
+        ),
+        mock.patch(
+            "uxon.infra.sessions_probe.tmux.tmux_base",
+            return_value=["tmux", "-S", socket],
+        ),
+        mock.patch("uxon.infra.sessions_probe.run_cmd", return_value=_cp()),
+        mock.patch("uxon.infra.sessions_probe.garbage_collect_records"),
+    ):
+        snapshot = sessions_probe.collect_session_snapshot_for_user(cfg, "alice", "uxon-", socket)
+    assert snapshot.server_state == "running"
+    assert snapshot.sessions == ()
+
+
 def test_fixed_tmux_probe_distinguishes_absent_and_non_socket(tmp_path: Path) -> None:
     absent = tmux_server_probe.collect(tmp_path / "missing.sock")
     assert absent == {"state": "absent", "sessions": [], "error": ""}
@@ -469,14 +492,90 @@ def test_fixed_tmux_probe_distinguishes_absent_and_non_socket(tmp_path: Path) ->
     assert "not a socket" in unreachable["error"]
 
 
-def test_fixed_tmux_probe_preserves_lstat_error() -> None:
-    with mock.patch(
-        "uxon.infra.tmux_server_probe.os.stat",
-        side_effect=PermissionError("permission denied"),
-    ):
-        result = tmux_server_probe.collect(Path("/private/tmux.sock"))
+def test_fixed_tmux_probe_rejects_non_private_parent(tmp_path: Path) -> None:
+    tmp_path.chmod(0o755)
+    result = tmux_server_probe.collect(tmp_path / "tmux.sock")
     assert result["state"] == "unreachable"
-    assert "permission denied" in result["error"]
+    assert "permissions must be 0700" in result["error"]
+
+
+def test_fixed_tmux_probe_treats_closed_socket_as_absent(tmp_path: Path) -> None:
+    socket_path = tmp_path / "tmux.sock"
+    listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    socket_path.chmod(0o600)
+    listener.close()
+
+    assert tmux_server_probe.collect(socket_path) == {
+        "state": "absent",
+        "sessions": [],
+        "error": "",
+    }
+
+
+def test_fixed_tmux_probe_keeps_live_foreign_listener_unreachable(tmp_path: Path) -> None:
+    socket_path = tmp_path / "tmux.sock"
+    listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    socket_path.chmod(0o600)
+    listener.listen(1)
+    try:
+        with mock.patch(
+            "uxon.infra.tmux_server_probe.run_query",
+            return_value=_cp(returncode=1),
+        ):
+            result = tmux_server_probe.collect(socket_path)
+    finally:
+        listener.close()
+    assert result["state"] == "unreachable"
+
+
+def test_fixed_tmux_probe_does_not_accept_replaced_stale_inode(tmp_path: Path) -> None:
+    socket_path = tmp_path / "tmux.sock"
+    first = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+    first.bind(str(socket_path))
+    socket_path.chmod(0o600)
+    first.close()
+    replacements: list[unix_socket.socket] = []
+
+    def replace_during_query(*_args, **_kwargs):
+        socket_path.unlink()
+        replacement = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+        replacement.bind(str(socket_path))
+        socket_path.chmod(0o600)
+        replacement.listen(1)
+        replacements.append(replacement)
+        return _cp(returncode=1)
+
+    try:
+        with mock.patch("uxon.infra.tmux_server_probe.run_query", side_effect=replace_during_query):
+            result = tmux_server_probe.collect(socket_path)
+    finally:
+        for replacement in replacements:
+            replacement.close()
+    assert result["state"] == "unreachable"
+
+
+def test_tmux_socket_parent_is_created_private_and_rejects_symlinks(tmp_path: Path) -> None:
+    parent = tmp_path / "private"
+    socket_path = parent / "tmux.sock"
+    tmux_socket.prepare_socket_parent(socket_path)
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    linked = tmp_path / "linked"
+    linked.symlink_to(target, target_is_directory=True)
+    with pytest.raises(tmux_socket.SocketDirectoryError):
+        tmux_socket.prepare_socket_parent(linked / "tmux.sock")
+
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir(mode=0o777)
+    unsafe.chmod(0o777)
+    private = unsafe / "private"
+    private.mkdir(mode=0o700)
+    with pytest.raises(tmux_socket.SocketDirectoryError):
+        tmux_socket.prepare_socket_parent(private / "tmux.sock")
 
 
 def test_git_fs_binary_and_runtime_commands_are_nested_under_boundary(tmp_path: Path) -> None:
@@ -619,6 +718,56 @@ def test_backend_id_change_selects_a_distinct_socket() -> None:
     second = _command_cfg(backend_id="netns_b")
     with mock.patch("uxon.infra.tmux.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=1001)):
         assert tmux.tmux_socket_path(first, "alice") != tmux.tmux_socket_path(second, "alice")
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+def test_tmux_clean_exit_stale_socket_is_absent_and_reusable(tmp_path: Path) -> None:
+    socket_path = tmp_path / "tmux.sock"
+    base = ["tmux", "-f", "/dev/null", "-S", str(socket_path)]
+    try:
+        subprocess.run(base + ["new-session", "-d", "-s", "short", "true"], check=True)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            result = subprocess.run(
+                base + ["list-sessions"], capture_output=True, text=True, check=False
+            )
+            if result.returncode != 0:
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("short tmux server did not exit")
+
+        assert socket_path.is_socket()
+        assert tmux_server_probe.collect(socket_path) == {
+            "state": "absent",
+            "sessions": [],
+            "error": "",
+        }
+
+        subprocess.run(base + ["new-session", "-d", "-s", "reused", "sleep", "30"], check=True)
+        running = tmux_server_probe.collect(socket_path)
+        assert running == {"state": "running", "sessions": ["reused"], "error": ""}
+    finally:
+        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
+        socket_path.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+def test_tmux_live_empty_server_remains_running(tmp_path: Path) -> None:
+    socket_path = tmp_path / "tmux.sock"
+    base = ["tmux", "-f", "/dev/null", "-S", str(socket_path)]
+    try:
+        subprocess.run(base + ["new-session", "-d", "-s", "temporary", "sleep", "30"], check=True)
+        subprocess.run(base + ["set-option", "-s", "exit-empty", "off"], check=True)
+        subprocess.run(base + ["kill-session", "-t", "temporary"], check=True)
+        assert tmux_server_probe.collect(socket_path) == {
+            "state": "running",
+            "sessions": [],
+            "error": "",
+        }
+    finally:
+        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
+        socket_path.unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from helpers import make_config as _make_config
+from helpers import make_session_snapshot
 
 import uxon.app.attach as attach_app
 import uxon.app.doctor as doctor_app
@@ -1114,7 +1115,10 @@ class UxonTests(unittest.TestCase):
 
         with mock.patch.object(uxon_git_create, "create_project_remote", side_effect=fake_create):
             with (
-                mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                mock.patch(
+                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                    return_value=make_session_snapshot(),
+                ),
                 mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
             ):
                 with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0):
@@ -1207,7 +1211,10 @@ class UxonTests(unittest.TestCase):
                 new_app, "canonical", side_effect=lambda value: str(value), create=True
             ):
                 with (
-                    mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                    mock.patch(
+                        "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                        return_value=make_session_snapshot(user="u-vz"),
+                    ),
                     mock.patch(
                         "uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]
                     ),
@@ -1231,7 +1238,8 @@ class UxonTests(unittest.TestCase):
         ):
             with mock.patch("uxon.infra.process.run_cmd") as run_cmd:
                 with mock.patch(
-                    "uxon.infra.sessions_probe.collect_sessions", return_value=existing
+                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                    return_value=make_session_snapshot(existing, user="u-vz"),
                 ):
                     with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=True):
                         with mock.patch("builtins.input", return_value=""):
@@ -1262,7 +1270,8 @@ class UxonTests(unittest.TestCase):
         ):
             with mock.patch("uxon.infra.process.run_cmd") as run_cmd:
                 with mock.patch(
-                    "uxon.infra.sessions_probe.collect_sessions", return_value=existing
+                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                    return_value=make_session_snapshot(existing, user="u-vz"),
                 ):
                     with mock.patch.object(
                         new_app, "allocate_session_name", return_value="uxon-demo-2"
@@ -1285,7 +1294,8 @@ class UxonTests(unittest.TestCase):
         ):
             with mock.patch("uxon.infra.process.run_cmd") as run_cmd:
                 with mock.patch(
-                    "uxon.infra.sessions_probe.collect_sessions", return_value=existing
+                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                    return_value=make_session_snapshot(existing, user="u-vz"),
                 ):
                     with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
                         with mock.patch("uxon.errors.eprint") as eprint:
@@ -1432,7 +1442,10 @@ class UxonTests(unittest.TestCase):
             new_app, "canonical", side_effect=lambda value: str(value), create=True
         ):
             with mock.patch("uxon.infra.process.run_cmd"):
-                with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
+                with mock.patch(
+                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                    return_value=make_session_snapshot(),
+                ):
                     with mock.patch(
                         "uxon.infra.sessions_probe.collect_sessions_for_user", return_value=legacy
                     ):
@@ -1622,11 +1635,12 @@ class UxonTests(unittest.TestCase):
         self.assertIn("sonnet", create)
         self.assertIn("--dangerously-skip-permissions", create)
         self.assertIn("--foo", create)
-        # prelaunch mkdir for the socket parent
+        # prelaunch prepares and verifies the private socket parent
         self.assertEqual(len(req.prelaunch), 1)
         pre = req.prelaunch[0]
-        self.assertIn("mkdir", pre)
-        self.assertIn("-p", pre)
+        self.assertIn("uxon.infra.tmux_socket", pre)
+        self.assertIn("--prepare", pre)
+        self.assertIn("/tmp/uxon-test.sock", pre)
 
     def test_managed_launch_create_argv_is_non_adopting(self) -> None:
         cfg = self.make_config()
@@ -2254,12 +2268,13 @@ class UxonTests(unittest.TestCase):
         # Main cmd is the switch; creation happens in prelaunch.
         self.assertIn("switch-client", req.cmd)
         self.assertIn("uxon-demo@claude", req.cmd)
-        # Prelaunch only creates the socket parent; detached creation is
+        # Prelaunch only prepares the socket parent; detached creation is
         # finalized by the managed launch preparation.
         self.assertEqual(len(req.prelaunch), 1)
-        (mkdir_pre,) = req.prelaunch
+        (socket_pre,) = req.prelaunch
         create_pre = _managed_create_cmd(req)
-        self.assertIn("mkdir", mkdir_pre)
+        self.assertIn("uxon.infra.tmux_socket", socket_pre)
+        self.assertIn("--prepare", socket_pre)
         self.assertIn("new-session", create_pre)
         self.assertIn("-d", create_pre)
         self.assertNotIn("-dA", create_pre)
@@ -2876,7 +2891,10 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         with mock.patch("uxon.infra.execution.path_facts", return_value=facts):
             with mock.patch.object(new_app, "canonical", side_effect=lambda v: str(v), create=True):
                 with mock.patch.object(os, "getcwd", return_value="/home/u-vz"):
-                    with mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]):
+                    with mock.patch(
+                        "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                        return_value=make_session_snapshot(user="u-vz"),
+                    ):
                         with (
                             mock.patch(
                                 "uxon.infra.sessions_probe.legacy_compatible_sessions",
@@ -2942,6 +2960,38 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
         # Direct unit test of the predicate that drives the doctor
         # warning; the full doctor flow is exercised elsewhere.
         self.assertTrue(domain_authz.is_under_allowed_roots(cfg, cfg.new_project_root))
+
+    def test_doctor_accepts_socket_parent_before_first_launch(self) -> None:
+        cfg = self._cfg(allowed_roots=[])
+        missing = execution_infra.PathFacts("/tmp/tmux-1001", False, False, False, "/tmp")
+        with mock.patch("uxon.infra.execution.path_facts", return_value=missing):
+            issues = doctor_app.doctor_issues(
+                cfg,
+                "u-vz",
+                "u-vz",
+                "/usr/bin/tmux",
+                {"claude": "/usr/bin/claude"},
+                "/tmp/tmux-1001/uxon-local.sock",
+                [],
+                [],
+            )
+        self.assertNotIn("tmux socket parent", "\n".join(issues))
+
+    def test_doctor_rejects_existing_non_directory_socket_parent(self) -> None:
+        cfg = self._cfg(allowed_roots=[])
+        file_facts = execution_infra.PathFacts("/tmp/tmux-1001", True, False, False, "/tmp")
+        with mock.patch("uxon.infra.execution.path_facts", return_value=file_facts):
+            issues = doctor_app.doctor_issues(
+                cfg,
+                "u-vz",
+                "u-vz",
+                "/usr/bin/tmux",
+                {"claude": "/usr/bin/claude"},
+                "/tmp/tmux-1001/uxon-local.sock",
+                [],
+                [],
+            )
+        self.assertIn("tmux socket parent is not a directory", "\n".join(issues))
 
 
 class SessionNamingTests(unittest.TestCase):
@@ -3221,7 +3271,10 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
         cfg = config_loader.load_config()
         with (
             mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch.object(tui_planning, "allocate_session_name", fake_alloc),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
@@ -3249,7 +3302,10 @@ class TuiPlannerWorktreeStemTests(unittest.TestCase):
         cfg = config_loader.load_config()
         with (
             mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch.object(tui_planning, "allocate_session_name", fake_alloc),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
@@ -3333,7 +3389,10 @@ class WorktreeIdentityRegressionTests(unittest.TestCase):
         # (a) planner names the session with the worktree stem.
         with (
             mock.patch.object(launch_app, "ensure_launch_target_allowed", lambda *a, **k: None),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch(
                 "uxon.infra.tmux._build_tmux_launch_request",
                 lambda td, s, *a, **k: attach_app._tui_launch_request_cls()(
@@ -3424,7 +3483,10 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
             mock.patch("uxon.infra.git.copy_worktreeinclude_matches", lambda *a, **k: None),
@@ -3527,7 +3589,10 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
             mock.patch("uxon.infra.git.copy_worktreeinclude_matches", lambda *a, **k: None),
@@ -3579,7 +3644,10 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
             mock.patch("uxon.infra.git.copy_worktreeinclude_matches", lambda *a, **k: None),
@@ -3624,7 +3692,10 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
             mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
@@ -3670,7 +3741,10 @@ class PlanWorktreeLaunchTests(unittest.TestCase):
 
         with (
             mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch("uxon.infra.process.run_cmd", fake_run_cmd),
             mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
             mock.patch("uxon.infra.git._local_base_ref_as_user", return_value="HEAD"),

@@ -75,7 +75,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # else local HEAD; "remote" fetches origin first (claude-like).
     "worktree_root": "",
     "worktree_base": "local",
-    "tmux_socket_template": "/tmp/uxon-{user}-{execution_backend}.sock",
+    "tmux_socket_template": "/tmp/tmux-{uid}/uxon-{execution_backend}.sock",
     # Empty uses the controller's private XDG state directory. Multi-controller
     # supervision requires an explicitly provisioned shared control directory.
     "launch_record_dir": "",

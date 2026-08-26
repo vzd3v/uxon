@@ -284,20 +284,10 @@ def _build_tmux_launch_request(
     (see AGENTS.md "hard rules"). Both the CLI execvp path
     (``launch_in_tmux``) and the TUI fork-and-wait path reuse it.
 
-    ``server_running`` (derived by callers from the already-collected
-    per-user session list — a non-empty list means the user's tmux server
-    is live) gates the ``-as`` scope of the managed-options chain: see
-    :func:`_tmux_set_chain`. Defaults to False (treat as a server birth →
-    full chain); every real launch path passes the actual value.
-
-    NB: ``bool(sessions)`` is a liveness *proxy* — it reuses the data the
-    launch/dashboard path already collected (no extra probe). It
-    under-reports (False on a live server) only if the dedicated per-user
-    socket carries sessions that don't match uxon's name prefix, which
-    AGENTS.md disallows (that socket is uxon-exclusive). In that off-policy
-    state the ``-as`` append scope would re-emit and its list would grow;
-    a precise fix would cost a dedicated ``list-sessions`` liveness call per
-    launch, deliberately not added.
+    ``server_running`` comes from the same target-side snapshot that collected
+    the session rows. It is independent of list length because a reachable tmux
+    server may deliberately remain alive with zero sessions. The flag gates the
+    ``-as`` scope of the managed-options chain; see :func:`_tmux_set_chain`.
 
     The launch profile is expected to be resolved before this is called.
     Install-gating is owned by ``app.launch_profile.resolve_launch_profile``.
@@ -402,9 +392,9 @@ def _build_tmux_launch_request(
         agent_argv = wrap_agent_for_runtime(agent_argv, session=session, pidfile=pidfile)
     final_cmd = exec_prefix + agent_argv
     socket_path = tmux_socket_path(cfg, launch_user)
-    socket_parent = str(Path(socket_path).parent)
     ensure_socket_parent = tuple(
-        command_prefix(cfg, launch_user, interactive=True) + ["mkdir", "-p", socket_parent]
+        command_prefix(cfg, launch_user, interactive=True)
+        + [sys.executable, "-m", "uxon.infra.tmux_socket", "--prepare", "--socket", socket_path]
     )
     base = configured_tmux_base(cfg, launch_user)
     # uxon-managed tmux options (3.5.0). The chain must ride the SAME
@@ -719,7 +709,7 @@ def launch_in_tmux(
         print(f"dir={shlex.quote(target_dir)}")
         print(f"socket={shlex.quote(tmux_socket_path(cfg, launch_user))}")
         for pre in req.prelaunch:
-            print(f"socket_parent_mkdir={shlex.join(pre)}")
+            print(f"socket_parent_prepare={shlex.join(pre)}")
         if req.managed is not None:
             print(f"tmux_create={shlex.join(req.managed.create_cmd)}")
         print(f"session={shlex.quote(session)}")

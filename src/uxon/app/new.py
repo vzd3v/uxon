@@ -273,7 +273,8 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             resolved.git_remote,
         )
 
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
+    snapshot = sessions_probe.collect_current_session_snapshot(cfg, launch_user)
+    sessions = list(snapshot.sessions)
     existing = compatible_indexed_sessions(
         session_stem,
         resolved.profile.id,
@@ -328,7 +329,7 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         cfg,
         branch,
         resolved_profile=resolved,
-        server_running=bool(sessions),
+        server_running=snapshot.server_state == "running",
         active_sessions=sessions,
     )
 

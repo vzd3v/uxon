@@ -9,10 +9,13 @@ matching the existing ``harness`` package convention.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from uxon.domain.agents import default_agent_catalog
 from uxon.domain.config import Config
 from uxon.domain.launch_profiles import LaunchConfig, builtin_launch_profiles
 from uxon.domain.session import SessionInfo
+from uxon.infra.sessions_probe import UserSessionSnapshot
 
 
 def make_config(**overrides: object) -> Config:
@@ -38,6 +41,17 @@ def make_config(**overrides: object) -> Config:
     }
     base.update(overrides)
     return Config(**base)  # type: ignore[arg-type]
+
+
+def make_session_snapshot(
+    sessions: list[SessionInfo] | tuple[SessionInfo, ...] = (),
+    *,
+    user: str = "dana_agent",
+    server_state: Literal["absent", "running"] | None = None,
+) -> UserSessionSnapshot:
+    rows = tuple(sessions)
+    state = server_state or ("running" if rows else "absent")
+    return UserSessionSnapshot(user=user, server_state=state, sessions=rows)
 
 
 def run_off_loop_sync(fn, *, on_success=None, on_error=None, label="action"):

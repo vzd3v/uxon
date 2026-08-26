@@ -20,6 +20,8 @@ import unittest
 from typing import Any
 from unittest import mock
 
+from helpers import make_session_snapshot
+
 import uxon.app.launch_profile as launch_profile_app
 from uxon.domain.agents import default_agent_catalog
 from uxon.domain.args import ParsedArgs
@@ -1718,7 +1720,10 @@ class WorktreePathMapGateTests(unittest.TestCase):
             mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
             mock.patch("uxon.infra.git._local_base_ref_as_user", return_value="HEAD"),
             mock.patch("uxon.infra.identity.command_prefix_for_user", return_value=[]),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(),
+            ),
             mock.patch("uxon.infra.tmux._build_tmux_launch_request", return_value=sentinel),
         ):
             req = launch_app.plan_worktree_launch(
