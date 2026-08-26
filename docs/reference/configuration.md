@@ -32,7 +32,7 @@ are operator-owned.
 | `new_project_root` | string | `~/projects` | Base directory for `uxon new <name>`. Must be inside `allowed_roots`. |
 | `session_prefix` | string | `"uxon-"` | TMUX session-name prefix for new sessions. |
 | `legacy_session_prefixes` | array | `[]` | Extra prefixes recognised by `list`/`attach`/`kill`. Never used to create new sessions. |
-| `tmux_socket_template` | string | `/tmp/uxon-{user}-{execution_backend}.sock` | Socket path. Placeholders: `{user}`, `{uid}`, `{execution_backend}`, `{execution_fingerprint}`. |
+| `tmux_socket_template` | string | `/tmp/tmux-{uid}/uxon-{execution_backend}.sock` | Dedicated socket path. Its parent must be a real directory owned by the launch user with mode `0700`; the socket must be owned by that user with mode `0600`. Placeholders: `{user}`, `{uid}`, `{execution_backend}`, `{execution_fingerprint}`. |
 | `launch_record_dir` | string | `""` | Authoritative launch-record directory. Empty uses the controller's private XDG state directory. Set an absolute, pre-provisioned shared directory only for multi-controller supervision; see [Launch records](#launch-records). |
 | `tui_refresh_interval_seconds` | number | `2.0` | Local-tmux refresh cadence. |
 | `tui_ssh_refresh_interval_seconds` | number | `10.0` | Cadence for SSH-driven streams: the `ssh-link` probe (visible inside SSH) and the per-peer remote-sessions poller (when `[[remote_hosts]]` is configured). |
@@ -464,8 +464,8 @@ the session-creating tmux invocation, before `new-session` (or before
 
 **When it runs (server birth vs. live server).** The tmux server is **per
 launch-user** and born once; these options are server-scoped, so they only
-need applying when the server is born. uxon already knows whether a user's
-server is live (a non-empty session list ⇒ alive), so:
+need applying when the server is born. uxon carries server reachability
+separately from the session list, so a live server with zero sessions stays live:
 
 - **Server birth** (the launch creates the user's first session): the **full**
   chain — `-g` + `-s` + `-as` — rides the `new-session` invocation.

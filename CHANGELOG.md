@@ -10,7 +10,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - The interactive TUI now exits when its controlling terminal disappears instead of leaving an orphaned process that can spin at 100% CPU after an SSH or ET disconnect.
-- Session listing now distinguishes an absent tmux server from an unreachable socket or backend and reports the latter instead of silently rendering an empty list.
+- Session lifecycle checks now distinguish absent, running, and unreachable tmux servers: a residual socket from a normal shutdown is absent, while a live server with zero sessions remains running.
 - Installed wheels no longer report a surrounding consumer repository's Git commit as Uxon's source identity.
 - Cross-user attach dry-runs now emit one complete terminal audit event, and remote audit events report their actual final outcome and SSH return code.
 - `kill-all --json` keeps `action` to its closed operation enum and reports post-kill cleanup separately as `cleanup_outcome`.
@@ -18,7 +18,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed (breaking)
 - Runtime selection moved from `agents.enabled` / `agents.default` and the old global `[container]` block to operator-owned launch profiles and `[runtimes.<id>]`. A launch profile selects `runtime = "direct"` by default; project `.uxon.toml` files are no longer read.
 - `uxon run` and `uxon new` now select runnable lanes with `--profile <id>`. Other flags, including `--agent`, are forwarded to the selected agent. New sessions use the launch-profile suffix (`<prefix><stem>@<profile>[-N]`).
-- Target-user commands now traverse `[execution]`. The built-in `local` backend preserves host/sudo behavior; command backends own tmux server/list/attach/kill, git/worktrees/filesystem, probes, runtime lifecycle, and agent launch. The default socket is `/tmp/uxon-{user}-{execution_backend}.sock`.
+- Target-user commands now traverse `[execution]`. The built-in `local` backend preserves host/sudo behavior; command backends own tmux server/list/attach/kill, git/worktrees/filesystem, probes, runtime lifecycle, and agent launch. The default socket is `/tmp/tmux-{uid}/uxon-{execution_backend}.sock` under a launch-user-owned private directory.
 - Wire schema 3, launch-record schema 2, and audit schema 2 replace container-specific fields/events with `execution_backend`, `runtime`, `runtime_kind`, `runtime_resource`, `runtime.prepare`, and `runtime.session_stop`.
 - `uxon doctor --json` now reports `execution_backends` and `runtimes`; launch-profile rows expose `runtime_kind` and `uses_runtime`.
 - Audit: the `cli.start` event's `agents_enabled` field is renamed `profiles_enabled` and now lists launch-profile ids (it listed agent ids). Update audit/SIEM queries that filter on `agents_enabled`.

@@ -376,7 +376,8 @@ def plan_worktree_launch(
     )
 
     if dry_run:
-        sessions = sessions_probe.collect_sessions([launch_user], cfg)
+        snapshot = sessions_probe.collect_current_session_snapshot(cfg, launch_user)
+        sessions = list(snapshot.sessions)
         session = allocate_session_name(
             session_stem,
             resolved_profile.profile.id,
@@ -391,7 +392,7 @@ def plan_worktree_launch(
             cfg,
             None,
             resolved_profile=resolved_profile,
-            server_running=bool(sessions),
+            server_running=snapshot.server_state == "running",
             active_sessions=sessions,
         )
         # No side effects: print the git plan, skip add/copy/exclude/audit.
@@ -448,7 +449,8 @@ def plan_worktree_launch(
     # documented for non-interactive worktree creation.
     ensure_runtime_ready(cfg, worktree_path, resolved_profile)
 
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
+    snapshot = sessions_probe.collect_current_session_snapshot(cfg, launch_user)
+    sessions = list(snapshot.sessions)
     session = allocate_session_name(
         session_stem,
         resolved_profile.profile.id,
@@ -463,7 +465,7 @@ def plan_worktree_launch(
         cfg,
         branch_name,
         resolved_profile=resolved_profile,
-        server_running=bool(sessions),
+        server_running=snapshot.server_state == "running",
         active_sessions=sessions,
     )
 

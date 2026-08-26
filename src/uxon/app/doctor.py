@@ -47,10 +47,13 @@ def doctor_issues(
         issues.append(f"new_project_root {cfg.new_project_root} is outside allowed_roots")
     socket_parent = str(Path(socket_path).parent)
     socket_facts = execution_infra.path_facts(cfg, launch_user, socket_parent)
-    if not socket_facts.directory:
-        issues.append(f"tmux socket parent does not exist yet: {socket_parent}")
+    if socket_facts.exists and not socket_facts.directory:
+        issues.append(f"tmux socket parent is not a directory: {socket_parent}")
     elif not user_can_write_dir(cfg, socket_parent, launch_user):
-        issues.append(f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}")
+        if socket_facts.exists:
+            issues.append(
+                f"launch user {launch_user} cannot write tmux socket parent: {socket_parent}"
+            )
     if tmux_path is None:
         issues.append(f"'tmux' is not resolvable for {launch_user}")
     host_required_agents = tuple(

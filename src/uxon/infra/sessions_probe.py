@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -40,6 +41,15 @@ from uxon.infra.launch_records import (
 )
 from uxon.infra.process import run_cmd
 from uxon.infra.run import run_query
+
+
+@dataclass(frozen=True, slots=True)
+class UserSessionSnapshot:
+    """One target user's sessions plus the independently observed server state."""
+
+    user: str
+    server_state: Literal["absent", "running"]
+    sessions: tuple[SessionInfo, ...]
 
 
 def _gc_launch_records(
@@ -321,7 +331,7 @@ def _read_pid_sessions(cfg: Config, launch_user: str, pids: list[int]) -> dict[i
     return read_session_markers(cfg, launch_user, pids)
 
 
-def collect_sessions_for_user(
+def collect_session_snapshot_for_user(
     cfg: Config,
     user: str,
     session_prefix: str,
@@ -329,7 +339,7 @@ def collect_sessions_for_user(
     *,
     legacy_prefixes: tuple[str, ...] = (),
     runtimes: dict[str, WorkloadRuntimeSpec] | None = None,
-) -> list[SessionInfo]:
+) -> UserSessionSnapshot:
     # Demo-mode short-circuit: when ``UXON_DEMO_HOSTS`` is set, bypass
     # tmux entirely and read the synthetic-local envelope. Returning
     # ``[]`` for an absent envelope mirrors production's "empty tmux
@@ -339,7 +349,12 @@ def collect_sessions_for_user(
     # session names.
     _demo_dir = demo.demo_hosts_dir()
     if _demo_dir is not None:
-        return demo.load_demo_local_sessions(_demo_dir, user)
+        demo_sessions = tuple(demo.load_demo_local_sessions(_demo_dir, user))
+        return UserSessionSnapshot(
+            user=user,
+            server_state="running" if demo_sessions else "absent",
+            sessions=demo_sessions,
+        )
 
     # Listing runs without a TTY (CLI ``list``, TUI background poll,
     # remote aggregator). Use the non-interactive sudo prefix so a
@@ -349,7 +364,7 @@ def collect_sessions_for_user(
     if server.state == "absent":
         if socket_path is not None:
             _gc_launch_records(cfg, user, socket_path, set())
-        return []
+        return UserSessionSnapshot(user=user, server_state="absent", sessions=())
     if server.state == "unreachable":
         location = socket_path or "the default socket"
         fail(f"tmux server for {user!r} is unreachable at {location}: {server.error}")
@@ -475,22 +490,47 @@ def collect_sessions_for_user(
         runtimes=runtimes,
         launch_user=user,
     )
-    return sessions
+    return UserSessionSnapshot(user=user, server_state="running", sessions=tuple(sessions))
+
+
+def collect_sessions_for_user(
+    cfg: Config,
+    user: str,
+    session_prefix: str,
+    socket_path: str | None,
+    *,
+    legacy_prefixes: tuple[str, ...] = (),
+    runtimes: dict[str, WorkloadRuntimeSpec] | None = None,
+) -> list[SessionInfo]:
+    """Return only session rows for callers that do not need server liveness."""
+    return list(
+        collect_session_snapshot_for_user(
+            cfg,
+            user,
+            session_prefix,
+            socket_path,
+            legacy_prefixes=legacy_prefixes,
+            runtimes=runtimes,
+        ).sessions
+    )
+
+
+def collect_current_session_snapshot(cfg: Config, user: str) -> UserSessionSnapshot:
+    """Collect the configured dedicated socket once for launch planning."""
+    return collect_session_snapshot_for_user(
+        cfg,
+        user,
+        cfg.session_prefix,
+        tmux.tmux_socket_path(cfg, user),
+        legacy_prefixes=cfg.legacy_session_prefixes,
+        runtimes=cfg.runtimes,
+    )
 
 
 def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
     sessions: list[SessionInfo] = []
     for user in normalize_user_list(users):
-        sessions.extend(
-            collect_sessions_for_user(
-                cfg,
-                user,
-                cfg.session_prefix,
-                tmux.tmux_socket_path(cfg, user),
-                legacy_prefixes=cfg.legacy_session_prefixes,
-                runtimes=cfg.runtimes,
-            )
-        )
+        sessions.extend(collect_current_session_snapshot(cfg, user).sessions)
     return sessions
 
 

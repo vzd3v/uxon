@@ -62,7 +62,8 @@ def _plan_tui_run_profile(
         session_stem = session_stem_for_worktree(repo_root, branch)
     else:
         session_stem = session_stem_for_path(target_dir)
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
+    snapshot = sessions_probe.collect_current_session_snapshot(cfg, launch_user)
+    sessions = list(snapshot.sessions)
     session = allocate_session_name(
         session_stem, resolved.profile.id, target_dir, sessions, prefix=cfg.session_prefix
     )
@@ -74,7 +75,7 @@ def _plan_tui_run_profile(
         cfg,
         None,
         resolved_profile=resolved,
-        server_running=bool(sessions),
+        server_running=snapshot.server_state == "running",
         active_sessions=sessions,
     )
 
@@ -137,7 +138,8 @@ def _plan_tui_existing_session_or_launch(
             report=args.host_report,
         )
     launch_user = resolved.launch_user
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
+    snapshot = sessions_probe.collect_current_session_snapshot(cfg, launch_user)
+    sessions = list(snapshot.sessions)
     # Path-safety side effect — raises via fail() on a path mismatch.
     compatible_indexed_sessions(
         session_stem,
@@ -164,7 +166,7 @@ def _plan_tui_existing_session_or_launch(
         cfg,
         None,
         resolved_profile=resolved,
-        server_running=bool(sessions),
+        server_running=snapshot.server_state == "running",
         active_sessions=sessions,
     )
 

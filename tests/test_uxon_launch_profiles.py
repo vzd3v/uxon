@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helpers import make_config
+from helpers import make_config, make_session_snapshot
 
 import uxon.app.launch as launch_app
 import uxon.app.launch_profile as launch_profile_app
@@ -256,11 +256,12 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
             resolved = dataclasses.replace(
                 _resolved(cfg, "claude_sub1", launch_user="alice"), canonical_target=tmp
             )
-            captured: dict[str, str] = {}
+            captured: dict[str, object] = {}
 
             def fake_launch(target_dir, session, *args, **kwargs):
                 captured["session"] = session
                 captured["target_dir"] = target_dir
+                captured["server_running"] = kwargs["server_running"]
                 return 0
 
             with (
@@ -269,14 +270,18 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                     run_app.launch_profile_app, "resolve_launch_profile", return_value=resolved
                 ),
                 mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
-                mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                mock.patch(
+                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                    return_value=make_session_snapshot(user="alice", server_state="running"),
+                ),
                 mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
                 mock.patch("uxon.infra.tmux.launch_in_tmux", side_effect=fake_launch),
             ):
                 rc = run_app.do_run(ParsedArgs(action="run", profile="claude_sub1"), cfg, "alice")
 
         self.assertEqual(rc, 0)
-        self.assertTrue(captured["session"].endswith("@claude_sub1"))
+        self.assertTrue(str(captured["session"]).endswith("@claude_sub1"))
+        self.assertIs(captured["server_running"], True)
 
     def test_run_worktree_rejects_profile_for_worktree_path_before_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -523,7 +528,10 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 ),
                 mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
                 mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
-                mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                mock.patch(
+                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                    return_value=make_session_snapshot(user="alice"),
+                ),
                 mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
                 mock.patch.object(tui_planning.launch_app, "ensure_runtime_ready") as ready,
                 mock.patch(
@@ -559,7 +567,10 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 ) as resolve,
                 mock.patch.object(tui_planning.launch_app, "ensure_launch_target_allowed") as gate,
                 mock.patch("uxon.infra.process.run_cmd") as run_cmd,
-                mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+                mock.patch(
+                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                    return_value=make_session_snapshot(user="alice"),
+                ),
                 mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
                 mock.patch(
                     "uxon.infra.tmux._build_tmux_launch_request",
@@ -592,7 +603,10 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
 
         with (
             mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
-            mock.patch("uxon.infra.sessions_probe.collect_sessions", return_value=[]),
+            mock.patch(
+                "uxon.infra.sessions_probe.collect_current_session_snapshot",
+                return_value=make_session_snapshot(user="alice"),
+            ),
             mock.patch("uxon.infra.git._branch_exists_as_user", return_value=True),
             mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
             mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
