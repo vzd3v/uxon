@@ -530,6 +530,36 @@ def test_fixed_tmux_probe_keeps_live_foreign_listener_unreachable(tmp_path: Path
     assert result["state"] == "unreachable"
 
 
+def test_fixed_tmux_probe_accepts_owner_only_execute_bits(tmp_path: Path) -> None:
+    socket_path = tmp_path / "tmux.sock"
+    listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    socket_path.chmod(0o700)
+    listener.listen(1)
+    try:
+        with mock.patch(
+            "uxon.infra.tmux_server_probe.run_query",
+            return_value=_cp(stdout="session\n"),
+        ):
+            result = tmux_server_probe.collect(socket_path)
+    finally:
+        listener.close()
+    assert result == {"state": "running", "sessions": ["session"], "error": ""}
+
+
+def test_fixed_tmux_probe_rejects_group_socket_access(tmp_path: Path) -> None:
+    socket_path = tmp_path / "tmux.sock"
+    listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    socket_path.chmod(0o660)
+    try:
+        result = tmux_server_probe.collect(socket_path)
+    finally:
+        listener.close()
+    assert result["state"] == "unreachable"
+    assert "owner-only" in result["error"]
+
+
 def test_fixed_tmux_probe_does_not_accept_replaced_stale_inode(tmp_path: Path) -> None:
     socket_path = tmp_path / "tmux.sock"
     first = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
