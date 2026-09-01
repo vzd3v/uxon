@@ -65,7 +65,7 @@ class CatalogTests(unittest.TestCase):
         )
         self.assertEqual(
             permission_mode_for(DEFAULT_AGENT_CATALOG["codex"], "auto").flags,
-            ("--full-auto",),
+            ("--approve-for-me",),
         )
         self.assertIsNone(permission_mode_for(DEFAULT_AGENT_CATALOG["cursor"], "auto"))
 

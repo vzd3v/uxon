@@ -9,6 +9,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Codex `auto` mode now uses the current `--approve-for-me` flag instead of the removed `--full-auto` flag.
 - Dedicated tmux sockets with owner-only mode `0700` are accepted alongside `0600`, matching tmux behavior without weakening the per-user boundary.
 - The interactive TUI now exits when its controlling terminal disappears instead of leaving an orphaned process that can spin at 100% CPU after an SSH or ET disconnect.
 - Session lifecycle checks now distinguish absent, running, and unreachable tmux servers: a residual socket from a normal shutdown is absent, while a live server with zero sessions remains running.

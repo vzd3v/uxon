@@ -2667,7 +2667,7 @@ class UxonTests(unittest.TestCase):
                     resolved_profile=resolved,
                 )
 
-    def test_launch_builder_codex_full_auto(self) -> None:
+    def test_launch_builder_codex_auto_approval(self) -> None:
         cfg = self.make_config(enabled_profiles=("codex",), default_profile="codex")
         args = ParsedArgs(action="run", profile="codex", permission_mode="auto")
         resolved = _resolved_for_test(cfg, profile="codex", mode="auto")
@@ -2680,7 +2680,9 @@ class UxonTests(unittest.TestCase):
                 None,
                 resolved_profile=resolved,
             )
-        self.assertIn("--full-auto", _managed_create_cmd(req))
+        command = _managed_create_cmd(req)
+        self.assertIn("--approve-for-me", command)
+        self.assertNotIn("--full-auto", command)
 
     def test_launch_builder_branch_does_not_add_native_w_flag(self) -> None:
         # uxon launches worktrees via ``-c <worktree_path>``, never the

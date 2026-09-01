@@ -140,7 +140,7 @@ Full keybinding list:
 | Agent id | Binary | `--mode auto` | `--mode yolo` | Install |
 |----------|--------|---------------|----------------|---------|
 | `claude` | `claude` | `--permission-mode auto` | `--dangerously-skip-permissions` | [Anthropic docs](https://docs.claude.com/claude-code) |
-| `codex`  | `codex` | `--full-auto` | `--dangerously-bypass-approvals-and-sandbox` | `npm i -g @openai/codex` |
+| `codex`  | `codex` | `--approve-for-me` | `--dangerously-bypass-approvals-and-sandbox` | `npm i -g @openai/codex` |
 | `cursor` | `cursor-agent` | (not supported) | `--yolo` | `curl https://cursor.com/install -fsSL \| bash` |
 
 Expose launch profiles in `/etc/uxon/config.toml`:

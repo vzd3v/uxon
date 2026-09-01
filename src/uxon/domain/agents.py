@@ -70,7 +70,7 @@ DEFAULT_AGENT_CATALOG: dict[str, AgentSpec] = {
         binary="codex",
         permission_modes=(
             PermissionMode("normal"),
-            PermissionMode("auto", "auto (--full-auto)", ("--full-auto",)),
+            PermissionMode("auto", "auto (--approve-for-me)", ("--approve-for-me",)),
             PermissionMode(
                 "yolo",
                 "yolo (--dangerously-bypass-approvals-and-sandbox)",
