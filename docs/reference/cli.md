@@ -341,7 +341,7 @@ defined per agent in config; the shipped agents carry:
 | Agent | Modes (first = default) | Effect of each |
 |-------|-------------------------|----------------|
 | `claude` | `normal`, `auto`, `yolo` | `auto` → `--permission-mode auto`; `yolo` → `--dangerously-skip-permissions`. |
-| `codex` | `normal`, `auto`, `yolo` | `auto` → `--full-auto`; `yolo` → `--dangerously-bypass-approvals-and-sandbox`. |
+| `codex` | `normal`, `auto`, `yolo` | `auto` → `--approve-for-me`; `yolo` → `--dangerously-bypass-approvals-and-sandbox`. |
 | `cursor` | `normal`, `yolo` | `yolo` → `--yolo`. |
 
 Omitting `--mode` picks the agent's **first** catalogued mode (the
