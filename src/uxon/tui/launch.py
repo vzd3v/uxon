@@ -52,11 +52,11 @@ def pause_on_launch_failure(
 ) -> None:
     """Hold the terminal after a failed launch so the user can read stderr.
 
-    Plain-text — no blessed escape codes. Stays silent on rc=0 unless
-    the launch returned in under :data:`FAST_EXIT_THRESHOLD_SEC` (almost
-    certainly a silent failure).
+    Plain-text — no blessed escape codes. Managed launches retain failed panes
+    inside tmux, so a fast successful attach is not reclassified as an agent
+    failure. Unmanaged fast exits still receive an explicit diagnostic.
     """
-    fast_zero = rc == 0 and wall_seconds < FAST_EXIT_THRESHOLD_SEC
+    fast_zero = req.managed is None and rc == 0 and wall_seconds < FAST_EXIT_THRESHOLD_SEC
     if rc == 130:  # user Ctrl-C
         return
     if rc == 0 and not fast_zero:
@@ -74,7 +74,10 @@ def pause_on_launch_failure(
         stream.write(f"  command: {' '.join(first)}\n")
     else:
         stream.write(f"  command: {' '.join(req.cmd)}\n")
-    stream.write("  see output above for details\n")
+    if fast_zero:
+        stream.write("  no diagnostic output was retained\n")
+    else:
+        stream.write("  command output, if any, was written directly above\n")
     stream.write("press Enter to return to the uxon menu...\n")
     stream.flush()
     try:

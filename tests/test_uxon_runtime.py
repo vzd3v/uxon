@@ -143,6 +143,11 @@ def _managed_create_cmd(req):
     return req.managed.create_cmd
 
 
+def _tmux_primary_command(argv):
+    """Return the new-session command before chained tmux setup commands."""
+    return argv[: argv.index(";")]
+
+
 class NameResolutionTests(unittest.TestCase):
     """AC-B2 — same container per (user, project dir), never per-session."""
 
@@ -250,11 +255,12 @@ class ExecWrapTests(unittest.TestCase):
         # AC-P0.1 off-invariant: no container marker / wrapper appears when
         # disabled. Launch-profile diagnostics still ride every managed launch.
         cmd = list(disabled_create)
+        primary_cmd = _tmux_primary_command(cmd)
         joined = " ".join(cmd)
         self.assertNotIn("UXON_CONTAINER", joined)
         self.assertNotIn("UXON_SESSION", joined)
         self.assertNotIn("sh", cmd)
-        self.assertEqual(cmd[idx:], ["claude", "--dangerously-skip-permissions"])
+        self.assertEqual(primary_cmd[idx:], ["claude", "--dangerously-skip-permissions"])
 
     def test_enabled_prepends_exec_prefix(self) -> None:
         c = WorkloadRuntimeSpec(
@@ -268,7 +274,7 @@ class ExecWrapTests(unittest.TestCase):
         # order. After the hoist, EVERY enabled session is wrapped (to export
         # UXON_SESSION), so the resolved exec prefix is the leading 6 tokens.
         cmd = list(_managed_create_cmd(req))
-        agent_tail = cmd[cmd.index("docker") :]
+        agent_tail = _tmux_primary_command(cmd[cmd.index("docker") :])
         self.assertEqual(
             agent_tail[:6],
             ["docker", "exec", "-it", "-w", "/srv/projects/myapp", "proj-myapp"],
@@ -315,7 +321,7 @@ class ExecWrapTests(unittest.TestCase):
         self.assertIn("-e", cmd)
         self.assertIn(f"{RUNTIME_RESOURCE_ENV}=proj-myapp", cmd)
         # The agent is wrapped: exec prefix, then ``sh -c '…' uxon-agent claude …``.
-        tail = cmd[cmd.index("docker") :]
+        tail = _tmux_primary_command(cmd[cmd.index("docker") :])
         self.assertEqual(
             tail[:6], ["docker", "exec", "-it", "-w", "/srv/projects/myapp", "proj-myapp"]
         )
@@ -361,7 +367,7 @@ class ExecWrapTests(unittest.TestCase):
         self.assertNotIn(RUNTIME_CGROUP_ENV, joined)
         self.assertNotIn(RUNTIME_EPOCH_ENV, joined)
         # The agent IS wrapped to export the per-session marker, with NO pidfile.
-        tail = cmd[cmd.index("docker") :]
+        tail = _tmux_primary_command(cmd[cmd.index("docker") :])
         self.assertEqual(tail[6:8], ["sh", "-c"])
         self.assertIn(f"export {SESSION_ENV}=", tail[8])
         self.assertNotIn("echo $$", tail[8])

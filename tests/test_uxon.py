@@ -1661,6 +1661,34 @@ class UxonTests(unittest.TestCase):
         self.assertNotIn("-As", create)
         self.assertNotIn("-dA", create)
 
+    def test_managed_launch_retains_failed_pane_before_release(self) -> None:
+        cfg = self.make_config()
+        args = ParsedArgs(action="run", permission_mode="yolo")
+        resolved = _resolved_for_test(cfg, mode="yolo")
+        with self._stub_socket_path():
+            req = tmux._build_tmux_launch_request(
+                "/srv/repos/demo",
+                "uxon-demo@claude",
+                args,
+                cfg,
+                None,
+                resolved_profile=resolved,
+            )
+        create = list(_managed_create_cmd(req))
+        retention = [
+            ";",
+            "set-window-option",
+            "-t",
+            "uxon-demo@claude",
+            "remain-on-exit",
+            "failed",
+        ]
+        start = create.index("remain-on-exit") - 4
+        self.assertEqual(create[start : start + len(retention)], retention)
+        self.assertLess(create.index("new-session"), start)
+        self.assertNotIn("remain-on-exit-format", create)
+        self.assertNotIn("capture-pane", create)
+
     def test_managed_launch_keeps_record_dir_out_of_bootstrap(self) -> None:
         cfg = self.make_config()
         args = ParsedArgs(action="run", permission_mode="yolo")

@@ -364,12 +364,15 @@ every launch.
 | `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), live `--host` fetch failed without a usable cache, SSH timeout, peer rc non-zero, agent binary not installed on the launch user's host (`run`/`new` / TUI launch, with install hint). |
 | `2` | Usage error (bad flags, no TTY for the bare TUI invocation, unknown subcommand, unknown `--host` alias). |
 | `130` | User cancelled the confirmation prompt. |
-| `non-zero from forked tmux/agent` | Surfaced to the caller as-is. The TUI pauses with a banner so you can read stderr. `0` (success) and `130` (Ctrl-C inside the agent) do not pause. |
+| `non-zero from forked tmux` | Surfaced to the caller as-is. The TUI pauses and states that command output, if any, was written directly to the terminal. |
 
 ## Failure-mode notes
 
 - **Allowed-roots mismatch** — `run` / `new` exit before touching
   `tmux`. Add the directory to `allowed_roots` or move the project.
+- **Agent exits before attach** — a non-zero exit leaves the failed pane and
+  its scrollback available for inspection; close the pane after reviewing it.
+  A successful exit removes the session normally.
 - **Foreign `tmux` server** — when `$TMUX` names a socket `uxon`
   doesn't manage, `uxon` prints `Ctrl-b d first` and exits cleanly.
 - **`textual` missing** — non-TUI subcommands all keep working;

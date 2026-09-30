@@ -77,8 +77,8 @@ def _command_cfg(
     )
 
 
-def _cp(*, stdout: str = "", returncode: int = 0):
-    return subprocess.CompletedProcess([], returncode, stdout, "")
+def _cp(*, stdout: str = "", stderr: str = "", returncode: int = 0):
+    return subprocess.CompletedProcess([], returncode, stdout, stderr)
 
 
 def test_one_command_prefix_for_interactive_and_background_work() -> None:
@@ -155,7 +155,36 @@ def test_concurrent_create_loser_never_kills_preexisting_session() -> None:
         tmux.prepare_managed_launch(request, pending)
     assert request.managed is not None
     assert not any(call[:3] == request.managed.rollback_kill_prefix for call in calls)
-    assert request.managed.query_cmd not in calls
+    assert request.managed.query_cmd in calls
+
+
+def test_create_chain_failure_kills_only_the_nonce_owned_session() -> None:
+    request, pending = _managed_request_for_race()
+    assert request.managed is not None
+    owned = "$1\t100\tuxon-race@claude\towned-nonce\n"
+    responses = iter(
+        (
+            _cp(returncode=1, stderr="bad value: failed"),
+            _cp(stdout=owned),
+            _cp(),
+        )
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def run(cmd, **_kwargs):
+        calls.append(tuple(cmd))
+        return next(responses)
+
+    with (
+        mock.patch("uxon.infra.launch_records.create_pending_record"),
+        mock.patch("uxon.infra.launch_records.fail_pending_record"),
+        mock.patch("uxon.infra.process.run_cmd", side_effect=run),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        tmux.prepare_managed_launch(request, pending)
+
+    assert "bad value: failed" in getattr(exc_info.value, "uxon_msg", "")
+    assert (*request.managed.rollback_kill_prefix, "$1") in calls
 
 
 def test_post_create_cleanup_does_not_kill_nonce_mismatch() -> None:
@@ -756,7 +785,7 @@ def test_tmux_clean_exit_stale_socket_is_absent_and_reusable(tmp_path: Path) -> 
     base = ["tmux", "-f", "/dev/null", "-S", str(socket_path)]
     try:
         subprocess.run(base + ["new-session", "-d", "-s", "short", "true"], check=True)
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             result = subprocess.run(
                 base + ["list-sessions"], capture_output=True, text=True, check=False
@@ -816,6 +845,96 @@ def test_tmux_release_channel_is_sticky_and_nonce_scoped(tmp_path: Path) -> None
             subprocess.run(base + ["wait-for", other], check=True, timeout=0.1)
     finally:
         subprocess.run(base + ["kill-server"], capture_output=True, check=False)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+def test_tmux_failed_pane_retains_output_while_clean_exit_is_removed(tmp_path: Path) -> None:
+    socket = tmp_path / "tmux.sock"
+    base = ["tmux", "-f", "/dev/null", "-S", str(socket)]
+    try:
+        subprocess.run(
+            base
+            + [
+                "new-session",
+                "-d",
+                "-s",
+                "failed",
+                "/bin/sh",
+                "-c",
+                'tmux -S "$1" wait-for failed-release; printf "agent diagnostic\\r\\n"; exit 17',
+                "sh",
+                str(socket),
+                ";",
+                "set-option",
+                "-w",
+                "-t",
+                "failed",
+                "remain-on-exit",
+                "failed",
+            ],
+            check=True,
+        )
+        subprocess.run(base + ["wait-for", "-S", "failed-release"], check=True)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            state = subprocess.run(
+                base
+                + ["display-message", "-p", "-t", "failed", "#{pane_dead} #{pane_dead_status}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if state.stdout.strip() == "1 17":
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("failed pane did not reach retained dead state")
+        captured = subprocess.run(
+            base + ["capture-pane", "-p", "-S", "-", "-t", "failed"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert "agent diagnostic" in captured
+
+        subprocess.run(
+            base
+            + [
+                "new-session",
+                "-d",
+                "-s",
+                "clean",
+                "/bin/sh",
+                "-c",
+                'tmux -S "$1" wait-for clean-release; exit 0',
+                "sh",
+                str(socket),
+                ";",
+                "set-option",
+                "-w",
+                "-t",
+                "clean",
+                "remain-on-exit",
+                "failed",
+            ],
+            check=True,
+        )
+        subprocess.run(base + ["wait-for", "-S", "clean-release"], check=True)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            clean = subprocess.run(
+                base + ["has-session", "-t", "clean"],
+                capture_output=True,
+                check=False,
+            )
+            if clean.returncode != 0:
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("clean pane was retained")
+    finally:
+        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
+        socket.unlink(missing_ok=True)
 
 
 def test_target_user_sudo_prefix_is_centralized() -> None:

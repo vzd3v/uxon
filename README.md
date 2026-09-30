@@ -47,7 +47,7 @@ operator-managed host namespace. A launch profile may then select a generic
 
 ## Install
 
-Requires **Python 3.11+**, `tmux`, and Linux.
+Requires **Python 3.11+**, `tmux` 3.2+, and Linux.
 
 ```bash
 # Team / shared host (recommended): one root-owned binary in

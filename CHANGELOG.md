@@ -9,6 +9,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Managed launches retain a failed agent pane until it is reviewed, so startup errors no longer disappear before tmux can attach; fast successful non-managed exits no longer claim that missing output appeared above.
 - Codex `auto` mode now uses the current `--approve-for-me` flag instead of the removed `--full-auto` flag.
 - Dedicated tmux sockets with owner-only mode `0700` are accepted alongside `0600`, matching tmux behavior without weakening the per-user boundary.
 - The interactive TUI now exits when its controlling terminal disappears instead of leaving an orphaned process that can spin at 100% CPU after an SSH or ET disconnect.

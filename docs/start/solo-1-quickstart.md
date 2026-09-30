@@ -14,7 +14,7 @@ runs as a sandboxed `<user>-agent`).
 
 ## What you'll need
 
-- A Linux host with `tmux` and Python ≥ 3.11.
+- A Linux host with `tmux` ≥ 3.2 and Python ≥ 3.11.
 - One of `claude`, `codex`, or `cursor-agent` installed for your
   user.
 - Optional but useful: `et` (Eternal Terminal) on the laptop —

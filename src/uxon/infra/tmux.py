@@ -426,6 +426,16 @@ def _build_tmux_launch_request(
         + ["new-session", "-d", "-s", session, "-c", target_dir]
         + session_env
         + bootstrap_cmd
+        # ``failed`` is available at Uxon's tmux 3.2 minimum. Do not customize
+        # ``remain-on-exit-format`` here: that option was added in tmux 3.3.
+        + [
+            ";",
+            "set-window-option",
+            "-t",
+            session,
+            "remain-on-exit",
+            "failed",
+        ]
     )
     query_cmd = tuple(
         base
@@ -561,7 +571,7 @@ def prepare_managed_launch(
         "session": managed.record_session,
         "dry_run": False,
     }
-    created = False
+    create_attempted = False
     metadata: launch_records.TmuxSessionMetadata | None = None
     try:
         launch_records.create_pending_record(
@@ -569,12 +579,14 @@ def prepare_managed_launch(
         )
         for prelaunch in req.prelaunch:
             process.run_cmd(list(prelaunch), timeout=_TMUX_CONTROL_TIMEOUT_SECONDS)
+        create_attempted = True
         cp = process.run_cmd(
             list(managed.create_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
         )
         if cp.returncode != 0:
-            fail(f"tmux session {pending.session_name!r} could not be created")
-        created = True
+            detail = (cp.stderr or cp.stdout).strip()
+            suffix = f": {detail[:512]}" if detail else ""
+            fail(f"tmux session {pending.session_name!r} could not be prepared{suffix}")
         meta_cp = process.run_cmd(
             list(managed.query_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
         )
@@ -592,7 +604,7 @@ def prepare_managed_launch(
             list(managed.release_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
         )
     except BaseException as exc:
-        if created:
+        if create_attempted:
             _kill_created_session_if_owned(managed, pending, metadata)
         try:
             launch_records.fail_pending_record(
