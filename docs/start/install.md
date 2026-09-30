@@ -9,7 +9,7 @@ points.
 ## Requirements
 
 - **Python ≥ 3.11** (stdlib `tomllib` is used for config reads).
-- **`tmux`** on the host.
+- **`tmux` ≥ 3.2** on the host.
 - **Linux.** The runtime assumes per-user `tmux` sockets and
   `sudo -H -u USER --` style cross-user invocation. macOS / WSL work for
   development but aren't supported targets.
