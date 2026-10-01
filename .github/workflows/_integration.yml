@@ -1,0 +1,48 @@
+name: Integration
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: slow and container tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 -m pip install -e ".[dev]"
+      # tmux 3.4 with libutempter can lose pane exit status (tmux #4559).
+      # Use an upstream fixed version without replacing the host installation.
+      - name: Install tmux with reliable retained-pane status
+        env:
+          TMUX_TEST_VERSION: "3.6a"
+          TMUX_TEST_SHA256: b6d8d9c76585db8ef5fa00d4931902fa4b8cbe8166f528f44fc403961a3f3759
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential bison pkg-config libevent-dev libncurses-dev libutempter-dev
+          tmux_test_dir=$(mktemp -d "$RUNNER_TEMP/uxon-tmux.XXXXXX")
+          cd "$tmux_test_dir"
+          curl --fail --location --retry 3 --output tmux.tar.gz \
+            "https://github.com/tmux/tmux/releases/download/${TMUX_TEST_VERSION}/tmux-${TMUX_TEST_VERSION}.tar.gz"
+          echo "$TMUX_TEST_SHA256  tmux.tar.gz" | sha256sum --check
+          tar -xzf tmux.tar.gz
+          cd "tmux-${TMUX_TEST_VERSION}"
+          ./configure --prefix="$tmux_test_dir/install"
+          make -j2
+          make install
+          echo "$tmux_test_dir/install/bin" >> "$GITHUB_PATH"
+      - name: Run slow process and terminal tests
+        run: pytest tests/ -m slow -rs
+      - name: Verify Docker availability
+        run: docker info
+      - name: Run real container tests
+        env:
+          UXON_TEST_REQUIRE_DOCKER: "1"
+        run: pytest tests/ -m container -rs

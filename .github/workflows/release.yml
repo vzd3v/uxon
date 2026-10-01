@@ -19,9 +19,12 @@ jobs:
     with:
       python-versions: '["3.11"]'
 
+  integration:
+    uses: ./.github/workflows/_integration.yml
+
   build:
     name: Build sdist + wheel
-    needs: checks
+    needs: [checks, integration]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -37,7 +37,7 @@ jobs:
         run: python3 -m pip install -e ".[dev]"
 
       - name: Compile Python files
-        run: python3 -m py_compile $(git ls-files '*.py')
+        run: git ls-files -z '*.py' | xargs -0 python3 -m py_compile
 
       - name: Run unit tests
         run: pytest tests/ -n auto
