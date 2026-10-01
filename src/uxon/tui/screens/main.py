@@ -182,7 +182,6 @@ class MainScreen(Screen):
         # Primary repo root resolved by the launch-flow workspace probe
         # . Threaded into LaunchOptionsScreen + the workspace-choice
         # dispatch so neither re-resolves the repo root on the event loop.
-        self._workspace_repo_root = ""
         # Dashboard rows are an in-flight repaint cache, not UI state —
         # they're rebuilt from ``state`` on every tick, so dying with
         # the screen on recompose is harmless. Filter/view/tab state
@@ -312,7 +311,7 @@ class MainScreen(Screen):
                 kind="action-cwd",
                 label="New session in current folder",
                 detail=self._cwd_detail(),
-                enabled=self._cwd_writable_now() is not False,
+                enabled=True,
                 id="action-cwd",
             )
             yield ActionRow(
@@ -519,15 +518,11 @@ class MainScreen(Screen):
         target_dir: str,
         target_label: str,
         commit_primary,
-        launchable: bool | None = None,
-        on_probed=None,
     ) -> None:
         self._launch_flow.begin_launch_in_folder(
             target_dir=target_dir,
             target_label=target_label,
             commit_primary=commit_primary,
-            launchable=launchable,
-            on_probed=on_probed,
         )
 
     def _launch_cwd(self) -> None:
@@ -712,7 +707,7 @@ class MainScreen(Screen):
         except Exception:  # pragma: no cover — DOM not mounted yet
             return
         row.detail = self._cwd_detail()
-        row.set_enabled(self._cwd_writable_now() is not False)
+        row.set_enabled(True)
         row._render_text()
 
     def _apply_ctx_refresh(self) -> bool:

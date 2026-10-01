@@ -45,7 +45,6 @@ from uxon.domain.runtime import (
     apply_path_map,
     decide_runtime_action,
     is_valid_runtime_resource,
-    render_stop_command,
     resolve_runtime_resource_name,
     runtime_pidfile,
     validate_path_map,
@@ -329,7 +328,7 @@ class ExecWrapTests(unittest.TestCase):
         # The export marker is present on the teardown path too (hoist), plus
         # the pidfile write that this path opted into.
         self.assertIn(f"export {SESSION_ENV}=", tail[8])
-        self.assertIn("echo $$ >", tail[8])
+        self.assertIn("/proc/$$/stat", tail[8])
         # The agent argv survives intact after the ``uxon-agent`` $0 sentinel.
         self.assertEqual(
             tail[tail.index("uxon-agent") + 1 :], ["claude", "--dangerously-skip-permissions"]
@@ -652,48 +651,39 @@ class IdentityParseTests(unittest.TestCase):
 class TeardownPrimitiveTests(unittest.TestCase):
     """AC-B5 pure-domain teardown primitives (pidfile, wrap, render, name)."""
 
-    def test_pidfile_is_deterministic_per_session_and_sanitized(self) -> None:
-        # Same session → same path; different sessions → different paths.
-        self.assertEqual(runtime_pidfile("uxon-app@claude"), runtime_pidfile("uxon-app@claude"))
-        self.assertNotEqual(
-            runtime_pidfile("uxon-app@claude-2"), runtime_pidfile("uxon-app@claude")
-        )
-        # Worktree/index variants of one container resolve to distinct files.
-        self.assertNotEqual(runtime_pidfile("uxon-app@codex"), runtime_pidfile("uxon-app@claude"))
-        # Unsafe characters collapse to ``_`` (path safe to embed in sh -c).
-        pf = runtime_pidfile("uxon-a b/c@claude")
-        self.assertTrue(pf.startswith("/tmp/uxon-"))
-        self.assertNotIn(" ", pf)
-        self.assertNotIn("/", pf[len("/tmp/") :])
+    def test_workload_record_is_unique_per_nonce_and_rejects_unsafe_identity(self) -> None:
+        first, second = "a" * 32, "b" * 32
+        self.assertEqual(runtime_pidfile(first), runtime_pidfile(first))
+        self.assertNotEqual(runtime_pidfile(first), runtime_pidfile(second))
+        for nonce in ("", "short", "../" + first, "uxon-app@claude"):
+            with self.subTest(nonce=nonce), self.assertRaises(SystemExit):
+                runtime_pidfile(nonce)
 
     def test_wrap_exports_session_and_optionally_records_pid(self) -> None:
         # With a pidfile (teardown opted in): export the per-session marker AND
         # record the in-container PID, then exec the agent.
         wrapped = wrap_agent_for_runtime(
-            ["claude", "--flag"], session="uxon-app@claude", pidfile="/tmp/uxon-s.pid"
+            ["claude", "--flag"],
+            session="uxon-app@claude",
+            launch_nonce="a" * 32,
+            pidfile="/tmp/uxon-s.pid",
         )
         self.assertEqual(wrapped[:2], ["sh", "-c"])
         self.assertIn(f"export {SESSION_ENV}=uxon-app@claude", wrapped[2])
-        self.assertIn("echo $$ > /tmp/uxon-s.pid", wrapped[2])
+        self.assertIn("/proc/$$/stat", wrapped[2])
+        self.assertIn("UXON_LAUNCH_NONCE=" + "a" * 32, wrapped[2])
+        self.assertIn("/tmp/uxon-s.pid", wrapped[2])
         self.assertIn('exec "$@"', wrapped[2])
         # $0 sentinel then the agent argv, untouched and still a token list.
         self.assertEqual(wrapped[3:], ["uxon-agent", "claude", "--flag"])
         # Without a pidfile (no teardown): export only, no PID record.
-        bare = wrap_agent_for_runtime(["claude"], session="uxon-app@claude", pidfile=None)
+        bare = wrap_agent_for_runtime(
+            ["claude"], session="uxon-app@claude", launch_nonce="a" * 32, pidfile=None
+        )
         self.assertIn(f"export {SESSION_ENV}=uxon-app@claude", bare[2])
         self.assertNotIn("echo $$", bare[2])
         self.assertIn('exec "$@"', bare[2])
         self.assertEqual(bare[3:], ["uxon-agent", "claude"])
-
-    def test_render_stop_command_fills_per_token(self) -> None:
-        out = render_stop_command(
-            ("docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile})"),
-            resource="proj-app",
-            pidfile="/tmp/uxon-s.pid",
-        )
-        self.assertEqual(
-            out, ["docker", "exec", "proj-app", "sh", "-c", "kill $(cat /tmp/uxon-s.pid)"]
-        )
 
     def test_is_valid_runtime_resource_matches_charset(self) -> None:
         self.assertTrue(is_valid_runtime_resource("proj-app_1.2"))
@@ -711,20 +701,6 @@ class ContainerUsageResolverTests(unittest.TestCase):
         # One PID per line; blanks + non-numeric skipped; first-seen dedupe.
         self.assertEqual(parse_cgroup_procs("12\n34\n\n12\nfoo\n56\n"), [12, 34, 56])
         self.assertEqual(parse_cgroup_procs(""), [])
-
-    def test_parse_environ_session_extracts_marker(self) -> None:
-        from uxon.domain.runtime_usage import parse_environ_session
-
-        blob = "PATH=/bin\0UXON_SESSION=uxon-proj@claude\0HOME=/root\0"
-        self.assertEqual(parse_environ_session(blob), "uxon-proj@claude")
-        # Absent marker → "" (a non-uxon process sharing the container).
-        self.assertEqual(parse_environ_session("PATH=/bin\0TERM=xterm\0"), "")
-
-    def test_parse_sudo_environ_lines_maps_pid_to_session(self) -> None:
-        from uxon.domain.runtime_usage import parse_sudo_environ_lines
-
-        out = parse_sudo_environ_lines("10 uxon-a@claude\n11 uxon-b@claude\nbad\n12 \n")
-        self.assertEqual(out, {10: "uxon-a@claude", 11: "uxon-b@claude", 12: ""})
 
     def test_sum_usage_clamps_and_skips_missing(self) -> None:
         from uxon.domain.runtime_usage import sum_usage_for_pids
@@ -798,6 +774,11 @@ class TelemetryEnrichTests(unittest.TestCase):
             runtime_fingerprint=profile.fingerprint,
             runtime_id="cid-1",
             runtime_epoch="1000",
+            runtime_dir="/work/myapp",
+            project_slug="myapp",
+            profile="claude",
+            agent="claude",
+            launch_nonce=name.replace("@", "_").ljust(32, "x"),
         )
         values.update(kw)
         return self._session(name, **values)
@@ -823,8 +804,8 @@ class TelemetryEnrichTests(unittest.TestCase):
         self.assertEqual(s.rss_kib, 4096 + 2048)
         self.assertEqual(s.cpu_pct, 4.0)
 
-    def test_single_runtime_session_sums_cgroup_no_environ(self) -> None:
-        """One session per container: cgroup.procs IS its set — no sudo read."""
+    def test_single_visible_session_excludes_other_controllers_workload(self) -> None:
+        """A shared resource may contain unseen sessions from another server."""
         from uxon.infra import sessions_probe
 
         profile = self._profile()
@@ -839,6 +820,10 @@ class TelemetryEnrichTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe.run_query", side_effect=fake_run) as run,
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
             mock.patch(
+                "uxon.infra.sessions_probe._read_pid_sessions",
+                return_value={900: s.launch_nonce, 901: "other-controller-nonce"},
+            ),
+            mock.patch(
                 "uxon.infra.runtime.current_runtime_identity_for_profile",
                 return_value=RuntimeIdentity(
                     id="cid-1", cgroup="/system.slice/docker-c.scope", epoch="1000"
@@ -848,10 +833,9 @@ class TelemetryEnrichTests(unittest.TestCase):
             sessions_probe.enrich_session_usage(
                 _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
             )
-        # No sudo environ batch (single session) — only the ps call.
         self.assertEqual(run.call_count, 1)
-        self.assertEqual(s.rss_kib, 8192 + 1024)
-        self.assertEqual(s.cpu_pct, 110.0)
+        self.assertEqual(s.rss_kib, 8192)
+        self.assertEqual(s.cpu_pct, 50.0)
 
     def test_shared_runtime_splits_per_session_when_privileged(self) -> None:
         """AC-P1.6: ≥2 sessions share a cgroup → split by UXON_SESSION."""
@@ -865,7 +849,7 @@ class TelemetryEnrichTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
             mock.patch(
                 "uxon.infra.sessions_probe._read_pid_sessions",
-                return_value={900: "uxon-a@claude", 901: "uxon-b@claude"},
+                return_value={900: a.launch_nonce, 901: b.launch_nonce},
             ),
             mock.patch(
                 "uxon.infra.runtime.current_runtime_identity_for_profile",
@@ -1470,6 +1454,24 @@ class WorkloadRuntimeSpecRuntimeTests(unittest.TestCase):
 class RuntimeTeardownAuditTests(unittest.TestCase):
     """AC-P3.2 / AC-P3.5 — teardown audit emit + PID-recycle stale guard."""
 
+    def test_finish_preserves_stop_failure_and_still_cleans_record(self) -> None:
+        from uxon.app import kill as kill_app
+
+        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
+        target = self._record_session(cfg)
+        teardown = kill_app.prepare_runtime_teardown(cfg, target)
+        for stopped in (False, True):
+            with (
+                self.subTest(stopped=stopped),
+                mock.patch.object(kill_app, "run_runtime_teardown", return_value=stopped),
+                mock.patch.object(kill_app, "cleanup_launch_record") as cleanup,
+            ):
+                self.assertEqual(
+                    kill_app.finish_killed_session(cfg, target, teardown, target_user=target.user),
+                    stopped,
+                )
+                cleanup.assert_called_once_with(cfg, target)
+
     def _cfg_with_stop(self, identity_command=()):
         c = WorkloadRuntimeSpec(
             id="box",
@@ -1495,6 +1497,9 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
         s.runtime_fingerprint = profile.fingerprint
         s.runtime_id = "cid-1"
         s.runtime_epoch = "1000"
+        s.runtime_dir = "/work/myapp"
+        s.project_slug = "myapp"
+        s.launch_nonce = "a" * 32
         return s
 
     def test_prepare_captures_launch_epoch(self) -> None:
@@ -1567,6 +1572,11 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
             runtime_id="cid-1",
             runtime_fingerprint=profile.fingerprint,
             launch_epoch="1000",
+            runtime_dir="/work/myapp",
+            project_slug="myapp",
+            launch_profile="claude",
+            agent="claude",
+            launch_user="dana",
         )
         with (
             mock.patch(
@@ -1597,6 +1607,11 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
             runtime_id="cid-1",
             runtime_fingerprint=profile.fingerprint,
             launch_epoch="1000",
+            runtime_dir="/work/myapp",
+            project_slug="myapp",
+            launch_profile="claude",
+            agent="claude",
+            launch_user="dana",
         )
         with (
             mock.patch(
@@ -1623,6 +1638,11 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
             runtime_id="cid-1",
             runtime_fingerprint=profile.fingerprint,
             launch_epoch="1000",
+            runtime_dir="/work/myapp",
+            project_slug="myapp",
+            launch_profile="claude",
+            agent="claude",
+            launch_user="dana",
         )
         with (
             mock.patch("uxon.infra.runtime.run_teardown") as run_td,
@@ -1645,6 +1665,11 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
             runtime_id="cid-1",
             runtime_fingerprint=profile.fingerprint,
             launch_epoch="1000",
+            runtime_dir="/work/myapp",
+            project_slug="myapp",
+            launch_profile="claude",
+            agent="claude",
+            launch_user="dana",
         )
         with (
             mock.patch(

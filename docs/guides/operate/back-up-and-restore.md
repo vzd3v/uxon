@@ -14,7 +14,9 @@ small explicit backup policy.
 | `~/.claude/` (each `<user>-agent`) | `<user>-agent` | Optional | Cached agent config + history. Restorable via re-login. |
 | `/etc/uxon/config.toml` (host's `uxon` config) | root or admin | **Yes** | Drives the whole host. Render from JSON if you have one. |
 | `/etc/sudoers.d/uxon-*` | root | **Yes** | Per-developer grants. Easy to forget when restoring. |
-| `~/.local/state/uxon/` (any user) | per-user | No | Debug logs, metrics, and caches. Recreated. |
+| `~/.local/state/uxon/launch-records/` (controller) | controller | **Yes, while sessions are live** | Authoritative launch context for managed-runtime supervision and teardown. Honor `XDG_STATE_HOME` when set. |
+| Explicit `launch_record_dir` (shared store) | root/control group | **Yes, while sessions are live** | Same authority across trusted controllers; preserve ownership, modes and records. |
+| Debug/metrics files below the controller state directory | controller | Usually no | Optional diagnostics; may contain sensitive historical input. |
 | `~/.local/state/uxon/remote/<peer>.json` (aggregator) | aggregator user | No | Cache fallback. Refetched on next poll. |
 | journald log files (`/var/log/journal/`) | systemd | Per retention policy | Audit channel sink — see [`forward-audit-to-collector.md`](forward-audit-to-collector.md) for fleet-wide audit retention. |
 | `/etc/passwd`, `/etc/shadow`, `/etc/group` | root | Yes (system-level) | The `*-agent` accounts. |
@@ -44,6 +46,14 @@ For a fleet, fold these into your existing backup tooling
 (restic, borg, rsync.net, S3 lifecycle, etc.). The shape is the
 same; the content is small (typically tens of GB per host
 including project trees).
+
+If controllers can be restored while workload sessions remain live, include the
+private or configured shared launch-record store in a protected, consistent
+snapshot. Restore it only to the original trusted controller context on the
+same surviving host. Without verified records, Uxon refuses unsafe runtime
+teardown; inspect and clean up workloads explicitly. On a full-host replacement,
+old process identities are obsolete: start fresh sessions rather than restoring
+records as authority for new processes. See [launch records](../../reference/configuration.md#launch-records).
 
 ## Encrypted-at-rest reminder
 

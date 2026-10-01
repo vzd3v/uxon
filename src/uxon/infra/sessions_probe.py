@@ -172,9 +172,8 @@ def _enrich_runtime_sessions(
     """Attribute workload CPU/RAM for the marker-carrying sessions.
 
     Work is bounded by the number of **distinct cgroups**: each
-    cgroup's ``cgroup.procs`` is read once; the per-session ``UXON_SESSION``
-    split (a single privileged ``environ`` batch) runs only when ≥2 sessions
-    share one cgroup; the ``ready_command`` liveness probe runs only when a
+    cgroup's ``cgroup.procs`` is read once; launch-nonce attribution uses one
+    ``environ`` batch per cgroup; the liveness probe runs only when a
     cgroup is empty/unresolvable.
     """
     # Group the marker-carrying sessions by their stashed cgroup path. A
@@ -207,15 +206,8 @@ def _enrich_runtime_sessions(
                 launch_user=launch_user,
             )
             continue
-        if len(group) == 1:
-            # One session per resource: cgroup.procs IS that session's set —
-            # no environ read needed (the common case, fully unprivileged).
-            rss_kib, cpu_pct = sum_usage_for_pids(cgroup_pids, proc_rows)
-            group[0].rss_kib = rss_kib
-            group[0].cpu_pct = cpu_pct
-            continue
-        # ≥2 sessions share this cgroup → split by the per-process
-        # ``UXON_SESSION`` marker (privileged environ read, batched once).
+        # A resource can contain workloads from other tmux servers, even when
+        # only one session is visible here. Always split by the launch nonce.
         pid_to_session = _read_pid_sessions(cfg, launch_user, cgroup_pids)
         if pid_to_session is None:
             # No privilege / unreadable → degrade to the per-resource SHARED
@@ -229,10 +221,10 @@ def _enrich_runtime_sessions(
         usage = per_session_usage(cgroup_pids, pid_to_session, proc_rows)
         for session in group:
             # A session with no marker-carrying PID (e.g. processes that
-            # predate the UXON_SESSION marker) shows 0 here — the read
+            # predate nonce attribution) shows 0 here — the read
             # succeeded, so this is an honest per-session split, not the
             # wholesale-failure shared-total degrade above.
-            rss_kib, cpu_pct = usage.get(session.name, (0, 0.0))
+            rss_kib, cpu_pct = usage.get(session.launch_nonce, (0, 0.0))
             session.rss_kib = rss_kib
             session.cpu_pct = cpu_pct
 
@@ -269,17 +261,39 @@ def _mark_runtime_down(
     sessions stay at the already-set ``0``/``—`` degrade rather than asserting a
     "down" it cannot verify.
     """
-    name = group[0].runtime_resource
-    if runtimes is not None and group[0].runtime:
-        profile = runtimes.get(group[0].runtime)
-        if profile is None or not profile.ready_command:
-            return
-        from uxon.infra.runtime import probe_runtime_state_for_profile
-
-        if probe_runtime_state_for_profile(cfg, profile, name, launch_user)[0] == "no":
-            for session in group:
-                session.runtime_down = True
+    if runtimes is None:
         return
+    from uxon.infra.runtime import probe_runtime_state_for_profile
+
+    results: dict[tuple[str, ...], bool] = {}
+    for session in group:
+        profile = runtimes.get(session.runtime)
+        if profile is None or not profile.ready_command:
+            continue
+        key = (
+            session.runtime,
+            session.runtime_resource,
+            session.launch_user,
+            session.runtime_dir,
+            session.profile,
+            session.agent,
+            session.project_slug,
+        )
+        if key not in results:
+            results[key] = (
+                probe_runtime_state_for_profile(
+                    cfg,
+                    profile,
+                    session.runtime_resource,
+                    session.launch_user,
+                    runtime_dir=session.runtime_dir,
+                    launch_profile=session.profile,
+                    agent=session.agent,
+                    project_slug=session.project_slug,
+                )[0]
+                == "no"
+            )
+        session.runtime_down = results[key]
 
 
 RuntimeIdentityState = Literal["current", "unresolved", "stale"]
@@ -298,6 +312,17 @@ def _runtime_identity_state(
         return "stale"
     if not session.runtime_id or not session.runtime_epoch:
         return "stale"
+    if not all(
+        (
+            session.runtime_dir,
+            session.project_slug,
+            session.launch_user,
+            session.profile,
+            session.agent,
+            session.launch_nonce,
+        )
+    ):
+        return "stale"
     if runtimes is None:
         return "stale"
     profile = runtimes.get(session.runtime)
@@ -307,7 +332,16 @@ def _runtime_identity_state(
         return "stale"
     from uxon.infra.runtime import current_runtime_identity_for_profile
 
-    live = current_runtime_identity_for_profile(cfg, profile, session.runtime_resource, launch_user)
+    live = current_runtime_identity_for_profile(
+        cfg,
+        profile,
+        session.runtime_resource,
+        session.launch_user,
+        runtime_dir=session.runtime_dir,
+        launch_profile=session.profile,
+        agent=session.agent,
+        project_slug=session.project_slug,
+    )
     if live is None:
         return "unresolved"
     if live.id == session.runtime_id and live.epoch == session.runtime_epoch:
@@ -476,6 +510,8 @@ def collect_session_snapshot_for_user(
                 runtime_kind=str(record.get("runtime_kind", "")) if record else "",
                 runtime_fingerprint=(str(record.get("runtime_fingerprint", "")) if record else ""),
                 runtime_resource=str(record.get("runtime_resource", "")) if record else "",
+                runtime_dir=str(record.get("runtime_dir", "")) if record else "",
+                project_slug=str(record.get("project_slug", "")) if record else "",
                 runtime_cgroup=str(record.get("runtime_cgroup", "")) if record else "",
                 runtime_id=str(record.get("runtime_id", "")) if record else "",
                 runtime_epoch=str(record.get("runtime_epoch", "")) if record else "",

@@ -31,15 +31,27 @@ Available topics:
 | Topic | What it logs |
 |---|---|
 | `startup` | Startup phases (`mount_started`, `first_paint`, `first_data_landed`). |
-| `keys` | Per-keypress trace (every key before binding dispatch), cursor / host-navigation, refresh-dashboard timing, and the event-loop stall watchdog. The primary channel for dropped-keystroke and freeze investigation. |
+| `keys` | Navigation/input-category trace, input size and timing, cursor/host navigation, refresh timing and the event-loop stall watchdog. Printable key values and paste contents are omitted. |
 | `refresh` | Pluggable refresh-source registry events per source per tick (fan-out, per-source spawn / skip). |
 | `tui` | Sparse lifecycle markers — app-quit reason and unknown-column-id on config load. |
 | `probes` | Host-stats probe failures during `list --json` collection. |
 
 Output goes to `${state_dir}/tui-debug-{user}-{YYYYMMDD}.log` (one
-JSON line per event; one file per launch user per day). Default
+JSON line per event; one file per controller user per day). Default
 `state_dir` is `${XDG_STATE_HOME:-~/.local/state}/uxon`. Override
 with `UXON_LOG_DIR=/path`.
+
+The directory must be owned by the controller and private; an existing shared
+directory is refused without changing its permissions. Choose a dedicated path:
+
+```bash
+install -d -m 0700 "$HOME/.local/state/uxon-diagnostics"
+UXON_LOG_DIR="$HOME/.local/state/uxon-diagnostics" UXON_DEBUG=keys uxon
+```
+
+Review an old dedicated diagnostic directory before restricting it yourself.
+Do not change permissions on a shared operational directory just to enable logs.
+Exact storage rules are in the [configuration reference](../../reference/configuration.md#environment-variables).
 
 ## `UXON_METRICS=1`
 
@@ -86,6 +98,11 @@ jq -r '.elapsed_ms' ~/.local/state/uxon/metrics.jsonl | \
   `strace` to a running `uxon` PID.
 - The agent binary's own logs. The agent writes wherever it
   writes (`~/.claude/logs/`, etc.); `uxon` doesn't capture it.
+- Printable input and paste contents in current key diagnostics. Historical
+  versions logged input; review old logs before attaching them to a bug report.
+
+Logs can contain project paths, account names and errors. Review even current
+logs before publishing them.
 
 ## When you're done
 
@@ -119,7 +136,7 @@ jq -c '.at' "$DBG"
 UXON_DEBUG=keys uxon
 # Reproduce the stutter, then quit. Inspect:
 DBG=~/.local/state/uxon/tui-debug-$(id -un)-$(date +%Y%m%d).log
-# Every key the app saw, plus any event-loop stall the watchdog caught:
+# Navigation/input categories plus event-loop stalls; no input contents:
 jq -c 'select(.topic == "keys")' "$DBG"
 ```
 

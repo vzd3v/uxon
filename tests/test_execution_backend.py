@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import getpass
 import json
 import os
 import shutil
@@ -47,6 +46,7 @@ from uxon.infra.execution import (
     canonicalize_path,
     filesystem_usage,
     list_directories,
+    path_facts,
     probe,
     resolve_target,
     wrap_command,
@@ -90,7 +90,7 @@ def test_one_command_prefix_for_interactive_and_background_work() -> None:
 
 def test_helper_ignoring_target_user_fails_before_path_or_launch_side_effects() -> None:
     """The fixed identity probe is the first launch boundary operation."""
-    user = getpass.getuser()
+    user = identity.process_user()
     cfg = _command_cfg()
     wrong_identity = json.dumps({"euid": 0, "egid": 0, "groups": [0]})
     canonicalize = mock.Mock(side_effect=AssertionError("path probe must not run"))
@@ -120,7 +120,7 @@ def _managed_request_for_race() -> tuple[tmux.LaunchRequest, launch_records.Pend
         launch_nonce="owned-nonce",
         launch_profile="claude",
         agent="claude",
-        launch_user=getpass.getuser(),
+        launch_user=identity.process_user(),
     )
     managed = tmux.ManagedTmuxLaunch(
         create_cmd=("tmux", "new-session"),
@@ -334,8 +334,9 @@ def test_backend_probe_rejects_wrong_supplementary_groups() -> None:
     assert "did not enter target user" in result.error
 
 
-def test_command_backend_returns_authoritative_canonical_path() -> None:
-    cfg = _command_cfg()
+@pytest.mark.parametrize("backend", ["command", "local"])
+def test_backend_returns_authoritative_canonical_path(backend: str) -> None:
+    cfg = _command_cfg() if backend == "command" else make_config()
     payload = {"ok": True, "path": "/inside/projects/demo", "error": ""}
     with mock.patch(
         "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
@@ -343,12 +344,17 @@ def test_command_backend_returns_authoritative_canonical_path() -> None:
         result = canonicalize_path(cfg, "alice", "/outside/projects/demo", intended=False)
     assert result == "/inside/projects/demo"
     argv = run.call_args.args[0]
-    assert argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+    assert (
+        argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+        if backend == "command"
+        else argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
+    )
     assert argv[-2:] == ["--path", "/outside/projects/demo"]
 
 
-def test_command_backend_lists_target_directories_inside_boundary() -> None:
-    cfg = _command_cfg()
+@pytest.mark.parametrize("backend", ["command", "local"])
+def test_backend_lists_target_directories_inside_boundary(backend: str) -> None:
+    cfg = _command_cfg() if backend == "command" else make_config()
     payload = {
         "ok": True,
         "entries": [{"name": "demo", "mtime": 123}],
@@ -361,12 +367,17 @@ def test_command_backend_lists_target_directories_inside_boundary() -> None:
             DirectoryEntry(name="demo", mtime=123),
         )
     argv = run.call_args.args[0]
-    assert argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+    assert (
+        argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+        if backend == "command"
+        else argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
+    )
     assert argv[-4:] == ["--mode", "list-directories", "--path", "/inside/projects"]
 
 
-def test_command_backend_reads_target_filesystem_usage_inside_boundary() -> None:
-    cfg = _command_cfg()
+@pytest.mark.parametrize("backend", ["command", "local"])
+def test_backend_reads_target_filesystem_usage_inside_boundary(backend: str) -> None:
+    cfg = _command_cfg() if backend == "command" else make_config()
     payload = {"ok": True, "total": 4096, "available": 1024, "error": ""}
     with mock.patch(
         "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
@@ -375,7 +386,11 @@ def test_command_backend_reads_target_filesystem_usage_inside_boundary() -> None
             total=4096, available=1024
         )
     argv = run.call_args.args[0]
-    assert argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+    assert (
+        argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+        if backend == "command"
+        else argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
+    )
     assert argv[-4:] == ["--mode", "filesystem-usage", "--path", "/inside/projects"]
 
 
@@ -385,16 +400,19 @@ def test_local_intended_path_rejects_symlink_component(tmp_path: Path) -> None:
     link = tmp_path / "link"
     link.symlink_to(real, target_is_directory=True)
     with pytest.raises(SystemExit):
-        canonicalize_path(make_config(), "alice", str(link / "new"), intended=True)
+        canonicalize_path(make_config(), identity.process_user(), str(link / "new"), intended=True)
 
     broken = tmp_path / "broken"
     broken.symlink_to("missing-target")
     with pytest.raises(SystemExit):
-        canonicalize_path(make_config(), "alice", str(broken), intended=True)
+        canonicalize_path(make_config(), identity.process_user(), str(broken), intended=True)
 
     with pytest.raises(SystemExit):
         canonicalize_path(
-            make_config(), "alice", str(tmp_path / "missing" / ".." / "new"), intended=True
+            make_config(),
+            identity.process_user(),
+            str(tmp_path / "missing" / ".." / "new"),
+            intended=True,
         )
 
 
@@ -475,6 +493,112 @@ def test_runtime_telemetry_uses_the_execution_boundary() -> None:
         "alice",
         "--",
     ]
+
+
+@pytest.mark.parametrize("backend", ["local", "command"])
+def test_target_path_facts_never_inherit_controller_writability(backend: str) -> None:
+    cfg = _command_cfg() if backend == "command" else make_config()
+    payload = {
+        "ok": True,
+        "path": "/srv/private",
+        "exists": True,
+        "directory": True,
+        "writable": False,
+        "nearest_existing_ancestor": "/srv/private",
+        "error": "",
+    }
+    with mock.patch(
+        "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
+    ) as run:
+        assert not path_facts(cfg, "alice", "/srv/private").writable
+    expected = (
+        ["/usr/local/libexec/fake-boundary", "alice", "--"]
+        if backend == "command"
+        else ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
+    )
+    assert run.call_args.args[0][: len(expected)] == expected
+    assert (
+        run.call_args.kwargs["timeout"]
+        == cfg.execution.backend_for_user("alice").probe_timeout_seconds
+    )
+
+
+@pytest.mark.parametrize(
+    "resolver", [git.git_repo_root_nonint_as_user, git.git_common_dir_root_as_user]
+)
+def test_target_git_discovery_uses_configured_timeout(resolver) -> None:
+    cfg = _command_cfg()
+    with mock.patch("uxon.infra.git.run_query", return_value=_cp(returncode=128)) as run:
+        assert resolver(cfg, "/srv/work", "alice") is None
+    assert run.call_args.kwargs["timeout"] == 1.25
+    assert run.call_args.args[0][:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+
+
+def test_denied_real_proc_marker_read_reports_failure_not_unmanaged() -> None:
+    from uxon.infra.runtime_telemetry_probe import session_markers
+
+    try:
+        Path("/proc/1/environ").read_bytes()
+    except PermissionError:
+        result = session_markers([1])
+        assert result["ok"] is False and result["markers"] == {}
+        assert "Permission denied" in str(result["error"])
+    else:
+        pytest.skip("PID 1 environment is readable in this environment")
+
+
+@pytest.mark.slow
+def test_real_other_user_cannot_use_controller_private_directory(tmp_path: Path) -> None:
+    import tempfile
+
+    cp = subprocess.run(
+        ["sudo", "-n", "-H", "-u", "nobody", "--", "true"], capture_output=True, timeout=3
+    )
+    if cp.returncode:
+        pytest.skip("passwordless target-user boundary is unavailable")
+    # The source checkout may itself be private. Provision the shipped,
+    # stdlib-only probe in a disposable public import root, not a host install.
+    with tempfile.TemporaryDirectory(prefix="uxon-target-probe-") as public:
+        import_root = Path(public)
+        import_root.chmod(0o755)
+        source = Path(probes.__file__).parent.parent
+        (import_root / "uxon" / "infra").mkdir(parents=True)
+        (import_root / "uxon").chmod(0o755)
+        (import_root / "uxon" / "infra").chmod(0o755)
+        for relative in ("__init__.py", "infra/__init__.py", "infra/path_probe.py"):
+            destination = import_root / "uxon" / relative
+            shutil.copyfile(source / relative, destination)
+            destination.chmod(0o644)
+        cfg = _command_cfg(
+            command_prefix=(
+                "/usr/bin/sudo",
+                "-n",
+                "-H",
+                "-u",
+                "{user}",
+                "--",
+                "env",
+                f"PYTHONPATH={public}",
+                "sh",
+                "-c",
+                'shift; exec /usr/bin/python3 "$@"',
+                "uxon-test-probe",
+            )
+        )
+        # The selected boundary must reach the actual probe before exercising
+        # permissions; the controller's virtualenv may be private too.
+        public_facts = path_facts(cfg, "nobody", public)
+        assert public_facts.exists and public_facts.directory
+        assert not public_facts.writable
+        private = tmp_path / "private"
+        private.mkdir(mode=0o700)
+        assert os.access(private, os.W_OK | os.X_OK)
+        try:
+            facts = path_facts(cfg, "nobody", str(private))
+        except SystemExit as exc:
+            assert "Permission denied" in getattr(exc, "uxon_msg", "")
+        else:
+            assert not facts.writable
 
 
 def test_unreachable_tmux_server_is_not_reported_as_empty() -> None:
@@ -848,6 +972,7 @@ def test_tmux_release_channel_is_sticky_and_nonce_scoped(tmp_path: Path) -> None
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+@pytest.mark.slow
 def test_tmux_failed_pane_retains_output_while_clean_exit_is_removed(tmp_path: Path) -> None:
     socket = tmp_path / "tmux.sock"
     base = ["tmux", "-f", "/dev/null", "-S", str(socket)]
@@ -969,7 +1094,7 @@ def test_command_backend_can_own_a_tmux_server_inside_existing_netns() -> None:
     ).stdout.split()
     if namespace not in listed:
         pytest.skip(f"network namespace {namespace!r} does not exist")
-    user = getpass.getuser()
+    user = identity.process_user()
     cfg = _command_cfg(
         backend_id="netns",
         command_prefix=(helper, "{user}", "--"),
@@ -1074,7 +1199,7 @@ def test_launch_record_gc_covers_same_user_retired_sockets(tmp_path: Path) -> No
             launch_nonce=nonce,
             launch_profile="claude",
             agent="claude",
-            launch_user=getpass.getuser(),
+            launch_user=identity.process_user(),
         )
         launch_records.create_pending_record(pending, override_dir=tmp_path)
         path = launch_records.finalize_pending_record(
@@ -1092,7 +1217,7 @@ def test_launch_record_gc_covers_same_user_retired_sockets(tmp_path: Path) -> No
     removed = launch_records.garbage_collect_records(
         set(),
         override_dir=tmp_path,
-        launch_user=getpass.getuser(),
+        launch_user=identity.process_user(),
         now=10**12,
     )
     assert removed == 2

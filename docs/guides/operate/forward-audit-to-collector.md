@@ -84,7 +84,7 @@ syslog, or for fleets that already run rsyslog centrally.
 
 On each peer (`/etc/rsyslog.d/50-uxon.conf`):
 
-```
+```text
 # Forward only uxon events to the central collector:
 :syslogtag, isequal, "uxon:" @@(o)collector.example.org:514;RSYSLOG_SyslogProtocol23Format
 & stop
@@ -92,7 +92,7 @@ On each peer (`/etc/rsyslog.d/50-uxon.conf`):
 
 On the collector:
 
-```
+```text
 # Receive on :514:
 module(load="imtcp")
 input(type="imtcp" port="514")
@@ -102,9 +102,12 @@ input(type="imtcp" port="514")
 & stop
 ```
 
-Query: `grep '@cee:' /var/log/uxon/audit.log | jq …`. The
-`@cee:` payload is one JSON object per line — every envelope
-field reachable as a JSON key.
+Strip the syslog prefix before parsing its lowercase JSON fields:
+
+```bash
+sed -n 's/^.*@cee: //p' /var/log/uxon/audit.log | \
+  jq -c 'select(.process_user == "nadia")'
+```
 
 Pros: works without systemd; integrates with anything that
 already speaks syslog.
@@ -150,7 +153,7 @@ Once events are forwarded, the typical queries become:
 ```bash
 # Everything one operator did today across the fleet:
 journalctl --directory=/var/log/journal/remote/ \
-  SYSLOG_IDENTIFIER=uxon CALLER_USER=nadia --since today
+  SYSLOG_IDENTIFIER=uxon PROCESS_USER=nadia --since today
 
 # Cross-host correlation pair:
 journalctl --directory=/var/log/journal/remote/ \
@@ -159,12 +162,12 @@ journalctl --directory=/var/log/journal/remote/ \
 # All denied/errored gestures fleet-wide:
 journalctl --directory=/var/log/journal/remote/ \
   SYSLOG_IDENTIFIER=uxon -o json | \
-  jq -c 'select(.OUTCOME != "ok") | {host:.HOST, ts:.TS, event:.EVENT, outcome:.OUTCOME, caller:.CALLER_USER, target:.TARGET_USER, session:.SESSION}'
+  jq -c 'select(.OUTCOME != "ok") | {host:.HOST, ts:.TS, event:.EVENT, outcome:.OUTCOME, process_user:.PROCESS_USER, target:.TARGET_USER, session:.SESSION}'
 
 # kill-all gestures and what they hit, last week:
 journalctl --directory=/var/log/journal/remote/ \
   SYSLOG_IDENTIFIER=uxon EVENT=session.kill_all --since "7 days ago" -o json | \
-  jq -c '{host:.HOST, ts:.TS, caller:.CALLER_USER, users:.TARGET_USERS, killed:.KILLED_COUNT, dry_run:.DRY_RUN}'
+  jq -c '{host:.HOST, ts:.TS, process_user:.PROCESS_USER, users:.TARGET_USERS, killed:.KILLED_COUNT, dry_run:.DRY_RUN}'
 ```
 
 For Vector / Loki / Elastic stacks, the same queries are
@@ -178,7 +181,7 @@ LogQL examples (Loki / Grafana):
 {job="uxon"}
 
 # One operator's gestures across the fleet:
-{job="uxon"} | json | CALLER_USER="nadia"
+{job="uxon"} | json | PROCESS_USER="nadia"
 
 # Cross-host correlation pair:
 {job="uxon"} | json | CORRELATION_ID="8f3c2d4e-..."
@@ -187,8 +190,9 @@ LogQL examples (Loki / Grafana):
 {job="uxon"} | json | OUTCOME!="ok"
 ```
 
-The `json` parser stage exposes every envelope field as a label
-(uppercased — same convention as journald native).
+These LogQL examples assume unmodified native journal JSON. Parsed syslog
+payloads use lowercase fields such as `process_user`; use the names your
+collector actually preserves. Older schema-1 history still uses `CALLER_USER`.
 
 ## Retention
 

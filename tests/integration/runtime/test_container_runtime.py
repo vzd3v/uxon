@@ -10,19 +10,18 @@ the two properties a mocked subprocess boundary cannot:
   process behind (``<runtime> top`` shows it gone). A kill that orphaned
   the agent would be a real regression, not just a tidiness issue.
 
-The suite drives uxon's actual launch path: the project-layer config
-merge (the unique container name comes from a ``.uxon.toml``), the
-readiness probe + create step, and the single exec-site command builder.
+The suite drives uxon's actual launch path: the operator runtime catalog,
+readiness probe + create step, authoritative launch-record handshake,
+and the single exec-site command builder.
 It never builds an image — a stock base plus a bind-mounted stub agent
 stands in for a real one.
 
-Skipped entirely when no runtime is reachable, so a host without docker
-or podman (or with an unreachable daemon) runs them as clean skips.
+Unavailable optional runtimes skip. Required Docker validation fails if its
+client or daemon is unavailable.
 """
 
 from __future__ import annotations
 
-import getpass
 import subprocess
 import time
 from pathlib import Path
@@ -35,6 +34,7 @@ from conftest import (  # type: ignore[import-not-found]
     COMPOSE_TEMPLATE,
     PROBE_TIMEOUT_SEC,
     Runtime,
+    operator_runtime_table,
     write_project,
 )
 from helpers import make_config  # type: ignore[import-not-found]
@@ -48,60 +48,11 @@ from uxon.domain.launch_profiles import (
     RuntimeContext,
     builtin_launch_profiles,
 )
+from uxon.infra.identity import process_user
 
 _RUNTIME_PROFILE_ID = "it"
 
 pytestmark = pytest.mark.container
-
-
-def _operator_runtime_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
-    """The operator ``[container]`` table for ``rt`` (argv templates only).
-
-    Mirrors what ``config/config.toml`` would carry: the exec wrap, the
-    state probes, and a ``create_command`` delegating to ``compose`` —
-    all opaque operator argv, fed to ``build_runtimes``.
-    """
-    return {
-        "enabled": True,
-        # name comes from the project .uxon.toml; a resource_name_template is still
-        # required by validation, so give a harmless fallback.
-        "resource_name_template": "uxon-it-{project_slug}",
-        # The compose file bind-mounts the host project dir at /work, so the
-        # exec wrap's ``{runtime_dir}`` (``-w``) must resolve to the CONTAINER path,
-        # not the host one — otherwise ``<runtime> exec -w <host-path>`` fails
-        # with "chdir ... no such file or directory" before the agent runs.
-        # This is the path translation a real container operator configures.
-        "path_map": {str(project_dir): "/work"},
-        "exec_prefix": [rt.binary, "exec", "-i", "-w", "{runtime_dir}", "{resource}"],
-        # Teardown mirror of the exec wrap: on kill, terminate exactly this
-        # session's in-container PID (recorded by the launch wrapper into
-        # ``{pidfile}``) and clean the file up. ``2>/dev/null`` + a trailing
-        # ``rm -f`` keep the exit status 0 even when the agent is already gone.
-        "stop_command": [
-            rt.binary,
-            "exec",
-            "{resource}",
-            "sh",
-            "-c",
-            "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}",
-        ],
-        "identity_command": [
-            rt.binary,
-            "inspect",
-            "-f",
-            "{{{{.Id}}}} {{{{.State.Pid}}}} {{{{.State.StartedAt}}}}",
-            "{resource}",
-        ],
-        "ready_command": [rt.binary, "top", "{resource}"],
-        "exists_command": [rt.binary, "container", "inspect", "{resource}"],
-        # on_missing="create" still requires a start_command (a created
-        # container can later be stopped and need restarting), even though
-        # this run only ever takes the create path. Both delegate to compose.
-        "start_command": [rt.binary, "compose", "start"],
-        "create_command": [rt.binary, "compose", "up", "-d"],
-        "on_missing": "create",
-        "approval": "auto",
-    }
 
 
 def _cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
@@ -113,11 +64,9 @@ def _cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     launch_profiles["claude"] = LaunchProfile(
         id="claude", agent="claude", runtime=_RUNTIME_PROFILE_ID
     )
-    profile_tbl = dict(_operator_runtime_table(rt, project_dir))
-    profile_tbl.pop("enabled", None)
-    profile_tbl["resource_scope"] = "per_user"
-    profile_tbl["resource_name_template"] = rt.runtime_name
-    runtimes = config_loader.build_runtimes({"profiles": {_RUNTIME_PROFILE_ID: profile_tbl}})
+    runtimes = config_loader.build_runtimes(
+        {_RUNTIME_PROFILE_ID: operator_runtime_table(rt, project_dir)}
+    )
     return make_config(
         allowed_roots=[str(project_dir)],
         # Per-test socket under tmp_path so this never touches a real uxon
@@ -190,7 +139,7 @@ def test_launch_runs_agent_in_runtime_and_kill_reaps(runtime: Runtime, tmp_path:
     from uxon.app import launch as launch_app
     from uxon.infra import tmux
 
-    launch_user = getpass.getuser()
+    launch_user = process_user()
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     socket_path = tmp_path / "uxon.sock"
@@ -229,13 +178,7 @@ def test_launch_runs_agent_in_runtime_and_kill_reaps(runtime: Runtime, tmp_path:
             None,
             resolved_profile=resolved,
         )
-    for pre in req.prelaunch:
-        subprocess.run(list(pre), check=True, timeout=PROBE_TIMEOUT_SEC)
-    # Detach (-d) so the test process is not replaced; same argv otherwise.
-    cmd = list(req.cmd)
-    new_session_idx = cmd.index("new-session")
-    cmd.insert(new_session_idx + 1, "-d")
-    subprocess.run(cmd, check=True, timeout=PROBE_TIMEOUT_SEC)
+    tmux.prepare_managed_launch(req)
 
     try:
         # 3. AC-C2: the stub ran inside the container — the marker appears

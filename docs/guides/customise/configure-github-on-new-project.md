@@ -24,6 +24,10 @@ creds_user = "your-os-user"
 token_file = "/home/your-os-user/.secrets/uxon-acme.token"
 visibility = "private"
 
+[launch]
+enabled_profiles = ["claude"]
+default_profile = "claude"
+
 [launch.profiles.claude]
 agent = "claude"
 allowed_git_remote_profiles = ["personal", "acme-org"]

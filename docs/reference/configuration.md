@@ -215,6 +215,12 @@ tmux session id, creation time and launch nonce to its launch profile, execution
 backend and workload runtime. It is finalized and fsynced before the pane is
 released. The record path is never passed into the execution backend or workload.
 
+Schema 3 also saves the original mapped runtime directory and project slug.
+Identity checks and teardown reuse this context rather than a pane's current
+directory or environment. The launch nonce keys workload PID records and process
+attribution across independent tmux servers. Older record schemas are refused;
+drain their managed-runtime sessions before upgrading.
+
 With `launch_record_dir = ""`, records are private to one controller under its
 XDG state directory (`0700` directory, `0600` files). Use this default when one
 controller account owns supervision.
@@ -262,16 +268,37 @@ a container engine is one possible implementation. Runtime ids must match
 | `timeouts.stop_seconds` | number | `10.0` | Teardown timeout. |
 | `path_map` | table | `{}` | Host prefix to runtime prefix; longest match wins. |
 
-Templates support `{user}`, `{launch_profile}`, `{runtime}`, `{agent}`, and
-`{project_slug}`; command templates add `{resource}` and `{runtime_dir}`, while
-`session.stop_command` adds `{pidfile}`. Resource names and mapped paths are
-validated after expansion.
+Allowed placeholders depend on the field:
+
+| Field | Placeholders |
+|---|---|
+| `resource_name_template` | `{user}`, `{launch_profile}`, `{runtime}`, `{agent}`, `{project_slug}` |
+| `exec_prefix`, all `readiness.*_command`, `identity.resolve_command` | The base placeholders above, plus `{resource}` and `{runtime_dir}` |
+| `session.stop_command` | The base placeholders above, plus `{resource}` and `{pidfile}`; not `{runtime_dir}` |
+
+`project_slug` is the slugified project basename, not a full-path identifier.
+`runtime_dir` is the mapped launch directory. Resource names and mapped paths are
+validated after expansion. Literal braces use `{{` / `}}`; embedded Docker Go
+templates need another escaping layer. See the [complete container example](../guides/customise/run-agents-in-a-container.md#configure-the-launch-profile).
 
 Every lifecycle command traverses the selected execution backend. The tmux
 server also runs inside that execution boundary; only the agent workload gets
 the additional runtime prefix. Runtime auth is operator-provisioned: uxon has
 no environment or credential passthrough. Teardown is best effort and an
 identity/fingerprint mismatch fails safe rather than killing an unrelated PID.
+
+With `session.stop_command`, the workload wrapper requires Linux procfs and `sh`
+and writes `PID start_ticks` into a private, nonce-keyed `{pidfile}`. The stop
+adapter must validate process identity, signal only that workload and report
+success only after termination; Uxon does not interpret the adapter's command.
+Missing/unverifiable launch records skip unsafe teardown. A failed teardown is
+reported even if tmux has already removed the session.
+
+`telemetry = "cgroup"` uses the resource identity to measure workload usage.
+Per-launch attribution requires readable process environments and matches the
+launch nonce, including when only one tmux session is visible. If attribution
+is unavailable, rows fall back to the shared container total rather than a false
+zero. A stopped or unresolved resource has a distinct down state.
 
 ## `[tui.table]` table
 
@@ -404,7 +431,7 @@ touching `xkb`.
 | Variable | Effect |
 |----------|--------|
 | `UXON_REPEAT_NONINTERACTIVE_POLICY` | Overrides `repeat_noninteractive_mode` per invocation (`fail` / `attach` / `new`). |
-| `UXON_LOG_DIR` | Overrides the directory used for the developer-facing `debug` and `metrics` channels (off by default; gated on `UXON_DEBUG` / `UXON_METRICS=1`). Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. The audit channel goes to journald/syslog regardless of this variable. |
+| `UXON_LOG_DIR` | Overrides the directory used for off-by-default `debug` and `metrics` channels. Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. New diagnostic directories are `0700`, files `0600`. An existing directory must be owned by the controller with no group/other access; otherwise logging refuses it without changing permissions. Symlink/nonregular files are refused. The audit channel goes to journald/syslog independently. |
 | `UXON_DEBUG` | Comma-separated topic list enabling the `debug` JSONL channel (e.g. `tui,startup,tui-table`). Off by default. |
 | `UXON_METRICS` | When set to `1`, writes per-fetch latency rows to `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files). |
 

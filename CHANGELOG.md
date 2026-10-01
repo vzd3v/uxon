@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Permission-mode selection follows the chosen launch profile even when its id matches another agent; committing a mode preserves its displayed id.
+- Folder launches discover primary and linked worktrees after profile selection, under the selected launch user. Valid pinned-user profiles are no longer blocked by the startup user's permissions, and late workspace results cannot overwrite a newer launch flow.
+- Filesystem checks for another local launch user use that user's credentials rather than the controller's access rights; workspace discovery probes are bounded.
+- Workload teardown and telemetry distinguish same-named sessions sharing a runtime by launch nonce. Workload records include process start ticks, and the Linux stop adapter rejects reused PIDs and confirms termination before reporting success.
+- Live runtime identity checks reuse the saved launch directory and template context. Failed or refused runtime cleanup is reflected in kill results; inaccessible process markers fall back to shared-resource usage instead of false zero usage.
+- Key diagnostics retain timing and navigation metadata without recording typed or pasted content. Diagnostic files are private, and unsafe existing log directories or rotation entries are rejected without changing them.
+- Container, GitHub-project and migration examples validate against the current config schema. Team setup recipes protect personal trees from peer writes and reserve group-write permissions for shared projects; audit collector examples use the current actor fields.
 - Managed launches retain a failed agent pane until it is reviewed, so startup errors no longer disappear before tmux can attach; fast successful non-managed exits no longer claim that missing output appeared above.
 - Codex `auto` mode now uses the current `--approve-for-me` flag instead of the removed `--full-auto` flag.
 - Dedicated tmux sockets with owner-only mode `0700` are accepted alongside `0600`, matching tmux behavior without weakening the per-user boundary.
@@ -22,7 +29,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Runtime selection moved from `agents.enabled` / `agents.default` and the old global `[container]` block to operator-owned launch profiles and `[runtimes.<id>]`. A launch profile selects `runtime = "direct"` by default; project `.uxon.toml` files are no longer read.
 - `uxon run` and `uxon new` now select runnable lanes with `--profile <id>`. Other flags, including `--agent`, are forwarded to the selected agent. New sessions use the launch-profile suffix (`<prefix><stem>@<profile>[-N]`).
 - Target-user commands now traverse `[execution]`. The built-in `local` backend preserves host/sudo behavior; command backends own tmux server/list/attach/kill, git/worktrees/filesystem, probes, runtime lifecycle, and agent launch. The default socket is `/tmp/tmux-{uid}/uxon-{execution_backend}.sock` under a launch-user-owned private directory.
-- Wire schema 3, launch-record schema 2, and audit schema 2 replace container-specific fields/events with `execution_backend`, `runtime`, `runtime_kind`, `runtime_resource`, `runtime.prepare`, and `runtime.session_stop`.
+- Wire schema 3, launch-record schema 3, and audit schema 2 replace container-specific fields/events with `execution_backend`, `runtime`, `runtime_kind`, `runtime_resource`, `runtime.prepare`, and `runtime.session_stop`. Older managed sessions must be drained before upgrading; see [migration notes](docs/migrations.md#provision-launch-records-for-multi-controller-hosts).
 - `uxon doctor --json` now reports `execution_backends` and `runtimes`; launch-profile rows expose `runtime_kind` and `uses_runtime`.
 - Audit: the `cli.start` event's `agents_enabled` field is renamed `profiles_enabled` and now lists launch-profile ids (it listed agent ids). Update audit/SIEM queries that filter on `agents_enabled`.
 - Removed configuration fields, including `tui.table.default_sort_by`, are rejected as unknown in v4.

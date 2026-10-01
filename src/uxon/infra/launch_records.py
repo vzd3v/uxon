@@ -20,6 +20,7 @@ from typing import Any
 import platformdirs
 
 from uxon.domain.launch_profiles import ResolvedLaunchProfile
+from uxon.domain.session import slugify
 from uxon.errors import fail
 
 LAUNCH_PROFILE_ENV = "UXON_LAUNCH_PROFILE"
@@ -28,7 +29,7 @@ LAUNCH_AGENT_ENV = "UXON_AGENT"
 RUNTIME_ENV = "UXON_RUNTIME"
 RUNTIME_FINGERPRINT_ENV = "UXON_RUNTIME_FINGERPRINT"
 
-_RECORD_VERSION = 2
+_RECORD_VERSION = 3
 _STORE_MODE = 0o700
 _RECORD_MODE = 0o600
 _SHARED_STORE_MODE = 0o2770
@@ -54,6 +55,8 @@ class PendingLaunchRecord:
     runtime_kind: str = "direct"
     runtime_fingerprint: str = ""
     runtime_resource: str = ""
+    runtime_dir: str = ""
+    project_slug: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,7 @@ def pending_from_resolved(
     socket_path: str,
     session_name: str,
     resolved: ResolvedLaunchProfile,
+    target_dir: str,
     nonce: str | None = None,
 ) -> PendingLaunchRecord:
     context = resolved.runtime_context
@@ -105,6 +109,8 @@ def pending_from_resolved(
         runtime_kind="command" if context is not None else "direct",
         runtime_fingerprint=context.fingerprint if context is not None else "",
         runtime_resource=context.resource if context is not None else "",
+        runtime_dir=context.runtime_dir if context is not None else "",
+        project_slug=slugify(os.path.basename(os.path.normpath(target_dir))),
     )
 
 
@@ -222,6 +228,11 @@ def read_finalized_record(
     if payload.get("status") != "finalized":
         return None
     if payload.get("version") != _RECORD_VERSION:
+        return None
+    if payload.get("runtime_kind") == "command" and any(
+        not isinstance(payload.get(key), str) or not payload[key]
+        for key in ("runtime_dir", "project_slug", "launch_user", "profile", "agent")
+    ):
         return None
     if (
         payload.get("socket_path") != socket_path
@@ -407,6 +418,8 @@ def _base_payload(record: PendingLaunchRecord) -> dict[str, Any]:
         "runtime_kind": record.runtime_kind,
         "runtime_fingerprint": record.runtime_fingerprint,
         "runtime_resource": record.runtime_resource,
+        "runtime_dir": record.runtime_dir,
+        "project_slug": record.project_slug,
         "created_at": time.time(),
     }
 

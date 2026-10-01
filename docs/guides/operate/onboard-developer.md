@@ -20,6 +20,8 @@ see [`start/team-1-bootstrap.md`](../../start/team-1-bootstrap.md).
 NEW=maya
 sudo useradd -m -s /bin/bash "$NEW"
 sudo useradd -m -s /bin/bash "${NEW}-agent"
+sudo usermod -aG devs "$NEW"
+sudo usermod -aG devs "${NEW}-agent"
 ```
 
 If your team uses an LDAP / IPA / SSO directory for shell
@@ -48,12 +50,15 @@ full reasoning.
 ## Step 3 — Project workspace
 
 ```bash
-sudo install -d -o "${NEW}-agent" -g devs -m 2775 "/srv/projects/$NEW"
+sudo install -d -o "${NEW}-agent" -g devs -m 2750 "/srv/projects/$NEW"
+sudo setfacl -m "u:$NEW:rwx,g::r-x,m::rwx,o::---" "/srv/projects/$NEW"
+sudo setfacl -d -m "u::rwx,u:$NEW:rwx,g::r-x,m::rwx,o::---" "/srv/projects/$NEW"
 ```
 
-Setgid (`2775`) so files inside inherit the `devs` group, which
-the lead and other developers can read for review. For richer
-ACL schemes see
+The ACL grants the developer's shell and paired account write access, and peers
+read/traverse access. New files inherit the group and default ACL. Reconnect
+shell sessions to pick up group membership. Verify read, edit and unlink
+behavior with the checks in
 [`guides/harden/lay-out-shared-projects.md`](../harden/lay-out-shared-projects.md).
 
 ## Step 4 — Add to `session_users`
@@ -148,7 +153,7 @@ Every step the new developer takes is recorded in the audit
 channel under `process_user=maya`. To review their activity later:
 
 ```bash
-journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=maya --since today
+journalctl SYSLOG_IDENTIFIER=uxon PROCESS_USER=maya --since today
 ```
 
 For fleet-wide queries see

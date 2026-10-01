@@ -149,5 +149,4 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         branch,
         resolved_profile=resolved,
         server_running=snapshot.server_state == "running",
-        active_sessions=sessions,
     )

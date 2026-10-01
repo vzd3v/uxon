@@ -31,16 +31,29 @@ keymap survives a Cyrillic layout without `xkb` tweaks.
 ## Launch options screen
 
 Shown after picking a launch action (New session / Create new
-project / Open existing project). Three side-by-side panels —
-AGENT, PERMISSION, and WORKSPACE (the WORKSPACE panel appears
-for any git target: the primary tree, existing worktrees, and a
-`+ New worktree…` row).
+project / Open existing project). Two side-by-side panels — PROFILE and
+PERMISSION. Permission choices belong to the selected profile's underlying
+agent. Filesystem/worktree discovery runs off-loop as that profile's effective
+launch user after this selection.
 
 | Key | Action |
 |---|---|
-| `←` / `→` | Move between the AGENT / PERMISSION / WORKSPACE panels |
+| `←` / `→` | Move between the PROFILE / PERMISSION panels |
 | `↑` / `↓` | Move within the focused panel |
-| `Enter` | Confirm and launch (on `+ New worktree…`, opens the branch-name prompt) |
+| `Enter` | Confirm the profile and mode, then continue |
+| `Esc` | Cancel |
+
+## Workspace screen
+
+For an existing git target, the next screen offers the primary tree, existing
+worktrees and `+ New worktree…`. Non-git targets skip this screen. A failed
+target-user probe reports its error rather than presenting a false non-git
+result. The final launch planner revalidates the chosen workspace.
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move within the workspace list |
+| `Enter` | Select; `+ New worktree…` opens the branch-name prompt |
 | `Esc` | Cancel |
 
 The branch-name prompt (reached via `+ New worktree…`) takes

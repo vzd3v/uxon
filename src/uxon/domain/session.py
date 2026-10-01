@@ -63,6 +63,8 @@ class SessionInfo:
     # resource; ``runtime_cgroup`` is the host-side cgroup path telemetry reads
     # to enumerate workload PIDs. Both default to "" for the direct runtime.
     runtime_resource: str = ""
+    runtime_dir: str = ""
+    project_slug: str = ""
     runtime_cgroup: str = ""
     # True iff this session's workload resource is not running
     # (empty/absent ``cgroup.procs`` confirmed by ``ready_command``). Renders a

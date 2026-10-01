@@ -2,12 +2,11 @@
 """Real-runtime container telemetry: per-session in-container CPU/RAM.
 
 Opt-in, marker-gated, docker-only by reachability (the other runtime skips).
-Proves the Phase-2 observability properties a mocked subprocess boundary
-cannot:
+Proves observability properties a mocked subprocess boundary cannot:
 
 * **Per-session split (AC-P1.6)** — two sessions in ONE container show
-  independent CPU/RAM, attributed from each agent's ``UXON_SESSION`` environ
-  marker via a single privileged batched read. A busy-loop agent in session A
+  independent CPU/RAM, attributed from each agent's ``UXON_LAUNCH_NONCE`` environ
+  marker via a single target-user batched read. A busy-loop agent in session A
   reddens A (>50% → the runaway style fires, AC-P1.2) and NOT idle session B.
 * **Container down (AC-P1.8)** — once the container is stopped, a marked
   session reports the distinct down state, not a silent idle 0/—.
@@ -19,14 +18,14 @@ session-env markers) and its real telemetry path
 (``collect_sessions_for_user`` → ``enrich_session_usage``). It never builds an
 image; a stock base plus a bind-mounted selectable stub stands in for an agent.
 
-Skipped when no reachable runtime, or when ``sudo -n`` to root is unavailable
-for the per-session environ split (then only the unprivileged single-session
-path would be exercisable). Runs rootless-under-the-current-user.
+Synthetic workloads run with the controller's actual UID/GID, so marker reads
+cross the same execution identity without privileged telemetry. The suite works
+with either rootless Docker or a CI daemon. Unavailable optional runtimes skip;
+required Docker validation fails if its client or daemon is unavailable.
 """
 
 from __future__ import annotations
 
-import getpass
 import subprocess
 import time
 from pathlib import Path
@@ -39,6 +38,7 @@ from conftest import (  # type: ignore[import-not-found]
     PROBE_TIMEOUT_SEC,
     STUB_AGENT_SELECTABLE,
     Runtime,
+    operator_runtime_table,
 )
 from helpers import make_config  # type: ignore[import-not-found]
 
@@ -51,52 +51,10 @@ from uxon.domain.launch_profiles import (
     RuntimeContext,
     builtin_launch_profiles,
 )
+from uxon.infra.identity import process_user
 
 pytestmark = pytest.mark.container
 _RUNTIME_PROFILE_ID = "it"
-
-
-def _sudo_root_available() -> bool:
-    """True iff ``sudo -n true`` succeeds — the per-session environ split needs it."""
-    try:
-        cp = subprocess.run(
-            ["sudo", "-n", "true"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            timeout=PROBE_TIMEOUT_SEC,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return cp.returncode == 0
-
-
-def _operator_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
-    """Operator ``[container]`` table with a ``identity_command`` for the cgroup stash."""
-    return {
-        "enabled": True,
-        "resource_name_template": "uxon-it-{project_slug}",
-        "path_map": {str(project_dir): "/work"},
-        "exec_prefix": [rt.binary, "exec", "-i", "-w", "{runtime_dir}", "{resource}"],
-        "ready_command": [rt.binary, "top", "{resource}"],
-        "exists_command": [rt.binary, "container", "inspect", "{resource}"],
-        "start_command": [rt.binary, "compose", "start"],
-        "create_command": [rt.binary, "compose", "up", "-d"],
-        # Prints ``<id> <init_pid> <start_epoch>`` — uxon reads the cgroup path
-        # from /proc/<init_pid>/cgroup (no hardcoded runtime layout). uxon
-        # ``str.format``s each token, so the Go-template braces are DOUBLED
-        # (``{{{{`` → ``{{``) to survive — the documented operator escaping for
-        # a brace-using runtime template.
-        "identity_command": [
-            rt.binary,
-            "inspect",
-            "-f",
-            "{{{{.Id}}}} {{{{.State.Pid}}}} {{{{.State.StartedAt}}}}",
-            "{resource}",
-        ],
-        "on_missing": "create",
-        "approval": "auto",
-    }
 
 
 def _build_cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
@@ -108,10 +66,9 @@ def _build_cfg(rt: Runtime, project_dir: Path, socket_path: Path) -> Config:
     launch_profiles["claude"] = LaunchProfile(
         id="claude", agent="claude", runtime=_RUNTIME_PROFILE_ID
     )
-    profile_tbl = dict(_operator_table(rt, project_dir))
-    profile_tbl["resource_scope"] = "per_user"
-    profile_tbl["resource_name_template"] = rt.runtime_name
-    runtimes = config_loader.build_runtimes({"profiles": {_RUNTIME_PROFILE_ID: profile_tbl}})
+    runtimes = config_loader.build_runtimes(
+        {_RUNTIME_PROFILE_ID: operator_runtime_table(rt, project_dir)}
+    )
     return make_config(
         allowed_roots=[str(project_dir)],
         tmux_socket_template=str(socket_path),
@@ -173,12 +130,7 @@ def _launch(cfg: Config, project_dir: Path, session: str, launch_user: str, agen
             None,
             resolved_profile=resolved,
         )
-    for pre in req.prelaunch:
-        subprocess.run(list(pre), check=True, timeout=PROBE_TIMEOUT_SEC)
-    cmd = list(req.cmd)
-    new_session_idx = cmd.index("new-session")
-    cmd.insert(new_session_idx + 1, "-d")
-    subprocess.run(cmd, check=True, timeout=PROBE_TIMEOUT_SEC)
+    tmux.prepare_managed_launch(req)
 
 
 def _kill_server(socket_path: Path) -> None:
@@ -194,14 +146,12 @@ def test_two_sessions_one_runtime_split_and_runaway(runtime: Runtime, tmp_path: 
     """AC-P1.6/P1.2: independent per-session usage; the busy session reddens, idle doesn't."""
     if runtime.binary != "docker":
         pytest.skip("telemetry split validated on docker; podman cgroup layout differs")
-    if not _sudo_root_available():
-        pytest.skip("sudo -n to root unavailable: per-session environ split not exercisable")
 
     from uxon.infra import sessions_probe
     from uxon.tui.dashboard.columns import format_cpu
     from uxon.tui.dashboard.row import from_tui_session
 
-    launch_user = getpass.getuser()
+    launch_user = process_user()
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     socket_path = tmp_path / "uxon.sock"
@@ -279,7 +229,7 @@ def test_stopped_runtime_shows_down(runtime: Runtime, tmp_path: Path) -> None:
     from uxon.domain.session import SessionInfo
     from uxon.infra import sessions_probe
 
-    launch_user = getpass.getuser()
+    launch_user = process_user()
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     stub = _write_project(project_dir, runtime.runtime_name)
@@ -321,6 +271,15 @@ def test_stopped_runtime_shows_down(runtime: Runtime, tmp_path: Path) -> None:
             runtime_resource=runtime.runtime_name,
             runtime=_RUNTIME_PROFILE_ID,
             runtime_cgroup=ident.cgroup,
+            launch_record_verified=True,
+            launch_user=launch_user,
+            profile="claude",
+            launch_nonce="a" * 32,
+            runtime_dir="/work",
+            project_slug=project_dir.name,
+            runtime_fingerprint=cfg.runtimes[_RUNTIME_PROFILE_ID].fingerprint,
+            runtime_id=ident.id,
+            runtime_epoch=ident.epoch,
         )
         sessions_probe.enrich_session_usage(
             cfg, [sess], runtimes=cfg.runtimes, launch_user=launch_user
@@ -342,7 +301,7 @@ def test_no_marker_session_takes_pane_walk(runtime: Runtime, tmp_path: Path) -> 
         pytest.skip("single live runtime suffices for this invariant")
     from uxon.infra import sessions_probe
 
-    launch_user = getpass.getuser()
+    launch_user = process_user()
     socket_path = tmp_path / "uxon.sock"
     # A plain (non-container) cfg + a real local tmux session.
     cfg = make_config(allowed_roots=[str(tmp_path)], tmux_socket_template=str(socket_path))

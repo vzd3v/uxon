@@ -67,81 +67,44 @@ For the bundled installer, PEP 668 caveat, and unreleased-from-
 
 ## Documentation
 
-The site at [`docs/`](docs/) is organised two ways. Pick the
-entry that matches what you have in mind.
-
-**By scenario:**
+Start with your scenario:
 
 - [Solo on a single host](docs/scenarios/solo-1.md)
 - [Solo on multiple hosts](docs/scenarios/solo-n.md)
 - [Team on a single host](docs/scenarios/team-1.md)
 - [Team on multiple hosts](docs/scenarios/team-n.md)
 
-**By task ([Diátaxis](https://diataxis.fr) layout):**
-
-- [`docs/start/`](docs/start/) — tutorials (install,
-  bootstrap a host, add a peer).
-- [`docs/guides/`](docs/guides/) — how-to recipes
-  (operate, harden, customise, debug).
-- [`docs/reference/`](docs/reference/) — every command,
-  every flag, every config key, every audit event.
-- [`docs/explain/`](docs/explain/) — the model
-  (isolation, supervision, multi-host, audit channel).
-
-Top-level pointers:
-
-- [`docs/index.md`](docs/index.md) — full table of contents.
-- [`docs/clients.md`](docs/clients.md) — laptop side
-  (Eternal Terminal, SSH config, hardware keys).
-- [`docs/privacy.md`](docs/privacy.md) — what `uxon`
-  records about each developer; for sharing with your team.
-- [`docs/migrations.md`](docs/migrations.md) — version-bump
-  operator notes.
-- [`SECURITY.md`](SECURITY.md) — disclosure policy + threat
-  model summary.
-- [`CHANGELOG.md`](CHANGELOG.md) — version history.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — local checks,
-  branch policy, release process.
+The [documentation index](docs/index.md) also organizes tutorials, how-tos,
+reference and explanation by [Diátaxis](https://diataxis.fr).
+See [client setup](docs/clients.md), [privacy](docs/privacy.md),
+[upgrade notes](docs/migrations.md), [security](SECURITY.md),
+[changes](CHANGELOG.md), and [contributing](CONTRIBUTING.md).
 
 ## Quick TUI tour
 
 `uxon` (no args, on a TTY) opens a full-screen picker:
 
-- **New session in current folder** — start the default launch profile
-  in `$PWD`.
+- **New session in current folder** — choose a launch profile and permission
+  mode, then a workspace when the selected user can inspect the git repository.
 - **Create new project** — prompt for a name, create
   `<new_project_root>/<name>`, optionally create a GitHub repo,
   launch the agent.
 - **Open existing project** — pick a directory under
   `new_project_root` and launch.
 
-Below that: a unified session dashboard mounting your own
-sessions, other-user sessions visible via `sudo` (when the
-superuser block is active), and one row per session on each
-configured `[[remote_hosts]]` peer. Two view modes — `flat`
-(default; single ranked list) and `by_host` (per-host tabs and
-a status bar); toggle with `v`. ←/→ on the dashboard cycles
-between hosts (host tabs in `by_host`, `(host, own/other)`
-transitions in `flat`).
-A search bar filters across all rows — hidden by default, press
-`s` (or `/`) to summon it. Per-row data: agent, working dir,
-live CPU / RAM, attached glyph (`●`/`○`), creation time, last
-activity time. `Enter` attaches; `d` kills with confirmation.
-
-Every launch asks whether to start in normal mode or with
-`--dangerously-skip-permissions` ("yolo") — the TUI does not
-start yolo without that explicit choice.
-
-Full keybinding list:
-[`docs/reference/keybindings.md`](docs/reference/keybindings.md).
+The dashboard combines your sessions, authorized other-user sessions and
+configured SSH peers. Choose a session to attach or stop it with confirmation.
+The launch picker uses the selected profile's agent modes; it preserves that
+choice through workspace selection. See [TUI keys](docs/reference/keybindings.md)
+and [dashboard recipes](docs/guides/customise/customise-dashboard.md).
 
 ## Supported agents
 
-| Agent id | Binary | `--mode auto` | `--mode yolo` | Install |
-|----------|--------|---------------|----------------|---------|
-| `claude` | `claude` | `--permission-mode auto` | `--dangerously-skip-permissions` | [Anthropic docs](https://docs.claude.com/claude-code) |
-| `codex`  | `codex` | `--approve-for-me` | `--dangerously-bypass-approvals-and-sandbox` | `npm i -g @openai/codex` |
-| `cursor` | `cursor-agent` | (not supported) | `--yolo` | `curl https://cursor.com/install -fsSL \| bash` |
+| Agent id | Binary | Install |
+|----------|--------|---------|
+| `claude` | `claude` | [Claude Code](https://docs.claude.com/claude-code) |
+| `codex` | `codex` | `npm i -g @openai/codex` |
+| `cursor` | `cursor-agent` | `curl https://cursor.com/install -fsSL \| bash` |
 
 Expose launch profiles in `/etc/uxon/config.toml`:
 
@@ -155,8 +118,9 @@ Fleet automation can validate and render the full JSON form with
 `uxon config render --config-json config.json`; install the reviewed TOML at
 `/etc/uxon/config.toml` with an explicit root-owned `sudo install`.
 
-`-w <branch>` (worktree) works with any agent; uxon manages the worktree
-itself. `cursor` has no `auto` mode.
+Uxon manages worktrees independently of the agent. See the
+[profile/mode reference](docs/reference/cli.md#--mode-id)
+and [worktree guide](docs/guides/customise/worktrees.md).
 
 `uxon doctor` probes the agent catalog and prints each path,
 version, and status.

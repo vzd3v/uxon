@@ -1,27 +1,7 @@
-"""LaunchOptionsScreen — pick agent (left), permission mode, workspace.
+"""Pick a launch profile and an explicit permission mode.
 
-Dismiss value (variable arity, B2):
-- constructed WITHOUT ``workspaces`` → a 2-tuple ``(profile_id, mode_id)``
-  (the project-create / project-open flows that have no workspace column);
-- constructed WITH a non-empty ``workspaces`` → a 3-tuple
-  ``(profile_id, mode_id, workspace_choice)`` where ``workspace_choice`` is
-  one of ``("primary", repo_root)`` / ``("worktree", path, branch)`` /
-  ``("new", None)``;
-- ``None`` on cancel.
-
-Up to three panels: AGENT (left) lists enabled + available agents and is
-hidden when a single agent is enabled; PERMISSION lists permission modes
-for the focused agent; WORKSPACE (shown whenever ``workspaces`` is not
-``None`` — i.e. the folder was probed) lists the primary working tree + one
-row per existing worktree + a ``+ New worktree…`` row, or — when the probe
-returned no worktrees (an empty list) — a single non-selectable row: a
-``git not initialized`` hint for a git-less folder, or a ``git error: …``
-row when the probe raised (``probe_error`` set).
-
-Key map: ↑/↓ navigate within the focused panel; ←/→ cycle only the VISIBLE
-panels (``next_launch_panel`` skips hidden columns). No h/j/k/l bindings —
-those letters are free on ``MainScreen`` but avoided here to prevent
-misfires when the modal sits above the main screen.
+Returns ``(profile_id, mode_id)`` or ``None`` on cancel. Workspace discovery
+follows this choice so its filesystem probes use the selected profile's user.
 """
 
 from __future__ import annotations
@@ -38,6 +18,7 @@ from ..keymap import bindings_with_aliases
 from ..state import (
     launch_commit_decision,
     launch_options_state,
+    launch_permission_modes,
     launch_profile_list_label,
     launch_profile_users_differ,
     next_launch_panel,
@@ -46,7 +27,7 @@ from ..state import (
 )
 
 
-class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object] | None"]):
+class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     DEFAULT_CSS = """
     LaunchOptionsScreen { align: center middle; }
     LaunchOptionsScreen > Horizontal {
@@ -69,9 +50,6 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         self,
         cfg,
         state=None,
-        workspaces: list | None = None,
-        repo_root: str = "",
-        probe_error: str | None = None,
     ) -> None:
         super().__init__()
         # ``cfg`` is the static rebuild snapshot (carries launch profiles +
@@ -83,29 +61,6 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         # construct a TuiState.
         self.cfg = cfg
         self._state = state
-        # The WORKSPACE column is folder-selection only. The rows are
-        # built from ``workspaces`` (filled by the launch-screen worker —
-        # ``repo_root`` is the primary repo root the probe
-        # resolved off the event loop; ``action_commit`` reads it for the
-        # ``("primary", repo_root)`` choice without re-resolving on the loop.
-        #
-        # Tri-state: ``None`` ⟺ the caller never probed (project-create flow)
-        # → no WORKSPACE column at all; ``[]`` ⟺ probed but the folder is not a
-        # git repo → the column shows a single non-selectable
-        # "git not initialized" hint; a non-empty list ⟺ git target → primary
-        # tree + worktrees + "+ New worktree…". Visibility keys off
-        # ``is not None``; focusability/selection keys off truthiness, so the
-        # hint column renders but ←/→ skips it and Enter falls through to the
-        # plain 2-tuple launch.
-        #
-        # ``probe_error`` is set (and ``workspaces`` is ``[]``) when the git
-        # probe RAISED — a real repo whose ``git worktree list`` failed, not a
-        # git-less folder. The same non-interactive column then shows an error
-        # row instead of the benign hint, so a genuine failure isn't
-        # mislabelled as "no repo here".
-        self._workspaces = None if workspaces is None else list(workspaces)
-        self._probe_error = probe_error
-        self._repo_root = repo_root
         # Compute the initial visible set from current availability.
         # ``_rebuild_agent_list`` re-reads on every probe-result
         # dispatch so the modal reflects fresh data without a re-open.
@@ -123,16 +78,11 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         self._panel_order = self._compute_panel_order()
 
     def _compute_panel_order(self) -> tuple[str, ...]:
-        """Visible-column sequence for ←/→ cycling (a subset of
-        ``agent``/``mode``/``workspace``). AGENT drops under a single
-        agent; WORKSPACE is present only when ``workspaces`` were passed.
-        """
+        """The profile panel is omitted when there is only one choice."""
         order: list[str] = []
         if not self._single_agent:
             order.append("agent")
         order.append("mode")
-        if self._workspaces:
-            order.append("workspace")
         return tuple(order)
 
     def _availability_now(self) -> dict:
@@ -192,10 +142,6 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             with Vertical(id="mode-panel"):
                 yield Static("Permission mode", classes="panel-title")
                 yield ListView(id="mode-list")
-            if self._workspaces is not None:
-                with Vertical(id="workspace-panel"):
-                    yield Static("Workspace", classes="panel-title")
-                    yield ListView(id="workspace-list")
 
     async def on_mount(self) -> None:
         if not self._visible_agents:
@@ -221,48 +167,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
             except ValueError:
                 agent_list.index = 0
         await self._rebuild_mode_list(self._current_agent)
-        if self._workspaces is not None:
-            await self._populate_workspace_list()
         self._reflect_focus()
-
-    async def _populate_workspace_list(self) -> None:
-        """One row per workspace + a final ``+ New worktree…`` row.
-
-        The primary row carries a ``(primary)`` suffix and is the default
-        highlight (index 0) so Enter from any panel commits the common
-        "launch in the primary tree" case.
-
-        When the probe returned no worktrees (an empty list, distinct from the
-        ``None`` "never probed" case that hides the column entirely) the column
-        instead shows a single disabled row and omits "+ New worktree…": either
-        the benign "git not initialized" hint (a git-less folder) or, when the
-        probe RAISED, a "git error: …" row carrying the failure message — a
-        real git failure must not read as "no repo here". Both are
-        non-selectable; the panel is left out of ``_panel_order``
-        (focusability keys off truthiness), so ←/→ skips it and Enter falls
-        through to ``action_commit``'s plain 2-tuple launch.
-        """
-        workspace_list = self.query_one("#workspace-list", ListView)
-        await workspace_list.clear()
-        if not self._workspaces:
-            if self._probe_error:
-                # First line only, capped — git stderr can be multi-line/long
-                # and the column is one third of an 80-cell modal.
-                detail = self._probe_error.splitlines()[0][:60]
-                label = f"git error: {detail}"
-            else:
-                label = "git not initialized"
-            await workspace_list.extend(
-                [ListItem(Static(label), id="workspace-none", disabled=True)]
-            )
-            return
-        items = []
-        for idx, w in enumerate(self._workspaces):
-            label = f"{w.label}  (primary)" if w.is_primary else w.label
-            items.append(ListItem(Static(label), id=f"workspace-{idx}"))
-        items.append(ListItem(Static("+ New worktree…"), id="workspace-new"))
-        await workspace_list.extend(items)
-        workspace_list.index = 0
 
     async def _rebuild_mode_list(self, profile_id: str) -> None:
         mode_list = self.query_one("#mode-list", ListView)
@@ -271,14 +176,10 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         # new ones and the list ends up showing stale entries (e.g. claude's
         # "auto" remains visible after switching to cursor).
         await mode_list.clear()
-        profile = self._launch_profiles().get(profile_id)
-        agent_key = profile.agent if profile is not None else profile_id
-        spec = self.cfg.agents.get(agent_key)
-        if spec is None:
-            return
+        modes = launch_permission_modes(self.cfg.agents, profile_id, self._launch_profiles())
         items = [
             ListItem(Static(f"{idx} {mode.label}"), id=f"mode-{mode.id}")
-            for idx, mode in enumerate(spec.permission_modes, start=1)
+            for idx, mode in enumerate(modes, start=1)
         ]
         if items:
             await mode_list.extend(items)
@@ -287,8 +188,6 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
     def _reflect_focus(self) -> None:
         if self._active_panel == "agent":
             self.query_one("#agent-list", ListView).focus()
-        elif self._active_panel == "workspace" and self._workspaces:
-            self.query_one("#workspace-list", ListView).focus()
         else:
             self.query_one("#mode-list", ListView).focus()
 
@@ -316,11 +215,13 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         await self._rebuild_mode_list(new_agent)
 
     def action_commit(self) -> None:
+        selected = self.query_one("#mode-list", ListView).highlighted_child
+        selected_mode_id = selected.id.removeprefix("mode-") if selected and selected.id else None
         decision = launch_commit_decision(
             active_panel=self._active_panel,
             current_agent=self._current_agent,
             availability=self._availability_now(),
-            mode_index=(self.query_one("#mode-list", ListView).index or 0),
+            selected_mode_id=selected_mode_id,
             agents=self.cfg.agents,
             launch_profiles=self._launch_profiles(),
         )
@@ -333,30 +234,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | tuple[str, str, object]
         if decision.action == "dismiss" or decision.mode_id is None:
             self.dismiss(None)
             return
-        # B2 dismiss arity: 2-tuple without a workspace column (the
-        # untouched project create/open callers), 3-tuple with one.
-        if not self._workspaces:
-            self.dismiss((self._current_agent, decision.mode_id))
-            return
-        self.dismiss((self._current_agent, decision.mode_id, self._workspace_choice()))
-
-    def _workspace_choice(self) -> object:
-        """Resolve the highlighted ``#workspace-list`` row into a choice tuple.
-
-        Read regardless of which panel committed, so Enter from the AGENT /
-        PERMISSION columns launches into the default-highlighted primary
-        row. ``+ New worktree…`` → ``("new", None)``; the primary row →
-        ``("primary", repo_root)``; an existing worktree row →
-        ``("worktree", path, branch)``.
-        """
-        workspace_list = self.query_one("#workspace-list", ListView)
-        idx = workspace_list.index or 0
-        if not self._workspaces or idx >= len(self._workspaces):
-            return ("new", None)
-        w = self._workspaces[idx]
-        if w.is_primary:
-            return ("primary", self._repo_root)
-        return ("worktree", w.path, w.branch)
+        self.dismiss((self._current_agent, decision.mode_id))
 
     def action_cancel(self) -> None:
         self.dismiss(None)

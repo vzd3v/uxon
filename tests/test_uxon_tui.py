@@ -11,6 +11,8 @@ Screen / widget / integration tests live in:
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from uxon import tui as uxon_tui
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG as _CATALOG
@@ -37,11 +39,10 @@ from uxon.tui.state import (
     confirm_phrase_matches,
     filter_existing_projects,
     launch_commit_decision,
-    launch_mode_id,
     launch_options_state,
+    launch_permission_modes,
     launch_profile_users_differ,
     main_action_intent,
-    mode_item_ids,
     pick_index,
     pick_visible_agent,
     project_name_error,
@@ -57,6 +58,59 @@ from uxon.tui.state import (
 )
 
 _CATALOG_IDS = tuple(_CATALOG)
+
+
+class WorkspaceContinuationTests(unittest.TestCase):
+    def test_out_of_order_probes_keep_current_modal_and_its_repository(self) -> None:
+        from helpers import make_launch_profile_options
+
+        from uxon.infra.worktrees import Workspace
+        from uxon.tui.screens.launch_flow import LaunchFlow
+        from uxon.tui.screens.workspace import WorkspaceScreen
+
+        pushed, workers, created = [], [], []
+        app = SimpleNamespace(
+            state=None,
+            push_screen=lambda screen, callback: pushed.append((screen, callback)),
+            run_off_loop=lambda fn, **kw: workers.append((fn, kw)),
+            request_launch=mock.Mock(),
+            notify=mock.Mock(),
+        )
+        cfg = _ctx(
+            launch_profiles=make_launch_profile_options(),
+            on_create_worktree=lambda *args: created.append(args),
+        )
+        host = SimpleNamespace(
+            app=app,
+            cfg=cfg,
+            state=SimpleNamespace(agent_availability=SimpleNamespace(value=cfg.agent_availability)),
+        )
+        app.screen = host
+        flow = LaunchFlow(host)
+        for target in ("/srv/a/subdir", "/srv/b/subdir"):
+            flow.begin_launch_in_folder(
+                target_dir=target, target_label=target, commit_primary=mock.Mock()
+            )
+            pushed[-1][1](("claude", "normal"))
+        for index, root in ((1, "/srv/b"), (0, "/srv/a")):
+            workers[index][1]["on_success"]([Workspace(root, "main", root, True)])
+            if index == 1:
+                app.screen = pushed[-1][0]
+        self.assertIsInstance(app.screen, WorkspaceScreen)
+        self.assertEqual(len(pushed), 3)  # two profile choices, only the current workspace
+        pushed[-1][1](("new", None))
+        pushed[-1][1]("feature/b")
+        workers[-1][0]()
+        self.assertEqual(created, [("/srv/b", "feature/b", "claude", "normal")])
+        app.screen = host
+        flow.begin_launch_in_folder(
+            target_dir="/srv/c", target_label="c", commit_primary=mock.Mock()
+        )
+        pushed[-1][1](("claude", "normal"))
+        app.screen = SimpleNamespace()  # an unrelated modal opened during the current probe
+        count = len(pushed)
+        workers[-1][1]["on_success"]([Workspace("c", "main", "/srv/c", True)])
+        self.assertEqual(len(pushed), count)
 
 
 def _ctx(**overrides) -> uxon_tui.TuiContext:
@@ -370,11 +424,11 @@ class LaunchOptionsStateTests(unittest.TestCase):
                     id="codex",
                     label="codex",
                     agent="codex",
-                    launch_user="deva2",
+                    launch_user="alice",
                 ),
                 None,
             ),
-            "2 codex  deva2",
+            "2 codex  alice",
         )
 
     def test_launch_profile_list_label_can_hide_uniform_launch_user(self) -> None:
@@ -388,7 +442,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
                     id="codex",
                     label="codex",
                     agent="codex",
-                    launch_user="deva2",
+                    launch_user="alice",
                 ),
                 None,
                 show_launch_user=False,
@@ -418,29 +472,43 @@ class LaunchOptionsStateTests(unittest.TestCase):
     def test_launch_profile_users_differ_only_when_visible_users_differ(self) -> None:
         profiles = {
             "claude": LaunchProfileOption(
-                id="claude", label="claude", agent="claude", launch_user="deva2"
+                id="claude", label="claude", agent="claude", launch_user="alice"
             ),
             "codex": LaunchProfileOption(
-                id="codex", label="codex", agent="codex", launch_user="deva2"
+                id="codex", label="codex", agent="codex", launch_user="alice"
             ),
             "opencode": LaunchProfileOption(
-                id="opencode", label="opencode", agent="opencode", launch_user="devagent"
+                id="opencode", label="opencode", agent="opencode", launch_user="bob_agent"
             ),
         }
 
         self.assertFalse(launch_profile_users_differ(("claude", "codex"), profiles))
         self.assertTrue(launch_profile_users_differ(("claude", "opencode"), profiles))
 
-    def test_mode_item_ids_match_catalog_order(self) -> None:
+    def test_profile_collision_preserves_selected_mode_and_rejects_unknowns(self) -> None:
+        profiles = {"cursor": LaunchProfileOption("cursor", "Claude", "claude", "alice")}
         self.assertEqual(
-            mode_item_ids(_CATALOG, "cursor"),
-            ("mode-normal", "mode-yolo"),
+            tuple(m.id for m in launch_permission_modes(_CATALOG, "cursor", profiles)),
+            ("normal", "auto", "yolo"),
         )
-
-    def test_launch_mode_id_uses_selected_mode_or_normal_fallback(self) -> None:
-        self.assertEqual(launch_mode_id(_CATALOG, "cursor", 1), "yolo")
-        self.assertEqual(launch_mode_id(_CATALOG, "cursor", 99), "normal")
-        self.assertEqual(launch_mode_id(_CATALOG, "nosuch", 0), None)
+        for profile_id, mode_id, expected in (
+            ("cursor", "auto", LaunchCommitDecision("commit", "auto")),
+            ("cursor", "missing", LaunchCommitDecision("dismiss")),
+            ("cursor", None, LaunchCommitDecision("dismiss")),
+            ("claude", "normal", LaunchCommitDecision("dismiss")),
+        ):
+            with self.subTest(profile=profile_id, mode=mode_id):
+                self.assertEqual(
+                    launch_commit_decision(
+                        active_panel="mode",
+                        current_agent=profile_id,
+                        availability={},
+                        selected_mode_id=mode_id,
+                        agents=_CATALOG,
+                        launch_profiles=profiles,
+                    ),
+                    expected,
+                )
 
     def test_launch_update_all_missing_dismisses(self) -> None:
         update = update_launch_options_after_availability(
@@ -501,7 +569,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
             active_panel="agent",
             current_agent="claude",
             availability={"claude": self._avail("pending")},
-            mode_index=0,
+            selected_mode_id="normal",
             agents=_CATALOG,
         )
         self.assertEqual(decision, LaunchCommitDecision("ignore"))
@@ -512,7 +580,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
                 active_panel="agent",
                 current_agent="claude",
                 availability={"claude": self._avail("ok")},
-                mode_index=0,
+                selected_mode_id="normal",
                 agents=_CATALOG,
             ),
             LaunchCommitDecision("switch-to-mode"),
@@ -522,7 +590,7 @@ class LaunchOptionsStateTests(unittest.TestCase):
                 active_panel="mode",
                 current_agent="cursor",
                 availability={},
-                mode_index=1,
+                selected_mode_id="yolo",
                 agents=_CATALOG,
             ),
             LaunchCommitDecision("commit", "yolo"),

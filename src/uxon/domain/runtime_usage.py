@@ -1,30 +1,13 @@
 # SPDX-License-Identifier: MIT
 """Pure host-side workload-telemetry resolvers (no I/O).
 
-Observability attributes a workload agent's CPU/RAM back to its tmux session:
-
-1. Each command-runtime session carries its host-side cgroup path in
-   the ``UXON_RUNTIME_CGROUP`` session-env marker (stashed at launch).
-2. ``/sys/fs/cgroup/<cgroup-path>/cgroup.procs`` lists all workload
-   host PIDs (pid1 plus children / ``--init``-reparented descendants).
-3. For ≥2 sessions sharing one resource, ``/proc/<hostpid>/environ`` carries
-   the per-session ``UXON_SESSION`` marker that splits the shared PID set.
-
-This module holds the **pure** logic only — the parsers and the grouping /
-summation given already-read strings and tables. The impure ``/proc`` +
-``cgroup.procs`` reads and the privileged ``environ`` shell-out live in
-:mod:`uxon.infra.sessions_probe`. Keeping the core pure lets it be
-host-free unit-tested against a fabricated tree, and keeps ``domain`` free of
-subprocess per the layering rule.
+The verified launch record identifies the workload cgroup. Its membership
+and process-environment launch nonces are read inside the selected execution
+boundary. Attribution always uses nonces, even when only one session is visible
+on this controller. This module only groups and sums already-read values.
 """
 
 from __future__ import annotations
-
-# Agent-process environment marker (also defined in :mod:`uxon.domain.runtime`
-# as ``SESSION_ENV``; re-stated here as the parse key so this pure module needs
-# no cross-import). Host-side telemetry reads it from ``/proc/<pid>/environ`` to
-# attribute each workload host PID to its tmux session.
-_SESSION_ENV_KEY = "UXON_SESSION"
 
 
 def parse_cgroup_procs(content: str) -> list[int]:
@@ -51,44 +34,6 @@ def parse_cgroup_procs(content: str) -> list[int]:
         seen.add(pid)
         pids.append(pid)
     return pids
-
-
-def parse_environ_session(environ_blob: str) -> str:
-    """Extract ``UXON_SESSION``'s value from a ``/proc/<pid>/environ`` blob.
-
-    ``/proc/<pid>/environ`` is NUL-separated ``KEY=value`` entries. Returns
-    the session name, or ``""`` when the marker is absent (a non-uxon process
-    sharing the workload, or one launched before the marker existed). Never
-    raises.
-    """
-    for entry in environ_blob.split("\0"):
-        key, sep, value = entry.partition("=")
-        if sep and key == _SESSION_ENV_KEY:
-            return value
-    return ""
-
-
-def parse_sudo_environ_lines(stdout: str) -> dict[int, str]:
-    """Parse the batched privileged-read output → ``{hostpid: session}``.
-
-    The privileged helper emits one ``<hostpid> <UXON_SESSION value>`` line
-    per readable PID (see :mod:`uxon.infra.sessions_probe`). A PID whose
-    ``environ`` carried no marker is emitted with an empty value (``<pid> ``)
-    or omitted entirely; either way it maps to ``""``. Malformed lines are
-    skipped. Pure and defensive — never raises.
-    """
-    out: dict[int, str] = {}
-    for line in stdout.splitlines():
-        line = line.rstrip("\n")
-        if not line.strip():
-            continue
-        pid_s, _, session = line.partition(" ")
-        try:
-            pid = int(pid_s.strip())
-        except ValueError:
-            continue
-        out[pid] = session.strip()
-    return out
 
 
 def sum_usage_for_pids(
@@ -127,13 +72,13 @@ def group_pids_by_session(
 
     ``cgroup_pids`` is the resource's full host-PID set (from
     ``cgroup.procs``); ``pid_to_session`` maps each readable PID to its
-    ``UXON_SESSION`` marker (from ``/proc/<pid>/environ``). Returns
-    ``{session: [pids]}`` for every non-empty marker seen, so each session's
+    launch nonce (from ``/proc/<pid>/environ``). Returns
+    ``{nonce: [pids]}`` for every non-empty marker seen, so each session's
     sum reflects **only its own** process set — a runaway in session A never
     reddens session B.
 
     A PID with no marker (empty value, or absent from ``pid_to_session``
-    because its ``environ`` was unreadable) is dropped: it belongs to no known
+    because the process exited) is dropped: it belongs to no known
     session. The per-resource degrade (every sharing session shows the shared
     total) is the caller's fallback when the marker read fails wholesale — it
     is *not* expressed here, where a clean per-session split is the goal.
@@ -155,8 +100,7 @@ def per_session_usage(
     """Per-session ``(rss_kib, cpu_pct)`` for one resource's PID set.
 
     Composes :func:`group_pids_by_session` + :func:`sum_usage_for_pids`. The
-    pure core of the ≥2-sessions-per-resource split: each session keyed by its
-    ``UXON_SESSION`` marker gets the sum over only its own PIDs.
+    Each session, keyed by its launch nonce, gets the sum over only its own PIDs.
     """
     groups = group_pids_by_session(cgroup_pids, pid_to_session)
     return {session: sum_usage_for_pids(pids, proc_rows) for session, pids in groups.items()}

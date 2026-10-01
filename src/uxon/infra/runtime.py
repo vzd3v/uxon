@@ -221,12 +221,12 @@ def run_teardown(
     """Run a rendered ``stop_command`` as ``launch_user`` — best-effort.
 
     The mirror of the exec wrap: ``uxon kill`` terminates the workload
-    agent process uxon started, by the per-session PID the launch wrapper
-    recorded. Runs as the launch user (same per-user rootless daemon the
+    agent process uxon started, using the nonce-scoped process record.
+    Runs as the launch user (same per-user rootless daemon the
     agent execs under), non-interactive prefix (the kill path has no TTY),
     bounded timeout. Returns ``(ok, detail)`` and NEVER raises — a teardown
-    failure must not abort the ``tmux kill-session`` that follows it; the
-    caller surfaces ``detail`` as a note and proceeds.
+    failure must not erase the already proven ``tmux kill-session`` result;
+    the caller reports cleanup failure separately.
 
     This terminates the agent process, never the operator-owned runtime resource.
     """
@@ -247,8 +247,13 @@ def current_runtime_identity_for_profile(
     profile: WorkloadRuntimeSpec,
     resource: str,
     launch_user: str,
+    *,
+    runtime_dir: str,
+    launch_profile: str,
+    agent: str,
+    project_slug: str,
 ) -> RuntimeIdentity | None:
-    """Best-effort live identity for a profile-scoped runtime resource."""
+    """Best-effort live identity using the verified launch's rendering context."""
     if not profile.identity_command:
         return None
     try:
@@ -257,11 +262,11 @@ def current_runtime_identity_for_profile(
             profile=profile,
             what="identity_command",
             resource=resource,
-            runtime_dir="/",
+            runtime_dir=runtime_dir,
             user=launch_user,
-            launch_profile="",
-            agent="",
-            project_slug="",
+            launch_profile=launch_profile,
+            agent=agent,
+            project_slug=project_slug,
         )
     except SystemExit:
         return None
@@ -295,6 +300,7 @@ def probe_runtime_state_for_profile(
     resource: str,
     launch_user: str,
     *,
+    runtime_dir: str,
     launch_profile: str = "",
     agent: str = "",
     project_slug: str = "",
@@ -310,7 +316,7 @@ def probe_runtime_state_for_profile(
                 profile=profile,
                 what=what,
                 resource=resource,
-                runtime_dir="/",
+                runtime_dir=runtime_dir,
                 user=launch_user,
                 launch_profile=launch_profile,
                 agent=agent,
