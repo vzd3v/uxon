@@ -38,17 +38,20 @@ writes use `tomlkit`. Both are hard runtime dependencies (pulled in by
 Before opening a PR, run:
 
 ```bash
-python3 -m py_compile $(git ls-files '*.py')
-python3 -m pytest tests/ -n auto
+git ls-files -z '*.py' | xargs -0 python3 -m py_compile
 ruff check .
 ruff format --check .
 pyright
+lint-imports
+python3 -m pytest tests/ -n auto
 python -m build               # smoke-test the wheel/sdist
 twine check dist/*            # README rendering on PyPI
+python -c "import sys, uxon.cli; assert 'textual' not in sys.modules"
 ```
 
-CI runs the same. If something passes locally but breaks CI, please
-add a test that catches it.
+The reusable fast CI gate runs these checks across its Python matrix, plus a
+secrets scan. Heavy checks run separately; both gates are required for releases.
+If something passes locally but breaks CI, add a regression for the cause.
 
 ## Branching and commits
 
@@ -84,8 +87,7 @@ These are non-negotiable — see
 full picture. Quick list:
 
 - **`textual` is imported lazily inside `do_interactive`.** Non-TUI
-  subcommands (`uxon list`, `uxon doctor`, `uxon version`) must run
-  without `textual` installed.
+  subcommands (`uxon list`, `uxon doctor`, `uxon version`) must not import it.
 - **All key handling goes through `BINDINGS`.** No `on_key` overrides
   on screen classes; a drift guard test refuses the PR otherwise.
 - **Config writes use `tomlkit`** — round-trip preserves comments and
@@ -100,7 +102,7 @@ full picture. Quick list:
 
 ## Tests
 
-- Prefer pure tests in `src/uxon/tui/state.py` for branchy UI logic.
+- Prefer tests exercising pure `uxon.tui.state` behavior for branchy UI logic.
   Pilot/pty tests are reserved for Textual wiring (mounting, key
   routing, `ListView`/`DataTable` events, async workers,
   `call_later`).
@@ -113,15 +115,48 @@ full picture. Quick list:
   (`pytest tests/test_specific.py -k name`); always run the full
   suite (`-n auto`) before pushing.
 
+Keep verification levels separate:
+
+```bash
+pytest tests/ -n auto                  # default: excludes slow and container
+pytest tests/ -m slow -rs              # real-process/pty and timing checks
+pytest tests/ -m container -rs         # real Docker/Podman lifecycle checks
+UXON_PERF=1 pytest tests/perf/ -s       # optional benchmark measurements
+```
+
+The default set includes limited Textual wiring tests, not just unit tests.
+Place expensive process/terminal checks under `slow`; container tests live in
+`tests/integration/runtime/` and require a reachable daemon. Local container
+runs skip unavailable engines. CI/release uses a separate required integration
+job: it runs `slow`, requires Docker, and sets `UXON_TEST_REQUIRE_DOCKER=1` so
+Docker unavailability fails rather than silently skips. Podman remains optional.
+Performance measurements stay opt-in and outside the gates.
+
+The audit benchmark measures channel machinery after CLI module startup, with
+only OS, NSS, and socket boundaries controlled. Sink detection, identity parsing,
+serialization, and send dispatch run normally; the numerical budgets apply to
+that controlled measurement. It separately reports first-call latency using real
+identity lookup and a temporary Unix datagram sink. That host-dependent result
+is not a portable latency guarantee or a pass/fail timing threshold.
+Run the budget assertions on an idle benchmark host: competing workloads can
+inflate wall-clock tails even when the channel performs no blocking I/O.
+Keep failed measurements when comparing results; a successful retry does not
+establish a stable latency baseline.
+
+Some tmux builds have an upstream libutempter child-status defect; integration
+CI uses a pinned fixed build. See the [installation caveat](docs/start/install.md#tmux-child-status-caveat)
+when reproducing retained-pane failures locally.
+
 ## Adding a config key
 
 1. Extend `DEFAULT_CONFIG` / `Config` in `src/uxon/domain/config.py`, the public
    key/type schema in `src/uxon/domain/config_schema.py`, and parsing in
    `src/uxon/infra/config_loader.py`.
 2. Add validation if the value space is constrained.
-3. Add a matching `SettingSpec` in
+3. For scalar keys, add a matching `SettingSpec` in
    `src/uxon/infra/settings.py::SETTINGS_SPECS` so the TUI Settings screen
-   exposes it.
+   exposes it. Nested agent/profile/runtime tables and path-rule arrays are
+   file-only; do not force them into scalar settings.
 4. Document it in [`docs/reference/configuration.md`](docs/reference/configuration.md)
    (use case + the reference table).
 5. Add a `load_config` test in `tests/test_uxon.py` and a
