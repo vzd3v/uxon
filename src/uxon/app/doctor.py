@@ -401,7 +401,7 @@ def _doctor_runtime_rows(
             try:
                 # Validate the mapped cwd: a non-absolute or ``..`` result
                 # raises SystemExit (caught below → name_error).
-                apply_path_map(cwd, profile.path_map)
+                runtime_dir = apply_path_map(cwd, profile.path_map)
                 name = resolve_runtime_resource_name(
                     profile,
                     user=launch_user,
@@ -417,6 +417,7 @@ def _doctor_runtime_rows(
                     profile,
                     name,
                     launch_user,
+                    runtime_dir=runtime_dir,
                     launch_profile=launch_profile.id,
                     agent=launch_profile.agent,
                     project_slug=project_slug,

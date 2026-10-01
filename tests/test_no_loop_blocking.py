@@ -134,6 +134,10 @@ def _mk_ctx(**overrides):
         ),
     )
     base.update(overrides)
+    if "launch_profiles" not in overrides:
+        from helpers import make_launch_profile_options
+
+        base["launch_profiles"] = make_launch_profile_options()
     ctx = TuiContext(**base)
     ctx.refresh_sources = [
         SourceSpec(
@@ -315,6 +319,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         rec: list[bool] = []
+        workspace_probes: list[tuple] = []
 
         def on_launch_cwd(profile_id, mode_id, target_dir=None):
             rec.append(_on_loop())
@@ -326,6 +331,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
         # the options screen mount (an empty agent list won't render).
         ctx = _mk_ctx(
             on_launch_cwd=on_launch_cwd,
+            on_probe_worktrees=lambda *a: workspace_probes.append((*a, _on_loop())) or [],
             on_probe_existing_sessions=lambda *a: (),
             enabled_profiles=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
@@ -349,6 +355,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(opts, msg="LaunchOptionsScreen was not reached")
             opts.dismiss(("claude", "normal"))
             await self._settle(pilot)
+            self.assertEqual(workspace_probes, [("/srv/work", "claude", "normal", False)])
             self.assertEqual(rec, [False], msg="on_launch_cwd commit ran on the event loop")
 
     async def test_runtime_probe_runs_off_loop(self) -> None:

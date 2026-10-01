@@ -42,8 +42,10 @@ host-wide path. Full options: [`start/install.md`](install.md).
 ## Step 2 — Create the project root
 
 ```bash
-sudo install -d -o root -g devs /srv/projects
-sudo chmod 2775 /srv/projects     # setgid: new files inherit `devs` group
+sudo groupadd -r devs
+sudo install -d -o root -g devs -m 2750 /srv/projects
+sudo install -d -o root -g devs -m 2770 /srv/projects/shared
+sudo setfacl -d -m u::rwx,g::rwx,m::rwx,o::--- /srv/projects/shared
 ```
 
 (Adjust the group to whatever your team uses.) For richer ACL
@@ -57,6 +59,8 @@ For each developer (template):
 ```bash
 sudo useradd -m -s /bin/bash nadia          # the developer
 sudo useradd -m -s /bin/bash nadia-agent    # the paired agent account
+sudo usermod -aG devs nadia
+sudo usermod -aG devs nadia-agent
 
 # nadia -> nadia-agent (the developer can sudo into their own agent):
 echo 'nadia ALL=(nadia-agent) NOPASSWD: ALL' \
@@ -64,11 +68,16 @@ echo 'nadia ALL=(nadia-agent) NOPASSWD: ALL' \
 sudo chmod 440 /etc/sudoers.d/uxon-nadia-agent
 
 # nadia-agent gets a writable subdir of the project root:
-sudo install -d -o nadia-agent -g devs -m 2775 /srv/projects/nadia
+sudo install -d -o nadia-agent -g devs -m 2750 /srv/projects/nadia
+sudo setfacl -m u:nadia:rwx,g::r-x,m::rwx,o::--- /srv/projects/nadia
+sudo setfacl -d -m u::rwx,u:nadia:rwx,g::r-x,m::rwx,o::--- /srv/projects/nadia
 ```
 
 The grant lets `nadia` become **`nadia-agent`**, not the other
-way round. `nadia-agent` cannot impersonate `nadia`.
+way round. `nadia-agent` cannot impersonate `nadia`. Repeat the account and
+workspace steps for Liam and Ethan. Reconnect shell sessions after adding group
+membership. Personal trees are peer-readable, not peer-writable; `/shared` is
+intentionally collaborative.
 
 Install the agent binary for each `<user>-agent` — typically by
 running `sudo -H -u nadia-agent -- /bin/bash` and then the agent's installer.
@@ -81,6 +90,7 @@ operator must add the corresponding launch profile to `enabled_profiles`.
 For the team lead (and any other supervisor account):
 
 ```bash
+sudo usermod -aG devs lead
 echo 'lead ALL=(nadia-agent,liam-agent,ethan-agent) NOPASSWD: ALL' \
   | sudo tee /etc/sudoers.d/uxon-lead-supervisor
 sudo chmod 440 /etc/sudoers.d/uxon-lead-supervisor
@@ -102,11 +112,11 @@ most teams the per-target grant is the right default.
 
 ```toml
 default_launch_mode   = "fixed"
-default_launch_user          = "team-agent"      # fallback for unmapped callers
+default_launch_user   = "lead"            # fallback for the supervisor
 session_users         = ["nadia-agent", "liam-agent", "ethan-agent"]
 enable_all_users_list = true
 allowed_roots         = ["/srv/projects"]
-new_project_root      = "/srv/projects"
+new_project_root      = "/srv/projects/shared"
 
 [launch_user_by_caller]
 nadia = "nadia-agent"
@@ -121,6 +131,10 @@ default_profile = "claude"
 If you don't want a fallback launch user (i.e. unmapped callers
 should fail outright), drop `default_launch_user` — `uxon` then refuses
 to launch for callers that aren't in `[launch_user_by_caller]`.
+
+"Create new project" uses the deliberately shared tree. For a personal project,
+create its directory inside your own subtree, enter it, then use `uxon run` or
+the TUI's current-folder action. The root directory is not writable by peers.
 
 ## Step 6 — Verify
 

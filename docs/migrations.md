@@ -32,6 +32,9 @@ default_profile = "claude_work"
 agent = "claude"
 launch_user = "team-agent"
 runtime = "direct"
+
+[launch.profiles.codex_safe]
+agent = "codex"
 ```
 
 Replace removed `agents.enabled`, `agents.default`, per-project agent defaults,
@@ -81,6 +84,12 @@ prove lifecycle continuity across an operator-managed boundary.
 
 ## Provision launch records for multi-controller hosts
 
+Drain managed-runtime sessions with the old installation before upgrading.
+Launch-record schema 3 saves the original runtime directory and project slug
+alongside the workload nonce. Older records lack that context and are refused;
+they cannot safely authorize teardown after the upgrade. Do not recreate records
+from pane environment or current working directories.
+
 The default launch-record store is controller-private. If several trusted
 controller accounts supervise the same sessions, provision one root-owned
 setgid directory, exclude launch users from its group, and set
@@ -93,6 +102,19 @@ sudo install -d -o root -g uxon-control -m 2770 /var/lib/uxon/launch-records
 ```toml
 launch_record_dir = "/var/lib/uxon/launch-records"
 ```
+
+## Update audit queries and diagnostic storage
+
+Audit schema 2 uses `process_user` / `process_uid`, replacing `caller_user` /
+`caller_uid`. Native journal fields are `PROCESS_USER` / `PROCESS_UID`; parsed
+syslog JSON uses lowercase. Query retained schema-1 events separately when
+reviewing history across the upgrade.
+
+Debug and metrics output requires a private directory owned by the controller.
+An existing shared directory is refused without changing its permissions.
+Choose a new dedicated directory, or review and restrict an old dedicated
+diagnostic directory yourself. Current key diagnostics omit input contents;
+historical key logs may contain typed or pasted text. Review them before sharing.
 
 ## Roll out
 

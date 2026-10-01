@@ -565,31 +565,35 @@ class TuiBridge:
         ]
         return options, resolved.git_remote.default_profile
 
-    def on_probe_worktrees(self, cwd_arg: str) -> list:
-        """Workspaces for ``cwd_arg``'s repo (folders only).
+    def on_probe_worktrees(self, cwd_arg: str, profile_id: str, mode_id: str) -> list:
+        """Validate the chosen profile's access and list its target-user worktrees.
 
-        Resolves ``cwd`` → primary repo root with non-interactive resolvers
-        so the fullscreen TUI never blocks on a hidden ``sudo`` prompt, then
-        lists worktrees under the same ``identity.nonint_command_prefix_for_user``.
-
-        Two empty-ish outcomes are kept distinct so the WORKSPACE column can
-        tell them apart: a folder that is **not a git repo** returns ``[]``
-        (the benign "git not initialized" hint), whereas a folder that **is**
-        a repo but whose ``git worktree list`` enumeration fails raises
-        :class:`WorktreeProbeError` (an error row) — a real git failure must
-        not masquerade as "no repo here".
+        A non-git directory returns an empty list. Failed enumeration raises;
+        it must not be treated as a non-git directory. Runs off the event loop.
         """
         from uxon.infra.worktrees import WorktreeProbeError, parse_worktree_porcelain
 
-        repo_root = git.git_repo_root_nonint_as_user(self.cfg, cwd_arg, self.launch_user)
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            profile_id,
+            cwd_arg,
+            mode_id,
+            target_may_not_exist=False,
+        )
+        user = resolved.launch_user
+        cwd_arg = resolved.canonical_target
+        launch_app.ensure_launch_target_allowed(self.cfg, user, cwd_arg)
+        repo_root = git.git_repo_root_nonint_as_user(self.cfg, cwd_arg, user)
         if not repo_root:
             return []
-        primary = git.git_common_dir_root_as_user(self.cfg, cwd_arg, self.launch_user)
+        primary = git.git_common_dir_root_as_user(self.cfg, cwd_arg, user)
         if primary:
             repo_root = primary
         cp = run_query(
-            identity.nonint_command_prefix_for_user(self.cfg, self.launch_user)
+            identity.nonint_command_prefix_for_user(self.cfg, user)
             + ["git", "-C", repo_root, "worktree", "list", "--porcelain"],
+            timeout=self.cfg.execution.backend_for_user(user).probe_timeout_seconds,
         )
         if cp.returncode != 0:
             raise WorktreeProbeError((cp.stderr or "").strip() or "git worktree list failed")
@@ -677,8 +681,3 @@ class TuiBridge:
 
     def on_probe_cwd_writable(self) -> bool:
         return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, self.cwd)
-
-    def on_probe_dir_launchable(self, target_dir: str) -> bool:
-        # Same predicate as on_probe_cwd_writable, parameterised by target —
-        # gates the "Open existing project" launch (no pre-probed slot).
-        return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, target_dir)

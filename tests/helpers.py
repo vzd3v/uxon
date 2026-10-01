@@ -43,6 +43,17 @@ def make_config(**overrides: object) -> Config:
     return Config(**base)  # type: ignore[arg-type]
 
 
+def make_launch_profile_options(agents=None, *, user: str = "alice"):
+    """The authoritative built-in profile catalog for synthetic TUI contexts."""
+    from uxon.tui.context import LaunchProfileOption
+
+    catalog = agents or default_agent_catalog()
+    return {
+        profile.id: LaunchProfileOption(profile.id, profile.id, profile.agent, user)
+        for profile in builtin_launch_profiles(catalog).values()
+    }
+
+
 def make_session_snapshot(
     sessions: list[SessionInfo] | tuple[SessionInfo, ...] = (),
     *,

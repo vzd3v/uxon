@@ -177,7 +177,7 @@ ls /etc/sudoers.d/ | grep nadia
 ls /home/ | grep nadia
 # Expected: nothing (or only handed-over directories).
 
-journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=nadia --since today
+journalctl SYSLOG_IDENTIFIER=uxon PROCESS_USER=nadia --since today
 # Expected: only the kill events from step 1; no later activity.
 ```
 

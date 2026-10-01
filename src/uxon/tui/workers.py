@@ -38,7 +38,6 @@ from .messages import (
     _LinkHealthUpdated,
     _OffLoopCallbackDone,
     _RefreshSourceLanded,
-    _WorktreesProbed,
 )
 
 if TYPE_CHECKING:
@@ -356,56 +355,6 @@ class WorkerCoordinator:
         if status is None:
             status = LinkHealthStatus()
         self._post_message(_LinkHealthUpdated(status))
-
-    # ── One-shot worktree probe (launch-screen open) ────────────────
-
-    def probe_workspaces_then(
-        self, cwd: str, on_done: Any, *, probe_launchable: Any = None
-    ) -> None:
-        """Probe ``cwd`` off the event loop; call ``on_done(launchable, list, error)``.
-
-        Off-event-loop git probe (under the non-interactive sudo prefix on
-        the CLI side). Runs once per launch-flow open, before the
-        launch screen is pushed. The worker reads ``on_probe_worktrees``
-        off the frozen :class:`TuiConfig` (no mutable-ctx access from the
-        thread, same rule as :meth:`_probe_link_health_worker`), then posts
-        a :class:`_WorktreesProbed`; ``on_done`` runs on the message loop so
-        it can gate / push :class:`LaunchOptionsScreen` safely.
-
-        ``probe_launchable`` (optional) is a launchability predicate run in
-        the SAME worker so its cross-user ``sudo`` call never blocks the
-        event loop — passed when the caller has no pre-resolved value (cwd
-        pre-resolves via its reactive slot and omits it → ``launchable`` is
-        ``None``). Any *launchability* probe error degrades to "not
-        launchable" (False), mirroring :func:`probe_cwd_writable`'s yes/no
-        contract. A False result skips the worktree probe — the gate aborts
-        anyway. A *worktree* probe that raises (e.g. ``git worktree list``
-        failed on a real repo) is NOT swallowed: its message rides ``error``
-        so the WORKSPACE column can show an error row.
-        """
-
-        def _worker() -> None:
-            launchable: bool | None = None
-            if probe_launchable is not None:
-                try:
-                    launchable = bool(probe_launchable())
-                except Exception:  # pragma: no cover — defensive; any error = no
-                    launchable = False
-            workspaces: list = []
-            error: str | None = None
-            if launchable is not False:
-                try:
-                    probe = self._cfg.on_probe_worktrees
-                    workspaces = list(probe(cwd)) if callable(probe) else []
-                except Exception as exc:
-                    # A git probe that raised is a real failure (e.g. the repo
-                    # exists but ``git worktree list`` errored) — surface it as
-                    # an error row rather than silently hiding the column or
-                    # mislabelling it as "not a git repo".
-                    error = str(exc).strip() or exc.__class__.__name__
-            self._post_message(_WorktreesProbed(launchable, workspaces, on_done, error))
-
-        self._run_worker(_worker, thread=True, exclusive=False, group="worktree_probe")
 
     # ── Interactive blocking callbacks (run off the event loop) ──────
 

@@ -189,7 +189,6 @@ def build_tui_context(
     on_refresh = _wrap_tui_callback(bridge.on_refresh, _CbErr)
     on_probe_link_health = _wrap_tui_callback(bridge.on_probe_link_health, _CbErr)
     on_probe_cwd_writable = _wrap_tui_callback(bridge.on_probe_cwd_writable, _CbErr)
-    on_probe_dir_launchable = _wrap_tui_callback(bridge.on_probe_dir_launchable, _CbErr)
     on_launch_cwd = _wrap_tui_callback(bridge.on_launch_cwd, _CbErr)
     on_launch_new = _wrap_tui_callback(bridge.on_launch_new, _CbErr)
     on_launch_existing = _wrap_tui_callback(bridge.on_launch_existing, _CbErr)
@@ -444,7 +443,6 @@ def build_tui_context(
         on_refresh=on_refresh,
         on_probe_link_health=on_probe_link_health,
         on_probe_cwd_writable=on_probe_cwd_writable,
-        on_probe_dir_launchable=on_probe_dir_launchable,
         on_launch_cwd=on_launch_cwd,
         on_launch_new=on_launch_new,
         on_launch_existing=on_launch_existing,

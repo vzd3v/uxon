@@ -76,7 +76,6 @@ def _plan_tui_run_profile(
         None,
         resolved_profile=resolved,
         server_running=snapshot.server_state == "running",
-        active_sessions=sessions,
     )
 
 
@@ -167,7 +166,6 @@ def _plan_tui_existing_session_or_launch(
         None,
         resolved_profile=resolved,
         server_running=snapshot.server_state == "running",
-        active_sessions=sessions,
     )
 
 

@@ -393,7 +393,6 @@ def plan_worktree_launch(
             None,
             resolved_profile=resolved_profile,
             server_running=snapshot.server_state == "running",
-            active_sessions=sessions,
         )
         # No side effects: print the git plan, skip add/copy/exclude/audit.
         print(f"worktree_path={shlex.quote(worktree_path)}")
@@ -466,7 +465,6 @@ def plan_worktree_launch(
         branch_name,
         resolved_profile=resolved_profile,
         server_running=snapshot.server_state == "running",
-        active_sessions=sessions,
     )
 
     _audit.audit(

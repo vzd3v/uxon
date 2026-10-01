@@ -17,11 +17,9 @@ defense-in-depth.
 > [`../../explain/isolation-model.md`](../../explain/isolation-model.md).
 
 Everything below is **operator-facing runtime config**, not `uxon`
-behaviour — `uxon` only execs the prefix you give it and stays
-runtime-agnostic. The `docker` / `podman` commands are examples of
-what an operator puts in the `create_command` / image; swap the
-binary name for your runtime (`docker` → `podman`, `docker compose`
-→ `podman compose`).
+behaviour — `uxon` executes the configured adapter and stays runtime-agnostic.
+This page continues the rootless Docker recipe. Review Podman's UID mapping
+and Compose provider separately before adapting it.
 
 ## The container definition must not be agent-writable
 
@@ -31,19 +29,14 @@ get it wrong.** Keep the container *definition* — the
 builds from — on an **operator-owned path outside the bind-mounted
 repo**, and reference it with an explicit `-f`:
 
-```toml
-[runtimes.workbox.readiness]
-create_command = ["docker", "compose", "-f", "/operator/uxon/compose.yml", "up", "-d"]
-```
-
 ```text
 /operator/uxon/compose.yml      # operator-owned, root:root, 0644 — outside any mount
 /srv/projects/<repo>/           # bind-mounted into the container; agent-writable
 ```
 
-The minimal guide's `compose.yml`-next-to-the-project shape is a
-footgun: that file lives **inside** the bind mount, so the agent can
-edit it. A yolo or prompt-injected agent that can rewrite the
+Use the explicit create command in the [setup recipe](../customise/run-agents-in-a-container.md#configure-the-launch-profile).
+A definition inside the bind mount would let the workload rewrite it.
+A yolo or prompt-injected agent that can rewrite the
 definition can add `-v /:/host`, `--privileged`, a socket mount, or a
 devcontainer `initializeCommand` / `onCreateCommand` — and those
 **run on the host** at the next rebuild. That is a full host escape,
@@ -56,14 +49,15 @@ as a backstop, not your guarantee — verify the path yourself.
 
 ## A hardened run template
 
-Start from drop-everything and add back only what the agent needs:
+Keep the setup recipe's resource and mount wiring, then add resource limits:
 
 ```yaml
 # /operator/uxon/compose.yml — operator-owned, outside the repo mount
 services:
   agent:
     image: registry.example/uxon-agent@sha256:<digest>   # pin by digest, not :latest
-    user: "1000:1000"                # non-root inside the container
+    container_name: ${UXON_RESOURCE:?set UXON_RESOURCE}
+    user: "0:0"                     # rootless daemon owner's host UID
     init: true                       # PID 1 reaps zombies (docker run: --init)
     read_only: true                  # read-only root filesystem
     cap_drop: [ALL]                  # drop every Linux capability
@@ -72,11 +66,19 @@ services:
     pids_limit: 512                  # cap process count (fork-bomb guard)
     mem_limit: 8g
     cpus: "2.0"
+    environment:
+      HOME: /tmp/uxon-home
     tmpfs:
       - /tmp:size=512m,mode=1777     # writable scratch on a read-only root
     volumes:
-      - /srv/projects/<repo>:/work   # the repo, the only writable bind
-    working_dir: /work
+      - type: bind
+        source: ${UXON_PROJECT:?set UXON_PROJECT}
+        target: ${UXON_RUNTIME_DIR:?set UXON_RUNTIME_DIR}
+        bind:
+          create_host_path: false
+      - /operator/uxon/runtime_stop.py:/usr/local/libexec/uxon-runtime-stop.py:ro
+    working_dir: ${UXON_RUNTIME_DIR:?set UXON_RUNTIME_DIR}
+    command: [sh, -c, 'mkdir -p "$$HOME" && exec sleep infinity']
 ```
 
 The `docker run` equivalent of the security flags, for reference:
@@ -91,7 +93,8 @@ docker run --cap-drop=ALL --security-opt=no-new-privileges \
 agent:
 
 - **Never mount the runtime socket** (`/var/run/docker.sock`,
-  the podman socket) — socket access is host-root-equivalent.
+  the Podman socket). A rootful socket grants host-root authority; a rootless
+  socket grants the daemon owner's authority over host files and containers.
 - **Never `--privileged`.** It disables almost every isolation
   control at once.
 - **Never share host namespaces** — `--network=host`, `--pid=host`,
@@ -99,24 +102,18 @@ agent:
 
 ## Default-deny egress
 
-Give the container **no** outbound network by default and allow back
-only the few hosts the agent legitimately needs (the model API, your
-package registry, your git remote). The Anthropic `init-firewall`
-pattern is a good template: bring the firewall up as the container's
-first action, resolve the allowlisted domains, and drop everything
-else.
+The template above does not implement an egress allowlist. Enforce one through
+operator-controlled networking or a logging proxy outside the workload; allow
+only the model API, package registry and git remote it needs. An offline
+workload can use `network_mode: none`. Do not grant the workload `NET_ADMIN`
+to run its own firewall: the template drops that capability, and a workload
+able to rewrite its firewall can bypass it.
 
 Block the **cloud metadata endpoint** explicitly — `169.254.169.254`
 and the link-local `169.254.0.0/16` range. An agent that can reach it
 can read the host's instance-IAM credentials (an SSRF straight to your
-cloud account):
-
-```bash
-# inside the container's firewall init, before any agent work — and
-# ahead of any allowlist ACCEPT rules (iptables is first-match).
-iptables -A OUTPUT -d 169.254.169.254 -j DROP   # the IMDS IP, kept explicit
-iptables -A OUTPUT -d 169.254.0.0/16   -j DROP   # the whole link-local range
-```
+cloud account). Apply this denial in the external network policy, ahead of
+allow rules, and deny direct routes that bypass the proxy.
 
 **Check it.** From inside the container, the metadata endpoint must
 fail:
@@ -140,25 +137,30 @@ or a neighbour's container. Put it on its own network.
 
 ## Fix the rootless UID-mapping footgun
 
-Under rootless docker/podman, files the agent writes in the bind mount
-land owned by a **mapped** UID, not the launch user — so the developer
-often cannot read back or delete what the agent created without
-`sudo`. Map the container user to the host user:
+Docker and Podman have different rootless mapping options:
+
+- **Docker rootless:** container UID/GID 0 maps to the daemon owner's host
+  UID/GID. Positive container IDs map to subordinate IDs. This recipe runs
+  as `0:0` inside the namespace with capabilities dropped; that is not host
+  root. Passing the host numeric UID to `--user` does not preserve its host
+  ownership. See [Docker UID/GID mapping](https://docs.docker.com/engine/security/rootless/uid-gid-mapping/).
+- **Podman rootless:** `--userns=keep-id` maps the invoking user's identity to
+  the same container UID/GID and selects that user unless explicitly
+  overridden. Review the image and adapter for that identity; see
+  [Podman user namespaces](https://docs.podman.io/en/latest/markdown/podman-run.1.html#userns-mode).
 
 ```bash
-# podman: map the container's user to the host launch user
+# Podman only; review the remaining runtime flags separately:
 podman run --userns=keep-id ...
-# docker rootless: run as the host UID:GID directly
-docker run --user "$(id -u):$(id -g)" ...
 ```
 
 **Check it.** Have the agent write a file in the repo, then confirm
 the launch user owns it and can delete it without `sudo`:
 
 ```bash
-docker exec <name> sh -c 'touch /work/.uxon-ownership-probe'
-ls -ln /srv/projects/<repo>/.uxon-ownership-probe   # UID should be the launch user's
-rm /srv/projects/<repo>/.uxon-ownership-probe        # must succeed without sudo
+docker exec -w /work/nadia/repo <name> touch .uxon-ownership-probe
+ls -ln /srv/projects/nadia/repo/.uxon-ownership-probe  # launch user's host UID
+rm /srv/projects/nadia/repo/.uxon-ownership-probe     # as launch user, without sudo
 ```
 
 ## File-based secrets
@@ -205,8 +207,9 @@ The CPU/RAM caps in the template are not the whole story:
   sharing one backing UID, one tenant exhausting
   `fs.inotify.max_user_instances` / `max_user_watches` (file watchers
   are per-*UID*, kernel-wide) can block every other tenant's watches.
-  Give each user a **non-overlapping subuid/subgid range** so the
-  kernel accounts them separately.
+  Give each launch user a separate rootless daemon and non-overlapping
+  subuid/subgid ranges. Container UID 0 still counts against that daemon
+  owner's UID; adding more containers under one daemon does not separate it.
 
 This composes with the OS-level per-UID limits in
 [`apply-resource-limits.md`](apply-resource-limits.md) — the container

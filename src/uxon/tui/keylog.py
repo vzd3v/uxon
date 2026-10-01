@@ -15,7 +15,6 @@ so ``XTermParser.feed`` is called **exactly once per ``os.read``** with
 that read's whole payload. Tapping ``feed`` therefore records, with no
 extra syscalls and no UI slowdown, the authoritative *per-read* picture:
 
-  * ``data``    — exactly what Python read from stdin this read (escaped),
   * ``nbytes``  — its byte length,
   * ``gap_ms``  — wall gap since the previous read.
 
@@ -35,10 +34,9 @@ behind a long gap against an external stdin oracle to confirm a kernel
 overflow drop. All three witnesses land in the SAME
 ``tui-debug-{user}-{date}.log``, gated by ``UXON_DEBUG=keys``.
 
-This is deliberately committed and always-available: the operator runs
-``UXON_DEBUG=keys uxon``, reproduces the swallow with *any* keys (no
-fixed pattern, nothing to memorise), and the log alone tells the whole
-story. Off by default; one ``frozenset`` check when disabled.
+Input contents are never recorded. Printable keys and unknown key names
+are classified as input; only navigation/control names are retained.
+Off by default; one ``frozenset`` check when disabled.
 """
 
 from __future__ import annotations
@@ -47,6 +45,31 @@ import time
 
 from uxon.infra.events import debug as _debug
 from uxon.infra.events import is_enabled as _debug_enabled
+
+_NAVIGATION_KEYS = frozenset(
+    {
+        "up",
+        "down",
+        "left",
+        "right",
+        "escape",
+        "enter",
+        "tab",
+        "shift+tab",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "backspace",
+        "delete",
+        "insert",
+    }
+)
+
+
+def diagnostic_key(key: str) -> str:
+    """Keep useful navigation metadata without recording entered characters."""
+    return key if key in _NAVIGATION_KEYS else "input"
 
 
 def install_stdin_tap() -> bool:
@@ -88,9 +111,6 @@ def install_stdin_tap() -> bool:
             _debug(
                 "keys",
                 at="stdin_read",
-                # latin-1 keeps every byte visible and JSON-safe, so
-                # escape sequences / control bytes survive in the log.
-                data=raw.decode("latin-1"),
                 nbytes=len(raw),
                 nchars=len(data),
                 gap_ms=None if prev is None else round((now - prev) * 1000, 1),

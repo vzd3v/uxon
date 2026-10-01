@@ -3945,6 +3945,7 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
 
         cfg = config_loader.load_config()
         with (
+            mock.patch.object(launch_app, "ensure_launch_target_allowed"),
             mock.patch(
                 "uxon.infra.git.git_repo_root_nonint_as_user", return_value="/srv/work/myapp"
             ),
@@ -3957,20 +3958,21 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
             ctx = context_builder.build_tui_context(
                 cfg, "dana_agent", "dana_agent", "/srv/work/myapp", skeleton=True
             )
-            rows = ctx.on_probe_worktrees("/srv/work/myapp")
+            rows = ctx.on_probe_worktrees("/srv/work/myapp", "claude", "normal")
         self.assertTrue(rows[0].is_primary)
         self.assertEqual(rows[1].branch, "feature/auth")
 
     def test_probe_worktrees_non_git_returns_empty(self) -> None:
         cfg = config_loader.load_config()
         with (
+            mock.patch.object(launch_app, "ensure_launch_target_allowed"),
             mock.patch("uxon.infra.git.git_repo_root_nonint_as_user", return_value=None),
             mock.patch("uxon.infra.identity.process_user", return_value="dana_agent"),
         ):
             ctx = context_builder.build_tui_context(
                 cfg, "dana_agent", "dana_agent", "/tmp/plain", skeleton=True
             )
-            self.assertEqual(ctx.on_probe_worktrees("/tmp/plain"), [])
+            self.assertEqual(ctx.on_probe_worktrees("/tmp/plain", "claude", "normal"), [])
 
     def test_probe_worktrees_git_failure_raises(self) -> None:
         """A real repo whose ``git worktree list`` errors makes the probe RAISE
@@ -3991,6 +3993,7 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
 
         cfg = config_loader.load_config()
         with (
+            mock.patch.object(launch_app, "ensure_launch_target_allowed"),
             mock.patch(
                 "uxon.infra.git.git_repo_root_nonint_as_user", return_value="/srv/work/myapp"
             ),
@@ -4004,7 +4007,7 @@ class BuildTuiContextWorktreeWiringTests(unittest.TestCase):
                 cfg, "dana_agent", "dana_agent", "/srv/work/myapp", skeleton=True
             )
             with self.assertRaises(CallbackError) as caught:
-                ctx.on_probe_worktrees("/srv/work/myapp")
+                ctx.on_probe_worktrees("/srv/work/myapp", "claude", "normal")
         self.assertIn("fatal: not a git repository", str(caught.exception))
 
 

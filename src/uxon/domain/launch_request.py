@@ -34,6 +34,8 @@ class ManagedTmuxLaunch:
     runtime_kind: str = "direct"
     runtime_fingerprint: str = ""
     runtime_resource: str = ""
+    runtime_dir: str = ""
+    project_slug: str = ""
     runtime_id: str = ""
     runtime_cgroup: str = ""
     runtime_epoch: str = ""

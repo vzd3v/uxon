@@ -55,6 +55,7 @@ def git_repo_root_nonint_as_user(cfg: Config, cwd: str, target_user: str) -> str
     cp = run_query(
         command_prefix(cfg, target_user, interactive=False)
         + ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+        timeout=cfg.execution.backend_for_user(target_user).probe_timeout_seconds,
     )
     if cp.returncode != 0:
         return None
@@ -77,6 +78,7 @@ def git_common_dir_root_as_user(cfg: Config, cwd: str, target_user: str) -> str 
     cp = run_query(
         command_prefix(cfg, target_user, interactive=False)
         + ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
+        timeout=cfg.execution.backend_for_user(target_user).probe_timeout_seconds,
     )
     if cp.returncode != 0:
         return None

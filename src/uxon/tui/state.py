@@ -316,46 +316,22 @@ def launch_profile_users_differ(
 
 
 def _agent_id_for_launch_choice(
-    agents: Mapping[str, Any],
     launch_choice_id: str,
     launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
 ) -> str:
-    if launch_choice_id in agents:
-        return launch_choice_id
     if launch_profiles is not None:
         profile = launch_profiles.get(launch_choice_id)
-        if profile is not None:
-            return profile.agent
+        return profile.agent if profile is not None else ""
     return launch_choice_id
 
 
-def mode_item_ids(
+def launch_permission_modes(
     agents: Mapping[str, Any],
     profile_id: str,
     launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
-) -> tuple[str, ...]:
-    spec = agents.get(_agent_id_for_launch_choice(agents, profile_id, launch_profiles))
-    if spec is None:
-        return ()
-    return tuple(f"mode-{mode.id}" for mode in spec.permission_modes)
-
-
-def launch_mode_id(
-    agents: Mapping[str, Any],
-    profile_id: str,
-    mode_index: int,
-    launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
-) -> str | None:
-    spec = agents.get(_agent_id_for_launch_choice(agents, profile_id, launch_profiles))
-    if spec is None:
-        return None
-    modes = spec.permission_modes
-    if 0 <= mode_index < len(modes):
-        return modes[mode_index].id
-    if not modes:
-        return None
-    # Out-of-range index falls back to the agent's first (default) mode.
-    return modes[0].id
+) -> tuple:
+    spec = agents.get(_agent_id_for_launch_choice(profile_id, launch_profiles))
+    return spec.permission_modes if spec is not None else ()
 
 
 def launch_commit_decision(
@@ -363,7 +339,7 @@ def launch_commit_decision(
     active_panel: str,
     current_agent: str,
     availability: Mapping[str, Any],
-    mode_index: int,
+    selected_mode_id: str | None,
     agents: Mapping[str, Any],
     launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
 ) -> LaunchCommitDecision:
@@ -371,10 +347,10 @@ def launch_commit_decision(
         if agent_is_pending(current_agent, availability):
             return LaunchCommitDecision("ignore")
         return LaunchCommitDecision("switch-to-mode")
-    mode_id = launch_mode_id(agents, current_agent, mode_index, launch_profiles)
-    if mode_id is None:
+    modes = launch_permission_modes(agents, current_agent, launch_profiles)
+    if selected_mode_id is None or not any(mode.id == selected_mode_id for mode in modes):
         return LaunchCommitDecision("dismiss")
-    return LaunchCommitDecision("commit", mode_id)
+    return LaunchCommitDecision("commit", selected_mode_id)
 
 
 def next_launch_panel(current: str, direction: int, order: tuple[str, ...]) -> str:

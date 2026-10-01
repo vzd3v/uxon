@@ -22,14 +22,9 @@ from uxon.infra.run import run_query
 class RuntimeTeardown:
     """A prepared runtime session stop (the kill-path mirror of launch).
 
-    Captured while the session is still alive (its env holds the resolved
-    runtime resource and launch-time identity markers). ``stop_cmd`` is the
-    rendered ``stop_command`` argv; ``resource`` is operator-chosen;
-    ``launch_epoch`` is the resource start epoch
-    stashed at launch (``UXON_RUNTIME_EPOCH``, empty when ``identity_command`` is
-    unset). The PID-recycle guard compares ``launch_epoch`` against
-    the live epoch in :func:`run_runtime_teardown` — re-resolved there, after
-    ``kill-session``, so the comparison sits as close to the kill as possible.
+    Rendered exclusively from the verified controller-side launch record.
+    The saved resource identity is compared with the live runtime before the
+    stop adapter uses the nonce-scoped workload record.
     """
 
     stop_cmd: list[str]
@@ -37,6 +32,11 @@ class RuntimeTeardown:
     resource: str
     runtime_id: str
     runtime_fingerprint: str
+    runtime_dir: str
+    project_slug: str
+    launch_profile: str
+    agent: str
+    launch_user: str
     launch_epoch: str = ""
 
 
@@ -100,23 +100,8 @@ def cleanup_launch_record(cfg: Config, target: SessionInfo) -> None:
 def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardown | None:
     """Prepare the workload session stop, or return ``None``.
 
-    When a runtime ``stop_command`` is set, launch records the workload agent
-    PID and stashes the resolved resource on the session environment. This reads it and
-    renders the operator's stop_command against it and the per-session
-    pidfile — targeting exactly this session's process (the resource may be
-    shared across arbitrarily many sessions, so a per-session PID is the only
-    correct target).
-
-    **PID-recycle guard:** this captures the launch-time start-epoch
-    (``UXON_RUNTIME_EPOCH``, set only when ``identity_command`` is configured) off
-    the still-live session env onto the returned teardown. The actual
-    restarted-since-launch comparison happens in :func:`run_runtime_teardown`,
-    which re-resolves the *live* epoch immediately before the kill (after
-    ``kill-session``) — keeping the check as close to the kill as possible
-    rather than sampling it here, a whole ``kill-session`` round-trip earlier.
-
-    MUST run while the session is still alive (the name + markers live in its
-    env). The caller runs the result via :func:`run_runtime_teardown` AFTER
+    Capture the verified launch record while the exact tmux session is alive.
+    The caller runs the result via :func:`run_runtime_teardown` AFTER
     ``kill-session`` — killing the agent closes its pane, so reaping first
     would race tmux's own session teardown and leave ``kill-session`` with no
     server to talk to. Kill the session first, then reap the orphan the
@@ -194,17 +179,17 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
                 target_user=target.user,
             )
             return None
-        pidfile = runtime_pidfile(target.name)
+        pidfile = runtime_pidfile(target.launch_nonce)
         stop_cmd = render_profile_template(
             profile.stop_command,
             profile=profile,
             what="stop_command",
             resource=name,
-            runtime_dir="/",
-            user=target.launch_user or target.user,
+            runtime_dir=target.runtime_dir,
+            user=target.launch_user,
             launch_profile=target.profile,
             agent=target.agent,
-            project_slug="",
+            project_slug=target.project_slug,
             pidfile=pidfile,
         )
         return RuntimeTeardown(
@@ -213,6 +198,11 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             resource=name,
             runtime_id=target.runtime_id,
             runtime_fingerprint=target.runtime_fingerprint,
+            runtime_dir=target.runtime_dir,
+            project_slug=target.project_slug,
+            launch_profile=target.profile,
+            agent=target.agent,
+            launch_user=target.launch_user,
             launch_epoch=target.runtime_epoch,
         )
     except SystemExit:  # template render failure must never abort the kill
@@ -239,7 +229,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
 
 def run_runtime_teardown(
     cfg: Config, teardown: RuntimeTeardown, target_user: str, session_name: str
-) -> None:
+) -> bool:
     """Run a prepared teardown (best-effort) — after ``kill-session``.
 
     The single shared teardown-call site: every kill path (CLI self/cross-user,
@@ -277,7 +267,7 @@ def run_runtime_teardown(
             session=session_name,
             target_user=target_user,
         )
-        return
+        return False
     if profile.fingerprint != teardown.runtime_fingerprint:
         _teardown_skip(session_name, "workload runtime changed since launch")
         _audit.audit(
@@ -290,9 +280,16 @@ def run_runtime_teardown(
             session=session_name,
             target_user=target_user,
         )
-        return
+        return False
     live = runtime_infra.current_runtime_identity_for_profile(
-        cfg, profile, teardown.resource, target_user
+        cfg,
+        profile,
+        teardown.resource,
+        teardown.launch_user,
+        runtime_dir=teardown.runtime_dir,
+        launch_profile=teardown.launch_profile,
+        agent=teardown.agent,
+        project_slug=teardown.project_slug,
     )
     if live is None:
         _teardown_skip(session_name, "live runtime resource identity could not be resolved")
@@ -306,7 +303,7 @@ def run_runtime_teardown(
             session=session_name,
             target_user=target_user,
         )
-        return
+        return False
     if live.id != teardown.runtime_id or live.epoch != teardown.launch_epoch:
         _teardown_skip(
             session_name,
@@ -322,7 +319,7 @@ def run_runtime_teardown(
             session=session_name,
             target_user=target_user,
         )
-        return
+        return False
 
     ok, detail = runtime_infra.run_teardown(
         cfg, teardown.stop_cmd, target_user, profile.stop_timeout_seconds
@@ -339,6 +336,7 @@ def run_runtime_teardown(
         target_user=target_user,
         **({"error": detail[:256]} if not ok and detail else {}),
     )
+    return ok
 
 
 def run_kill_session(
@@ -424,7 +422,7 @@ def finish_killed_session(
     cleanup_ok = True
     if teardown is not None:
         try:
-            run_runtime_teardown(cfg, teardown, target_user, target.name)
+            cleanup_ok = run_runtime_teardown(cfg, teardown, target_user, target.name)
         except BaseException:  # cleanup must not erase the proven tmux kill
             cleanup_ok = False
     try:

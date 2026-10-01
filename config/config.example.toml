@@ -115,11 +115,11 @@ default_args = []
 #     One <user>-agent per developer.
 #
 # default_launch_mode   = "fixed"
-# default_launch_user          = "team-agent"   # fallback for unmapped callers
+# default_launch_user   = "lead"         # fallback for the supervisor
 # session_users         = ["nadia-agent", "liam-agent", "ethan-agent"]
 # enable_all_users_list = true
 # allowed_roots         = ["/srv/projects"]
-# new_project_root      = "/srv/projects"
+# new_project_root      = "/srv/projects/shared"  # intentionally collaborative
 #
 # [launch_user_by_caller]
 # nadia  = "nadia-agent"
@@ -334,9 +334,9 @@ default_args = []
 # string. ``{resource}`` is the resolved workload name; ``{runtime_dir}``
 # is the working directory after ``path_map``.
 #
-# The resource is chosen deterministically per (launch user, project
-# directory) — the same resource is reused across sessions, never one
-# per session.
+# The sample name is deterministic per (launch user, launch profile, project
+# basename). Require unique basenames in that scope or choose explicit names.
+# The same resource is reused across sessions, never one per session.
 #
 # ``on_missing`` gates what uxon may do when the resource is not
 # running: ``fail`` (default) execs only — a stopped/absent resource
@@ -352,11 +352,14 @@ default_args = []
 # workload is ready. ``exists_command`` exits 0 when it exists.
 #
 # Teardown is the mirror of the exec wrap. ``tmux kill-session`` may only
-# sever the client-side exec, so uxon records the workload PID in
-# ``{pidfile}`` and can run ``stop_command`` to terminate that process.
+# sever the client-side exec, so uxon records the workload PID and Linux start
+# ticks in nonce-keyed ``{pidfile}``. Stop adapters must verify that identity.
 # Omit ``stop_command`` when the runtime guarantees normal process cleanup;
 # otherwise the agent may orphan and uxon
-# prints a reminder at every kill).
+# prints a reminder at every kill.
+# Install the operator-owned Compose definition and pidfd stop helper from
+# docs/guides/customise/run-agents-in-a-container.md before using this adapter.
+# Explicitly enable claude_container in [launch].enabled_profiles as well.
 #
 # [launch.profiles.claude_container]
 # agent = "claude"
@@ -375,15 +378,16 @@ default_args = []
 # ready_command = ["docker", "top", "{resource}"]
 # exists_command = ["docker", "container", "inspect", "{resource}"]
 # start_command = ["docker", "start", "{resource}"]
-# create_command = ["docker", "compose", "up", "-d"]
+# create_command = ["sh", "-c", 'project=uxon-$(printf %s "$1" | sha256sum | cut -c 1-20); export UXON_RESOURCE="$1" UXON_RUNTIME_DIR="$2" UXON_PROJECT="$PWD"; exec docker compose -p "$project" -f /operator/uxon/compose.yml up -d', "uxon-create", "{resource}", "{runtime_dir}"]
 #
 # [runtimes.workbox.identity]
-# resolve_command = ["docker", "inspect", "--format", '{"id":"{{.Id}}","host_pid":{{.State.Pid}},"epoch":"{{.State.StartedAt}}"}', "{resource}"]
+# resolve_command = ["docker", "inspect", "--format", '{{"id":"{{{{.Id}}}}","host_pid":{{{{.State.Pid}}}},"epoch":"{{{{.State.StartedAt}}}}"}}', "{resource}"]
 #
 # [runtimes.workbox.session]
 # # Reap this session's agent on kill ({pidfile} is uxon-supplied,
-# # unique per session); the resource itself is left running:
-# stop_command = ["docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile}) 2>/dev/null; rm -f {pidfile}"]
+# # unique per launch across users/servers); the resource is left running.
+# # The helper requires Python 3.11+ and Linux pidfd support inside the image:
+# stop_command = ["docker", "exec", "{resource}", "python3", "/usr/local/libexec/uxon-runtime-stop.py", "{pidfile}", "--timeout", "8"]
 #
 # [runtimes.workbox.timeouts]
 # probe_seconds = 10.0

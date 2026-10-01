@@ -47,9 +47,10 @@ Full per-event reference: [`reference/audit-events.md`](reference/audit-events.m
 
 Managed sessions also have an authoritative controller-side launch record. It
 contains the session name/id/creation time, launch nonce, launch user, profile,
-agent, execution backend, workload runtime/resource identifiers, and record
-timestamps. It does not contain prompts, transcript content, credentials, or
-the project path. One-controller installs keep records private to that
+agent, execution backend, workload runtime/resource identifiers, the mapped
+runtime directory, project slug, and record timestamps. Paths can reveal project
+names. It does not contain prompts, transcript content or credentials.
+One-controller installs keep records private to that
 controller; multi-controller installs may use a group-readable control
 directory that launch users cannot access.
 
@@ -64,6 +65,12 @@ directory that launch users cannot access.
 
 `uxon` is a session manager — it sees the **shape** of what you
 do, not the **contents**.
+
+Optional debug/metrics logs are separate from audit and off by default. Current
+key diagnostics record navigation, input categories, counts and timing, not
+printable key values or paste contents. They can still contain operational
+paths and errors. Historical key logs may contain input text; review them before
+sharing. Storage requirements are in the [configuration reference](reference/configuration.md#environment-variables).
 
 ## Where it goes
 

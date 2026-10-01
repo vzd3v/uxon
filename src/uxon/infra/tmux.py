@@ -276,7 +276,6 @@ def _build_tmux_launch_request(
     resolved_profile: ResolvedLaunchProfile | None = None,
     server_running: bool = False,
     pending_record: launch_records.PendingLaunchRecord | None = None,
-    active_sessions: tuple[SessionInfo, ...] | list[SessionInfo] = (),
 ):
     """Assemble the agent + tmux argv plus the socket-parent mkdir.
 
@@ -320,6 +319,7 @@ def _build_tmux_launch_request(
             socket_path=tmux_socket_path(cfg, launch_user),
             session_name=session,
             resolved=resolved_profile,
+            target_dir=target_dir,
         )
     record_shared = bool(cfg.launch_record_dir)
     record_dir = str(
@@ -388,8 +388,10 @@ def _build_tmux_launch_request(
         # The pidfile write stays gated on ``stop_command`` (teardown opt-in):
         # the kill path then terminates exactly this session's recorded
         # workload PID, leaving the shared resource running.
-        pidfile = runtime_pidfile(session) if runtime.stop_command else None
-        agent_argv = wrap_agent_for_runtime(agent_argv, session=session, pidfile=pidfile)
+        pidfile = runtime_pidfile(pending_record.launch_nonce) if runtime.stop_command else None
+        agent_argv = wrap_agent_for_runtime(
+            agent_argv, session=session, launch_nonce=pending_record.launch_nonce, pidfile=pidfile
+        )
     final_cmd = exec_prefix + agent_argv
     socket_path = tmux_socket_path(cfg, launch_user)
     ensure_socket_parent = tuple(
@@ -479,6 +481,8 @@ def _build_tmux_launch_request(
         runtime_kind=pending_record.runtime_kind,
         runtime_fingerprint=pending_record.runtime_fingerprint,
         runtime_resource=pending_record.runtime_resource,
+        runtime_dir=pending_record.runtime_dir,
+        project_slug=pending_record.project_slug,
         runtime_id=getattr(runtime_identity, "id", ""),
         runtime_cgroup=getattr(runtime_identity, "cgroup", ""),
         runtime_epoch=getattr(runtime_identity, "epoch", ""),
@@ -509,13 +513,13 @@ def build_managed_tmux_launch_request(
     *,
     resolved_profile: ResolvedLaunchProfile,
     server_running: bool = False,
-    active_sessions: tuple[SessionInfo, ...] | list[SessionInfo] = (),
 ) -> tuple[LaunchRequest, launch_records.PendingLaunchRecord]:
     socket_path = tmux_socket_path(cfg, resolved_profile.launch_user)
     pending = launch_records.pending_from_resolved(
         socket_path=socket_path,
         session_name=session,
         resolved=resolved_profile,
+        target_dir=target_dir,
     )
     req = _build_tmux_launch_request(
         target_dir,
@@ -526,7 +530,6 @@ def build_managed_tmux_launch_request(
         resolved_profile=resolved_profile,
         server_running=server_running,
         pending_record=pending,
-        active_sessions=active_sessions,
     )
     return req, pending
 
@@ -548,6 +551,8 @@ def pending_record_from_request(req: LaunchRequest) -> launch_records.PendingLau
         runtime_kind=managed.runtime_kind,
         runtime_fingerprint=managed.runtime_fingerprint,
         runtime_resource=managed.runtime_resource,
+        runtime_dir=managed.runtime_dir,
+        project_slug=managed.project_slug,
     )
 
 
@@ -673,7 +678,6 @@ def launch_in_tmux(
     *,
     resolved_profile: ResolvedLaunchProfile | None = None,
     server_running: bool = False,
-    active_sessions: tuple[SessionInfo, ...] | list[SessionInfo] = (),
 ) -> int:
     import shlex
 
@@ -690,7 +694,6 @@ def launch_in_tmux(
             branch,
             resolved_profile=resolved_profile,
             server_running=server_running,
-            active_sessions=active_sessions,
         )
         pending = None
     else:
@@ -702,7 +705,6 @@ def launch_in_tmux(
             branch,
             resolved_profile=resolved_profile,
             server_running=server_running,
-            active_sessions=active_sessions,
         )
     if args.dry_run:
         from uxon.infra import audit as _audit

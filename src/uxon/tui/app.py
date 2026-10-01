@@ -32,13 +32,13 @@ from uxon.infra.events import is_enabled as _debug_enabled
 
 from .config import TuiConfig
 from .context import TuiContext
+from .keylog import diagnostic_key
 from .messages import (
     _CwdWritableUpdated,
     _HostReportUpdated,
     _LinkHealthUpdated,
     _OffLoopCallbackDone,
     _RefreshSourceLanded,
-    _WorktreesProbed,
 )
 from .screens.agents_unavailable import AgentsUnavailableScreen
 from .screens.main import MainScreen
@@ -247,7 +247,7 @@ class UxonApp(App):
             _debug(
                 "keys",
                 at="app_received",
-                key=getattr(event, "key", ""),
+                key=diagnostic_key(event.key),
                 screen=type(self.screen).__name__ if self.screen is not None else None,
                 focused_id=getattr(focused, "id", None) if focused is not None else None,
                 focused_kind=type(focused).__name__ if focused is not None else None,
@@ -304,7 +304,7 @@ class UxonApp(App):
         _debug(
             "keys",
             at="app_unhandled",
-            key=getattr(event, "key", ""),
+            key=diagnostic_key(event.key),
             screen=type(screen).__name__ if screen is not None else None,
             focused_id=focused_id,
             focused_kind=focused_kind,
@@ -399,11 +399,6 @@ class UxonApp(App):
 
     def _kick_link_health_probe(self) -> None:
         self._worker_coord.kick_link_health_probe()
-
-    def probe_workspaces_then(
-        self, cwd: str, on_done: object, *, probe_launchable: object = None
-    ) -> None:
-        self._worker_coord.probe_workspaces_then(cwd, on_done, probe_launchable=probe_launchable)
 
     # ── Source landing dispatch ─────────────────────────────────────
     #
@@ -547,10 +542,6 @@ class UxonApp(App):
         top = self.screen_stack[-1] if self.screen_stack else None
         if isinstance(top, MainScreen):
             self.call_later(top._refresh_cwd_row)
-
-    def on__worktrees_probed(self, event: _WorktreesProbed) -> None:
-        """Invoke the launch-flow callback with launchability + workspaces + error."""
-        event.on_done(event.launchable, event.workspaces, event.error)
 
     def on__off_loop_callback_done(self, event: _OffLoopCallbackDone) -> None:
         """Run the on-loop continuation for a blocking callback finished off-loop.

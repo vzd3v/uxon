@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 
+from uxon.domain.runtime import WORKLOAD_NONCE_ENV
 from uxon.domain.runtime_usage import parse_cgroup_procs
 from uxon.infra.runtime import parse_proc_cgroup
 
@@ -34,16 +35,17 @@ def cgroup_members(cgroup: str) -> dict[str, object]:
 
 def session_markers(pids: list[int]) -> dict[str, object]:
     markers: dict[str, str] = {}
+    prefix = (WORKLOAD_NONCE_ENV + "=").encode()
     for pid in pids:
         try:
             raw = Path(f"/proc/{pid}/environ").read_bytes()
-        except OSError:
+        except FileNotFoundError:
             continue
+        except OSError as exc:
+            return {"ok": False, "markers": {}, "error": str(exc)}
         for entry in raw.split(b"\0"):
-            if entry.startswith(b"UXON_SESSION="):
-                markers[str(pid)] = entry.removeprefix(b"UXON_SESSION=").decode(
-                    "utf-8", errors="replace"
-                )
+            if entry.startswith(prefix):
+                markers[str(pid)] = entry.removeprefix(prefix).decode("utf-8", errors="replace")
                 break
     return {"ok": True, "markers": markers, "error": ""}
 

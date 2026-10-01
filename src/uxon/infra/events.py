@@ -1,31 +1,9 @@
-"""Structured JSONL observability log for uxon.
-
-Infra-level concern (stdlib + structlog only, no textual); the TUI is
-its primary consumer. Every user-visible transition in the TUI writes one JSON line to
-``${XDG_STATE_HOME:-~/.local/state}/uxon/tui-{launch_user}-YYYYMMDD.log``
-(override with ``UXON_LOG_DIR``). Format is newline-delimited JSON;
-each line is self-describing. Log writes are best-effort — a failure
-here must NEVER crash the TUI or propagate into the fullscreen TUI
-context.
-
-Fields (all optional except ``ts`` and ``event``):
-  ts              ISO-8601 UTC timestamp with seconds precision
-  caller_user     real caller username (``os.getlogin()`` or $USER)
-  launch_user     effective launch user (may differ under sudo)
-  screen          the :class:`Screen` the event originated from
-  event           short event name (``key``, ``activate``, ``launch``,
-                   ``launch_completed``, ``refresh``, …)
-  action          mapped action name from SCREEN_KEYMAP, when known
-  key             raw key representation, for ``event == "key"``
-  item_kind       kind of item activated, for ``event == "activate"``
-  outcome         terminal outcome string (``ok``, ``cancel``,
-                   ``rc=5``, ``error:<msg>``)
-  extra           free-form dict for event-specific fields
-"""
+"""Opt-in debug and metrics JSONL logs with private, best-effort writes."""
 
 from __future__ import annotations
 
 import os
+import stat
 from typing import TYPE_CHECKING, Any
 
 import platformdirs
@@ -89,12 +67,46 @@ def _log_dir() -> str:
     return os.environ.get("UXON_LOG_DIR") or _default_log_dir()
 
 
+def _append_private_log(path: str, line: str, *, rotate_bytes: int | None = None) -> None:
+    """Validate one private directory handle before rotating or appending."""
+    directory, name = os.path.split(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        directory_info = os.fstat(directory_fd)
+        if directory_info.st_uid != os.geteuid() or stat.S_IMODE(directory_info.st_mode) & 0o077:
+            raise PermissionError("diagnostic directory must be owned by this user and private")
+        if rotate_bytes is not None:
+            try:
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                info = None
+            if info is not None and info.st_size >= rotate_bytes:
+                _rotate_metrics(directory_fd, name)
+        fd = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+                raise PermissionError("diagnostic file is not an owned regular file")
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as handle:
+                handle.write(line + "\n")
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory_fd)
+
+
 # ── Debug logging (off by default; enable via UXON_DEBUG env) ────────
 #
 # Internal-only diagnostic channel. Off in production; instrumentation
 # call sites stay in place and cost a single ``frozenset`` truthiness
-# check when disabled. Goes to ``tui-debug-{user}-{date}.log`` next to
-# the user-facing event log.
+# check when disabled. Goes to ``tui-debug-{user}-{date}.log``.
 
 
 def _parse_debug_topics() -> frozenset[str]:
@@ -131,7 +143,7 @@ def debug(topic: str, **fields: Any) -> None:
     they cost nothing in production. Never raises.
 
     Output: ``${XDG_STATE_HOME:-~/.local/state}/uxon/tui-debug-{user}-{YYYYMMDD}.log``
-    (honours ``UXON_LOG_DIR`` like the event log).
+    (honours ``UXON_LOG_DIR``).
 
     Topic is required; arbitrary keyword fields merge into the JSON
     record.
@@ -151,10 +163,6 @@ def debug(topic: str, **fields: Any) -> None:
         record.update(fields)
 
         log_dir = _log_dir()
-        try:
-            os.makedirs(log_dir, mode=0o2775, exist_ok=True)
-        except OSError:
-            pass
 
         user = os.environ.get("SUDO_USER") or os.environ.get("USER", "unknown")
         date_str = now.strftime("%Y%m%d")
@@ -168,8 +176,7 @@ def debug(topic: str, **fields: Any) -> None:
         # config (no bytes serializer) it always returns ``str`` here.
         line = _debug_renderer()(None, "debug", record)
         assert isinstance(line, str)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        _append_private_log(path, line)
     except Exception:
         # Telemetry, not a correctness path — never crash the TUI.
         return
@@ -180,7 +187,7 @@ def debug(topic: str, **fields: Any) -> None:
 # Opt-in JSONL of source-attempt records, rotated at 1 MiB into ``.1``
 # and ``.2`` (cap 3 files total). Telemetry, not a correctness path:
 # failures are swallowed, never raised. The path lives next to the
-# event-log + debug-log under platformdirs' ``user_state_dir("uxon")``.
+# debug log under platformdirs' ``user_state_dir("uxon")``.
 
 # Test seam: rotation threshold in bytes. Production default is 1 MiB
 # (per spec). Tests override to a small value to exercise rotation
@@ -204,32 +211,28 @@ def _metrics_path() -> str:
     return os.path.join(_log_dir(), "metrics.jsonl")
 
 
-def _rotate_metrics(path: str) -> None:
-    """Shift ``metrics.jsonl`` → ``.1``, ``.1`` → ``.2``; drop ``.2``.
-
-    Cap is 3 files total (``metrics.jsonl``, ``.1``, ``.2``). Old ``.2``
-    is removed. Never raises — rotation is best-effort.
-    """
-    try:
-        old2 = path + ".2"
-        old1 = path + ".1"
-        if os.path.exists(old2):
-            try:
-                os.remove(old2)
-            except OSError:
-                pass
-        if os.path.exists(old1):
-            try:
-                os.rename(old1, old2)
-            except OSError:
-                pass
-        if os.path.exists(path):
-            try:
-                os.rename(path, old1)
-            except OSError:
-                pass
-    except Exception:
-        return
+def _rotate_metrics(directory_fd: int, name: str) -> None:
+    """Rotate only owned private regular files inside the validated directory."""
+    names = (name, name + ".1", name + ".2")
+    present: set[str] = set()
+    for candidate in names:
+        try:
+            info = os.stat(candidate, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            raise PermissionError("metrics rotation requires owned private regular files")
+        present.add(candidate)
+    if names[2] in present:
+        os.unlink(names[2], dir_fd=directory_fd)
+    for source, destination in ((names[1], names[2]), (names[0], names[1])):
+        if source in present:
+            os.rename(source, destination, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
 
 
 def metrics_record(
@@ -271,26 +274,8 @@ def metrics_record(
         if attempted_at is not None:
             record["attempted_at"] = float(attempted_at)
 
-        log_dir = _log_dir()
-        try:
-            # 0o700 mirrors the SSH cache permission used elsewhere — the
-            # metrics file may carry hostnames the operator considers
-            # sensitive, so we keep it user-only.
-            os.makedirs(log_dir, mode=0o700, exist_ok=True)
-        except OSError:
-            pass
-
-        path = _metrics_path()
-        # Pre-write rotation: check current size and shift if past
-        # threshold. Append-only; we don't rotate mid-write.
-        try:
-            if os.path.exists(path) and os.path.getsize(path) >= _METRICS_ROTATE_BYTES:
-                _rotate_metrics(path)
-        except OSError:
-            pass
         line = json.dumps(record, ensure_ascii=False)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        _append_private_log(_metrics_path(), line, rotate_bytes=_METRICS_ROTATE_BYTES)
     except Exception:
         # Telemetry — never crash the TUI.
         return

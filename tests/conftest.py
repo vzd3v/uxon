@@ -9,6 +9,9 @@ state) per-test via its own ``_reset_audit_state`` helper.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import subprocess
 from unittest import mock
 
 import pytest
@@ -63,6 +66,38 @@ def _stub_execution_identity_probe_by_default():
         "uxon.infra.execution.require_probe",
         return_value=ExecutionProbe(backend="local", ok=True),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_target_filesystem(request: pytest.FixtureRequest):
+    """Emulate only the external JSON adapter in synthetic launch unit tests.
+
+    These modules use fictional OS users and controller-owned temporary trees.
+    Run the fixed probe against their fixture tree; execution-boundary tests and
+    integration tests remain unmocked, including actual permission checks.
+    """
+    if request.node.fspath.basename not in {
+        "test_uxon.py",
+        "test_uxon_runtime.py",
+        "test_uxon_launch_profiles.py",
+    }:
+        yield
+        return
+    from uxon.infra import execution, path_probe
+
+    original = execution.run_query
+
+    def query(argv, **kwargs):
+        if "uxon.infra.path_probe" not in argv:
+            return original(argv, **kwargs)
+        args = list(argv[argv.index("uxon.infra.path_probe") + 1 :])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = path_probe.main(args)
+        return subprocess.CompletedProcess(argv, status, output.getvalue(), "")
+
+    with mock.patch.object(execution, "run_query", side_effect=query):
         yield
 
 

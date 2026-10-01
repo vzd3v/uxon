@@ -11,12 +11,13 @@ ever built.
 The suite is gated three ways so it never slows the normal test run:
 
 * every test carries the ``container`` marker, deselected by default in
-  ``pyproject.toml`` (``-m 'not container'``);
+  ``pyproject.toml`` alongside the separate ``slow`` suite;
 * the ``runtime`` fixture is parametrized over ``docker`` and ``podman``
-  and skips each independently when its binary is missing **or** its
-  daemon is unreachable;
+  and skips unavailable optional runtimes; ``UXON_TEST_REQUIRE_DOCKER=1``
+  makes missing or unreachable Docker a hard failure in CI;
 * the fixtures own teardown of the containers *these tests* create —
-  they never touch a user's own project container.
+  including their uniquely named Compose networks. User containers are
+  never in scope.
 
 Run them explicitly with a working runtime::
 
@@ -37,7 +38,8 @@ import pytest
 
 # Stock minimal base image. Pulled once on first run (a pull, never a
 # build); small enough that the one-time cost is negligible.
-BASE_IMAGE = "docker.io/library/alpine:3.20"
+BASE_IMAGE = "docker.io/library/python:3.11-alpine"
+STOP_HELPER = Path(__file__).resolve().parents[3] / "install" / "runtime_stop.py"
 
 # How long a runtime probe / lifecycle command may take before the test
 # treats the runtime as unusable and skips. Keeps a wedged daemon from
@@ -51,8 +53,8 @@ def _runtime_usable(binary: str) -> bool:
     """True iff ``binary`` is on PATH and its daemon answers ``info``.
 
     Both conditions matter: a host can ship the client without a running
-    daemon (or with a daemon it cannot reach), in which case the suite
-    must skip rather than error. ``info`` is the cheapest call that
+    daemon (or with a daemon it cannot reach). The fixture decides whether
+    absence is optional or a required-gate failure. ``info`` is the cheapest call that
     actually round-trips to the daemon.
     """
     if shutil.which(binary) is None:
@@ -93,6 +95,8 @@ def runtime(request: pytest.FixtureRequest) -> Iterator[Runtime]:
     """
     binary = request.param
     if not _runtime_usable(binary):
+        if binary == "docker" and os.environ.get("UXON_TEST_REQUIRE_DOCKER") == "1":
+            pytest.fail("Docker is required but its binary or daemon is unavailable")
         pytest.skip(f"{binary}: binary absent or daemon unreachable")
     # Unique per run: pid + a uuid shard. Stays within the runtime name
     # charset (leading alnum, then alnum/dash/underscore/dot).
@@ -104,9 +108,18 @@ def runtime(request: pytest.FixtureRequest) -> Iterator[Runtime]:
         _teardown(rt)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_controller_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep authoritative launch records out of the controller's live state."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+
 def _teardown(rt: Runtime) -> None:
     """Remove anything the suite created for ``rt`` (idempotent, quiet)."""
-    for argv in ([rt.binary, "rm", "-f", rt.runtime_name],):
+    for argv in (
+        [rt.binary, "rm", "-f", rt.runtime_name],
+        [rt.binary, "network", "rm", rt.runtime_name + "_default"],
+    ):
         subprocess.run(
             argv,
             stdout=subprocess.DEVNULL,
@@ -137,7 +150,7 @@ exec sleep 300
 # first argv token (the agent args uxon threads through after the binary). A
 # ``busy`` agent spins so its per-session CPU is unmistakably non-idle; any
 # other arg idles. The ``$$`` (the exec'd PID) is what the cgroup attribution +
-# the UXON_SESSION environ split must see — proving per-session isolation.
+# the UXON_LAUNCH_NONCE environ split must see — proving per-session isolation.
 STUB_AGENT_SELECTABLE = """\
 #!/bin/sh
 # Telemetry stand-in: spin (busy) or idle, selected by the first agent arg.
@@ -152,17 +165,65 @@ exec sleep 300
 # create_command = ["<runtime>", "compose", "up", "-d"] path. PID 1 idles
 # on ``tail`` (not ``sleep``) so the agent's ``sleep`` is unambiguous in
 # ``<runtime> top`` — the container stays up across the agent's reap.
-COMPOSE_TEMPLATE = """\
+COMPOSE_TEMPLATE = (
+    """\
 services:
   agent:
     image: {image}
-    runtime_name: {name}
+    container_name: {name}
+    user: "{uid}:{gid}"
     command: ["tail", "-f", "/dev/null"]
     volumes:
       - {project_dir}:/work
       - {stub_path}:/usr/local/bin/claude:ro
+      - {stopper_path}:/usr/local/libexec/uxon-runtime-stop.py:ro
     working_dir: /work
-"""
+""".replace("{uid}", str(os.getuid()))
+    .replace("{gid}", str(os.getgid()))
+    .replace("{stopper_path}", str(STOP_HELPER))
+)
+
+
+def operator_runtime_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
+    """A complete operator-owned command runtime using the current schema."""
+    return {
+        "kind": "command",
+        "resource_scope": "per_user",
+        "resource_name_template": rt.runtime_name,
+        "path_map": {str(project_dir): "/work"},
+        "exec_prefix": [rt.binary, "exec", "-i", "-w", "{runtime_dir}", "{resource}"],
+        "telemetry": "cgroup",
+        "readiness": {
+            "ready_command": [rt.binary, "top", "{resource}"],
+            "exists_command": [rt.binary, "container", "inspect", "{resource}"],
+            "start_command": [rt.binary, "start", "{resource}"],
+            "create_command": [rt.binary, "compose", "-p", "{resource}", "up", "-d"],
+            "on_missing": "create",
+            "approval": "auto",
+        },
+        "identity": {
+            "resolve_command": [
+                rt.binary,
+                "inspect",
+                "--format",
+                '{{"id":"{{{{.Id}}}}","host_pid":{{{{.State.Pid}}}},"epoch":"{{{{.State.StartedAt}}}}"}}',
+                "{resource}",
+            ],
+        },
+        "session": {
+            "stop_command": [
+                rt.binary,
+                "exec",
+                "{resource}",
+                "python3",
+                "/usr/local/libexec/uxon-runtime-stop.py",
+                "{pidfile}",
+                "--timeout",
+                "5",
+            ],
+        },
+        "timeouts": {"stop_seconds": 10.0},
+    }
 
 
 def write_project(project_dir: Path, _runtime_name: str) -> Path:

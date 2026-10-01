@@ -18,6 +18,16 @@ points.
 - **`gh` CLI** only when an `auth = "gh"` git-remote profile is
   configured.
 
+## Tmux child-status caveat
+
+Some tmux builds, including 3.4 with libutempter, can lose a child-status
+notification: a failed pane remains dead but its exit status is empty. This is
+[upstream issue 4559](https://github.com/tmux/tmux/issues/4559), fixed by
+[commit fa5f3ce](https://github.com/tmux/tmux/commit/fa5f3cef3d651b0eb9abfa77fc37ccade81679b5).
+Use a distribution package containing that fix, or a fixed upstream release
+such as 3.6a, when diagnosing retained-pane failures or running the heavy tests.
+Uxon does not work around it by weakening exit-status checks.
+
 ## Two flavours
 
 Pick by who owns the binary on the host:

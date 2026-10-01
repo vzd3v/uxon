@@ -2,7 +2,8 @@
 
 Single public entrypoint :func:`audit` emits a structured event to the
 platform log (journald native protocol on systemd hosts, ``/dev/log`` syslog
-fallback otherwise) — never raises, never blocks.
+fallback otherwise). Delivery uses non-blocking datagrams and never raises;
+first-call initialization also performs OS and NSS identity lookups.
 
 The module is intentionally stdlib-only: ``socket`` for the wire layer,
 ``json`` for the syslog body, ``threading.Lock`` to serialize first-call
@@ -330,7 +331,10 @@ def _lazy_init() -> None:
 
 
 def audit(event: str, *, outcome: str = "ok", **fields: Any) -> None:
-    """Emit one structured audit event.  Never raises, never blocks.
+    """Emit one structured audit event without raising or waiting for delivery.
+
+    The first call initializes the sink and kernel-backed identity; its
+    OS/NSS lookups are not subject to the steady-state hot-path budget.
 
     Expected hot-path budget: enabled-check (~0.1 µs) + dict merge (~3 µs)
     + serialize (~5–10 µs) + socket.send (~10 µs) ≈ 15–25 µs per event.

@@ -105,11 +105,9 @@ class TuiContext:
     # the current policy: write access, plus membership in
     # ``allowed_roots`` when that whitelist is non-empty. Field name is
     # historical — the predicate is broader than write-access alone.
-    # Three-valued:
-    #   None  — probe still in flight; row stays enabled, activation
-    #           runs a synchronous fallback check before launching.
-    #   True  — launchable; row enabled, no detail hint.
-    #   False — not launchable; row dimmed, detail says so.
+    # Advisory only: None means pending; False adds a startup-user hint.
+    # The action stays enabled so profile-pinned users can be selected;
+    # authoritative authorization runs after profile selection, off-loop.
     cwd_writable: bool | None = None
 
     current_user: str = ""
@@ -170,18 +168,9 @@ class TuiContext:
     )
     on_refresh: Callable[[], TuiContext] = lambda: None  # type: ignore[return-value]
     on_probe_link_health: Callable[[], Any] = lambda: None
-    # Returns True if launch_user has write access to ``cwd``. Wired by
-    # ``uxon.cli`` — uses ``os.access`` when launch_user == caller, otherwise
-    # ``sudo -H -u launch_user test -w <cwd>``. App runs it in a worker
-    # thread on mount when ``cwd_writable`` is None; activation also
-    # calls it synchronously as a fallback if the probe hasn't landed.
+    # Bounded startup-user launchability probe, run in a worker on mount.
+    # Its result is advisory, not authorization for a selected profile.
     on_probe_cwd_writable: Callable[[], bool] = lambda: True
-    # Same predicate as ``on_probe_cwd_writable`` but for an arbitrary target
-    # directory (``is_launch_target_allowed``): launch_user can write it and
-    # it sits under ``allowed_roots``. Used to gate the "Open existing
-    # project" launch synchronously at activation — that flow has no
-    # pre-probed reactive slot like ``cwd`` does.
-    on_probe_dir_launchable: Callable[[str], bool] = lambda target_dir: True
     on_launch_cwd: Callable[..., LaunchRequest] = lambda profile_id, mode_id, target_dir=None: (
         LaunchRequest(cmd=("true",), label="noop-launch-cwd")
     )
@@ -201,7 +190,7 @@ class TuiContext:
     on_runtime_gate: Callable[[str, str, str], RuntimeGate | None] = (
         lambda target_dir, profile_id, mode_id: None
     )
-    # Probe callback: returns (session_name, attached) pairs for the
+    # Probe callback: returns compatible session choices for the
     # selected profile's sessions compatible with (target_dir, profile_id).
     # The TUI calls this after the operator picks profile+mode in
     # ``LaunchOptionsScreen`` and before committing to ``on_launch_*``;
@@ -217,16 +206,9 @@ class TuiContext:
     )
 
     # ── Worktree callbacks (3.5.0) ───────────────────────────────────
-    # Worktree probe: returns the workspaces (folders only — no session
-    # data) for ``cwd``'s repo, parsed from ``git worktree list``. An empty
-    # list = a non-git target → the WORKSPACE column shows a benign "git not
-    # initialized" hint; RAISING (a real repo whose ``git worktree list``
-    # failed) → the column shows an error row carrying the message. Hiding
-    # the column entirely is the screen-side ``workspaces=None`` (never
-    # probed) case, not anything this callback returns. Runs ONCE in a worker
-    # when the launch screen opens, under the non-interactive sudo prefix so a
-    # missing NOPASSWD grant fails fast.
-    on_probe_worktrees: Callable[[str], list] = lambda cwd: []
+    # Resolve profile+mode, validate target-user access, then enumerate git
+    # worktrees off-loop. Empty means non-git; errors abort the launch.
+    on_probe_worktrees: Callable[[str, str, str], list] = lambda cwd, profile_id, mode_id: []
     # Worktree create → plan_worktree_launch. Builds + launches a
     # uxon-managed worktree for ``branch`` under the repo at ``repo_root``.
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest] = (
@@ -343,7 +325,7 @@ def build_items(ctx: TuiContext) -> list[Item]:
         Item(
             kind="action-cwd",
             label="New session in current folder",
-            enabled=ctx.cwd_writable is not False,
+            enabled=True,
         )
     )
     items.append(

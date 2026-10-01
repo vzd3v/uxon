@@ -1,152 +1,59 @@
 # Customise dashboard columns
 
-The TUI's session dashboard ships a default column layout that
-suits most setups. The `[tui.table]` block lets you override it.
+Choose a layout for your terminal and workflow. Exact column ids, defaults,
+sorting and display semantics belong to the [configuration reference](../../reference/configuration.md#tuitable-table);
+interactive controls belong to the [keybinding reference](../../reference/keybindings.md).
 
-```toml
-[tui.table]
-columns      = ["name", "user", "cpu", "ram", "last"]
-default_view = "flat"
-```
-
-## What each key does
-
-- **`tui.table.columns`** — list of column ids in display order.
-  Leave empty (or omit) to use the registry defaults: every
-  column whose `default_visible` is true plus any that the
-  runtime layout promotes (`host` in multi-host setups, `user`
-  when other-user rows are visible). Listing columns explicitly
-  opts into a fixed visual order; ids unknown to the running
-  `uxon` version are silently dropped (an older config carrying
-  a since-removed column id stays loadable). The `path` and
-  `cmd` columns are hidden by default — opt back in by listing
-  `"path"` / `"cmd"` here.
-- **`tui.table.default_view`** — `"flat"` (default) or
-  `"by_host"`. `flat` is a single ranked list across the
-  fleet; `by_host` shows the per-host tab strip and status
-  bar. Toggle at runtime with `v`.
-
-There is no sort setting. Sort is a fixed contract owned by
-the model selector — locals first (own then other-user), then
-remotes in `[[remote_hosts]]` declaration order, with
-within-block ranking by last-attach descending then name
-ascending.
-
-## Available column ids
-
-`host`, `user`, `name`, `agent`, `cpu`, `ram`, `new`, `last`,
-`cmd`, `path`, `pid`, `wins`.
-
-The full contract (which ids are gated by which runtime flags,
-alignment, formatting) lives in
-[`src/uxon/tui/dashboard/columns.py`](../../../src/uxon/tui/dashboard/columns.py).
-
-## Examples
-
-**Compact for narrow terminals:**
+## Compact for narrow terminals
 
 ```toml
 [tui.table]
 columns = ["name", "cpu", "ram", "last"]
 ```
 
-**Multi-host operator view (start in flat mode):**
+## Multi-host operator view
 
 ```toml
 [tui.table]
-columns      = ["host", "user", "name", "agent", "cpu", "ram", "last"]
-default_view = "flat"
+columns = ["host", "user", "name", "agent", "cpu", "ram", "last"]
+default_view = "by_host"
 ```
 
-**Path-focused for navigation:**
+## Path-focused navigation
 
 ```toml
 [tui.table]
 columns = ["name", "path", "last"]
 ```
 
-## View, search, attach indicator
+Configure searchable fields separately through [tui.search](../../reference/configuration.md#tuisearch-table).
+Explicit column lists give you a fixed layout; remove the list to return to the
+runtime-aware defaults.
 
-- `v` toggles between `flat` (single ranked list, default) and
-  `by_host` (per-host tabs + status bar). Configure the initial
-  view with `tui.table.default_view`. ←/→ on the dashboard
-  cycles between hosts: tabs in `by_host`, `(host, own/other)`
-  transitions in `flat`; both cyclic.
-- The dashboard search bar is summoned on demand — hidden by
-  default, press `s` (or `/`) from anywhere to reveal and focus
-  it. `Esc` clears the query and returns focus to the summoning
-  widget. While a search query is active, the view is forced to
-  `flat` so matches across hosts appear in one list; clearing
-  the query restores the previous view mode. Configure
-  searchable fields with `tui.search.fields` (default
-  `["name", "user"]`; allowed `name`, `user`, `host`, `path`,
-  `cmd`).
-- Attached state is shown by a glyph in the NAME column: `●`
-  filled when attached, `○` hollow otherwise. There is no bold
-  green override.
-- The NAME column shows the project stem only — the `@<profile>`
-  suffix that lives in the underlying tmux session name (and
-  that `tmux ls` would print) is dropped here because the AGENT
-  column carries the underlying agent. Sibling sessions on the
-  same stem keep their `-N` index so they stay visually distinct
-  (`proj@claude_work-2` → `proj-2`).
-- The LAST column tints by how long a session has been idle:
-  the timestamp turns **yellow** after 24 h and **red** after
-  3 days, so stale sessions stand out at a glance. Idle means
-  no I/O on the session (tmux's activity clock) — a session you
-  are attached to but not typing in ages the same way. The
-  thresholds are fixed and not configurable.
+## Distinguish hosts with colour
 
-## Container sessions
+```toml
+[local_host]
+color = "green"
 
-When an agent runs inside a container, the dashboard and `uxon list`
-report it at parity with a host-level agent:
+[tui]
+color_palette = ["cyan", "blue", "magenta"]
+```
 
-- **CPU and RAM are the in-container agent's own.** The figures
-  reflect the agent's process subtree inside the container, not the
-  near-idle runtime client on the host — so the **>50% runaway-red**
-  CPU cell fires for a container session exactly as it does for a
-  host-level one.
-- **Per-session, even when several share one container.** Two or more
-  sessions in the same container each show only their own usage; a
-  runaway in one reddens that row alone, never a calm neighbour.
-  *(Privilege requirement: splitting a shared container by session
-  reads each in-container process's environment, which needs a
-  privileged `/proc/<pid>/environ` read — uxon issues one batched
-  read per container. Without that grant, the sessions sharing a
-  container all show the **summed container total** instead of their
-  individual share — still correct in aggregate, just not split.)*
-- **`cmd` shows the agent id** (e.g. `claude`), not the runtime
-  client (`docker`/`sh`), so search-by-`cmd` matches the agent.
-- **A stopped container shows a distinct `down` marker** in the CPU
-  and RAM cells, not a silent `0`/`-` that looks like a healthy idle
-  agent.
+A peer can pin its own colour in its existing `[[remote_hosts]]` block. See
+[colour configuration](../../reference/configuration.md#tui-colour-palette).
+HOST and USER remain textual identifiers; do not rely on colour alone.
 
-Across hosts, a container session on a remote peer shows its
-corrected figures too — the peer computes them before sending. One
-caveat: a peer still running an **older uxon** emits the old
-near-idle numbers for its container sessions until it is upgraded.
+## Check runtime telemetry
 
-The fleet status bar sits below the table in both views. Press
-`h` to toggle it between collapsed (`N hosts · M sess` plus
-unreachable / high-memory alerts) and an expanded per-host
-detail line.
+A container row should show workload usage rather than the idle host exec
+client. If several sessions show the same container total, check whether the
+controller can read the workload process environments needed for nonce-based
+attribution. A down marker means the resource is stopped or unresolved, not an
+idle workload. See the [runtime telemetry contract](../../reference/configuration.md#runtimesid-table)
+and [container setup checks](run-agents-in-a-container.md#verify-the-rootless-setup).
 
-## Colour and accessibility
+## Related
 
-Each host gets a block colour applied to its tab, status-bar
-name token, and dashboard rows. Configure:
-
-- Per-host pin: `[[remote_hosts]] color = "..."` (any Rich
-  style spec; pin wins unconditionally over the auto-cycle).
-- Auto-cycle palette: `[tui] color_palette = ["cyan", "blue", ...]`.
-- Local block colour: `[local_host] color = "green"`.
-
-Colours are decorative — every row's HOST and USER are also
-present as text. There is currently no `UXON_COLOR=0` knob; if
-your team needs a no-colour mode, file a feature request.
-
-## Reference
-
-- [`../../reference/configuration.md`](../../reference/configuration.md) — `[tui.table]`, `[tui.search]`, `[tui]`, `[local_host]` keys.
-- [`../../reference/keybindings.md`](../../reference/keybindings.md) — TUI keys including `v`, `h`, `s` / `/`, and ←/→ host cycling.
+- [Diagnose multi-host state](../debug/diagnose-multi-host.md).
+- [Profile refresh/render cost](../debug/render-performance.md).

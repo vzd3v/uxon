@@ -19,8 +19,10 @@ peer state via `uxon list --json`. So:
   journald. Per-host audit history is intact.
 - **Per-peer dashboards** still work — SSH into the peer
   directly and run `uxon` there for that host's view.
-- **Per-session destructive operations** still work — same SSH +
-  `uxon kill` from any aggregator (current or replacement).
+- **Per-session destructive operations** remain available through a peer's
+  authorized controller. A replacement aggregator must use the same peer-side
+  controller identity or a provisioned shared launch-record store; an SSH grant
+  alone does not recover another controller's private records.
 
 ## What *is* lost
 

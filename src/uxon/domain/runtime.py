@@ -41,16 +41,14 @@ RUNTIME_EPOCH_ENV = "UXON_RUNTIME_EPOCH"
 
 # Agent-process environment marker exported by the launch wrapper (NOT a tmux
 # session-env var): it lands in the workload agent's ``/proc/self/environ``
-# so host-side telemetry can attribute each workload PID to its session.
+# for diagnostics; host-side telemetry attributes workloads by launch nonce.
 SESSION_ENV = "UXON_SESSION"
+WORKLOAD_NONCE_ENV = "UXON_LAUNCH_NONCE"
 
 # Where the launch wrapper drops the workload agent PID. The teardown reads it
 # back within the same runtime resource and PID namespace.
 _RUNTIME_PIDFILE_DIR = "/tmp"
-# Filename-safe charset for the session-derived pidfile name; anything else
-# is collapsed to ``_`` so the path is safe to embed in the operator's
-# ``sh -c`` stop_command without quoting surprises.
-_PIDFILE_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._@-]")
+_WORKLOAD_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
 # Runtime-resource charset: a leading word char, then word/dot/dash. Rejecting a leading
 # ``-``/``.``/``_`` is the security-critical part — it closes the slugify gap
@@ -61,7 +59,6 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _NAME_MAX_LEN = 128
 
 # Placeholders accepted in templates / resource_name_template.
-_NAME_PLACEHOLDERS = ("user", "project_slug", "dir")
 _BASE_PROFILE_PLACEHOLDERS = frozenset(
     {"user", "launch_profile", "runtime", "agent", "project_slug"}
 )
@@ -323,32 +320,23 @@ def _safe_format(template: str, what: str, **values: str) -> str:
 def is_valid_runtime_resource(resource: str) -> bool:
     """Non-raising form of :func:`validate_runtime_resource`.
 
-    The kill path reads the runtime resource back from the live session
-    environment and must not abort the destructive ``kill-session`` on a
-    malformed value — it degrades to "skip teardown" instead. This keeps the
+    The kill path validates the verified launch record's runtime resource and
+    degrades to "skip teardown" on a malformed value. This keeps the
     same charset invariant without the ``fail`` (SystemExit) of the launch-
     time validator.
     """
     return bool(resource) and len(resource) <= _NAME_MAX_LEN and bool(_NAME_RE.match(resource))
 
 
-def runtime_pidfile(session: str) -> str:
-    """Deterministic runtime-side PID-file path for a tmux ``session``.
-
-    The launch wrapper writes the workload agent PID here; the kill
-    teardown reads it back. Keyed by the (server-unique) session name — never
-    the runtime resource or agent — so each of the arbitrarily many sessions sharing
-    one resource (indexed re-runs, worktrees, different agents) targets
-    exactly its own process. The session is sanitized to a filename-safe
-    charset so the path is safe to embed in the operator's ``sh -c``
-    stop_command.
-    """
-    safe = _PIDFILE_UNSAFE_RE.sub("_", session)
-    return f"{_RUNTIME_PIDFILE_DIR}/uxon-{safe}.pid"
+def runtime_pidfile(launch_nonce: str) -> str:
+    """Runtime-side workload record keyed by the globally unique launch nonce."""
+    if _WORKLOAD_NONCE_RE.fullmatch(launch_nonce) is None:
+        fail("invalid workload launch nonce")
+    return f"{_RUNTIME_PIDFILE_DIR}/uxon-{launch_nonce}.pid"
 
 
 def wrap_agent_for_runtime(
-    agent_argv: list[str], *, session: str, pidfile: str | None
+    agent_argv: list[str], *, session: str, launch_nonce: str, pidfile: str | None
 ) -> list[str]:
     """Wrap the agent argv inside a command runtime.
 
@@ -356,37 +344,35 @@ def wrap_agent_for_runtime(
     The wrapper runs inside the workload boundary, after the
     operator exec prefix:
 
-    - It **always** exports ``UXON_SESSION=<session>`` so the marker lands in
-      the workload agent's ``/proc/self/environ`` — host-side telemetry
-      reads it back to attribute each workload PID to its session.
+    - It exports the display name and unique launch nonce into the workload
+      environment. Telemetry attributes processes by nonce across independent
+      tmux servers sharing a resource.
     - When a ``pidfile`` is supplied (the operator opted into teardown via
-      ``stop_command``), it **also** records the workload agent PID with
-      ``echo $$ > <pidfile>``: ``$$`` is the shell's PID and ``exec`` replaces
-      that shell with the agent, so the agent inherits the same PID and the
-      file holds its real runtime-side PID.
+      ``stop_command``), it records ``PID start_ticks`` from Linux procfs.
+      The exec preserves both values; stop recipes verify the start ticks
+      with an opened process handle before signalling to reject reused PIDs.
 
     ``exec "$@"`` keeps the agent argv a list of tokens — never re-parsed by
     the shell — preserving the argv-list injection invariant. Same idiom as
     ``infra.runtime._as_user_in_dir``. Requires ``sh`` in the workload environment.
     """
-    parts = [f"export {SESSION_ENV}={shlex.quote(session)};"]
+    runtime_pidfile(launch_nonce)  # validate before embedding the marker
+    parts = [
+        f"export {SESSION_ENV}={shlex.quote(session)};",
+        f"export {WORKLOAD_NONCE_ENV}={shlex.quote(launch_nonce)};",
+    ]
     if pidfile is not None:
-        parts.append(f"echo $$ > {shlex.quote(pidfile)};")
+        # A subshell keeps the original workload argv intact. The stat command
+        # name can contain spaces/parentheses, so remove through its last ') '.
+        parts.append(
+            "(umask 077; set -C; "
+            "stat=$(cat /proc/$$/stat) && stat=${stat##*) } && "
+            "set -- $stat && shift 19 && "
+            f'printf \'%s %s\\n\' "$$" "$1" > {shlex.quote(pidfile)}) || exit 1;'
+        )
     parts.append('exec "$@"')
     script = " ".join(parts)
     return ["sh", "-c", script, "uxon-agent", *agent_argv]
-
-
-def render_stop_command(command: tuple[str, ...], *, resource: str, pidfile: str) -> list[str]:
-    """Render the ``stop_command`` argv with ``{resource}``/``{pidfile}`` filled.
-
-    Per-token formatting keeps the argv-list shape (each ``{resource}`` is one
-    token). ``resource`` is the validated resolved resource read back from the
-    session; ``pidfile`` the deterministic per-session path.
-    """
-    return [
-        _safe_format(tok, "stop_command", resource=resource, pidfile=pidfile) for tok in command
-    ]
 
 
 def validate_runtime_resource(resource: str) -> str:
@@ -430,22 +416,6 @@ def resolve_runtime_resource_name(
         project_slug=project_slug,
     )
     return validate_runtime_resource(expanded)
-
-
-def render_exec_prefix(
-    exec_prefix: tuple[str, ...], *, resource: str, runtime_dir: str
-) -> list[str]:
-    """Render the exec-template argv list with ``{resource}``/``{runtime_dir}`` filled.
-
-    Each token is formatted independently — the argv-list shape is the
-    security invariant (``"{resource}"`` is one token, defeating shell
-    injection). ``{resource}`` is the already-validated resource and
-    ``{runtime_dir}`` the already-validated runtime path.
-    """
-    return [
-        _safe_format(tok, "exec_prefix", resource=resource, runtime_dir=runtime_dir)
-        for tok in exec_prefix
-    ]
 
 
 def render_profile_template(

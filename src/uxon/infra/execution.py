@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
-from uxon.domain.execution import ExecutionConfig, ExecutionTarget
+from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig, ExecutionTarget
 from uxon.errors import fail
 from uxon.infra.identity import process_user
 from uxon.infra.run import run_query
@@ -89,13 +89,17 @@ def wrap_command(
     return command_prefix(cfg, user, interactive=interactive) + argv
 
 
+def _can_inspect_locally(backend: ExecutionBackendSpec, user: str) -> bool:
+    return backend.kind == "local" and process_user() == user and os.getuid() == os.geteuid()
+
+
 def canonicalize_path(cfg: ExecutionConfigured, user: str, path: str, *, intended: bool) -> str:
     """Return the path resolved inside the selected target-user boundary."""
     target = str(Path(path).expanduser())
     if not Path(target).is_absolute():
         target = str(Path.cwd() / target)
     backend = cfg.execution.backend_for_user(user)
-    if backend.kind == "local":
+    if _can_inspect_locally(backend, user):
         from uxon.infra.path_probe import canonical_existing, canonical_intended
 
         try:
@@ -148,7 +152,7 @@ def path_facts(cfg: ExecutionConfigured, user: str, path: str) -> PathFacts:
     if not Path(target).is_absolute():
         target = str(Path.cwd() / target)
     backend = cfg.execution.backend_for_user(user)
-    if backend.kind == "local":
+    if _can_inspect_locally(backend, user):
         from uxon.infra.path_probe import inspect
 
         try:
@@ -219,7 +223,7 @@ def list_directories(cfg: ExecutionConfigured, user: str, path: str) -> tuple[Di
     if not Path(target).is_absolute():
         target = str(Path.cwd() / target)
     backend = cfg.execution.backend_for_user(user)
-    if backend.kind == "local":
+    if _can_inspect_locally(backend, user):
         from uxon.infra.path_probe import list_directories as inspect_directories
 
         try:
@@ -285,7 +289,7 @@ def filesystem_usage(cfg: ExecutionConfigured, user: str, path: str) -> Filesyst
     if not Path(target).is_absolute():
         target = str(Path.cwd() / target)
     backend = cfg.execution.backend_for_user(user)
-    if backend.kind == "local":
+    if _can_inspect_locally(backend, user):
         from uxon.infra.path_probe import filesystem_usage as inspect_usage
 
         try:

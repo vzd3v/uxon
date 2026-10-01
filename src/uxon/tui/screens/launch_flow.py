@@ -1,17 +1,4 @@
-"""LaunchFlow — the launch-chain controller for :class:`MainScreen`.
-
-Holds the heavy bodies of the launch flow (session-choice probe, the
-worktree-aware folder launch, the three entry points, and the settings
-opener) so the Screen's ``action_*`` handlers stay thin delegators
-(AGENTS.md: every ``action_*``/``on_*`` is a method *on the Screen*, but
-its body may live here).
-
-The controller is a mechanical lift of the former ``MainScreen``
-methods: every reference to ``self.cfg``/``self.app``/``self.state`` etc.
-is re-routed through ``self.host`` (the owning Screen). No behavior
-changes — the closures, the ``app.probe_workspaces_then`` off-loop
-handoff, and the ``request_launch`` ordering are preserved exactly.
-"""
+"""Profile selection, workspace discovery and off-loop launch orchestration."""
 
 from __future__ import annotations
 
@@ -23,6 +10,7 @@ from .git_profile import GitProfileScreen
 from .launch_options import LaunchOptionsScreen
 from .new_project import NewProjectScreen
 from .session_choice import SessionChoiceScreen
+from .workspace import WorkspaceScreen
 from .worktree_branch import WorktreeBranchScreen
 
 if TYPE_CHECKING:
@@ -32,16 +20,11 @@ if TYPE_CHECKING:
 
 
 class LaunchFlow:
-    """Launch-chain controller bound to one :class:`MainScreen`.
-
-    The Screen owns the live state (``cfg``/``state``/``_workspace_repo_root``)
-    and the Textual primitives (``app.push_screen``/``request_launch``);
-    this controller reaches into ``host`` for them so there is a single
-    source of truth — the controller carries no copy of per-build state.
-    """
+    """Launch-chain controller bound to one :class:`MainScreen`."""
 
     def __init__(self, host: MainScreen) -> None:
         self.host = host
+        self._generation = 0
 
     def commit_with_runtime_gate(
         self, target_dir: str, profile_id: str, mode_id: str, do_commit
@@ -64,6 +47,7 @@ class LaunchFlow:
         consent and does not widen the configured capability.
         """
         host = self.host
+
         gate_fn = host.cfg.on_runtime_gate
 
         def run_prepare_then_commit(gate) -> None:
@@ -250,14 +234,12 @@ class LaunchFlow:
         target_dir: str,
         target_label: str,
         commit_primary,
-        launchable: bool | None = None,
-        on_probed=None,
     ) -> None:
         """Worktree-aware launch into an existing folder (cwd or named project).
 
         Shared by ``_launch_cwd`` and ``_launch_existing``. Profile-specific
         launchability and workspace discovery happen after the operator picks a
-        profile, inside the commit planner. Before that choice this screen uses
+        profile. Before that choice this screen uses
         the plain profile/mode picker so pinned launch-user profiles cannot be
         denied by probes run under the startup user.
 
@@ -269,10 +251,12 @@ class LaunchFlow:
         primary tree even when the TUI was started in a linked worktree or a
         subdirectory of the repo); the non-git / 2-tuple path passes ``None``
         to launch the folder as-is.
-        Worktree create / attach is available only when profile-aware workspace
-        choices are supplied to the launch-options screen.
+        Workspace discovery runs off-loop under the resolved target user.
         """
         host = self.host
+        self._generation += 1
+        generation = self._generation
+        repo_root = target_dir
 
         def commit_existing_worktree(
             profile_id: str, mode_id: str, repo_root: str, path: str, branch: str
@@ -305,6 +289,8 @@ class LaunchFlow:
             )
 
         def dispatch_workspace(profile_id: str, mode_id: str, choice) -> None:
+            if generation != self._generation:
+                return
             kind = choice[0]
             if kind == "primary":
                 # Primary tree keeps the plain path-based planner + probe,
@@ -327,7 +313,6 @@ class LaunchFlow:
                 return
             if kind == "worktree":
                 _, path, branch = choice
-                repo_root = host._workspace_repo_root or target_dir
                 # Worktree target: the attach guard uses the worktree-aware
                 # probe, not the path-based one.
                 self.maybe_show_session_choice(
@@ -344,7 +329,6 @@ class LaunchFlow:
                 )
                 return
             # ("new", None) → prompt for a branch name, then create + launch.
-            repo_root = host._workspace_repo_root or target_dir
 
             def after_branch(branch: str | None) -> None:
                 if not branch:
@@ -354,71 +338,44 @@ class LaunchFlow:
             host.app.push_screen(WorktreeBranchScreen(), after_branch)
 
         def after_opts(result) -> None:
-            if result is None:
-                return
-            # B2: a 3-tuple only arrives when the WORKSPACE column was
-            # shown (git target); a 2-tuple is the non-git path.
-            if len(result) == 3:
-                profile_id, mode_id, choice = result
-                dispatch_workspace(profile_id, mode_id, choice)
+            if result is None or generation != self._generation:
                 return
             profile_id, mode_id = result
-            self.maybe_show_session_choice(
-                target_dir=target_dir,
-                target_label=target_label,
-                profile_id=profile_id,
-                mode_id=mode_id,
-                on_new=lambda: commit_primary(profile_id, mode_id),
-            )
 
-        def push_with_workspaces(workspaces, error) -> None:
-            # The primary working tree carries its own path == repo_root;
-            # thread it into the screen + the dispatch closures so neither
-            # has to re-resolve the repo root on the event loop.
-            host._workspace_repo_root = next(
-                (w.path for w in workspaces if getattr(w, "is_primary", False)),
-                target_dir,
-            )
-            host.app.push_screen(  # type: ignore[attr-defined]
-                LaunchOptionsScreen(
-                    host.cfg,
-                    host.state,
-                    workspaces=workspaces,
-                    repo_root=host._workspace_repo_root,
-                    probe_error=error,
+            def after_probe(workspaces) -> None:
+                nonlocal repo_root
+                if generation != self._generation or getattr(host.app, "screen", host) is not host:
+                    return
+                if not workspaces:
+                    self.maybe_show_session_choice(
+                        target_dir=target_dir,
+                        target_label=target_label,
+                        profile_id=profile_id,
+                        mode_id=mode_id,
+                        on_new=lambda: commit_primary(profile_id, mode_id),
+                    )
+                    return
+                repo_root = next((w.path for w in workspaces if w.is_primary), target_dir)
+                host.app.push_screen(
+                    WorkspaceScreen(workspaces, repo_root=repo_root),
+                    lambda choice: (
+                        dispatch_workspace(profile_id, mode_id, choice)
+                        if choice is not None
+                        else None
+                    ),
+                )
+
+            probe = host.cfg.on_probe_worktrees
+            host.app.run_off_loop(  # type: ignore[attr-defined]
+                lambda: probe(target_dir, profile_id, mode_id),
+                on_success=after_probe,
+                on_error=lambda exc: host.app.notify(
+                    f"Workspace probe failed: {exc}", severity="error", timeout=6
                 ),
-                after_opts,
+                label="worktree_probe",
             )
 
-        def deny() -> None:
-            user = host.cfg.launch_user or host.cfg.current_user or "launch user"
-            host.app.notify(
-                f"Cannot launch in {target_label} as {user} "
-                "(no write access, or outside allowed_roots)",
-                severity="warning",
-                timeout=6,
-            )
-
-        def on_probed_workspaces(resolved: bool | None, workspaces, error=None) -> None:
-            # On-loop callback (off the worker thread). ``resolved is None``
-            # ⟺ the caller pre-resolved launchability and no worker probe
-            # ran, so ``on_probed`` (cwd slot persist) fires only on a fresh
-            # probe — matching the original never-loaded-only refresh.
-            if resolved is not None and on_probed is not None:
-                on_probed(bool(resolved))
-            if resolved is False:
-                deny()
-                return
-            push_with_workspaces(workspaces, error)
-
-        # Profile-specific launchability and worktree availability cannot be
-        # probed until the operator picks a profile. The commit planner performs
-        # the authoritative gate after that choice; until the profile-aware TUI
-        # path is available, show the plain profile/mode picker without a
-        # pre-selection filesystem probe.
-        if on_probed is not None and launchable is not None:
-            on_probed(bool(launchable))
-        push_with_workspaces([], None)
+        host.app.push_screen(LaunchOptionsScreen(host.cfg, host.state), after_opts)
 
     def launch_cwd(self) -> None:
         host = self.host
@@ -442,36 +399,20 @@ class LaunchFlow:
                 target_dir or host.cfg.cwd, profile_id, mode_id, do_commit
             )
 
-        def on_probed(value: bool) -> None:
-            # The cross-user / sudo probe may not have landed yet; when the
-            # gate resolves it synchronously, persist into the reactive slot
-            # and re-render the cwd row so its enabled state stops lying. The
-            # slot getter prefers a later background-worker write, so this
-            # never masks a fresher value (a legitimate ``value=None`` does
-            # not retrigger — the slot is concrete after any probe attempt).
-            # Persist onto the static seed; ``_cwd_writable_now`` reads it
-            # until a worker probe lands on ``state.cwd_writable``.
-            host.cfg.cwd_writable = value
-            host._refresh_cwd_row()
-
         self.begin_launch_in_folder(
             target_dir=host.cfg.cwd,
             target_label=host.cfg.cwd_short or host.cfg.cwd,
             commit_primary=commit_primary,
-            launchable=host._cwd_writable_now(),
-            on_probed=on_probed,
         )
 
     def launch_new(self) -> None:
         host = self.host
+        self._generation += 1
+        generation = self._generation
 
         def after_opts(name: str):
-            # Built WITHOUT ``workspaces`` → only ever a 2-tuple at runtime
-            # (B2). The annotation covers the screen's widened result type
-            # so pyright accepts the callback; ``result[:2]`` is robust if a
-            # 3-tuple ever reaches here.
-            def _on_opts(result: tuple[str, str] | tuple[str, str, object] | None) -> None:
-                if result is None:
+            def _on_opts(result: tuple[str, str] | None) -> None:
+                if result is None or generation != self._generation:
                     return
                 profile_id, mode_id = result[0], result[1]
 
@@ -531,6 +472,7 @@ class LaunchFlow:
 
     def launch_existing(self) -> None:
         host = self.host
+        self._generation += 1
         if not host.cfg.existing_projects:
             host.app.notify(
                 f"No projects in {host.cfg.new_project_root}",
