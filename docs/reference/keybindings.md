@@ -62,14 +62,25 @@ The branch-name prompt (reached via `+ New worktree…`) takes
 ## "Open existing project" screen
 
 The filter input owns focus on mount — start typing to narrow the
-list. Cursor and selection bindings work without leaving the input.
+list. Navigation and selection work without leaving the input. The current
+path appears above the filter; browsing stays under `new_project_root`.
 
 | Key | Action |
 |---|---|
 | typing | Filter the list (case-insensitive substring on name) |
 | `↑` / `↓` | Navigate the (filtered) list |
+| `→` | Browse inside the highlighted folder; clear the filter for that level |
+| `←` | Return to the parent folder, restoring its filter and selection; no effect at the project root |
 | `Enter` | Confirm the row under the cursor |
 | `Esc` | Clear filter when non-empty, otherwise cancel |
+
+`←` / `→` navigate folders rather than moving the text cursor; `Backspace`
+still deletes filter text. `Enter` selects a folder for launch, including one
+that contains subfolders. Empty folders can be selected from their parent.
+Directory reads run in the background using the configured launch user and
+execution backend. A failed read keeps the current directory and displays the
+error; `←` also cancels a pending read. Launch-profile selection and final
+access validation follow folder selection.
 
 ## "Pick git remote profile" screen
 

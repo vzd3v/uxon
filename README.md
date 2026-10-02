@@ -89,7 +89,7 @@ See [client setup](docs/clients.md), [privacy](docs/privacy.md),
 - **Create new project** — prompt for a name, create
   `<new_project_root>/<name>`, optionally create a GitHub repo,
   launch the agent.
-- **Open existing project** — pick a directory under
+- **Open existing project** — browse and pick a directory at any depth under
   `new_project_root` and launch.
 
 The dashboard combines your sessions, authorized other-user sessions and

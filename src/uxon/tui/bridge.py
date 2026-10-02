@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import uxon.app.launch as launch_app
 import uxon.app.launch_profile as launch_profile_app
+import uxon.app.project_browsing as project_browsing
 import uxon.app.tui_planning as tui_planning
 from uxon.domain.config import Config
 from uxon.domain.session import session_stem_for_worktree
@@ -509,6 +510,12 @@ class TuiBridge:
             self.cfg, self.caller_user, self.launch_user, name, profile_id, mode_id
         )
         return req
+
+    def on_list_project_directories(self, relative_path: str) -> list[tuple[str, str]]:
+        """Browse under the project root using the context's launch user, off-loop."""
+        return project_browsing.browse_project_directories(
+            self.cfg, self.launch_user, relative_path
+        )
 
     def on_probe_existing_sessions(
         self, target_dir: str, profile_id: str, mode_id: str

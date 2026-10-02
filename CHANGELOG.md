@@ -36,6 +36,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - The TUI Settings screen is read-only for non-root processes. Operators render configuration unprivileged, review it, and cross the privilege boundary explicitly with `sudo install`.
 
 ### Added
+- The project picker browses nested folders with plain arrow keys, shows the current path, and restores the previous search and selection when returning to a parent folder.
 - Generic command runtimes with deterministic resources, path mapping, readiness/start/create policy, optional cgroup telemetry, identity resolution, and safe per-session teardown.
 - Command execution backends accept one generic argv prefix, verify the effective target UID/GID and supplementary groups with a fixed internal probe, canonicalize target filesystem and telemetry reads inside the boundary, and keep credential-file reads plus token-authenticated HTTP inside that boundary. The built-in local backend uses argv-preserving non-login `sudo`.
 - Managed launches finalize and fsync their authoritative controller-side launch record before releasing the new tmux pane through a one-shot tmux synchronization channel. Records are private by default; multi-controller deployments can opt into a validated shared control-group directory with bounded stale-record collection.

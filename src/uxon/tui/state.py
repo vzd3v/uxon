@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from uxon.domain.authz import project_directory
 from uxon.domain.session import TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
 
@@ -383,14 +384,36 @@ def filter_existing_projects(
 ) -> list[tuple[str, str]]:
     """Substring-filter a project list by name (case-insensitive).
 
-    Original order is preserved — the screen sorts by mtime desc when
-    it builds the list, and the filter must not reshuffle that. An
+    Original order is preserved; the filter must not reshuffle it. An
     empty (or whitespace-only) needle returns every project.
     """
     n = needle.strip().lower()
     if not n:
         return list(projects)
     return [p for p in projects if n in p[0].lower()]
+
+
+@dataclass(frozen=True)
+class ProjectBrowserLevel:
+    """One directory's filter and cursor, retained while browsing its children."""
+
+    directory: str
+    projects: tuple[tuple[str, str], ...]
+    needle: str
+    index: int | None
+
+    @property
+    def filtered(self) -> list[tuple[str, str]]:
+        return filter_existing_projects(self.projects, self.needle)
+
+    @property
+    def selected_path(self) -> str | None:
+        rows = self.filtered
+        index = self.index if self.index is not None else 0
+        if not 0 <= index < len(rows):
+            return None
+        name = rows[index][0]
+        return project_directory(self.directory, name)
 
 
 def selected_setting_index(*, row: int, has_git_view: bool, entry_count: int) -> int | None:

@@ -91,6 +91,7 @@ class TuiConfig:
     on_launch_cwd: Callable[..., LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
+    on_list_project_directories: Callable[[str], list[tuple[str, str]]]
     on_runtime_gate: Callable[[str, str, str], RuntimeGate | None]
     on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]]
     on_git_remote_options: Callable[[str, str, str], tuple[list[tuple[str, str]], str]]
@@ -150,6 +151,7 @@ class TuiConfig:
             on_launch_cwd=ctx.on_launch_cwd,
             on_launch_new=ctx.on_launch_new,
             on_launch_existing=ctx.on_launch_existing,
+            on_list_project_directories=ctx.on_list_project_directories,
             on_runtime_gate=ctx.on_runtime_gate,
             on_probe_existing_sessions=ctx.on_probe_existing_sessions,
             on_git_remote_options=ctx.on_git_remote_options,

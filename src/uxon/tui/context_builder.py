@@ -19,8 +19,9 @@ import os
 import threading
 from typing import TYPE_CHECKING, Any
 
+from uxon.app.project_browsing import list_project_directories
 from uxon.domain.config import Config
-from uxon.domain.format import compact_time, fmt_epoch, format_cpu_pct, format_rss_kib
+from uxon.domain.format import format_cpu_pct, format_rss_kib
 from uxon.domain.session import SessionInfo, to_tui_session
 from uxon.infra import (
     host_status_probe,
@@ -34,22 +35,6 @@ from uxon.tui.callback_wrap import _wrap_tui_callback
 if TYPE_CHECKING:
     from uxon.domain.sudo import SudoCapability
     from uxon.tui.context import TuiContext
-
-
-def _list_existing_projects(cfg: Config, launch_user: str, root: str) -> list[tuple[str, str]]:
-    """List ``(name, compact_mtime)`` under ``new_project_root``, sorted by name.
-
-    ``compact_mtime`` uses :func:`compact_time`: ``HH:MM`` if the
-    directory was last modified today, ``MM-DD`` otherwise. ``"-"``
-    when the stat call fails.
-    """
-    from uxon.infra.execution import list_directories
-
-    entries = list_directories(cfg, launch_user, root)
-    result: list[tuple[str, str]] = []
-    for entry in entries:
-        result.append((entry.name, compact_time(fmt_epoch(str(entry.mtime)))))
-    return result
 
 
 def build_tui_context(
@@ -192,6 +177,7 @@ def build_tui_context(
     on_launch_cwd = _wrap_tui_callback(bridge.on_launch_cwd, _CbErr)
     on_launch_new = _wrap_tui_callback(bridge.on_launch_new, _CbErr)
     on_launch_existing = _wrap_tui_callback(bridge.on_launch_existing, _CbErr)
+    on_list_project_directories = _wrap_tui_callback(bridge.on_list_project_directories, _CbErr)
     on_runtime_gate = _wrap_tui_callback(bridge.on_runtime_gate, _CbErr)
     on_probe_existing_sessions = _wrap_tui_callback(bridge.on_probe_existing_sessions, _CbErr)
     on_git_remote_options = _wrap_tui_callback(bridge.on_git_remote_options, _CbErr)
@@ -252,7 +238,7 @@ def build_tui_context(
         existing_projects: list[tuple[str, str]] = []
         server_status = ServerStatus()
     else:
-        existing_projects = _list_existing_projects(cfg, launch_user, cfg.new_project_root)
+        existing_projects = list_project_directories(cfg, launch_user, cfg.new_project_root)
         server_status = host_status_probe.read_server_status(cfg, launch_user, cfg.new_project_root)
 
     # Pluggable refresh sources include one local context rebuild and one
@@ -446,6 +432,7 @@ def build_tui_context(
         on_launch_cwd=on_launch_cwd,
         on_launch_new=on_launch_new,
         on_launch_existing=on_launch_existing,
+        on_list_project_directories=on_list_project_directories,
         on_runtime_gate=on_runtime_gate,
         on_probe_existing_sessions=on_probe_existing_sessions,
         on_git_remote_options=on_git_remote_options,

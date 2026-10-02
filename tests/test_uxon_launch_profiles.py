@@ -551,8 +551,8 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
             profiles=builtin_launch_profiles(default_agent_catalog()),
         )
         with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "demo"
-            project.mkdir()
+            project = Path(tmp) / "group" / "demo"
+            project.mkdir(parents=True)
             cfg = _cfg_with_launch(launch, allowed_roots=[tmp], new_project_root=tmp)
             resolved = dataclasses.replace(
                 _resolved(cfg, "claude", launch_user="profile_user"),
@@ -578,11 +578,12 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                 ),
             ):
                 tui_planning._plan_tui_open_existing_profile(
-                    cfg, "erin", "startup_user", "demo", "claude", "normal"
+                    cfg, "erin", "startup_user", "group/demo", "claude", "normal"
                 )
 
         resolve.assert_called_once()
         self.assertEqual(resolve.call_args.args[1], "erin")
+        self.assertEqual(resolve.call_args.args[3], str(project))
         gate.assert_called_once_with(cfg, "profile_user", str(project))
         run_cmd.assert_not_called()
 

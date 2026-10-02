@@ -19,6 +19,7 @@ from helpers import make_config, make_session
 
 from uxon.app.doctor import _doctor_execution_rows
 from uxon.app.launch_profile import resolve_launch_profile
+from uxon.app.project_browsing import browse_project_directories
 from uxon.domain.args import ParsedArgs
 from uxon.domain.execution import (
     ExecutionBackendSpec,
@@ -376,6 +377,40 @@ def test_backend_lists_target_directories_inside_boundary(backend: str) -> None:
 
 
 @pytest.mark.parametrize("backend", ["command", "local"])
+def test_project_browsing_canonicalizes_and_reads_inside_target_boundary(backend: str) -> None:
+    cfg = _command_cfg() if backend == "command" else make_config()
+    cfg.new_project_root = "/outside/projects"
+    replies = [
+        {"ok": True, "path": "/inside/projects", "error": ""},
+        {"ok": True, "path": "/inside/projects/group/demo", "error": ""},
+        {"ok": True, "entries": [{"name": "child", "mtime": 123}], "error": ""},
+    ]
+    with mock.patch(
+        "uxon.infra.execution.run_query",
+        side_effect=[_cp(stdout=json.dumps(reply)) for reply in replies],
+    ) as run:
+        rows = browse_project_directories(cfg, "alice", "group/demo")
+    assert [name for name, _ in rows] == ["child"]
+    for call in run.call_args_list:
+        argv = call.args[0]
+        assert (
+            argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+            if backend == "command"
+            else argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
+        )
+        assert (
+            call.kwargs["timeout"] == cfg.execution.backend_for_user("alice").probe_timeout_seconds
+        )
+    assert run.call_args.args[0][-5:] == [
+        "--mode",
+        "list-directories",
+        "--path",
+        "/inside/projects/group/demo",
+        "--require-directory",
+    ]
+
+
+@pytest.mark.parametrize("backend", ["command", "local"])
 def test_backend_reads_target_filesystem_usage_inside_boundary(backend: str) -> None:
     cfg = _command_cfg() if backend == "command" else make_config()
     payload = {"ok": True, "total": 4096, "available": 1024, "error": ""}
@@ -590,6 +625,9 @@ def test_real_other_user_cannot_use_controller_private_directory(tmp_path: Path)
         public_facts = path_facts(cfg, "nobody", public)
         assert public_facts.exists and public_facts.directory
         assert not public_facts.writable
+        assert [
+            entry.name for entry in list_directories(cfg, "nobody", public, missing_ok=False)
+        ] == ["uxon"]
         private = tmp_path / "private"
         private.mkdir(mode=0o700)
         assert os.access(private, os.W_OK | os.X_OK)
@@ -599,6 +637,8 @@ def test_real_other_user_cannot_use_controller_private_directory(tmp_path: Path)
             assert "Permission denied" in getattr(exc, "uxon_msg", "")
         else:
             assert not facts.writable
+        with pytest.raises(SystemExit):
+            list_directories(cfg, "nobody", str(private), missing_ok=False)
 
 
 def test_unreachable_tmux_server_is_not_reported_as_empty() -> None:
