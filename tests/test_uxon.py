@@ -2171,6 +2171,8 @@ class UxonTests(unittest.TestCase):
     def test_list_existing_projects_returns_name_and_mtime(self) -> None:
         """Smoke test against a real temp dir — guards against regressions
         like mistaking Path objects for os.DirEntry (no ``.path`` attr)."""
+        from uxon.app.project_browsing import list_project_directories
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "alpha").mkdir()
@@ -2178,9 +2180,7 @@ class UxonTests(unittest.TestCase):
             (root / ".hidden").mkdir()  # dot-prefixed must be skipped
             (root / "not_a_dir.txt").write_text("x")
             cfg = self.make_config(new_project_root=str(root), allowed_roots=[str(root)])
-            entries = context_builder._list_existing_projects(
-                cfg, identity.process_user(), str(root)
-            )
+            entries = list_project_directories(cfg, identity.process_user(), str(root))
         names = [n for n, _ in entries]
         self.assertEqual(names, ["alpha", "beta"])
         for _, mtime in entries:
@@ -2188,8 +2188,10 @@ class UxonTests(unittest.TestCase):
             self.assertRegex(mtime, r"^\d\d[:-]\d\d$")
 
     def test_list_existing_projects_missing_root_returns_empty(self) -> None:
+        from uxon.app.project_browsing import list_project_directories
+
         self.assertEqual(
-            context_builder._list_existing_projects(
+            list_project_directories(
                 self.make_config(), identity.process_user(), "/nonexistent/path/for/uxon/test"
             ),
             [],

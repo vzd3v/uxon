@@ -182,6 +182,8 @@ class TuiContext:
     on_launch_existing: Callable[[str, str, str], LaunchRequest] = (
         lambda name, profile_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
+    # Relative paths under new_project_root; directory I/O runs off-loop.
+    on_list_project_directories: Callable[[str], list[tuple[str, str]]] = lambda path: []
     # Workload-runtime readiness gate resolves the selected profile for ``target_dir``
     # and probes that profile's launch user's workload. The TUI runs this off
     # the loop BEFORE a commit so it can show a confirm affordance when a

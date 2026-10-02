@@ -31,6 +31,7 @@ from uxon.tui.state import (
     LaunchOptionsState,
     LaunchOptionsUpdate,
     MainIntent,
+    ProjectBrowserLevel,
     activate_main_index,
     agent_is_pending,
     agent_list_label,
@@ -659,6 +660,23 @@ class PickIndexStateTests(unittest.TestCase):
 
 
 class FilterExistingProjectsTests(unittest.TestCase):
+    def test_browser_selection_keeps_relative_path_and_saved_filter(self) -> None:
+        for directory, needle, index, expected in [
+            ("", "", None, "alpha"),
+            ("group", "ALP", 0, "group/alpha"),
+            ("group/project", "", 1, "group/project/beta"),
+            ("group", "missing", 0, None),
+            ("group", "", -1, None),
+            ("group", "", 2, None),
+        ]:
+            with self.subTest(directory=directory, needle=needle, index=index):
+                level = ProjectBrowserLevel(
+                    directory, (("alpha", "1s"), ("beta", "2s")), needle, index
+                )
+                self.assertEqual(level.selected_path, expected)
+                self.assertEqual(level.needle, needle)
+                self.assertEqual(level.index, index)
+
     def test_empty_needle_returns_full_list_in_order(self) -> None:
         rows = [("zebra", "1s"), ("alpha", "2s"), ("Mango", "3s")]
         self.assertEqual(filter_existing_projects(rows, ""), rows)

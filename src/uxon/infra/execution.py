@@ -217,7 +217,9 @@ def path_facts(cfg: ExecutionConfigured, user: str, path: str) -> PathFacts:
     )
 
 
-def list_directories(cfg: ExecutionConfigured, user: str, path: str) -> tuple[DirectoryEntry, ...]:
+def list_directories(
+    cfg: ExecutionConfigured, user: str, path: str, *, missing_ok: bool = True
+) -> tuple[DirectoryEntry, ...]:
     """List direct child directories inside the target filesystem boundary."""
     target = str(Path(path).expanduser())
     if not Path(target).is_absolute():
@@ -227,7 +229,7 @@ def list_directories(cfg: ExecutionConfigured, user: str, path: str) -> tuple[Di
         from uxon.infra.path_probe import list_directories as inspect_directories
 
         try:
-            payload = inspect_directories(target)
+            payload = inspect_directories(target, missing_ok=missing_ok)
         except (OSError, ValueError) as exc:
             fail(str(exc))
     else:
@@ -242,6 +244,7 @@ def list_directories(cfg: ExecutionConfigured, user: str, path: str) -> tuple[Di
                 "list-directories",
                 "--path",
                 target,
+                *([] if missing_ok else ["--require-directory"]),
             ],
             interactive=False,
         )

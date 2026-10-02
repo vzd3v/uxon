@@ -16,6 +16,7 @@ import uxon.app.launch as launch_app
 import uxon.app.launch_profile as launch_profile_app
 import uxon.app.new as new_app
 from uxon.domain.args import ParsedArgs
+from uxon.domain.authz import project_directory
 from uxon.domain.config import Config
 from uxon.domain.session import (
     allocate_session_name,
@@ -255,9 +256,10 @@ def _plan_tui_open_existing_profile(
     project must not have any git side effect, regardless of
     ``git_create_enabled`` or profile configuration.
     """
-    if "/" in name or name in (".", ".."):
-        fail(f"invalid name: {name}")
-    project_dir = os.path.normpath(os.path.join(cfg.new_project_root, name))
+    try:
+        project_dir = project_directory(cfg.new_project_root, name)
+    except ValueError as exc:
+        fail(str(exc))
     args = ParsedArgs(
         action="new",
         target_id=name,

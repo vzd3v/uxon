@@ -19,6 +19,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "tests"))
 
@@ -121,6 +123,76 @@ class PtyTuiIntegrationTests(unittest.TestCase):
             timeout=3.0,
         )
         self.assertIn("controlling-tty:True:True", trace.plain)
+
+    @pytest.mark.slow
+    def test_project_picker_decodes_plain_folder_arrows_with_search(self) -> None:
+        from harness.pty_tui import run_python_snippet
+
+        script = r"""
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from helpers import make_config
+from textual.widgets import Input
+from uxon.app.project_browsing import browse_project_directories, list_project_directories
+from uxon.infra.identity import process_user
+import uxon.tui.app as app_module
+from uxon.tui.app import UxonApp
+from uxon.tui.callback_wrap import _wrap_tui_callback
+from uxon.tui.context import CallbackError, TuiContext
+from uxon.tui.screens.existing import ExistingProjectScreen
+
+with TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    (root / "folder-key-sentinel" / "inner-key-sentinel" / "leaf-key-sentinel").mkdir(parents=True)
+    cfg = make_config(new_project_root=tmp, allowed_roots=[tmp])
+    user = process_user()
+    ctx = TuiContext(
+        sessions=[], total_cpu="0", total_ram="0", version="test",
+        cwd=tmp, cwd_short="projects", new_project_root=tmp,
+        existing_projects=list_project_directories(cfg, user, tmp),
+        current_user=user, launch_user=user, cwd_writable=True, refresh_sources=[],
+    )
+    class ProjectApp(UxonApp):
+        CSS_PATH = Path(app_module.__file__).with_name("styles.tcss")
+        selected = None
+        def on_mount(self):
+            super().on_mount()
+            self.call_later(self.open_picker)
+        async def open_picker(self):
+            callback = _wrap_tui_callback(
+                lambda path: browse_project_directories(cfg, user, path), CallbackError
+            )
+            await self.push_screen(
+                ExistingProjectScreen(ctx.existing_projects, tmp, list_directories=callback),
+                self.picked,
+            )
+            # Output settling must follow navigation, not caret animation.
+            self.screen.query_one(Input).cursor_blink = False
+        def picked(self, value):
+            self.selected = value
+            self.exit()
+    app = ProjectApp(ctx, probe_agents=False)
+    app.run()
+    print(f"picked:{app.selected}")
+"""
+        trace = run_python_snippet(
+            script,
+            [
+                (10.0, b"sentinel", "1 match"),
+                (10.0, b"\x1b[C", "inner-key-sentinel"),
+                (10.0, b"inner", "1 match"),
+                (10.0, b"\x1b[C", "leaf-key-sentinel"),
+                (10.0, b"\x1b[D", "inner-key-sentinel"),
+                (10.0, b"\r", "picked:"),
+            ],
+            extra_path=[str(_REPO / "tests")],
+            initial_wait_for="folder-key-sentinel",
+            initial_drain=20.0,
+            timeout=60.0,
+        )
+        self.assertEqual(trace.exit_code, 0, trace.plain[-3000:])
+        self.assertIn("picked:folder-key-sentinel/inner-key-sentinel", trace.plain)
+        self.assertNotIn("Traceback", trace.plain)
 
     def test_stray_digit_and_letter_do_not_open_git_remotes(self) -> None:
         """Pressing an unbound digit and then ``g`` must never reach

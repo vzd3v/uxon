@@ -33,12 +33,12 @@ def inspect(path: str) -> dict[str, object]:
     }
 
 
-def list_directories(path: str) -> dict[str, object]:
+def list_directories(path: str, *, missing_ok: bool = True) -> dict[str, object]:
     """List direct child directories without following child symlinks."""
     target = _absolute(path)
-    if not target.exists():
+    if missing_ok and not target.exists():
         return {"ok": True, "entries": [], "error": ""}
-    if not target.is_dir():
+    if missing_ok and not target.is_dir():
         raise ValueError(f"not a directory: {target}")
     entries: list[dict[str, object]] = []
     with os.scandir(target) as iterator:
@@ -116,12 +116,13 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
     )
     parser.add_argument("--path", required=True)
+    parser.add_argument("--require-directory", action="store_true")
     ns = parser.parse_args(argv)
     try:
         if ns.mode == "inspect":
             payload = inspect(ns.path)
         elif ns.mode == "list-directories":
-            payload = list_directories(ns.path)
+            payload = list_directories(ns.path, missing_ok=not ns.require_directory)
         elif ns.mode == "filesystem-usage":
             payload = filesystem_usage(ns.path)
         else:

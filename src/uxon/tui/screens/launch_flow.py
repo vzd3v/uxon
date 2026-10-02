@@ -492,14 +492,9 @@ class LaunchFlow:
             def commit_primary(
                 profile_id: str, mode_id: str, target_dir: str | None = None
             ) -> None:
-                # ``target_dir`` (the primary ``repo_root`` from the WORKSPACE
-                # choice) is accepted for a uniform ``commit_primary`` signature
-                # but intentionally unused here: a named project launches by
-                # name, not path, so the primary tree is already its
-                # ``new_project_root/<name>`` root (``project_dir``). The
-                # named-project-is-a-linked-worktree case is out of scope (the
-                # backlog item is cwd-only). The planner probes tmux before
-                # building the request — off the loop.
+                # Preserve the chosen directory, including subfolders of a
+                # repository. The planner revalidates its relative project path
+                # under the selected profile before building the request.
                 fn = host.cfg.on_launch_existing
 
                 def do_commit() -> None:
@@ -523,7 +518,11 @@ class LaunchFlow:
             )
 
         host.app.push_screen(
-            ExistingProjectScreen(host.cfg.existing_projects, host.cfg.new_project_root),
+            ExistingProjectScreen(
+                host.cfg.existing_projects,
+                host.cfg.new_project_root,
+                list_directories=host.cfg.on_list_project_directories,
+            ),
             after_name,
         )
 

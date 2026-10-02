@@ -24,6 +24,17 @@ def lexical_absolute(path: str) -> str:
     return os.path.normpath(expanded)
 
 
+def project_directory(root: str, relative_path: str) -> str:
+    """Join a non-empty project path without accepting traversal or absolute paths."""
+    if (
+        not relative_path
+        or "\x00" in relative_path
+        or any(part in {"", ".", ".."} for part in relative_path.split("/"))
+    ):
+        raise ValueError(f"invalid project path: {relative_path!r}")
+    return os.path.normpath(os.path.join(root, relative_path))
+
+
 def is_under(path: str, base: str) -> bool:
     path_p = Path(path)
     base_p = Path(base)
