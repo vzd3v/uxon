@@ -8,6 +8,28 @@ these and the outer loop runs the command. Pure, stdlib-only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from uxon.domain.config import Config
+
+
+@dataclass(frozen=True)
+class TmuxHandoff:
+    """Controller context for acknowledging retained diagnostics."""
+
+    config: Config
+    user: str
+    session: str = ""
+    diagnostics: bool = False
+
+
+@dataclass(frozen=True)
+class HandoffResult:
+    rc: int
+    stage: str
+    wall_seconds: float
+    warning: str = ""
 
 
 @dataclass(frozen=True)
@@ -39,6 +61,7 @@ class ManagedTmuxLaunch:
     runtime_id: str = ""
     runtime_cgroup: str = ""
     runtime_epoch: str = ""
+    diagnostics_prefix: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,6 +78,7 @@ class LaunchRequest:
     prelaunch: tuple[tuple[str, ...], ...] = ()
     label: str = ""
     managed: ManagedTmuxLaunch | None = None
+    handoff: TmuxHandoff | None = None
 
 
 def session_name_from_launch_label(label: str) -> str:

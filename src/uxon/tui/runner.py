@@ -22,11 +22,12 @@ import time
 from collections.abc import Callable
 from functools import partial
 
+from uxon.app.session_handoff import run_launch_request
 from uxon.infra.events import debug as _debug
 
 from .context import CallbackError, TuiContext
 from .hints import TEXTUAL_MISSING_HINT
-from .launch import _run_launch_request, pause_on_launch_failure
+from .launch import pause_on_launch_failure
 
 
 class _TerminalDisconnectWatcher:
@@ -114,7 +115,7 @@ def run(ctx: TuiContext) -> int:
     # Root invariant: from here on this process runs an event loop. Any
     # blocking subprocess on the loop thread (the keystroke-swallowing
     # bug class) now raises at the spawn site instead of degrading the
-    # UI silently. Launch handoff (``_run_launch_request``) runs between
+    # UI silently. Launch handoff (``run_launch_request``) runs between
     # app instances with no loop on the thread, so it is unaffected.
     from uxon.infra.loop_guard import install_subprocess_guard
 
@@ -176,7 +177,8 @@ def run(ctx: TuiContext) -> int:
         _session = session_name_from_launch_label(req.label)
         _t0 = time.monotonic()
         try:
-            rc, stage, wall_seconds = _run_launch_request(req)
+            result = run_launch_request(req)
+            rc, stage, wall_seconds = result.rc, result.stage, result.wall_seconds
         except Exception as exc:
             # ``Exception`` (not ``BaseException``): a KeyboardInterrupt or
             # SystemExit propagating up here is a user-driven interruption,
@@ -194,7 +196,7 @@ def run(ctx: TuiContext) -> int:
             raise
         _audit.audit(
             "session.ended",
-            outcome="ok" if rc == 0 else "error",
+            outcome="ok" if rc == 0 and not result.warning else "error",
             session=_session,
             rc=rc,
             wall_seconds=round(wall_seconds, 3),
@@ -202,6 +204,6 @@ def run(ctx: TuiContext) -> int:
         pause_on_launch_failure(sys.stdout, req, rc, stage, wall_seconds)
         try:
             ctx = ctx.on_refresh()
-            pending_status = ""
+            pending_status = result.warning
         except CallbackError as exc:
-            pending_status = f"Refresh failed: {exc}"
+            pending_status = "; ".join(filter(None, (result.warning, f"Refresh failed: {exc}")))

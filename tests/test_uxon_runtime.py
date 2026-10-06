@@ -1454,7 +1454,7 @@ class WorkloadRuntimeSpecRuntimeTests(unittest.TestCase):
 class RuntimeTeardownAuditTests(unittest.TestCase):
     """AC-P3.2 / AC-P3.5 — teardown audit emit + PID-recycle stale guard."""
 
-    def test_finish_preserves_stop_failure_and_still_cleans_record(self) -> None:
+    def test_finish_preserves_authority_until_workload_stop_succeeds(self) -> None:
         from uxon.app import kill as kill_app
 
         cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
@@ -1470,7 +1470,10 @@ class RuntimeTeardownAuditTests(unittest.TestCase):
                     kill_app.finish_killed_session(cfg, target, teardown, target_user=target.user),
                     stopped,
                 )
-                cleanup.assert_called_once_with(cfg, target)
+                if stopped:
+                    cleanup.assert_called_once_with(cfg, target)
+                else:
+                    cleanup.assert_not_called()
 
     def _cfg_with_stop(self, identity_command=()):
         c = WorkloadRuntimeSpec(

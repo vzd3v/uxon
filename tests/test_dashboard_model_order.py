@@ -33,6 +33,9 @@ def _local_session(name, last_attached, user="me", cpu=0.0):
         legacy=False,
         created_iso="",
         last_attached_iso=_epoch_to_iso(last_attached) if last_attached else "",
+        exited=False,
+        has_diagnostics=False,
+        active_exit_status=None,
     )
 
 

@@ -168,7 +168,13 @@ class AttachCrossUserTests(unittest.TestCase):
             mock.patch("uxon.infra.sessions_probe.resolve_session") as rs,
             mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
         ):
-            rs.return_value = mock.Mock(name="demo@claude", profile="claude_fast", agent="claude")
+            rs.return_value = mock.Mock(
+                name="demo@claude",
+                profile="claude_fast",
+                agent="claude",
+                launch_record_verified=False,
+                active_pane_dead=False,
+            )
             rs.return_value.name = "demo@claude"
             with redirect_stdout(buf):
                 rc = attach_app.do_attach(args, cfg, "u-vz")

@@ -11,11 +11,12 @@ import shlex
 
 import uxon.app.launch as launch_app
 import uxon.app.launch_profile as launch_profile_app
+from uxon.app import session_handoff
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.session import allocate_session_name, session_stem_for_path
 from uxon.errors import fail
-from uxon.infra import git, process, sessions_probe, tmux
+from uxon.infra import git, sessions_probe
 from uxon.infra.worktrees import compute_worktree_path
 
 
@@ -105,16 +106,10 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             print(f"launch_user={shlex.quote(launch_user)}")
             print(f"exec {shlex.join(req.cmd)}")
             return 0
-        if req.managed is not None:
-            tmux.prepare_managed_launch(req)
-        else:
-            for pre in req.prelaunch:
-                process.run_cmd(list(pre))
-        # Lane B — interactive terminal handoff: ``execvp`` replaces this
-        # image with the agent/tmux client, which keeps the controlling
-        # terminal. Bypasses ``Popen``/the loop guard by construction.
-        os.execvp(req.cmd[0], list(req.cmd))
-        return 0
+        result = session_handoff.run_launch_request(req)
+        if result.warning:
+            fail(result.warning)
+        return result.rc
 
     resolved = launch_profile_app.resolve_launch_profile(
         cfg,
@@ -141,7 +136,7 @@ def do_run(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
     if not args.dry_run:
         # Probe and, when allowed, prepare the workload runtime before exec.
         launch_app.ensure_runtime_ready(cfg, target_dir, resolved)
-    return tmux.launch_in_tmux(
+    return session_handoff.launch_in_tmux(
         target_dir,
         session,
         args,

@@ -70,6 +70,15 @@ class SessionInfo:
     # (empty/absent ``cgroup.procs`` confirmed by ``ready_command``). Renders a
     # distinct "runtime down" indicator rather than a silent idle 0/—.
     runtime_down: bool = False
+    # Retained diagnostics are not running sessions. A mixed session still has
+    # live panes; attaching may select one rather than its dead active pane.
+    exited: bool = False
+    has_diagnostics: bool = False
+    active_pane_id: str = ""
+    active_pane_dead: bool = False
+    active_exit_status: int | None = None
+    live_pane_id: str = ""
+    dismissed_panes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -102,6 +111,9 @@ class TuiSession:
     # renders a distinct "runtime down" indicator in the
     # cpu/ram cells rather than a silent idle 0/—.
     runtime_down: bool = False
+    exited: bool = False
+    has_diagnostics: bool = False
+    active_exit_status: int | None = None
 
 
 def session_stem_for_path(target_dir: str) -> str:
@@ -193,7 +205,8 @@ def compatible_indexed_sessions(
                 f"{session.name} already points to {session.active_path or '<unknown>'}, "
                 f"not under {compatibility_root}"
             )
-        matches.append(session)
+        if not session.exited:
+            matches.append(session)
     return matches
 
 
@@ -305,4 +318,7 @@ def to_tui_session(
         created_iso=s.created,
         last_attached_iso=s.last_attached,
         runtime_down=s.runtime_down,
+        exited=s.exited,
+        active_exit_status=s.active_exit_status,
+        has_diagnostics=s.has_diagnostics,
     )

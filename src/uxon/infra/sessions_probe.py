@@ -373,6 +373,8 @@ def collect_session_snapshot_for_user(
     *,
     legacy_prefixes: tuple[str, ...] = (),
     runtimes: dict[str, WorkloadRuntimeSpec] | None = None,
+    session_id: str | None = None,
+    for_dismissal: bool = False,
 ) -> UserSessionSnapshot:
     # Demo-mode short-circuit: when ``UXON_DEMO_HOSTS`` is set, bypass
     # tmux entirely and read the synthetic-local envelope. Returning
@@ -396,7 +398,7 @@ def collect_session_snapshot_for_user(
     # blocking on a hidden password prompt.
     server = tmux.probe_tmux_server(cfg, user, socket_path)
     if server.state == "absent":
-        if socket_path is not None:
+        if socket_path is not None and not for_dismissal:
             _gc_launch_records(cfg, user, socket_path, set())
         return UserSessionSnapshot(user=user, server_state="absent", sessions=())
     if server.state == "unreachable":
@@ -412,7 +414,14 @@ def collect_session_snapshot_for_user(
         "\t#{E:" + LAUNCH_NONCE_ENV + "}\t#{E:" + RUNTIME_RESOURCE_ENV + "}"
         "\t#{E:" + RUNTIME_CGROUP_ENV + "}"
     )
-    rows = run_cmd(base + ["list-sessions", "-F", fmt]).stdout.splitlines()
+    timeout = cfg.execution.backend_for_user(user).probe_timeout_seconds
+    listed = run_cmd(base + ["list-sessions", "-F", fmt], check=False, timeout=timeout)
+    if listed.returncode != 0:
+        if for_dismissal and tmux.probe_tmux_server(cfg, user, socket_path).state == "absent":
+            return UserSessionSnapshot(user=user, server_state="absent", sessions=())
+        detail = (listed.stderr or listed.stdout or "tmux list-sessions failed").strip()
+        fail(f"unable to inspect tmux sessions for {user!r}: {detail}")
+    rows = listed.stdout.splitlines()
     sessions: list[SessionInfo] = []
     live_record_keys: set[tuple[str, str, str]] = set()
     known_prefixes = (session_prefix, *legacy_prefixes)
@@ -422,7 +431,7 @@ def collect_session_snapshot_for_user(
             continue
         (
             name,
-            session_id,
+            row_session_id,
             attached,
             windows,
             created_ts,
@@ -435,10 +444,22 @@ def collect_session_snapshot_for_user(
             continue
         if socket_path is not None and launch_nonce:
             live_record_keys.add((socket_path, name, launch_nonce))
+        if session_id is not None and row_session_id != session_id:
+            continue
 
-        pane_fmt = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
-        pane_result = run_cmd(base + ["list-panes", "-t", name, "-F", pane_fmt], check=False)
+        pane_fmt = (
+            "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
+            "\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}"
+            "\t#{@uxon-dismissed}"
+        )
+        pane_result = run_cmd(
+            base + ["list-panes", "-s", "-t", row_session_id, "-F", pane_fmt],
+            check=False,
+            timeout=timeout,
+        )
         if pane_result.returncode != 0:
+            if for_dismissal and not tmux.exact_session_exists(cfg, user, row_session_id):
+                continue
             detail = (pane_result.stderr or pane_result.stdout or "tmux list-panes failed").strip()
             fail(f"unable to inspect tmux session {name!r}: {detail}")
         pane_rows = pane_result.stdout.splitlines()
@@ -446,22 +467,41 @@ def collect_session_snapshot_for_user(
         active_pid: int | None = None
         active_cmd = ""
         active_path = ""
+        active_pane_id = ""
+        active_pane_dead = False
+        active_exit_status: int | None = None
+        live_pane_id = ""
+        inspected_panes = 0
+        dismissed_panes: list[str] = []
+        has_diagnostics = False
         for prow in pane_rows:
             pparts = prow.split("\t")
-            if len(pparts) != 4:
+            if len(pparts) != 9:
                 continue
-            is_active, pid_s, cmd, path = pparts
+            is_active, pid_s, cmd, path, window_active, pane_id, dead, status, dismissed = pparts
+            inspected_panes += 1
+            has_diagnostics = has_diagnostics or dead == "1"
             try:
                 pane_pid = int(pid_s)
             except ValueError:
                 pane_pid = None
-            if pane_pid is not None:
+            if dead != "1" and pane_pid is not None:
                 pane_pids.append(pane_pid)
-            if is_active != "1":
+            if dead != "1" and not live_pane_id:
+                live_pane_id = pane_id
+            if dead == "1" and dismissed == pid_s:
+                dismissed_panes.append(pane_id)
+            if is_active != "1" or window_active != "1":
                 continue
-            active_pid = pane_pid
+            active_pid = pane_pid if dead != "1" else None
             active_cmd = cmd
             active_path = path
+            active_pane_id = pane_id
+            active_pane_dead = dead == "1"
+            try:
+                active_exit_status = int(status) if active_pane_dead else None
+            except ValueError:
+                active_exit_status = None
 
         _parsed = parse_session_name(name, prefix=session_prefix, legacy_prefixes=legacy_prefixes)
         if _parsed is None:
@@ -472,7 +512,7 @@ def collect_session_snapshot_for_user(
             record = read_verified_record(
                 socket_path,
                 TmuxSessionMetadata(
-                    session_id=session_id,
+                    session_id=row_session_id,
                     created=created_ts,
                     name=name,
                     launch_nonce=launch_nonce,
@@ -497,7 +537,7 @@ def collect_session_snapshot_for_user(
                 agent=str(record.get("agent", "")) if record else "",
                 profile=str(record.get("profile") or _profile) if record else _profile,
                 legacy=_legacy,
-                tmux_session_id=session_id,
+                tmux_session_id=row_session_id,
                 tmux_session_created=created_ts,
                 launch_nonce=launch_nonce,
                 launch_record_verified=record is not None,
@@ -516,16 +556,24 @@ def collect_session_snapshot_for_user(
                 runtime_id=str(record.get("runtime_id", "")) if record else "",
                 runtime_epoch=str(record.get("runtime_epoch", "")) if record else "",
                 runtime_marker=runtime_marker,
+                exited=inspected_panes > 0 and not live_pane_id,
+                has_diagnostics=has_diagnostics,
+                active_pane_id=active_pane_id,
+                active_pane_dead=active_pane_dead,
+                active_exit_status=active_exit_status,
+                live_pane_id=live_pane_id,
+                dismissed_panes=tuple(dismissed_panes),
             )
         )
-    if socket_path is not None:
+    if socket_path is not None and not for_dismissal:
         _gc_launch_records(cfg, user, socket_path, live_record_keys)
-    enrich_session_usage(
-        cfg,
-        sessions,
-        runtimes=runtimes,
-        launch_user=user,
-    )
+    if not for_dismissal:
+        enrich_session_usage(
+            cfg,
+            sessions,
+            runtimes=runtimes,
+            launch_user=user,
+        )
     return UserSessionSnapshot(user=user, server_state="running", sessions=tuple(sessions))
 
 

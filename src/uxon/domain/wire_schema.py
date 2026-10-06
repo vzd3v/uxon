@@ -123,6 +123,9 @@ class SessionRecord(TypedDict):
     cpu_pct: float
     rss_kib: int
     runtime_down: bool
+    exited: bool
+    active_exit_status: int | None
+    has_diagnostics: bool
     legacy: bool
 
 
@@ -251,6 +254,9 @@ class _SessionLike(Protocol):
     runtime_kind: str
     runtime_resource: str
     runtime_down: bool
+    exited: bool
+    active_exit_status: int | None
+    has_diagnostics: bool
     legacy: bool
 
 
@@ -304,6 +310,9 @@ def build_session_records(
                 cpu_pct=s.cpu_pct,
                 rss_kib=s.rss_kib,
                 runtime_down=s.runtime_down,
+                exited=s.exited,
+                active_exit_status=s.active_exit_status,
+                has_diagnostics=s.has_diagnostics,
                 legacy=s.legacy,
             )
         )

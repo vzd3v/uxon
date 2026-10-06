@@ -3,7 +3,7 @@
 
 Every external-tool spawn in ``src/uxon/`` must go through ``run_query``
 (background, Lane A) or the one sanctioned interactive handoff in
-``tui/launch.py`` (Lane B). This walks the AST of every first-party module
+``app/session_handoff.py`` (Lane B). This walks the AST of every first-party module
 and fails if a raw ``subprocess.run`` / ``.call`` / ``.check_output`` /
 ``.check_call`` / ``Popen`` *call-expression* appears anywhere else.
 
@@ -20,11 +20,11 @@ from pathlib import Path
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "uxon"
 
 #: Files permitted to spawn directly. ``infra/run.py`` *is* ``run_query``;
-#: ``tui/launch.py`` is the single Lane-B interactive handoff.
+#: ``app/session_handoff.py`` is the single Lane-B interactive handoff.
 _ALLOWED = frozenset(
     {
         _SRC_ROOT / "infra" / "run.py",
-        _SRC_ROOT / "tui" / "launch.py",
+        _SRC_ROOT / "app" / "session_handoff.py",
     }
 )
 

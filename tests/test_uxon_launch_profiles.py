@@ -275,7 +275,7 @@ class LaunchProfileRuntimeGateTests(unittest.TestCase):
                     return_value=make_session_snapshot(user="alice", server_state="running"),
                 ),
                 mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
-                mock.patch("uxon.infra.tmux.launch_in_tmux", side_effect=fake_launch),
+                mock.patch("uxon.app.session_handoff.launch_in_tmux", side_effect=fake_launch),
             ):
                 rc = run_app.do_run(ParsedArgs(action="run", profile="claude_sub1"), cfg, "alice")
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import shlex
 
+from uxon.app.session_handoff import run_launch_request
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.session import SessionInfo
@@ -147,8 +148,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             target_user=target_user,
             extra={"profile": "", "agent": ""},
         )
-        base = tmux.configured_tmux_base(cfg, target_user) + ["attach-session", "-t", target.name]
-        full = base
+        req = tmux._build_tmux_attach_request(target, cfg, target_user)
+        full = list(req.cmd)
         if args.dry_run:
             _audit.audit(
                 attach_event,
@@ -163,11 +164,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             print(f"session={shlex.quote(target.name)}")
             print(f"exec {shlex.join(full)}")
             return 0
-        # Lane B — interactive terminal handoff: ``execvp`` replaces this
-        # image with ``tmux attach``, which keeps the controlling terminal.
-        # Bypasses ``Popen``/the loop guard by construction.
-        # Audit before ``os.execvp`` — once the image is
-        # replaced our cached socket is gone.
+        # The shared interactive handoff waits for tmux so an acknowledged
+        # error can be removed before returning to the caller.
         _audit.audit(
             attach_event,
             session=target.name,
@@ -176,8 +174,10 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             agent=target.agent,
             dry_run=args.dry_run,
         )
-        os.execvp(full[0], full)
-        return 0
+        result = run_launch_request(req)
+        if result.warning:
+            fail(result.warning)
+        return result.rc
 
     # Same-user path.
     sessions = sessions_probe.collect_sessions([launch_user], cfg)
@@ -248,10 +248,9 @@ def attach_session(
         print(f"exec {shlex.join(req.cmd)}")
         return 0
     tmux.require_tmux_server(cfg, launch_user, tmux.tmux_socket_path(cfg, launch_user))
-    # Lane B — interactive terminal handoff. ``execvp`` replaces this
-    # process image with ``tmux attach``; the TUI is gone and the child
-    # inherits the real controlling terminal (an interactive attach needs
-    # one). This bypasses ``subprocess``/``Popen`` entirely, so it is
-    # outside the loop guard and the no-raw-spawn test by construction.
-    os.execvp(req.cmd[0], list(req.cmd))
-    return 0
+    # The child inherits the controlling terminal; the shared handoff runs
+    # outside Textual and waits to handle explicit diagnostic dismissal.
+    result = run_launch_request(req)
+    if result.warning:
+        fail(result.warning)
+    return result.rc
