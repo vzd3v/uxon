@@ -54,6 +54,9 @@ class SessionRow:
     # of a silent idle 0/—. Defaults False so a peer running an older wire
     # schema (no such field) renders as a normal row.
     runtime_down: bool = False
+    exited: bool = False
+    active_exit_status: int | None = None
+    has_diagnostics: bool = False
 
     @property
     def key(self) -> str:
@@ -177,6 +180,9 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         # partial source object (no such attribute) renders as a normal row,
         # the same forward-compat stance ``from_wire_record`` takes.
         runtime_down=bool(getattr(s, "runtime_down", False)),
+        exited=s.exited,
+        active_exit_status=s.active_exit_status,
+        has_diagnostics=s.has_diagnostics,
     )
 
 
@@ -213,4 +219,9 @@ def from_wire_record(host: str, rec: dict[str, Any]) -> SessionRow:
         # (an acceptable cross-host limitation — the field is forward-compat
         # only). ``False`` when absent.
         runtime_down=bool(rec.get("runtime_down", False)),
+        exited=bool(rec.get("exited", False)),
+        active_exit_status=(
+            rec["active_exit_status"] if isinstance(rec.get("active_exit_status"), int) else None
+        ),
+        has_diagnostics=rec.get("has_diagnostics") is True,
     )

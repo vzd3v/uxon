@@ -425,6 +425,8 @@ def finish_killed_session(
             cleanup_ok = run_runtime_teardown(cfg, teardown, target_user, target.name)
         except BaseException:  # cleanup must not erase the proven tmux kill
             cleanup_ok = False
+    if not cleanup_ok:
+        return False  # retain the authoritative identity for failed workload teardown
     try:
         cleanup_launch_record(cfg, target)
     except BaseException:

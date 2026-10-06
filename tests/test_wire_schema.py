@@ -173,6 +173,9 @@ class BuildSessionRecordsTests(unittest.TestCase):
             "cpu_pct",
             "rss_kib",
             "runtime_down",
+            "exited",
+            "active_exit_status",
+            "has_diagnostics",
             "legacy",
         }
         self.assertEqual(set(rec.keys()), expected_keys)

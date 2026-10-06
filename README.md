@@ -98,6 +98,10 @@ The launch picker uses the selected profile's agent modes; it preserves that
 choice through workspace selection. See [TUI keys](docs/reference/keybindings.md)
 and [dashboard recipes](docs/guides/customise/customise-dashboard.md).
 
+Failed processes keep their output visible with an on-screen return hint,
+without stopping other running terminals.
+See [failed-process controls](docs/reference/keybindings.md#failed-process-terminal).
+
 ## Supported agents
 
 | Agent id | Binary | Install |

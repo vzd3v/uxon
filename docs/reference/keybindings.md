@@ -1,7 +1,7 @@
 # TUI keybindings
 
 `uxon` with no arguments on a TTY opens the interactive picker. All
-keys go through Textual `BINDINGS` declarations — the footer shows
+menu keys go through Textual `BINDINGS` declarations — the footer shows
 the visible subset.
 
 ## Main screen
@@ -139,3 +139,27 @@ goes through `BINDINGS` (no `on_key` overrides) and that every
 destructive binding has `show=True` plus a non-empty description.
 The footer of the running TUI is the source of truth — if a
 binding isn't shown, it's intentionally hidden, not missing.
+
+## Failed-process terminal
+
+These controls run inside tmux, not the Textual menu. A managed process that
+exits with an error keeps its output visible and shows its exit status plus
+`Enter / Esc / q: close and return to Uxon` at the terminal border.
+
+`Enter`, `Esc` or `q` closes that finished terminal and returns to the menu.
+It does not restart the process or stop another running terminal. After the
+last terminal closes, its session disappears. In tmux copy mode, keys retain
+their normal meaning; leave copy mode before closing the error.
+
+The dashboard marks fully finished sessions `[exited (status)]` and mixed
+sessions with unread errors `[error]`. Launch choices offer running sessions
+only. Attaching to a mixed session selects a live terminal; existing tmux
+navigation still lets you inspect the finished ones.
+
+Live terminals keep their existing keys and tmux prefix. Uxon snapshots native
+bindings once at launch or attach, without editing tmux configuration files.
+Opening an existing managed session uses two setup calls to tmux: capture and
+install bindings. New launches reuse their metadata query and release call.
+Configuration is streamed through stdin without temporary files or an argv
+size limit. Refresh keeps the same query count and
+inspects all windows in the existing per-session query. No watcher is started.

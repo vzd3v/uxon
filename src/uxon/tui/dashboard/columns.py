@@ -192,6 +192,11 @@ def _format_name(row: SessionRow) -> Text:
     text = Text(glyph)
     base = row.short or row.name or "-"
     text.append(_strip_profile_suffix(base, row.profile or row.agent))
+    if row.exited:
+        status = f" ({row.active_exit_status})" if row.active_exit_status is not None else ""
+        text.append(f" [exited{status}]", style="bold red")
+    elif row.has_diagnostics:
+        text.append(" [error]", style="bold red")
     return text
 
 

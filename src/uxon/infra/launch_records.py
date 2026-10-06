@@ -283,7 +283,8 @@ def delete_verified_record(
     shared: bool = False,
     launch_user: str = "",
 ) -> bool:
-    """Delete exactly one record after its matching tmux session was killed."""
+    """Delete one verified record; concurrent removal is already complete."""
+    path = _record_path(socket_path, metadata.name, metadata.launch_nonce, override_dir)
     payload = read_verified_record(
         socket_path,
         metadata,
@@ -293,12 +294,15 @@ def delete_verified_record(
         launch_user=launch_user,
     )
     if payload is None:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return True
         return False
-    path = _record_path(socket_path, metadata.name, metadata.launch_nonce, override_dir)
     try:
         path.unlink()
     except FileNotFoundError:
-        return False
+        return True
     except OSError as exc:
         fail(f"unable to remove finalized launch record: {exc}")
     return True

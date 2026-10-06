@@ -197,7 +197,7 @@ class ListJsonTests(unittest.TestCase):
                 "/env.scope",
             ]
         )
-        pane_row = "1\t111\tsh\t/srv/repos/demo"
+        pane_row = "1\t111\tsh\t/srv/repos/demo\t1\t%0\t0\t\t"
         record = {
             "profile": "claude_fast",
             "agent": "claude",
@@ -221,7 +221,7 @@ class ListJsonTests(unittest.TestCase):
             mock.patch(
                 "uxon.infra.sessions_probe.run_cmd",
                 side_effect=[
-                    mock.Mock(stdout=list_row),
+                    mock.Mock(returncode=0, stdout=list_row),
                     mock.Mock(returncode=0, stdout=pane_row),
                 ],
             ),
@@ -260,7 +260,7 @@ class ListJsonTests(unittest.TestCase):
                 "/env.scope",
             ]
         )
-        pane_row = "1\t111\tdocker\t/srv/repos/demo"
+        pane_row = "1\t111\tdocker\t/srv/repos/demo\t1\t%0\t0\t\t"
         with (
             mock.patch(
                 "uxon.infra.sessions_probe.tmux.probe_tmux_server",
@@ -273,7 +273,7 @@ class ListJsonTests(unittest.TestCase):
             mock.patch(
                 "uxon.infra.sessions_probe.run_cmd",
                 side_effect=[
-                    mock.Mock(stdout=list_row),
+                    mock.Mock(returncode=0, stdout=list_row),
                     mock.Mock(returncode=0, stdout=pane_row),
                 ],
             ),

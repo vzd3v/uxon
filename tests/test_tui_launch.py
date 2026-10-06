@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 from unittest import mock
 
-from uxon.domain.launch_request import LaunchRequest, ManagedTmuxLaunch
+from uxon.domain.launch_request import LaunchRequest, ManagedTmuxLaunch, TmuxHandoff
 from uxon.tui.launch import pause_on_launch_failure
 
 
@@ -38,6 +38,17 @@ def test_unmanaged_fast_zero_reports_that_no_output_was_retained() -> None:
     assert "exited immediately" in rendered
     assert "no diagnostic output was retained" in rendered
     assert "see output above" not in rendered
+
+
+def test_acknowledged_error_return_does_not_show_a_false_fast_exit() -> None:
+    from helpers import make_config
+
+    request = LaunchRequest(("tmux", "attach-session"), handoff=TmuxHandoff(make_config(), "alice"))
+    output = io.StringIO()
+    with mock.patch("sys.stdin.readline") as readline:
+        pause_on_launch_failure(output, request, 0, "cmd", 0.1)
+    assert output.getvalue() == ""
+    readline.assert_not_called()
 
 
 def test_nonzero_launch_reports_direct_terminal_output() -> None:

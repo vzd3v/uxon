@@ -23,7 +23,7 @@ from typing import Literal
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.launch_profiles import ResolvedLaunchProfile
-from uxon.domain.launch_request import LaunchRequest, ManagedTmuxLaunch
+from uxon.domain.launch_request import LaunchRequest, ManagedTmuxLaunch, TmuxHandoff
 from uxon.domain.runtime import (
     RUNTIME_CGROUP_ENV,
     RUNTIME_EPOCH_ENV,
@@ -38,6 +38,7 @@ from uxon.errors import fail
 from uxon.infra import launch_records, process
 from uxon.infra.execution import command_prefix, wrap_command
 from uxon.infra.run import run_query
+from uxon.infra.tmux_diagnostics import diagnostics_query, diagnostics_script
 
 _LAUNCH_HANDSHAKE_TIMEOUT_SECONDS = 60.0
 _TMUX_CONTROL_TIMEOUT_SECONDS = 10.0
@@ -96,6 +97,22 @@ def require_tmux_server(cfg: Config, target_user: str, socket_path: str) -> None
     if result.state == "absent":
         fail(f"tmux server for {target_user!r} is absent at {socket_path}")
     fail(f"tmux server for {target_user!r} is unreachable at {socket_path}: {result.error}")
+
+
+def exact_session_exists(cfg: Config, user: str, session_id: str) -> bool:
+    """Prove absence without name-prefix or launch-record discovery filters."""
+    result = run_query(
+        configured_tmux_base(cfg, user, nonint=True) + ["list-sessions", "-F", "#{session_id}"],
+        timeout=cfg.execution.backend_for_user(user).probe_timeout_seconds,
+    )
+    if result.returncode == 0:
+        return session_id in result.stdout.splitlines()
+    server = probe_tmux_server(cfg, user, tmux_socket_path(cfg, user))
+    if server.state == "absent":
+        return False
+    detail = (result.stderr or result.stdout or server.error).strip()
+    fail(f"unable to verify terminal removal: {detail or 'tmux query failed'}")
+    raise AssertionError("unreachable")
 
 
 def tmux_base(
@@ -248,8 +265,7 @@ def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: st
     classic ``attach-session`` (when the process is not already inside
     tmux) and a ``switch-client`` (when it is, on the same socket).
     Raises ``SystemExit`` when ``$TMUX`` names a different socket.
-    Used by both the CLI execvp path (``attach_session``) and the
-    TUI fork-and-wait path.
+    Used by the shared CLI/TUI interactive handoff.
     """
     base = configured_tmux_base(cfg, launch_user)
     # Attaching means the server is already alive, so re-assert the
@@ -258,12 +274,56 @@ def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: st
     # session, without a kill-server. ``-as`` is skipped (server_running) so
     # the append list does not grow. ``[]`` when managed options are off.
     set_chain = _tmux_set_chain(cfg, server_running=True)
+    if target.active_pane_dead and target.live_pane_id:
+        set_chain += [
+            "select-window",
+            "-t",
+            target.live_pane_id,
+            ";",
+            "select-pane",
+            "-t",
+            target.live_pane_id,
+            ";",
+        ]
+    handoff = TmuxHandoff(cfg, launch_user, target.name, target.launch_record_verified)
     mode = tmux_nesting_mode(cfg, launch_user, tmux_socket_path(cfg, launch_user))
     if mode == "switch":
         full = tuple(base + set_chain + ["switch-client", "-t", target.name])
-        return LaunchRequest(cmd=full, prelaunch=(), label=f"switch-client {target.name}")
+        return LaunchRequest(cmd=full, label=f"switch-client {target.name}", handoff=handoff)
     full = tuple(base + set_chain + ["attach-session", "-t", target.name])
-    return LaunchRequest(cmd=full, prelaunch=(), label=f"attach {target.name}")
+    return LaunchRequest(cmd=full, label=f"attach {target.name}", handoff=handoff)
+
+
+def prepare_diagnostics_attach(req: LaunchRequest) -> tuple[str, ...]:
+    """Capture and install native controls once, never during list refresh."""
+    context = req.handoff
+    if context is None or not context.diagnostics:
+        return req.cmd
+    base = configured_tmux_base(context.config, context.user)
+    query = diagnostics_query(context.session)[1:]
+    result = process.run_query(
+        base + _tmux_set_chain(context.config, server_running=True) + query,
+        timeout=_TMUX_CONTROL_TIMEOUT_SECONDS,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        fail(f"could not read tmux bindings: {detail or 'tmux query failed'}")
+    live_table, _, bindings = result.stdout.partition("\n")
+    if not live_table:
+        fail("tmux did not return the live key table")
+    _install_diagnostics(base, diagnostics_script(context.session, live_table, bindings))
+    return req.cmd
+
+
+def _install_diagnostics(base: list[str], script: str, after: list[str] | None = None) -> None:
+    """Feed native configuration through stdin without files or argv limits."""
+    command = [*base, "source-file", "-"]
+    if after:
+        command += [";", *after]
+    result = process.run_query(command, input=script, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        fail(f"could not configure tmux diagnostics: {detail or 'tmux rejected configuration'}")
 
 
 def _build_tmux_launch_request(
@@ -280,8 +340,7 @@ def _build_tmux_launch_request(
     """Assemble the agent + tmux argv plus the socket-parent mkdir.
 
     This is the single place where the agent command line is built
-    (see AGENTS.md "hard rules"). Both the CLI execvp path
-    (``launch_in_tmux``) and the TUI fork-and-wait path reuse it.
+    The shared CLI/TUI interactive handoff reuses it.
 
     ``server_running`` comes from the same target-side snapshot that collected
     the session rows. It is independent of list length because a reachable tmux
@@ -450,6 +509,7 @@ def _build_tmux_launch_request(
             + launch_records.LAUNCH_NONCE_ENV
             + "}",
         ]
+        + diagnostics_query(session)
     )
     release_cmd = tuple(
         base
@@ -486,6 +546,7 @@ def _build_tmux_launch_request(
         runtime_id=getattr(runtime_identity, "id", ""),
         runtime_cgroup=getattr(runtime_identity, "cgroup", ""),
         runtime_epoch=getattr(runtime_identity, "epoch", ""),
+        diagnostics_prefix=tuple(base),
     )
     if mode == "switch":
         switch = tuple(base + ["switch-client", "-t", session])
@@ -494,6 +555,7 @@ def _build_tmux_launch_request(
             prelaunch=(ensure_socket_parent,),
             label=f"switch-client {session} (nested)",
             managed=managed,
+            handoff=TmuxHandoff(cfg, launch_user),
         )
     attach = tuple(base + ["attach-session", "-t", session])
     return LaunchRequest(
@@ -501,6 +563,7 @@ def _build_tmux_launch_request(
         prelaunch=(ensure_socket_parent,),
         label=f"launch {session}",
         managed=managed,
+        handoff=TmuxHandoff(cfg, launch_user),
     )
 
 
@@ -596,6 +659,10 @@ def prepare_managed_launch(
             list(managed.query_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
         )
         metadata = _parse_tmux_launch_metadata(meta_cp.stdout)
+        script = ""
+        if managed.diagnostics_prefix:
+            _, live_table, bindings = meta_cp.stdout.split("\n", 2)
+            script = diagnostics_script(managed.record_session, live_table, bindings)
         launch_records.finalize_pending_record(
             pending,
             metadata,
@@ -605,9 +672,16 @@ def prepare_managed_launch(
             override_dir=record_dir,
             shared=managed.record_shared,
         )
-        process.run_cmd(
-            list(managed.release_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
-        )
+        if script:
+            _install_diagnostics(
+                list(managed.diagnostics_prefix),
+                script,
+                list(managed.release_cmd[len(managed.diagnostics_prefix) :]),
+            )
+        else:
+            process.run_cmd(
+                list(managed.release_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
+            )
     except BaseException as exc:
         if create_attempted:
             _kill_created_session_if_owned(managed, pending, metadata)
@@ -667,77 +741,3 @@ def _parse_tmux_launch_metadata(stdout: str) -> launch_records.TmuxSessionMetada
         name=parts[2],
         launch_nonce=parts[3],
     )
-
-
-def launch_in_tmux(
-    target_dir: str,
-    session: str,
-    args: ParsedArgs,
-    cfg: Config,
-    branch: str | None,
-    *,
-    resolved_profile: ResolvedLaunchProfile | None = None,
-    server_running: bool = False,
-) -> int:
-    import shlex
-
-    if resolved_profile is None:
-        fail("internal: launch profile must be resolved before launch_in_tmux")
-    launch_user = resolved_profile.launch_user
-
-    if args.dry_run:
-        req = _build_tmux_launch_request(
-            target_dir,
-            session,
-            args,
-            cfg,
-            branch,
-            resolved_profile=resolved_profile,
-            server_running=server_running,
-        )
-        pending = None
-    else:
-        req, pending = build_managed_tmux_launch_request(
-            target_dir,
-            session,
-            args,
-            cfg,
-            branch,
-            resolved_profile=resolved_profile,
-            server_running=server_running,
-        )
-    if args.dry_run:
-        from uxon.infra import audit as _audit
-
-        _audit.audit(
-            "session.new",
-            profile=resolved_profile.profile.id,
-            agent=resolved_profile.agent.id,
-            target_user=launch_user,
-            project=target_dir,
-            branch=branch or "",
-            session=session,
-            dry_run=True,
-        )
-        print(f"launch_user={shlex.quote(launch_user)}")
-        print(f"dir={shlex.quote(target_dir)}")
-        print(f"socket={shlex.quote(tmux_socket_path(cfg, launch_user))}")
-        for pre in req.prelaunch:
-            print(f"socket_parent_prepare={shlex.join(pre)}")
-        if req.managed is not None:
-            print(f"tmux_create={shlex.join(req.managed.create_cmd)}")
-        print(f"session={shlex.quote(session)}")
-        if branch:
-            print(f"branch={shlex.quote(branch)}")
-        print(f"exec {shlex.join(req.cmd)}")
-        return 0
-    if pending is not None:
-        prepare_managed_launch(req, pending)
-    else:
-        for pre in req.prelaunch:
-            process.run_cmd(list(pre))
-    # Lane B — interactive terminal handoff: ``execvp`` replaces this image
-    # with the tmux client, which keeps the controlling terminal. Bypasses
-    # ``Popen``/the loop guard by construction.
-    os.execvp(req.cmd[0], list(req.cmd))
-    return 0

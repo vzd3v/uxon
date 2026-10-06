@@ -67,6 +67,9 @@ schema is part of the public contract.
         "cpu_pct": 1.4,
         "rss_kib": 2408192,
         "runtime_down": false,
+        "exited": false,
+        "has_diagnostics": false,
+        "active_exit_status": null,
         "legacy": false
       }
     ]
@@ -94,6 +97,13 @@ schema is part of the public contract.
   sessions carry empty resource values.
 - `runtime_down` — `true` when a record-backed workload resource is known to
   be stopped or unresolved during liveness probing.
+- `exited` — `true` when all inspected terminals have finished; live PID lists
+  exclude finished terminals across all windows.
+- `has_diagnostics` — `true` when any retained terminal has finished, including
+  sessions that still have live terminals.
+- `active_exit_status` — the selected terminal's numeric exit status, or `null`
+  when it is live or no numeric status is available. These three fields are
+  additive; older peers may omit them.
 
 ## `kind = "doctor"`
 

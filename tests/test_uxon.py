@@ -20,6 +20,7 @@ import uxon.app.launch as launch_app
 import uxon.app.new as new_app
 import uxon.app.repeat as repeat_app
 import uxon.app.run as run_app
+import uxon.app.session_handoff as session_handoff
 import uxon.app.tui_planning as tui_planning
 import uxon.cli as uxon_cli
 import uxon.tui.bridge as tui_bridge
@@ -1121,7 +1122,7 @@ class UxonTests(unittest.TestCase):
                 ),
                 mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
             ):
-                with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0):
+                with mock.patch("uxon.app.session_handoff.launch_in_tmux", return_value=0):
                     with mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False):
                         new_app.do_new(args, cfg, "dana_agent")
 
@@ -1222,7 +1223,9 @@ class UxonTests(unittest.TestCase):
                     with mock.patch.object(
                         new_app, "allocate_session_name", return_value="uxon-demo"
                     ):
-                        with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0) as launch:
+                        with mock.patch(
+                            "uxon.app.session_handoff.launch_in_tmux", return_value=0
+                        ) as launch:
                             result = new_app.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
@@ -1247,7 +1250,7 @@ class UxonTests(unittest.TestCase):
                                 attach_app, "attach_session", return_value=0
                             ) as attach:
                                 with mock.patch(
-                                    "uxon.infra.tmux.launch_in_tmux", return_value=0
+                                    "uxon.app.session_handoff.launch_in_tmux", return_value=0
                                 ) as launch:
                                     with mock.patch(
                                         "uxon.infra.launch_records.create_pending_record"
@@ -1276,7 +1279,9 @@ class UxonTests(unittest.TestCase):
                     with mock.patch.object(
                         new_app, "allocate_session_name", return_value="uxon-demo-2"
                     ) as allocate:
-                        with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0) as launch:
+                        with mock.patch(
+                            "uxon.app.session_handoff.launch_in_tmux", return_value=0
+                        ) as launch:
                             result = new_app.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
@@ -1425,13 +1430,13 @@ class UxonTests(unittest.TestCase):
             mock.patch("uxon.infra.identity.is_interactive_tty", return_value=False),
             mock.patch.object(launch_app, "plan_worktree_launch", return_value=fake_req) as plan,
             mock.patch("uxon.infra.process.run_cmd"),
-            mock.patch.object(os, "execvp", return_value=None) as execvp,
+            mock.patch("uxon.app.session_handoff.subprocess.call", return_value=0) as spawn,
         ):
             result = new_app.do_new(args, cfg, "u-vz")
 
         self.assertEqual(result, 0)
         plan.assert_called_once()
-        execvp.assert_called_once()
+        spawn.assert_called_once()
 
     def test_do_new_legacy_socket_guardrail_fails(self) -> None:
         cfg = self.make_config()
@@ -1721,17 +1726,20 @@ class UxonTests(unittest.TestCase):
             tmux._build_tmux_launch_request("/srv/repos/demo", "uxon-demo@claude", args, cfg, None)
         self.assertIn("launch profile must be resolved", getattr(cm.exception, "uxon_msg", ""))
 
-    def test_attach_session_cli_still_calls_execvp(self) -> None:
+    def test_attach_session_cli_waits_for_the_interactive_client(self) -> None:
         cfg = self.make_config()
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         with self._stub_socket_path():
             with (
                 mock.patch.object(attach_app.tmux, "require_tmux_server"),
-                mock.patch.object(attach_app.os, "execvp") as execvp,
+                mock.patch.object(
+                    tmux, "prepare_diagnostics_attach", side_effect=lambda req: req.cmd
+                ),
+                mock.patch("uxon.app.session_handoff.subprocess.call", return_value=0) as spawn,
             ):
                 attach_app.attach_session(target, cfg, "u-vz")
-        execvp.assert_called_once()
-        argv = execvp.call_args[0][1]
+        spawn.assert_called_once()
+        argv = spawn.call_args[0][0]
         self.assertIn("attach-session", argv)
         self.assertIn("uxon-demo", argv)
 
@@ -1742,15 +1750,58 @@ class UxonTests(unittest.TestCase):
             req = tmux._build_tmux_attach_request(target, cfg, "u-vz")
         self.assertIsNone(req.managed)
 
-    def test_launch_in_tmux_cli_delegates_managed_prelaunch_before_execvp(self) -> None:
+    def test_handoff_preparation_error_is_returned_with_its_message(self) -> None:
+        req = tmux.LaunchRequest(("tmux", "attach-session"))
+        with (
+            mock.patch.object(
+                tmux,
+                "prepare_diagnostics_attach",
+                side_effect=lambda _: fail("cannot read terminal settings", 1),
+            ),
+            mock.patch("uxon.app.session_handoff.subprocess.call") as spawn,
+        ):
+            result = session_handoff.run_launch_request(req)
+        self.assertEqual(
+            (result.rc, result.stage, result.warning),
+            (1, "prepare", "cannot read terminal settings"),
+        )
+        spawn.assert_not_called()
+
+    def test_handoff_preserves_unattributed_system_exit(self) -> None:
+        req = tmux.LaunchRequest(("tmux", "attach-session"))
+        with mock.patch.object(tmux, "prepare_diagnostics_attach", side_effect=SystemExit(0)):
+            with self.assertRaises(SystemExit) as caught:
+                session_handoff.run_launch_request(req)
+        self.assertEqual(caught.exception.code, 0)
+
+    def test_dismissal_failure_returns_to_menu_with_warning(self) -> None:
+        from uxon.domain.launch_request import TmuxHandoff
+
+        req = tmux.LaunchRequest(
+            ("tmux", "attach-session"), handoff=TmuxHandoff(self.make_config(), "alice")
+        )
+        with (
+            mock.patch("uxon.app.session_handoff.subprocess.call", return_value=125),
+            mock.patch.object(
+                session_handoff,
+                "_dismiss_diagnostics",
+                side_effect=lambda _: fail("cannot verify terminal identity"),
+            ),
+        ):
+            result = session_handoff.run_launch_request(req)
+        self.assertEqual((result.rc, result.warning), (0, "cannot verify terminal identity"))
+
+    def test_launch_in_tmux_cli_prepares_then_waits_for_client(self) -> None:
         cfg = self.make_config()
         args = ParsedArgs(action="run", agent_args=[])
         resolved = _resolved_for_test(cfg)
         with self._stub_socket_path():
             with mock.patch("uxon.infra.process.run_cmd") as run_cmd:
                 with mock.patch("uxon.infra.tmux.prepare_managed_launch") as prepare:
-                    with mock.patch.object(os, "execvp") as execvp:
-                        tmux.launch_in_tmux(
+                    with mock.patch(
+                        "uxon.app.session_handoff.subprocess.call", return_value=0
+                    ) as spawn:
+                        session_handoff.launch_in_tmux(
                             "/srv/repos/demo",
                             "uxon-demo",
                             args,
@@ -1760,7 +1811,7 @@ class UxonTests(unittest.TestCase):
                         )
         run_cmd.assert_not_called()
         prepare.assert_called_once()
-        execvp.assert_called_once()
+        spawn.assert_called_once()
 
     def test_managed_launch_finalization_failure_kills_created_session(self) -> None:
         from uxon.infra import launch_records
@@ -2548,7 +2599,7 @@ class UxonTests(unittest.TestCase):
         with self._stub_socket_path():
             with mock.patch.object(os, "execvp") as execvp:
                 with __import__("contextlib").redirect_stdout(buf):
-                    rc = tmux.launch_in_tmux(
+                    rc = session_handoff.launch_in_tmux(
                         "/srv/repos/demo",
                         "uxon-demo@claude",
                         args,
@@ -2936,7 +2987,9 @@ class AllowedRootsUnifiedSemanticsTests(unittest.TestCase):
                                 new_app, "allocate_session_name", return_value="uxon-demo"
                             ),
                         ):
-                            with mock.patch("uxon.infra.tmux.launch_in_tmux", return_value=0):
+                            with mock.patch(
+                                "uxon.app.session_handoff.launch_in_tmux", return_value=0
+                            ):
                                 with mock.patch.object(
                                     new_app.launch_profile_app,
                                     "resolve_launch_profile",
@@ -3084,6 +3137,20 @@ class SessionNamingTests(unittest.TestCase):
             "foo", "claude", compat_root, [s_claude, s_codex]
         )
         self.assertEqual([m.name for m in matches], ["uxon-foo@claude"])
+
+    def test_launch_choices_skip_exited_sessions_but_keep_path_guard(self) -> None:
+        finished = _mk_session("uxon-foo@claude", "/srv/repos/foo", agent="claude")
+        finished.exited = True
+        self.assertEqual(
+            domain_session.compatible_indexed_sessions(
+                "foo", "claude", "/srv/repos/foo", [finished]
+            ),
+            [],
+        )
+        with self.assertRaises(SystemExit):
+            domain_session.compatible_indexed_sessions(
+                "foo", "claude", "/srv/repos/other", [finished]
+            )
 
     def test_resolve_full_new(self) -> None:
         sessions = [_mk_session("uxon-foo@claude"), _mk_session("uxon-foo@codex", agent="codex")]
