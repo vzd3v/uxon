@@ -102,7 +102,7 @@ def test_status_block_marks_pending_when_no_snapshot():
     assert kris.state == "pending…"
 
 
-def test_status_block_marks_cached_when_snapshot_from_cache():
+def test_status_block_never_treats_cached_snapshot_as_live():
     rows = ()
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name="kris")])
     snap = SimpleNamespace(from_cache=True, host_stats=None)
@@ -111,14 +111,14 @@ def test_status_block_marks_cached_when_snapshot_from_cache():
     lines = select_host_status_block(rows, state, host_stats_local=None, cfg=cfg)
     kris = next(line for line in lines if line.host_name == "kris")
     assert kris.state == "(cached)"
+    assert kris.failure == "kris · unreachable"
 
 
-def test_status_block_marks_unreachable_after_consecutive_failures():
+def test_status_block_marks_unreachable_on_first_failure():
     rows = ()
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name="kris")])
     snap = SimpleNamespace(from_cache=False, host_stats=None)
-    # Threshold mirrors BreakerSpec.trip_after default of 3.
-    slot = SimpleNamespace(value=snap, consecutive_failures=3)
+    slot = SimpleNamespace(value=snap, consecutive_failures=1, last_error="failed")
     state = SimpleNamespace(remote={"kris": slot}, main=None)
     lines = select_host_status_block(rows, state, host_stats_local=None, cfg=cfg)
     kris = next(line for line in lines if line.host_name == "kris")

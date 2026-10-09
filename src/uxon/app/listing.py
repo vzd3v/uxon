@@ -11,6 +11,7 @@ from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.format import compact_time, format_cpu_pct, format_rss_kib
 from uxon.domain.session import SessionInfo
+from uxon.domain.wire_schema import RemoteError, RemoteSnapshot
 from uxon.errors import eprint, fail
 from uxon.infra import config_loader, identity, sessions_probe, version_probe
 
@@ -202,15 +203,32 @@ def _print_remote_table(
     print_list(cfg, synth, users_in_payload, show_user=show_user)
 
 
+def _remote_list_data(cfg: Config, snap: RemoteSnapshot) -> dict[str, Any]:
+    sessions = snap.sessions if snap.is_live else []
+    body = _list_data_from_records(
+        sessions,
+        sorted({s.get("user", "") for s in sessions if s.get("user")}),
+        session_prefix=cfg.session_prefix,
+        all_users=False,
+    )
+    if snap.peer:
+        body["peer"] = dict(snap.peer)
+    if not snap.is_live:
+        error: RemoteError = {
+            "code": snap.error_code or "fetch_error",
+            "message": snap.error or "unconfirmed remote snapshot",
+        }
+        body["error"] = error
+    return body
+
+
 def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     """Handle ``uxon list --host <name>``.
 
     Looks up the configured peer, runs the SSH-driven collector,
     and prints either the JSON envelope (with the ``host`` field
-    set) or a human table. When the live fetch fails but the disk
-    cache is populated, the result is rendered with a "(CACHED)"
-    marker; no fallback exits with a non-zero code so the caller
-    knows to investigate.
+    set) or a human table. Failed fetches contribute no rows and exit
+    nonzero, regardless of offline cache contents.
     """
     from uxon.infra.remote.collector import fetch_remote_snapshot
     from uxon.infra.remote_hosts import find_host
@@ -229,26 +247,17 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     if args.json_output:
         _emit_json_with_host(
             "list",
-            _list_data_from_records(
-                snap.sessions,
-                # The peer's payload carried scope_users on its own
-                # envelope; we lost that during collector parsing
-                # because the wire schema there only kept ``sessions``.
-                # Surface what we can derive.
-                scope_users=sorted({s.get("user", "") for s in snap.sessions if s.get("user")}),
-                session_prefix=cfg.session_prefix,
-                all_users=False,
-            ),
+            _remote_list_data(cfg, snap),
             host=target.name,
         )
-        if snap.error and not snap.from_cache:
+        if not snap.is_live:
             eprint(f"uxon: --host {target.name}: {snap.error}")
             return 1
         return 0
-    _print_remote_table(cfg, target.name, snap.sessions, cached=snap.from_cache)
-    if snap.error and not snap.from_cache:
+    if not snap.is_live:
         eprint(f"uxon: --host {target.name}: {snap.error}")
         return 1
+    _print_remote_table(cfg, target.name, snap.sessions, cached=False)
     return 0
 
 
@@ -259,8 +268,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     peer. With ``--json`` emits a JSON Lines stream — one envelope
     per source (local + each peer) — so a consumer can split by
     newline and parse each independently. Exits non-zero iff any
-    peer failed AND its cache was empty; partial results are still
-    rendered.
+    peer failed; healthy partial results are still rendered.
     """
     from uxon.infra.remote.collector import fetch_remote_snapshot
 
@@ -297,16 +305,11 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             )
             _emit_json_with_host(
                 "list",
-                _list_data_from_records(
-                    snap.sessions,
-                    scope_users=sorted({s.get("user", "") for s in snap.sessions if s.get("user")}),
-                    session_prefix=cfg.session_prefix,
-                    all_users=False,
-                ),
+                _remote_list_data(cfg, snap),
                 host=host.name,
                 compact=True,
             )
-            if snap.error and not snap.from_cache:
+            if not snap.is_live:
                 eprint(f"uxon: --host {host.name}: {snap.error}")
                 rc = 1
         return rc
@@ -322,10 +325,11 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         )
         print()
-        _print_remote_table(cfg, host.name, snap.sessions, cached=snap.from_cache)
-        if snap.error and not snap.from_cache:
+        if not snap.is_live:
             eprint(f"uxon: --host {host.name}: {snap.error}")
             rc = 1
+        else:
+            _print_remote_table(cfg, host.name, snap.sessions, cached=False)
     return rc
 
 

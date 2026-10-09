@@ -139,8 +139,8 @@ composed on top of the execution backend — see
 prints the version and short git commit (with `-dirty` when the
 checkout has uncommitted changes).
 
-In a `team·N` fleet, all peers must run the same major version
-— see [`docs/guides/operate/roll-fleet-upgrade.md`](docs/guides/operate/roll-fleet-upgrade.md).
+Fleet peers require compatible [wire schemas](docs/reference/wire-schema.md#versioning).
+Failed peers show a compact status below the table; their old sessions stay hidden.
 
 ## License
 

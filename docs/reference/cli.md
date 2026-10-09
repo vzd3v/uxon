@@ -116,6 +116,10 @@ attach, current command, and path.
 - `--json`: emit a wire-schema envelope (or JSON Lines stream for
   `--all-hosts`) instead of the human table.
 
+Failed remote hosts contribute no rows and make the command exit with code 1,
+even when a cache exists. Healthy partial results remain available.
+JSON preserves failure and peer metadata in [the wire envelope](wire-schema.md#json-lines---all-hosts---json).
+
 ## `uxon attach <id> [--user <name>] [--host <alias>] [--dry-run]`
 
 Short form: `uxon -a <id>`. Re-attaches to an existing session.
@@ -361,7 +365,7 @@ every launch.
 | Code | Meaning |
 |------|---------|
 | `0` | Success. |
-| `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), live `--host` fetch failed without a usable cache, SSH timeout, peer rc non-zero, agent binary not installed on the launch user's host (`run`/`new` / TUI launch, with install hint). |
+| `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), any live remote listing failed, SSH timeout, peer rc non-zero, agent binary not installed on the launch user's host (`run`/`new` / TUI launch, with install hint). |
 | `2` | Usage error (bad flags, no TTY for the bare TUI invocation, unknown subcommand, unknown `--host` alias). |
 | `130` | User cancelled the confirmation prompt. |
 | `non-zero from forked tmux` | Surfaced to the caller as-is. The TUI pauses and states that command output, if any, was written directly to the terminal. |

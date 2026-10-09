@@ -557,7 +557,7 @@ class MainScreen(Screen):
         # host probe so newly-installed tmux/agents show up after a
         # manual refresh — without this, ``r`` would only re-fetch
         # session state and the missing-agents modal would never recover.
-        self.app.kick_refresh()  # type: ignore[attr-defined]
+        self.app.kick_refresh(manual=True)  # type: ignore[attr-defined]
         kick = getattr(self.app, "_kick_host_probe", None)
         if callable(kick):
             kick()

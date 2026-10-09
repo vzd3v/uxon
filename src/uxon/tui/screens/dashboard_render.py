@@ -295,6 +295,11 @@ class DashboardRender:
                 (sl for sl in status_lines if sl.host_name == active_bucket.host_name),
                 status_lines[0],
             )
+            # Failures have one persistent home below the table.
+            if line.failure:
+                if self._changed("compact_display", False):
+                    compact_bar.display = False
+                return
             if self._changed("compact_display", True):
                 compact_bar.display = True
             if self._changed("compact_line", line):

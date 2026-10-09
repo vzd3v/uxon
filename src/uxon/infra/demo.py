@@ -39,7 +39,7 @@ from typing import Any
 import msgspec
 
 from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION, RemoteSnapshot
-from uxon.infra.remote.envelope import parse_envelope
+from uxon.infra.remote.envelope import decode_envelope
 from uxon.infra.remote_hosts import RemoteHost
 
 DEMO_ENV_VAR = "UXON_DEMO_HOSTS"
@@ -183,21 +183,20 @@ def load_demo_snapshot(host_name: str, dir_path: Path, fetched_at: float) -> Rem
     except OSError as exc:
         return _error_snapshot(host_name, fetched_at, f"demo envelope unreadable: {exc}")
 
-    sessions, scope_skipped, host_stats, parse_err = parse_envelope(raw.decode("utf-8", "replace"))
-    if parse_err is not None:
-        return _error_snapshot(host_name, fetched_at, f"demo envelope: {parse_err}")
-    assert sessions is not None
+    parsed = decode_envelope(raw.decode("utf-8", "replace"))
 
     return RemoteSnapshot(
         host_name=host_name,
         fetched_at_epoch=fetched_at,
         from_cache=False,
-        error=None,
-        sessions=sessions,
+        error=parsed.error,
+        sessions=parsed.sessions or [],
         cached_at_epoch=fetched_at,
         scope_limited=False,
-        scope_skipped=scope_skipped,
-        host_stats=host_stats,
+        scope_skipped=parsed.scope_skipped,
+        host_stats=parsed.host_stats,
+        error_code=parsed.error_code,
+        peer=parsed.peer,
     )
 
 

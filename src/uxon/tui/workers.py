@@ -24,10 +24,13 @@ is stable for the App's lifetime and captured directly.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 from textual.worker import Worker, WorkerState
 
+from uxon.domain.host_breaker import BreakerSpec, HostBreaker
+from uxon.domain.wire_schema import COMPATIBILITY_ERROR_CODES, RemoteSnapshot
 from uxon.infra.events import debug as _debug
 from uxon.infra.events import metrics_record
 
@@ -56,6 +59,35 @@ def _worker_active(w: Worker | None) -> bool:
     return w is not None and w.state in _ACTIVE_STATES
 
 
+class _RemoteAttempt:
+    """Coordinate cancellation before thread entry without releasing a live fetch."""
+
+    def __init__(self, attempt_id: int) -> None:
+        self.attempt_id = attempt_id
+        self._lock = threading.Lock()
+        self._started = False
+        self._invalidated = False
+        self._finished_without_landing = False
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._invalidated:
+                return False
+            self._started = True
+            return True
+
+    def cancel_pending(self) -> bool:
+        with self._lock:
+            if self._started and not self._finished_without_landing:
+                return False
+            self._invalidated = True
+            return True
+
+    def finish(self, *, posted: bool) -> None:
+        with self._lock:
+            self._finished_without_landing = not posted
+
+
 class WorkerCoordinator:
     """Owns the App's background workers + their in-flight gates + drain."""
 
@@ -77,6 +109,9 @@ class WorkerCoordinator:
         # the in-flight worker for that source so a slow source never
         # blocks a faster sibling's next tick.
         self._source_handles: dict[str, Worker | None] = {}
+        self._remote_breakers: dict[str, HostBreaker] = {}
+        self._remote_attempts: dict[str, _RemoteAttempt] = {}
+        self._next_attempt_id = 0
         self._host_probe_handle: Worker | None = None
         self._link_health_handle: Worker | None = None
 
@@ -117,7 +152,7 @@ class WorkerCoordinator:
             if spec.kick_on_mount:
                 self.kick_source(spec)
 
-    def kick_refresh(self) -> None:
+    def kick_refresh(self, *, manual: bool = False) -> None:
         """Fan out: kick every registered refresh source.
 
         Each source is gated independently — a source whose worker is
@@ -129,9 +164,9 @@ class WorkerCoordinator:
             return
         _debug("refresh", at="kick_refresh", action="fanout", count=len(sources))
         for spec in sources:
-            self.kick_source(spec)
+            self.kick_source(spec, manual=manual)
 
-    def kick_source(self, spec: Any) -> None:
+    def kick_source(self, spec: Any, *, manual: bool = False) -> None:
         """Schedule one source's fetcher in a worker if not already running.
 
         Worker group is namespaced ``refresh:<name>`` so an ``exclusive``
@@ -142,20 +177,72 @@ class WorkerCoordinator:
         if _worker_active(handle):
             _debug("refresh", at="kick_source", source=spec.name, action="skip", reason="in_flight")
             return
+        breaker = None
+        attempt = None
+        if spec.name.startswith("remote:"):
+            breaker = self._remote_breakers.get(spec.name)
+            if breaker is None:
+                breaker = HostBreaker(BreakerSpec())
+                self._remote_breakers[spec.name] = breaker
+            if handle is not None and handle.state in (WorkerState.CANCELLED, WorkerState.ERROR):
+                previous = self._remote_attempts.get(spec.name)
+                if previous is not None and previous.cancel_pending():
+                    breaker.clear_inflight()
+            # Reserve through result landing, not just worker completion.
+            if breaker.in_flight or (not manual and not breaker.should_attempt()):
+                return
+            breaker.mark_inflight()
+            self._next_attempt_id += 1
+            attempt = _RemoteAttempt(self._next_attempt_id)
+            self._remote_attempts[spec.name] = attempt
         _debug("refresh", at="kick_source", source=spec.name, action="spawn")
-        self._source_handles[spec.name] = self._run_worker(
-            lambda spec=spec: self._source_worker(spec),
-            thread=True,
-            exclusive=False,
-            group=f"refresh:{spec.name}",
-        )
+        try:
+            self._source_handles[spec.name] = self._run_worker(
+                lambda spec=spec, attempt=attempt: self._source_worker(spec, attempt),
+                thread=True,
+                exclusive=False,
+                group=f"refresh:{spec.name}",
+            )
+        except BaseException:
+            if breaker is not None:
+                breaker.clear_inflight()
+            raise
 
-    def _source_worker(self, spec: Any) -> None:
+    def source_landed(self, event: _RefreshSourceLanded) -> bool:
+        """Report remote outcomes on the event loop and release admission."""
+        attempt = self._remote_attempts.get(event.name)
+        if event.attempt_id and (attempt is None or attempt.attempt_id != event.attempt_id):
+            return False
+        breaker = self._remote_breakers.get(event.name)
+        if breaker is None:
+            return True
+        snap = event.value if isinstance(event.value, RemoteSnapshot) else None
+        if not event.error and snap is not None and snap.is_live:
+            breaker.on_success()
+        else:
+            breaker.on_failure(
+                incompatible=bool(snap and snap.error_code in COMPATIBILITY_ERROR_CODES)
+            )
+        breaker.clear_inflight()
+        return True
+
+    def _source_worker(self, spec: Any, attempt: _RemoteAttempt | None = None) -> None:
         """Background thread: run a source's fetcher with fail-soft semantics.
 
         ``run_source`` never raises — exceptions are captured into the
         result.
         """
+
+        if attempt is not None and not attempt.start():
+            return
+        posted = False
+        try:
+            posted = self._run_source_worker(spec, attempt)
+        finally:
+            if attempt is not None:
+                attempt.finish(posted=posted)
+
+    def _run_source_worker(self, spec: Any, attempt: _RemoteAttempt | None) -> bool:
         from .refresh import run_source
 
         result = run_source(spec)
@@ -177,13 +264,14 @@ class WorkerCoordinator:
             error=result.error or None,
             from_cache=from_cache,
         )
-        self._post_message(
+        return self._post_message(
             _RefreshSourceLanded(
                 name=result.name,
                 value=result.value,
                 error=result.error or "",
                 elapsed_ms=result.elapsed_ms,
                 instance_epoch=self._instance_epoch(),
+                attempt_id=attempt.attempt_id if attempt is not None else 0,
             )
         )
 

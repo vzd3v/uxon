@@ -552,11 +552,8 @@ class HostDispatchTests(unittest.TestCase):
         env = json.loads(buf.getvalue())
         self.assertEqual(env["data"]["sessions"], [])
 
-    def test_host_failure_with_cache_succeeds(self) -> None:
-        # When the live fetch failed but the disk cache is populated,
-        # the collector returns from_cache=True with the cached
-        # sessions. We treat that as a soft success — still exit 0
-        # so a watchdog doesn't page on every brief outage.
+    def test_host_failure_with_cache_is_nonzero_and_suppresses_rows(self) -> None:
+        # Even an old collector DTO must not present offline rows as current.
         from uxon.app.listing import _do_list_host
         from uxon.domain.wire_schema import RemoteSnapshot
 
@@ -574,9 +571,10 @@ class HostDispatchTests(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = _do_list_host(args, cfg)
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 1)
         env = json.loads(buf.getvalue())
-        self.assertEqual(len(env["data"]["sessions"]), 1)
+        self.assertEqual(env["data"]["sessions"], [])
+        self.assertEqual(env["data"]["error"]["message"], snap.error)
 
 
 class AllHostsJsonLinesTests(unittest.TestCase):

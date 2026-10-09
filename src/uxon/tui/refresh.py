@@ -32,6 +32,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from uxon.domain.wire_schema import RemoteSnapshot
+
 
 @dataclass(frozen=True)
 class SourceSpec:
@@ -121,6 +123,8 @@ def run_source(spec: SourceSpec) -> SourceResult:
     return SourceResult(
         name=spec.name,
         value=value,
-        error=None,
+        error=(value.error or "unconfirmed remote snapshot")
+        if isinstance(value, RemoteSnapshot) and not value.is_live
+        else None,
         elapsed_ms=int((time.monotonic() - t0) * 1000),
     )

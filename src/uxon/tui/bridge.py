@@ -5,10 +5,11 @@
 The stable inputs (``cfg`` / ``caller_user`` / ``launch_user`` / ``cwd``) are
 instance attributes; every former nested ``on_*`` closure is now a method that delegates to the
 ``app.*`` use-cases and ``infra.*`` adapters. Per-build state (the probed
-``sudo_caps``, the fleet fetch semaphore, the per-host circuit breakers) is
+``sudo_caps``) is
 constructed in :func:`uxon.tui.context_builder.build_tui_context` and stashed on
 the bridge instance — a fresh bridge is built on every refresh, so this state
-never outlives one ``TuiContext``.
+never outlives one ``TuiContext``. The fleet semaphore is passed through
+refreshes; retry admission is owned by the App's worker coordinator.
 
 This module lives in ``tui/`` and may import ``domain`` / ``infra`` / ``app``;
 it must NOT import ``uxon.cli`` (the composition root imports *this*, lazily).
@@ -20,7 +21,7 @@ import os
 import shlex
 import subprocess
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import uxon.app.launch as launch_app
 import uxon.app.launch_profile as launch_profile_app
@@ -50,11 +51,11 @@ class TuiBridge:
     """Holds the stable TUI inputs and the command callbacks.
 
     Every ``on_*`` method delegates to the ``app.*`` use-cases and
-    ``infra.*`` adapters. Per-build state — the probed ``sudo_caps``, the
-    fleet ``fetch`` semaphore, and the per-host circuit breakers — is
+    ``infra.*`` adapters. Per-build state — the probed ``sudo_caps`` — is
     populated by :func:`uxon.tui.context_builder.build_tui_context` before
     the context is wired, and lives only for the lifetime of one
     ``TuiContext`` (a fresh bridge is built on every refresh).
+    The fleet fetch semaphore is shared across those refreshes.
     """
 
     def __init__(self, cfg: Config, caller_user: str, launch_user: str, cwd: str) -> None:
@@ -69,7 +70,6 @@ class TuiBridge:
         # first real load probes; the probed caps thereafter (one-shot).
         self.captured_sudo_caps: SudoCapability | None = None
         self._fetch_sem: threading.Semaphore | None = None
-        self._host_breakers: dict[str, Any] = {}
 
     # ── attach / kill ──
 
@@ -433,6 +433,7 @@ class TuiBridge:
             self.launch_user,
             self.cwd,
             sudo_caps_override=self.captured_sudo_caps,
+            fetch_semaphore=self._fetch_sem,
         )
 
     def on_probe_link_health(self) -> object | None:

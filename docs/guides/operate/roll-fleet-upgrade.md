@@ -39,9 +39,9 @@ drain before upgrading that host.
 
 ## Major release
 
-Schedule a maintenance window. Old and new aggregators cannot poll peers across
-the wire-major boundary; cache entries may provide stale display data but are
-not a compatibility mechanism.
+Schedule a maintenance window. Aggregators reject incompatible wire schemas;
+old rows stay hidden with a compact status instead of a cache fallback.
+See [wire compatibility](../../reference/wire-schema.md#versioning).
 
 1. Stop fleet mutations and record the active sessions.
 2. Drain sessions required by the migration guide.

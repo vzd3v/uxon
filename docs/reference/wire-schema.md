@@ -248,15 +248,28 @@ messages:
 | `uxon-error: all-users-disabled` | Peer's config has `enable_all_users_list = false`. Exit code 1. The aggregator detects this tag and falls back to own-only `list --json`, stamping the snapshot with `scope_limited = true`. |
 
 Anything else on stderr is treated as a generic SSH/peer failure
-and falls through to the cache fallback path.
+and contributes no session rows or metrics. A decodable structured failure
+on stdout preserves its diagnostic metadata even with a nonzero exit status.
 
 ## JSON Lines (`--all-hosts --json`)
 
 `uxon list --all-hosts --json` emits one envelope per source —
 local first, then one per configured peer — separated by newline.
-The reader processes each envelope independently; a failed peer
-emits an envelope with empty `sessions` and `from_cache` /
-`scope_limited` markers in the cache-fallback path.
+The reader processes each envelope independently. Remote `--host` and
+`--all-hosts` envelopes add optional fields under `data`:
+
+| Field | Shape | Meaning |
+|---|---|---|
+| `peer` | `{ "uxon_version": string, "schema_version": string }` | Observed peer identity; either key may be absent. The enclosing `uxon_version` identifies the envelope producer. |
+| `error` | `{ "code": string, "message": string }` | Failed live request. Sessions are empty; consumers must reject any non-null error, including a same-schema relayed response. |
+
+Error codes: `update_remote`, `update_local`, `incompatible`, `timeout`,
+`ssh_error`, `invalid_response`, `remote_error`, `fetch_error`. Package version
+is diagnostic only. An older numeric schema requires updating the remote;
+a newer one requires updating the local client; unknown/missing schemas are
+incompatible. Metadata remains available on incompatible responses.
+Local envelopes omit these fields. A failed peer never contributes disk-cache
+or preceding in-memory sessions, counts, or metrics. Healthy peers remain visible.
 
 ## Versioning
 

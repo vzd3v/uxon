@@ -61,6 +61,8 @@ def _render(line: HostStatusLine) -> str:
     rendered (FleetStatusBar redesign, 2026-05-30); it carries little
     value at a glance and is gone from both bar states.
     """
+    if line.failure:
+        return line.failure
     parts = [
         line.label,
         f"{line.session_count}/{line.attached_count} sess",
@@ -97,7 +99,7 @@ class HostStatusBar(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("", id=f"{self.id or 'hsb'}-line-0")
+            yield Static("", id=f"{self.id or 'hsb'}-line-0", markup=False)
 
     def update_lines(self, lines: tuple[HostStatusLine, ...]) -> None:
         self._lines = lines
@@ -121,4 +123,4 @@ class HostStatusBar(Widget):
                 # by_host steady-tick path the compact bar updates every tick.
                 existing[i].update(text, layout=False)  # type: ignore[attr-defined]
             else:
-                container.mount(Static(text, id=f"{self.id or 'hsb'}-line-{i}"))
+                container.mount(Static(text, id=f"{self.id or 'hsb'}-line-{i}", markup=False))

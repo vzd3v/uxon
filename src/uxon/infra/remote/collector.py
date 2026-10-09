@@ -13,12 +13,11 @@ import shlex
 import subprocess
 import time
 import uuid
-from dataclasses import replace
 from pathlib import Path
 
-from uxon.domain.wire_schema import RemoteSnapshot
-from uxon.infra.remote.cache import read_cached_snapshot, write_cached_snapshot
-from uxon.infra.remote.envelope import ALL_USERS_DISABLED_MARKER, parse_envelope
+from uxon.domain.wire_schema import PeerInfo, RemoteErrorCode, RemoteSnapshot
+from uxon.infra.remote.cache import write_cached_snapshot
+from uxon.infra.remote.envelope import ALL_USERS_DISABLED_MARKER, decode_envelope
 from uxon.infra.remote.master_recovery import recover_wedged_master
 from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
 from uxon.infra.remote_hosts import RemoteHost
@@ -79,13 +78,8 @@ def fetch_remote_snapshot(
 ) -> RemoteSnapshot:
     """Fetch one host's session list. Always returns a snapshot.
 
-    Fail-soft contract:
-      - SSH process error (non-zero exit, timeout, file-not-found):
-        captured into ``error``; cached snapshot loaded if present.
-      - Malformed payload from a peer: same — the cache is the
-        operator's safety net.
-      - Successful fetch: cache rewritten, fresh snapshot returned
-        with ``from_cache=False``.
+    Failures return empty sessions and no metrics, never cached data.
+    Successful fetches rewrite the optional offline cache.
 
     The ssh spawn goes through :func:`uxon.infra.run.run_query`; tests
     stub it by patching that function. ``override_state_dir`` is a test
@@ -119,6 +113,8 @@ def fetch_remote_snapshot(
     correlation_id = str(uuid.uuid4())
 
     final_rc: int | None = None
+    error_code: RemoteErrorCode | None = None
+    peer: PeerInfo = {}
 
     def _finalize(snap: RemoteSnapshot) -> RemoteSnapshot:
         from uxon.infra import audit as _audit
@@ -156,6 +152,7 @@ def fetch_remote_snapshot(
 
     def _run_one(all_users: bool) -> tuple[str | None, str | None, str, int | None]:
         """Run one SSH attempt and return error, payload, stderr, and rc."""
+        nonlocal error_code
         argv = _build_fetch_argv(
             host,
             connect_timeout=eff_connect,
@@ -167,6 +164,7 @@ def fetch_remote_snapshot(
         try:
             cp = run_query(argv, timeout=eff_total)
         except subprocess.TimeoutExpired:
+            error_code = "timeout"
             # Slave hung — almost always wedged ControlMaster (the
             # subprocess timeout already killed our slave; siblings
             # share the same %C socket and would loop on the same
@@ -176,19 +174,23 @@ def fetch_remote_snapshot(
                 recover_wedged_master(host)
             return f"ssh timeout after {eff_total}s", None, "", 124
         except FileNotFoundError:
+            error_code = "ssh_error"
             return "ssh not installed on local host", None, "", 127
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:  # pragma: no cover — defensive only
+            error_code = "fetch_error"
             return f"{exc.__class__.__name__}: {exc}", None, "", None
         if cp.returncode != 0:
+            error_code = "ssh_error"
             stderr = (cp.stderr or "").strip()
             err = (
                 f"ssh exited {cp.returncode}: {stderr.splitlines()[0]}"
                 if stderr
                 else f"ssh exited {cp.returncode}"
             )
-            return err, None, stderr, cp.returncode
+            return err, cp.stdout or None, stderr, cp.returncode
+        error_code = None
         return None, cp.stdout, "", 0
 
     error, payload, stderr, final_rc = _run_one(all_users=True)
@@ -202,22 +204,26 @@ def fetch_remote_snapshot(
         scope_limited = True
         error, payload, _, final_rc = _run_one(all_users=False)
 
-    if error is None and payload is not None:
-        sessions, scope_skipped, host_stats, parse_err = parse_envelope(payload)
-        if parse_err is not None:
-            error = parse_err
-        else:
-            assert sessions is not None
+    if payload is not None:
+        parsed = decode_envelope(payload)
+        peer = parsed.peer
+        # A decodable failed response carries a more specific cause than
+        # its exit status. Successful stdout never overrides a failed process.
+        if parsed.error is not None and (error is None or peer):
+            error, error_code = parsed.error, parsed.error_code
+        if error is None:
+            assert parsed.sessions is not None
             snap = RemoteSnapshot(
                 host_name=host.name,
                 fetched_at_epoch=fetched_at,
                 from_cache=False,
                 error=None,
-                sessions=sessions,
+                sessions=parsed.sessions,
                 cached_at_epoch=fetched_at,
                 scope_limited=scope_limited,
-                scope_skipped=scope_skipped,
-                host_stats=host_stats,
+                scope_skipped=parsed.scope_skipped,
+                host_stats=parsed.host_stats,
+                peer=peer,
             )
             # A cache-write failure (disk full, perms) must not taint
             # a fresh in-memory snapshot — we still have valid data.
@@ -228,28 +234,6 @@ def fetch_remote_snapshot(
                 pass
             return _finalize(snap)
 
-    # Failure path: try to fall back to the on-disk cache. The cache
-    # carries the previously-observed scope flags so a peer that went
-    # offline after flipping enable_all_users_list (or after building
-    # up scope_skipped users) still surfaces the right badge in the
-    # TUI — falling back to the live-fetch's intermediate flags would
-    # invent a "full visibility" view that the cached payload does
-    # not actually represent.
-    cached = read_cached_snapshot(host.name, override_dir=override_state_dir)
-    if cached is not None:
-        # ``replace`` over a field-by-field copy: every other field
-        # round-trips automatically, so adding a new attribute to
-        # :class:`RemoteSnapshot` (e.g. ``host_stats`` in 3.4) doesn't
-        # silently get dropped on the failure path the way it did
-        # before this refactor.
-        return _finalize(
-            replace(
-                cached,
-                fetched_at_epoch=fetched_at,
-                from_cache=True,
-                error=error,
-            )
-        )
     return _finalize(
         RemoteSnapshot(
             host_name=host.name,
@@ -260,5 +244,7 @@ def fetch_remote_snapshot(
             cached_at_epoch=None,
             scope_limited=scope_limited,
             scope_skipped=[],
+            error_code=error_code or "fetch_error",
+            peer=peer,
         )
     )

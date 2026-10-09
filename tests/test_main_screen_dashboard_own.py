@@ -240,8 +240,10 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
         assert ``on_remote_kill`` was invoked with ``(host, user, name)``
         — and the local ``on_kill`` was NOT.
         """
+        from uxon.domain.wire_schema import RemoteSnapshot
         from uxon.tui.app import UxonApp
         from uxon.tui.dashboard.row import SessionRow
+        from uxon.tui.slot_state import SlotState
         from uxon.tui.widgets.session_list_view import SessionListView
 
         local_kill_calls: list[tuple[str, str]] = []
@@ -263,6 +265,15 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             _seed_state_main(app, ctx)
             app.screen._refresh_dashboard()
+            app.state.remote["peer1"] = SlotState(
+                value=RemoteSnapshot(
+                    host_name="peer1",
+                    fetched_at_epoch=1.0,
+                    from_cache=False,
+                    error=None,
+                    sessions=[{"user": "dana_agent", "name": "dana_agent.remote"}],
+                )
+            )
             # Inject a synthetic remote row.
             synthetic_remote_row = SessionRow(
                 host="peer1",

@@ -53,7 +53,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, get_args
 
 WIRE_SCHEMA_VERSION = "3"
 """Current wire-schema version. Bump on incompatible changes only."""
@@ -161,6 +161,40 @@ successful fetch — hence the deliberately permissive type.
 """
 
 
+RemoteErrorCode = Literal[
+    "update_remote",
+    "update_local",
+    "incompatible",
+    "timeout",
+    "ssh_error",
+    "invalid_response",
+    "remote_error",
+    "fetch_error",
+]
+REMOTE_ERROR_CODES: frozenset[RemoteErrorCode] = frozenset(get_args(RemoteErrorCode))
+COMPATIBILITY_ERROR_CODES: frozenset[RemoteErrorCode] = frozenset(
+    {
+        "update_remote",
+        "update_local",
+        "incompatible",
+    }
+)
+
+
+class PeerInfo(TypedDict, total=False):
+    """Diagnostic identity of the peer, independent of envelope compatibility."""
+
+    uxon_version: str
+    schema_version: str
+
+
+class RemoteError(TypedDict):
+    """Structured failed remote response; sessions must not be consumed."""
+
+    code: RemoteErrorCode
+    message: str
+
+
 @dataclass(frozen=True)
 class RemoteSnapshot:
     """Result of one fetch attempt against one ``RemoteHost``.
@@ -176,17 +210,11 @@ class RemoteSnapshot:
         host_name: Mirrors ``RemoteHost.name`` — preserved here so
             consumers that store snapshots without the matching host
             object can still attribute them.
-        fetched_at_epoch: ``time.time()`` at the moment the fetch
-            attempt finished (success or failure). Used by the TUI to
-            display "stale 12s ago" indicators.
+        fetched_at_epoch: Wall-clock time of the fetch attempt.
         from_cache: ``True`` when the sessions list came from the
-            on-disk cache rather than a fresh fetch. In a snapshot
-            returned by ``fetch_remote_snapshot`` this implies
-            :attr:`error` is non-None (the live fetch failed and we
-            fell back). A snapshot returned by ``read_cached_snapshot``
-            in isolation also sets ``from_cache=True`` but leaves
-            ``error=None`` — the cache file alone has no opinion on
-            whether the peer is currently reachable.
+            on-disk cache rather than a fresh fetch. Cached snapshots
+            are historical and must never contribute live rows or metrics.
+            The live collector never returns cache contents on failure.
         error: Short, human-readable error string, or ``None`` on a
             successful fetch. The collector never raises — every
             failure surfaces here.
@@ -194,10 +222,10 @@ class RemoteSnapshot:
             (:data:`RemoteSessionPayload`). Each record's shape mirrors
             :class:`SessionRecord` but is unvalidated at decode time —
             consumers must read fields defensively. Empty when the
-            fetch failed AND no cache was available.
+            live fetch failed, regardless of cache contents.
         cached_at_epoch: Wall-clock time at which the underlying
             payload was originally collected. For a fresh fetch this
-            equals :attr:`fetched_at_epoch`; for a cache fallback it
+            equals :attr:`fetched_at_epoch`; for a historical cache read it
             is older.
         scope_limited: ``True`` when the peer rejected
             ``list --all-users`` (because its
@@ -214,6 +242,8 @@ class RemoteSnapshot:
             alongside the session list. Absence on a same-major peer is
             treated as ``None`` and the host status bar renders without
             metrics.
+        error_code: Structured cause used for display and retry admission.
+        peer: Observed package/schema identity, retained on parse failure.
     """
 
     host_name: str
@@ -225,6 +255,13 @@ class RemoteSnapshot:
     scope_limited: bool = False
     scope_skipped: list[str] = field(default_factory=list)
     host_stats: dict[str, Any] | None = None
+    error_code: RemoteErrorCode | None = None
+    peer: PeerInfo = field(default_factory=PeerInfo)
+
+    @property
+    def is_live(self) -> bool:
+        """Whether this result is confirmed data from a successful live fetch."""
+        return self.error is None and not self.from_cache
 
 
 class _SessionLike(Protocol):

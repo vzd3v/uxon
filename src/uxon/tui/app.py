@@ -379,8 +379,8 @@ class UxonApp(App):
     # methods so the production + test call surface (``app.kick_refresh``
     # etc.) is unchanged.
 
-    def kick_refresh(self) -> None:
-        self._worker_coord.kick_refresh()
+    def kick_refresh(self, *, manual: bool = False) -> None:
+        self._worker_coord.kick_refresh(manual=manual)
 
     def run_off_loop(self, fn, *, on_success=None, on_error=None, label="action") -> None:
         """Run a blocking interactive callback off the loop (see coordinator).
@@ -496,6 +496,8 @@ class UxonApp(App):
             )
             return
         handler = self._source_dispatch_exact.get(event.name)
+        if not self._worker_coord.source_landed(event):
+            return
         if handler is not None:
             handler(event)
             return

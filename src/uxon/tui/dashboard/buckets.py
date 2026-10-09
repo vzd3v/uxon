@@ -76,6 +76,7 @@ class HostStatusLine:
     loadavg_1m: float | None  # computed, intentionally unrendered (FleetStatusBar redesign)
     uptime_s: int | None
     state: str  # "" | "(cached)" | "pending…" | "unreachable"
+    failure: str = ""  # Literal, bounded diagnostic line; always shown below the table.
 
 
 # Memory-pressure alert threshold: used/total at or above this fraction.
@@ -109,6 +110,8 @@ def select_fleet_summary(lines: tuple[HostStatusLine, ...]) -> FleetSummary:
     """
     alerts: list[str] = []
     for line in lines:
+        if line.failure:
+            continue
         if line.state == "unreachable":
             # Unreachable subsumes mem pressure for the same host: the
             # mem figure is stale (last snapshot before the host dropped)
@@ -149,20 +152,46 @@ def _bucket_state(host_name: str | None, state) -> str:
     if slot is None or getattr(slot, "value", None) is None:
         # No snapshot yet → pending.
         return "pending…"
-    # "unreachable" wins over "(cached)" — `slot_state.apply()` preserves
-    # both `value` and `from_cache` on failure, so a host whose last
-    # successful fetch was cache-loaded and is now failing keeps
-    # `from_cache=True` indefinitely. The breaker is owned by the
-    # scheduler and never round-trips into the slot, so we read
-    # ``consecutive_failures`` directly from :class:`SlotState`.
-    # ``BreakerSpec.trip_after`` defaults to 3, so we mirror that
-    # threshold here — keeping the two in sync is a known coupling,
-    # called out in :class:`BreakerSpec`'s docstring.
-    if getattr(slot, "consecutive_failures", 0) >= 3:
+    if getattr(slot, "last_error", None) or getattr(slot.value, "error", None):
         return "unreachable"
     if getattr(slot.value, "from_cache", False):
         return "(cached)"
     return ""
+
+
+def _display_token(value: str, limit: int) -> str:
+    """Bound peer-controlled text and remove control characters."""
+    return "".join(c for c in value[:limit] if c.isprintable())
+
+
+def _failure_line(label: str, slot) -> str:
+    snap = getattr(slot, "value", None)
+    if snap is None and not getattr(slot, "last_error", None):
+        return ""
+    if not (
+        getattr(slot, "last_error", None)
+        or getattr(snap, "error", None)
+        or getattr(snap, "from_cache", False)
+    ):
+        return ""
+    code = getattr(snap, "error_code", None)
+    captions = {
+        "update_remote": "update remote",
+        "update_local": "update local",
+        "incompatible": "incompatible",
+        "timeout": "timeout",
+        "ssh_error": "SSH failed",
+        "invalid_response": "invalid response",
+        "remote_error": "remote error",
+        "fetch_error": "unreachable",
+    }
+    parts = [_display_token(label, 64)]
+    peer = getattr(snap, "peer", {}) or {}
+    version = _display_token(peer.get("uxon_version", ""), 32)
+    if version:
+        parts.append(f"uxon {version}")
+    parts.append(captions.get(code or "", "unreachable"))
+    return " · ".join(parts)
 
 
 def _hs_field(stats: Any, key: str, default: Any = 0) -> Any:
@@ -182,20 +211,23 @@ def select_host_status_block(
     buckets = select_host_buckets(rows, cfg)
     out: list[HostStatusLine] = []
     for bucket in buckets:
+        failure = ""
         if bucket.host_name is None:
             stats = host_stats_local  # may be None on cold start
         else:
             remote = getattr(state, "remote", {}) or {}
             slot = remote.get(bucket.host_name) if hasattr(remote, "get") else None
             snap = getattr(slot, "value", None) if slot else None
-            stats = getattr(snap, "host_stats", None) if snap else None
-        cpu_sum = sum(getattr(r, "cpu_pct", 0.0) or 0.0 for r in bucket.rows)
-        attached = sum(1 for r in bucket.rows if getattr(r, "attached", False))
+            failure = _failure_line(bucket.label, slot)
+            stats = getattr(snap, "host_stats", None) if snap and not failure else None
+        confirmed_rows = () if failure else bucket.rows
+        cpu_sum = sum(getattr(r, "cpu_pct", 0.0) or 0.0 for r in confirmed_rows)
+        attached = sum(1 for r in confirmed_rows if getattr(r, "attached", False))
         out.append(
             HostStatusLine(
                 host_name=bucket.host_name,
                 label=bucket.label,
-                session_count=len(bucket.rows),
+                session_count=len(confirmed_rows),
                 attached_count=attached,
                 cpu_pct_sum=cpu_sum,
                 mem_used_kib=_hs_field(stats, "mem_used_kib", 0),
@@ -203,6 +235,7 @@ def select_host_status_block(
                 loadavg_1m=_hs_field(stats, "loadavg_1m", None),
                 uptime_s=_hs_field(stats, "uptime_s", None),
                 state=_bucket_state(bucket.host_name, state),
+                failure=failure,
             )
         )
     return tuple(out)
