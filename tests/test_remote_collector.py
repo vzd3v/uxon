@@ -3,7 +3,7 @@
 Pin the fail-soft contract that the TUI integration depends on:
 every documented failure mode produces a :class:`RemoteSnapshot`
 (no exceptions escape), the cache is written only on a real
-success, the cache is consulted only on a failed fetch, and the
+success, failed live fetches never return historical rows, and the
 ssh argv is constructed with the documented hardening options.
 
 Pure tests — no real SSH, no real subprocess. Spawns go through the
@@ -628,7 +628,7 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         self.assertEqual(event["outcome"], "ok")
         self.assertEqual(event["rc"], 0)
 
-    def test_ssh_nonzero_exit_falls_back_to_cache(self) -> None:
+    def test_ssh_nonzero_exit_hides_cache_without_overwriting_it(self) -> None:
         with TemporaryDirectory() as tmp:
             # Seed the cache with a known-good payload.
             seed = RemoteSnapshot(
@@ -647,12 +647,14 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
                     _host(),
                     override_state_dir=Path(tmp),
                 )
-            self.assertTrue(snap.from_cache)
-            self.assertEqual(snap.sessions, [{"name": "cached@claude"}])
+            self.assertFalse(snap.from_cache)
+            self.assertEqual(snap.sessions, [])
             assert snap.error is not None
             self.assertIn("ssh exited 255", snap.error)
             # Cache must not have been overwritten.
-            self.assertEqual(snap.cached_at_epoch, 1.0)
+            loaded = read_cached_snapshot("vz-prod1", override_dir=Path(tmp))
+            assert loaded is not None
+            self.assertEqual(loaded.cached_at_epoch, 1.0)
 
     def test_ssh_nonzero_exit_no_cache_returns_empty(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -700,7 +702,7 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
             assert snap.error is not None
             self.assertIn("ssh not installed", snap.error)
 
-    def test_malformed_payload_falls_back_to_cache(self) -> None:
+    def test_malformed_payload_never_returns_cached_rows(self) -> None:
         with TemporaryDirectory() as tmp:
             # Seed cache.
             seed = RemoteSnapshot(
@@ -718,8 +720,8 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
                     _host(),
                     override_state_dir=Path(tmp),
                 )
-            self.assertTrue(snap.from_cache)
-            self.assertEqual(snap.sessions, [{"name": "cached"}])
+            self.assertFalse(snap.from_cache)
+            self.assertEqual(snap.sessions, [])
             assert snap.error is not None
             self.assertIn("invalid JSON", snap.error)
 
@@ -881,9 +883,8 @@ class CacheScopeRoundtripTests(unittest.TestCase):
             self.assertFalse(loaded.scope_limited)
             self.assertEqual(loaded.scope_skipped, [])
 
-    def test_failure_path_with_cache_returns_cached_scope_flags(self) -> None:
-        """Live fetch fails; cache fallback must carry the cached flags
-        — NOT the failed live-fetch's intermediate values."""
+    def test_failure_does_not_claim_cached_scope_is_current(self) -> None:
+        """Offline records are historical, not a successful live response."""
         with TemporaryDirectory() as tmp:
             cached = RemoteSnapshot(
                 host_name="vz-prod1",
@@ -904,11 +905,11 @@ class CacheScopeRoundtripTests(unittest.TestCase):
                     _host(),
                     override_state_dir=Path(tmp),
                 )
-            self.assertTrue(snap.from_cache)
+            self.assertFalse(snap.from_cache)
             self.assertIsNotNone(snap.error)
-            # Critical: cached flags survive the failure-with-cache path.
-            self.assertTrue(snap.scope_limited)
-            self.assertEqual(snap.scope_skipped, ["carol"])
+            self.assertFalse(snap.scope_limited)
+            self.assertEqual(snap.scope_skipped, [])
+            self.assertEqual(snap.sessions, [])
 
     def test_failure_path_without_cache_returns_empty_scope_skipped(self) -> None:
         """No cache file; returned snapshot has scope_skipped=[] (no info)."""

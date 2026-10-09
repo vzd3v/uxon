@@ -92,7 +92,7 @@ def _build(
         if slot is None:
             continue
         snap = slot.value
-        if snap is None:
+        if snap is None or slot.last_error or not snap.is_live:
             continue
         for rec in snap.sessions:
             rows.append(from_wire_record(host.name, rec))
@@ -112,6 +112,19 @@ def _build(
     tail = len(cfg.remote_hosts)
     rows.sort(key=lambda r: host_priority.get(r.host, tail))
     return tuple(rows)
+
+
+def remote_session_available(state: TuiState, host: str, user: str, name: str) -> bool:
+    """Recheck a captured row against current live data before an action."""
+    slot = state.remote.get(host)
+    snap = slot.value if slot is not None else None
+    return bool(
+        slot is not None
+        and not slot.last_error
+        and snap is not None
+        and snap.is_live
+        and any(rec.get("user") == user and rec.get("name") == name for rec in snap.sessions)
+    )
 
 
 def select_dashboard_model(

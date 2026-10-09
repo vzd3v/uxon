@@ -1,8 +1,7 @@
 """On-disk cache for the last successful remote snapshot per host.
 
-The cache is the operator's safety net: a brief outage falls back to
-the last good payload rather than blanking the TUI table. Read on every
-failed fetch; a successful fetch overwrites it atomically (temp-file +
+Historical data for offline inspection only; live fetch failures never
+return this cache. A successful fetch overwrites it atomically (temp-file +
 rename) under a mode-0700 directory so other users on a shared host
 cannot read another user's host list.
 """
@@ -132,11 +131,8 @@ def write_cached_snapshot(snapshot: RemoteSnapshot, *, override_dir: Path | None
         "host_name": snapshot.host_name,
         "cached_at_epoch": snapshot.fetched_at_epoch,
         "sessions": snapshot.sessions,
-        # Persist scope flags. Without them, a peer
-        # that flipped enable_all_users_list = false (or a peer that
-        # accumulated scope_skipped users) would lose that signal on
-        # the next cache-fallback path and the TUI would surface a
-        # misleading "full visibility" badge.
+        # Preserve the successful snapshot's visibility scope for offline
+        # inspection; cached data never establishes current session state.
         "scope_limited": bool(snapshot.scope_limited),
         "scope_skipped": list(snapshot.scope_skipped),
     }

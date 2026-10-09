@@ -252,8 +252,10 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_remote_attach_runs_off_loop(self) -> None:
         from types import SimpleNamespace
 
+        from uxon.domain.wire_schema import RemoteSnapshot
         from uxon.tui.app import UxonApp
         from uxon.tui.context import LaunchRequest
+        from uxon.tui.slot_state import SlotState
 
         rec: list[bool] = []
 
@@ -267,6 +269,15 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app.request_launch = lambda req: None  # type: ignore[assignment, method-assign]
             row = SimpleNamespace(host="kris", user="me", name="s1")
+            app.state.remote["kris"] = SlotState(
+                value=RemoteSnapshot(
+                    host_name="kris",
+                    fetched_at_epoch=1.0,
+                    from_cache=False,
+                    error=None,
+                    sessions=[{"user": "me", "name": "s1"}],
+                )
+            )
             app.screen._launch_flow.attach_row(row)
             await self._settle(pilot)
             self.assertEqual(rec, [False], msg="on_remote_attach (ssh) ran on the event loop")

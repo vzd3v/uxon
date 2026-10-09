@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from uxon.infra.events import debug as _debug
@@ -94,15 +95,35 @@ def handle_remote_snapshot(app: UxonApp, event: _RefreshSourceLanded) -> None:
         return
 
     from_cache = bool(getattr(snap, "from_cache", False)) if snap is not None else False
+    error = event.error or (snap.error if snap is not None else None)
+    if snap is not None and not snap.is_live:
+        error = error or "unconfirmed remote snapshot"
+    if error:
+        snap = (
+            replace(snap, sessions=[], host_stats=None, scope_skipped=[], error=error)
+            if snap
+            else RemoteSnapshot(
+                host_name=host_name,
+                fetched_at_epoch=attempted_at,
+                from_cache=False,
+                error=error,
+                error_code="fetch_error",
+            )
+        )
     result: SlotResult[RemoteSnapshot] = SlotResult(
         value=snap,
-        error=event.error or None,
+        error=error,
         elapsed_ms=event.elapsed_ms,
         attempted_at=attempted_at,
         from_cache=from_cache,
     )
     prev = app.state.remote.get(host_name) or SlotState[RemoteSnapshot]()
-    app.state.remote[host_name] = apply_slot(prev, result)
+    updated = apply_slot(prev, result)
+    # Generic slots preserve successful values; remote failures instead keep
+    # their diagnostic DTO while excluding all unconfirmed session data.
+    app.state.remote[host_name] = (
+        replace(updated, value=snap, from_cache=from_cache) if error else updated
+    )
 
     # Fold peer-emitted users into the cross-user latch accumulator.
     # If this snapshot brings the very first foreign user, the latch
@@ -112,7 +133,7 @@ def handle_remote_snapshot(app: UxonApp, event: _RefreshSourceLanded) -> None:
     # ``remote`` fast path is enough — row-level diff against the
     # updated slot, no recompose.
     prev_latched = len(app.main_ui.seen_users) > 1
-    if snap is not None:
+    if snap is not None and snap.is_live and not error:
         for rec in snap.sessions:
             user = rec.get("user") if isinstance(rec, dict) else None
             if user:

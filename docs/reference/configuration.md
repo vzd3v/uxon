@@ -388,6 +388,13 @@ Unknown keys in a peer block are rejected at load time with a
 clear error so typos like `ssh_alaias` fail loud rather than
 silently disabling the host.
 
+Remote retry policy is fixed per host: three transient failures open a bounded
+exponential breaker (factor 2, cap 60 seconds, ±25% jitter). A valid incompatible
+response opens immediately for 300 seconds with ±10% jitter, renewed without
+doubling. Successful live responses restore the configured cadence. Skipped
+ticks leave the last error unchanged; [manual refresh](keybindings.md) bypasses
+cooldown while preserving single-flight and the shared fleet concurrency cap.
+
 ## `[[git_remote_profiles]]` table-array
 
 One entry per allowed GitHub repo-creation target.

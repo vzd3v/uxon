@@ -69,6 +69,7 @@ class FleetStatusBar(Widget):
     }
     FleetStatusBar #fleet-counts {
         width: 1fr;
+        height: 1;
     }
     FleetStatusBar #fleet-counts.-alert {
         color: $warning;
@@ -76,6 +77,10 @@ class FleetStatusBar(Widget):
     }
     FleetStatusBar #fleet-expanded {
         height: auto;
+    }
+    FleetStatusBar #fleet-failures {
+        height: auto;
+        color: $warning;
     }
     FleetStatusBar #fleet-expanded > Static {
         height: auto;
@@ -97,10 +102,13 @@ class FleetStatusBar(Widget):
         # every tick (telemetry shifts each tick; ``layout=False`` keeps it a
         # repaint, not a relayout — ).
         self._last_expanded: bool | None = None
+        self._last_failures: tuple[str, ...] = ()
+        self._expanded_failures: tuple[str, ...] = ()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="fleet-collapsed"):
-            yield Static("", id="fleet-counts")
+            yield Static("", id="fleet-counts", markup=False)
+        yield Static("", id="fleet-failures", markup=False)
         yield Vertical(id="fleet-expanded")
 
     def on_click(self) -> None:
@@ -123,6 +131,7 @@ class FleetStatusBar(Widget):
             collapsed_row = self.query_one("#fleet-collapsed")
             expanded_box = self.query_one("#fleet-expanded", Vertical)
             counts = self.query_one("#fleet-counts", Static)
+            failure_rows = self.query_one("#fleet-failures", Static)
         except Exception:  # pragma: no cover — not mounted yet
             return
         if self._last_expanded != expanded:
@@ -130,14 +139,20 @@ class FleetStatusBar(Widget):
             expanded_box.display = expanded
             self._last_expanded = expanded
         if expanded:
+            failure_rows.display = False
             self._render_expanded(expanded_box)
         else:
             # ``layout=False``: the counts line is a single row of stable
             # height — a content swap must repaint it, not request a
             # screen-global relayout. The fleet totals shift on every
             # telemetry tick, so this is on the steady-tick hot path.
+            failures = tuple(line.failure for line in lines if line.failure)
             counts.update(format_collapsed(summary), layout=False)
-            counts.set_class(bool(summary.alerts), "-alert")
+            if failures != self._last_failures:
+                failure_rows.update("\n".join(failures))
+            failure_rows.display = bool(failures)
+            self._last_failures = failures
+            counts.set_class(bool(summary.alerts or failures), "-alert")
 
     def _render_expanded(self, box: Vertical) -> None:
         existing = list(box.children)
@@ -148,6 +163,8 @@ class FleetStatusBar(Widget):
             if i < len(existing):
                 # ``layout=False``: stable single-line host row; content
                 # swap repaints without a global relayout.
-                existing[i].update(text, layout=False)  # type: ignore[attr-defined]
+                old_failure = self._expanded_failures[i] if i < len(self._expanded_failures) else ""
+                existing[i].update(text, layout=old_failure != line.failure)  # type: ignore[attr-defined]
             else:
-                box.mount(Static(text, id=f"fleet-line-{i}"))
+                box.mount(Static(text, id=f"fleet-line-{i}", markup=False))
+        self._expanded_failures = tuple(line.failure for line in self._lines)

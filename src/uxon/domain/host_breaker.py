@@ -14,7 +14,7 @@ State machine
     Normal cadence. Each failure increments an internal counter; the
     ``trip_after``-th consecutive failure trips us to ``open``.
 ``open``
-    ``should_attempt`` returns ``False`` until the current wall-clock
+    ``should_attempt`` returns ``False`` until the current monotonic clock
     is past ``next_attempt_at``. At that point we transition to
     ``half_open``.
 ``half_open``
@@ -61,10 +61,8 @@ from typing import Literal
 class BreakerSpec:
     """Static policy parameters for one :class:`HostBreaker`.
 
-    All four knobs are intentionally simple constants. A breaker spec
-    is per-host (the per-host config block in the multi-host TOML may
-    override fleet-wide defaults), so tuning a flaky peer doesn't
-    touch the others.
+    The fixed transient-error policy is maintained independently per host.
+    Valid incompatible responses instead use the fixed compatibility cooldown.
 
     Attributes:
         factor: Multiplicative growth factor applied to the backoff
@@ -88,6 +86,8 @@ class BreakerSpec:
 
 
 BreakerState = Literal["closed", "open", "half_open"]
+COMPATIBILITY_COOLDOWN_SECONDS = 300.0
+COMPATIBILITY_JITTER_PCT = 10.0
 
 
 class HostBreaker:
@@ -160,7 +160,7 @@ class HostBreaker:
         self._consecutive_failures = 0
         self.in_flight = False
 
-    def on_failure(self) -> None:
+    def on_failure(self, *, incompatible: bool = False) -> None:
         """Mark the latest probe as failed.
 
         State transitions:
@@ -176,7 +176,19 @@ class HostBreaker:
 
         ``next_attempt_at`` is recomputed using the current clock plus
         the new backoff window plus per-call jitter.
+        ``incompatible=True`` opens immediately for a fixed five minutes
+        with ±10% jitter, renewed without exponential growth.
         """
+        if incompatible:
+            self._consecutive_failures += 1
+            self.state = "open"
+            self.in_flight = False
+            self.backoff_seconds = COMPATIBILITY_COOLDOWN_SECONDS
+            pct = COMPATIBILITY_JITTER_PCT / 100.0
+            self.next_attempt_at = self._clock() + self.backoff_seconds * self._rng.uniform(
+                1 - pct, 1 + pct
+            )
+            return
         if self.state == "closed":
             self._consecutive_failures += 1
             if self._consecutive_failures < self._spec.trip_after:

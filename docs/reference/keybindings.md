@@ -16,13 +16,17 @@ the visible subset.
 | `v` | Toggle dashboard view (`flat` ↔ `by_host`) |
 | `h` | Toggle the fleet status bar (collapsed counts+alerts ↔ per-host detail) |
 | `s` (or `/`) | Focus the search bar from anywhere |
-| `r` | Refresh |
+| `r` | Refresh; bypass remote retry cooldown once, without overlapping an in-flight fetch |
 | `q` | Quit |
 | `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
 | `F1` | Help (hidden) |
 
 Sort is a fixed contract (locals → cfg-order remotes →
 within-block by recency); there are no sort bindings.
+
+Each failed host keeps one compact status line below the table in both fleet
+bar states, independent of search and selected tab. Its sessions and metrics
+remain hidden until a successful live response.
 
 JCUKEN twins: every dashboard key has a Russian-layout twin
 (`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`, `h`/`р`) so the

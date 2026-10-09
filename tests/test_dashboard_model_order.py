@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from uxon.domain.wire_schema import RemoteSnapshot
 from uxon.tui.dashboard import model as model_module
 from uxon.tui.dashboard.model import select_dashboard_model
 from uxon.tui.dashboard.ui_state import DashboardUiState
+from uxon.tui.slot_state import SlotState
 
 
 def _epoch_to_iso(epoch: float) -> str:
@@ -68,19 +70,27 @@ def test_locals_first_then_cfg_order_remotes_then_recency_within_block():
             other_sessions=[],
         ),
         remote={
-            "kris": SimpleNamespace(
-                value=SimpleNamespace(
+            "kris": SlotState(
+                value=RemoteSnapshot(
+                    host_name="kris",
+                    fetched_at_epoch=1.0,
+                    from_cache=False,
+                    error=None,
                     sessions=[
                         _wire("k-old", last_attached=10),
                         _wire("k-new", last_attached=500),
-                    ]
+                    ],
                 )
             ),
-            "ada": SimpleNamespace(
-                value=SimpleNamespace(
+            "ada": SlotState(
+                value=RemoteSnapshot(
+                    host_name="ada",
+                    fetched_at_epoch=1.0,
+                    from_cache=False,
+                    error=None,
                     sessions=[
                         _wire("a1", last_attached=50),
-                    ]
+                    ],
                 )
             ),
         },

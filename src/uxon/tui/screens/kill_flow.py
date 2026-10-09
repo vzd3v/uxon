@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..dashboard.model import remote_session_available
 from ..widgets.session_list_view import SessionListView
 from .confirm import ConfirmPhrase, ConfirmYesNo
 
@@ -63,13 +64,16 @@ class KillFlow:
             def after_confirm_remote(ok: bool | None) -> None:
                 if not ok:
                     return
+                if not remote_session_available(host.state, host_name, session_user, session_name):
+                    host.app.notify("Remote session is no longer available.", severity="warning")
+                    return
 
                 def on_ok(_result) -> None:
                     host.app.notify(
                         f"Killed {session_short} on {host_name}; "
                         "remote table will update on next poll"
                     )
-                    host.action_refresh()
+                    host.app.kick_refresh()  # type: ignore[attr-defined]
 
                 # SSH round-trip — off the event loop (§ blocking invariant).
                 fn = host.cfg.on_remote_kill
@@ -94,7 +98,7 @@ class KillFlow:
 
             def on_ok(_result) -> None:
                 host.app.notify(f"Killed {session_short}")
-                host.action_refresh()
+                host.app.kick_refresh()  # type: ignore[attr-defined]
 
             # ``on_kill`` shells out to tmux — off the event loop (§ invariant).
             fn = host.cfg.on_kill
@@ -126,7 +130,7 @@ class KillFlow:
 
             def on_ok(_result) -> None:
                 host.app.notify(f"Killed all {n} sessions")
-                host.action_refresh()
+                host.app.kick_refresh()  # type: ignore[attr-defined]
 
             # Loops tmux kill-session over every own session — off-loop.
             host.app.run_off_loop(  # type: ignore[attr-defined]
@@ -162,7 +166,7 @@ class KillFlow:
 
             def on_ok(_result) -> None:
                 host.app.notify(f"Killed all {total} sessions across {n_users} reachable users")
-                host.action_refresh()
+                host.app.kick_refresh()  # type: ignore[attr-defined]
 
             # Fans out tmux/ssh kills across reachable users — off-loop.
             host.app.run_off_loop(  # type: ignore[attr-defined]

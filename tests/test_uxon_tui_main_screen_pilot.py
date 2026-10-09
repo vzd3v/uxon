@@ -68,14 +68,22 @@ class EscNotQuitTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def test_smoke_search_filter_forces_flat_then_clear(self) -> None:
+        from textual.geometry import Region
+
+        from uxon.domain.wire_schema import RemoteSnapshot
         from uxon.infra.remote_hosts import RemoteHost
         from uxon.tui.app import UxonApp
+        from uxon.tui.messages import _RefreshSourceLanded
 
         ctx = _mk_ctx(
+            tui_render_debounce_ms=0,
             remote_hosts=[
                 RemoteHost(name="kris", ssh_alias="kris", description="", remote_uxon="uxon"),
                 RemoteHost(name="ada", ssh_alias="ada", description="", remote_uxon="uxon"),
-            ]
+                RemoteHost(
+                    name="build-box", ssh_alias="build-box", description="", remote_uxon="uxon"
+                ),
+            ],
         )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
@@ -115,6 +123,47 @@ class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
             await pilot.pause()
             self.assertFalse(bar.has_class("-shown"))
+            # Failed peers remain visible below the table, independent of tab.
+            for peer in ctx.remote_hosts:
+                app.on__refresh_source_landed(
+                    _RefreshSourceLanded(
+                        f"remote:{peer.name}",
+                        RemoteSnapshot(
+                            peer.name,
+                            1,
+                            False,
+                            "mismatch",
+                            error_code="update_remote",
+                            peer={"uxon_version": "[bold]0.9.0"},
+                        ),
+                    )
+                )
+            await pilot.pause()
+            counts = app.screen.query_one("#fleet-failures")
+            self.assertEqual(counts.content.count("update remote"), 3)
+            self.assertIn("[bold]0.9.0", counts.content)
+            await pilot.resize_terminal(40, 30)
+            await pilot.pause()
+            self.assertGreater(counts.size.height, 1)
+            self.assertEqual(counts.content.count("update remote"), 3)
+            rendered = "".join(
+                strip.text
+                for strip in counts.render_lines(
+                    Region(0, 0, counts.size.width, counts.size.height),
+                )
+            )
+            self.assertEqual(" ".join(rendered.split()).count("update remote"), 3)
+            self.assertIn("[bold]0.9.0", rendered)
+            self.assertGreaterEqual(
+                counts.region.y, app.screen.query_one("#sessions-dashboard").region.bottom
+            )
+            await pilot.press("h")
+            await pilot.pause()
+            expanded = app.screen.query_one("#fleet-expanded")
+            self.assertTrue(expanded.display)
+            self.assertEqual(
+                sum("update remote" in str(child.content) for child in expanded.children), 3
+            )
             await pilot.press("q")
 
 

@@ -144,8 +144,12 @@ class ActionKillRemoteRowTests(unittest.TestCase):
 
         kill_calls: list[tuple[str, str, str]] = []
         captured_callback: list = []
+        refresh_calls: list[dict] = []
 
         class _FakeApp:
+            def kick_refresh(self, **kwargs) -> None:
+                refresh_calls.append(kwargs)
+
             def notify(self, *_a: object, **_kw: object) -> None:
                 pass
 
@@ -183,6 +187,16 @@ class ActionKillRemoteRowTests(unittest.TestCase):
 
         screen = _StubScreen.__new__(_StubScreen)
         screen.cfg = ctx
+        screen.state = _state_with_snapshots(
+            {
+                "vz-prod1": _snap(
+                    "vz-prod1",
+                    [
+                        {"user": "alice", "name": "uxon-foo@claude"},
+                    ],
+                )
+            }
+        )
         # ``action_kill`` delegates to the KillFlow controller; __new__
         # bypasses __init__ so wire it up explicitly (the body lives on
         # the controller, reaching back into this stub host).
@@ -212,6 +226,14 @@ class ActionKillRemoteRowTests(unittest.TestCase):
         self.assertEqual(len(captured_callback), 1)
         captured_callback[0](True)
         self.assertEqual(kill_calls, [("vz-prod1", "alice", "uxon-foo@claude")])
+        self.assertEqual(refresh_calls, [{}])  # Post-kill refresh respects cooldown.
+        from dataclasses import replace
+
+        screen.state.remote["vz-prod1"] = replace(
+            screen.state.remote["vz-prod1"], last_error="timeout"
+        )
+        captured_callback[0](True)
+        self.assertEqual(len(kill_calls), 1)
 
 
 class OnRowSelectedRemoteTests(unittest.TestCase):
@@ -247,7 +269,7 @@ class OnRowSelectedRemoteTests(unittest.TestCase):
             cwd_short="",
             new_project_root="",
             existing_projects=[],
-            current_user="vasily",
+            current_user="alice",
             on_remote_attach=fake_attach,
         )
 
@@ -260,6 +282,16 @@ class OnRowSelectedRemoteTests(unittest.TestCase):
 
         screen = _StubScreen.__new__(_StubScreen)
         screen.cfg = ctx
+        screen.state = _state_with_snapshots(
+            {
+                "vz-prod1": _snap(
+                    "vz-prod1",
+                    [
+                        {"user": "alice", "name": "uxon-foo@claude"},
+                    ],
+                )
+            }
+        )
         # ``on_session_list_view_row_selected`` delegates the attach
         # dispatch to the LaunchFlow controller; __new__ bypasses __init__.
         screen._launch_flow = LaunchFlow(screen)
@@ -290,6 +322,13 @@ class OnRowSelectedRemoteTests(unittest.TestCase):
         screen.on_session_list_view_row_selected(_Event())
         self.assertEqual(attach_calls, [("vz-prod1", "alice", "uxon-foo@claude")])
         self.assertEqual(len(captured), 1)
+        from dataclasses import replace
+
+        screen.state.remote["vz-prod1"] = replace(
+            screen.state.remote["vz-prod1"], last_error="timeout"
+        )
+        screen.on_session_list_view_row_selected(_Event())
+        self.assertEqual(len(attach_calls), 1)
 
 
 class RemoteStateSurvivesRebuildTests(unittest.TestCase):

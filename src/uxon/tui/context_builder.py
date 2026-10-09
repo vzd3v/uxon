@@ -5,9 +5,8 @@
 refresh, probes the live session/sudo/remote state, wraps each bridge
 callback with :func:`_wrap_tui_callback`, and assembles the immutable
 ``TuiContext`` the TUI renders. The nested :func:`_make_remote_fetch`
-closure is kept co-located here on purpose: it captures the per-build
-fetch semaphore and per-host circuit breaker, so the per-build state
-contract lives in one place.
+closure shares the fleet fetch semaphore across context rebuilds.
+Retry admission belongs to the App's worker coordinator.
 
 This module lives in ``tui/`` and may import ``domain`` / ``infra`` /
 ``app`` / ``tui``; it must NOT import ``uxon.cli``.
@@ -45,6 +44,7 @@ def build_tui_context(
     *,
     skeleton: bool = False,
     sudo_caps_override: SudoCapability | None = None,
+    fetch_semaphore: threading.Semaphore | None = None,
 ) -> TuiContext:
     """Build a TuiContext from live session data.
 
@@ -249,9 +249,6 @@ def build_tui_context(
     # ``MainScreen.on_mount`` reads to fan out the initial refresh —
     # an empty list there means the "Loading sessions…" placeholder
     # never gets replaced.
-    from uxon.domain.host_breaker import BreakerSpec, HostBreaker
-    from uxon.domain.wire_schema import RemoteSnapshot
-    from uxon.infra.remote.cache import read_cached_snapshot
     from uxon.infra.remote.collector import fetch_remote_snapshot
     from uxon.tui.refresh import SourceSpec
 
@@ -277,81 +274,26 @@ def build_tui_context(
     # peer can never stall the local-sessions stream or another
     # peer's poll. Cadence is the dedicated SSH interval — peers
     # are polled less aggressively than the local tmux stream.
-    # Fleet-wide fetch-concurrency cap. Without this a 50-host peer
-    # set recovering from an outage launches 50 concurrent
-    # ``subprocess.Popen`` calls (each holding ≥3 pipe FDs), which
-    # saturates the default 1024-FD ulimit before scheduling becomes
-    # the bottleneck. Scope is per-``TuiContext`` instance — matches
-    # the spec's "no worker survives App teardown" contract.
-    fetch_sem = threading.Semaphore(cfg.fetch_concurrency)
+    # Timer-captured and rebuilt fetchers share one fleet concurrency cap.
+    fetch_sem = (
+        fetch_semaphore
+        if fetch_semaphore is not None
+        else threading.Semaphore(cfg.fetch_concurrency)
+    )
     bridge._fetch_sem = fetch_sem
 
-    # Per-host circuit breaker. One :class:`HostBreaker` per peer,
-    # keyed by host name and captured by ``_make_remote_fetch``. The
-    # breaker decides whether an SSH attempt fires; when open, the
-    # fetcher short-circuits to a cache-only snapshot so the UI keeps
-    # rendering the last good payload without the cost of yet another
-    # doomed connect. ``BreakerSpec`` defaults are intentional — no
-    # The breaker uses one fixed package policy across peers.
-    host_breakers: dict[str, HostBreaker] = bridge._host_breakers
-
-    def _make_remote_fetch(h, sem, multiplex, persist_seconds, breaker):
+    def _make_remote_fetch(h, sem, multiplex, persist_seconds):
         def _fetch():
-            # Breaker is the first gate: if it says "do not attempt",
-            # skip the SSH layer entirely. We still produce a
-            # ``RemoteSnapshot`` so the UI sees something — load the
-            # last good cache if we have one; otherwise an empty
-            # error snapshot. Either way the cadence-driven retry
-            # path will get its next chance the moment the breaker
-            # half-opens.
-            if not breaker.should_attempt():
-                cached = read_cached_snapshot(h.name)
-                if cached is not None:
-                    return cached
-                return RemoteSnapshot(
-                    host_name=h.name,
-                    fetched_at_epoch=0.0,
-                    from_cache=False,
-                    error="circuit breaker open",
-                    sessions=[],
-                    cached_at_epoch=None,
+            with sem:
+                return fetch_remote_snapshot(
+                    h,
+                    ssh_multiplex=multiplex,
+                    ssh_control_persist_seconds=persist_seconds,
                 )
-            breaker.mark_inflight()
-            try:
-                sem.acquire()
-                try:
-                    snap = fetch_remote_snapshot(
-                        h,
-                        ssh_multiplex=multiplex,
-                        ssh_control_persist_seconds=persist_seconds,
-                    )
-                finally:
-                    sem.release()
-                # Translate the snapshot's success/failure into the
-                # breaker's outcome reporting. A cache-fallback
-                # snapshot (``from_cache=True``, ``error=<live>``)
-                # means the live fetch did not succeed — count as
-                # failure. ``error is None and not from_cache`` is a
-                # real live success.
-                if snap.error is None and not snap.from_cache:
-                    breaker.on_success()
-                else:
-                    breaker.on_failure()
-                return snap
-            finally:
-                # Defence in depth: if ``fetch_remote_snapshot`` ever
-                # propagates (KeyboardInterrupt mid-tick, a test mock
-                # that raises), the breaker must NOT stay in_flight=True
-                # forever — that would permanently block the host's
-                # next probe. ``on_success`` / ``on_failure`` already
-                # clear the gate as a safety net, but the contract is
-                # this finally.
-                breaker.clear_inflight()
 
         return _fetch
 
     for host in cfg.remote_hosts:
-        host_breakers[host.name] = HostBreaker(BreakerSpec())
         # Per-host cadence: ``host.interval`` (if set) wins over the
         # fleet-global ``tui_ssh_refresh_interval_seconds``. We pass
         # cadence_seconds_attr=None so the timer reads the explicit
@@ -369,7 +311,6 @@ def build_tui_context(
                     fetch_sem,
                     cfg.ssh_multiplex,
                     cfg.ssh_control_persist_seconds,
-                    host_breakers[host.name],
                 ),
                 cadence_seconds_attr=None,
                 cadence_seconds=host_cadence,

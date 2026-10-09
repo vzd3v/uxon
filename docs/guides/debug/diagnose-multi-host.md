@@ -54,8 +54,8 @@ Stable error tags on stderr disambiguate the failure mode:
 | `uxon-error: not-reachable` | Caller cannot `sudo -n -H -u <user> --` | Add per-target NOPASSWD on the peer. |
 | `uxon-error: all-users-disabled` | Peer's `enable_all_users_list = false` | Set `true` on peer (and confirm sudoers for `session_users`). |
 
-Other stderr → generic SSH/peer failure → falls to cache
-fallback (`(stale)` in TUI, `from_cache=True` in JSON).
+Other stderr means a failed live fetch: the peer's rows are hidden.
+See [remote error metadata](../../reference/wire-schema.md#json-lines---all-hosts---json).
 
 ## Layer 5 — wire-schema mismatch
 
@@ -64,18 +64,16 @@ uxon --version          # aggregator
 ssh <ssh_alias> uxon --version   # peer
 ```
 
-Major-version mismatch (e.g. aggregator on 3.x, peer on 2.x or
-4.x) breaks the wire. The aggregator emits a parse error,
-peer-side `uxon` keeps working locally. Roll the upgrade:
+Wire-schema mismatch rejects the remote response; package versions alone do
+not determine compatibility. The status names which side needs updating.
+Peer-side `uxon` keeps working locally. Roll the upgrade:
 [`../operate/roll-fleet-upgrade.md`](../operate/roll-fleet-upgrade.md).
 
 ## Layer 6 — circuit breaker open
 
-After three consecutive failures the breaker opens for one
-interval. The peer shows as errored even after the underlying
-issue is resolved, until the next half-open attempt. Wait
-~30–60 s and re-check, or restart the TUI to reset the
-breaker.
+After repairing the cause, press `r` to retry immediately or wait for the
+next automatic probe. Retry intervals depend on the failure category;
+see [the retry policy](../../reference/configuration.md#remote_hosts-table-array).
 
 ## Layer 7 — SSH multiplex socket stale
 

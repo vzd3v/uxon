@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from ..dashboard.model import remote_session_available
 from .confirm import ConfirmYesNo
 from .git_profile import GitProfileScreen
 from .launch_options import LaunchOptionsScreen
@@ -144,6 +145,9 @@ class LaunchFlow:
             # Remote: dispatch via ctx.on_remote_attach over SSH — a network
             # round-trip, so it MUST run off the event loop.
             user = row.user or host.cfg.current_user
+            if not remote_session_available(host.state, row.host, user, row.name):
+                host.app.notify("Remote session is no longer available.", severity="warning")
+                return
             fn = host.cfg.on_remote_attach
             host.app.run_off_loop(  # type: ignore[attr-defined]
                 lambda: fn(row.host, user, row.name),

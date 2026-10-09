@@ -53,7 +53,7 @@ adds them to the default fetch template (warm tick: 5–20 ms vs.
 cold 200–500 ms). On hosts that prohibit `ControlPersist`
 sockets, set `ssh_multiplex = "off"`.
 
-## Fail-soft cache
+## Historical snapshots
 
 The last successful payload per peer is cached at:
 
@@ -61,21 +61,17 @@ The last successful payload per peer is cached at:
 ${XDG_STATE_HOME:-~/.local/state}/uxon/remote/<name>.json
 ```
 
-Atomic write (temp + rename). When a live fetch fails, the
-collector falls back to the cache and returns the last-good
-sessions with a `from_cache=True` marker so the TUI can show
-`(stale)` hints. The disk file is **only** written by a fresh
-successful fetch — a failed poll never overwrites the last
-good data.
+Atomic write (temp + rename), only after a successful live fetch. The file
+supports offline inspection; it cannot establish that sessions still exist.
+Failed polls therefore hide the affected host's data and preserve the last
+error until a live response succeeds. Healthy siblings continue updating.
 
 ## Per-host circuit breaker
 
-Three consecutive failures open a peer for one interval before
-the next probe attempts a half-open. Exponential backoff (factor
-2.0) up to 60 s, with ±25 % jitter to spread half-opens across a
-recovering fleet. Prevents a 50-host fleet from saturating its
-own `ulimit` with 50 simultaneous reconnects when an upstream
-network blip ends.
+Transient failures back off to avoid reconnect storms. Incompatible responses
+wait longer because rapid polling cannot repair a version mismatch. Manual
+refresh allows checking an operator's update immediately; ordinary polls
+resume after recovery. See [the retry policy](../reference/configuration.md#remote_hosts-table-array).
 
 The breaker is per-peer, not fleet-wide. A dead peer does not
 slow down healthy ones.
@@ -94,8 +90,8 @@ The collector consumes the same versioned envelope `uxon list
 }
 ```
 
-A `schema_version` mismatch fails the parse loud rather than
-silently dropping fields. Peers must run the same major version
+A `schema_version` mismatch rejects the response rather than
+silently dropping fields. Peers must use compatible wire schemas
 (see [`guides/operate/roll-fleet-upgrade.md`](../guides/operate/roll-fleet-upgrade.md)
 for the rolling-upgrade procedure).
 
