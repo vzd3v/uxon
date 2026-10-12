@@ -254,15 +254,10 @@ class WorkerCoordinator:
             error=result.error or "",
             elapsed_ms=result.elapsed_ms,
         )
-        # ``from_cache`` is available on ``RemoteSnapshot`` (the
-        # remote-host path) but not on ``TuiContext`` (the local
-        # rebuild path), so we read it defensively.
-        from_cache = bool(getattr(result.value, "from_cache", False))
         metrics_record(
             result.name,
             elapsed_ms=result.elapsed_ms,
             error=result.error or None,
-            from_cache=from_cache,
         )
         return self._post_message(
             _RefreshSourceLanded(

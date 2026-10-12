@@ -140,7 +140,6 @@ class MetricsJsonlTests(unittest.TestCase):
                     "remote:prod",
                     elapsed_ms=42,
                     error=None,
-                    from_cache=True,
                     attempted_at=1700000000.0,
                 )
             path = pathlib.Path(td) / "metrics.jsonl"
@@ -151,7 +150,7 @@ class MetricsJsonlTests(unittest.TestCase):
             self.assertEqual(rec["source_id"], "remote:prod")
             self.assertEqual(rec["elapsed_ms"], 42)
             self.assertIsNone(rec["error"])
-            self.assertTrue(rec["from_cache"])
+            self.assertFalse(rec["from_cache"])
             self.assertEqual(rec["attempted_at"], 1700000000.0)
 
     def test_swallows_errors(self) -> None:
@@ -181,7 +180,6 @@ class MetricsJsonlTests(unittest.TestCase):
                         f"remote:host{i}",
                         elapsed_ms=i,
                         error=None,
-                        from_cache=False,
                     )
             main = pathlib.Path(td) / "metrics.jsonl"
             rotated = pathlib.Path(td) / "metrics.jsonl.1"

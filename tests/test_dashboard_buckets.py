@@ -102,22 +102,22 @@ def test_status_block_marks_pending_when_no_snapshot():
     assert kris.state == "pending…"
 
 
-def test_status_block_never_treats_cached_snapshot_as_live():
+def test_status_block_failed_snapshot_has_persistent_failure():
     rows = ()
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name="kris")])
-    snap = SimpleNamespace(from_cache=True, host_stats=None)
+    snap = SimpleNamespace(error="timeout", error_code="timeout", host_stats=None)
     slot = SimpleNamespace(value=snap, consecutive_failures=0)
     state = SimpleNamespace(remote={"kris": slot}, main=None)
     lines = select_host_status_block(rows, state, host_stats_local=None, cfg=cfg)
     kris = next(line for line in lines if line.host_name == "kris")
-    assert kris.state == "(cached)"
-    assert kris.failure == "kris · unreachable"
+    assert kris.state == "unreachable"
+    assert kris.failure == "kris · timeout"
 
 
 def test_status_block_marks_unreachable_on_first_failure():
     rows = ()
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name="kris")])
-    snap = SimpleNamespace(from_cache=False, host_stats=None)
+    snap = SimpleNamespace(error=None, host_stats=None)
     slot = SimpleNamespace(value=snap, consecutive_failures=1, last_error="failed")
     state = SimpleNamespace(remote={"kris": slot}, main=None)
     lines = select_host_status_block(rows, state, host_stats_local=None, cfg=cfg)
@@ -184,11 +184,10 @@ def test_fleet_summary_missing_mem_never_alerts():
     assert select_fleet_summary(lines).alerts == ()
 
 
-def test_fleet_summary_unreachable_alerts_but_pending_and_cached_do_not():
+def test_fleet_summary_unreachable_alerts_but_pending_does_not():
     lines = (
         _line("down", state="unreachable"),
         _line("warming", state="pending…"),
-        _line("stale", state="(cached)"),
     )
     assert select_fleet_summary(lines).alerts == ("down unreachable",)
 

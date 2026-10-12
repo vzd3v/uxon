@@ -373,7 +373,7 @@ One entry per peer host the local `uxon` aggregates over SSH.
 
 | Field | Type | Required | Default | Purpose |
 |-------|------|----------|---------|---------|
-| `name` | string | yes | — | Cache filename + UI label. ASCII, must match `[A-Za-z0-9_.-]+`, unique across the array. |
+| `name` | string | yes | — | Stable peer identity and UI label. ASCII, must match `[A-Za-z0-9_.-]+`, unique across the array. |
 | `ssh_alias` | string | yes | — | Passed verbatim to `ssh`. Auth/port/identity/ProxyJump live in `~/.ssh/config`. |
 | `description` | string | no | `""` | Free-form, shown in TUI tooltips. |
 | `remote_uxon` | string | no | `"uxon"` | Path to `uxon` on the peer (override when peer uses a non-PATH location). |

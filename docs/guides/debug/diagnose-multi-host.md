@@ -11,7 +11,7 @@ uxon doctor --remote
 ```
 
 Per-peer status with reachability, latency, and session count.
-If everything is `ok`, the issue is local (cache stale, TUI
+If everything is `ok`, the issue is local (TUI
 needs `r` to refresh). If a peer reports an error, the next
 layers narrow it down.
 
@@ -121,18 +121,7 @@ If `sink=no-sink` on the peer, the peer has no journald and no
 dropped on that peer. Fix: add a syslog daemon or run on a
 systemd-equipped host.
 
-## Layer 9 — cache file inspection
-
-```bash
-ls -la ~/.local/state/uxon/remote/
-cat ~/.local/state/uxon/remote/<peer>.json | jq .
-```
-
-The cache file's `mtime` is the snapshot age. Fresh successful
-fetches overwrite atomically; failed polls don't. Manually
-deleting the file is fine — next successful fetch recreates.
-
-## Layer 10 — metrics
+## Layer 9 — metrics
 
 ```bash
 UXON_METRICS=1 uxon list --all-hosts --json > /dev/null

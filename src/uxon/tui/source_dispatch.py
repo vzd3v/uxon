@@ -94,7 +94,6 @@ def handle_remote_snapshot(app: UxonApp, event: _RefreshSourceLanded) -> None:
         # RemoteSnapshot nor an error — drop without mutating.
         return
 
-    from_cache = bool(getattr(snap, "from_cache", False)) if snap is not None else False
     error = event.error or (snap.error if snap is not None else None)
     if snap is not None and not snap.is_live:
         error = error or "unconfirmed remote snapshot"
@@ -105,7 +104,6 @@ def handle_remote_snapshot(app: UxonApp, event: _RefreshSourceLanded) -> None:
             else RemoteSnapshot(
                 host_name=host_name,
                 fetched_at_epoch=attempted_at,
-                from_cache=False,
                 error=error,
                 error_code="fetch_error",
             )
@@ -115,15 +113,12 @@ def handle_remote_snapshot(app: UxonApp, event: _RefreshSourceLanded) -> None:
         error=error,
         elapsed_ms=event.elapsed_ms,
         attempted_at=attempted_at,
-        from_cache=from_cache,
     )
     prev = app.state.remote.get(host_name) or SlotState[RemoteSnapshot]()
     updated = apply_slot(prev, result)
     # Generic slots preserve successful values; remote failures instead keep
     # their diagnostic DTO while excluding all unconfirmed session data.
-    app.state.remote[host_name] = (
-        replace(updated, value=snap, from_cache=from_cache) if error else updated
-    )
+    app.state.remote[host_name] = replace(updated, value=snap) if error else updated
 
     # Fold peer-emitted users into the cross-user latch accumulator.
     # If this snapshot brings the very first foreign user, the latch

@@ -10,8 +10,7 @@ tests pin:
   field, so an operator with a typo in ``config.toml`` sees a clean
   failure and not a confused traceback later when the SSH collector
   shells out.
-- ``name`` charset: rejects anything that would cause filename
-  trouble in the snapshot cache (``~/.local/state/uxon/remote/<name>.json``).
+- ``name`` charset follows the documented ASCII whitelist for peer ids.
 - Unknown keys are rejected — typos like ``ssh_alaias`` must fail
   loud rather than silently disabling the host.
 
@@ -117,8 +116,7 @@ class LoadRemoteHostsValidationTests(unittest.TestCase):
             )
 
     def test_invalid_name_charset(self) -> None:
-        # ``name`` becomes a filename — reject anything outside the
-        # documented ASCII whitelist.
+        # Peer identity rejects anything outside the documented ASCII whitelist.
         for bad in ("foo bar", "foo/bar", "foo:bar", "foo$bar", "../etc"):
             with self.assertRaises(RemoteHostError, msg=f"name {bad!r} should be rejected"):
                 load_remote_hosts([{"name": bad, "ssh_alias": "x"}])

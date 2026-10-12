@@ -53,17 +53,9 @@ adds them to the default fetch template (warm tick: 5–20 ms vs.
 cold 200–500 ms). On hosts that prohibit `ControlPersist`
 sockets, set `ssh_multiplex = "off"`.
 
-## Historical snapshots
+## Live session data
 
-The last successful payload per peer is cached at:
-
-```
-${XDG_STATE_HOME:-~/.local/state}/uxon/remote/<name>.json
-```
-
-Atomic write (temp + rename), only after a successful live fetch. The file
-supports offline inspection; it cannot establish that sessions still exist.
-Failed polls therefore hide the affected host's data and preserve the last
+Session snapshots are not persisted. Failed polls hide the affected host's data and preserve the last
 error until a live response succeeds. Healthy siblings continue updating.
 
 ## Per-host circuit breaker

@@ -151,7 +151,7 @@ RemoteSessionPayload = dict[str, Any]
 
 Shape mirrors :class:`SessionRecord` (the producer-side total TypedDict
 written by :func:`build_session_records`), but
-:func:`uxon.infra.remote.envelope.parse_envelope` validates the envelope
+:func:`uxon.infra.remote.envelope.decode_envelope` validates the envelope
 only and treats individual records as opaque. Forward-compatibility
 with peers running a newer or older release of the same major is the goal: a peer
 that adds, renames, or omits a per-session field must not blank a
@@ -211,10 +211,6 @@ class RemoteSnapshot:
             consumers that store snapshots without the matching host
             object can still attribute them.
         fetched_at_epoch: Wall-clock time of the fetch attempt.
-        from_cache: ``True`` when the sessions list came from the
-            on-disk cache rather than a fresh fetch. Cached snapshots
-            are historical and must never contribute live rows or metrics.
-            The live collector never returns cache contents on failure.
         error: Short, human-readable error string, or ``None`` on a
             successful fetch. The collector never raises — every
             failure surfaces here.
@@ -222,11 +218,7 @@ class RemoteSnapshot:
             (:data:`RemoteSessionPayload`). Each record's shape mirrors
             :class:`SessionRecord` but is unvalidated at decode time —
             consumers must read fields defensively. Empty when the
-            live fetch failed, regardless of cache contents.
-        cached_at_epoch: Wall-clock time at which the underlying
-            payload was originally collected. For a fresh fetch this
-            equals :attr:`fetched_at_epoch`; for a historical cache read it
-            is older.
+            live fetch failed.
         scope_limited: ``True`` when the peer rejected
             ``list --all-users`` (because its
             ``enable_all_users_list = false``) and the collector fell
@@ -248,10 +240,8 @@ class RemoteSnapshot:
 
     host_name: str
     fetched_at_epoch: float
-    from_cache: bool
     error: str | None
     sessions: list[RemoteSessionPayload] = field(default_factory=list)
-    cached_at_epoch: float | None = None
     scope_limited: bool = False
     scope_skipped: list[str] = field(default_factory=list)
     host_stats: dict[str, Any] | None = None
@@ -261,7 +251,7 @@ class RemoteSnapshot:
     @property
     def is_live(self) -> bool:
         """Whether this result is confirmed data from a successful live fetch."""
-        return self.error is None and not self.from_cache
+        return self.error is None
 
 
 class _SessionLike(Protocol):

@@ -4,8 +4,7 @@ Two states, default collapsed:
 
 * **Collapsed** — one line: ``N hosts · M sess`` + capped alert tokens.
   Goes to a warning colour only when there is a real alert
-  (``unreachable`` or memory pressure) — never for ``pending…`` /
-  ``(cached)`` (see
+  (a failed host or memory pressure) — never for ``pending…`` (see
   :func:`uxon.tui.dashboard.buckets.select_fleet_summary`). The expand
   gesture is the screen's ``h`` binding (advertised in the footer) or
   a click on the bar — no inline affordance text.

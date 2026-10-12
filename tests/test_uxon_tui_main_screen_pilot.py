@@ -131,7 +131,6 @@ class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
                         RemoteSnapshot(
                             peer.name,
                             1,
-                            False,
                             "mismatch",
                             error_code="update_remote",
                             peer={"uxon_version": "[bold]0.9.0"},

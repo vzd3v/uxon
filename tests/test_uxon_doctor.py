@@ -325,10 +325,8 @@ class DoctorRemoteFlagTests(unittest.TestCase):
             return RemoteSnapshot(
                 host_name=host.name,
                 fetched_at_epoch=1.0,
-                from_cache=False,
                 error=None,
                 sessions=[{"user": "u", "name": "uxon-s@claude"}],
-                cached_at_epoch=1.0,
             )
 
         with self._patches() as stack:
@@ -378,10 +376,8 @@ class DoctorRemoteFlagTests(unittest.TestCase):
             return RemoteSnapshot(
                 host_name=host.name,
                 fetched_at_epoch=1.0,
-                from_cache=False,
                 error=None,
                 sessions=[],
-                cached_at_epoch=1.0,
             )
 
         with self._patches() as stack:

@@ -268,8 +268,9 @@ Error codes: `update_remote`, `update_local`, `incompatible`, `timeout`,
 is diagnostic only. An older numeric schema requires updating the remote;
 a newer one requires updating the local client; unknown/missing schemas are
 incompatible. Metadata remains available on incompatible responses.
-Local envelopes omit these fields. A failed peer never contributes disk-cache
-or preceding in-memory sessions, counts, or metrics. Healthy peers remain visible.
+Local envelopes omit these fields. Remote session data is not persisted.
+A failed peer never contributes preceding in-memory sessions, counts, or metrics.
+Healthy peers remain visible.
 
 ## Versioning
 

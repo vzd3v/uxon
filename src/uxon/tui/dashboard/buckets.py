@@ -75,7 +75,7 @@ class HostStatusLine:
     mem_total_kib: int
     loadavg_1m: float | None  # computed, intentionally unrendered (FleetStatusBar redesign)
     uptime_s: int | None
-    state: str  # "" | "(cached)" | "pending…" | "unreachable"
+    state: str  # "" | "pending…" | "unreachable"
     failure: str = ""  # Literal, bounded diagnostic line; always shown below the table.
 
 
@@ -104,8 +104,8 @@ def select_fleet_summary(lines: tuple[HostStatusLine, ...]) -> FleetSummary:
     * memory pressure: a host with ``mem_total > 0`` and
       ``mem_used / mem_total >= 0.90``. Hosts with no mem data are
       excluded — never alert on missing data.
-    * reachability: only ``unreachable``. ``pending…`` and ``(cached)``
-      are transient/benign and must NOT flip the bar to a warning state
+    * reachability: only ``unreachable``. ``pending…`` is benign and
+      must NOT flip the bar to a warning state
       (the whole fleet is ``pending…`` on cold start).
     """
     alerts: list[str] = []
@@ -154,8 +154,6 @@ def _bucket_state(host_name: str | None, state) -> str:
         return "pending…"
     if getattr(slot, "last_error", None) or getattr(slot.value, "error", None):
         return "unreachable"
-    if getattr(slot.value, "from_cache", False):
-        return "(cached)"
     return ""
 
 
@@ -168,11 +166,7 @@ def _failure_line(label: str, slot) -> str:
     snap = getattr(slot, "value", None)
     if snap is None and not getattr(slot, "last_error", None):
         return ""
-    if not (
-        getattr(slot, "last_error", None)
-        or getattr(snap, "error", None)
-        or getattr(snap, "from_cache", False)
-    ):
+    if not (getattr(slot, "last_error", None) or getattr(snap, "error", None)):
         return ""
     code = getattr(snap, "error_code", None)
     captions = {

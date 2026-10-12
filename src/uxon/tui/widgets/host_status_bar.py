@@ -39,8 +39,7 @@ def _format_uptime(seconds: int | None) -> str:
 def _format_mem(used_kib: int, total_kib: int) -> str:
     """Render ``used / total`` in GiB with one decimal — '6.3/16G'.
 
-    Returns ``—`` when total is missing (e.g., cache from an older
-    peer that didn't ship host_stats).
+    Returns ``—`` when the peer omits host metrics.
     """
     if total_kib <= 0:
         return "—"

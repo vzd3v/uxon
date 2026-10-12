@@ -77,7 +77,7 @@ def test_package_version_is_diagnostic_and_relayed_errors_are_failures():
     assert decode_envelope(_envelope(sessions=[None])).error_code == "invalid_response"
 
 
-def test_nonzero_remote_response_keeps_structured_peer_metadata(tmp_path):
+def test_nonzero_remote_response_keeps_structured_peer_metadata():
     payload = _envelope(
         error={"code": "timeout", "message": "upstream timeout"},
         peer={"uxon_version": "0.8.0", "schema_version": "3"},
@@ -90,9 +90,7 @@ def test_nonzero_remote_response_keeps_structured_peer_metadata(tmp_path):
             stderr="failed",
         ),
     ):
-        snap = fetch_remote_snapshot(
-            RemoteHost("build-box", "build-box", "", "uxon"), override_state_dir=tmp_path
-        )
+        snap = fetch_remote_snapshot(RemoteHost("build-box", "build-box", "", "uxon"))
     assert snap.peer["uxon_version"] == "0.8.0"
     assert snap.error_code == "timeout"
     assert snap.sessions == [] and snap.host_stats is None
@@ -102,7 +100,6 @@ def _snapshot(host="build-box", **changes):
     snap = RemoteSnapshot(
         host,
         1,
-        False,
         None,
         sessions=[{"user": "alice", "name": "uxon-job@claude", "cpu_pct": 20}],
         host_stats={"mem_used_kib": 90, "mem_total_kib": 100},
@@ -124,7 +121,6 @@ def test_first_failure_removes_ram_rows_metrics_and_foreign_user_discovery():
         error="schema mismatch",
         error_code="update_remote",
         peer={"uxon_version": "[bold]\n" + "x" * 10000},
-        from_cache=True,
         sessions=[{"name": "stale", "user": "bob"}],
     )
     result = run_source(SourceSpec("remote:build-box", lambda: failed))
@@ -310,7 +306,6 @@ def test_cli_partial_results_hide_failed_rows_and_exit_nonzero(json_output, caps
         "test-box",
         error="mismatch",
         error_code="update_remote",
-        from_cache=True,
         peer={"uxon_version": "0.8.0", "schema_version": "1"},
         sessions=[{"user": "bob", "name": "stale"}],
     )

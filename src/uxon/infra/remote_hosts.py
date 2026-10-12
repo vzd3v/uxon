@@ -34,11 +34,9 @@ class RemoteHost:
     """One ``[[remote_hosts]]`` entry after validation.
 
     Attributes:
-        name: Stable label. Used as the snapshot-cache key
-            (``~/.local/state/uxon/remote/<name>.json``), the TUI
-            ``HOST`` column value, and the ``--host`` CLI selector.
-            Must be unique across the array, ASCII, no whitespace —
-            it ends up in a filename.
+        name: Stable peer identity, TUI ``HOST`` column value, and
+            ``--host`` CLI selector. Must be unique across the array,
+            with characters restricted to the documented ASCII whitelist.
         ssh_alias: Host token passed verbatim to ``ssh``. Resolved
             through the user's ``~/.ssh/config`` (per the multi-host
             design: SSH config is the single source of connection
@@ -99,9 +97,7 @@ def _validate_host(raw: dict, index: int, seen_names: set[str]) -> RemoteHost:
         return value.strip()
 
     name = _req_str("name")
-    # ``name`` becomes a filename in the snapshot cache; reject characters
-    # that would force quoting or path-escape tricks. Conservative ASCII
-    # whitelist keeps us out of unicode-edge-case territory.
+    # Stable source ids and UI keys require the documented ASCII whitelist.
     bad = [c for c in name if c not in _VALID_NAME_CHARS]
     if bad:
         raise RemoteHostError(

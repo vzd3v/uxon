@@ -504,7 +504,7 @@ def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:
     fallback masking — the operator wants the truth).
 
     Returns one dict per peer: ``name``, ``ok`` (bool),
-    ``latency_ms`` (int), ``error`` (str | None), ``from_cache`` (bool),
+    ``latency_ms`` (int), ``error`` (str | None), ``from_cache`` (always false),
     ``sessions`` (int).
     """
     from uxon.infra.remote.collector import fetch_remote_snapshot
@@ -524,7 +524,7 @@ def _doctor_remote_rows(cfg: Config) -> list[dict[str, Any]]:
                 "ok": snap.error is None,
                 "latency_ms": latency_ms,
                 "error": snap.error,
-                "from_cache": bool(snap.from_cache),
+                "from_cache": False,
                 "sessions": len(snap.sessions),
             }
         )

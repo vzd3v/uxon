@@ -39,8 +39,7 @@ def _ssh_control_dir() -> str:
     Resolves to ``$XDG_CACHE_HOME/uxon`` (falling back to ``~/.cache/uxon``).
     OpenSSH refuses to bind a ControlMaster socket whose parent directory
     does not exist, so this helper *owns* the directory: callers receive a
-    path that is guaranteed to be usable. Symmetrical to
-    ``write_cached_snapshot``, which owns the on-disk snapshot dir.
+    path that is guaranteed to be usable.
 
     Idempotent — safe to call on every fetch / kill / attach. Mode 0o700
     keeps socket names invisible to other users on a shared host.
