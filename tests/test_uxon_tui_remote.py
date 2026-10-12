@@ -56,10 +56,8 @@ def _snap(name: str, sessions: list[dict]) -> RemoteSnapshot:
     return RemoteSnapshot(
         host_name=name,
         fetched_at_epoch=1.0,
-        from_cache=False,
         error=None,
         sessions=sessions,
-        cached_at_epoch=1.0,
     )
 
 
@@ -361,10 +359,8 @@ class RemoteStateSurvivesRebuildTests(unittest.TestCase):
         return RemoteSnapshot(
             host_name="vz-prod1",
             fetched_at_epoch=1.0,
-            from_cache=False,
             error=None,
             sessions=[{"name": "uxon-foo@claude", "user": "alice"}],
-            cached_at_epoch=1.0,
         )
 
     def test_state_remote_survives_apply_loaded_ctx(self) -> None:

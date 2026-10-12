@@ -332,7 +332,6 @@ class RemoteSnapshotSeenUsersTests(unittest.TestCase):
         return RemoteSnapshot(
             host_name=host,
             fetched_at_epoch=0.0,
-            from_cache=False,
             error=None,
             sessions=sessions,
         )

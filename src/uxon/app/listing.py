@@ -158,8 +158,6 @@ def _print_remote_table(
     cfg: Config,
     host_name: str,
     sessions: Sequence[dict[str, Any]] | Sequence[Any],
-    *,
-    cached: bool,
 ) -> None:
     """Render a remote host's ``list --json`` payload as a human
     table.
@@ -196,8 +194,7 @@ def _print_remote_table(
                 legacy=bool(r.get("legacy", False)),
             )
         )
-    cache_marker = "  (CACHED — peer unreachable)" if cached else ""
-    print(f"── remote: {host_name}{cache_marker} ──")
+    print(f"── remote: {host_name} ──")
     users_in_payload = sorted({s.user for s in synth}) or ["?"]
     show_user = len(users_in_payload) > 1
     print_list(cfg, synth, users_in_payload, show_user=show_user)
@@ -228,7 +225,7 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     Looks up the configured peer, runs the SSH-driven collector,
     and prints either the JSON envelope (with the ``host`` field
     set) or a human table. Failed fetches contribute no rows and exit
-    nonzero, regardless of offline cache contents.
+    nonzero.
     """
     from uxon.infra.remote.collector import fetch_remote_snapshot
     from uxon.infra.remote_hosts import find_host
@@ -257,7 +254,7 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     if not snap.is_live:
         eprint(f"uxon: --host {target.name}: {snap.error}")
         return 1
-    _print_remote_table(cfg, target.name, snap.sessions, cached=False)
+    _print_remote_table(cfg, target.name, snap.sessions)
     return 0
 
 
@@ -329,7 +326,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             eprint(f"uxon: --host {host.name}: {snap.error}")
             rc = 1
         else:
-            _print_remote_table(cfg, host.name, snap.sessions, cached=False)
+            _print_remote_table(cfg, host.name, snap.sessions)
     return rc
 
 

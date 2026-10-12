@@ -273,7 +273,6 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
                 value=RemoteSnapshot(
                     host_name="kris",
                     fetched_at_epoch=1.0,
-                    from_cache=False,
                     error=None,
                     sessions=[{"user": "me", "name": "s1"}],
                 )

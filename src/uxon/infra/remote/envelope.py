@@ -112,37 +112,3 @@ def decode_envelope(payload: str) -> ParsedEnvelope:
     )
     stats = env.get("host_stats")
     return ParsedEnvelope(sessions, skipped, stats if isinstance(stats, dict) else None, peer=peer)
-
-
-def parse_envelope(
-    payload: str,
-) -> tuple[list[RemoteSessionPayload] | None, list[str], dict[str, Any] | None, str | None]:
-    """Validate and unpack an ``uxon list --json`` envelope.
-
-    Returns ``(sessions, scope_skipped, host_stats, None)`` on success,
-    or ``(None, [], None, error)`` when the payload is malformed.
-    Failure modes:
-
-    - JSON parse error.
-    - Top-level shape is not a dict.
-    - ``schema_version`` is missing or differs from the local
-      :data:`WIRE_SCHEMA_VERSION`. Cross-version peers are rejected
-      explicitly so a future schema bump fails loud rather than
-      silently dropping fields.
-    - ``kind`` is not ``"list"`` (the collector only ever runs
-      ``list``; anything else is a remote bug or a wrong binary).
-    - ``data.sessions`` is missing or not a list of objects.
-    - Non-null ``data.error`` reports a failed relayed request.
-
-    ``scope_skipped`` is the optional per-target-sudo skipped-users
-    list emitted by peers that ran the per-target probe. Older peers
-    omit the field — we treat that as ``[]`` (forward-compatible
-    addition to the schema, no version bump).
-
-    No deep validation of individual session records — they're
-    treated as opaque dicts. If a peer renames a session field, the
-    TUI will surface the absence; we don't want to fail the whole
-    snapshot for one bad session.
-    """
-    result = decode_envelope(payload)
-    return result.sessions, result.scope_skipped, result.host_stats, result.error

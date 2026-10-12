@@ -269,7 +269,6 @@ class DashboardOwnTests(unittest.IsolatedAsyncioTestCase):
                 value=RemoteSnapshot(
                     host_name="peer1",
                     fetched_at_epoch=1.0,
-                    from_cache=False,
                     error=None,
                     sessions=[{"user": "dana_agent", "name": "dana_agent.remote"}],
                 )
@@ -694,7 +693,6 @@ class DashboardOtherUserTests(unittest.IsolatedAsyncioTestCase):
             snap = RemoteSnapshot(
                 host_name="vz-prod1",
                 fetched_at_epoch=0.0,
-                from_cache=False,
                 error=None,
                 sessions=[
                     {

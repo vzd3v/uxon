@@ -17,7 +17,6 @@ small explicit backup policy.
 | `~/.local/state/uxon/launch-records/` (controller) | controller | **Yes, while sessions are live** | Authoritative launch context for managed-runtime supervision and teardown. Honor `XDG_STATE_HOME` when set. |
 | Explicit `launch_record_dir` (shared store) | root/control group | **Yes, while sessions are live** | Same authority across trusted controllers; preserve ownership, modes and records. |
 | Debug/metrics files below the controller state directory | controller | Usually no | Optional diagnostics; may contain sensitive historical input. |
-| `~/.local/state/uxon/remote/<peer>.json` (aggregator) | aggregator user | No | Historical snapshot; live failures never display it. Refetched on successful polls. |
 | journald log files (`/var/log/journal/`) | systemd | Per retention policy | Audit channel sink — see [`forward-audit-to-collector.md`](forward-audit-to-collector.md) for fleet-wide audit retention. |
 | `/etc/passwd`, `/etc/shadow`, `/etc/group` | root | Yes (system-level) | The `*-agent` accounts. |
 

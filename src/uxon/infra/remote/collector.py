@@ -1,6 +1,6 @@
 """The remote-snapshot collector orchestrator.
 
-Composes the leaf concerns (argv build, envelope parse, on-disk cache,
+Composes the leaf concerns (argv build, envelope parse,
 wedged-master recovery) into :func:`fetch_remote_snapshot`, the single
 point where the local uxon process talks to a peer machine. Always
 returns a :class:`uxon.domain.wire_schema.RemoteSnapshot`; never raises
@@ -13,10 +13,8 @@ import shlex
 import subprocess
 import time
 import uuid
-from pathlib import Path
 
 from uxon.domain.wire_schema import PeerInfo, RemoteErrorCode, RemoteSnapshot
-from uxon.infra.remote.cache import write_cached_snapshot
 from uxon.infra.remote.envelope import ALL_USERS_DISABLED_MARKER, decode_envelope
 from uxon.infra.remote.master_recovery import recover_wedged_master
 from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
@@ -74,16 +72,13 @@ def fetch_remote_snapshot(
     total_timeout: int = DEFAULT_TOTAL_TIMEOUT_SEC,
     ssh_multiplex: str = "auto",
     ssh_control_persist_seconds: int = 300,
-    override_state_dir: Path | None = None,
 ) -> RemoteSnapshot:
     """Fetch one host's session list. Always returns a snapshot.
 
-    Failures return empty sessions and no metrics, never cached data.
-    Successful fetches rewrite the optional offline cache.
+    Failures return empty sessions and no metrics. Session data is never cached.
 
     The ssh spawn goes through :func:`uxon.infra.run.run_query`; tests
-    stub it by patching that function. ``override_state_dir`` is a test
-    seam.
+    stub it by patching that function.
     """
     fetched_at = time.time()
 
@@ -104,10 +99,8 @@ def fetch_remote_snapshot(
         return RemoteSnapshot(
             host_name=host.name,
             fetched_at_epoch=fetched_at,
-            from_cache=False,
             error=f"demo alias {host.ssh_alias!r} but {_uxon_demo.DEMO_ENV_VAR} is unset",
             sessions=[],
-            cached_at_epoch=None,
         )
 
     correlation_id = str(uuid.uuid4())
@@ -125,7 +118,7 @@ def fetch_remote_snapshot(
             peer_name=host.name,
             ssh_alias=host.ssh_alias,
             scope="own" if snap.scope_limited else "all-users",
-            from_cache=snap.from_cache,
+            from_cache=False,
             correlation_id=correlation_id,
             **({"rc": final_rc} if final_rc is not None else {}),
             **({"error": snap.error[:256]} if snap.error else {}),
@@ -216,32 +209,21 @@ def fetch_remote_snapshot(
             snap = RemoteSnapshot(
                 host_name=host.name,
                 fetched_at_epoch=fetched_at,
-                from_cache=False,
                 error=None,
                 sessions=parsed.sessions,
-                cached_at_epoch=fetched_at,
                 scope_limited=scope_limited,
                 scope_skipped=parsed.scope_skipped,
                 host_stats=parsed.host_stats,
                 peer=peer,
             )
-            # A cache-write failure (disk full, perms) must not taint
-            # a fresh in-memory snapshot — we still have valid data.
-            # Swallow the OSError; the next successful fetch retries.
-            try:
-                write_cached_snapshot(snap, override_dir=override_state_dir)
-            except OSError:
-                pass
             return _finalize(snap)
 
     return _finalize(
         RemoteSnapshot(
             host_name=host.name,
             fetched_at_epoch=fetched_at,
-            from_cache=False,
             error=error,
             sessions=[],
-            cached_at_epoch=None,
             scope_limited=scope_limited,
             scope_skipped=[],
             error_code=error_code or "fetch_error",

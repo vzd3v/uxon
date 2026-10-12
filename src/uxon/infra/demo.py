@@ -169,7 +169,7 @@ def load_demo_snapshot(host_name: str, dir_path: Path, fetched_at: float) -> Rem
     Always returns a :class:`RemoteSnapshot`. A missing / unreadable
     file yields a snapshot with a demo-specific ``error`` set; once the
     bytes are in hand, the wire-shape validation is delegated to
-    :func:`uxon.infra.remote.envelope.parse_envelope` — the *same*
+    :func:`uxon.infra.remote.envelope.decode_envelope` — the *same*
     validator the live collector uses — so a demo envelope and a real
     peer envelope are held to identical standards (including the
     ``kind == "list"`` check). Same contract as a failed live fetch, so
@@ -188,10 +188,8 @@ def load_demo_snapshot(host_name: str, dir_path: Path, fetched_at: float) -> Rem
     return RemoteSnapshot(
         host_name=host_name,
         fetched_at_epoch=fetched_at,
-        from_cache=False,
         error=parsed.error,
         sessions=parsed.sessions or [],
-        cached_at_epoch=fetched_at,
         scope_limited=False,
         scope_skipped=parsed.scope_skipped,
         host_stats=parsed.host_stats,
@@ -204,10 +202,8 @@ def _error_snapshot(host_name: str, fetched_at: float, error: str) -> RemoteSnap
     return RemoteSnapshot(
         host_name=host_name,
         fetched_at_epoch=fetched_at,
-        from_cache=False,
         error=error,
         sessions=[],
-        cached_at_epoch=None,
     )
 
 
@@ -292,7 +288,7 @@ def _session_info_from_record(rec: dict[str, Any], cls: type) -> Any:
     Every field is read defensively (``.get(...)``) so an envelope
     authored by a future or past producer can't crash the loader —
     same forward-compat posture as
-    :func:`uxon.infra.remote.envelope.parse_envelope`. Type-narrowing of
+    :func:`uxon.infra.remote.envelope.decode_envelope`. Type-narrowing of
     primitive fields uses ``str()`` / ``int()`` / ``float()`` /
     ``bool()`` rather than ``isinstance`` checks because the
     envelope is JSON (so the input is already one of those types) and

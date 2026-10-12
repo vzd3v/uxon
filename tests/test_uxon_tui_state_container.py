@@ -292,10 +292,8 @@ class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
         snap = RemoteSnapshot(
             host_name="prod",
             fetched_at_epoch=1.0,
-            from_cache=False,
             error=None,
             sessions=[{"user": "u1", "name": "n1"}],
-            cached_at_epoch=1.0,
         )
         state = TuiState()
         state.remote["prod"] = SlotState(value=snap, last_attempt_at=1.0)

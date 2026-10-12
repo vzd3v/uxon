@@ -116,8 +116,8 @@ attach, current command, and path.
 - `--json`: emit a wire-schema envelope (or JSON Lines stream for
   `--all-hosts`) instead of the human table.
 
-Failed remote hosts contribute no rows and make the command exit with code 1,
-even when a cache exists. Healthy partial results remain available.
+Failed remote hosts contribute no rows and make the command exit with code 1.
+Healthy partial results remain available.
 JSON preserves failure and peer metadata in [the wire envelope](wire-schema.md#json-lines---all-hosts---json).
 
 ## `uxon attach <id> [--user <name>] [--host <alias>] [--dry-run]`

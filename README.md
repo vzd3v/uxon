@@ -140,7 +140,7 @@ prints the version and short git commit (with `-dirty` when the
 checkout has uncommitted changes).
 
 Fleet peers require compatible [wire schemas](docs/reference/wire-schema.md#versioning).
-Failed peers show a compact status below the table; their old sessions stay hidden.
+Only live session data is displayed; failed peers show a compact status below the table.
 
 ## License
 

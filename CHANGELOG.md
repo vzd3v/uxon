@@ -9,7 +9,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
-- Failed remote polls immediately hide outdated sessions and metrics, with compact persistent status below the table. Incompatible peers show their version and which side needs updating; automatic retries wait about five minutes, while `r` retries immediately. Remote CLI listings return nonzero on any failed peer and preserve healthy partial results.
+- Failed remote polls immediately hide outdated sessions and metrics, with compact persistent status below the table. Incompatible peers show their version and which side needs updating; automatic retries wait about five minutes, while `r` retries immediately. Remote CLI listings return nonzero on any failed peer and preserve healthy partial results. Remote session snapshots are no longer written to disk.
 - Permission-mode selection follows the chosen launch profile even when its id matches another agent; committing a mode preserves its displayed id.
 - Folder launches discover primary and linked worktrees after profile selection, under the selected launch user. Valid pinned-user profiles are no longer blocked by the startup user's permissions, and late workspace results cannot overwrite a newer launch flow.
 - Filesystem checks for another local launch user use that user's credentials rather than the controller's access rights; workspace discovery probes are bounded.

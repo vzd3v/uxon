@@ -62,10 +62,8 @@ class DashboardPerHostRepaintTests(unittest.TestCase):
         return RemoteSnapshot(
             host_name=host,
             fetched_at_epoch=1.0,
-            from_cache=False,
             error=None,
             sessions=sessions,
-            cached_at_epoch=1.0,
         )
 
     def test_only_changed_host_produces_ops(self) -> None:

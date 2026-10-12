@@ -74,7 +74,6 @@ def test_locals_first_then_cfg_order_remotes_then_recency_within_block():
                 value=RemoteSnapshot(
                     host_name="kris",
                     fetched_at_epoch=1.0,
-                    from_cache=False,
                     error=None,
                     sessions=[
                         _wire("k-old", last_attached=10),
@@ -86,7 +85,6 @@ def test_locals_first_then_cfg_order_remotes_then_recency_within_block():
                 value=RemoteSnapshot(
                     host_name="ada",
                     fetched_at_epoch=1.0,
-                    from_cache=False,
                     error=None,
                     sessions=[
                         _wire("a1", last_attached=50),

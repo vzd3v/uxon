@@ -2,8 +2,8 @@
 
 Pin the fail-soft contract that the TUI integration depends on:
 every documented failure mode produces a :class:`RemoteSnapshot`
-(no exceptions escape), the cache is written only on a real
-success, failed live fetches never return historical rows, and the
+(no exceptions escape), successful fetches do not persist session data,
+failed live fetches never return historical rows, and the
 ssh argv is constructed with the documented hardening options.
 
 Pure tests — no real SSH, no real subprocess. Spawns go through the
@@ -24,20 +24,14 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest import mock
 
-from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION, RemoteSnapshot
-from uxon.infra.remote.cache import (
-    read_cached_snapshot,
-    snapshot_cache_path,
-    state_dir,
-    write_cached_snapshot,
-)
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
 from uxon.infra.remote.collector import (
     DEFAULT_CONNECT_TIMEOUT_SEC,
     DEFAULT_TOTAL_TIMEOUT_SEC,
     _build_fetch_argv,
     fetch_remote_snapshot,
 )
-from uxon.infra.remote.envelope import parse_envelope
+from uxon.infra.remote.envelope import decode_envelope
 from uxon.infra.remote.master_recovery import (
     _resolved_control_path,
     recover_wedged_master,
@@ -88,34 +82,6 @@ def _good_envelope(sessions: list[dict[str, Any]]) -> str:
             },
         }
     )
-
-
-class StateDirTests(unittest.TestCase):
-    def test_xdg_state_home_honoured(self) -> None:
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": "/tmp/xdg-test"}, clear=False):
-            self.assertEqual(state_dir(), Path("/tmp/xdg-test/uxon/remote"))
-
-    def test_default_under_home_local_state(self) -> None:
-        # When ``$XDG_STATE_HOME`` is unset, platformdirs derives the
-        # path from ``$HOME`` per the XDG Base Directory spec.
-        env = dict(os.environ)
-        env.pop("XDG_STATE_HOME", None)
-        env["HOME"] = "/home/alice"
-        with mock.patch.dict(os.environ, env, clear=True):
-            self.assertEqual(state_dir(), Path("/home/alice/.local/state/uxon/remote"))
-
-    def test_override_short_circuits_env(self) -> None:
-        # Tests use this seam to keep their fixtures inside tmpdir.
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": "/tmp/x"}, clear=False):
-            self.assertEqual(state_dir(override=Path("/foo")), Path("/foo"))
-
-
-class SnapshotCachePathTests(unittest.TestCase):
-    def test_filename_uses_host_name(self) -> None:
-        with TemporaryDirectory() as tmp:
-            p = snapshot_cache_path("vz-prod1", override_dir=Path(tmp))
-            self.assertEqual(p.name, "vz-prod1.json")
-            self.assertEqual(p.parent, Path(tmp))
 
 
 class BuildFetchArgvTests(unittest.TestCase):
@@ -324,53 +290,51 @@ class BuildPeerSshArgvTests(unittest.TestCase):
         self.assertEqual(argv[alias_idx - 2 : alias_idx], ["-o", "ProxyJump=bastion"])
 
 
-class ParseEnvelopeTests(unittest.TestCase):
+class DecodeEnvelopeTests(unittest.TestCase):
     def test_happy_path(self) -> None:
-        sessions, scope_skipped, host_stats, err = parse_envelope(
-            _good_envelope([{"name": "uxon-foo@claude"}])
-        )
-        self.assertIsNone(err)
-        self.assertEqual(sessions, [{"name": "uxon-foo@claude"}])
+        result = decode_envelope(_good_envelope([{"name": "uxon-foo@claude"}]))
+        self.assertIsNone(result.error)
+        self.assertEqual(result.sessions, [{"name": "uxon-foo@claude"}])
         # Older envelopes that omit ``scope_skipped`` parse as an
         # empty list (forward-compatible per-target-sudo addition).
-        self.assertEqual(scope_skipped, [])
+        self.assertEqual(result.scope_skipped, [])
         # Older envelopes also omit ``host_stats``; absence → ``None``.
-        self.assertIsNone(host_stats)
+        self.assertIsNone(result.host_stats)
 
     def test_invalid_json(self) -> None:
-        sessions, _scope_skipped, _host_stats, err = parse_envelope("{not json")
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("invalid JSON", err)
+        result = decode_envelope("{not json")
+        self.assertIsNone(result.sessions)
+        assert result.error is not None
+        self.assertIn("invalid JSON", result.error)
 
     def test_schema_version_mismatch_rejected(self) -> None:
         bad = json.dumps({"schema_version": "1", "kind": "list", "data": {"sessions": []}})
-        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("schema_version mismatch", err)
+        result = decode_envelope(bad)
+        self.assertIsNone(result.sessions)
+        assert result.error is not None
+        self.assertIn("schema_version mismatch", result.error)
 
     def test_kind_must_be_list(self) -> None:
         bad = json.dumps(
             {"schema_version": WIRE_SCHEMA_VERSION, "kind": "version", "data": {"sessions": []}}
         )
-        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("unexpected envelope kind", err)
+        result = decode_envelope(bad)
+        self.assertIsNone(result.sessions)
+        assert result.error is not None
+        self.assertIn("unexpected envelope kind", result.error)
 
     def test_missing_sessions_list(self) -> None:
         bad = json.dumps({"schema_version": WIRE_SCHEMA_VERSION, "kind": "list", "data": {}})
-        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("sessions", err)
+        result = decode_envelope(bad)
+        self.assertIsNone(result.sessions)
+        assert result.error is not None
+        self.assertIn("sessions", result.error)
 
     def test_top_level_must_be_object(self) -> None:
-        sessions, _scope_skipped, _host_stats, err = parse_envelope("[]")
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("not a JSON object", err)
+        result = decode_envelope("[]")
+        self.assertIsNone(result.sessions)
+        assert result.error is not None
+        self.assertIn("not a JSON object", result.error)
 
     def test_scope_skipped_extracted_when_present(self) -> None:
         env = json.dumps(
@@ -383,10 +347,10 @@ class ParseEnvelopeTests(unittest.TestCase):
                 },
             }
         )
-        sessions, scope_skipped, _host_stats, err = parse_envelope(env)
-        self.assertIsNone(err)
-        self.assertEqual(sessions, [])
-        self.assertEqual(scope_skipped, ["carol_agent", "dave_agent"])
+        result = decode_envelope(env)
+        self.assertIsNone(result.error)
+        self.assertEqual(result.sessions, [])
+        self.assertEqual(result.scope_skipped, ["carol_agent", "dave_agent"])
 
     def test_host_stats_extracted_when_present(self) -> None:
         env = json.dumps(
@@ -404,143 +368,12 @@ class ParseEnvelopeTests(unittest.TestCase):
                 },
             }
         )
-        sessions, _scope_skipped, host_stats, err = parse_envelope(env)
-        self.assertIsNone(err)
-        self.assertEqual(sessions, [])
-        assert host_stats is not None
-        self.assertEqual(host_stats["kernel"], "6.8.0")
-        self.assertEqual(host_stats["mem_total_kib"], 2048)
-
-
-class CacheRoundTripTests(unittest.TestCase):
-    def test_write_then_read_round_trip(self) -> None:
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=1700000000.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "uxon-foo@claude", "user": "alice"}],
-                cached_at_epoch=1700000000.0,
-            )
-            write_cached_snapshot(snap, override_dir=Path(tmp))
-            loaded = read_cached_snapshot("vz-prod1", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertEqual(loaded.host_name, "vz-prod1")
-            self.assertTrue(loaded.from_cache)
-            self.assertEqual(loaded.sessions, snap.sessions)
-            self.assertEqual(loaded.cached_at_epoch, 1700000000.0)
-
-    def test_write_skipped_when_error_set(self) -> None:
-        # Failed fetches must NOT overwrite the last good cache.
-        with TemporaryDirectory() as tmp:
-            good = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "good"}],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(good, override_dir=Path(tmp))
-            bad = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=2.0,
-                from_cache=False,
-                error="ssh exited 255",
-                sessions=[],
-                cached_at_epoch=None,
-            )
-            write_cached_snapshot(bad, override_dir=Path(tmp))
-            loaded = read_cached_snapshot("x", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertEqual(loaded.sessions, [{"name": "good"}])
-
-    def test_write_skipped_when_from_cache(self) -> None:
-        # Re-writing a from_cache snapshot would mark cached_at_epoch
-        # as 'now', falsifying staleness reports.
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=99.0,
-                from_cache=True,
-                error="ssh exited 255",
-                sessions=[{"name": "stale"}],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(snap, override_dir=Path(tmp))
-            self.assertFalse(snapshot_cache_path("x", override_dir=Path(tmp)).exists())
-
-    def test_read_missing_file_returns_none(self) -> None:
-        with TemporaryDirectory() as tmp:
-            self.assertIsNone(read_cached_snapshot("absent", override_dir=Path(tmp)))
-
-    def test_read_corrupt_file_returns_none(self) -> None:
-        with TemporaryDirectory() as tmp:
-            p = snapshot_cache_path("corrupt", override_dir=Path(tmp))
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("{not json", encoding="utf-8")
-            self.assertIsNone(read_cached_snapshot("corrupt", override_dir=Path(tmp)))
-
-    def test_write_failure_unlinks_temp_file(self) -> None:
-        # If the atomic-write step crashes (disk full, EINTR), the
-        # ``.tmp`` file must not survive. Otherwise a future ``ls`` of
-        # the state dir would surface a stale partial.
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[],
-                cached_at_epoch=1.0,
-            )
-            # Create the parent so chmod path doesn't fault first.
-            (Path(tmp)).mkdir(parents=True, exist_ok=True)
-            with mock.patch.object(
-                Path,
-                "replace",
-                side_effect=OSError("simulated disk full"),
-            ):
-                with self.assertRaises(OSError):
-                    write_cached_snapshot(snap, override_dir=Path(tmp))
-            leftovers = sorted(p.name for p in Path(tmp).iterdir())
-            self.assertNotIn("x.json.tmp", leftovers)
-
-    def test_existing_dir_is_chmodded_to_0700(self) -> None:
-        # mkdir(mode=0o700, exist_ok=True) does not chmod an existing
-        # directory. We force-apply 0o700 after mkdir to honour the
-        # documented per-user privacy invariant.
-        with TemporaryDirectory() as tmp:
-            override = Path(tmp) / "remote"
-            override.mkdir(mode=0o755)
-            self.assertEqual(override.stat().st_mode & 0o777, 0o755)
-            snap = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(snap, override_dir=override)
-            self.assertEqual(override.stat().st_mode & 0o777, 0o700)
-
-    def test_atomic_write_uses_temp_file(self) -> None:
-        # The sequence is mkdir → write tmp → rename. After the call,
-        # only the final file should exist (no leftover .tmp).
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(snap, override_dir=Path(tmp))
-            files = sorted(p.name for p in Path(tmp).iterdir())
-            self.assertEqual(files, ["x.json"])
+        result = decode_envelope(env)
+        self.assertIsNone(result.error)
+        self.assertEqual(result.sessions, [])
+        assert result.host_stats is not None
+        self.assertEqual(result.host_stats["kernel"], "6.8.0")
+        self.assertEqual(result.host_stats["mem_total_kib"], 2048)
 
 
 def _patch_run_query(runner: Any) -> Any:
@@ -562,20 +395,23 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
 
         return _runner
 
-    def test_success_writes_cache_and_returns_fresh(self) -> None:
+    def test_success_returns_fresh_without_persisting_session_data(self) -> None:
         with TemporaryDirectory() as tmp:
             sessions = [{"name": "uxon-x@claude"}]
             runner = self._runner_returning(returncode=0, stdout=_good_envelope(sessions))
-            with _patch_run_query(runner):
+            with (
+                _patch_run_query(runner),
+                mock.patch.dict(os.environ, {"XDG_STATE_HOME": tmp}),
+                mock.patch.object(Path, "open") as disk_io,
+            ):
                 snap = fetch_remote_snapshot(
                     _host(),
-                    override_state_dir=Path(tmp),
+                    ssh_multiplex="off",
                 )
             self.assertIsNone(snap.error)
-            self.assertFalse(snap.from_cache)
             self.assertEqual(snap.sessions, sessions)
-            # Cache should now exist.
-            self.assertTrue(snapshot_cache_path("vz-prod1", override_dir=Path(tmp)).exists())
+            disk_io.assert_not_called()
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_success_emits_one_correlated_outbound_event(self) -> None:
         recorded: list[tuple[str, dict[str, object]]] = []
@@ -583,14 +419,13 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
             recorded.append((event, {"outcome": outcome, **fields}))
 
-        with TemporaryDirectory() as tmp:
-            runner = self._runner_returning(returncode=0, stdout=_good_envelope([]))
-            with (
-                _patch_run_query(runner) as run,
-                mock.patch("uxon.infra.remote.collector.uuid.uuid4", return_value=_CORRELATION_ID),
-                mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
-            ):
-                fetch_remote_snapshot(_host(), override_state_dir=Path(tmp))
+        runner = self._runner_returning(returncode=0, stdout=_good_envelope([]))
+        with (
+            _patch_run_query(runner) as run,
+            mock.patch("uxon.infra.remote.collector.uuid.uuid4", return_value=_CORRELATION_ID),
+            mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
+        ):
+            fetch_remote_snapshot(_host())
         [event] = [fields for name, fields in recorded if name == "list.remote.out"]
         self.assertEqual(event["outcome"], "ok")
         self.assertEqual(event["correlation_id"], _CORRELATION_ID)
@@ -616,57 +451,38 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
             recorded.append((event, {"outcome": outcome, **fields}))
 
-        with TemporaryDirectory() as tmp:
-            with (
-                _patch_run_query(runner) as run,
-                mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
-            ):
-                snap = fetch_remote_snapshot(_host(), override_state_dir=Path(tmp))
+        with (
+            _patch_run_query(runner) as run,
+            mock.patch("uxon.infra.audit.audit", side_effect=fake_audit),
+        ):
+            snap = fetch_remote_snapshot(_host())
         self.assertTrue(snap.scope_limited)
         self.assertEqual(run.call_count, 2)
         [event] = [fields for name, fields in recorded if name == "list.remote.out"]
         self.assertEqual(event["outcome"], "ok")
         self.assertEqual(event["rc"], 0)
 
-    def test_ssh_nonzero_exit_hides_cache_without_overwriting_it(self) -> None:
-        with TemporaryDirectory() as tmp:
-            # Seed the cache with a known-good payload.
-            seed = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "cached@claude"}],
-                cached_at_epoch=1.0,
+    def test_ssh_nonzero_exit_returns_empty(self) -> None:
+        runner = self._runner_returning(returncode=255, stderr="boom")
+        with _patch_run_query(runner):
+            snap = fetch_remote_snapshot(
+                _host(),
             )
-            write_cached_snapshot(seed, override_dir=Path(tmp))
+        self.assertEqual(snap.sessions, [])
+        self.assertEqual(snap.scope_skipped, [])
+        self.assertIsNone(snap.host_stats)
+        assert snap.error is not None
 
-            runner = self._runner_returning(returncode=255, stderr="ssh: connect: timed out")
-            with _patch_run_query(runner):
-                snap = fetch_remote_snapshot(
-                    _host(),
-                    override_state_dir=Path(tmp),
-                )
-            self.assertFalse(snap.from_cache)
-            self.assertEqual(snap.sessions, [])
-            assert snap.error is not None
-            self.assertIn("ssh exited 255", snap.error)
-            # Cache must not have been overwritten.
-            loaded = read_cached_snapshot("vz-prod1", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertEqual(loaded.cached_at_epoch, 1.0)
-
-    def test_ssh_nonzero_exit_no_cache_returns_empty(self) -> None:
-        with TemporaryDirectory() as tmp:
-            runner = self._runner_returning(returncode=255, stderr="boom")
-            with _patch_run_query(runner):
-                snap = fetch_remote_snapshot(
-                    _host(),
-                    override_state_dir=Path(tmp),
-                )
-            self.assertFalse(snap.from_cache)
-            self.assertEqual(snap.sessions, [])
-            assert snap.error is not None
+    def test_malformed_live_payload_returns_only_diagnostics(self) -> None:
+        runner = self._runner_returning(returncode=0, stdout="not json")
+        with _patch_run_query(runner), mock.patch("uxon.infra.audit.audit") as audit:
+            snap = fetch_remote_snapshot(_host(), ssh_multiplex="off")
+        self.assertEqual(snap.sessions, [])
+        self.assertIsNone(snap.host_stats)
+        self.assertEqual(snap.error_code, "invalid_response")
+        assert snap.error is not None
+        self.assertIn("invalid JSON", snap.error)
+        self.assertEqual(audit.call_args.kwargs["outcome"], "error")
 
     def test_timeout_captured_as_error(self) -> None:
         def _raise_timeout(*_args: Any, **_kwargs: Any) -> Any:
@@ -677,11 +493,10 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def fake_audit(event: str, *, outcome: str = "ok", **fields: object) -> None:
             recorded.append((event, {"outcome": outcome, **fields}))
 
-        with TemporaryDirectory() as tmp, _patch_run_query(_raise_timeout):
+        with _patch_run_query(_raise_timeout):
             with mock.patch("uxon.infra.audit.audit", side_effect=fake_audit):
                 snap = fetch_remote_snapshot(
                     _host(),
-                    override_state_dir=Path(tmp),
                 )
             assert snap.error is not None
             self.assertIn("timeout", snap.error)
@@ -694,36 +509,12 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def _raise_fnf(*_args: Any, **_kwargs: Any) -> Any:
             raise FileNotFoundError(2, "No such file or directory: 'ssh'")
 
-        with TemporaryDirectory() as tmp, _patch_run_query(_raise_fnf):
+        with _patch_run_query(_raise_fnf):
             snap = fetch_remote_snapshot(
                 _host(),
-                override_state_dir=Path(tmp),
             )
             assert snap.error is not None
             self.assertIn("ssh not installed", snap.error)
-
-    def test_malformed_payload_never_returns_cached_rows(self) -> None:
-        with TemporaryDirectory() as tmp:
-            # Seed cache.
-            seed = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "cached"}],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(seed, override_dir=Path(tmp))
-            runner = self._runner_returning(returncode=0, stdout="not json")
-            with _patch_run_query(runner):
-                snap = fetch_remote_snapshot(
-                    _host(),
-                    override_state_dir=Path(tmp),
-                )
-            self.assertFalse(snap.from_cache)
-            self.assertEqual(snap.sessions, [])
-            assert snap.error is not None
-            self.assertIn("invalid JSON", snap.error)
 
     def test_keyboard_interrupt_propagates(self) -> None:
         # Ctrl-C must escape the fail-soft net so the operator can
@@ -731,35 +522,11 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         def _raise_kbd(*_args: Any, **_kwargs: Any) -> Any:
             raise KeyboardInterrupt
 
-        with TemporaryDirectory() as tmp, _patch_run_query(_raise_kbd):
+        with _patch_run_query(_raise_kbd):
             with self.assertRaises(KeyboardInterrupt):
                 fetch_remote_snapshot(
                     _host(),
-                    override_state_dir=Path(tmp),
                 )
-
-    def test_cache_write_failure_does_not_taint_fresh_snapshot(self) -> None:
-        # A successful live fetch must return a valid snapshot even
-        # when the cache write step crashes — the operator may be on
-        # a read-only home or out of disk; that should not blank the
-        # TUI when fresh data is in hand.
-        with TemporaryDirectory() as tmp:
-            sessions = [{"name": "uxon-x@claude"}]
-            runner = self._runner_returning(returncode=0, stdout=_good_envelope(sessions))
-            with (
-                _patch_run_query(runner),
-                mock.patch(
-                    "uxon.infra.remote.collector.write_cached_snapshot",
-                    side_effect=OSError("simulated"),
-                ),
-            ):
-                snap = fetch_remote_snapshot(
-                    _host(),
-                    override_state_dir=Path(tmp),
-                )
-            self.assertIsNone(snap.error)
-            self.assertFalse(snap.from_cache)
-            self.assertEqual(snap.sessions, sessions)
 
     def test_default_timeouts_are_sane(self) -> None:
         # Sanity-check the documented defaults haven't drifted.
@@ -768,25 +535,23 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
 
     def test_per_host_connect_timeout_overrides_default(self) -> None:
         """``host.connect_timeout`` (if set) overrides the keyword default."""
-        with TemporaryDirectory() as tmp:
-            captured: list[list[str]] = []
+        captured: list[list[str]] = []
 
-            def runner(argv, **kwargs):
-                captured.append(argv)
-                cp = mock.Mock()
-                cp.returncode = 0
-                cp.stdout = _good_envelope([])
-                cp.stderr = ""
-                return cp
+        def runner(argv, **kwargs):
+            captured.append(argv)
+            cp = mock.Mock()
+            cp.returncode = 0
+            cp.stdout = _good_envelope([])
+            cp.stderr = ""
+            return cp
 
-            with _patch_run_query(runner):
-                fetch_remote_snapshot(
-                    _host(connect_timeout=2.0),
-                    connect_timeout=10,
-                    override_state_dir=Path(tmp),
-                )
-            argv = captured[0]
-            self.assertIn("ConnectTimeout=2", argv)
+        with _patch_run_query(runner):
+            fetch_remote_snapshot(
+                _host(connect_timeout=2.0),
+                connect_timeout=10,
+            )
+        argv = captured[0]
+        self.assertIn("ConnectTimeout=2", argv)
 
     def test_sub_second_connect_timeout_ceil_rounds_to_one(self) -> None:
         """``connect_timeout = "500ms"`` must NOT produce ssh ``ConnectTimeout=0``.
@@ -795,24 +560,22 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
         ceil-rounds sub-second durations to 1 so the operator's intent
         ("tight cap") is preserved.
         """
-        with TemporaryDirectory() as tmp:
-            captured: list[list[str]] = []
+        captured: list[list[str]] = []
 
-            def runner(argv, **kwargs):
-                captured.append(argv)
-                cp = mock.Mock()
-                cp.returncode = 0
-                cp.stdout = _good_envelope([])
-                cp.stderr = ""
-                return cp
+        def runner(argv, **kwargs):
+            captured.append(argv)
+            cp = mock.Mock()
+            cp.returncode = 0
+            cp.stdout = _good_envelope([])
+            cp.stderr = ""
+            return cp
 
-            with _patch_run_query(runner):
-                fetch_remote_snapshot(
-                    _host(connect_timeout=0.5),
-                    override_state_dir=Path(tmp),
-                )
-            self.assertIn("ConnectTimeout=1", captured[0])
-            self.assertNotIn("ConnectTimeout=0", captured[0])
+        with _patch_run_query(runner):
+            fetch_remote_snapshot(
+                _host(connect_timeout=0.5),
+            )
+        self.assertIn("ConnectTimeout=1", captured[0])
+        self.assertNotIn("ConnectTimeout=0", captured[0])
 
     def test_per_host_total_timeout_overrides_default(self) -> None:
         """``host.total_timeout`` overrides the subprocess timeout=."""
@@ -826,103 +589,12 @@ class FetchRemoteSnapshotTests(unittest.TestCase):
             cp.stderr = ""
             return cp
 
-        with TemporaryDirectory() as tmp, _patch_run_query(runner):
+        with _patch_run_query(runner):
             fetch_remote_snapshot(
                 _host(total_timeout=8.0),
                 total_timeout=30,
-                override_state_dir=Path(tmp),
             )
         self.assertEqual(captured["timeout"], 8)
-
-
-class CacheScopeRoundtripTests(unittest.TestCase):
-    """Stage 5 step 8: cache persists/restores scope_limited/scope_skipped."""
-
-    def _runner_returning(self, returncode: int, stdout: str = "", stderr: str = "") -> Any:
-        def runner(argv, **kwargs):
-            cp = mock.Mock()
-            cp.returncode = returncode
-            cp.stdout = stdout
-            cp.stderr = stderr
-            return cp
-
-        return runner
-
-    def test_write_then_read_preserves_scope_flags(self) -> None:
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=100.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "uxon-x@claude"}],
-                cached_at_epoch=100.0,
-                scope_limited=True,
-                scope_skipped=["alice", "bob"],
-            )
-            write_cached_snapshot(snap, override_dir=Path(tmp))
-            loaded = read_cached_snapshot("vz-prod1", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertTrue(loaded.scope_limited)
-            self.assertEqual(loaded.scope_skipped, ["alice", "bob"])
-
-    def test_old_cache_without_scope_keys_treated_as_defaults(self) -> None:
-        with TemporaryDirectory() as tmp:
-            # Synthesise a pre-stage-5 cache file (no scope_* fields).
-            old_blob = {
-                "host_name": "legacy",
-                "cached_at_epoch": 50.0,
-                "sessions": [{"name": "uxon-y@codex"}],
-            }
-            cache_path = snapshot_cache_path("legacy", override_dir=Path(tmp))
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(json.dumps(old_blob), encoding="utf-8")
-
-            loaded = read_cached_snapshot("legacy", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertFalse(loaded.scope_limited)
-            self.assertEqual(loaded.scope_skipped, [])
-
-    def test_failure_does_not_claim_cached_scope_is_current(self) -> None:
-        """Offline records are historical, not a successful live response."""
-        with TemporaryDirectory() as tmp:
-            cached = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=99.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "uxon-cached@claude"}],
-                cached_at_epoch=99.0,
-                scope_limited=True,
-                scope_skipped=["carol"],
-            )
-            write_cached_snapshot(cached, override_dir=Path(tmp))
-
-            # Simulate live failure — non-zero exit, no payload.
-            failing = self._runner_returning(returncode=255, stderr="connect: timed out")
-            with _patch_run_query(failing):
-                snap = fetch_remote_snapshot(
-                    _host(),
-                    override_state_dir=Path(tmp),
-                )
-            self.assertFalse(snap.from_cache)
-            self.assertIsNotNone(snap.error)
-            self.assertFalse(snap.scope_limited)
-            self.assertEqual(snap.scope_skipped, [])
-            self.assertEqual(snap.sessions, [])
-
-    def test_failure_path_without_cache_returns_empty_scope_skipped(self) -> None:
-        """No cache file; returned snapshot has scope_skipped=[] (no info)."""
-        with TemporaryDirectory() as tmp:
-            failing = self._runner_returning(returncode=255, stderr="connect: timed out")
-            with _patch_run_query(failing):
-                snap = fetch_remote_snapshot(
-                    _host(name="never-cached"),
-                    override_state_dir=Path(tmp),
-                )
-            self.assertFalse(snap.from_cache)
-            self.assertIsNotNone(snap.error)
-            self.assertEqual(snap.scope_skipped, [])
 
 
 class DefaultTemplateTests(unittest.TestCase):
@@ -1234,7 +906,6 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
             recovered.append(host)
 
         with (
-            TemporaryDirectory() as tmp,
             _patch_run_query(self._timeout_runner()),
             mock.patch(
                 "uxon.infra.remote.collector.recover_wedged_master",
@@ -1243,7 +914,6 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
         ):
             snap = fetch_remote_snapshot(
                 _host(),
-                override_state_dir=Path(tmp),
                 ssh_multiplex="auto",
             )
             assert snap.error is not None
@@ -1257,7 +927,6 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
             recovered.append(host)
 
         with (
-            TemporaryDirectory() as tmp,
             _patch_run_query(self._timeout_runner()),
             mock.patch(
                 "uxon.infra.remote.collector.recover_wedged_master",
@@ -1266,7 +935,6 @@ class FetchTimeoutRecoveryTests(unittest.TestCase):
         ):
             fetch_remote_snapshot(
                 _host(),
-                override_state_dir=Path(tmp),
                 ssh_multiplex="off",
             )
             self.assertEqual(recovered, [])

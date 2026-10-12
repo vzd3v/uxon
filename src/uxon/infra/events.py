@@ -240,7 +240,6 @@ def metrics_record(
     *,
     elapsed_ms: int,
     error: str | None,
-    from_cache: bool = False,
     attempted_at: float | None = None,
 ) -> None:
     """Append one JSON line to ``metrics.jsonl`` if ``UXON_METRICS=1``.
@@ -254,7 +253,7 @@ def metrics_record(
       source_id     ``"main_ctx_rebuild"`` or ``"remote:<host>"``
       elapsed_ms    wall-time of the fetch attempt
       error         first-line error string, or ``null`` on success
-      from_cache    True iff the result was served from on-disk cache
+      from_cache    Always false for live collection
       attempted_at  optional epoch seconds (caller-supplied)
     """
     if not _metrics_enabled():
@@ -269,7 +268,7 @@ def metrics_record(
             "source_id": source_id,
             "elapsed_ms": int(elapsed_ms),
             "error": error,
-            "from_cache": bool(from_cache),
+            "from_cache": False,
         }
         if attempted_at is not None:
             record["attempted_at"] = float(attempted_at)

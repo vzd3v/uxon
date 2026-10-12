@@ -147,10 +147,9 @@ class LoadDemoSnapshotTests(unittest.TestCase):
             snap = uxon_demo.load_demo_snapshot("laptop", d, fetched_at=12345.0)
         self.assertIsNone(snap.error)
         self.assertEqual(snap.host_name, "laptop")
-        self.assertFalse(snap.from_cache)
         self.assertEqual(snap.sessions, sessions)
         self.assertEqual(snap.fetched_at_epoch, 12345.0)
-        self.assertEqual(snap.cached_at_epoch, 12345.0)
+        self.assertEqual(snap.fetched_at_epoch, 12345.0)
 
     def test_missing_file_yields_error_snapshot(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -178,7 +177,7 @@ class LoadDemoSnapshotTests(unittest.TestCase):
             snap = uxon_demo.load_demo_snapshot("laptop", d, fetched_at=1.0)
         self.assertIsNotNone(snap.error)
         assert snap.error is not None
-        # Shape validation is now delegated to ``parse_envelope`` (§B
+        # Shape validation is delegated to ``decode_envelope`` (§B
         # dedup): a readable-but-malformed-JSON file surfaces the
         # shared validator's ``invalid JSON`` text rather than the old
         # demo-specific ``unreadable`` message (which now applies only

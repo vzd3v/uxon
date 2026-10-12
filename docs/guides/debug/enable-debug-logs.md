@@ -66,8 +66,7 @@ plus one per remote peer) with timing:
 - `source_id` (`main_ctx_rebuild`, or `remote:<host>` for a peer)
 - `elapsed_ms` (wall-time of the fetch attempt)
 - `error` (first-line error string, or `null` on success)
-- `from_cache` (`true` when the result was served from the
-  on-disk snapshot cache)
+- `from_cache` (`false` for live collection)
 - `attempted_at` (optional epoch seconds, when the caller supplies it)
 
 Goes to `${state_dir}/metrics.jsonl`, rotated at 1 MiB, capped at
