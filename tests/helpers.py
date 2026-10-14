@@ -84,7 +84,7 @@ def run_off_loop_sync(fn, *, on_success=None, on_error=None, label="action"):
         on_success(value)
 
 
-def make_session(name: str = "uxon-demo@claude", *, user: str = "u-vz") -> SessionInfo:
+def make_session(name: str = "uxon-demo@claude", *, user: str = "alice") -> SessionInfo:
     return SessionInfo(
         user=user,
         name=name,

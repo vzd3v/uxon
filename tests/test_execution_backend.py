@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import ast
+import dataclasses
 import json
 import os
 import shutil
@@ -15,9 +15,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-from helpers import make_config, make_session
+from helpers import make_config
 
-from uxon.app.doctor import _doctor_execution_rows
 from uxon.app.launch_profile import resolve_launch_profile
 from uxon.app.project_browsing import browse_project_directories
 from uxon.domain.args import ParsedArgs
@@ -26,15 +25,13 @@ from uxon.domain.execution import (
     ExecutionConfig,
     validate_execution_config,
 )
-from uxon.domain.launch_profiles import LaunchProfile, ResolvedLaunchProfile, RuntimeContext
+from uxon.domain.launch_profiles import LaunchProfile
 from uxon.domain.runtime import WorkloadRuntimeSpec
 from uxon.infra import (
-    agents,
     git,
     identity,
     launch_records,
     probes,
-    runtime,
     sessions_probe,
     tmux,
     tmux_server_probe,
@@ -42,15 +39,12 @@ from uxon.infra import (
 )
 from uxon.infra.execution import (
     DirectoryEntry,
-    ExecutionProbe,
     FilesystemUsage,
     canonicalize_path,
     filesystem_usage,
     list_directories,
     path_facts,
     probe,
-    resolve_target,
-    wrap_command,
 )
 
 
@@ -82,46 +76,73 @@ def _cp(*, stdout: str = "", stderr: str = "", returncode: int = 0):
     return subprocess.CompletedProcess([], returncode, stdout, stderr)
 
 
-def test_one_command_prefix_for_interactive_and_background_work() -> None:
+@pytest.mark.usefixtures("real_execution", "real_host_probes")
+def test_attestation_rejects_each_identity_fault_before_filesystem_or_launch(subtests):
     cfg = _command_cfg()
-    expected = ["/usr/local/libexec/fake-boundary", "alice", "--", "true"]
-    assert wrap_command(cfg, "alice", ["true"], interactive=True) == expected
-    assert wrap_command(cfg, "alice", ["true"], interactive=False) == expected
+    valid = {"euid": 1001, "egid": 1002, "groups": [1002, 2000]}
+    cases = {
+        "valid": valid,
+        "uid": dict(valid, euid=1003),
+        "gid": dict(valid, egid=1003),
+        "groups": dict(valid, groups=[1002]),
+        "bool_uid": dict(valid, euid=True),
+        "bool_gid": dict(valid, egid=True),
+        "bool_group": dict(valid, groups=[True]),
+        "malformed": "{",
+        "denied": None,
+        "timeout": subprocess.TimeoutExpired("boundary", 1.25),
+        "unreachable": OSError("boundary unreachable"),
+    }
+    for label, payload in cases.items():
+        with subtests.test(label=label):
+            calls = []
+
+            def run(argv, *, timeout, calls=calls, payload=payload):
+                calls.append(argv)
+                assert argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
+                assert argv[-2:] == ["-m", "uxon.infra.execution_probe"]
+                assert timeout == 1.25
+                if isinstance(payload, Exception):
+                    raise payload
+                return _cp(
+                    returncode=int(payload is None),
+                    stdout=payload if isinstance(payload, str) else json.dumps(payload),
+                    stderr="permission denied" if payload is None else "",
+                )
+
+            with (
+                mock.patch(
+                    "uxon.infra.execution.pwd.getpwnam",
+                    return_value=SimpleNamespace(pw_uid=1001, pw_gid=1002),
+                ),
+                mock.patch("uxon.infra.execution.os.getgrouplist", return_value=[2000, 1002]),
+                mock.patch("uxon.infra.execution.run_query", side_effect=run),
+            ):
+                if label == "valid":
+                    assert probe(cfg, "alice").ok
+                else:
+                    with pytest.raises(SystemExit) as error:
+                        resolve_launch_profile(cfg, "alice", "claude", "/srv/demo", None)
+                    assert "failed identity attestation" in error.value.uxon_msg
+            assert len(calls) == 1
 
 
-def test_helper_ignoring_target_user_fails_before_path_or_launch_side_effects() -> None:
-    """The fixed identity probe is the first launch boundary operation."""
-    user = identity.process_user()
-    cfg = _command_cfg()
-    wrong_identity = json.dumps({"euid": 0, "egid": 0, "groups": [0]})
-    canonicalize = mock.Mock(side_effect=AssertionError("path probe must not run"))
-
-    def require_real_probe(probe_cfg, probe_user):
-        result = probe(probe_cfg, probe_user)
-        if not result.ok:
-            from uxon.errors import fail
-
-            fail(result.error)
-        return result
-
-    with (
-        mock.patch("uxon.infra.execution.run_query", return_value=_cp(stdout=wrong_identity)),
-        mock.patch("uxon.infra.execution.require_probe", side_effect=require_real_probe),
-        mock.patch("uxon.infra.execution.canonicalize_path", canonicalize),
-        pytest.raises(SystemExit),
-    ):
-        resolve_launch_profile(cfg, user, "claude", "/srv/demo", None)
-    canonicalize.assert_not_called()
-
-
-def _managed_request_for_race() -> tuple[tmux.LaunchRequest, launch_records.PendingLaunchRecord]:
+def _managed_request_for_race(directory):
     pending = launch_records.PendingLaunchRecord(
         socket_path="/tmp/uxon-race.sock",
-        session_name="uxon-race@claude",
-        launch_nonce="owned-nonce",
-        launch_profile="claude",
+        session_name="uxon-race@claude_box",
+        launch_nonce="a" * 32,
+        launch_profile="claude_box",
         agent="claude",
-        launch_user=identity.process_user(),
+        launch_user="alice",
+        execution_backend="boundary",
+        execution_fingerprint="boundary-fingerprint",
+        runtime="box",
+        runtime_kind="command",
+        runtime_fingerprint="runtime-fingerprint",
+        runtime_resource="box-repo",
+        runtime_dir="/work/repo",
+        project_slug="repo",
     )
     managed = tmux.ManagedTmuxLaunch(
         create_cmd=("tmux", "new-session"),
@@ -131,137 +152,263 @@ def _managed_request_for_race() -> tuple[tmux.LaunchRequest, launch_records.Pend
         record_socket=pending.socket_path,
         record_session=pending.session_name,
         record_nonce=pending.launch_nonce,
-        record_dir="/tmp/uxon-race-records",
-        launch_profile="claude",
-        agent="claude",
+        record_dir=str(directory),
+        launch_profile=pending.launch_profile,
+        agent=pending.agent,
         launch_user=pending.launch_user,
+        runtime_id="container-id",
+        runtime_epoch="epoch-1",
+        runtime_cgroup="/box.scope",
     )
     return tmux.LaunchRequest(cmd=("tmux", "attach"), managed=managed), pending
 
 
-def test_concurrent_create_loser_never_kills_preexisting_session() -> None:
-    request, pending = _managed_request_for_race()
-    calls: list[tuple[str, ...]] = []
-
-    def run(cmd, **_kwargs):
-        calls.append(tuple(cmd))
-        return _cp(returncode=1)
-
-    with (
-        mock.patch("uxon.infra.launch_records.create_pending_record"),
-        mock.patch("uxon.infra.launch_records.fail_pending_record"),
-        mock.patch("uxon.infra.process.run_cmd", side_effect=run),
-        pytest.raises(SystemExit),
-    ):
-        tmux.prepare_managed_launch(request, pending)
-    assert request.managed is not None
-    assert not any(call[:3] == request.managed.rollback_kill_prefix for call in calls)
-    assert request.managed.query_cmd in calls
-
-
-def test_create_chain_failure_kills_only_the_nonce_owned_session() -> None:
-    request, pending = _managed_request_for_race()
-    assert request.managed is not None
-    owned = "$1\t100\tuxon-race@claude\towned-nonce\n"
-    responses = iter(
-        (
-            _cp(returncode=1, stderr="bad value: failed"),
-            _cp(stdout=owned),
-            _cp(),
-        )
+def test_managed_release_reads_fsynced_full_authority_and_rejects_metadata_tampering(tmp_path):
+    request, pending = _managed_request_for_race(tmp_path / "records")
+    managed = request.managed
+    metadata = launch_records.TmuxSessionMetadata(
+        "$1", "100", pending.session_name, pending.launch_nonce
     )
-    calls: list[tuple[str, ...]] = []
+    encoded = "\t".join(dataclasses.astuple(metadata)) + "\n"
+    real_fsync = os.fsync
+    durable = []
+    calls = []
 
-    def run(cmd, **_kwargs):
-        calls.append(tuple(cmd))
-        return next(responses)
+    def fsync(fd):
+        real_fsync(fd)
+        st = os.fstat(fd)
+        durable.append(("directory" if stat.S_ISDIR(st.st_mode) else "file", st.st_ino))
+
+    def run(argv, **kwargs):
+        command = tuple(argv)
+        calls.append(command)
+        assert kwargs["timeout"] > 0
+        if command == managed.create_cmd:
+            payload = json.loads(
+                launch_records.record_path(pending, override_dir=tmp_path / "records").read_text()
+            )
+            assert payload["status"] == "pending"
+            return _cp()
+        if command == managed.query_cmd:
+            return _cp(stdout=encoded)
+        assert command == managed.release_cmd
+        path = launch_records.record_path(pending, override_dir=tmp_path / "records")
+        payload = launch_records.read_verified_record(
+            pending.socket_path, metadata, override_dir=path.parent
+        )
+        assert payload is not None
+        assert {
+            key: payload[key]
+            for key in dataclasses.asdict(pending)
+            if key not in {"launch_profile"}
+        } == {
+            key: value
+            for key, value in dataclasses.asdict(pending).items()
+            if key != "launch_profile"
+        }
+        assert payload["profile"] == pending.launch_profile
+        assert (
+            payload["tmux_session_id"],
+            payload["tmux_session_created"],
+            payload["runtime_id"],
+            payload["runtime_epoch"],
+            payload["runtime_cgroup"],
+        ) == ("$1", "100", "container-id", "epoch-1", "/box.scope")
+        assert ("file", path.stat().st_ino) in durable
+        assert ("directory", path.parent.stat().st_ino) in durable
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        return _cp()
 
     with (
-        mock.patch("uxon.infra.launch_records.create_pending_record"),
-        mock.patch("uxon.infra.launch_records.fail_pending_record"),
         mock.patch("uxon.infra.process.run_cmd", side_effect=run),
-        pytest.raises(SystemExit) as exc_info,
+        mock.patch("uxon.infra.launch_records.os.fsync", side_effect=fsync),
+        mock.patch("uxon.infra.audit.audit") as audit,
     ):
         tmux.prepare_managed_launch(request, pending)
-
-    assert "bad value: failed" in getattr(exc_info.value, "uxon_msg", "")
-    assert (*request.managed.rollback_kill_prefix, "$1") in calls
-
-
-def test_post_create_cleanup_does_not_kill_nonce_mismatch() -> None:
-    request, pending = _managed_request_for_race()
-    assert request.managed is not None
-    owned = "$1\t100\tuxon-race@claude\towned-nonce\n"
-    winner = "$2\t101\tuxon-race@claude\twinner-nonce\n"
-    responses = iter((_cp(), _cp(stdout=owned), _cp(stdout=winner)))
-    calls: list[tuple[str, ...]] = []
-
-    def run(cmd, **_kwargs):
-        calls.append(tuple(cmd))
-        return next(responses)
-
-    with (
-        mock.patch("uxon.infra.launch_records.create_pending_record"),
-        mock.patch(
-            "uxon.infra.launch_records.finalize_pending_record",
-            side_effect=RuntimeError("record failed"),
-        ),
-        mock.patch("uxon.infra.launch_records.fail_pending_record"),
-        mock.patch("uxon.infra.process.run_cmd", side_effect=run),
-        pytest.raises(RuntimeError),
-    ):
-        tmux.prepare_managed_launch(request, pending)
-    assert not any(call[:3] == request.managed.rollback_kill_prefix for call in calls)
-
-
-def test_post_create_cleanup_targets_immutable_session_id_not_reused_name() -> None:
-    request, pending = _managed_request_for_race()
-    assert request.managed is not None
-    owned = "$1\t100\tuxon-race@claude\towned-nonce\n"
-    responses = iter((_cp(), _cp(stdout=owned), _cp(stdout=owned), _cp()))
-    calls: list[tuple[str, ...]] = []
-
-    def run(cmd, **_kwargs):
-        calls.append(tuple(cmd))
-        return next(responses)
-
-    with (
-        mock.patch("uxon.infra.launch_records.create_pending_record"),
-        mock.patch(
-            "uxon.infra.launch_records.finalize_pending_record",
-            side_effect=RuntimeError("record failed"),
-        ),
-        mock.patch("uxon.infra.launch_records.fail_pending_record"),
-        mock.patch("uxon.infra.process.run_cmd", side_effect=run),
-        pytest.raises(RuntimeError),
-    ):
-        tmux.prepare_managed_launch(request, pending)
-
-    rollback = (*request.managed.rollback_kill_prefix, "$1")
-    assert rollback in calls
-    assert (*request.managed.rollback_kill_prefix, pending.session_name) not in calls
-
-
-def test_local_binary_probe_uses_argv_safe_nonlogin_sudo() -> None:
-    cfg = make_config()
-    with (
-        mock.patch("uxon.infra.execution.process_user", return_value="operator"),
-        mock.patch(
-            "uxon.infra.probes.run_query",
-            return_value=_cp(stdout="tmux\t/usr/bin/tmux\n"),
-        ) as run,
-    ):
-        assert probes._resolve_paths_remote(cfg, ["tmux"], "alice")["tmux"] == "/usr/bin/tmux"
-    assert run.call_args.args[0][:7] == [
-        "/usr/bin/sudo",
-        "-n",
-        "-H",
-        "-u",
-        "alice",
-        "--",
-        "sh",
+    assert calls == [managed.create_cmd, managed.query_cmd, managed.release_cmd]
+    assert [(call.args[0], call.kwargs.get("outcome", "ok")) for call in audit.call_args_list] == [
+        ("session.new", "ok")
     ]
-    assert "-i" not in run.call_args.args[0]
+    for changed in (
+        dataclasses.replace(metadata, session_id="$2"),
+        dataclasses.replace(metadata, created="101"),
+        dataclasses.replace(metadata, name="uxon-other@claude_box"),
+        dataclasses.replace(metadata, launch_nonce="b" * 32),
+    ):
+        assert (
+            launch_records.read_verified_record(
+                pending.socket_path, changed, override_dir=tmp_path / "records"
+            )
+            is None
+        )
+
+
+def test_managed_launch_failures_remove_pending_without_adopting_or_killing_winner(
+    tmp_path, subtests
+):
+    for label in ("conflict", "partial_create", "owned", "id", "created", "name", "nonce"):
+        with subtests.test(label=label):
+            directory = tmp_path / label
+            request, pending = _managed_request_for_race(directory)
+            managed = request.managed
+            owned = launch_records.TmuxSessionMetadata(
+                "$1", "100", pending.session_name, pending.launch_nonce
+            )
+            observed = {
+                "id": dataclasses.replace(owned, session_id="$2"),
+                "created": dataclasses.replace(owned, created="101"),
+                "name": dataclasses.replace(owned, name="uxon-winner@claude_box"),
+                "nonce": dataclasses.replace(owned, launch_nonce="b" * 32),
+            }.get(label, owned)
+            winner_path = None
+            if label == "conflict":
+                winner = dataclasses.replace(pending, launch_nonce="b" * 32)
+                observed = dataclasses.replace(
+                    owned, session_id="$2", created="101", launch_nonce=winner.launch_nonce
+                )
+                launch_records.create_pending_record(winner, override_dir=directory)
+                winner_path = launch_records.finalize_pending_record(
+                    winner,
+                    observed,
+                    runtime_id="winner-id",
+                    runtime_epoch="winner-epoch",
+                    override_dir=directory,
+                )
+                winner_bytes = winner_path.read_bytes()
+                winner_inode = winner_path.stat().st_ino
+            calls, queries = [], []
+            real_fsync = os.fsync
+            sync_count = 0
+
+            def fsync(fd, *, real_fsync=real_fsync):
+                nonlocal sync_count
+                sync_count += 1
+                if sync_count == 2:
+                    raise OSError("final record fsync failed")
+                real_fsync(fd)
+
+            def run(
+                argv,
+                *,
+                calls=calls,
+                label=label,
+                managed=managed,
+                observed=observed,
+                owned=owned,
+                queries=queries,
+                **kwargs,
+            ):
+                command = tuple(argv)
+                calls.append(command)
+                assert kwargs["timeout"] > 0
+                if command == managed.create_cmd:
+                    return _cp(
+                        returncode=int(label in {"conflict", "partial_create"}),
+                        stderr="create denied",
+                    )
+                if command == managed.query_cmd:
+                    if label == "conflict":
+                        queries.append(observed)
+                        return _cp(stdout="\t".join(dataclasses.astuple(observed)) + "\n")
+                    meta = owned if not queries else observed
+                    queries.append(meta)
+                    return _cp(stdout="\t".join(dataclasses.astuple(meta)) + "\n")
+                assert command == (*managed.rollback_kill_prefix, "$1")
+                return _cp()
+
+            with (
+                mock.patch("uxon.infra.process.run_cmd", side_effect=run),
+                mock.patch("uxon.infra.launch_records.os.fsync", side_effect=fsync),
+                mock.patch("uxon.infra.audit.audit") as audit,
+                pytest.raises((SystemExit, OSError)),
+            ):
+                tmux.prepare_managed_launch(request, pending)
+            assert not launch_records.record_path(pending, override_dir=directory).exists()
+            assert list(directory.iterdir()) == ([winner_path] if winner_path else [])
+            if winner_path:
+                assert (
+                    winner_path.read_bytes() == winner_bytes
+                    and winner_path.stat().st_ino == winner_inode
+                )
+                assert (
+                    launch_records.read_verified_record(
+                        pending.socket_path, observed, override_dir=directory
+                    )["runtime_id"]
+                    == "winner-id"
+                )
+            assert managed.release_cmd not in calls
+            rollback = [call for call in calls if call[:3] == managed.rollback_kill_prefix]
+            assert rollback == (
+                [(*managed.rollback_kill_prefix, "$1")]
+                if label in {"partial_create", "owned"}
+                else []
+            )
+            assert [
+                (call.args[0], call.kwargs.get("outcome")) for call in audit.call_args_list
+            ] == [("session.new", "error")]
+
+
+def test_bootstrap_release_timeout_and_cleanup_failures_never_execute_workload(subtests):
+    from uxon.infra import launch_bootstrap
+
+    nonce = "a" * 32
+    channel = launch_records.handshake_channel(nonce, "release")
+    base = ["tmux", "-S", "/tmp/owned.sock"]
+    for fault in ("timeout", "cleanup", "nonzero", "transport", "released"):
+        with subtests.test(fault=fault):
+            calls = []
+
+            def respond(argv, *, calls=calls, fault=fault, **kwargs):
+                calls.append(list(argv))
+                assert kwargs["start_new_session"] and kwargs["stdin"] == subprocess.DEVNULL
+                if len(calls) == 1:
+                    assert argv == base + ["wait-for", channel] and kwargs["timeout"] == 0.01
+                    if fault in {"timeout", "cleanup"}:
+                        raise subprocess.TimeoutExpired(argv, 0.01)
+                    if fault == "transport":
+                        raise OSError("wait transport lost")
+                    return _cp(
+                        returncode=int(fault == "nonzero"),
+                        stderr="wait rejected" if fault == "nonzero" else "",
+                    )
+                assert kwargs["timeout"] == 5
+                assert argv == base + (
+                    ["wait-for", "-S", channel]
+                    if len(calls) == 2
+                    else ["kill-session", "-t", "uxon-repo@claude"]
+                )
+                if fault == "cleanup":
+                    raise OSError("cleanup transport lost")
+                return _cp()
+
+            with (
+                mock.patch("uxon.infra.run.subprocess.run", side_effect=respond),
+                mock.patch.object(
+                    launch_bootstrap.os, "execvp", side_effect=RuntimeError("exec reached")
+                ) as execute,
+            ):
+                if fault == "released":
+                    with pytest.raises(RuntimeError, match="exec reached"):
+                        launch_bootstrap.wait_then_exec(
+                            socket_path="/tmp/owned.sock",
+                            session_name="uxon-repo@claude",
+                            launch_nonce=nonce,
+                            agent_argv=["claude", "literal ; arg"],
+                            timeout_seconds=0.01,
+                        )
+                    execute.assert_called_once_with("claude", ["claude", "literal ; arg"])
+                    assert len(calls) == 1
+                else:
+                    assert launch_bootstrap.wait_then_exec(
+                        socket_path="/tmp/owned.sock",
+                        session_name="uxon-repo@claude",
+                        launch_nonce=nonce,
+                        agent_argv=["claude"],
+                        timeout_seconds=0.01,
+                    ) == (124 if fault in {"timeout", "cleanup"} else 1)
+                    execute.assert_not_called()
+                    assert len(calls) == 3
 
 
 @pytest.mark.parametrize("failure", ("timeout", "nonzero"))
@@ -281,6 +428,7 @@ def test_process_failures_never_echo_workload_argv_or_output(failure: str) -> No
 
         run_cmd(command, timeout=1.0)
     message = str(getattr(raised.value, "uxon_msg", ""))
+    assert message.strip()
     assert secret not in message
     assert "private prompt" not in message
 
@@ -290,143 +438,6 @@ def test_execution_template_rejects_nonliteral_user_expansion(token: str) -> Non
     cfg = _command_cfg(command_prefix=("boundary", token))
     with pytest.raises(SystemExit):
         validate_execution_config(cfg.execution)
-
-
-def test_backend_probe_verifies_target_uid_gid_and_groups() -> None:
-    cfg = _command_cfg()
-    with (
-        mock.patch(
-            "uxon.infra.execution.pwd.getpwnam",
-            return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001),
-        ),
-        mock.patch(
-            "uxon.infra.execution.run_query",
-            return_value=_cp(
-                stdout=json.dumps({"euid": 1001, "egid": 1001, "groups": [1001, 2000]})
-            ),
-        ) as run,
-        mock.patch("uxon.infra.execution.os.getgrouplist", return_value=[2000, 1001]),
-    ):
-        result = probe(cfg, "alice")
-    assert result.ok
-    assert run.call_args.args[0][:4] == [
-        "/usr/local/libexec/fake-boundary",
-        "alice",
-        "--",
-        mock.ANY,
-    ]
-
-
-def test_backend_probe_rejects_wrong_supplementary_groups() -> None:
-    cfg = _command_cfg()
-    with (
-        mock.patch(
-            "uxon.infra.execution.pwd.getpwnam",
-            return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001),
-        ),
-        mock.patch("uxon.infra.execution.os.getgrouplist", return_value=[1001, 2000]),
-        mock.patch(
-            "uxon.infra.execution.run_query",
-            return_value=_cp(stdout=json.dumps({"euid": 1001, "egid": 1001, "groups": [1001]})),
-        ),
-    ):
-        result = probe(cfg, "alice")
-    assert not result.ok
-    assert "did not enter target user" in result.error
-
-
-@pytest.mark.parametrize("backend", ["command", "local"])
-def test_backend_returns_authoritative_canonical_path(backend: str) -> None:
-    cfg = _command_cfg() if backend == "command" else make_config()
-    payload = {"ok": True, "path": "/inside/projects/demo", "error": ""}
-    with mock.patch(
-        "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
-    ) as run:
-        result = canonicalize_path(cfg, "alice", "/outside/projects/demo", intended=False)
-    assert result == "/inside/projects/demo"
-    argv = run.call_args.args[0]
-    assert (
-        argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
-        if backend == "command"
-        else argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
-    )
-    assert argv[-2:] == ["--path", "/outside/projects/demo"]
-
-
-@pytest.mark.parametrize("backend", ["command", "local"])
-def test_backend_lists_target_directories_inside_boundary(backend: str) -> None:
-    cfg = _command_cfg() if backend == "command" else make_config()
-    payload = {
-        "ok": True,
-        "entries": [{"name": "demo", "mtime": 123}],
-        "error": "",
-    }
-    with mock.patch(
-        "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
-    ) as run:
-        assert list_directories(cfg, "alice", "/inside/projects") == (
-            DirectoryEntry(name="demo", mtime=123),
-        )
-    argv = run.call_args.args[0]
-    assert (
-        argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
-        if backend == "command"
-        else argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
-    )
-    assert argv[-4:] == ["--mode", "list-directories", "--path", "/inside/projects"]
-
-
-@pytest.mark.parametrize("backend", ["command", "local"])
-def test_project_browsing_canonicalizes_and_reads_inside_target_boundary(backend: str) -> None:
-    cfg = _command_cfg() if backend == "command" else make_config()
-    cfg.new_project_root = "/outside/projects"
-    replies = [
-        {"ok": True, "path": "/inside/projects", "error": ""},
-        {"ok": True, "path": "/inside/projects/group/demo", "error": ""},
-        {"ok": True, "entries": [{"name": "child", "mtime": 123}], "error": ""},
-    ]
-    with mock.patch(
-        "uxon.infra.execution.run_query",
-        side_effect=[_cp(stdout=json.dumps(reply)) for reply in replies],
-    ) as run:
-        rows = browse_project_directories(cfg, "alice", "group/demo")
-    assert [name for name, _ in rows] == ["child"]
-    for call in run.call_args_list:
-        argv = call.args[0]
-        assert (
-            argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
-            if backend == "command"
-            else argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
-        )
-        assert (
-            call.kwargs["timeout"] == cfg.execution.backend_for_user("alice").probe_timeout_seconds
-        )
-    assert run.call_args.args[0][-5:] == [
-        "--mode",
-        "list-directories",
-        "--path",
-        "/inside/projects/group/demo",
-        "--require-directory",
-    ]
-
-
-@pytest.mark.parametrize("backend", ["command", "local"])
-def test_backend_reads_target_filesystem_usage_inside_boundary(backend: str) -> None:
-    cfg = _command_cfg() if backend == "command" else make_config()
-    payload = {"ok": True, "total": 4096, "available": 1024, "error": ""}
-    with mock.patch(
-        "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
-    ) as run:
-        assert filesystem_usage(cfg, "alice", "/inside/projects") == FilesystemUsage(
-            total=4096, available=1024
-        )
-    argv = run.call_args.args[0]
-    assert (
-        argv[:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
-        if backend == "command"
-        else argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
-    )
-    assert argv[-4:] == ["--mode", "filesystem-usage", "--path", "/inside/projects"]
 
 
 def test_local_intended_path_rejects_symlink_component(tmp_path: Path) -> None:
@@ -451,59 +462,6 @@ def test_local_intended_path_rejects_symlink_component(tmp_path: Path) -> None:
         )
 
 
-def test_doctor_reports_fixed_backend_probe() -> None:
-    cfg = _command_cfg()
-    profile = cfg.launch.profiles["claude"]
-    cfg.launch.profiles["claude"] = LaunchProfile(
-        id=profile.id,
-        agent=profile.agent,
-        launch_user="alice",
-    )
-    with mock.patch(
-        "uxon.app.doctor.execution_infra.probe",
-        return_value=ExecutionProbe(backend="boundary", ok=True),
-    ):
-        rows = _doctor_execution_rows(cfg, "operator")
-    assert rows[0]["backend"] == "boundary"
-    assert rows[0]["status"] == "ok"
-    assert "change_policy" not in rows[0]
-
-
-def test_tmux_server_list_attach_and_kill_share_the_boundary() -> None:
-    cfg = _command_cfg()
-    prefix = ["/usr/local/libexec/fake-boundary", "alice", "--"]
-    socket = "/tmp/uxon-alice-boundary.sock"
-    assert tmux.tmux_base(cfg, "alice", socket) == prefix + ["tmux", "-S", socket]
-
-    session = make_session(user="alice")
-    with (
-        mock.patch("uxon.infra.tmux.tmux_socket_path", return_value=socket),
-        mock.patch.dict(os.environ, {}, clear=False),
-    ):
-        os.environ.pop("TMUX", None)
-        attach = tmux._build_tmux_attach_request(session, cfg, "alice")
-    assert list(attach.cmd[: len(prefix)]) == prefix
-    assert "attach-session" in attach.cmd
-
-    with (
-        mock.patch(
-            "uxon.infra.tmux.run_query",
-            return_value=_cp(stdout=json.dumps({"state": "absent", "sessions": [], "error": ""})),
-        ) as run,
-        mock.patch("uxon.infra.sessions_probe.garbage_collect_records"),
-    ):
-        assert sessions_probe.collect_sessions_for_user(cfg, "alice", "uxon-", socket) == []
-    assert run.call_args.args[0][: len(prefix)] == prefix
-    assert run.call_args.args[0][-2:] == ["--socket", socket]
-
-    kill = tmux.tmux_base(cfg, "alice", socket, nonint=True) + [
-        "kill-session",
-        "-t",
-        session.name,
-    ]
-    assert kill[: len(prefix)] == prefix
-
-
 def test_nested_controller_tmux_cannot_cross_a_command_boundary() -> None:
     cfg = _command_cfg()
     with (
@@ -513,79 +471,26 @@ def test_nested_controller_tmux_cannot_cross_a_command_boundary() -> None:
         tmux.tmux_nesting_mode(cfg, "alice", "/tmp/controller.sock")
 
 
-def test_runtime_telemetry_uses_the_execution_boundary() -> None:
-    from uxon.infra.runtime_telemetry import read_cgroup_members
-
-    cfg = _command_cfg()
-    payload = {"ok": True, "pids": [101, 102], "error": ""}
-    with mock.patch(
-        "uxon.infra.runtime_telemetry.run_query",
-        return_value=_cp(stdout=json.dumps(payload)),
-    ) as run:
-        assert read_cgroup_members(cfg, "alice", "/demo.scope") == [101, 102]
-    assert run.call_args.args[0][:3] == [
-        "/usr/local/libexec/fake-boundary",
-        "alice",
-        "--",
-    ]
-
-
-@pytest.mark.parametrize("backend", ["local", "command"])
-def test_target_path_facts_never_inherit_controller_writability(backend: str) -> None:
-    cfg = _command_cfg() if backend == "command" else make_config()
-    payload = {
-        "ok": True,
-        "path": "/srv/private",
-        "exists": True,
-        "directory": True,
-        "writable": False,
-        "nearest_existing_ancestor": "/srv/private",
-        "error": "",
-    }
-    with mock.patch(
-        "uxon.infra.execution.run_query", return_value=_cp(stdout=json.dumps(payload))
-    ) as run:
-        assert not path_facts(cfg, "alice", "/srv/private").writable
-    expected = (
-        ["/usr/local/libexec/fake-boundary", "alice", "--"]
-        if backend == "command"
-        else ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
-    )
-    assert run.call_args.args[0][: len(expected)] == expected
-    assert (
-        run.call_args.kwargs["timeout"]
-        == cfg.execution.backend_for_user("alice").probe_timeout_seconds
-    )
-
-
-@pytest.mark.parametrize(
-    "resolver", [git.git_repo_root_nonint_as_user, git.git_common_dir_root_as_user]
-)
-def test_target_git_discovery_uses_configured_timeout(resolver) -> None:
-    cfg = _command_cfg()
-    with mock.patch("uxon.infra.git.run_query", return_value=_cp(returncode=128)) as run:
-        assert resolver(cfg, "/srv/work", "alice") is None
-    assert run.call_args.kwargs["timeout"] == 1.25
-    assert run.call_args.args[0][:3] == ["/usr/local/libexec/fake-boundary", "alice", "--"]
-
-
-def test_denied_real_proc_marker_read_reports_failure_not_unmanaged() -> None:
+def test_denied_proc_marker_read_reports_failure_not_unmanaged():
     from uxon.infra.runtime_telemetry_probe import session_markers
 
-    try:
-        Path("/proc/1/environ").read_bytes()
-    except PermissionError:
-        result = session_markers([1])
-        assert result["ok"] is False and result["markers"] == {}
-        assert "Permission denied" in str(result["error"])
-    else:
-        pytest.skip("PID 1 environment is readable in this environment")
+    with mock.patch("pathlib.Path.read_bytes", side_effect=PermissionError("Permission denied")):
+        result = session_markers([123])
+    assert result["ok"] is False and result["markers"] == {}
+    assert "Permission denied" in result["error"]
 
 
 @pytest.mark.slow
 def test_real_other_user_cannot_use_controller_private_directory(tmp_path: Path) -> None:
+    import pwd
     import tempfile
 
+    if shutil.which("sudo") is None:
+        pytest.skip("sudo is unavailable for the real target-user proof")
+    try:
+        pwd.getpwnam("nobody")
+    except KeyError:
+        pytest.skip("the nobody target account is unavailable")
     cp = subprocess.run(
         ["sudo", "-n", "-H", "-u", "nobody", "--", "true"], capture_output=True, timeout=3
     )
@@ -641,144 +546,6 @@ def test_real_other_user_cannot_use_controller_private_directory(tmp_path: Path)
             list_directories(cfg, "nobody", str(private), missing_ok=False)
 
 
-def test_unreachable_tmux_server_is_not_reported_as_empty() -> None:
-    cfg = _command_cfg()
-    socket = "/tmp/uxon-alice-boundary.sock"
-    payload = {"state": "unreachable", "sessions": [], "error": "permission denied"}
-    with (
-        mock.patch("uxon.infra.tmux.run_query", return_value=_cp(stdout=json.dumps(payload))),
-        pytest.raises(SystemExit) as raised,
-    ):
-        sessions_probe.collect_sessions_for_user(cfg, "alice", "uxon-", socket)
-    assert "permission denied" in getattr(raised.value, "uxon_msg", "")
-
-
-def test_live_empty_tmux_server_is_preserved_in_session_snapshot() -> None:
-    cfg = _command_cfg()
-    socket = "/tmp/tmux-1001/uxon-boundary.sock"
-    with (
-        mock.patch(
-            "uxon.infra.sessions_probe.tmux.probe_tmux_server",
-            return_value=tmux.TmuxServerProbe("running", sessions=()),
-        ),
-        mock.patch(
-            "uxon.infra.sessions_probe.tmux.tmux_base",
-            return_value=["tmux", "-S", socket],
-        ),
-        mock.patch("uxon.infra.sessions_probe.run_cmd", return_value=_cp()),
-        mock.patch("uxon.infra.sessions_probe.garbage_collect_records"),
-    ):
-        snapshot = sessions_probe.collect_session_snapshot_for_user(cfg, "alice", "uxon-", socket)
-    assert snapshot.server_state == "running"
-    assert snapshot.sessions == ()
-
-
-def test_fixed_tmux_probe_distinguishes_absent_and_non_socket(tmp_path: Path) -> None:
-    absent = tmux_server_probe.collect(tmp_path / "missing.sock")
-    assert absent == {"state": "absent", "sessions": [], "error": ""}
-
-    regular = tmp_path / "not-a-socket"
-    regular.write_text("not tmux")
-    unreachable = tmux_server_probe.collect(regular)
-    assert unreachable["state"] == "unreachable"
-    assert unreachable["sessions"] == []
-    assert "not a socket" in unreachable["error"]
-
-
-def test_fixed_tmux_probe_rejects_non_private_parent(tmp_path: Path) -> None:
-    tmp_path.chmod(0o755)
-    result = tmux_server_probe.collect(tmp_path / "tmux.sock")
-    assert result["state"] == "unreachable"
-    assert "permissions must be 0700" in result["error"]
-
-
-def test_fixed_tmux_probe_treats_closed_socket_as_absent(tmp_path: Path) -> None:
-    socket_path = tmp_path / "tmux.sock"
-    listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
-    listener.bind(str(socket_path))
-    socket_path.chmod(0o600)
-    listener.close()
-
-    assert tmux_server_probe.collect(socket_path) == {
-        "state": "absent",
-        "sessions": [],
-        "error": "",
-    }
-
-
-def test_fixed_tmux_probe_keeps_live_foreign_listener_unreachable(tmp_path: Path) -> None:
-    socket_path = tmp_path / "tmux.sock"
-    listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
-    listener.bind(str(socket_path))
-    socket_path.chmod(0o600)
-    listener.listen(1)
-    try:
-        with mock.patch(
-            "uxon.infra.tmux_server_probe.run_query",
-            return_value=_cp(returncode=1),
-        ):
-            result = tmux_server_probe.collect(socket_path)
-    finally:
-        listener.close()
-    assert result["state"] == "unreachable"
-
-
-def test_fixed_tmux_probe_accepts_owner_only_execute_bits(tmp_path: Path) -> None:
-    socket_path = tmp_path / "tmux.sock"
-    listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
-    listener.bind(str(socket_path))
-    socket_path.chmod(0o700)
-    listener.listen(1)
-    try:
-        with mock.patch(
-            "uxon.infra.tmux_server_probe.run_query",
-            return_value=_cp(stdout="session\n"),
-        ):
-            result = tmux_server_probe.collect(socket_path)
-    finally:
-        listener.close()
-    assert result == {"state": "running", "sessions": ["session"], "error": ""}
-
-
-def test_fixed_tmux_probe_rejects_group_socket_access(tmp_path: Path) -> None:
-    socket_path = tmp_path / "tmux.sock"
-    listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
-    listener.bind(str(socket_path))
-    socket_path.chmod(0o660)
-    try:
-        result = tmux_server_probe.collect(socket_path)
-    finally:
-        listener.close()
-    assert result["state"] == "unreachable"
-    assert "owner-only" in result["error"]
-
-
-def test_fixed_tmux_probe_does_not_accept_replaced_stale_inode(tmp_path: Path) -> None:
-    socket_path = tmp_path / "tmux.sock"
-    first = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
-    first.bind(str(socket_path))
-    socket_path.chmod(0o600)
-    first.close()
-    replacements: list[unix_socket.socket] = []
-
-    def replace_during_query(*_args, **_kwargs):
-        socket_path.unlink()
-        replacement = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
-        replacement.bind(str(socket_path))
-        socket_path.chmod(0o600)
-        replacement.listen(1)
-        replacements.append(replacement)
-        return _cp(returncode=1)
-
-    try:
-        with mock.patch("uxon.infra.tmux_server_probe.run_query", side_effect=replace_during_query):
-            result = tmux_server_probe.collect(socket_path)
-    finally:
-        for replacement in replacements:
-            replacement.close()
-    assert result["state"] == "unreachable"
-
-
 def test_tmux_socket_parent_is_created_private_and_rejects_symlinks(tmp_path: Path) -> None:
     parent = tmp_path / "private"
     socket_path = parent / "tmux.sock"
@@ -801,323 +568,16 @@ def test_tmux_socket_parent_is_created_private_and_rejects_symlinks(tmp_path: Pa
         tmux_socket.prepare_socket_parent(private / "tmux.sock")
 
 
-def test_git_fs_binary_and_runtime_commands_are_nested_under_boundary(tmp_path: Path) -> None:
-    cfg = _command_cfg()
-    prefix = ["/usr/local/libexec/fake-boundary", "alice", "--"]
-
-    with (
-        mock.patch("uxon.infra.git.run_query", return_value=_cp(stdout="/srv/repo\n")) as run,
-        mock.patch(
-            "uxon.infra.execution.run_query",
-            return_value=_cp(stdout=json.dumps({"ok": True, "path": "/srv/repo", "error": ""})),
-        ) as path_run,
-    ):
-        assert git.git_repo_root_nonint_as_user(cfg, "/srv/repo/sub", "alice") == "/srv/repo"
-    assert run.call_args.args[0][: len(prefix)] == prefix
-    assert "git" in run.call_args.args[0]
-    assert path_run.call_args.args[0][: len(prefix)] == prefix
-
-    with (
-        mock.patch(
-            "uxon.infra.execution.run_query",
-            return_value=_cp(
-                stdout=json.dumps(
-                    {
-                        "ok": True,
-                        "path": str(tmp_path),
-                        "exists": True,
-                        "directory": True,
-                        "writable": True,
-                        "nearest_existing_ancestor": str(tmp_path),
-                        "error": "",
-                    }
-                )
-            ),
-        ) as run,
-    ):
-        assert identity.probe_cwd_writable(cfg, "alice", str(tmp_path))
-    assert run.call_args.args[0][: len(prefix)] == prefix
-    assert run.call_args.args[0][-2:] == ["--path", str(tmp_path)]
-
-    with mock.patch("uxon.infra.agents.run_query", return_value=_cp(stdout="1.0\n")) as run:
-        assert agents._probe_one(cfg, "claude", "alice").status == "ok"
-    assert run.call_args.args[0][: len(prefix)] == prefix
-
-    with mock.patch(
-        "uxon.infra.probes.run_query",
-        return_value=_cp(stdout="tmux\t/usr/bin/tmux\n"),
-    ) as run:
-        assert probes._resolve_paths_remote(cfg, ["tmux"], "alice")["tmux"] == "/usr/bin/tmux"
-    assert run.call_args.args[0][: len(prefix)] == prefix
-
-    with mock.patch("uxon.infra.runtime.run_query", return_value=_cp()) as run:
-        assert runtime._probe_exit_ok(cfg, ["docker", "top", "box"], "alice", 2.0)
-    assert run.call_args.args[0] == prefix + ["docker", "top", "box"]
-
-    with mock.patch("uxon.infra.runtime.run_query", return_value=_cp()) as run:
-        runtime._run_prepare(
-            cfg,
-            ["docker", "start", "box"],
-            "/srv/repo",
-            "alice",
-            3.0,
-        )
-    prepare = run.call_args.args[0]
-    assert prepare[: len(prefix)] == prefix
-    assert prepare[len(prefix) : len(prefix) + 3] == ["sh", "-c", mock.ANY]
-    assert prepare[-3:] == ["docker", "start", "box"]
-
-
-def test_nested_runtime_never_replaces_execution_boundary() -> None:
-    runtime_spec = WorkloadRuntimeSpec(
-        id="box",
-        kind="command",
-        resource_name_template="box-{project_slug}",
-        exec_prefix=("docker", "exec", "-w", "{runtime_dir}", "{resource}"),
-    )
-    cfg = _command_cfg()
-    cfg.runtimes["box"] = runtime_spec
-    resolved = ResolvedLaunchProfile(
-        profile=LaunchProfile(id="claude_box", agent="claude", runtime="box"),
-        agent=cfg.agents["claude"],
-        launch_user="alice",
-        mode_id="normal",
-        execution=resolve_target(cfg, "alice"),
-        runtime_context=RuntimeContext(
-            runtime_id="box",
-            resource="box-demo",
-            runtime_dir="/work/demo",
-            fingerprint=runtime_spec.fingerprint,
-        ),
-    )
-    socket = "/tmp/uxon-alice-boundary.sock"
-    with (
-        mock.patch("uxon.infra.tmux.tmux_socket_path", return_value=socket),
-        mock.patch.dict(os.environ, {}, clear=False),
-    ):
-        os.environ.pop("TMUX", None)
-        request, _pending = tmux.build_managed_tmux_launch_request(
-            "/srv/demo",
-            "uxon-demo@claude_box",
-            ParsedArgs(action="run"),
-            cfg,
-            None,
-            resolved_profile=resolved,
-        )
-    assert request.managed is not None
-    create = list(request.managed.create_cmd)
-    boundary = ["/usr/local/libexec/fake-boundary", "alice", "--"]
-    assert create[: len(boundary)] == boundary
-    assert create[len(boundary) : len(boundary) + 3] == ["tmux", "-S", socket]
-    for command in (
-        request.managed.query_cmd,
-        request.managed.release_cmd,
-        request.managed.rollback_kill_prefix,
-    ):
-        assert list(command[: len(boundary)]) == boundary
-    runtime_start = create.index("docker")
-    assert create.index("uxon.infra.launch_bootstrap") < runtime_start
-    assert create[runtime_start : runtime_start + 5] == [
-        "docker",
-        "exec",
-        "-w",
-        "/work/demo",
-        "box-demo",
-    ]
-    assert create[runtime_start + 5] == "sh"
-    assert "claude" in create[runtime_start + 6 :]
-
-
-def test_same_backend_id_keeps_socket_address_stable() -> None:
-    old_cfg = _command_cfg(command_prefix=("/usr/local/libexec/old-boundary", "{user}", "--"))
-    new_cfg = _command_cfg(command_prefix=("/usr/local/libexec/new-boundary", "{user}", "--"))
-
+def test_socket_address_follows_backend_id_and_optional_fingerprint():
+    first = _command_cfg(command_prefix=("old-boundary", "{user}", "--"))
+    changed = _command_cfg(command_prefix=("new-boundary", "{user}", "--"))
+    other = _command_cfg(backend_id="other")
     with mock.patch("uxon.infra.tmux.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=1001)):
-        assert tmux.tmux_socket_path(old_cfg, "alice") == tmux.tmux_socket_path(new_cfg, "alice")
-
-
-def test_backend_id_change_selects_a_distinct_socket() -> None:
-    first = _command_cfg(backend_id="netns_a")
-    second = _command_cfg(backend_id="netns_b")
-    with mock.patch("uxon.infra.tmux.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=1001)):
-        assert tmux.tmux_socket_path(first, "alice") != tmux.tmux_socket_path(second, "alice")
-
-
-@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
-def test_tmux_clean_exit_stale_socket_is_absent_and_reusable(tmp_path: Path) -> None:
-    socket_path = tmp_path / "tmux.sock"
-    base = ["tmux", "-f", "/dev/null", "-S", str(socket_path)]
-    try:
-        subprocess.run(base + ["new-session", "-d", "-s", "short", "true"], check=True)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            result = subprocess.run(
-                base + ["list-sessions"], capture_output=True, text=True, check=False
-            )
-            if result.returncode != 0:
-                break
-            time.sleep(0.01)
-        else:
-            pytest.fail("short tmux server did not exit")
-
-        assert socket_path.is_socket()
-        assert tmux_server_probe.collect(socket_path) == {
-            "state": "absent",
-            "sessions": [],
-            "error": "",
-        }
-
-        subprocess.run(base + ["new-session", "-d", "-s", "reused", "sleep", "30"], check=True)
-        running = tmux_server_probe.collect(socket_path)
-        assert running == {"state": "running", "sessions": ["reused"], "error": ""}
-    finally:
-        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
-        socket_path.unlink(missing_ok=True)
-
-
-@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
-def test_tmux_live_empty_server_remains_running(tmp_path: Path) -> None:
-    socket_path = tmp_path / "tmux.sock"
-    base = ["tmux", "-f", "/dev/null", "-S", str(socket_path)]
-    try:
-        subprocess.run(base + ["new-session", "-d", "-s", "temporary", "sleep", "30"], check=True)
-        subprocess.run(base + ["set-option", "-s", "exit-empty", "off"], check=True)
-        subprocess.run(base + ["kill-session", "-t", "temporary"], check=True)
-        assert tmux_server_probe.collect(socket_path) == {
-            "state": "running",
-            "sessions": [],
-            "error": "",
-        }
-    finally:
-        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
-        socket_path.unlink(missing_ok=True)
-
-
-@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
-def test_tmux_release_channel_is_sticky_and_nonce_scoped(tmp_path: Path) -> None:
-    socket = tmp_path / "tmux.sock"
-    session = "uxon-handshake-contract"
-    nonce = "abcdefghijklmnop"
-    release = launch_records.handshake_channel(nonce, "release")
-    other = launch_records.handshake_channel("ponmlkjihgfedcba", "release")
-    base = ["tmux", "-S", str(socket)]
-    try:
-        subprocess.run(base + ["new-session", "-d", "-s", session, "sleep", "30"], check=True)
-        subprocess.run(base + ["wait-for", "-S", release], check=True)
-        subprocess.run(base + ["wait-for", release], check=True, timeout=2)
-        with pytest.raises(subprocess.TimeoutExpired):
-            subprocess.run(base + ["wait-for", other], check=True, timeout=0.1)
-    finally:
-        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
-
-
-@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
-@pytest.mark.slow
-def test_tmux_failed_pane_retains_output_while_clean_exit_is_removed(tmp_path: Path) -> None:
-    socket = tmp_path / "tmux.sock"
-    base = ["tmux", "-f", "/dev/null", "-S", str(socket)]
-    try:
-        subprocess.run(
-            base
-            + [
-                "new-session",
-                "-d",
-                "-s",
-                "failed",
-                "/bin/sh",
-                "-c",
-                'tmux -S "$1" wait-for failed-release; printf "agent diagnostic\\r\\n"; exit 17',
-                "sh",
-                str(socket),
-                ";",
-                "set-option",
-                "-w",
-                "-t",
-                "failed",
-                "remain-on-exit",
-                "failed",
-            ],
-            check=True,
-        )
-        subprocess.run(base + ["wait-for", "-S", "failed-release"], check=True)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            state = subprocess.run(
-                base
-                + ["display-message", "-p", "-t", "failed", "#{pane_dead} #{pane_dead_status}"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if state.stdout.strip() == "1 17":
-                break
-            time.sleep(0.01)
-        else:
-            pytest.fail("failed pane did not reach retained dead state")
-        captured = subprocess.run(
-            base + ["capture-pane", "-p", "-S", "-", "-t", "failed"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        assert "agent diagnostic" in captured
-
-        subprocess.run(
-            base
-            + [
-                "new-session",
-                "-d",
-                "-s",
-                "clean",
-                "/bin/sh",
-                "-c",
-                'tmux -S "$1" wait-for clean-release; exit 0',
-                "sh",
-                str(socket),
-                ";",
-                "set-option",
-                "-w",
-                "-t",
-                "clean",
-                "remain-on-exit",
-                "failed",
-            ],
-            check=True,
-        )
-        subprocess.run(base + ["wait-for", "-S", "clean-release"], check=True)
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            clean = subprocess.run(
-                base + ["has-session", "-t", "clean"],
-                capture_output=True,
-                check=False,
-            )
-            if clean.returncode != 0:
-                break
-            time.sleep(0.01)
-        else:
-            pytest.fail("clean pane was retained")
-    finally:
-        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
-        socket.unlink(missing_ok=True)
-
-
-def test_target_user_sudo_prefix_is_centralized() -> None:
-    root = Path(__file__).resolve().parent.parent / "src" / "uxon"
-    offenders: list[str] = []
-    for path in root.rglob("*.py"):
-        if path.name == "execution.py":
-            continue
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.List, ast.Tuple)):
-                continue
-            values = [elt.value for elt in node.elts if isinstance(elt, ast.Constant)]
-            if values and values[0] == "sudo" and any(v in {"-iu", "-niu"} for v in values):
-                offenders.append(f"{path}:{node.lineno}")
-    assert not offenders, (
-        "target-user sudo argv must live only in infra/execution.py: " + ", ".join(offenders)
-    )
+        assert tmux.tmux_socket_path(first, "alice") == tmux.tmux_socket_path(changed, "alice")
+        assert tmux.tmux_socket_path(first, "alice") != tmux.tmux_socket_path(other, "alice")
+        first.tmux_socket_template += "-{execution_fingerprint}"
+        changed.tmux_socket_template = first.tmux_socket_template
+        assert tmux.tmux_socket_path(first, "alice") != tmux.tmux_socket_path(changed, "alice")
 
 
 def test_command_backend_can_own_a_tmux_server_inside_existing_netns() -> None:
@@ -1130,7 +590,7 @@ def test_command_backend_can_own_a_tmux_server_inside_existing_netns() -> None:
             "an existing network namespace"
         )
     listed = subprocess.run(
-        ["ip", "netns", "list"], capture_output=True, text=True, check=False
+        ["ip", "netns", "list"], capture_output=True, text=True, check=False, timeout=3
     ).stdout.split()
     if namespace not in listed:
         pytest.skip(f"network namespace {namespace!r} does not exist")
@@ -1143,88 +603,148 @@ def test_command_backend_can_own_a_tmux_server_inside_existing_netns() -> None:
     base = tmux.tmux_base(cfg, user, socket)
     name = f"uxon-netns-contract-{os.getpid()}"
     try:
-        subprocess.run(base + ["new-session", "-d", "-s", name, "sleep", "30"], check=True)
+        subprocess.run(
+            base + ["new-session", "-d", "-s", name, "sleep", "30"], check=True, timeout=5
+        )
+        server_pid = int(
+            subprocess.check_output(
+                base + ["display-message", "-p", "#{pid}"], text=True, timeout=3
+            )
+        )
+        wanted = Path(f"/var/run/netns/{namespace}").stat().st_ino
+        assert Path(f"/proc/{server_pid}/ns/net").stat().st_ino == wanted
+        assert wanted != Path("/proc/self/ns/net").stat().st_ino
         out = subprocess.run(
             base + ["list-sessions", "-F", "#{session_name}"],
             capture_output=True,
             text=True,
             check=True,
+            timeout=5,
         ).stdout
         assert name in out.splitlines()
     finally:
-        subprocess.run(base + ["kill-server"], capture_output=True, check=False)
+        subprocess.run(base + ["kill-server"], capture_output=True, check=False, timeout=5)
 
 
-def test_shared_launch_record_dir_is_group_readable_and_launch_user_cannot_write(
-    tmp_path: Path,
-) -> None:
-    directory = tmp_path / "records"
-    directory.mkdir(mode=0o2770)
-    directory.chmod(0o2770)
-    real_lstat = os.lstat
+def test_shared_store_checks_owner_mode_membership_acl_and_record_access(tmp_path, subtests):
     control_gid = os.getegid()
+    for fault in ("valid", "owner", "mode", "controller-group", "launch-group", "acl"):
+        with subtests.test(fault=fault):
+            directory = tmp_path / fault
+            directory.mkdir(mode=0o2770)
+            directory.chmod(0o2770)
+            real_lstat = os.lstat
+            real_getxattr = os.getxattr
 
-    def root_owned_lstat(path):
-        result = real_lstat(path)
-        if Path(path) == directory:
-            values = list(result)
-            values[0] = stat.S_IFDIR | 0o2770
-            values[4] = 0
-            values[5] = control_gid
-            return os.stat_result(values)
-        return result
+            def metadata(
+                path, *args, directory=directory, fault=fault, real_lstat=real_lstat, **kwargs
+            ):
+                result = real_lstat(path, *args, **kwargs)
+                if Path(path) == directory:
+                    values = list(result)
+                    values[0] = stat.S_IFDIR | (0o2777 if fault == "mode" else 0o2770)
+                    values[4] = 1003 if fault == "owner" else 0
+                    values[5] = control_gid
+                    return os.stat_result(values)
+                return result
 
-    pending = launch_records.PendingLaunchRecord(
-        socket_path="/run/uxon/alice.sock",
-        session_name="uxon-demo@claude",
-        launch_nonce="abcdefghijklmnop",
-        launch_profile="claude",
-        agent="claude",
-        launch_user="alice",
-    )
-    with (
-        mock.patch("uxon.infra.launch_records.os.lstat", side_effect=root_owned_lstat),
-        mock.patch(
-            "uxon.infra.launch_records.pwd.getpwnam",
-            return_value=SimpleNamespace(pw_gid=2000),
-        ),
-        mock.patch("uxon.infra.launch_records.os.getgrouplist", return_value=[2000]),
-        mock.patch("uxon.infra.launch_records._has_posix_acl", return_value=False),
-    ):
-        path = launch_records.create_pending_record(pending, override_dir=directory, shared=True)
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+            def xattr(
+                path,
+                name,
+                *,
+                directory=directory,
+                fault=fault,
+                real_getxattr=real_getxattr,
+                **kwargs,
+            ):
+                if Path(path) == directory and fault == "acl":
+                    return b"access-acl"
+                return real_getxattr(path, name, **kwargs)
 
-
-def test_shared_launch_record_dir_rejects_launch_user_in_control_group(tmp_path: Path) -> None:
-    directory = tmp_path / "records"
-    directory.mkdir(mode=0o2770)
-    directory.chmod(0o2770)
-    metadata = SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=0, st_gid=2000)
-    real_lstat = os.lstat
-
-    def shared_lstat(path):
-        return metadata if Path(path) == directory else real_lstat(path)
-
-    pending = launch_records.PendingLaunchRecord(
-        socket_path="/run/uxon/alice.sock",
-        session_name="uxon-demo@claude",
-        launch_nonce="abcdefghijklmnop",
-        launch_profile="claude",
-        agent="claude",
-        launch_user="alice",
-    )
-    with (
-        mock.patch("uxon.infra.launch_records.os.lstat", side_effect=shared_lstat),
-        mock.patch("uxon.infra.launch_records.os.geteuid", return_value=0),
-        mock.patch(
-            "uxon.infra.launch_records.pwd.getpwnam",
-            return_value=SimpleNamespace(pw_gid=2000),
-        ),
-        mock.patch("uxon.infra.launch_records.os.getgrouplist", return_value=[2000]),
-        mock.patch("uxon.infra.launch_records._has_posix_acl", return_value=False),
-        pytest.raises(SystemExit, match="2"),
-    ):
-        launch_records.create_pending_record(pending, override_dir=directory, shared=True)
+            pending = launch_records.PendingLaunchRecord(
+                socket_path="/run/uxon/alice.sock",
+                session_name="uxon-demo@claude",
+                launch_nonce="a" * 32,
+                launch_profile="claude",
+                agent="claude",
+                launch_user="alice",
+            )
+            with (
+                mock.patch("uxon.infra.launch_records.os.lstat", side_effect=metadata),
+                mock.patch("uxon.infra.launch_records.os.geteuid", return_value=1001),
+                mock.patch(
+                    "uxon.infra.launch_records.os.getegid",
+                    return_value=control_gid + 1 if fault == "controller-group" else control_gid,
+                ),
+                mock.patch("uxon.infra.launch_records.os.getgroups", return_value=[]),
+                mock.patch(
+                    "uxon.infra.launch_records.pwd.getpwnam",
+                    return_value=SimpleNamespace(pw_uid=2001, pw_gid=control_gid + 1),
+                ),
+                mock.patch(
+                    "uxon.infra.launch_records.os.getgrouplist",
+                    return_value=[control_gid] if fault == "launch-group" else [control_gid + 1],
+                ),
+                mock.patch("uxon.infra.launch_records.os.getxattr", side_effect=xattr),
+            ):
+                if fault != "valid":
+                    with pytest.raises(SystemExit) as error:
+                        launch_records.create_pending_record(
+                            pending, override_dir=directory, shared=True
+                        )
+                    expected = {
+                        "owner": "root-owned",
+                        "mode": "mode 2770",
+                        "controller-group": "controller is not a member",
+                        "launch-group": "launch user must not belong",
+                        "acl": "POSIX access ACL",
+                    }
+                    assert expected[fault] in error.value.uxon_msg
+                    assert list(directory.iterdir()) == []
+                    continue
+                path = launch_records.create_pending_record(
+                    pending, override_dir=directory, shared=True
+                )
+                st = path.stat()
+                assert stat.S_IMODE(st.st_mode) == 0o640 and st.st_gid == control_gid
+                target_uid, target_groups = 2001, {control_gid + 1}
+                permissions = stat.S_IMODE(st.st_mode)
+                target_access = (
+                    (permissions >> 6) & 7
+                    if st.st_uid == target_uid
+                    else (permissions >> 3) & 7
+                    if st.st_gid in target_groups
+                    else permissions & 7
+                )
+                assert target_access == 0
+                assert ((permissions >> 3) & 7) == 4
+                meta = launch_records.TmuxSessionMetadata(
+                    "$1", "100", pending.session_name, pending.launch_nonce
+                )
+                launch_records.finalize_pending_record(
+                    pending, meta, override_dir=directory, shared=True
+                )
+                assert (
+                    launch_records.read_verified_record(
+                        pending.socket_path,
+                        meta,
+                        override_dir=directory,
+                        shared=True,
+                        launch_user="alice",
+                    )
+                    is not None
+                )
+                path.chmod(0o660)
+                assert (
+                    launch_records.read_verified_record(
+                        pending.socket_path,
+                        meta,
+                        override_dir=directory,
+                        shared=True,
+                        launch_user="alice",
+                    )
+                    is None
+                )
 
 
 def test_launch_record_gc_covers_same_user_retired_sockets(tmp_path: Path) -> None:
@@ -1296,19 +816,16 @@ def test_launch_record_gc_never_deletes_another_users_live_record(tmp_path: Path
     assert paths["bob"].exists()
 
 
-@pytest.mark.parametrize("leading_kind", ("other-user", "young"))
-def test_launch_record_gc_cursor_reaches_stale_record_after_full_batch(
-    tmp_path: Path, leading_kind: str
-) -> None:
+def test_launch_record_gc_cursor_reaches_stale_record_after_full_batch(tmp_path: Path) -> None:
     now = 10**12
     for index in range(1024):
         payload = {
             "status": "finalized",
-            "launch_user": "bob" if leading_kind == "other-user" else "alice",
+            "launch_user": "bob" if index % 2 else "alice",
             "socket_path": "/run/uxon/current.sock",
             "session_name": f"uxon-live-{index}@claude",
             "launch_nonce": f"nonce-{index:04d}",
-            "finalized_at": 1 if leading_kind == "other-user" else now,
+            "finalized_at": 1 if index % 2 else now,
         }
         path = tmp_path / f"{index:04d}.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
@@ -1329,6 +846,22 @@ def test_launch_record_gc_cursor_reaches_stale_record_after_full_batch(
     )
     stale.chmod(0o600)
 
+    original = {path.name: path.read_bytes() for path in tmp_path.glob("*.json")}
+    assert len(original) == 1025
+    victim = tmp_path / "victim"
+    victim.write_text("do not replace")
+    cursor = launch_records._gc_cursor_path(tmp_path, "alice")
+    cursor.symlink_to(victim)
+    assert (
+        launch_records.garbage_collect_records(
+            set(), override_dir=tmp_path, launch_user="alice", now=now
+        )
+        == 0
+    )
+    assert cursor.is_symlink() and victim.read_text() == "do not replace"
+    assert {path.name: path.read_bytes() for path in tmp_path.glob("*.json")} == original
+    cursor.unlink()
+
     first = launch_records.garbage_collect_records(
         set(), override_dir=tmp_path, launch_user="alice", now=now
     )
@@ -1339,33 +872,480 @@ def test_launch_record_gc_cursor_reaches_stale_record_after_full_batch(
     )
     assert second == 1
     assert not stale.exists()
+    assert {path.name: path.read_bytes() for path in tmp_path.glob("*.json")} == {
+        name: data for name, data in original.items() if name != "zzzz.json"
+    }
+    assert not cursor.is_symlink() and stat.S_IMODE(cursor.stat().st_mode) == 0o600
 
 
-def test_launch_record_gc_refuses_unsafe_cursor_symlink(tmp_path: Path) -> None:
-    record = tmp_path / "record.json"
-    record.write_text(
-        json.dumps(
-            {
-                "status": "finalized",
+@pytest.mark.usefixtures("real_execution", "real_host_probes")
+def test_public_adapters_keep_server_files_git_workload_and_kill_inside_one_boundary(
+    tmp_path, monkeypatch
+):
+    from harness.target_commands import TargetCommands, target_config
+
+    from uxon.app import kill, launch
+    from uxon.infra.runtime_telemetry import read_cgroup_members
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("TMUX", raising=False)
+    target = tmp_path / "project"
+    target.mkdir()
+    (target / "child").mkdir()
+    cfg = target_config(new_project_root=str(target), allowed_roots=[str(tmp_path)])
+    cfg.runtimes["box"] = WorkloadRuntimeSpec(
+        id="box",
+        resource_name_template="box-{project_slug}",
+        exec_prefix=("engine", "exec", "-w", "{runtime_dir}", "{resource}"),
+        path_map=((str(target), "/work/repo"),),
+        ready_command=("engine", "ready", "{resource}"),
+        exists_command=("engine", "exists", "{resource}"),
+        start_command=("engine", "start", "{resource}"),
+        on_missing="start",
+    )
+    cfg.launch.profiles["claude_box"] = LaunchProfile(
+        id="claude_box", agent="claude", runtime="box", launch_user="alice"
+    )
+    cfg.launch = dataclasses.replace(cfg.launch, enabled_profiles=("claude_box",))
+    server_state = "running"
+    emitted = []
+    socket = "/tmp/uxon-alice.sock"
+
+    def respond(user, command, kwargs):
+        if user == "bob":
+            assert kwargs["timeout"] in (20, 60)
+            if command == ["sh", "-c", "command -v gh"]:
+                return _cp(stdout="/usr/bin/gh\n")
+            assert command[:1] == ["gh"]
+            if command[1:3] == ["auth", "status"]:
+                return _cp()
+            if command[1:3] == ["repo", "view"]:
+                return _cp(returncode=1)
+            assert command == ["gh", "repo", "create", "github.com/example/project", "--private"]
+            assert kwargs["timeout"] == 60
+            return _cp()
+        assert user == "alice"
+        emitted.append(command)
+        if "uxon.infra.tmux_server_probe" in command:
+            return _cp(
+                stdout=json.dumps(
+                    {
+                        "state": server_state,
+                        "sessions": [],
+                        "error": "denied" if server_state == "unreachable" else "",
+                    }
+                )
+            )
+        if command[:2] == ["ps", "-eo"]:
+            return _cp(stdout="111 1 32 1.5\n")
+        if command[0] == "git":
+            assert kwargs["timeout"] == 1.25
+            return _cp(
+                stdout=str(target / ".git" if "--git-common-dir" in command else target) + "\n"
+            )
+        if "uxon.infra.runtime_telemetry_probe" in command:
+            assert kwargs["timeout"] == 10
+            assert command[-4:] == ["--mode", "cgroup-members", "--cgroup", "/demo.scope"]
+            return _cp(stdout=json.dumps({"ok": True, "pids": [101, 102], "error": ""}))
+        if command[:2] in (["engine", "ready"], ["engine", "exists"]):
+            assert kwargs["timeout"] == 10
+            return _cp(returncode=int(command[1] == "ready"))
+        if command[:2] == ["engine", "exec"]:
+            assert command[:5] == ["engine", "exec", "-w", "/work/repo", "box-project"]
+            assert command[-1] == "claude" and "uxon-agent-probe" in command
+            return _cp()
+        if command[:2] == ["sh", "-c"]:
+            assert command[-3:] == ["engine", "start", "box-project"]
+            assert command[2] == f'cd {target} && exec "$@"' and kwargs["timeout"] == 120
+            return _cp()
+        assert command[:3] == ["tmux", "-S", socket], command
+        if command[3] == "list-sessions":
+            assert kwargs["timeout"] == 1.25
+            return _cp(stdout="uxon-demo@claude\t$1\t0\t1\t100\t110\t\t\t\n")
+        if command[3] == "list-panes":
+            assert kwargs["timeout"] == 1.25
+            return _cp(stdout=f"1\t111\tclaude\t{target}\t1\t%0\t0\t\t\n")
+        assert command[3:] == ["kill-session", "-t", "uxon-demo@claude"], command
+        return _cp()
+
+    external = TargetCommands(respond)
+    with external.installed_boundary():
+        assert canonicalize_path(cfg, "alice", str(target), intended=False) == str(target)
+        assert list_directories(cfg, "alice", str(target)) == (DirectoryEntry("child", mock.ANY),)
+        assert path_facts(cfg, "alice", str(target)).writable
+        usage = filesystem_usage(cfg, "alice", str(target))
+        assert 0 <= usage.available <= usage.total and usage.total > 0
+        assert [name for name, _ in browse_project_directories(cfg, "alice", "child")] == []
+        assert git.git_repo_root_nonint_as_user(cfg, str(target), "alice") == str(target)
+        assert git.git_common_dir_root_as_user(cfg, str(target), "alice") == str(target)
+        assert read_cgroup_members(cfg, "alice", "/demo.scope") == [101, 102]
+        resolved = resolve_launch_profile(cfg, "operator", "claude_box", str(target), "normal")
+        assert (
+            resolved.launch_user == "alice" and resolved.runtime_context.runtime_dir == "/work/repo"
+        )
+        launch.ensure_runtime_ready(cfg, str(target), resolved)
+        from uxon.domain.git_profiles import GitRemoteProfile
+        from uxon.gitremote import backend_gh
+
+        credentials = GitRemoteProfile(
+            "private", "github.com", "example", "gh", "bob", "", "private"
+        )
+        backend_gh.preflight(cfg, credentials, "project", "bob", "operator")
+        assert (
+            backend_gh.create_remote(cfg, credentials, "project", str(target), "bob", "operator")
+            == "git@github.com:example/project.git"
+        )
+        req, _ = tmux.build_managed_tmux_launch_request(
+            str(target),
+            "uxon-project@claude_box",
+            ParsedArgs(action="run"),
+            cfg,
+            None,
+            resolved_profile=resolved,
+        )
+        assert req.managed is not None
+        for command in (
+            req.cmd,
+            req.managed.create_cmd,
+            req.managed.query_cmd,
+            req.managed.release_cmd,
+            req.managed.rollback_kill_prefix,
+        ):
+            assert command[:6] == ("boundary", "alice", "--", "tmux", "-S", socket)
+        create = req.managed.create_cmd
+        index = create.index("engine")
+        assert create.index("uxon.infra.launch_bootstrap") < index
+        assert create[index : index + 5] == ("engine", "exec", "-w", "/work/repo", "box-project")
+        assert "claude" in create[index + 5 :]
+        assert not any(str(tmp_path / "state") in arg for arg in create)
+        snapshot = sessions_probe.collect_session_snapshot_for_user(cfg, "alice", "uxon-", socket)
+        assert snapshot.server_state == "running" and [s.name for s in snapshot.sessions] == [
+            "uxon-demo@claude"
+        ]
+        assert (snapshot.sessions[0].rss_kib, snapshot.sessions[0].cpu_pct) == (32, 1.5)
+        attach = tmux._build_tmux_attach_request(snapshot.sessions[0], cfg, "alice")
+        assert attach.cmd[:6] == ("boundary", "alice", "--", "tmux", "-S", socket)
+        assert (
+            kill.do_kill(
+                ParsedArgs(action="kill", target_id="demo@claude", force=True), cfg, "alice"
+            )
+            == 0
+        )
+    assert sum(c[3:] == ["kill-session", "-t", "uxon-demo@claude"] for c in emitted) == 1
+    assert {user for user, _, _ in external.calls} == {"alice", "bob"}
+    assert [command[0] for user, command, _ in external.calls if user == "bob"] == [
+        "sh",
+        "gh",
+        "gh",
+        "gh",
+    ]
+
+
+@pytest.mark.usefixtures("real_execution")
+def test_session_snapshot_preserves_server_state_and_reports_transport_errors(
+    tmp_path, monkeypatch, subtests
+):
+    from harness.target_commands import TargetCommands, target_config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cfg = target_config()
+    for state in ("absent", "running", "unreachable"):
+        with subtests.test(state=state):
+
+            def respond(user, command, kwargs, *, state=state):
+                if "uxon.infra.tmux_server_probe" in command:
+                    return _cp(
+                        stdout=json.dumps(
+                            {
+                                "state": state,
+                                "sessions": [],
+                                "error": "permission denied" if state == "unreachable" else "",
+                            }
+                        )
+                    )
+                assert state == "running" and command[3] == "list-sessions"
+                return _cp()
+
+            with TargetCommands(respond).installed_boundary():
+                if state == "unreachable":
+                    with pytest.raises(SystemExit) as raised:
+                        sessions_probe.collect_session_snapshot_for_user(
+                            cfg, "alice", "uxon-", "/tmp/uxon-alice.sock"
+                        )
+                    assert "permission denied" in raised.value.uxon_msg
+                else:
+                    snapshot = sessions_probe.collect_session_snapshot_for_user(
+                        cfg, "alice", "uxon-", "/tmp/uxon-alice.sock"
+                    )
+                    assert snapshot.server_state == state and snapshot.sessions == ()
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+def test_native_server_release_failure_clean_exit_empty_and_reuse(tmp_path, monkeypatch):
+    socket = tmp_path / "tmux.sock"
+    base = ["tmux", "-f", "/dev/null", "-S", str(socket)]
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    def run(*args, **kwargs):
+        return subprocess.run(
+            base + list(args), capture_output=True, text=True, timeout=5, **kwargs
+        )
+
+    def until(predicate, message):
+        deadline = time.monotonic() + 5
+        while not predicate():
+            assert time.monotonic() < deadline, message
+            time.sleep(0.005)
+
+    nonce = "a" * 32
+    release = launch_records.handshake_channel(nonce, "release")
+    other = launch_records.handshake_channel("b" * 32, "release")
+    try:
+        run("new-session", "-d", "-s", "anchor", "sleep", "30", check=True)
+        run("set-option", "-s", "exit-empty", "off", check=True)
+        run("wait-for", "-S", release, check=True)
+        run("wait-for", release, check=True)
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess.run(base + ["wait-for", other], capture_output=True, timeout=0.1, check=True)
+        for name, status in (("failed", 17), ("clean", 0)):
+            run(
+                "new-session",
+                "-d",
+                "-s",
+                name,
+                "sh",
+                "-c",
+                'tmux -S "$1" wait-for "$2"; printf "diagnostic-%s\\r\\n" "$2"; exit "$3"',
+                "sh",
+                str(socket),
+                name,
+                str(status),
+                ";",
+                "set-window-option",
+                "-t",
+                name,
+                "remain-on-exit",
+                "failed",
+                check=True,
+            )
+            run("wait-for", "-S", name, check=True)
+            if status:
+                until(
+                    lambda *, name=name: (
+                        run(
+                            "display-message", "-p", "-t", name, "#{pane_dead} #{pane_dead_status}"
+                        ).stdout.strip()
+                        == "1 17"
+                    ),
+                    "failed pane not retained",
+                )
+                assert (
+                    "diagnostic-failed"
+                    in run("capture-pane", "-p", "-S", "-", "-t", name, check=True).stdout
+                )
+            else:
+                until(
+                    lambda *, name=name: run("has-session", "-t", name).returncode != 0,
+                    "clean pane retained",
+                )
+        run("kill-session", "-t", "failed", check=True)
+        run("kill-session", "-t", "anchor", check=True)
+        assert tmux_server_probe.collect(socket) == {
+            "state": "running",
+            "sessions": [],
+            "error": "",
+        }
+        run("kill-server", check=True)
+        until(
+            lambda: tmux_server_probe.collect(socket)["state"] == "absent",
+            "server stayed reachable",
+        )
+        assert socket.is_socket()
+        run("new-session", "-d", "-s", "uxon-reused@claude", "sleep", "30", check=True)
+        assert tmux_server_probe.collect(socket) == {
+            "state": "running",
+            "sessions": ["uxon-reused@claude"],
+            "error": "",
+        }
+        cfg = make_config(tmux_socket_template=str(socket))
+        snapshot = sessions_probe.collect_session_snapshot_for_user(
+            cfg, identity.process_user(), "uxon-", str(socket)
+        )
+        [session] = snapshot.sessions
+        assert (
+            session.name == "uxon-reused@claude"
+            and session.pane_pids
+            and session.active_pid in session.pane_pids
+        )
+        assert session.rss_kib > 0 and not session.runtime_resource and not session.runtime_down
+    finally:
+        run("kill-server")
+        socket.unlink(missing_ok=True)
+
+
+def test_socket_state_policy_and_replacement_never_adopt_foreign_listener(tmp_path, subtests):
+    cases = (
+        ("missing", "absent", ""),
+        ("regular", "unreachable", "not a socket"),
+        ("parent", "unreachable", "0700"),
+        ("closed", "absent", ""),
+        ("foreign", "unreachable", "foreign listener"),
+        ("mode600", "running", ""),
+        ("mode700", "running", ""),
+        ("group", "unreachable", "owner-only"),
+        ("symlink", "unreachable", "not a socket"),
+        ("replaced", "unreachable", "foreign listener"),
+    )
+    for label, state, error in cases:
+        with subtests.test(label=label):
+            directory = tmp_path / label
+            directory.mkdir(mode=0o700)
+            path = directory / "tmux.sock"
+            listeners = []
+            if label == "regular":
+                path.write_text("keep")
+            elif label not in {"missing", "parent"}:
+                listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+                listeners.append(listener)
+                listener.bind(str(path))
+                path.chmod(0o700 if label == "mode700" else 0o660 if label == "group" else 0o600)
+                if label in {"closed", "replaced"}:
+                    listener.close()
+                else:
+                    listener.listen(1)
+                if label == "symlink":
+                    victim = directory / "victim.sock"
+                    path.rename(victim)
+                    path.symlink_to(victim)
+            if label == "parent":
+                directory.chmod(0o755)
+
+            def run(argv, *, timeout, label=label, listeners=listeners, path=path):
+                assert argv == ["tmux", "-S", str(path), "list-sessions", "-F", "#{session_name}"]
+                assert timeout == 2
+                if label == "replaced":
+                    path.unlink()
+                    replacement = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+                    replacement.bind(str(path))
+                    path.chmod(0o600)
+                    replacement.listen(1)
+                    listeners.append(replacement)
+                return _cp(
+                    stdout="zeta\nalpha\n" if label in {"mode600", "mode700"} else "",
+                    stderr="foreign listener",
+                    returncode=int(label not in {"mode600", "mode700"}),
+                )
+
+            try:
+                with mock.patch("uxon.infra.tmux_server_probe.run_query", side_effect=run):
+                    result = tmux_server_probe.collect(path)
+                assert result["state"] == state and result["sessions"] == (
+                    ["alpha", "zeta"] if state == "running" else []
+                )
+                assert error in result["error"]
+                if label == "regular":
+                    assert path.read_text() == "keep"
+                elif label == "symlink":
+                    assert path.is_symlink() and victim.is_socket()
+                elif label not in {"missing", "parent"}:
+                    assert path.is_socket()
+            finally:
+                for listener in listeners:
+                    listener.close()
+
+
+def test_local_target_filesystem_adapters_use_nonlogin_prefix_and_exact_results(subtests):
+    cfg = make_config()
+    payloads = {
+        "existing": {"ok": True, "path": "/inside/project", "error": ""},
+        "list-directories": {"ok": True, "entries": [{"name": "child", "mtime": 123}], "error": ""},
+        "inspect": {
+            "ok": True,
+            "path": "/inside/project",
+            "exists": True,
+            "directory": True,
+            "writable": False,
+            "nearest_existing_ancestor": "/inside/project",
+            "error": "",
+        },
+        "filesystem-usage": {"ok": True, "total": 4096, "available": 1024, "error": ""},
+    }
+    calls = []
+
+    def run(argv, *, timeout):
+        assert argv[:6] == ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"]
+        assert argv[7:9] == ["-m", "uxon.infra.path_probe"]
+        assert timeout == cfg.execution.backend_for_user("alice").probe_timeout_seconds
+        mode = argv[argv.index("--mode") + 1]
+        assert argv[-2:] == ["--path", "/outside/project"]
+        calls.append(mode)
+        return _cp(stdout=json.dumps(payloads[mode]))
+
+    with (
+        mock.patch("uxon.infra.execution.process_user", return_value="operator"),
+        mock.patch("uxon.infra.execution.run_query", side_effect=run),
+    ):
+        assert (
+            canonicalize_path(cfg, "alice", "/outside/project", intended=False) == "/inside/project"
+        )
+        assert list_directories(cfg, "alice", "/outside/project") == (DirectoryEntry("child", 123),)
+        assert not path_facts(cfg, "alice", "/outside/project").writable
+        assert filesystem_usage(cfg, "alice", "/outside/project") == FilesystemUsage(4096, 1024)
+    assert calls == ["existing", "list-directories", "inspect", "filesystem-usage"]
+
+
+@pytest.mark.usefixtures("real_execution", "real_host_probes")
+def test_public_doctor_reports_selected_execution_attestation_success_and_failure(
+    tmp_path, monkeypatch, subtests
+):
+    import io
+    from contextlib import redirect_stdout
+
+    from harness.target_commands import TargetCommands, target_config
+
+    from uxon.app.doctor import do_doctor
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cfg = target_config(
+        new_project_root=str(tmp_path),
+        allowed_roots=[str(tmp_path)],
+        tmux_socket_template=str(tmp_path / "socket" / "tmux.sock"),
+    )
+    cfg.launch = dataclasses.replace(
+        cfg.launch,
+        enabled_profiles=("claude",),
+        profiles={"claude": LaunchProfile(id="claude", agent="claude", launch_user="alice")},
+    )
+    for outcome in ("ok", "denied"):
+        with subtests.test(outcome=outcome):
+
+            def respond(user, command, kwargs):
+                assert user == "alice"
+                assert "uxon.infra.tmux_server_probe" in command
+                return _cp(stdout=json.dumps({"state": "absent", "sessions": [], "error": ""}))
+
+            external = TargetCommands(respond, installed=("tmux",))
+            original = external.__call__
+
+            def run(argv, *, original=original, outcome=outcome, **kwargs):
+                if outcome == "denied" and argv[-2:] == ["-m", "uxon.infra.execution_probe"]:
+                    assert argv[:3] == ["boundary", "alice", "--"] and kwargs["timeout"] == 1.25
+                    return _cp(returncode=1, stderr="denied-sentinel")
+                return original(argv, **kwargs)
+
+            with (
+                external.installed_boundary(),
+                mock.patch("uxon.infra.run.subprocess.run", side_effect=run),
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                assert do_doctor(cfg, "operator", "alice", str(tmp_path), json_output=True) == 0
+            [row] = json.loads(output.getvalue())["data"]["execution_backends"]
+            assert row == {
                 "launch_user": "alice",
-                "socket_path": "/run/uxon/alice.sock",
-                "session_name": "uxon-demo@claude",
-                "launch_nonce": "abcdefghijklmnop",
-                "finalized_at": 1,
+                "backend": "boundary",
+                "kind": "command",
+                "fingerprint": cfg.execution.backend_for_user("alice").fingerprint,
+                "status": "ok" if outcome == "ok" else "error",
+                "error": "" if outcome == "ok" else "denied-sentinel",
             }
-        ),
-        encoding="utf-8",
-    )
-    record.chmod(0o600)
-    victim = tmp_path / "victim"
-    victim.write_text("do not replace", encoding="utf-8")
-    cursor = launch_records._gc_cursor_path(tmp_path, "alice")
-    cursor.symlink_to(victim)
-
-    removed = launch_records.garbage_collect_records(
-        set(), override_dir=tmp_path, launch_user="alice", now=10**12
-    )
-    assert removed == 0
-    assert record.exists()
-    assert cursor.is_symlink()
-    assert victim.read_text(encoding="utf-8") == "do not replace"

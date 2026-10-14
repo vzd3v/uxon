@@ -1,1836 +1,974 @@
-"""Container-agnostic launch: resolution, exec wrap, policy, safety, caveat.
-
-In-gate mocked-boundary tests (no runtime). Cover the Part B contracts that
-are assertable without docker/podman:
-
-* exec-site wrap shape (AC-B1) + disabled parity (AC-B6),
-* deterministic name resolution per (user, project dir) (AC-B2),
-* ``path_map`` longest-prefix container path (AC-B3),
-* the ``on_missing`` × ``approval`` policy matrix with probe results
-  mocked at the subprocess boundary (AC-B4),
-* name / path / ``.format`` safety incl. hostile-dir-name cases (AC-B8),
-* the ``[container].enabled`` kill caveat (Security MEDIUM-2).
-
-The real-runtime harness (in-container exec, kill reaping) is P4.
-"""
+"""Workload policy, authority and attribution through external OS responses."""
 
 from __future__ import annotations
 
-import unittest
-from typing import Any
+import dataclasses
+import io
+import json
+import os
+import subprocess
+import sys
+from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 
-from helpers import make_session_snapshot
+import pytest
+from harness.launch_records import save_launch_record, session_from_record
+from harness.target_commands import TargetCommands, target_config
+from helpers import make_session
 
-import uxon.app.launch_profile as launch_profile_app
-from uxon.domain.agents import default_agent_catalog
+from uxon.app import doctor, kill, launch
+from uxon.app.launch_profile import resolve_launch_profile
 from uxon.domain.args import ParsedArgs
-from uxon.domain.config import Config
-from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.domain.launch_profiles import (
     LaunchConfig,
     LaunchProfile,
-    ResolvedLaunchProfile,
-    RuntimeContext,
     RuntimeIdentity,
-    builtin_launch_profiles,
 )
 from uxon.domain.runtime import (
-    RUNTIME_CGROUP_ENV,
-    RUNTIME_EPOCH_ENV,
-    RUNTIME_ID_ENV,
-    RUNTIME_RESOURCE_ENV,
-    SESSION_ENV,
     WorkloadRuntimeSpec,
     apply_path_map,
-    decide_runtime_action,
     is_valid_runtime_resource,
+    path_map_under_prefix,
     resolve_runtime_resource_name,
     runtime_pidfile,
     validate_path_map,
     validate_runtime,
     validate_runtime_resource,
-    wrap_agent_for_runtime,
 )
+from uxon.domain.runtime_usage import parse_cgroup_procs, per_session_usage, sum_usage_for_pids
+from uxon.infra import runtime, sessions_probe, tmux
+
+pytestmark = pytest.mark.usefixtures("real_execution", "real_host_probes")
 
 
-def _cfg(profile: WorkloadRuntimeSpec | None = None, **overrides) -> Config:
-    """Minimal Config carrying an optional workload runtime (other fields inert).
+def _cp(stdout="", *, rc=0, stderr=""):
+    return subprocess.CompletedProcess([], rc, stdout, stderr)
 
-    When ``profile`` is given it is registered as ``"box"`` and the ``claude``
-    launch profile is wired to use it (``runtime="box"``), so the
-    profile-based launch/teardown/doctor paths resolve a runtime context.
-    """
-    agents = default_agent_catalog()
-    profiles = builtin_launch_profiles(agents)
-    runtimes: dict[str, WorkloadRuntimeSpec] = {
-        "direct": WorkloadRuntimeSpec(id="direct", kind="direct")
-    }
-    if profile is not None:
-        runtimes["box"] = profile
-        profiles["claude"] = LaunchProfile(id="claude", agent="claude", runtime="box")
-    launch = LaunchConfig(default_profile="claude", profiles=profiles)
-    base = dict(
-        default_launch_user="",
-        default_launch_mode="caller",
-        enable_all_users_list=False,
-        launch_user_by_caller={},
-        session_users=[],
-        allowed_roots=["/srv"],
-        session_prefix="uxon-",
-        legacy_session_prefixes=(),
-        new_project_root="/srv",
-        repeat_noninteractive_mode="fail",
-        tmux_socket_template="/tmp/uxon-{user}.sock",
-        tui_refresh_interval_seconds=2.0,
-        git_create_enabled=False,
-        git_remote_profiles=[],
+
+def _spec(**changes):
+    return dataclasses.replace(
+        WorkloadRuntimeSpec(
+            id="box",
+            resource_scope="per_user",
+            resource_name_template="box-{project_slug}",
+            exec_prefix=("engine", "exec", "-w", "{runtime_dir}", "{resource}"),
+            ready_command=("engine", "ready", "{resource}"),
+            exists_command=("engine", "exists", "{resource}"),
+            start_command=("engine", "start", "{resource}"),
+            create_command=("engine", "create", "{resource}"),
+            identity_command=(
+                "engine",
+                "identity",
+                "{resource}",
+                "{runtime_dir}",
+                "{launch_profile}",
+                "{agent}",
+                "{project_slug}",
+                "{user}",
+            ),
+            probe_timeout_seconds=1.5,
+            prepare_timeout_seconds=2.5,
+            stop_timeout_seconds=3.5,
+        ),
+        **changes,
+    )
+
+
+def _cfg(target, spec=None, **changes):
+    cfg = target_config(
+        allowed_roots=[str(target.parent)],
+        new_project_root=str(target.parent),
         tmux_manage_options=False,
         tmux_options={},
         tmux_server_options={},
         tmux_append_server_options={},
-        agents=agents,
-        launch=launch,
-        runtimes=runtimes,
+        **changes,
     )
-    base.update(overrides)
-    return Config(**base)
-
-
-def _resolved(
-    cfg: Config,
-    launch_user: str,
-    *,
-    profile_id: str = "claude",
-    mode: str = "yolo",
-    target_dir: str = "/srv/projects/myapp",
-):
-    from uxon.domain.runtime import apply_path_map, resolve_runtime_resource_name
-    from uxon.domain.session import slugify
-
-    profile = cfg.launch.profiles[profile_id]
-    context = None
-    if profile.runtime != "direct":
-        runtime = cfg.runtimes[profile.runtime]
-        dir_token = apply_path_map(target_dir, runtime.path_map)
-        context = RuntimeContext(
-            runtime_id=runtime.id,
-            resource=resolve_runtime_resource_name(
-                runtime,
-                user=launch_user,
-                launch_profile=profile.id,
-                agent=profile.agent,
-                project_slug=slugify(target_dir.rsplit("/", 1)[-1]),
-            ),
-            runtime_dir=dir_token,
-            fingerprint=runtime.fingerprint,
-        )
-    return ResolvedLaunchProfile(
-        profile=profile,
-        agent=cfg.agents[profile.agent],
-        launch_user=launch_user,
-        mode_id=mode,
-        runtime_context=context,
+    cfg.runtimes["box"] = spec or _spec()
+    cfg.launch = LaunchConfig(
+        default_profile="claude",
+        enabled_profiles=("claude",),
+        profiles={
+            "claude": LaunchProfile(id="claude", agent="claude", launch_user="alice", runtime="box")
+        },
     )
-
-
-_EXEC = ("docker", "exec", "-it", "-w", "{runtime_dir}", "{resource}")
-
-
-def _managed_create_cmd(req):
-    assert req.managed is not None
-    return req.managed.create_cmd
-
-
-def _tmux_primary_command(argv):
-    """Return the new-session command before chained tmux setup commands."""
-    return argv[: argv.index(";")]
-
-
-class NameResolutionTests(unittest.TestCase):
-    """AC-B2 — same container per (user, project dir), never per-session."""
-
-    def test_resource_name_template_expands_project_slug(self) -> None:
-        profile = WorkloadRuntimeSpec(
-            id="box", resource_scope="per_user", resource_name_template="proj-{project_slug}"
-        )
-        self.assertEqual(
-            resolve_runtime_resource_name(
-                profile, user="dana", launch_profile="claude", agent="claude", project_slug="myapp"
-            ),
-            "proj-myapp",
-        )
-
-    def test_same_dir_same_name_different_dir_differs(self) -> None:
-        profile = WorkloadRuntimeSpec(
-            id="box", resource_scope="per_user", resource_name_template="proj-{project_slug}"
-        )
-        a1 = resolve_runtime_resource_name(
-            profile, user="dana", launch_profile="claude", agent="claude", project_slug="myapp"
-        )
-        a2 = resolve_runtime_resource_name(
-            profile, user="dana", launch_profile="claude", agent="claude", project_slug="myapp"
-        )
-        b = resolve_runtime_resource_name(
-            profile, user="dana", launch_profile="claude", agent="claude", project_slug="other"
-        )
-        self.assertEqual(a1, a2)
-        self.assertNotEqual(a1, b)
-
-    def test_user_placeholder(self) -> None:
-        profile = WorkloadRuntimeSpec(
-            id="box", resource_scope="per_user", resource_name_template="{user}-box"
-        )
-        self.assertEqual(
-            resolve_runtime_resource_name(
-                profile, user="dana", launch_profile="claude", agent="claude", project_slug="x"
-            ),
-            "dana-box",
-        )
-
-
-class PathMapTests(unittest.TestCase):
-    """AC-B3 — {runtime_dir} is the container-side path; allowed_roots stays host-side."""
-
-    def test_no_map_returns_host_path(self) -> None:
-        self.assertEqual(apply_path_map("/srv/projects/myapp", ()), "/srv/projects/myapp")
-
-    def test_longest_prefix_match(self) -> None:
-        pm = validate_path_map({"/srv": "/srv-root", "/srv/projects/myapp": "/work"})
-        self.assertEqual(apply_path_map("/srv/projects/myapp/sub", pm), "/work/sub")
-
-    def test_exact_prefix_match(self) -> None:
-        pm = validate_path_map({"/srv/projects/myapp": "/work"})
-        self.assertEqual(apply_path_map("/srv/projects/myapp", pm), "/work")
-
-    def test_resolve_runtime_applies_path_map_to_dir(self) -> None:
-        # Profile path: apply_path_map + resolve_runtime_resource_name are
-        # the pure halves the removed tmux.resolve_container composed.
-        profile = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
-        )
-        dir_token = apply_path_map("/srv/projects/myapp", profile.path_map)
-        self.assertEqual(dir_token, "/work")
-
-
-class ExecWrapTests(unittest.TestCase):
-    """AC-B1 / AC-B6 — single exec-site wrap; disabled = byte-for-byte parity."""
-
-    def _build(self, cfg: Config, target_dir: str = "/srv/projects/myapp"):
-        import getpass
-
-        from uxon.infra import tmux
-
-        # ``tmux_socket_path`` resolves the launch user via ``pwd.getpwnam``, so
-        # use a real OS account (the test runner's own user).
-        launch_user = getpass.getuser()
-        args = ParsedArgs(action="run", profile="claude", permission_mode="yolo")
-        resolved = _resolved(cfg, launch_user, target_dir=target_dir)
-        # ``tmux_nesting_mode`` reads $TMUX; force the classic (execvp) path so
-        # the request is deterministic regardless of the test runner's tmux.
-        with mock.patch("uxon.infra.tmux.tmux_nesting_mode", return_value="execvp"):
-            return tmux._build_tmux_launch_request(
-                target_dir,
-                "uxon-myapp@claude",
-                args,
-                cfg,
-                None,
-                resolved_profile=resolved,
-            )
-
-    def test_disabled_is_byte_for_byte_identical(self) -> None:
-        disabled = self._build(_cfg(None))
-        # A config with [container] present but enabled=false must match the
-        # no-container build exactly (AC-B6 parity).
-        also_disabled = self._build(_cfg(None))
-        self.assertEqual(disabled.cmd, also_disabled.cmd)
-        # And the agent binary leads the final_cmd (no exec prefix).
-        disabled_create = _managed_create_cmd(disabled)
-        idx = disabled_create.index("claude")
-        self.assertNotIn("docker", disabled_create[:idx])
-        # AC-P0.1 off-invariant: no container marker / wrapper appears when
-        # disabled. Launch-profile diagnostics still ride every managed launch.
-        cmd = list(disabled_create)
-        primary_cmd = _tmux_primary_command(cmd)
-        joined = " ".join(cmd)
-        self.assertNotIn("UXON_CONTAINER", joined)
-        self.assertNotIn("UXON_SESSION", joined)
-        self.assertNotIn("sh", cmd)
-        self.assertEqual(primary_cmd[idx:], ["claude", "--dangerously-skip-permissions"])
-
-    def test_enabled_prepends_exec_prefix(self) -> None:
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-        )
-        req = self._build(_cfg(c))
-        # exec_prefix(resolved) + the per-session wrapper + agent argv, in
-        # order. After the hoist, EVERY enabled session is wrapped (to export
-        # UXON_SESSION), so the resolved exec prefix is the leading 6 tokens.
-        cmd = list(_managed_create_cmd(req))
-        agent_tail = _tmux_primary_command(cmd[cmd.index("docker") :])
-        self.assertEqual(
-            agent_tail[:6],
-            ["docker", "exec", "-it", "-w", "/srv/projects/myapp", "proj-myapp"],
-        )
-        # The agent argv survives intact after the ``uxon-agent`` $0 sentinel.
-        self.assertEqual(
-            agent_tail[agent_tail.index("uxon-agent") + 1 :],
-            ["claude", "--dangerously-skip-permissions"],
-        )
-
-    def test_enabled_with_path_map_uses_runtime_dir(self) -> None:
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
-        )
-        req = self._build(_cfg(c))
-        cmd = list(_managed_create_cmd(req))
-        # -w token is the container-side path, not the host path.
-        self.assertIn("/work", cmd)
-        self.assertNotIn("/srv/projects/myapp", cmd[cmd.index("docker") :])
-
-    def test_stop_command_stashes_name_and_wraps_agent(self) -> None:
-        # Teardown opt-in (AC-B5): the new-session argv stashes the resolved
-        # name in the session env and the agent is wrapped so it exports the
-        # per-session marker AND records its in-container PID, while the exec
-        # prefix is unchanged.
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            stop_command=("docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile})"),
-            identity_command=("inspect", "{resource}"),
-        )
-        with mock.patch(
-            "uxon.infra.runtime.resolve_runtime_identity_for_profile",
-            return_value=RuntimeIdentity(id="cid", host_pid=42, epoch="1000"),
-        ):
-            cmd = list(_managed_create_cmd(self._build(_cfg(c))))
-        # ``-e UXON_CONTAINER=proj-myapp`` rides the new-session argv.
-        self.assertIn("-e", cmd)
-        self.assertIn(f"{RUNTIME_RESOURCE_ENV}=proj-myapp", cmd)
-        # The agent is wrapped: exec prefix, then ``sh -c '…' uxon-agent claude …``.
-        tail = _tmux_primary_command(cmd[cmd.index("docker") :])
-        self.assertEqual(
-            tail[:6], ["docker", "exec", "-it", "-w", "/srv/projects/myapp", "proj-myapp"]
-        )
-        self.assertEqual(tail[6:8], ["sh", "-c"])
-        # The export marker is present on the teardown path too (hoist), plus
-        # the pidfile write that this path opted into.
-        self.assertIn(f"export {SESSION_ENV}=", tail[8])
-        self.assertIn("/proc/$$/stat", tail[8])
-        # The agent argv survives intact after the ``uxon-agent`` $0 sentinel.
-        self.assertEqual(
-            tail[tail.index("uxon-agent") + 1 :], ["claude", "--dangerously-skip-permissions"]
-        )
-
-    def test_stop_enabled_runtime_fails_launch_without_identity(self) -> None:
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            stop_command=("stop", "{resource}", "{pidfile}"),
-        )
-        with self.assertRaises(SystemExit):
-            self._build(_cfg(c))
-
-    def test_enabled_without_stop_command_carries_marker_but_no_pidfile(self) -> None:
-        # After the hoist: enabled + no stop_command (+ no identity_command, the
-        # default) still carries ``-e UXON_CONTAINER=<bare name>`` and wraps the
-        # agent to export ``UXON_SESSION``, but does NOT write a pidfile, and the
-        # identity vars are ABSENT (identity_command unset → degrade path).
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-        )
-        cmd = list(_managed_create_cmd(self._build(_cfg(c))))
-        # Bare-name marker rides the session env.
-        self.assertIn("-e", cmd)
-        self.assertIn(f"{RUNTIME_RESOURCE_ENV}=proj-myapp", cmd)
-        # Identity vars absent without identity_command (degrade).
-        joined = " ".join(cmd)
-        self.assertNotIn(RUNTIME_ID_ENV, joined)
-        self.assertNotIn(RUNTIME_CGROUP_ENV, joined)
-        self.assertNotIn(RUNTIME_EPOCH_ENV, joined)
-        # The agent IS wrapped to export the per-session marker, with NO pidfile.
-        tail = _tmux_primary_command(cmd[cmd.index("docker") :])
-        self.assertEqual(tail[6:8], ["sh", "-c"])
-        self.assertIn(f"export {SESSION_ENV}=", tail[8])
-        self.assertNotIn("echo $$", tail[8])
-        self.assertEqual(
-            tail[tail.index("uxon-agent") + 1 :], ["claude", "--dangerously-skip-permissions"]
-        )
-
-    def test_resolved_identity_rides_separate_session_env_vars(self) -> None:
-        # When identity_command resolves a non-empty identity, the id / cgroup /
-        # epoch ride SEPARATE ``-e`` vars; ``UXON_CONTAINER`` keeps the bare name.
-        from uxon.infra.runtime import RuntimeIdentity
-
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            identity_command=("inspect", "{resource}"),
-        )
-        ident = RuntimeIdentity(
-            id="abc123", cgroup="/sys/fs/cgroup/x.scope", epoch="2026-06-15T00:00:00Z"
-        )
-        with mock.patch(
-            "uxon.infra.runtime.resolve_runtime_identity_for_profile", return_value=ident
-        ):
-            cmd = list(_managed_create_cmd(self._build(_cfg(c))))
-        self.assertIn(f"{RUNTIME_RESOURCE_ENV}=proj-myapp", cmd)
-        self.assertIn(f"{RUNTIME_ID_ENV}=abc123", cmd)
-        self.assertIn(f"{RUNTIME_CGROUP_ENV}=/sys/fs/cgroup/x.scope", cmd)
-        self.assertIn(f"{RUNTIME_EPOCH_ENV}=2026-06-15T00:00:00Z", cmd)
-
-
-class NameSafetyTests(unittest.TestCase):
-    """AC-B8 — the resolved name must be charset/length safe (the slug gap)."""
-
-    def test_hostile_leading_dot_slug_rejected(self) -> None:
-        # A project dir slugifying to ``.--x`` keeps the leading dot — reject.
-        with self.assertRaises(SystemExit):
-            validate_runtime_resource(".--x")
-
-    def test_all_dot_name_rejected(self) -> None:
-        with self.assertRaises(SystemExit):
-            validate_runtime_resource("...")
-
-    def test_leading_underscore_rejected(self) -> None:
-        with self.assertRaises(SystemExit):
-            validate_runtime_resource("_box")
-
-    def test_leading_dash_rejected(self) -> None:
-        # An option-looking token must never reach ``docker exec … <name>``.
-        with self.assertRaises(SystemExit):
-            validate_runtime_resource("-rm")
-
-    def test_over_128_chars_rejected(self) -> None:
-        with self.assertRaises(SystemExit):
-            validate_runtime_resource("a" * 129)
-
-    def test_safe_name_accepted(self) -> None:
-        self.assertEqual(validate_runtime_resource("proj-myapp_1.2"), "proj-myapp_1.2")
-
-    def test_resolved_hostile_dir_name_rejected_end_to_end(self) -> None:
-        # Directory basename "-evil" slugifies (strip('-')) to "evil" — safe;
-        # ".evil" keeps the dot → unsafe. Prove the post-expansion check fires
-        # on the profile name resolution path.
-        profile = WorkloadRuntimeSpec(
-            id="box", resource_scope="per_user", resource_name_template="{project_slug}"
-        )
-        from uxon.domain.session import slugify
-
-        with self.assertRaises(SystemExit):
-            resolve_runtime_resource_name(
-                profile,
-                user="dana",
-                launch_profile="claude",
-                agent="claude",
-                project_slug=slugify(".evil"),
-            )
-
-
-class PathSafetyTests(unittest.TestCase):
-    """AC-B8 — path_map / {runtime_dir} must be absolute, normalized, ``..``-free."""
-
-    def test_path_map_value_with_dotdot_rejected(self) -> None:
-        with self.assertRaises(SystemExit):
-            validate_path_map({"/srv": "/work/../../etc"})
-
-    def test_path_map_relative_key_rejected(self) -> None:
-        with self.assertRaises(SystemExit):
-            validate_path_map({"relative": "/work"})
-
-    def test_path_map_value_literal_not_formatted(self) -> None:
-        # A ``{resource}`` in a path_map value must be a literal, never expanded —
-        # it is a non-absolute string, so it is simply rejected (not run).
-        with self.assertRaises(SystemExit):
-            validate_path_map({"/srv": "{resource}"})
-
-
-class FormatGuardTests(unittest.TestCase):
-    """AC-B8 — a bad placeholder fails with a clear message, not a traceback."""
-
-    def test_unknown_placeholder_in_resource_name_template(self) -> None:
-        profile = WorkloadRuntimeSpec(
-            id="box", resource_scope="per_user", resource_name_template="proj-{bogus}"
-        )
-        with self.assertRaises(SystemExit) as ctx:
-            resolve_runtime_resource_name(
-                profile, user="dana", launch_profile="claude", agent="claude", project_slug="x"
-            )
-        # ``fail`` stashes the human message on ``.uxon_msg`` (str() is the code).
-        self.assertIn("placeholder", getattr(ctx.exception, "uxon_msg", "").lower())
-
-
-class DecideActionTests(unittest.TestCase):
-    """AC-B4 — the pure policy verdict before any side effect."""
-
-    def test_running_always_execs(self) -> None:
-        for on_missing in ("off", "start", "create"):
-            action, _ = decide_runtime_action(running=True, exists=True, on_missing=on_missing)
-            self.assertEqual(action, "exec")
-
-    def test_stopped_needs_start_capability(self) -> None:
-        self.assertEqual(
-            decide_runtime_action(running=False, exists=True, on_missing="off")[0], "fail"
-        )
-        self.assertEqual(
-            decide_runtime_action(running=False, exists=True, on_missing="start")[0], "start"
-        )
-        self.assertEqual(
-            decide_runtime_action(running=False, exists=True, on_missing="create")[0], "start"
-        )
-
-    def test_absent_needs_create_capability(self) -> None:
-        self.assertEqual(
-            decide_runtime_action(running=False, exists=False, on_missing="off")[0], "fail"
-        )
-        self.assertEqual(
-            decide_runtime_action(running=False, exists=False, on_missing="start")[0], "fail"
-        )
-        self.assertEqual(
-            decide_runtime_action(running=False, exists=False, on_missing="create")[0], "create"
-        )
-
-
-class AsUserShellOutTests(unittest.TestCase):
-    """HIGH — every container shell-out runs as the launch user (rootless).
-
-    The probe and the agent must hit the same per-user daemon; the prepare
-    must cd into the HOST dir. Assert the argv carries the as-user sudo prefix
-    and the host-dir cd wrapper, with the operator tokens preserved verbatim.
-    """
-
-    def _captured_argv(self, fn) -> list[str]:
-        from uxon.infra import runtime as runtime_infra
-
-        captured: dict[str, list[str]] = {}
-
-        class _CP:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        def fake_run(argv, **kw):
-            captured["argv"] = argv
-            return _CP()
-
-        # Force the cross-user path: pretend uxon runs as someone else so the
-        # argv-preserving sudo prefix is emitted (same-user would be empty).
-        with (
-            mock.patch.object(runtime_infra.subprocess, "run", side_effect=fake_run),
-            mock.patch("uxon.infra.identity.process_user", return_value="root"),
-        ):
-            fn()
-        return captured["argv"]
-
-    def test_probe_argv_is_prefixed_for_launch_user(self) -> None:
-        from uxon.infra import runtime as runtime_infra
-
-        argv = self._captured_argv(
-            lambda: runtime_infra._probe_exit_ok(_cfg(), ["docker", "top", "box"], "dana", 10.0)
-        )
-        # Non-interactive prefix (no TTY) for probes, then the operator argv.
-        self.assertEqual(argv[:6], ["/usr/bin/sudo", "-n", "-H", "-u", "dana", "--"])
-        self.assertEqual(argv[-3:], ["docker", "top", "box"])
-
-    def test_prepare_argv_runs_in_host_dir_as_launch_user(self) -> None:
-        from uxon.infra import runtime as runtime_infra
-
-        argv = self._captured_argv(
-            lambda: runtime_infra._run_prepare(
-                _cfg(),
-                ["docker", "compose", "up", "-d"],
-                "/srv/projects/app",
-                "dana",
-                10.0,
-            )
-        )
-        # Interactive prefix for the launch-time start/create.
-        self.assertEqual(argv[:5], ["/usr/bin/sudo", "-H", "-u", "dana", "--"])
-        # cd into the HOST dir, then exec the operator argv as separate tokens
-        # (argv-list invariant: never re-parsed by the shell).
-        self.assertEqual(argv[5], "sh")
-        self.assertIn("cd /srv/projects/app", argv[7])
-        self.assertEqual(argv[-4:], ["docker", "compose", "up", "-d"])
-
-    def test_probe_permission_error_fails_cleanly(self) -> None:
-        from uxon.infra import runtime as runtime_infra
-
-        with (
-            mock.patch.object(
-                runtime_infra.subprocess, "run", side_effect=PermissionError("denied")
-            ),
-            mock.patch("uxon.infra.identity.process_user", return_value="dana"),
-            self.assertRaises(SystemExit),
-        ):
-            runtime_infra._probe_exit_ok(_cfg(), ["docker", "top", "box"], "dana", 10.0)
-
-
-class IdentityParseTests(unittest.TestCase):
-    """Identity parsers and the resolver degrade without raising."""
-
-    def test_resolve_identity_degrades_on_bad_template(self) -> None:
-        # AC-P1.3 / AC-P3.5 degrade-never-block: a misconfigured identity_command
-        # template must yield EMPTY_IDENTITY, never abort the launch with the
-        # render_template SystemExit (it sits on the launch hot path).
-        from uxon.infra import runtime as runtime_infra
-        from uxon.infra.runtime import EMPTY_IDENTITY
-
-        profile = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            # Single-brace ``{.Id}`` is an invalid format token (the
-            # documented form doubles braces) → render_profile_template fail()s.
-            identity_command=("docker", "inspect", "--format", "{.Id}", "{resource}"),
-        )
-        cfg = _cfg(profile)
-        resolved = _resolved(cfg, "dana", target_dir="/srv/projects/myapp")
-        ident = runtime_infra.resolve_runtime_identity_for_profile(
-            cfg, "/srv/projects/myapp", resolved
-        )
-        self.assertIs(ident, EMPTY_IDENTITY)
-
-    def test_parse_runtime_identity_output_json_contract(self) -> None:
-        from uxon.infra.runtime import parse_runtime_identity_output
-
-        self.assertEqual(
-            parse_runtime_identity_output(
-                '{"id":"abc123","host_pid":4242,"epoch":"2026-06-15T00:00:00Z"}'
-            ),
-            RuntimeIdentity(id="abc123", host_pid=4242, epoch="2026-06-15T00:00:00Z"),
-        )
-
-    def test_parse_runtime_identity_output_degrades_on_bad_shape(self) -> None:
-        from uxon.infra.runtime import parse_runtime_identity_output
-
-        for bad in (
-            "",
-            "[]",
-            '{"id":"abc","host_pid":"4242","epoch":"e"}',
-            '{"id":"abc","host_pid":0,"epoch":"e"}',
-            '{"id":"","host_pid":42,"epoch":"e"}',
-        ):
-            self.assertIsNone(parse_runtime_identity_output(bad))
-
-    def test_parse_proc_cgroup_v2_prefers_unified_line(self) -> None:
-        from uxon.infra.runtime import parse_proc_cgroup
-
-        v2 = "0::/system.slice/docker-abc.scope\n"
-        self.assertEqual(parse_proc_cgroup(v2), "/system.slice/docker-abc.scope")
-        # Path containing ``:`` survives the bounded split.
-        self.assertEqual(parse_proc_cgroup("0::/a:b/c"), "/a:b/c")
-
-    def test_parse_proc_cgroup_v1_falls_back_to_a_controller_line(self) -> None:
-        from uxon.infra.runtime import parse_proc_cgroup
-
-        v1 = "12:pids:/docker/abc\n11:memory:/docker/abc\n"
-        self.assertEqual(parse_proc_cgroup(v1), "/docker/abc")
-        self.assertEqual(parse_proc_cgroup("garbage\n\n"), "")
-
-
-class TeardownPrimitiveTests(unittest.TestCase):
-    """AC-B5 pure-domain teardown primitives (pidfile, wrap, render, name)."""
-
-    def test_workload_record_is_unique_per_nonce_and_rejects_unsafe_identity(self) -> None:
-        first, second = "a" * 32, "b" * 32
-        self.assertEqual(runtime_pidfile(first), runtime_pidfile(first))
-        self.assertNotEqual(runtime_pidfile(first), runtime_pidfile(second))
-        for nonce in ("", "short", "../" + first, "uxon-app@claude"):
-            with self.subTest(nonce=nonce), self.assertRaises(SystemExit):
-                runtime_pidfile(nonce)
-
-    def test_wrap_exports_session_and_optionally_records_pid(self) -> None:
-        # With a pidfile (teardown opted in): export the per-session marker AND
-        # record the in-container PID, then exec the agent.
-        wrapped = wrap_agent_for_runtime(
-            ["claude", "--flag"],
-            session="uxon-app@claude",
-            launch_nonce="a" * 32,
-            pidfile="/tmp/uxon-s.pid",
-        )
-        self.assertEqual(wrapped[:2], ["sh", "-c"])
-        self.assertIn(f"export {SESSION_ENV}=uxon-app@claude", wrapped[2])
-        self.assertIn("/proc/$$/stat", wrapped[2])
-        self.assertIn("UXON_LAUNCH_NONCE=" + "a" * 32, wrapped[2])
-        self.assertIn("/tmp/uxon-s.pid", wrapped[2])
-        self.assertIn('exec "$@"', wrapped[2])
-        # $0 sentinel then the agent argv, untouched and still a token list.
-        self.assertEqual(wrapped[3:], ["uxon-agent", "claude", "--flag"])
-        # Without a pidfile (no teardown): export only, no PID record.
-        bare = wrap_agent_for_runtime(
-            ["claude"], session="uxon-app@claude", launch_nonce="a" * 32, pidfile=None
-        )
-        self.assertIn(f"export {SESSION_ENV}=uxon-app@claude", bare[2])
-        self.assertNotIn("echo $$", bare[2])
-        self.assertIn('exec "$@"', bare[2])
-        self.assertEqual(bare[3:], ["uxon-agent", "claude"])
-
-    def test_is_valid_runtime_resource_matches_charset(self) -> None:
-        self.assertTrue(is_valid_runtime_resource("proj-app_1.2"))
-        # Non-raising rejects (kill path degrades to skip-teardown, never aborts).
-        for bad in ("", "-leading", ".dot", "_under", "bad name", "a" * 129):
-            self.assertFalse(is_valid_runtime_resource(bad))
-
-
-class ContainerUsageResolverTests(unittest.TestCase):
-    """Pure host-side telemetry resolvers (host-free, fed fabricated input)."""
-
-    def test_parse_cgroup_procs_dedupes_and_skips_noise(self) -> None:
-        from uxon.domain.runtime_usage import parse_cgroup_procs
-
-        # One PID per line; blanks + non-numeric skipped; first-seen dedupe.
-        self.assertEqual(parse_cgroup_procs("12\n34\n\n12\nfoo\n56\n"), [12, 34, 56])
-        self.assertEqual(parse_cgroup_procs(""), [])
-
-    def test_sum_usage_clamps_and_skips_missing(self) -> None:
-        from uxon.domain.runtime_usage import sum_usage_for_pids
-
-        # pid → (ppid, rss_kib, cpu_pct). 99 is absent (exited); -5 clamped.
-        proc_rows = {1: (0, 100, 5.0), 2: (1, 200, 10.0), 3: (1, -5, -1.0)}
-        rss, cpu = sum_usage_for_pids([1, 2, 3, 99], proc_rows)
-        self.assertEqual(rss, 300)
-        self.assertEqual(cpu, 15.0)
-
-    def test_per_session_split_isolates_runaway(self) -> None:
-        """AC-P1.6: a busy PID in session A never sums into session B."""
-        from uxon.domain.runtime_usage import per_session_usage
-
-        cgroup_pids = [1, 2, 3, 4]
-        # 1,2 → session A (one a runaway); 3 → session B; 4 unmarked (init).
-        pid_to_session = {1: "uxon-a@claude", 2: "uxon-a@claude", 3: "uxon-b@claude", 4: ""}
-        proc_rows = {
-            1: (0, 1000, 95.0),  # runaway agent in A
-            2: (1, 50, 1.0),  # A child (reparented descendant in the cgroup)
-            3: (0, 200, 2.0),  # idle agent in B
-            4: (0, 10, 0.0),  # container init, unmarked
-        }
-        usage = per_session_usage(cgroup_pids, pid_to_session, proc_rows)
-        self.assertEqual(usage["uxon-a@claude"], (1050, 96.0))
-        self.assertEqual(usage["uxon-b@claude"], (200, 2.0))
-        # The runaway in A did not leak into B.
-        self.assertLess(usage["uxon-b@claude"][1], 50)
-
-    def test_per_session_split_degrades_to_empty_on_missing_markers(self) -> None:
-        from uxon.domain.runtime_usage import group_pids_by_session, per_session_usage
-
-        # No PID carries a marker (environ unreadable) → no per-session group.
-        self.assertEqual(group_pids_by_session([1, 2], {1: "", 2: ""}), {})
-        self.assertEqual(per_session_usage([1, 2], {}, {1: (0, 5, 1.0)}), {})
-
-
-class TelemetryEnrichTests(unittest.TestCase):
-    """``enrich_session_usage`` container wiring + the AC-P0.4 off-invariant."""
-
-    _PS = "111 1 4096 3.0\n222 111 2048 1.0\n900 1 8192 50.0\n901 1 1024 60.0\n"
-
-    def _ps_completed(self):
-        return mock.Mock(returncode=0, stdout=self._PS)
-
-    def _session(self, name, **kw):
-        from helpers import make_session
-
-        s = make_session(name)
-        for k, v in kw.items():
-            setattr(s, k, v)
-        return s
-
-    def _profile(self, *, running: bool = False) -> WorkloadRuntimeSpec:
-        return WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="cbox",
-            exec_prefix=("docker", "exec", "{resource}"),
-            ready_command=("docker", "top", "{resource}") if running else (),
-            identity_command=("docker", "inspect", "{resource}"),
-        )
-
-    def _record_session(self, name: str, profile: WorkloadRuntimeSpec, **kw):
-        values = dict(
-            runtime_resource="cbox",
-            runtime_cgroup="/c.scope",
-            launch_record_verified=True,
-            launch_user="u-vz",
-            runtime=profile.id,
-            runtime_fingerprint=profile.fingerprint,
-            runtime_id="cid-1",
-            runtime_epoch="1000",
-            runtime_dir="/work/myapp",
-            project_slug="myapp",
-            profile="claude",
-            agent="claude",
-            launch_nonce=name.replace("@", "_").ljust(32, "x"),
-        )
-        values.update(kw)
-        return self._session(name, **values)
-
-    def test_non_runtime_session_uses_pane_walk_and_touches_nothing(self) -> None:
-        """AC-P0.4: a no-marker session adds no subprocess / /proc / sudo read."""
-        from pathlib import Path
-
-        from uxon.infra import sessions_probe
-
-        s = self._session("uxon-plain@claude", pane_pids=(111,))
-        with (
-            mock.patch("uxon.infra.sessions_probe.run_query") as run,
-            mock.patch.object(Path, "read_text") as read_text,
-        ):
-            run.return_value = self._ps_completed()
-            sessions_probe.enrich_session_usage(_cfg(), [s])
-        # Exactly one subprocess (the single ps); no /proc read; the walk
-        # summed pane 111 + child 222.
-        self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[0][:2], ["ps", "-eo"])
-        read_text.assert_not_called()
-        self.assertEqual(s.rss_kib, 4096 + 2048)
-        self.assertEqual(s.cpu_pct, 4.0)
-
-    def test_single_visible_session_excludes_other_controllers_workload(self) -> None:
-        """A shared resource may contain unseen sessions from another server."""
-        from uxon.infra import sessions_probe
-
-        profile = self._profile()
-        s = self._record_session(
-            "uxon-c@claude", profile, runtime_cgroup="/system.slice/docker-c.scope"
-        )
-
-        def fake_run(cmd, *a, **k):
-            return self._ps_completed()  # only the ps table
-
-        with (
-            mock.patch("uxon.infra.sessions_probe.run_query", side_effect=fake_run) as run,
-            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
-            mock.patch(
-                "uxon.infra.sessions_probe._read_pid_sessions",
-                return_value={900: s.launch_nonce, 901: "other-controller-nonce"},
-            ),
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=RuntimeIdentity(
-                    id="cid-1", cgroup="/system.slice/docker-c.scope", epoch="1000"
-                ),
-            ),
-        ):
-            sessions_probe.enrich_session_usage(
-                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
-            )
-        self.assertEqual(run.call_count, 1)
-        self.assertEqual(s.rss_kib, 8192)
-        self.assertEqual(s.cpu_pct, 50.0)
-
-    def test_shared_runtime_splits_per_session_when_privileged(self) -> None:
-        """AC-P1.6: ≥2 sessions share a cgroup → split by UXON_SESSION."""
-        from uxon.infra import sessions_probe
-
-        profile = self._profile()
-        a = self._record_session("uxon-a@claude", profile)
-        b = self._record_session("uxon-b@claude", profile)
-        with (
-            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
-            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
-            mock.patch(
-                "uxon.infra.sessions_probe._read_pid_sessions",
-                return_value={900: a.launch_nonce, 901: b.launch_nonce},
-            ),
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
-            ),
-        ):
-            sessions_probe.enrich_session_usage(
-                _cfg(profile), [a, b], runtimes={"box": profile}, launch_user="u-vz"
-            )
-        self.assertEqual((a.rss_kib, a.cpu_pct), (8192, 50.0))
-        self.assertEqual((b.rss_kib, b.cpu_pct), (1024, 60.0))
-
-    def test_shared_runtime_degrades_to_shared_total_without_privilege(self) -> None:
-        from uxon.infra import sessions_probe
-
-        profile = self._profile()
-        a = self._record_session("uxon-a@claude", profile)
-        b = self._record_session("uxon-b@claude", profile)
-        with (
-            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
-            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[900, 901]),
-            mock.patch("uxon.infra.sessions_probe._read_pid_sessions", return_value=None),
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
-            ),
-        ):
-            sessions_probe.enrich_session_usage(
-                _cfg(profile), [a, b], runtimes={"box": profile}, launch_user="u-vz"
-            )
-        # Both show the summed total (the documented degrade), not zero.
-        shared = (8192 + 1024, 110.0)
-        self.assertEqual((a.rss_kib, a.cpu_pct), shared)
-        self.assertEqual((b.rss_kib, b.cpu_pct), shared)
-
-    def test_empty_cgroup_marks_runtime_down_when_probe_says_stopped(self) -> None:
-        """AC-P1.8: empty cgroup + ready_command non-zero → runtime_down."""
-        from uxon.infra import sessions_probe
-
-        profile = self._profile(running=True)
-        s = self._record_session("uxon-c@claude", profile)
-        with (
-            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
-            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
-            ),
-            mock.patch(
-                "uxon.infra.runtime.probe_runtime_state_for_profile", return_value=("no", "yes")
-            ),
-        ):
-            sessions_probe.enrich_session_usage(
-                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
-            )
-        self.assertTrue(s.runtime_down)
-        self.assertEqual(s.cpu_pct, 0.0)
-        self.assertEqual(s.rss_kib, 0)
-
-    def test_unresolved_live_identity_marks_runtime_down_when_probe_says_stopped(
-        self,
-    ) -> None:
-        from uxon.infra import sessions_probe
-
-        profile = self._profile(running=True)
-        s = self._record_session("uxon-c@claude", profile)
-        with (
-            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
-            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs") as read_cgroup,
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=None,
-            ),
-            mock.patch(
-                "uxon.infra.runtime.probe_runtime_state_for_profile",
-                return_value=("no", "yes"),
-            ) as probe,
-        ):
-            sessions_probe.enrich_session_usage(
-                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
-            )
-        read_cgroup.assert_not_called()
-        probe.assert_called_once()
-        self.assertTrue(s.runtime_down)
-        self.assertEqual(s.cpu_pct, 0.0)
-        self.assertEqual(s.rss_kib, 0)
-
-    def test_empty_cgroup_running_runtime_degrades_to_zero_not_down(self) -> None:
-        from uxon.infra import sessions_probe
-
-        profile = self._profile(running=True)
-        s = self._record_session("uxon-c@claude", profile)
-        with (
-            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
-            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
-            ),
-            mock.patch(
-                "uxon.infra.runtime.probe_runtime_state_for_profile",
-                return_value=("yes", "yes"),
-            ),
-        ):
-            sessions_probe.enrich_session_usage(
-                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
-            )
-        # Running but empty cgroup (race / unresolved path) → 0/—, not "down".
-        self.assertFalse(s.runtime_down)
-        self.assertEqual(s.cpu_pct, 0.0)
-
-    def test_empty_cgroup_unknown_profile_probe_degrades_to_zero_not_down(self) -> None:
-        from uxon.infra import sessions_probe
-
-        profile = self._profile(running=True)
-        s = self._record_session("uxon-c@claude", profile)
-        with (
-            mock.patch("uxon.infra.sessions_probe.run_query", return_value=self._ps_completed()),
-            mock.patch("uxon.infra.sessions_probe._read_cgroup_procs", return_value=[]),
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=RuntimeIdentity(id="cid-1", cgroup="/c.scope", epoch="1000"),
-            ),
-            mock.patch(
-                "uxon.infra.runtime.probe_runtime_state_for_profile",
-                return_value=("?", "?"),
-            ),
-        ):
-            sessions_probe.enrich_session_usage(
-                _cfg(profile), [s], runtimes={"box": profile}, launch_user="u-vz"
-            )
-        self.assertFalse(s.runtime_down)
-        self.assertEqual(s.cpu_pct, 0.0)
-
-
-class ContainerRenderTests(unittest.TestCase):
-    """``cmd`` shows the agent id (AC-P1.4); the down indicator (AC-P1.8)."""
-
-    def _session(self, **kw):
-        from helpers import make_session
-
-        s = make_session("uxon-proj@claude")
-        for k, v in kw.items():
-            setattr(s, k, v)
-        return s
-
-    def test_tui_cmd_shows_agent_for_runtime_session(self) -> None:
-        from uxon.domain.session import to_tui_session
-
-        s = self._session(runtime_resource="cbox", active_cmd="docker", agent="claude")
-        tui = to_tui_session(s, "uxon-")
-        self.assertEqual(tui.cmd, "claude")  # not "docker"
-
-    def test_tui_cmd_unchanged_for_non_runtime_session(self) -> None:
-        from uxon.domain.session import to_tui_session
-
-        s = self._session(runtime_resource="", active_cmd="vim", agent="claude")
-        self.assertEqual(to_tui_session(s, "uxon-").cmd, "vim")
-
-    def test_list_shows_down_and_agent_for_runtime_down_session(self) -> None:
-        import io
-        from contextlib import redirect_stdout
-
-        from helpers import make_config
-
-        from uxon.app.listing import print_list
-
-        s = self._session(
-            runtime_resource="cbox", runtime_down=True, active_cmd="docker", agent="claude"
-        )
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            print_list(make_config(), [s], ["u-vz"])
-        out = buf.getvalue()
-        self.assertIn("down", out)  # distinct down indicator, not a silent "-"
-        self.assertIn("claude", out)  # cmd shows the agent id
-
-    def test_dashboard_cpu_cell_renders_down_marker(self) -> None:
-        from uxon.tui.dashboard.columns import RUNTIME_DOWN_CELL, format_cpu, format_ram
-        from uxon.tui.dashboard.row import SessionRow
-
-        row = SessionRow(
-            host=None,
-            user="u",
-            name="uxon-x@claude",
-            short="x@claude",
-            agent="claude",
-            attached=False,
-            legacy=False,
-            pid=1,
-            cpu_pct=0.0,
-            rss_kib=0,
-            created_epoch=None,
-            last_attached_epoch=None,
-            cmd="claude",
-            path="/srv",
-            runtime_down=True,
-        )
-        self.assertEqual(format_cpu(row).plain, RUNTIME_DOWN_CELL)
-        self.assertEqual(format_ram(row), RUNTIME_DOWN_CELL)
-
-
-class ContainerGatingTests(unittest.TestCase):
-    """AC-P2 — container mode keeps agent RESOLUTION, suppresses the host GATE."""
-
-    @staticmethod
-    def _report(claude_path, *, launch_user: str = "dana"):
-        return HostReport(
-            tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
-            agents={"claude": BinaryStatus("claude", claude_path, "npm i -g claude")},
-            launch_user=launch_user,
-        )
-
-    @staticmethod
-    def _runtime_launch() -> LaunchConfig:
-        agents = default_agent_catalog()
-        profiles = builtin_launch_profiles(agents)
-        profiles["claude_box"] = LaunchProfile(
-            id="claude_box",
-            agent="claude",
-            runtime="box",
-        )
-        return LaunchConfig(
-            enabled_profiles=("claude_box",),
-            default_profile="claude_box",
-            profiles=profiles,
-        )
-
-    def test_host_absent_binary_does_not_fail_under_container(self) -> None:
-        # AC-P2.1: explicit workload runtime + host-absent binary →
-        # resolves anyway (no host-presence gate).
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="p-{project_slug}",
-            exec_prefix=_EXEC,
-        )
-        cfg = _cfg(c, launch=self._runtime_launch())
-        resolved = launch_profile_app.resolve_launch_profile(
-            cfg,
-            "dana",
-            "claude_box",
-            "/srv/projects/myapp",
-            "normal",
-            report=self._report(claude_path=None),
-        )
-        self.assertEqual(resolved.profile.id, "claude_box")
-
-    def test_host_absent_binary_fails_when_disabled(self) -> None:
-        # AC-P2.5: off-path is byte-for-byte unchanged — host gate still fires.
-        cfg = _cfg(None)
-        with self.assertRaises(SystemExit):
-            launch_profile_app.resolve_launch_profile(
-                cfg,
-                "dana",
-                "claude",
-                "/srv/projects/myapp",
-                "normal",
-                report=self._report(claude_path=None),
-            )
-
-    def test_auto_mode_ignores_operator_runtime(self) -> None:
-        # Auto-mode considers shipped OS-user-only profiles only; an operator
-        # workload runtime is not auto-enabled.
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="p-{project_slug}",
-            exec_prefix=_EXEC,
-        )
-        agents = default_agent_catalog()
-        profiles = builtin_launch_profiles(agents)
-        profiles["claude_box"] = LaunchProfile(
-            id="claude_box",
-            agent="claude",
-            runtime="box",
-        )
-        cfg = _cfg(c, launch=LaunchConfig(profiles=profiles))
-        resolved = launch_profile_app.resolve_launch_profile(
-            cfg,
-            "dana",
-            None,
-            "/srv/projects/myapp",
-            "normal",
-            report=self._report("/x/claude"),
-        )
-        self.assertEqual(resolved.profile.id, "claude")
-
-
-class PlanWorkloadRuntimeSpecMatrixTests(unittest.TestCase):
-    """AC-B4 -- plan_runtime_launch_for_profile action -> prepare matrix.
-
-    The subprocess probe boundary (_probe_exit_ok) is mocked, so this exercises
-    the orchestration the deleted legacy PlanMatrixTests covered: probe order,
-    decide_runtime_action gating on on_missing, and prepare_command / message
-    rendering -- without docker.
-    """
-
-    @staticmethod
-    def _profile(*, on_missing: str) -> WorkloadRuntimeSpec:
-        return WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="box-{project_slug}",
-            exec_prefix=("docker", "exec", "-w", "{runtime_dir}", "{resource}"),
-            ready_command=("docker", "top", "{resource}"),
-            exists_command=("docker", "inspect", "{resource}"),
-            start_command=("docker", "start", "{resource}"),
-            create_command=("docker", "create", "{resource}"),
-            on_missing=on_missing,  # type: ignore[arg-type]
-            path_map=(),
-        )
-
-    def _plan(self, profile: WorkloadRuntimeSpec, probes):
-        from uxon.infra.runtime import plan_runtime_launch_for_profile
-
-        cfg = _cfg(profile)
-        resolved = _resolved(cfg, "alice")
-        with mock.patch("uxon.infra.runtime._probe_exit_ok", side_effect=probes):
-            return plan_runtime_launch_for_profile(cfg, "/srv/projects/myapp", resolved)
-
-    def test_running_runtime_execs_with_no_prepare(self):
-        plan = self._plan(self._profile(on_missing="start"), [True])
-        self.assertEqual(plan.action, "exec")
-        self.assertEqual(plan.reason, "running")
-        self.assertEqual(plan.prepare_command, ())
-        self.assertEqual(plan.message, "Runtime resource 'box-myapp' is ready")
-
-    def test_stopped_with_start_policy_renders_start_prepare(self):
-        plan = self._plan(self._profile(on_missing="start"), [False, True])
-        self.assertEqual(plan.action, "start")
-        self.assertEqual(plan.reason, "stopped")
-        self.assertEqual(plan.prepare_command, ("docker", "start", "box-myapp"))
-        self.assertIn("stopped", plan.message)
-
-    def test_stopped_with_off_policy_fails(self):
-        plan = self._plan(self._profile(on_missing="off"), [False, True])
-        self.assertEqual(plan.action, "fail")
-        self.assertEqual(plan.reason, "stopped")
-        self.assertEqual(plan.prepare_command, ())
-        self.assertIn("does not permit starting", plan.message)
-
-    def test_absent_with_create_policy_renders_create_prepare(self):
-        plan = self._plan(self._profile(on_missing="create"), [False, False])
-        self.assertEqual(plan.action, "create")
-        self.assertEqual(plan.reason, "absent")
-        self.assertEqual(plan.prepare_command, ("docker", "create", "box-myapp"))
-        self.assertIn("does not exist", plan.message)
-
-    def test_absent_with_start_policy_fails(self):
-        plan = self._plan(self._profile(on_missing="start"), [False, False])
-        self.assertEqual(plan.action, "fail")
-        self.assertEqual(plan.reason, "absent")
-        self.assertEqual(plan.prepare_command, ())
-
-
-class WorkloadRuntimeSpecRuntimeTests(unittest.TestCase):
-    """P3 — launch decisions come from the resolved workload runtime."""
-
-    @staticmethod
-    def _profile(
-        cid: str,
-        *,
-        namespace: str = "per_user",
-        resource_name_template: str = "box-{project_slug}",
-        path_map=(),
-    ) -> WorkloadRuntimeSpec:
-        return WorkloadRuntimeSpec(
-            id=cid,
-            resource_scope=namespace,  # type: ignore[arg-type]
-            resource_name_template=resource_name_template,
-            exec_prefix=("docker", "exec", "-w", "{runtime_dir}", "{resource}"),
-            ready_command=("docker", "top", "{resource}"),
-            exists_command=("docker", "inspect", "{resource}"),
-            start_command=("docker", "start", "{resource}"),
-            on_missing="start",
-            path_map=path_map,
-        )
-
-    @staticmethod
-    def _report(*, launch_user: str, claude_path: str | None = None) -> HostReport:
-        return HostReport(
-            tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
-            agents={"claude": BinaryStatus("claude", claude_path, "install claude")},
-            launch_user=launch_user,
-        )
-
-    def _cfg_profiles(
-        self,
-        launch_profiles: dict[str, LaunchProfile],
-        runtimes: dict[str, WorkloadRuntimeSpec],
-        *,
-        enabled: tuple[str, ...],
-        default: str,
-    ) -> Config:
-        agents = default_agent_catalog()
-        profiles = builtin_launch_profiles(agents)
-        profiles.update(launch_profiles)
-        return _cfg(
-            None,
-            launch=LaunchConfig(
-                enabled_profiles=enabled,
-                default_profile=default,
-                profiles=profiles,
-            ),
-            runtimes=runtimes,
-        )
-
-    def test_prepare_and_agent_probe_use_pinned_launch_user_and_profile(self) -> None:
-        profile = LaunchProfile(id="claude_box", agent="claude", launch_user="alice", runtime="box")
-        cfg = self._cfg_profiles(
-            {"claude_box": profile},
-            {"box": self._profile("box", path_map=validate_path_map({"/srv/projects": "/work"}))},
-            enabled=("claude_box",),
-            default="claude_box",
-        )
-        resolved = launch_profile_app.resolve_launch_profile(
-            cfg,
-            "dana",
-            "claude_box",
-            "/srv/projects/myapp",
-            "normal",
-            report=self._report(launch_user="alice", claude_path=None),
-        )
-        self.assertEqual(resolved.launch_user, "alice")
-        assert resolved.runtime_context is not None
-        self.assertEqual(resolved.runtime_context.resource, "box-myapp")
-        self.assertEqual(resolved.runtime_context.runtime_dir, "/work/myapp")
-
-        from uxon.app import launch as launch_app
-        from uxon.infra import runtime as runtime_infra
-
-        probes = iter([False, True])
-        with (
-            mock.patch.object(
-                runtime_infra, "_probe_exit_ok", side_effect=lambda *_args: next(probes)
-            ),
-            mock.patch.object(runtime_infra, "_run_prepare") as run_prepare,
-            mock.patch.object(runtime_infra, "probe_agent_in_runtime") as probe_agent,
-        ):
-            launch_app.ensure_runtime_ready(cfg, "/srv/projects/myapp", resolved)
-        run_prepare.assert_called_once_with(
-            cfg,
-            ["docker", "start", "box-myapp"],
-            "/srv/projects/myapp",
-            "alice",
-            120.0,
-        )
-        probe_agent.assert_called_once_with(cfg, "/srv/projects/myapp", resolved)
-
-    def test_tui_gate_probes_agent_for_running_runtime(self) -> None:
-        profile = LaunchProfile(id="claude_box", agent="claude", launch_user="alice", runtime="box")
-        cfg = self._cfg_profiles(
-            {"claude_box": profile},
-            {"box": self._profile("box")},
-            enabled=("claude_box",),
-            default="claude_box",
-        )
-        resolved = launch_profile_app.resolve_launch_profile(
-            cfg,
-            "dana",
-            "claude_box",
-            "/srv/projects/myapp",
-            "normal",
-            report=self._report(launch_user="alice", claude_path=None),
-        )
-
-        from uxon.app import launch as launch_app
-        from uxon.infra import runtime as runtime_infra
-
-        with (
-            mock.patch.object(runtime_infra, "_probe_exit_ok", return_value=True),
-            mock.patch.object(runtime_infra, "probe_agent_in_runtime") as probe_agent,
-        ):
-            gate = launch_app.decide_runtime_gate(cfg, "/srv/projects/myapp", resolved)
-        self.assertIsNone(gate)
-        probe_agent.assert_called_once_with(cfg, "/srv/projects/myapp", resolved)
-
-    def test_agent_probe_runs_inside_runtime_not_on_host(self) -> None:
-        profile = LaunchProfile(id="claude_box", agent="claude", launch_user="alice", runtime="box")
-        cfg = self._cfg_profiles(
-            {"claude_box": profile},
-            {"box": self._profile("box")},
-            enabled=("claude_box",),
-            default="claude_box",
-        )
-        resolved = launch_profile_app.resolve_launch_profile(
-            cfg,
-            "dana",
-            "claude_box",
-            "/srv/projects/myapp",
-            "normal",
-            report=self._report(launch_user="alice", claude_path=None),
-        )
-        from uxon.infra import runtime as runtime_infra
-
-        cp = mock.Mock(returncode=0, stdout="", stderr="")
-        with (
-            mock.patch("uxon.infra.identity.process_user", return_value="root"),
-            mock.patch.object(runtime_infra, "run_query", return_value=cp) as run_query,
-        ):
-            runtime_infra.probe_agent_in_runtime(cfg, "/srv/projects/myapp", resolved)
-        argv = run_query.call_args.args[0]
-        self.assertEqual(argv[:6], ["/usr/bin/sudo", "-n", "-H", "-u", "alice", "--"])
-        self.assertIn("docker", argv)
-        self.assertIn("box-myapp", argv)
-        self.assertEqual(argv[-1], "claude")
-
-    def test_global_namespace_rejects_distinct_profile_name_collision(self) -> None:
-        cfg = self._cfg_profiles(
-            {
-                "one": LaunchProfile(id="one", agent="claude", launch_user="alice", runtime="c1"),
-                "two": LaunchProfile(id="two", agent="claude", launch_user="bob", runtime="c2"),
-            },
-            {
-                "c1": self._profile("c1", namespace="global", resource_name_template="shared"),
-                "c2": self._profile("c2", namespace="global", resource_name_template="shared"),
-            },
-            enabled=("one", "two"),
-            default="one",
-        )
-        with self.assertRaises(SystemExit) as ctx:
-            launch_profile_app.resolve_launch_profile(
-                cfg,
-                "dana",
-                "one",
-                "/srv/projects/myapp",
-                "normal",
-                report=self._report(launch_user="alice", claude_path=None),
-            )
-        self.assertIn("collides", getattr(ctx.exception, "uxon_msg", ""))
-
-    def test_per_user_namespace_rejects_same_user_collision(self) -> None:
-        cfg = self._cfg_profiles(
-            {
-                "one": LaunchProfile(id="one", agent="claude", launch_user="alice", runtime="c1"),
-                "two": LaunchProfile(id="two", agent="claude", launch_user="alice", runtime="c2"),
-            },
-            {
-                "c1": self._profile("c1", resource_name_template="shared"),
-                "c2": self._profile("c2", resource_name_template="shared"),
-            },
-            enabled=("one", "two"),
-            default="one",
-        )
-        with self.assertRaises(SystemExit):
-            launch_profile_app.resolve_launch_profile(
-                cfg,
-                "dana",
-                "one",
-                "/srv/projects/myapp",
-                "normal",
-                report=self._report(launch_user="alice", claude_path=None),
-            )
-
-    def test_same_runtime_id_is_intentional_sharing(self) -> None:
-        cfg = self._cfg_profiles(
-            {
-                "one": LaunchProfile(
-                    id="one", agent="claude", launch_user="alice", runtime="shared"
-                ),
-                "two": LaunchProfile(
-                    id="two", agent="claude", launch_user="alice", runtime="shared"
-                ),
-            },
-            {"shared": self._profile("shared", resource_name_template="shared")},
-            enabled=("one", "two"),
-            default="one",
-        )
-        resolved = launch_profile_app.resolve_launch_profile(
-            cfg,
-            "dana",
-            "one",
-            "/srv/projects/myapp",
-            "normal",
-            report=self._report(launch_user="alice", claude_path=None),
-        )
-        assert resolved.runtime_context is not None
-        self.assertEqual(resolved.runtime_context.runtime_id, "shared")
-
-    def test_placeholder_validation_names_field_and_placeholder(self) -> None:
-        bad = self._profile("box")
-        bad = WorkloadRuntimeSpec(
-            **{
-                **bad.__dict__,
-                "exec_prefix": ("docker", "exec", "{bogus}", "{resource}"),
-            }
-        )
-        with self.assertRaises(SystemExit) as ctx:
-            validate_runtime(bad)
-        msg = getattr(ctx.exception, "uxon_msg", "")
-        self.assertIn("exec_prefix", msg)
-        self.assertIn("bogus", msg)
-
-    def test_runtime_fingerprint_includes_profile_id(self) -> None:
-        one = self._profile("one", resource_name_template="{runtime}-{project_slug}")
-        two = self._profile("two", resource_name_template="{runtime}-{project_slug}")
-
-        self.assertNotEqual(one.fingerprint, two.fingerprint)
-
-
-class RuntimeTeardownAuditTests(unittest.TestCase):
-    """AC-P3.2 / AC-P3.5 — teardown audit emit + PID-recycle stale guard."""
-
-    def test_finish_preserves_authority_until_workload_stop_succeeds(self) -> None:
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        target = self._record_session(cfg)
-        teardown = kill_app.prepare_runtime_teardown(cfg, target)
-        for stopped in (False, True):
-            with (
-                self.subTest(stopped=stopped),
-                mock.patch.object(kill_app, "run_runtime_teardown", return_value=stopped),
-                mock.patch.object(kill_app, "cleanup_launch_record") as cleanup,
-            ):
-                self.assertEqual(
-                    kill_app.finish_killed_session(cfg, target, teardown, target_user=target.user),
-                    stopped,
+    return cfg
+
+
+def _resolve(cfg, target):
+    return resolve_launch_profile(cfg, "operator", "claude", str(target), "normal")
+
+
+def test_resource_names_paths_and_templates_have_literal_semantics(subtests):
+    for template, slug, expected in (
+        ("proj-{project_slug}", "myapp", "proj-myapp"),
+        ("proj-{project_slug}", "other", "proj-other"),
+        ("{user}-box", "x", "alice-box"),
+        (
+            "{user}-{runtime}-{launch_profile}-{agent}-{project_slug}",
+            "repo",
+            "alice-box-fast-claude-repo",
+        ),
+    ):
+        with subtests.test(template=template, slug=slug):
+            assert (
+                resolve_runtime_resource_name(
+                    _spec(resource_name_template=template),
+                    user="alice",
+                    launch_profile="fast",
+                    agent="claude",
+                    project_slug=slug,
                 )
-                if stopped:
-                    cleanup.assert_called_once_with(cfg, target)
+                == expected
+            )
+    for value, valid in (
+        ("proj-app_1.2", True),
+        ("a" * 128, True),
+        ("a" * 129, False),
+        ("", False),
+        ("-option", False),
+        (".dot", False),
+        ("...", False),
+        ("_under", False),
+        ("bad name", False),
+        ("bad\x00name", False),
+    ):
+        with subtests.test(resource=value):
+            assert is_valid_runtime_resource(value) == valid
+            if valid:
+                assert validate_runtime_resource(value) == value
+            else:
+                with pytest.raises(SystemExit):
+                    validate_runtime_resource(value)
+    with pytest.raises(SystemExit):
+        resolve_runtime_resource_name(
+            _spec(resource_name_template="{project_slug}"),
+            user="alice",
+            launch_profile="claude",
+            agent="claude",
+            project_slug=".evil",
+        )
+    maps = validate_path_map({"/srv": "/root", "/srv/projects/app": "/work/{resource}"})
+    for path, expected, covered in (
+        ("/srv", "/root", True),
+        ("/srv/projects/app", "/work/{resource}", True),
+        ("/srv/projects/app/sub", "/work/{resource}/sub", True),
+        ("/srv/projects/app-old", "/root/projects/app-old", True),
+        ("/srv-old/app", "/srv-old/app", False),
+        ("/other", "/other", False),
+    ):
+        with subtests.test(path=path):
+            assert (
+                apply_path_map(path, maps) == expected
+                and path_map_under_prefix(path, maps) == covered
+            )
+            assert apply_path_map(path, ()) == path and not path_map_under_prefix(path, ())
+    for invalid in (
+        {"relative": "/work"},
+        {"/srv": "relative"},
+        {"/srv": "{resource}"},
+        {"/srv": "/work/../../etc"},
+        {"/srv/../etc": "/work"},
+    ):
+        with subtests.test(invalid=invalid), pytest.raises(SystemExit):
+            validate_path_map(invalid)
+    for field in (
+        "resource_name_template",
+        "exec_prefix",
+        "ready_command",
+        "exists_command",
+        "start_command",
+        "create_command",
+        "identity_command",
+        "stop_command",
+    ):
+        with subtests.test(field=field), pytest.raises(SystemExit) as error:
+            value = "x-{bogus}" if field == "resource_name_template" else ("engine", "{bogus}")
+            validate_runtime(_spec(**{field: value}))
+        assert field in error.value.uxon_msg and "bogus" in error.value.uxon_msg
+    first = _spec()
+    for changed in (
+        dataclasses.replace(first, id="other"),
+        dataclasses.replace(first, exec_prefix=("other", "{resource}")),
+        dataclasses.replace(first, path_map=(("/srv", "/work"),)),
+    ):
+        assert changed.fingerprint != first.fingerprint
+
+
+def test_identity_cgroup_and_nonce_contracts(subtests):
+    valid = {"id": "cid-1", "host_pid": 4242, "epoch": "epoch-1"}
+    for payload, expected in (
+        (valid, RuntimeIdentity("cid-1", 4242, epoch="epoch-1")),
+        (dict(valid, extra="accepted"), RuntimeIdentity("cid-1", 4242, epoch="epoch-1")),
+        ([], None),
+        (dict(valid, id=""), None),
+        (dict(valid, host_pid=True), None),
+        (dict(valid, host_pid=0), None),
+        (dict(valid, host_pid="42"), None),
+        (dict(valid, epoch=""), None),
+        ({"id": "cid-1", "host_pid": 42}, None),
+    ):
+        with subtests.test(payload=payload):
+            assert runtime.parse_runtime_identity_output(json.dumps(payload)) == expected
+    assert runtime.parse_runtime_identity_output("") is None
+    for content, expected in (
+        ("12:pids:/v1\n0::/v2\n11:memory:/other\n", "/v2"),
+        ("0::/a:b/c", "/a:b/c"),
+        ("12:pids:/v1\n11:memory:/other", "/v1"),
+        ("garbage\n\n0::\n", ""),
+    ):
+        with subtests.test(content=content):
+            assert runtime.parse_proc_cgroup(content) == expected
+    for nonce in ("a" * 32, "b" * 32):
+        assert runtime_pidfile(nonce) == f"/tmp/uxon-{nonce}.pid"
+    for nonce in ("", "short", "../" + "a" * 32, "uxon-app@claude"):
+        with subtests.test(nonce=nonce), pytest.raises(SystemExit):
+            runtime_pidfile(nonce)
+    pids = parse_cgroup_procs("1\n2\n\n2\nnoise\n3\n4\n99\n")
+    assert pids == [1, 2, 3, 4, 99] and parse_cgroup_procs("") == []
+    rows = {1: (0, 100, 95.0), 2: (1, 50, 1.0), 3: (0, 200, 2.0), 4: (0, -5, -1.0)}
+    assert sum_usage_for_pids(pids, rows) == (350, 98.0)
+    assert per_session_usage(pids, {1: "a", 2: "a", 3: "b", 4: ""}, rows) == {
+        "a": (150, 96.0),
+        "b": (200, 2.0),
+    }
+    assert per_session_usage(pids, {}, rows) == {}
+
+
+def test_optional_bad_identity_template_degrades_without_external_command(tmp_path):
+    target = tmp_path / "repo"
+    target.mkdir()
+    cfg = _cfg(target, _spec(identity_command=("engine", "{.Id}")))
+    with TargetCommands().installed_boundary():
+        resolved = _resolve(cfg, target)
+        assert (
+            runtime.resolve_runtime_identity_for_profile(cfg, str(target), resolved)
+            == runtime.EMPTY_IDENTITY
+        )
+
+
+def test_readiness_state_policy_and_prepare_commands_are_bounded(tmp_path, subtests):
+    target = tmp_path / "repo with spaces;literal"
+    target.mkdir()
+    for state in ("running", "stopped", "absent"):
+        for policy in ("fail", "start", "create"):
+            with subtests.test(state=state, policy=policy):
+                spec = _spec(on_missing=policy, path_map=((str(target), "/work/repo"),))
+                cfg = _cfg(target, spec)
+                emitted = []
+                expected = (
+                    "exec"
+                    if state == "running"
+                    else "start"
+                    if state == "stopped" and policy in {"start", "create"}
+                    else "create"
+                    if state == "absent" and policy == "create"
+                    else "fail"
+                )
+
+                def respond(
+                    user, command, kwargs, *, emitted=emitted, expected=expected, state=state
+                ):
+                    assert user == "alice"
+                    emitted.append(command)
+                    if command[:2] == ["engine", "ready"]:
+                        assert kwargs["timeout"] == 1.5
+                        return _cp(rc=int(state != "running"))
+                    if command[:2] == ["engine", "exists"]:
+                        assert kwargs["timeout"] == 1.5
+                        return _cp(rc=int(state == "absent"))
+                    assert command[:2] == ["sh", "-c"] and command[-3:-1] == ["engine", expected]
+                    assert command[2] == f'cd {__import__("shlex").quote(str(target))} && exec "$@"'
+                    assert kwargs["timeout"] == 2.5
+                    return _cp()
+
+                with TargetCommands(respond).installed_boundary():
+                    resolved = _resolve(cfg, target)
+                    plan = runtime.plan_runtime_launch_for_profile(cfg, str(target), resolved)
+                    expected = (
+                        "exec"
+                        if state == "running"
+                        else "start"
+                        if state == "stopped" and policy in {"start", "create"}
+                        else "create"
+                        if state == "absent" and policy == "create"
+                        else "fail"
+                    )
+                    assert (plan.action, plan.reason) == (expected, state)
+                    assert plan.prepare_command == (
+                        ("engine", expected, resolved.runtime_context.resource)
+                        if expected in {"start", "create"}
+                        else ()
+                    )
+                    assert plan.prepare_timeout_seconds == 2.5 and plan.message
+                    if expected == "fail":
+                        with pytest.raises(SystemExit):
+                            runtime.run_prepare(cfg, plan, str(target), "alice")
+                    else:
+                        runtime.run_prepare(cfg, plan, str(target), "alice")
+                assert len(emitted) == 1 + (state != "running") + (expected in {"start", "create"})
+
+
+def test_runtime_probe_transport_failure_never_creates_resource(tmp_path, subtests):
+    target = tmp_path / "repo"
+    target.mkdir()
+    cfg = _cfg(target, _spec(on_missing="create"))
+    for failure in ("timeout", "permission", "missing"):
+        with subtests.test(failure=failure):
+            emitted = []
+
+            def respond(user, command, kwargs, *, emitted=emitted, failure=failure):
+                emitted.append(command)
+                assert command[:2] == ["engine", "ready"] and kwargs["timeout"] == 1.5
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired(command, 1.5)
+                if failure == "permission":
+                    raise PermissionError("denied")
+                raise FileNotFoundError("missing")
+
+            with TargetCommands(respond).installed_boundary():
+                resolved = _resolve(cfg, target)
+                with pytest.raises(SystemExit) as error:
+                    launch.ensure_runtime_ready(cfg, str(target), resolved)
+            assert (
+                len(emitted) == 1
+                and ("did not respond" if failure == "timeout" else "unavailable")
+                in error.value.uxon_msg
+            )
+
+
+def test_cli_and_tui_gate_probe_workload_agent_after_pinned_prepare(tmp_path, subtests):
+    target = tmp_path / "repo"
+    target.mkdir()
+    cfg = _cfg(target, _spec(on_missing="start", path_map=((str(target), "/work/repo"),)))
+    cfg.agents["claude"] = dataclasses.replace(cfg.agents["claude"], binary="custom-agent")
+    for caller, state in (("cli", "stopped"), ("tui", "running"), ("tui", "stopped")):
+        with subtests.test(caller=caller, state=state):
+            emitted = []
+
+            def respond(user, command, kwargs, *, emitted=emitted, state=state):
+                assert user == "alice"
+                emitted.append(command)
+                if command[:2] == ["engine", "ready"]:
+                    return _cp(rc=int(state != "running"))
+                if command[:2] == ["engine", "exists"]:
+                    return _cp()
+                if command[:2] == ["sh", "-c"]:
+                    assert (
+                        command[-3:] == ["engine", "start", "box-repo"]
+                        and str(target) in command[2]
+                    )
+                    return _cp()
+                assert command[:5] == ["engine", "exec", "-w", "/work/repo", "box-repo"]
+                assert command[-3:] == [
+                    'command -v -- "$1" >/dev/null 2>&1',
+                    "uxon-agent-probe",
+                    "custom-agent",
+                ]
+                return _cp()
+
+            with TargetCommands(respond, installed=("tmux",)).installed_boundary():
+                resolved = _resolve(cfg, target)
+                if caller == "cli":
+                    launch.ensure_runtime_ready(cfg, str(target), resolved)
                 else:
-                    cleanup.assert_not_called()
-
-    def _cfg_with_stop(self, identity_command=()):
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            stop_command=("docker", "exec", "{resource}", "sh", "-c", "kill $(cat {pidfile})"),
-            identity_command=identity_command,
-        )
-        return _cfg(c)
-
-    def _record_session(self, cfg: Config):
-        from helpers import make_session
-
-        profile = cfg.runtimes["box"]
-        s = make_session("uxon-x@claude", user="dana")
-        s.profile = "claude"
-        s.agent = "claude"
-        s.launch_record_verified = True
-        s.launch_user = "dana"
-        s.runtime_resource = "proj-myapp"
-        s.runtime = profile.id
-        s.runtime_fingerprint = profile.fingerprint
-        s.runtime_id = "cid-1"
-        s.runtime_epoch = "1000"
-        s.runtime_dir = "/work/myapp"
-        s.project_slug = "myapp"
-        s.launch_nonce = "a" * 32
-        return s
-
-    def test_prepare_captures_launch_epoch(self) -> None:
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        teardown = kill_app.prepare_runtime_teardown(cfg, self._record_session(cfg))
-        assert teardown is not None
-        self.assertEqual(teardown.resource, "proj-myapp")
-        self.assertEqual(teardown.runtime, "box")
-        self.assertEqual(teardown.runtime_id, "cid-1")
-        self.assertEqual(teardown.launch_epoch, "1000")
-
-    def test_missing_record_blocks_runtime_kill(self) -> None:
-        from helpers import make_session
-
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        s = make_session("uxon-x@claude", user="dana")
-        s.runtime_marker = "proj-myapp"
-        with self.assertRaises(SystemExit) as raised:
-            kill_app.prepare_runtime_teardown(cfg, s)
-        self.assertIn("no authoritative launch record", getattr(raised.exception, "uxon_msg", ""))
-
-    def test_missing_runtime_skips_prepare(self) -> None:
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        s = self._record_session(cfg)
-        s.runtime = ""
-        with mock.patch("uxon.app.kill.eprint") as eprint:
-            teardown = kill_app.prepare_runtime_teardown(cfg, s)
-        self.assertIsNone(teardown)
-        self.assertIn("missing workload runtime", eprint.call_args.args[0])
-
-    def test_fingerprint_mismatch_skips_prepare(self) -> None:
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        s = self._record_session(cfg)
-        s.runtime_fingerprint = "old"
-        with mock.patch("uxon.app.kill.eprint") as eprint:
-            teardown = kill_app.prepare_runtime_teardown(cfg, s)
-        self.assertIsNone(teardown)
-        self.assertIn("workload runtime changed", eprint.call_args.args[0])
-
-    def test_missing_saved_identity_skips_prepare(self) -> None:
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        s = self._record_session(cfg)
-        s.runtime_id = ""
-        with mock.patch("uxon.app.kill.eprint") as eprint:
-            teardown = kill_app.prepare_runtime_teardown(cfg, s)
-        self.assertIsNone(teardown)
-        self.assertIn("missing runtime resource identity", eprint.call_args.args[0])
-
-    def test_stale_teardown_emits_stale_and_skips_kill(self) -> None:
-        # AC-P3.2/P3.5: live epoch != stashed epoch → emit outcome=stale and do
-        # NOT run the stop command (the recorded PID would be a recycled one).
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        profile = cfg.runtimes["box"]
-        teardown = kill_app.RuntimeTeardown(
-            stop_cmd=["docker", "exec", "c", "true"],
-            resource="proj-myapp",
-            runtime="box",
-            runtime_id="cid-1",
-            runtime_fingerprint=profile.fingerprint,
-            launch_epoch="1000",
-            runtime_dir="/work/myapp",
-            project_slug="myapp",
-            launch_profile="claude",
-            agent="claude",
-            launch_user="dana",
-        )
-        with (
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=RuntimeIdentity(id="cid-2", epoch="2000"),
-            ),
-            mock.patch("uxon.infra.runtime.run_teardown") as run_td,
-            mock.patch("uxon.infra.audit.audit") as audit,
-        ):
-            kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
-        run_td.assert_not_called()
-        audit.assert_called_once()
-        self.assertEqual(audit.call_args.args[0], "runtime.session_stop")
-        self.assertEqual(audit.call_args.kwargs["outcome"], "skipped")
-        self.assertEqual(audit.call_args.kwargs["reason"], "stale_identity")
-        self.assertEqual(audit.call_args.kwargs["runtime_resource"], "proj-myapp")
-        self.assertEqual(audit.call_args.kwargs["runtime"], "box")
-
-    def test_matching_epoch_teardown_runs_and_emits_ok(self) -> None:
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        profile = cfg.runtimes["box"]
-        teardown = kill_app.RuntimeTeardown(
-            stop_cmd=["docker", "exec", "c", "true"],
-            resource="proj-myapp",
-            runtime="box",
-            runtime_id="cid-1",
-            runtime_fingerprint=profile.fingerprint,
-            launch_epoch="1000",
-            runtime_dir="/work/myapp",
-            project_slug="myapp",
-            launch_profile="claude",
-            agent="claude",
-            launch_user="dana",
-        )
-        with (
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile",
-                return_value=RuntimeIdentity(id="cid-1", epoch="1000"),
-            ),
-            mock.patch("uxon.infra.runtime.run_teardown", return_value=(True, "")) as run_td,
-            mock.patch("uxon.infra.audit.audit") as audit,
-        ):
-            kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
-        run_td.assert_called_once()
-        self.assertEqual(audit.call_args.kwargs["outcome"], "ok")
-
-    def test_missing_current_profile_skips_teardown(self) -> None:
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        profile = cfg.runtimes["box"]
-        cfg.runtimes.clear()
-        teardown = kill_app.RuntimeTeardown(
-            stop_cmd=["docker", "exec", "c", "true"],
-            resource="proj-myapp",
-            runtime="box",
-            runtime_id="cid-1",
-            runtime_fingerprint=profile.fingerprint,
-            launch_epoch="1000",
-            runtime_dir="/work/myapp",
-            project_slug="myapp",
-            launch_profile="claude",
-            agent="claude",
-            launch_user="dana",
-        )
-        with (
-            mock.patch("uxon.infra.runtime.run_teardown") as run_td,
-            mock.patch("uxon.infra.audit.audit") as audit,
-        ):
-            kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
-        run_td.assert_not_called()
-        self.assertEqual(audit.call_args.kwargs["outcome"], "skipped")
-        self.assertEqual(audit.call_args.kwargs["reason"], "missing_profile")
-
-    def test_unresolved_live_identity_skips_kill(self) -> None:
-        from uxon.app import kill as kill_app
-
-        cfg = self._cfg_with_stop(identity_command=("inspect", "{resource}"))
-        profile = cfg.runtimes["box"]
-        teardown = kill_app.RuntimeTeardown(
-            stop_cmd=["docker", "exec", "c", "true"],
-            resource="proj-myapp",
-            runtime="box",
-            runtime_id="cid-1",
-            runtime_fingerprint=profile.fingerprint,
-            launch_epoch="1000",
-            runtime_dir="/work/myapp",
-            project_slug="myapp",
-            launch_profile="claude",
-            agent="claude",
-            launch_user="dana",
-        )
-        with (
-            mock.patch(
-                "uxon.infra.runtime.current_runtime_identity_for_profile", return_value=None
-            ),
-            mock.patch("uxon.infra.runtime.run_teardown", return_value=(True, "")) as run_td,
-            mock.patch("uxon.infra.audit.audit") as audit,
-        ):
-            kill_app.run_runtime_teardown(cfg, teardown, "dana", "uxon-x@claude")
-        run_td.assert_not_called()
-        self.assertEqual(audit.call_args.kwargs["outcome"], "skipped")
-        self.assertEqual(audit.call_args.kwargs["reason"], "identity_unresolved")
+                    gate = launch.decide_runtime_gate(cfg, str(target), resolved)
+                    if state == "running":
+                        assert gate is None
+                    else:
+                        assert gate.needs_prepare and gate.needs_prompt and not gate.fail_message
+                        assert not any(c[:2] == ["sh", "-c"] for c in emitted)
+                        gate.prepare()
+            assert sum(c[:2] == ["engine", "exec"] for c in emitted) == 1
 
 
-class WorktreePathMapGateTests(unittest.TestCase):
-    """AC-P4.1 — unmapped worktree path fails fast; empty path_map carve-out."""
-
-    def test_path_map_under_prefix_predicate(self) -> None:
-        from uxon.domain.runtime import path_map_under_prefix
-
-        pm = validate_path_map({"/srv/projects": "/work"})
-        self.assertTrue(path_map_under_prefix("/srv/projects/myapp", pm))
-        self.assertTrue(path_map_under_prefix("/srv/projects", pm))
-        self.assertFalse(path_map_under_prefix("/srv/other", pm))
-        # Empty map covers nothing — the caller guards on non-empty separately.
-        self.assertFalse(path_map_under_prefix("/srv/projects/myapp", ()))
-
-    def test_unmapped_worktree_path_fails(self) -> None:
-        from uxon.app import launch as launch_app
-
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="p-{project_slug}",
-            exec_prefix=_EXEC,
-            path_map=validate_path_map({"/srv/mapped": "/work"}),
-        )
-        cfg = _cfg(c)
-        with (
-            mock.patch(
-                "uxon.infra.worktrees.compute_worktree_path",
-                return_value="/srv/projects/myapp/.uxon/worktrees/feat",
-            ),
-            mock.patch("uxon.app.launch.is_worktree_target_allowed", return_value=True),
-        ):
-            with self.assertRaises(SystemExit) as ctx:
-                launch_app.plan_worktree_launch(
-                    cfg,
-                    "dana",
-                    _resolved(cfg, "dana", mode="normal"),
-                    "/srv/projects/myapp",
-                    "feat",
-                    requested_profile="claude",
-                )
-        msg = str(getattr(ctx.exception, "uxon_msg", ctx.exception))
-        self.assertIn("path_map", msg)
-        self.assertIn("/srv/projects/myapp/.uxon/worktrees/feat", msg)
-
-    def test_empty_path_map_does_not_fail(self) -> None:
-        # Empty path_map = host-path verbatim — must NOT trip the gate. We only
-        # assert the gate is not the failure point: stub the git/launch steps so
-        # the function returns without touching a real repo.
-        from uxon.app import launch as launch_app
-
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="p-{project_slug}",
-            exec_prefix=_EXEC,
-        )
-        cfg = _cfg(c)
-        sentinel = object()
-        with (
-            mock.patch(
-                "uxon.infra.worktrees.compute_worktree_path",
-                return_value="/srv/projects/myapp/.uxon/worktrees/feat",
-            ),
-            mock.patch("uxon.app.launch.is_worktree_target_allowed", return_value=True),
-            mock.patch("uxon.infra.git._branch_exists_as_user", return_value=False),
-            mock.patch("uxon.infra.git._local_base_ref_as_user", return_value="HEAD"),
-            mock.patch("uxon.infra.identity.command_prefix_for_user", return_value=[]),
-            mock.patch(
-                "uxon.infra.sessions_probe.collect_current_session_snapshot",
-                return_value=make_session_snapshot(),
-            ),
-            mock.patch("uxon.infra.tmux._build_tmux_launch_request", return_value=sentinel),
-        ):
-            req = launch_app.plan_worktree_launch(
-                cfg,
-                "dana",
-                _resolved(cfg, "dana", mode="normal"),
-                "/srv/projects/myapp",
-                "feat",
-                requested_profile="claude",
-                dry_run=True,
+def test_builder_emits_direct_mapped_and_stop_enabled_workload_without_losing_argv(
+    tmp_path, monkeypatch, subtests
+):
+    target = tmp_path / "repo"
+    target.mkdir()
+    monkeypatch.delenv("TMUX", raising=False)
+    stub = target / "claude"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "nonce = os.environ['UXON_LAUNCH_NONCE']\n"
+        "record = pathlib.Path('/tmp/uxon-' + nonce + '.pid')\n"
+        "print(json.dumps(dict(argv=sys.argv[1:], nonce=nonce, "
+        "session=os.environ['UXON_SESSION'], pid=os.getpid(), "
+        "record=record.exists())))\n"
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(target) + os.pathsep + os.environ["PATH"])
+    for kind in ("direct", "bare", "mapped", "identity", "stop", "missing-identity"):
+        with subtests.test(kind=kind):
+            spec = _spec(
+                identity_command=()
+                if kind in {"bare", "mapped", "missing-identity"}
+                else _spec().identity_command,
+                path_map=((str(target), "/work/repo"),) if kind == "mapped" else (),
+                stop_command=("engine", "stop", "{resource}", "{pidfile}")
+                if kind in {"stop", "missing-identity"}
+                else (),
             )
-        self.assertIs(req, sentinel)
+            cfg = _cfg(target, spec)
+            if kind == "direct":
+                cfg.launch = dataclasses.replace(
+                    cfg.launch,
+                    profiles={
+                        "claude": LaunchProfile(id="claude", agent="claude", launch_user="alice")
+                    },
+                )
+
+            def respond(user, command, kwargs):
+                assert command[:2] == ["engine", "identity"] and kwargs["timeout"] == 1.5
+                return _cp(json.dumps({"id": "cid-1", "host_pid": 42, "epoch": "epoch-1"}))
+
+            with TargetCommands(respond).installed_boundary():
+                resolved = _resolve(cfg, target)
+                if kind == "missing-identity":
+                    with pytest.raises(SystemExit) as error:
+                        tmux.build_managed_tmux_launch_request(
+                            str(target),
+                            "uxon-repo@claude",
+                            ParsedArgs(action="run"),
+                            cfg,
+                            None,
+                            resolved_profile=resolved,
+                        )
+                    assert "requires identity_command" in error.value.uxon_msg
+                    continue
+                args = ParsedArgs(action="run", agent_args=["space arg", "$HOME;literal"])
+                request, pending = tmux.build_managed_tmux_launch_request(
+                    str(target), "uxon-repo@claude", args, cfg, None, resolved_profile=resolved
+                )
+            create = request.managed.create_cmd
+            bootstrap = create.index("uxon.infra.launch_bootstrap")
+            workload = create[create.index("--", bootstrap) + 1 : create.index(";", bootstrap)]
+            assert create[:3] == ("boundary", "alice", "--")
+            assert pending.launch_user == "alice" and pending.execution_backend == "boundary"
+            if kind == "direct":
+                assert workload == ("claude", "space arg", "$HOME;literal")
+            else:
+                assert workload[:5] == (
+                    "engine",
+                    "exec",
+                    "-w",
+                    "/work/repo" if kind == "mapped" else str(target),
+                    "box-repo",
+                )
+                assert workload[workload.index("uxon-agent") + 1 :] == (
+                    "claude",
+                    "space arg",
+                    "$HOME;literal",
+                )
+                assert "UXON_RUNTIME_RESOURCE=box-repo" in create
+                assert f"UXON_LAUNCH_NONCE={pending.launch_nonce}" in create
+                if kind in {"identity", "stop"}:
+                    assert (
+                        "UXON_RUNTIME_ID=cid-1" in create and "UXON_RUNTIME_EPOCH=epoch-1" in create
+                    )
+                else:
+                    assert not any(arg.startswith("UXON_RUNTIME_ID=") for arg in create)
+                pidfile = Path(runtime_pidfile(pending.launch_nonce))
+                assert not pidfile.exists()
+                try:
+                    result = subprocess.run(
+                        workload[5:], capture_output=True, text=True, timeout=3, check=True
+                    )
+                    actual = json.loads(result.stdout)
+                    assert (actual["argv"], actual["nonce"], actual["session"]) == (
+                        ["space arg", "$HOME;literal"],
+                        pending.launch_nonce,
+                        pending.session_name,
+                    )
+                    assert actual["record"] == pidfile.exists() == (kind == "stop")
+                    if kind == "stop":
+                        pid, ticks = map(int, pidfile.read_text().split())
+                        assert pid == actual["pid"] and ticks > 0
+                        assert pidfile.stat().st_mode & 0o777 == 0o600
+                finally:
+                    pidfile.unlink(missing_ok=True)
+            assert request.managed.runtime_dir == (
+                "/work/repo" if kind == "mapped" else str(target) if kind != "direct" else ""
+            )
 
 
-class DoctorRuntimeSectionTests(unittest.TestCase):
-    """AC-P5 — doctor runtime rows: probes, expected-absence note, warnings."""
-
-    def _rows(self, c: WorkloadRuntimeSpec, probe: tuple[str, str]) -> list[dict[str, Any]]:
-        from uxon.app.doctor import _doctor_runtime_rows
-
-        cfg = _cfg(c)
-        with mock.patch("uxon.infra.runtime.probe_runtime_state_for_profile", return_value=probe):
-            return _doctor_runtime_rows(cfg, "/srv/projects/myapp", "dana")
-
-    def test_section_warns_on_unset_stop_command(self) -> None:
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            ready_command=("docker", "inspect", "{resource}"),
-            exists_command=("docker", "inspect", "{resource}"),
-        )
-        rows = self._rows(c, ("yes", "yes"))
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(row["runtime"], "box")
-        self.assertEqual(row["runtime_resource"], "proj-myapp")
-        self.assertEqual(row["ready"], "yes")
-        self.assertTrue(row["host_agent_absence_expected"])
-        self.assertTrue(any("stop_command" in w for w in row["warnings"]))
-
-    def test_section_warns_on_definition_under_mount(self) -> None:
-        # AC-P5.4: create_command path token under a path_map host prefix.
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            stop_command=("docker", "exec", "{resource}", "true"),
-            create_command=("docker", "compose", "-f", "/srv/projects/myapp/compose.yml", "up"),
-            path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
-        )
-        rows = self._rows(c, ("no", "no"))
-        row = rows[0]
-        self.assertTrue(
-            any("agent-writable bind mount" in w for w in row["warnings"]),
-            row["warnings"],
-        )
-
-    def test_section_clean_when_hardened(self) -> None:
-        c = WorkloadRuntimeSpec(
-            id="box",
-            resource_scope="per_user",
-            resource_name_template="proj-{project_slug}",
-            exec_prefix=_EXEC,
-            stop_command=("docker", "exec", "{resource}", "true"),
-            create_command=("docker", "compose", "-f", "/operator/compose.yml", "up"),
-            path_map=validate_path_map({"/srv/projects/myapp": "/work"}),
-        )
-        rows = self._rows(c, ("yes", "yes"))
-        self.assertEqual(rows[0]["warnings"], [])
+def test_runtime_collision_scope_includes_different_user_and_intentional_sharing(
+    tmp_path, subtests
+):
+    target = tmp_path / "repo"
+    target.mkdir()
+    for scope, user, same_id, same_resource, denied in (
+        ("global", "bob", False, True, True),
+        ("per_user", "alice", False, True, True),
+        ("per_user", "bob", False, True, False),
+        ("per_user", "alice", True, True, False),
+        ("global", "alice", False, False, False),
+    ):
+        with subtests.test(scope=scope, user=user, same_id=same_id, same_resource=same_resource):
+            cfg = _cfg(target)
+            cfg.runtimes = {
+                "one": _spec(id="one", resource_scope=scope, resource_name_template="shared"),
+                "two": _spec(
+                    id="two",
+                    resource_scope=scope,
+                    resource_name_template="shared" if same_resource else "other",
+                ),
+            }
+            cfg.launch = LaunchConfig(
+                default_profile="first",
+                enabled_profiles=("first", "second"),
+                profiles={
+                    "first": LaunchProfile(
+                        id="first", agent="claude", launch_user="alice", runtime="one"
+                    ),
+                    "second": LaunchProfile(
+                        id="second",
+                        agent="claude",
+                        launch_user=user,
+                        runtime="one" if same_id else "two",
+                    ),
+                },
+            )
+            with TargetCommands(installed=("tmux",)).installed_boundary():
+                if denied:
+                    with pytest.raises(SystemExit) as error:
+                        resolve_launch_profile(cfg, "operator", "first", str(target), "normal")
+                    assert "collides" in error.value.uxon_msg
+                else:
+                    resolved = resolve_launch_profile(
+                        cfg, "operator", "first", str(target), "normal"
+                    )
+                    assert (
+                        resolved.runtime_context.resource == "shared"
+                        and resolved.runtime_context.runtime_id == "one"
+                    )
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_teardown_rechecks_each_authority_dimension_and_retains_failed_stop_for_retry(
+    tmp_path, monkeypatch, subtests
+):
+    target = tmp_path / "repo"
+    target.mkdir()
+    for label, reason in (
+        ("missing-runtime", "missing_runtime"),
+        ("missing-profile", "missing_profile"),
+        ("fingerprint", "fingerprint_mismatch"),
+        ("saved-id", "identity_unresolved"),
+        ("saved-epoch", "identity_unresolved"),
+        ("late-profile", "missing_profile"),
+        ("late-fingerprint", "fingerprint_mismatch"),
+        ("live-id", "stale_identity"),
+        ("live-epoch", "stale_identity"),
+        ("live-both", "stale_identity"),
+        ("unresolved", "identity_unresolved"),
+        ("stop-fail", None),
+        ("exact", None),
+    ):
+        with subtests.test(label=label):
+            monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / label))
+            cfg = _cfg(
+                target,
+                _spec(
+                    stop_command=(
+                        "engine",
+                        "stop",
+                        "{resource}",
+                        "{pidfile}",
+                        "{user}",
+                        "{launch_profile}",
+                        "{agent}",
+                        "{project_slug}",
+                    )
+                ),
+            )
+            stopped = {"recovered": False}
+            emitted = []
+
+            def respond(user, command, kwargs, *, emitted=emitted, label=label, stopped=stopped):
+                assert user == "alice"
+                emitted.append(command)
+                if command[:2] == ["engine", "identity"]:
+                    assert command == [
+                        "engine",
+                        "identity",
+                        "box-repo",
+                        str(target),
+                        "claude",
+                        "claude",
+                        "repo",
+                        "alice",
+                    ]
+                    assert kwargs["timeout"] == 1.5
+                    return _cp(
+                        json.dumps(
+                            {
+                                "id": "cid-other" if label in {"live-id", "live-both"} else "cid-1",
+                                "host_pid": 42,
+                                "epoch": "epoch-other"
+                                if label in {"live-epoch", "live-both"}
+                                else "epoch-1",
+                            }
+                        ),
+                        rc=int(label == "unresolved"),
+                    )
+                assert command == [
+                    "engine",
+                    "stop",
+                    "box-repo",
+                    runtime_pidfile("a" * 32),
+                    "alice",
+                    "claude",
+                    "claude",
+                    "repo",
+                ]
+                assert kwargs["timeout"] == 3.5
+                return _cp(
+                    rc=7 if label == "stop-fail" and not stopped["recovered"] else 0,
+                    stderr="stop-sentinel",
+                )
+
+            with TargetCommands(respond).installed_boundary():
+                resolved = _resolve(cfg, target)
+                pending, metadata, path = save_launch_record(cfg, resolved, target_dir=str(target))
+                payload = json.loads(path.read_text())
+                if label in {"missing-runtime", "saved-id", "saved-epoch"}:
+                    payload[
+                        {
+                            "missing-runtime": "runtime",
+                            "saved-id": "runtime_id",
+                            "saved-epoch": "runtime_epoch",
+                        }[label]
+                    ] = ""
+                    path.write_text(json.dumps(payload))
+                session = session_from_record(pending, metadata)
+                session.active_path = "/mutable/pane/decoy"
+                if label == "missing-profile":
+                    cfg.runtimes.clear()
+                elif label == "fingerprint":
+                    cfg.runtimes["box"] = _spec(id="changed")
+                with mock.patch("uxon.infra.audit.audit") as audit:
+                    teardown = kill.prepare_runtime_teardown(cfg, session)
+                    if label in {
+                        "missing-runtime",
+                        "missing-profile",
+                        "fingerprint",
+                        "saved-id",
+                        "saved-epoch",
+                    }:
+                        assert teardown is False
+                        assert not kill.finish_killed_session(
+                            cfg, session, teardown, target_user="alice"
+                        )
+                        assert emitted == [] and path.exists()
+                    else:
+                        assert teardown is not None and (
+                            teardown.runtime_id,
+                            teardown.launch_epoch,
+                        ) == ("cid-1", "epoch-1")
+                        if label == "late-profile":
+                            cfg.runtimes.clear()
+                        elif label == "late-fingerprint":
+                            cfg.runtimes["box"] = _spec(id="changed")
+                        result = kill.finish_killed_session(
+                            cfg, session, teardown, target_user="alice"
+                        )
+                        assert result == (label == "exact")
+                        assert path.exists() == (label != "exact")
+                    [event] = audit.call_args_list
+                    assert event.args == ("runtime.session_stop",)
+                    assert event.kwargs["outcome"] == (
+                        "skipped" if reason else "error" if label == "stop-fail" else "ok"
+                    )
+                    assert event.kwargs.get("reason") == reason
+                    assert (
+                        event.kwargs["runtime_resource"] == "box-repo"
+                        and event.kwargs["target_user"] == "alice"
+                    )
+                    if reason:
+                        assert not any(command[:2] == ["engine", "stop"] for command in emitted)
+                    if label == "stop-fail":
+                        assert "stop-sentinel" in event.kwargs["error"]
+                        audit.reset_mock()
+                        stopped["recovered"] = True
+                        assert kill.finish_killed_session(
+                            cfg, session, teardown, target_user="alice"
+                        )
+                        assert not path.exists()
+                        assert (
+                            len(audit.call_args_list) == 1
+                            and audit.call_args.kwargs["outcome"] == "ok"
+                        )
+
+
+def test_telemetry_mixed_direct_managed_and_foreign_nonces_uses_exact_queries(
+    tmp_path, monkeypatch, subtests
+):
+    target = tmp_path / "repo"
+    target.mkdir()
+    for label in (
+        "split",
+        "single-visible",
+        "denied",
+        "empty-markers",
+        "empty-stopped",
+        "empty-running",
+        "unknown-ready",
+        "unresolved-stopped",
+        "stale-id",
+        "stale-epoch",
+        "missing-profile",
+        "fingerprint",
+    ):
+        with subtests.test(label=label):
+            monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / label))
+            spec = _spec(telemetry="cgroup")
+            cfg = _cfg(target, spec)
+            emitted = []
+
+            def respond(user, command, kwargs, *, emitted=emitted, label=label):
+                assert user == "alice"
+                emitted.append(command)
+                if command[:2] == ["ps", "-eo"]:
+                    return _cp(
+                        "111 1 4096 3.0\n222 111 2048 1.0\n899 1 64 0\n900 1 8192 50\n901 1 1024 60\n902 1 4096 400\ninvalid\n"
+                    )
+                if command[:2] == ["engine", "identity"]:
+                    assert kwargs["timeout"] == 1.5
+                    return _cp(
+                        json.dumps(
+                            {
+                                "id": "other" if label == "stale-id" else "cid-1",
+                                "host_pid": 42,
+                                "epoch": "other" if label == "stale-epoch" else "epoch-1",
+                            }
+                        ),
+                        rc=int(label == "unresolved-stopped"),
+                    )
+                if "uxon.infra.runtime_telemetry_probe" in command:
+                    assert kwargs["timeout"] == 10
+                    mode = command[command.index("--mode") + 1]
+                    if mode == "process-cgroup":
+                        assert command[-2:] == ["--pid", "42"]
+                        return _cp(json.dumps({"ok": True, "cgroup": "/box.scope", "error": ""}))
+                    if mode == "cgroup-members":
+                        assert command[-2:] == ["--cgroup", "/box.scope"]
+                        return _cp(
+                            json.dumps(
+                                {
+                                    "ok": True,
+                                    "pids": []
+                                    if label in {"empty-stopped", "empty-running", "unknown-ready"}
+                                    else [899, 900, 901, 902, 903],
+                                    "error": "",
+                                }
+                            )
+                        )
+                    assert mode == "markers" and command[-10:] == [
+                        "--pid",
+                        "899",
+                        "--pid",
+                        "900",
+                        "--pid",
+                        "901",
+                        "--pid",
+                        "902",
+                        "--pid",
+                        "903",
+                    ]
+                    return _cp(
+                        json.dumps(
+                            {
+                                "ok": label != "denied",
+                                "markers": {}
+                                if label in {"denied", "empty-markers"}
+                                else {
+                                    "900": "a" * 32,
+                                    "901": "b" * 32,
+                                    "902": "foreign-nonce",
+                                    "899": "",
+                                },
+                                "error": "denied" if label == "denied" else "",
+                            }
+                        ),
+                        rc=int(label == "denied"),
+                    )
+                assert command[:2] in (["engine", "ready"], ["engine", "exists"])
+                assert kwargs["timeout"] == 1.5
+                if label == "unknown-ready":
+                    raise subprocess.TimeoutExpired(command, 1.5)
+                return _cp(rc=int(command[1] == "ready" and label != "empty-running"))
+
+            external = TargetCommands(respond)
+            with external.installed_boundary():
+                resolved = _resolve(cfg, target)
+                managed = []
+                for index, nonce in enumerate(("a" * 32, "b" * 32)):
+                    pending, metadata, _ = save_launch_record(
+                        cfg,
+                        resolved,
+                        target_dir=str(target),
+                        name=f"uxon-managed-{index}@claude",
+                        nonce=nonce,
+                        session_id=f"${index + 1}",
+                    )
+                    managed.append(session_from_record(pending, metadata))
+                if label == "single-visible":
+                    managed = managed[:1]
+                if label == "missing-profile":
+                    cfg.runtimes.clear()
+                elif label == "fingerprint":
+                    cfg.runtimes["box"] = dataclasses.replace(spec, id="changed")
+                direct = make_session("uxon-direct@claude", user="alice")
+                direct.pane_pids = (111, 111)
+                sessions_probe.enrich_session_usage(
+                    cfg, [direct, *managed], runtimes=cfg.runtimes, launch_user="alice"
+                )
+            assert (direct.rss_kib, direct.cpu_pct, direct.runtime_down) == (6144, 4.0, False)
+            expected = (
+                [(8192, 50.0, False), (1024, 60.0, False)]
+                if label in {"split", "single-visible"}
+                else [(13376, 510.0, False)] * 2
+                if label == "denied"
+                else [(0, 0.0, label in {"empty-stopped", "unresolved-stopped"})] * 2
+            )
+            assert [(s.rss_kib, s.cpu_pct, s.runtime_down) for s in managed] == expected[
+                : len(managed)
+            ]
+            assert [(s.runtime_id, s.runtime_epoch, s.runtime_resource) for s in managed] == [
+                ("cid-1", "epoch-1", "box-repo")
+            ] * len(managed)
+            modes = [
+                command[command.index("--mode") + 1]
+                for command in emitted
+                if "uxon.infra.runtime_telemetry_probe" in command
+            ]
+            stale = label in {"missing-profile", "fingerprint"}
+            assert sum(c[:2] == ["engine", "identity"] for c in emitted) == (
+                0 if stale else len(managed)
+            )
+            assert modes.count("process-cgroup") == (
+                0 if stale or label == "unresolved-stopped" else len(managed)
+            )
+            has_group = not stale and label not in {"unresolved-stopped", "stale-id", "stale-epoch"}
+            assert modes.count("cgroup-members") == int(has_group)
+            assert modes.count("markers") == int(
+                label in {"split", "single-visible", "denied", "empty-markers"}
+            )
+            assert sum(c[:2] == ["engine", "ready"] for c in emitted) == int(
+                label in {"empty-stopped", "empty-running", "unknown-ready", "unresolved-stopped"}
+            )
+            assert sum(c[:2] == ["ps", "-eo"] for c in emitted) == 1
+
+
+def test_direct_only_telemetry_walks_children_with_one_process_query():
+    session = make_session(user="alice")
+    session.pane_pids = (111, 111)
+
+    def respond(user, command, kwargs):
+        assert user == "alice" and command == ["ps", "-eo", "pid=,ppid=,rss=,%cpu="]
+        return _cp("111 1 4096 3\n222 111 2048 1\n999 1 99999 999\n")
+
+    external = TargetCommands(respond)
+    with (
+        external.installed_boundary(),
+        mock.patch(
+            "pathlib.Path.read_text",
+            side_effect=AssertionError("unexpected filesystem telemetry read"),
+        ),
+    ):
+        sessions_probe.enrich_session_usage(target_config(), [session], launch_user="alice")
+    assert (session.rss_kib, session.cpu_pct, session.runtime_down) == (6144, 4, False)
+    assert len(external.calls) == 1
+
+
+def test_runtime_presentation_keeps_agent_direct_command_and_down_status():
+    from uxon.app.listing import print_list
+    from uxon.domain.session import to_tui_session
+    from uxon.tui.dashboard.columns import format_cpu, format_ram
+    from uxon.tui.dashboard.row import from_tui_session
+
+    cfg = target_config()
+    sessions = []
+    for name, resource, down, command, expected in (
+        ("direct", "", False, "vim", "vim"),
+        ("live", "box", False, "engine", "claude"),
+        ("down", "box", True, "engine", "claude"),
+    ):
+        session = make_session(f"uxon-{name}@claude", user="alice")
+        session.agent = "claude"
+        session.runtime_resource = resource
+        session.runtime_down = down
+        session.active_cmd = command
+        tui = to_tui_session(session, "uxon-")
+        assert tui.cmd == expected
+        if down:
+            row = from_tui_session(tui)
+            assert "down" in format_cpu(row).plain.lower() and "down" in format_ram(row).lower()
+        sessions.append(session)
+    with redirect_stdout(io.StringIO()) as output:
+        print_list(cfg, sessions, ["alice"])
+    assert (
+        "vim" in output.getvalue()
+        and "claude" in output.getvalue()
+        and "down" in output.getvalue().lower()
+    )
+
+
+def test_public_doctor_reports_runtime_state_and_definition_warnings(tmp_path, monkeypatch):
+    target = tmp_path / "repo"
+    target.mkdir()
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cfg = _cfg(target)
+    cfg.runtimes.update(
+        {
+            "basic": _spec(id="basic", identity_command=()),
+            "mounted": _spec(
+                id="mounted",
+                stop_command=("engine", "stop", "{pidfile}"),
+                path_map=((str(target), "/work"),),
+                create_command=("engine", "compose", "-f", str(target / "compose.yml")),
+            ),
+            "hardened": _spec(
+                id="hardened",
+                stop_command=("engine", "stop", "{pidfile}"),
+                path_map=((str(target), "/work"),),
+                create_command=("engine", "compose", "-f", "/operator/compose.yml"),
+            ),
+        }
+    )
+    cfg.launch = LaunchConfig(
+        default_profile="basic",
+        enabled_profiles=("basic", "mounted", "hardened"),
+        profiles={
+            name: LaunchProfile(id=name, agent="claude", launch_user="alice", runtime=name)
+            for name in ("basic", "mounted", "hardened")
+        },
+    )
+
+    def respond(user, command, kwargs):
+        assert user == "alice"
+        if "uxon.infra.tmux_server_probe" in command:
+            return _cp(json.dumps({"state": "absent", "sessions": [], "error": ""}))
+        assert command[:2] in (["engine", "ready"], ["engine", "exists"])
+        return _cp()
+
+    with (
+        TargetCommands(respond, installed=("tmux",)).installed_boundary(),
+        redirect_stdout(io.StringIO()) as output,
+    ):
+        assert doctor.do_doctor(cfg, "operator", "alice", str(target), json_output=True) == 0
+    rows = json.loads(output.getvalue())["data"]["runtimes"]
+    assert [
+        (row["runtime"], row["ready"], row["exists"], row["host_agent_absence_expected"])
+        for row in rows
+    ] == [
+        ("basic", "yes", "yes", True),
+        ("mounted", "yes", "yes", True),
+        ("hardened", "yes", "yes", True),
+    ]
+    assert any("stop_command" in w for w in rows[0]["warnings"])
+    assert any("agent-writable bind mount" in w for w in rows[1]["warnings"])
+    assert rows[2]["warnings"] == []

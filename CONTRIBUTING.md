@@ -27,7 +27,8 @@ uxon --version
 ```
 
 Both pull `ruff`, `pyright`, `pytest`, `textual`, `tomlkit`
-automatically.
+automatically. The test suite requires pytest 9+ for built-in subtests;
+the dev extra installs the required version.
 
 `uxon` requires Python 3.11+. The TUI uses `textual >=0.80,<9`; config
 writes use `tomlkit`. Both are hard runtime dependencies (pulled in by

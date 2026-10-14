@@ -7,7 +7,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 import uxon.app.listing as listing_app
 from uxon.domain.args import ParsedArgs
@@ -38,6 +38,10 @@ class RuntimeTeardown:
     agent: str
     launch_user: str
     launch_epoch: str = ""
+
+
+# None means no stop is required; False means a required stop could not be prepared.
+RuntimeTeardownPreparation: TypeAlias = RuntimeTeardown | Literal[False] | None
 
 
 def _print_killed(name: str, cfg: Config) -> None:
@@ -97,8 +101,8 @@ def cleanup_launch_record(cfg: Config, target: SessionInfo) -> None:
         fail(f"unable to verify launch record cleanup for {target.name!r}")
 
 
-def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardown | None:
-    """Prepare the workload session stop, or return ``None``.
+def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardownPreparation:
+    """Prepare the workload stop, or report that it is absent or unavailable.
 
     Capture the verified launch record while the exact tmux session is alive.
     The caller runs the result via :func:`run_runtime_teardown` AFTER
@@ -107,12 +111,16 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
     server to talk to. Kill the session first, then reap the orphan the
     severed exec leaves behind.
 
-    Missing or invalid optional runtime teardown data degrades to ``None`` so
-    the mandatory tmux kill path remains available. A runtime-managed session
-    without its authoritative launch record fails closed before tmux mutation:
-    Uxon cannot safely reconstruct that workload's teardown identity.
+    ``None`` means no workload stop is configured. ``False`` means teardown
+    could not be prepared: the tmux kill remains available, but post-kill
+    cleanup must report failure and retain the launch record. A runtime-managed
+    session without its authoritative launch record fails closed before tmux
+    mutation: Uxon cannot safely reconstruct that workload's teardown identity.
     """
-    if not target.runtime_resource and not target.runtime_marker:
+    if target.launch_record_verified:
+        if target.runtime == "direct":
+            return None
+    elif not target.runtime_resource and not target.runtime_marker:
         return None
     if not target.launch_record_verified:
         fail(
@@ -127,7 +135,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             resource=target.runtime_resource,
             target_user=target.user,
         )
-        return None
+        return False
     profile = cfg.runtimes.get(target.runtime)
     if profile is None:
         _teardown_skip(
@@ -138,7 +146,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             resource=target.runtime_resource,
             target_user=target.user,
         )
-        return None
+        return False
     if profile.fingerprint != target.runtime_fingerprint:
         _teardown_skip(
             target.name,
@@ -148,7 +156,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             resource=target.runtime_resource,
             target_user=target.user,
         )
-        return None
+        return False
     if not profile.stop_command:
         return None
     if not target.runtime_id or not target.runtime_epoch:
@@ -160,7 +168,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             resource=target.runtime_resource,
             target_user=target.user,
         )
-        return None
+        return False
     try:
         from uxon.domain.runtime import (
             is_valid_runtime_resource,
@@ -178,7 +186,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
                 resource=target.runtime_resource,
                 target_user=target.user,
             )
-            return None
+            return False
         pidfile = runtime_pidfile(target.launch_nonce)
         stop_cmd = render_profile_template(
             profile.stop_command,
@@ -214,7 +222,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             resource=target.runtime_resource,
             target_user=target.user,
         )
-        return None
+        return False
     except Exception:  # noqa: BLE001 — teardown must never block kill-session
         _teardown_skip(
             target.name,
@@ -224,7 +232,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             resource=target.runtime_resource,
             target_user=target.user,
         )
-        return None
+        return False
 
 
 def run_runtime_teardown(
@@ -381,7 +389,7 @@ def run_kill_session(
 def _complete_kill(
     cfg: Config,
     target: SessionInfo,
-    teardown: RuntimeTeardown | None,
+    teardown: RuntimeTeardownPreparation,
     *,
     audit_event: str,
     target_user: str,
@@ -410,7 +418,7 @@ def _complete_kill(
 def finish_killed_session(
     cfg: Config,
     target: SessionInfo,
-    teardown: RuntimeTeardown | None,
+    teardown: RuntimeTeardownPreparation,
     *,
     target_user: str,
 ) -> bool:
@@ -419,6 +427,8 @@ def finish_killed_session(
     Returns a truthful aggregate status and never raises, allowing single and
     bulk callers to guarantee their one terminal audit event.
     """
+    if teardown is False:
+        return False
     cleanup_ok = True
     if teardown is not None:
         try:

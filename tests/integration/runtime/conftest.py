@@ -30,7 +30,6 @@ import os
 import shutil
 import subprocess
 import uuid
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,7 +49,7 @@ RUNTIMES = ["docker", "podman"]
 
 
 def _runtime_usable(binary: str) -> bool:
-    """True iff ``binary`` is on PATH and its daemon answers ``info``.
+    """True iff the engine and its Compose provider are available.
 
     Both conditions matter: a host can ship the client without a running
     daemon (or with a daemon it cannot reach). The fixture decides whether
@@ -60,16 +59,31 @@ def _runtime_usable(binary: str) -> bool:
     if shutil.which(binary) is None:
         return False
     try:
-        cp = subprocess.run(
-            [binary, "info"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            timeout=PROBE_TIMEOUT_SEC,
-        )
+        for argv in ([binary, "info"], [binary, "compose", "version"]):
+            cp = subprocess.run(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=PROBE_TIMEOUT_SEC,
+            )
+            if cp.returncode != 0:
+                return False
     except (OSError, subprocess.TimeoutExpired):
         return False
     return cp.returncode == 0
+
+
+@pytest.fixture(scope="session")
+def runtime_availability() -> dict[str, bool]:
+    """Cache only engine/provider checks; every test owns fresh resources."""
+    return {binary: _runtime_usable(binary) for binary in RUNTIMES}
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = (yield).get_result()
+    setattr(item, f"runtime_report_{report.when}", report)
 
 
 @dataclass(frozen=True)
@@ -86,7 +100,7 @@ class Runtime:
 
 
 @pytest.fixture(params=RUNTIMES)
-def runtime(request: pytest.FixtureRequest) -> Iterator[Runtime]:
+def runtime(request: pytest.FixtureRequest, runtime_availability: dict[str, bool]) -> Runtime:
     """Yield a usable runtime, or skip this parameter if none is reachable.
 
     Owns teardown of the container these tests start under the unique
@@ -94,18 +108,30 @@ def runtime(request: pytest.FixtureRequest) -> Iterator[Runtime]:
     even on failure. A user's own container is never in scope here.
     """
     binary = request.param
-    if not _runtime_usable(binary):
+    if not runtime_availability[binary]:
         if binary == "docker" and os.environ.get("UXON_TEST_REQUIRE_DOCKER") == "1":
-            pytest.fail("Docker is required but its binary or daemon is unavailable")
-        pytest.skip(f"{binary}: binary absent or daemon unreachable")
+            pytest.fail("Docker and Compose are required but unavailable")
+        pytest.skip(f"{binary}: engine or Compose provider unavailable")
     # Unique per run: pid + a uuid shard. Stays within the runtime name
     # charset (leading alnum, then alnum/dash/underscore/dot).
     name = f"uxon-it-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     rt = Runtime(binary=binary, runtime_name=name)
-    try:
-        yield rt
-    finally:
-        _teardown(rt)
+
+    def cleanup():
+        errors = _teardown(rt)
+        if errors:
+            detail = "\n".join(errors)
+            request.node.add_report_section("teardown", "runtime cleanup", detail)
+            failed = any(
+                getattr(request.node, f"runtime_report_{phase}", None) is not None
+                and getattr(request.node, f"runtime_report_{phase}").failed
+                for phase in ("setup", "call")
+            )
+            if not failed:
+                pytest.fail(detail)
+
+    request.addfinalizer(cleanup)
+    return rt
 
 
 @pytest.fixture(autouse=True)
@@ -114,37 +140,31 @@ def _isolated_controller_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
 
-def _teardown(rt: Runtime) -> None:
+def _teardown(rt: Runtime) -> list[str]:
     """Remove anything the suite created for ``rt`` (idempotent, quiet)."""
+    errors = []
     for argv in (
         [rt.binary, "rm", "-f", rt.runtime_name],
         [rt.binary, "network", "rm", rt.runtime_name + "_default"],
     ):
-        subprocess.run(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            timeout=PROBE_TIMEOUT_SEC,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=PROBE_TIMEOUT_SEC,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            errors.append(f"{argv[1:]}: {type(error).__name__}")
+            continue
+        if result.returncode and not any(
+            text in result.stderr.lower() for text in ("not found", "no such")
+        ):
+            errors.append(f"{argv[1:]}: rc={result.returncode}: {result.stderr.strip()}")
+    return errors
 
-
-# Token the agent's idle process carries so ``<runtime> top`` can tell it
-# apart from the container's own PID 1 (which idles on ``tail`` below).
-# A reap test must distinguish the agent from the still-alive container.
-AGENT_SENTINEL = "sleep"
-
-# A ~5-line stand-in for a real agent: record that it ran (so the test
-# can prove in-container exec), then idle on ``sleep`` so the session has
-# a live, identifiable process to reap. Any agent flags are ignored.
-STUB_AGENT = """\
-#!/bin/sh
-# Minimal stand-in for an AI agent binary used by the container test
-# suite: prove the command ran inside the container, then idle.
-touch /work/.agent-ran
-exec sleep 300
-"""
 
 # A stand-in agent for the telemetry suite that selects idle vs busy from its
 # first argv token (the agent args uxon threads through after the binary). A
@@ -158,13 +178,13 @@ touch /work/.agent-ran
 if [ "$1" = "busy" ]; then
   while :; do :; done
 fi
-exec sleep 300
+exec python3 -c 'import time; payload = bytearray(2 * 1024 * 1024); time.sleep(300)'
 """
 
 # Stock base + bind mount only — no build. Exercises the
 # create_command = ["<runtime>", "compose", "up", "-d"] path. PID 1 idles
-# on ``tail`` (not ``sleep``) so the agent's ``sleep`` is unambiguous in
-# ``<runtime> top`` — the container stays up across the agent's reap.
+# on ``tail`` so ``<runtime> top`` distinguishes container liveness from
+# workload liveness; the container stays up across a workload stop.
 COMPOSE_TEMPLATE = (
     """\
 services:
@@ -224,14 +244,3 @@ def operator_runtime_table(rt: Runtime, project_dir: Path) -> dict[str, object]:
         },
         "timeouts": {"stop_seconds": 10.0},
     }
-
-
-def write_project(project_dir: Path, _runtime_name: str) -> Path:
-    """Materialize the synthetic project and stub agent.
-
-    Returns the stub path (bind-mounted to ``/usr/local/bin/claude``).
-    """
-    stub = project_dir / "claude-stub"
-    stub.write_text(STUB_AGENT)
-    stub.chmod(0o755)
-    return stub

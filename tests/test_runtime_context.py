@@ -12,10 +12,10 @@ from helpers import make_config, make_session
 from uxon.app import kill
 from uxon.domain.launch_profiles import LaunchProfile, ResolvedLaunchProfile, RuntimeContext
 from uxon.domain.runtime import WorkloadRuntimeSpec, runtime_pidfile, validate_runtime
-from uxon.infra import launch_records, runtime
+from uxon.infra import execution, launch_records, runtime
 from uxon.infra.identity import process_user
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.usefixtures("real_execution", "real_host_probes")]
 
 
 def test_verified_record_preserves_context_for_real_identity_and_stop(tmp_path: Path) -> None:
@@ -59,6 +59,7 @@ def test_verified_record_preserves_context_for_real_identity_and_stop(tmp_path: 
         agent=cfg.agents["claude"],
         launch_user=user,
         mode_id="normal",
+        execution=execution.resolve_target(cfg, user),
         runtime_context=RuntimeContext(
             runtime_id="box",
             resource="box-repo",
@@ -78,14 +79,56 @@ def test_verified_record_preserves_context_for_real_identity_and_stop(tmp_path: 
     directory = tmp_path / "records"
     launch_records.create_pending_record(pending, override_dir=directory)
     path = launch_records.finalize_pending_record(
-        pending, metadata, runtime_id="cid-1", runtime_epoch="epoch-1", override_dir=directory
+        pending,
+        metadata,
+        runtime_id="cid-1",
+        runtime_epoch="epoch-1",
+        runtime_cgroup="/runtime.scope",
+        override_dir=directory,
     )
     payload = launch_records.read_verified_record(
         pending.socket_path, metadata, override_dir=directory
     )
     assert payload is not None
     assert (payload["runtime_dir"], payload["project_slug"]) == ("/work/repo", "repo")
+    assert {
+        key: payload[key]
+        for key in (
+            "execution_backend",
+            "execution_fingerprint",
+            "runtime",
+            "runtime_kind",
+            "runtime_resource",
+            "runtime_fingerprint",
+            "runtime_id",
+            "runtime_epoch",
+            "runtime_cgroup",
+            "profile",
+            "agent",
+            "launch_user",
+            "launch_nonce",
+            "tmux_session_id",
+            "tmux_session_created",
+        )
+    } == {
+        "execution_backend": "local",
+        "execution_fingerprint": cfg.execution.backend_for_user(user).fingerprint,
+        "runtime": "box",
+        "runtime_kind": "command",
+        "runtime_resource": "box-repo",
+        "runtime_fingerprint": spec.fingerprint,
+        "runtime_id": "cid-1",
+        "runtime_epoch": "epoch-1",
+        "runtime_cgroup": "/runtime.scope",
+        "profile": "claude_box",
+        "agent": "claude",
+        "launch_user": user,
+        "launch_nonce": nonce,
+        "tmux_session_id": "$1",
+        "tmux_session_created": "1234",
+    }
     assert path.stat().st_mode & 0o777 == 0o600
+    assert directory.stat().st_mode & 0o777 == 0o700
     session = make_session(pending.session_name, user=user)
     for field in (
         "launch_user",
@@ -96,6 +139,9 @@ def test_verified_record_preserves_context_for_real_identity_and_stop(tmp_path: 
         "runtime_fingerprint",
         "runtime_id",
         "runtime_epoch",
+        "runtime_cgroup",
+        "execution_backend",
+        "execution_fingerprint",
         "runtime_dir",
         "project_slug",
     ):
@@ -105,6 +151,7 @@ def test_verified_record_preserves_context_for_real_identity_and_stop(tmp_path: 
     session.launch_record_verified = True
     teardown = kill.prepare_runtime_teardown(cfg, session)
     assert teardown is not None
+    assert (teardown.runtime_id, teardown.launch_epoch) == ("cid-1", "epoch-1")
     assert list(teardown.stop_cmd) == [
         "true",
         user,

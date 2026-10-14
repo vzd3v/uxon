@@ -20,7 +20,7 @@ from uxon.infra.config_renderer import render_config
 from uxon.infra.remote import collector
 from uxon.infra.remote_hosts import RemoteHost
 
-_REAL_PROBE_HOST = probes.probe_host
+pytestmark = pytest.mark.usefixtures("real_execution", "real_host_probes")
 
 
 @pytest.fixture
@@ -163,7 +163,6 @@ def doctor_protocol(tmp_path, monkeypatch):
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(execution, "run_query", side_effect=target))
-        stack.enter_context(patch.object(probes, "probe_host", _REAL_PROBE_HOST))
         stack.enter_context(patch.object(probes, "run_query", side_effect=discovery))
         stack.enter_context(patch.object(agents, "run_query", side_effect=version))
         stack.enter_context(patch.object(tmux, "run_query", side_effect=server))
