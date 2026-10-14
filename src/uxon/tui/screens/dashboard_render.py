@@ -96,18 +96,16 @@ class DashboardRender:
         )
 
     def build_dashboard_cfg_view(self) -> SimpleNamespace:
-        """Minimal cfg view consumed by :func:`select_dashboard_model`.
+        """Configuration consumed by the dashboard selector.
 
-        The selector reads only ``cfg.remote_hosts`` today; the namespace
-        includes ``current_user`` for symmetry / future widening. This
-        avoids importing :class:`uxon.tui.config.TuiConfig` here (its
-        constructor demands the full callback bundle, which the bridge
-        does not need).
+        Keep the configured search fields alongside peer ordering so
+        filtering uses the same policy as the screen's context.
         """
         cfg = self.host.cfg
         return SimpleNamespace(
             remote_hosts=cfg.remote_hosts,
             current_user=cfg.current_user,
+            tui_search_fields=cfg.tui_search_fields,
         )
 
     def cursor_row_key(self, widget: SessionListView) -> str | None:

@@ -1,13 +1,16 @@
-from __future__ import annotations
+"""Terminal failure notices distinguish retained managed output from fast exits."""
 
 import io
+from dataclasses import replace
 from unittest import mock
+
+from helpers import make_config
 
 from uxon.domain.launch_request import LaunchRequest, ManagedTmuxLaunch, TmuxHandoff
 from uxon.tui.launch import pause_on_launch_failure
 
 
-def test_managed_fast_zero_is_not_reclassified_as_agent_failure() -> None:
+def test_failure_notice_matrix_and_acknowledgement_reads() -> None:
     managed = ManagedTmuxLaunch(
         create_cmd=("tmux", "new-session"),
         query_cmd=("tmux", "display-message"),
@@ -19,43 +22,53 @@ def test_managed_fast_zero_is_not_reclassified_as_agent_failure() -> None:
         record_dir="/tmp/records",
         launch_profile="codex",
         agent="codex",
-        launch_user="dana_agent",
+        launch_user="alice",
     )
-    request = LaunchRequest(cmd=("tmux", "attach-session"), managed=managed)
-    output = io.StringIO()
-    with mock.patch("sys.stdin.readline") as readline:
-        pause_on_launch_failure(output, request, 0, "cmd", 0.1)
-    assert output.getvalue() == ""
-    readline.assert_not_called()
-
-
-def test_unmanaged_fast_zero_reports_that_no_output_was_retained() -> None:
-    request = LaunchRequest(cmd=("tmux", "attach-session"), label="attach demo")
-    output = io.StringIO()
-    with mock.patch("sys.stdin.readline", return_value="\n"):
-        pause_on_launch_failure(output, request, 0, "cmd", 0.1)
-    rendered = output.getvalue()
-    assert "exited immediately" in rendered
-    assert "no diagnostic output was retained" in rendered
-    assert "see output above" not in rendered
-
-
-def test_acknowledged_error_return_does_not_show_a_false_fast_exit() -> None:
-    from helpers import make_config
-
-    request = LaunchRequest(("tmux", "attach-session"), handoff=TmuxHandoff(make_config(), "alice"))
-    output = io.StringIO()
-    with mock.patch("sys.stdin.readline") as readline:
-        pause_on_launch_failure(output, request, 0, "cmd", 0.1)
-    assert output.getvalue() == ""
-    readline.assert_not_called()
-
-
-def test_nonzero_launch_reports_direct_terminal_output() -> None:
-    request = LaunchRequest(cmd=("tmux", "attach-session"), label="attach demo")
-    output = io.StringIO()
-    with mock.patch("sys.stdin.readline", return_value="\n"):
-        pause_on_launch_failure(output, request, 1, "cmd", 2.0)
-    rendered = output.getvalue()
-    assert "failed (rc=1" in rendered
-    assert "command output, if any, was written directly above" in rendered
+    base = LaunchRequest(
+        cmd=("tmux", "attach-session"), label="attach demo", prelaunch=(("prepare", "workspace"),)
+    )
+    requests = {
+        "unmanaged": base,
+        "managed": replace(base, managed=managed),
+        "handoff": replace(base, handoff=TmuxHandoff(make_config(), "alice")),
+    }
+    for kind, rc, wall, stage, expected in (
+        ("managed", 0, 0.1, "cmd", ""),
+        ("handoff", 0, 0.1, "cmd", ""),
+        (
+            "unmanaged",
+            0,
+            0.1,
+            "cmd",
+            "\nuxon: attach demo exited immediately (rc=0 in 0.10s, stage=cmd)\n  command: tmux attach-session\n  no diagnostic output was retained\npress Enter to return to the uxon menu...\n",
+        ),
+        (
+            "unmanaged",
+            1,
+            2.0,
+            "cmd",
+            "\nuxon: attach demo failed (rc=1, stage=cmd)\n  command: tmux attach-session\n  command output, if any, was written directly above\npress Enter to return to the uxon menu...\n",
+        ),
+        (
+            "managed",
+            1,
+            0.1,
+            "prelaunch",
+            "\nuxon: attach demo failed (rc=1, stage=prelaunch)\n  command: prepare workspace\n  command output, if any, was written directly above\npress Enter to return to the uxon menu...\n",
+        ),
+        (
+            "handoff",
+            1,
+            0.1,
+            "cmd",
+            "\nuxon: attach demo failed (rc=1, stage=cmd)\n  command: tmux attach-session\n  command output, if any, was written directly above\npress Enter to return to the uxon menu...\n",
+        ),
+        ("unmanaged", 130, 0.1, "cmd", ""),
+        ("unmanaged", 0, 1.0, "cmd", ""),
+        ("unmanaged", 0, 2.0, "cmd", ""),
+    ):
+        output = io.StringIO()
+        with mock.patch("sys.stdin.readline", return_value="\n") as readline:
+            pause_on_launch_failure(output, requests[kind], rc, stage, wall)
+        assert output.getvalue() == expected, (kind, rc, wall, stage)
+        assert readline.call_count == int(bool(expected)), (kind, rc, wall, stage)

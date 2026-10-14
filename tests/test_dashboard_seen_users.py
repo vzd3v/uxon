@@ -95,84 +95,20 @@ def _snapshot(host: str, sessions: list[dict[str, Any]]) -> RemoteSnapshot:
     )
 
 
-class CollectUserSetTests(unittest.TestCase):
-    """``collect_user_set`` is pure: walks the three model sources,
-    dedupes, returns frozenset of non-empty usernames. No state
-    mutation, no I/O."""
+def test_collector_unions_sources_ignores_blank_and_cold_slots() -> None:
+    from uxon.tui.dashboard.seen_users import collect_user_set
 
-    def test_empty_state_returns_empty(self) -> None:
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        self.assertEqual(collect_user_set(TuiState()), frozenset())
-
-    def test_main_sessions_contribute(self) -> None:
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        state = TuiState(main=_main_data(sessions=(_session(user="alice"),)))
-        self.assertEqual(collect_user_set(state), frozenset({"alice"}))
-
-    def test_main_other_sessions_contribute(self) -> None:
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        state = TuiState(main=_main_data(other_sessions=(_session(user="bob"),)))
-        self.assertEqual(collect_user_set(state), frozenset({"bob"}))
-
-    def test_remote_snapshot_contributes(self) -> None:
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        state = TuiState()
-        state.remote["h1"] = SlotState(value=_snapshot("h1", [_wire_rec(user="carol")]))
-        self.assertEqual(collect_user_set(state), frozenset({"carol"}))
-
-    def test_all_three_sources_folded(self) -> None:
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        state = TuiState(
-            main=_main_data(
-                sessions=(_session(user="alice"),),
-                other_sessions=(_session(user="bob", name="uxon-b@claude"),),
-            )
-        )
-        state.remote["h1"] = SlotState(value=_snapshot("h1", [_wire_rec(user="carol")]))
-        self.assertEqual(collect_user_set(state), frozenset({"alice", "bob", "carol"}))
-
-    def test_duplicates_deduped(self) -> None:
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        state = TuiState(
-            main=_main_data(
-                sessions=(
-                    _session(user="alice", name="uxon-a1@claude"),
-                    _session(user="alice", name="uxon-a2@claude"),
-                ),
-            )
-        )
-        state.remote["h1"] = SlotState(value=_snapshot("h1", [_wire_rec(user="alice")]))
-        self.assertEqual(collect_user_set(state), frozenset({"alice"}))
-
-    def test_empty_user_skipped(self) -> None:
-        # An empty username is not a meaningful "second user" signal —
-        # treating it as one would auto-flip the latch on garbage data.
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        state = TuiState(main=_main_data(sessions=(_session(user=""),)))
-        self.assertEqual(collect_user_set(state), frozenset())
-
-    def test_no_main_no_remote_returns_empty(self) -> None:
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        # state.main = None — never-loaded sentinel; no crash.
-        state = TuiState()
-        self.assertEqual(collect_user_set(state), frozenset())
-
-    def test_remote_slot_value_none_skipped(self) -> None:
-        # A SlotState with value=None (host probed but not yet landed)
-        # must not crash the walk.
-        from uxon.tui.dashboard.seen_users import collect_user_set
-
-        state = TuiState()
-        state.remote["h1"] = SlotState(value=None)
-        self.assertEqual(collect_user_set(state), frozenset())
+    own = (_session("alice"), _session("alice", "uxon-second@claude"), _session(""))
+    foreign = (_session("bob"),)
+    records = [_wire_rec("carol"), _wire_rec("alice"), _wire_rec("")]
+    state = TuiState(main=_main_data(sessions=own, other_sessions=foreign))
+    state.remote["live"] = SlotState(value=_snapshot("live", records))
+    state.remote["cold"] = SlotState()
+    assert collect_user_set(state) == frozenset({"alice", "bob", "carol"})
+    assert state.main.sessions == own
+    assert state.main.other_sessions == foreign
+    assert [r["user"] for r in records] == ["carol", "alice", ""]
+    assert collect_user_set(TuiState(remote={"cold": SlotState()})) == frozenset()
 
 
 class CrossUserLatchedTests(unittest.TestCase):

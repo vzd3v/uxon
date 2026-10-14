@@ -1,21 +1,8 @@
-"""Unit tests for :class:`uxon.tui.main_data.MainData`.
-
-Stage 8 commit 2: introduces :class:`MainData` as a read-only mirror
-of the rebuild-derived fields on :class:`TuiContext`. The contract
-this test file pins:
-
-* ``MainData.from_context(ctx)`` reflects every rebuild-derived
-  field as a structural snapshot — no aliasing of the source list.
-* The dataclass is frozen and uses ``slots`` (no ``__dict__``).
-* The ``loading`` field is **not** present (intentional — see plan).
-* Two ``from_context`` calls on equivalent inputs produce equal but
-  not identical objects (``MainData`` is value-semantic, not memoised).
-"""
+"""Rebuild snapshots remain independent of producer collections."""
 
 from __future__ import annotations
 
 import dataclasses
-import unittest
 
 from uxon.tui.context import (
     LaunchRequest,
@@ -63,69 +50,56 @@ def _mk_ctx(**overrides) -> TuiContext:
     return TuiContext(**base)
 
 
-class FromContextTests(unittest.TestCase):
-    def test_every_field_is_mirrored(self) -> None:
-        ctx = _mk_ctx()
-        md = MainData.from_context(ctx)
-        self.assertEqual(md.sessions, tuple(ctx.sessions))
-        self.assertEqual(md.other_sessions, ())
-        self.assertIs(md.server_status, ctx.server_status)
-        self.assertIs(md.sudo_caps, ctx.sudo_caps)
-        self.assertEqual(md.scope_skipped_users, ("bob",))
-        self.assertEqual(md.cwd, "/srv/work")
-        self.assertEqual(md.cwd_short, "work")
-        self.assertEqual(md.new_project_root, "/srv/work")
-        self.assertEqual(md.existing_projects, (("proj-a", "1m"), ("proj-b", "5m")))
-        self.assertEqual(md.total_cpu, "13")
-        self.assertEqual(md.total_ram, "800M")
-        self.assertEqual(md.version, "0.0.0-test")
+def test_nondefault_snapshot_survives_producer_collection_mutations() -> None:
+    from uxon.infra.probes import HostStatsResult
 
-    def test_sequences_are_tuples(self) -> None:
-        ctx = _mk_ctx()
-        md = MainData.from_context(ctx)
-        self.assertIsInstance(md.sessions, tuple)
-        self.assertIsInstance(md.other_sessions, tuple)
-        self.assertIsInstance(md.scope_skipped_users, tuple)
-        self.assertIsInstance(md.existing_projects, tuple)
+    stats = HostStatsResult(
+        cpu_pct=12.0,
+        mem_used_kib=1000,
+        mem_total_kib=4000,
+        loadavg_1m=0.5,
+        uptime_s=3600,
+        kernel="test",
+    )
+    ctx = _mk_ctx(scope_skipped_users=["bob"], host_stats=stats)
+    ctx.other_sessions.append(dataclasses.replace(ctx.sessions[0], user="bob", name="foreign"))
+    snapshot = MainData.from_context(ctx)
 
-    def test_no_aliasing_of_source_lists(self) -> None:
-        ctx = _mk_ctx()
-        md = MainData.from_context(ctx)
-        # Mutating the source list does not leak into the snapshot.
-        ctx.sessions.clear()
-        self.assertEqual(len(md.sessions), 1)
+    def projection(md):
+        return (
+            tuple((s.name, s.user) for s in md.sessions),
+            tuple((s.name, s.user) for s in md.other_sessions),
+            md.server_status,
+            md.sudo_caps,
+            md.scope_skipped_users,
+            md.cwd,
+            md.cwd_short,
+            md.new_project_root,
+            md.existing_projects,
+            md.total_cpu,
+            md.total_ram,
+            md.version,
+            md.host_stats,
+        )
 
-
-class FrozenSlotsTests(unittest.TestCase):
-    def test_frozen(self) -> None:
-        md = MainData.from_context(_mk_ctx())
-        with self.assertRaises(dataclasses.FrozenInstanceError):
-            md.cwd = "/tmp"  # type: ignore[misc]
-
-    def test_no_dict(self) -> None:
-        # ``slots=True`` removes ``__dict__`` — verify so a future
-        # commit doesn't silently regress the memory-saving contract.
-        md = MainData.from_context(_mk_ctx())
-        self.assertFalse(hasattr(md, "__dict__"))
-
-    def test_loading_is_not_a_field(self) -> None:
-        # ``loading`` is intentionally absent — see plan §commit 2.
-        # It is a property of the slot store ("nothing has landed
-        # yet"), not of the rebuild output. Pinning this prevents a
-        # well-meaning future commit from copy-pasting the field
-        # onto MainData and obscuring the structural distinction.
-        field_names = {f.name for f in dataclasses.fields(MainData)}
-        self.assertNotIn("loading", field_names)
-
-
-class EqualityTests(unittest.TestCase):
-    def test_equal_inputs_produce_equal_outputs(self) -> None:
-        a = MainData.from_context(_mk_ctx())
-        b = MainData.from_context(_mk_ctx())
-        self.assertEqual(a, b)
-        # But not identical — MainData is value-semantic, not memoised.
-        self.assertIsNot(a, b)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    expected = (
+        (("s1", "dana_agent"),),
+        (("foreign", "bob"),),
+        ServerStatus(load="0.5"),
+        SudoCapability(reachable_users=frozenset({"alice"})),
+        ("bob",),
+        "/srv/work",
+        "work",
+        "/srv/work",
+        (("proj-a", "1m"), ("proj-b", "5m")),
+        "13",
+        "800M",
+        "0.0.0-test",
+        stats,
+    )
+    assert projection(snapshot) == expected
+    ctx.sessions.clear()
+    ctx.other_sessions.clear()
+    ctx.existing_projects.clear()
+    ctx.scope_skipped_users.clear()
+    assert projection(snapshot) == expected

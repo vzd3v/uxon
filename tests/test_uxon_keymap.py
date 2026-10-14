@@ -1,34 +1,28 @@
-"""JCUKEN ↔ QWERTY layout-alias contract for ``BINDINGS``."""
-
-from __future__ import annotations
+"""Physical-key aliases retain actions without duplicating footer entries."""
 
 from textual.binding import Binding
 
-from uxon.tui.keymap import LAYOUT_ALIASES, bindings_with_aliases
+from uxon.tui.keymap import bindings_with_aliases
 
 
-def test_known_key_gets_a_twin():
-    out = bindings_with_aliases(Binding("q", "quit", "Quit", show=True))
-    assert {"q", "й"} <= {b.key for b in out}
-    quit_actions = {b.action for b in out}
-    assert quit_actions == {"quit"}
-    twin = next(b for b in out if b.key == "й")
-    assert twin.show is False  # twins never duplicate the footer entry
-
-
-def test_unknown_key_passes_through_no_twin():
-    out = bindings_with_aliases(Binding("f10", "help", "", show=False))
-    keys = {b.key for b in out}
-    assert keys == {"f10"}
-
-
-def test_uppercase_letter_twin_exists():
-    out = bindings_with_aliases(Binding("D", "kill_all", "", show=True))
-    keys = {b.key for b in out}
-    assert "D" in keys and LAYOUT_ALIASES["D"] in keys
-
-
-def test_hosts_toggle_key_has_ru_twin():
-    # The FleetStatusBar `h` toggle must reach RU-layout operators too.
-    out = bindings_with_aliases(Binding("h", "toggle_hosts", "Hosts", show=True))
-    assert {"h", "р"} <= {b.key for b in out}
+def test_mixed_bindings_preserve_originals_and_alias_metadata() -> None:
+    originals = (
+        Binding("q", "quit", "Quit"),
+        Binding("D", "kill_all", "Kill all"),
+        Binding("h", "toggle_hosts", "Hosts"),
+        Binding("d", "kill", "Kill", priority=True),
+        Binding("f10", "help", "Help", show=False),
+    )
+    result = bindings_with_aliases(*originals)
+    assert [(b.key, b.action, b.description, b.show, b.priority) for b in result] == [
+        ("q", "quit", "Quit", True, False),
+        ("й", "quit", "Quit", False, False),
+        ("D", "kill_all", "Kill all", True, False),
+        ("В", "kill_all", "Kill all", False, False),
+        ("h", "toggle_hosts", "Hosts", True, False),
+        ("р", "toggle_hosts", "Hosts", False, False),
+        ("d", "kill", "Kill", True, True),
+        ("в", "kill", "Kill", False, True),
+        ("f10", "help", "Help", False, False),
+    ]
+    assert result[::2] == list(originals)

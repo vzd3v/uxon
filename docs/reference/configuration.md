@@ -315,8 +315,8 @@ formatting) lives in
 
 ## Dashboard view + sort
 
-Sort is a fixed contract owned by the selector — locals first
-(own then other-user), then remotes in `[[remote_hosts]]`
+Sort is a fixed contract owned by the selector — one local block first
+(own and other-user rows together), then remotes in `[[remote_hosts]]`
 declaration order, with within-block ranking by last-attach
 descending then name ascending. There is no sort setting and no
 sort cycle bindings.
@@ -337,6 +337,8 @@ preserved (`proj@claude_work-2` → `proj-2`).
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
 | `tui.search.fields` | array | `["name", "user"]` | Fields the dashboard search bar matches against. Allowed values: `name`, `user`, `host`, `path`, `cmd`. Unknown entries fail loud at load. |
+
+Configured fields apply to both local sessions and sessions from SSH peers.
 
 The search bar is summoned on demand — hidden by default, press
 `s` (or `/`) from anywhere to reveal it and focus the input.
