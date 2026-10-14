@@ -94,7 +94,8 @@ See [client setup](docs/clients.md), [privacy](docs/privacy.md),
   `new_project_root` and launch.
 
 The dashboard combines your sessions, authorized other-user sessions and
-configured SSH peers. Choose a session to attach or stop it with confirmation.
+configured SSH peers. Search across configured session fields, then choose a
+session to attach or stop it with confirmation.
 The launch picker uses the selected profile's agent modes; it preserves that
 choice through workspace selection. See [TUI keys](docs/reference/keybindings.md)
 and [dashboard recipes](docs/guides/customise/customise-dashboard.md).

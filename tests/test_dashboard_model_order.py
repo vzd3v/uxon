@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from uxon.domain.wire_schema import RemoteSnapshot
-from uxon.tui.dashboard import model as model_module
 from uxon.tui.dashboard.model import select_dashboard_model
 from uxon.tui.dashboard.ui_state import DashboardUiState
 from uxon.tui.slot_state import SlotState
@@ -62,13 +61,19 @@ def _wire(name, *, last_attached, user="me", cpu_pct=0.0):
     }
 
 
-def test_locals_first_then_cfg_order_remotes_then_recency_within_block():
-    model_module._LAST_OUTPUT = ()
+def test_locals_first_then_cfg_order_remotes_then_recency_within_block() -> None:
+    locals_ = [
+        _local_session("missing", None, cpu=999),
+        _local_session("zulu", 200),
+        _local_session("old", 100),
+        _local_session("alpha", 200),
+    ]
+    foreign = [
+        _local_session("foreign-new", 300, user="bob"),
+        _local_session("foreign-missing", None, user="bob", cpu=999),
+    ]
     state = SimpleNamespace(
-        main=SimpleNamespace(
-            sessions=[_local_session("alpha", 200), _local_session("bravo", 100)],
-            other_sessions=[],
-        ),
+        main=SimpleNamespace(sessions=locals_, other_sessions=foreign),
         remote={
             "kris": SlotState(
                 value=RemoteSnapshot(
@@ -76,8 +81,10 @@ def test_locals_first_then_cfg_order_remotes_then_recency_within_block():
                     fetched_at_epoch=1.0,
                     error=None,
                     sessions=[
+                        _wire("k-missing", last_attached=None, cpu_pct=999),
                         _wire("k-old", last_attached=10),
-                        _wire("k-new", last_attached=500),
+                        _wire("k-zulu", last_attached=500),
+                        _wire("k-alpha", last_attached=500),
                     ],
                 )
             ),
@@ -86,18 +93,32 @@ def test_locals_first_then_cfg_order_remotes_then_recency_within_block():
                     host_name="ada",
                     fetched_at_epoch=1.0,
                     error=None,
-                    sessions=[
-                        _wire("a1", last_attached=50),
-                    ],
+                    sessions=[_wire("a1", last_attached=50)],
                 )
             ),
         },
     )
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name="ada"), SimpleNamespace(name="kris")])
-    ui = DashboardUiState()
-    out = select_dashboard_model(state, cfg, ui)
-    assert [r.host for r in out] == [None, None, "ada", "kris", "kris"]
-    # Within locals: more-recent first ("alpha" 200 > "bravo" 100).
-    assert [r.name for r in out[:2]] == ["alpha", "bravo"]
-    # Within kris: 500 > 10.
-    assert [r.name for r in out[3:]] == ["k-new", "k-old"]
+    out = select_dashboard_model(state, cfg, DashboardUiState())
+    assert [(r.host, r.user, r.name) for r in out] == [
+        (None, "bob", "foreign-new"),
+        (None, "me", "alpha"),
+        (None, "me", "zulu"),
+        (None, "me", "old"),
+        (None, "bob", "foreign-missing"),
+        (None, "me", "missing"),
+        ("ada", "me", "a1"),
+        ("kris", "me", "k-alpha"),
+        ("kris", "me", "k-zulu"),
+        ("kris", "me", "k-old"),
+        ("kris", "me", "k-missing"),
+    ]
+    assert [s.name for s in locals_] == ["missing", "zulu", "old", "alpha"]
+    assert [s.name for s in foreign] == ["foreign-new", "foreign-missing"]
+    assert list(state.remote) == ["kris", "ada"]
+    assert [r["name"] for r in state.remote["kris"].value.sessions] == [
+        "k-missing",
+        "k-old",
+        "k-zulu",
+        "k-alpha",
+    ]

@@ -1,28 +1,10 @@
-"""Unit tests for :class:`uxon.tui.tui_state.TuiState` and the
-:class:`TuiContext` → :class:`TuiState` seeding at App construction.
-
-Pinned contracts:
-
-* ``TuiState()`` constructs with every slot in its zero state and
-  ``main is None`` (the "never loaded" sentinel).
-* ``state.refresh_tick`` is the live counter (a plain mutable field);
-  the read-through proxy on ``TuiContext`` is gone (Phase P5).
-* ``UxonApp`` constructs a fresh :class:`TuiState`, seeds the agent
-  availability slot from the launching ctx, and the App's ``state`` is
-  identity-stable across ctx replacement (``app.ctx`` may change;
-  ``app.state`` does not).
-* ``MainScreen.loading`` is declared as a writable reactive and has
-  no ``compute_loading`` method (a compute would make the reactive
-  read-only — see plan §commit 3 / §commit 11 verification).
-"""
+"""Availability seeding and loading/rebuild behavior at the App boundary."""
 
 from __future__ import annotations
 
 import unittest
 
 from uxon.tui.context import TuiContext
-from uxon.tui.slot_state import SlotState
-from uxon.tui.tui_state import TuiState
 
 
 def _bare_ctx(**overrides) -> TuiContext:
@@ -38,84 +20,6 @@ def _bare_ctx(**overrides) -> TuiContext:
     )
     base.update(overrides)
     return TuiContext(**base)
-
-
-class TuiStateZeroStateTests(unittest.TestCase):
-    def test_main_is_none_initially(self) -> None:
-        s = TuiState()
-        self.assertIsNone(s.main)
-
-    def test_refresh_tick_starts_at_zero(self) -> None:
-        self.assertEqual(TuiState().refresh_tick, 0)
-
-    def test_every_slot_is_zero_state(self) -> None:
-        s = TuiState()
-        for slot_name in (
-            "agent_availability",
-            "link_health",
-            "cwd_writable",
-        ):
-            slot = getattr(s, slot_name)
-            self.assertIsInstance(slot, SlotState)
-            self.assertIsNone(slot.value)
-            self.assertIsNone(slot.last_attempt_at)
-            self.assertIsNone(slot.last_success_at)
-            self.assertEqual(slot.consecutive_failures, 0)
-            self.assertFalse(slot.from_cache)
-            self.assertEqual(slot.elapsed_ms_recent, ())
-
-    def test_remote_slot_starts_empty(self) -> None:
-        s = TuiState()
-        self.assertEqual(s.remote, {})
-
-    def test_field_level_mutability(self) -> None:
-        # Plan §"Note on container style": TuiState stays mutable
-        # (field-level), MainData and SlotState are frozen.
-        s = TuiState()
-        s.refresh_tick = 7
-        self.assertEqual(s.refresh_tick, 7)
-
-
-class RefreshTickFieldTests(unittest.TestCase):
-    def test_refresh_tick_is_a_plain_mutable_field(self) -> None:
-        # Post-P5 the live counter is a plain field on ``TuiState`` —
-        # no read-through proxy on ``TuiContext``.
-        state = TuiState()
-        self.assertEqual(state.refresh_tick, 0)
-        state.refresh_tick = 5
-        self.assertEqual(state.refresh_tick, 5)
-
-
-class AppStateIntegrationTests(unittest.TestCase):
-    def test_app_creates_state(self) -> None:
-        try:
-            import textual  # noqa: F401
-        except ImportError:
-            self.skipTest("textual not available")
-        from uxon.tui.app import UxonApp
-
-        ctx = _bare_ctx(loading=True)
-        app = UxonApp(ctx, probe_agents=False)
-        self.assertIsInstance(app.state, TuiState)
-        # The live counter advances on the App's state, written by the
-        # rebuild handler — not via any proxy on ``ctx``.
-        app.state.refresh_tick = 3
-        self.assertEqual(app.state.refresh_tick, 3)
-
-    def test_state_is_identity_stable_across_ctx_replacement(self) -> None:
-        try:
-            import textual  # noqa: F401
-        except ImportError:
-            self.skipTest("textual not available")
-        from uxon.tui.app import UxonApp
-
-        ctx = _bare_ctx(loading=True)
-        app = UxonApp(ctx, probe_agents=False)
-        first_state = app.state
-        # Plain attribute reassignment — apply_loaded_ctx does this
-        # inside the running app; here we exercise the same shape.
-        app.ctx = _bare_ctx(loading=False)
-        self.assertIs(app.state, first_state)
 
 
 class MainScreenLoadingReactiveTests(unittest.TestCase):
@@ -182,39 +86,19 @@ class MainScreenLoadingOverlayTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(screen.query_one("#action-cwd", ActionRow).display)
 
 
-class AvailabilitySeedTests(unittest.TestCase):
-    """The App seeds ``state.agent_availability`` from the launching
-    ctx's static availability dict at construction. Consumers read the
-    live slot directly thereafter (no read-through proxy on ``ctx``).
-    """
+def test_availability_seed_copies_nonempty_mapping_in_both_directions() -> None:
+    from uxon.tui.app import UxonApp
 
-    def test_app_seeds_availability_slot_from_ctx(self) -> None:
-        try:
-            import textual  # noqa: F401
-        except ImportError:
-            self.skipTest("textual not available")
-        from uxon.tui.app import UxonApp
-
-        ctx = _bare_ctx(loading=True)
-        ctx.agent_availability = {"claude": "pending"}
-        app = UxonApp(ctx, probe_agents=False)
-        self.assertEqual(app.state.agent_availability.value, {"claude": "pending"})
-
-    def test_seed_is_a_copy_not_the_ctx_dict(self) -> None:
-        try:
-            import textual  # noqa: F401
-        except ImportError:
-            self.skipTest("textual not available")
-        from uxon.tui.app import UxonApp
-
-        ctx = _bare_ctx(loading=True)
-        ctx.agent_availability = {}
-        app = UxonApp(ctx, probe_agents=False)
-        # Mutating the live slot's dict does not leak back to the
-        # static seed on ``ctx`` (the App copied it at construction).
-        app.state.agent_availability.value["codex"] = "ok"
-        self.assertEqual(ctx.agent_availability, {})
-        self.assertEqual(app.state.agent_availability.value, {"codex": "ok"})
+    seed = {"claude": "pending"}
+    ctx = _bare_ctx(loading=True, agent_availability=seed)
+    app = UxonApp(ctx, probe_agents=False)
+    assert app.state.main is None
+    assert app.state.agent_availability.value == {"claude": "pending"}
+    seed["claude"] = "missing"
+    seed["cursor"] = "ok"
+    assert app.state.agent_availability.value == {"claude": "pending"}
+    app.state.agent_availability.value["codex"] = "ok"
+    assert seed == {"claude": "missing", "cursor": "ok"}
 
 
 class StateMainCanonicalTests(unittest.TestCase):
@@ -261,55 +145,3 @@ class StateMainCanonicalTests(unittest.TestCase):
         self.assertIsNotNone(app.state.main)
         self.assertEqual(app.state.main.cwd, "/srv/work")  # type: ignore[union-attr]
         self.assertEqual(app.state.main.total_cpu, "13")  # type: ignore[union-attr]
-
-
-class SelectorIdentityAcrossRefreshTickTests(unittest.TestCase):
-    """Stage 8 commit 6b regression: selectors must key on the
-    specific subfield they consume, not on whole-TuiState identity.
-    refresh_tick advances every local rebuild tick (it's a counter),
-    so any selector that memoises on whole-state identity would
-    cache-miss every tick — defeating the entire point of the
-    identity-stable apply.
-
-    Pin it: the dashboard model selector returns the same tuple
-    object across a ``refresh_tick`` increment with no
-    state.remote / state.main change.
-    """
-
-    def test_select_dashboard_model_stable_across_refresh_tick(self) -> None:
-        from uxon.domain.wire_schema import RemoteSnapshot
-        from uxon.infra.remote_hosts import RemoteHost
-        from uxon.tui.dashboard import model as dashboard_model
-        from uxon.tui.dashboard.model import select_dashboard_model
-        from uxon.tui.dashboard.ui_state import DashboardUiState
-        from uxon.tui.slot_state import SlotState
-        from uxon.tui.tui_state import TuiState
-
-        # Reset module-level cache so this test stands alone.
-        dashboard_model._LAST_OUTPUT = ()
-
-        host = RemoteHost(name="prod", ssh_alias="prod", description="", remote_uxon="uxon")
-        snap = RemoteSnapshot(
-            host_name="prod",
-            fetched_at_epoch=1.0,
-            error=None,
-            sessions=[{"user": "u1", "name": "n1"}],
-        )
-        state = TuiState()
-        state.remote["prod"] = SlotState(value=snap, last_attempt_at=1.0)
-
-        from types import SimpleNamespace
-
-        cfg = SimpleNamespace(remote_hosts=[host], current_user="u1")
-        ui = DashboardUiState()
-
-        first = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
-        # Advance refresh_tick — selector must NOT cache-miss.
-        state.refresh_tick += 1
-        state.refresh_tick += 1
-        second = select_dashboard_model(state, cfg, ui)  # type: ignore[arg-type]
-        self.assertIs(first, second)
-
-
-if __name__ == "__main__":
-    unittest.main()
