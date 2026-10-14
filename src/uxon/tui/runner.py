@@ -24,6 +24,7 @@ from functools import partial
 
 from uxon.app.session_handoff import run_launch_request
 from uxon.infra.events import debug as _debug
+from uxon.infra.terminal_title import set_dashboard_title
 
 from .context import CallbackError, TuiContext
 from .hints import TEXTUAL_MISSING_HINT
@@ -138,6 +139,9 @@ def run(ctx: TuiContext) -> int:
 
     pending_status: str = ""
     while True:
+        set_dashboard_title(
+            sys.stdout, enabled=ctx.tmux_set_terminal_title, term=os.environ.get("TERM", "")
+        )
         if sys.stdout.isatty():
             sys.stdout.write(
                 "\ruxon | New session in current folder | Create new project | Open existing project\r"

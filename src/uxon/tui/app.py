@@ -93,7 +93,7 @@ class UxonApp(App):
         probe_agents: bool = True,
     ) -> None:
         super().__init__()
-        # Terminal/window title — "uxon <version>" rather than Textual's
+        # Header title — "uxon <version>" rather than Textual's
         # default class-name ("UxonApp"). Version read live from the
         # single source of truth so it never drifts.
         self.title = f"uxon {__version__}"

@@ -465,17 +465,30 @@ For the multi-host operating model see
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `tmux.set_terminal_title` | bool | `true` | Show the full session name in the terminal's tab/window title when entering a new or existing session from the CLI or TUI. Independent of `manage_options`. Set `false` to disable title updates on the next entry. |
+| `tmux.set_terminal_title` | bool | `true` | Show the full session name during CLI/TUI attach and `uxon` when the interactive dashboard opens or resumes after detach. Independent of `manage_options`. Set `false` to disable updates on the next session or dashboard entry. |
 
 Title updates use tmux's native `set-titles` and `set-titles-string` options,
 scoped to the entered session. The title follows session switches and renames;
 workload pane titles do not replace it. This setting takes precedence over
 global title options in `[tmux.options]` or the user's tmux configuration.
-For remote attach, the peer's uxon configuration controls the title. The
-terminal must support and permit application title changes; SSH carries them
-to the client terminal, while an outer multiplexer may apply its own policy.
-After detach, the shell or terminal controls the title; uxon does not restore
-an earlier title.
+
+The dashboard sets `uxon` once on each entry using the same standard OSC 0
+title scope. It writes only to a TTY with a nonempty `TERM` other than `dumb`
+or `linux`. Reentry uses refreshed configuration; if refresh fails, the last
+valid setting remains in effect. An already displayed title is not cleared
+when the setting is disabled.
+
+For remote attach, the peer's configuration controls the session title and
+the local configuration controls the returning dashboard title. After CLI
+detach or quitting the TUI, the shell or terminal controls the title; uxon
+does not query or restore an arbitrary earlier title.
+
+The terminal must support and permit application title changes. This works
+with commonly used modern emulators, including Windows Terminal; its
+[`suppressApplicationTitle`](https://learn.microsoft.com/en-us/windows/terminal/tutorials/tab-title)
+setting and manual tab titles can override application titles. SSH carries
+title sequences to the client terminal. An enclosing tmux/screen or a custom
+tab-title format can apply its own policy; uxon does not bypass it.
 
 To disable:
 

@@ -952,6 +952,8 @@ class UxonTests(unittest.TestCase):
                     [[remote_hosts]]
                     name = "peer1"
                     ssh_alias = "peer1"
+                    [tmux]
+                    set_terminal_title = false
                 """).strip()
                 + "\n",
                 tmpdir,
@@ -960,6 +962,7 @@ class UxonTests(unittest.TestCase):
                 cfg, "dana_agent", "dana_agent", tmpdir, skeleton=True
             )
         self.assertTrue(ctx.loading)
+        self.assertFalse(ctx.tmux_set_terminal_title)
         names = [s.name for s in ctx.refresh_sources]
         self.assertIn("main_ctx_rebuild", names)
         self.assertIn("remote:peer1", names)
