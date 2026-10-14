@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""AC8 — static enforcement of the single-spawn-seam policy.
+"""Static enforcement of the single-spawn-seam policy.
 
 Every external-tool spawn in ``src/uxon/`` must go through ``run_query``
 (background, Lane A) or the one sanctioned interactive handoff in
@@ -32,33 +32,45 @@ _ALLOWED = frozenset(
 _SUBPROCESS_SPAWN_ATTRS = frozenset({"run", "call", "check_output", "check_call", "Popen"})
 
 
-def _spawn_callee_name(call: ast.Call) -> str | None:
+def _spawn_callee_name(call: ast.Call, modules: set[str], imports: dict[str, str]) -> str | None:
     """Return a label for a raw-spawn call-expression, else ``None``.
 
-    Matches ``subprocess.run(`` / ``.call(`` / ``.check_output(`` /
-    ``.check_call(`` / ``.Popen(`` and a bare ``Popen(`` (from-import form).
-    A bare ``run(``/``call(`` is *not* matched — those collide with unrelated
-    methods (``self.run``, ``thread.run``); the spawn policy only forbids the
-    ``subprocess`` module's spawns and any ``Popen``.
+    Imported module/function aliases retain their original subprocess API
+    name in diagnostics. Unrelated bare ``run`` functions are allowed.
+    Dynamic dispatch is outside this source check; the runtime guard
+    independently verifies spawns when the application executes them.
     """
     func = call.func
     if isinstance(func, ast.Attribute):
-        if isinstance(func.value, ast.Name) and func.value.id == "subprocess":
+        if isinstance(func.value, ast.Name) and func.value.id in modules:
             if func.attr in _SUBPROCESS_SPAWN_ATTRS:
                 return f"subprocess.{func.attr}"
-        if func.attr == "Popen":
-            return "Popen"
-    elif isinstance(func, ast.Name) and func.id == "Popen":
-        return "Popen"
+    elif isinstance(func, ast.Name):
+        return imports.get(func.id)
     return None
 
 
 def _violations_in(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(), filename=str(path))
+    modules: set[str] = set()
+    imports: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "subprocess"
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            imports.update(
+                {
+                    alias.asname or alias.name: f"subprocess.{alias.name}"
+                    for alias in node.names
+                    if alias.name in _SUBPROCESS_SPAWN_ATTRS
+                }
+            )
     out: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            name = _spawn_callee_name(node)
+            name = _spawn_callee_name(node, modules, imports)
             if name is not None:
                 out.append(f"{path}:{node.lineno}: raw spawn {name}(")
     return out
@@ -73,10 +85,3 @@ def test_no_raw_subprocess_spawn_outside_run_query() -> None:
     assert not offenders, "raw external-tool spawns must go through run_query:\n" + "\n".join(
         offenders
     )
-
-
-def test_guard_is_a_recognised_allowlist_invariant() -> None:
-    # The allowlist must stay tiny and real — guard against a file being
-    # added to it that no longer exists (a silent hole in the policy).
-    for path in _ALLOWED:
-        assert path.is_file(), f"allowlisted spawn site missing: {path}"

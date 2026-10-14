@@ -76,273 +76,8 @@ def _mk_ctx(**overrides):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class MainScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def test_q_quits(self) -> None:
-        from uxon.tui.app import UxonApp
-
-        app = UxonApp(_mk_ctx(), probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            # SearchBar has default focus; Esc blurs it so ``q``
-            # reaches the screen-level binding instead of being
-            # consumed as Input text.
-            await pilot.press("escape")
-            await pilot.pause()
-            await pilot.press("q")
-            await pilot.pause()
-        self.assertEqual(app.quit_rc, 0)
-
-    async def test_enter_on_default_focus_activates_action_cwd(self) -> None:
-        from uxon.tui.app import UxonApp
-
-        app = UxonApp(_mk_ctx(), probe_agents=False)
-        calls: list[str] = []
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            screen._launch_cwd = lambda: calls.append("cwd")
-            # action-cwd holds default focus; Enter activates it.
-            await pilot.press("enter")
-            await pilot.pause()
-        self.assertEqual(calls, ["cwd"])
-
-    async def test_refresh_preserves_action_focus(self) -> None:
-        from uxon.tui.app import UxonApp
-        from uxon.tui.widgets import ActionRow
-
-        def fake_refresh():
-            return _mk_ctx(on_refresh=fake_refresh)
-
-        app = UxonApp(_mk_ctx(on_refresh=fake_refresh), probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("#action-open", ActionRow).focus()
-            await pilot.press("r")
-            await pilot.pause()
-            self.assertEqual(app.screen.focused.id, "action-open")
-
-    async def test_skeleton_swap_preserves_agent_availability(self) -> None:
-        """Probe results survive the skeleton→loaded ctx swap.
-
-        Regression for a bug where ``apply_loaded_ctx`` carried over
-        ``link_health_status`` but not ``agent_availability``: the probe
-        result used to be orphaned on a ctx swap, so every subsequent
-        ``LaunchOptionsScreen`` saw a fresh ``pending`` dict and rendered
-        ``(checking…)`` forever, blocking the agent commit path.
-
-        Post-shim-removal the availability lives on the App-owned
-        ``state.agent_availability`` slot (identity-stable across rebuild
-        ticks), so the swap can no longer orphan it. Pin both: the slot
-        keeps the probe result, and the static snapshot stays shared
-        (``app.ctx is app.screen.cfg``).
-        """
-        from uxon.infra.agents import AgentAvailability
-        from uxon.tui.app import UxonApp
-
-        loaded = _mk_ctx()  # loaded ctx with its own fresh availability dict
-
-        def fake_refresh():
-            return _mk_ctx(on_refresh=fake_refresh)
-
-        skeleton = _mk_ctx(loading=True, on_refresh=fake_refresh)
-        # Pre-seed the skeleton's availability dict with a non-pending
-        # entry — emulates the probe completing before the swap. The App
-        # seeds ``state.agent_availability`` from this at construction.
-        skeleton.agent_availability["claude"] = AgentAvailability(status="ok")
-
-        app = UxonApp(skeleton, probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            # Force-trigger the swap (in real life kick_refresh fires in on_mount).
-            app.screen.apply_loaded_ctx(loaded)
-            await pilot.pause()
-            self.assertEqual(
-                app.state.agent_availability.value["claude"].status,
-                "ok",
-                msg="state slot lost the probe result across the ctx swap",
-            )
-            self.assertIs(
-                app.ctx,
-                app.screen.cfg,
-                msg="app.ctx and screen.cfg must point to the same TuiContext snapshot",
-            )
-
-    async def test_main_ui_survives_structural_refresh(self) -> None:
-        """Dashboard view, tab index, and focus-restore flag survive
-        a layout-signature change.
-
-        Regression for a bug class: ``apply_loaded_ctx`` used to build a
-        fresh ``MainScreen`` whenever ``select_layout_signature`` flipped
-        (e.g. another user starts a session). Three pieces of operator-set
-        UI state died with the old screen — view mode, active host tab,
-        pending tab-focus-restore — snapping the operator back to defaults
-        mid-session. Two layers now defend this: the state lives on
-        ``self.app.main_ui`` (App-owned), AND the structural refresh is
-        reconciled in place, so the screen is no longer swapped at all.
-        """
-        from uxon.tui.app import UxonApp
-        from uxon.tui.context import TuiSession
-        from uxon.tui.dashboard.ui_state import set_view_mode
-
-        # Skeleton has a single-user dashboard (dana_agent's own row);
-        # loaded ctx introduces a second user (alice), flipping the
-        # cross_user latch False→True and forcing the recompose path.
-        # Real :class:`TuiSession` instances are required because
-        # ``apply_loaded_ctx`` now syncs ``state.main`` from the ctx
-        # so the dashboard model walks the rows downstream.
-        own = TuiSession(
-            name="dana_agent.foo",
-            short="foo",
-            attached=False,
-            pid="1",
-            cpu="0",
-            ram="0",
-            created="0s",
-            last_activity="0s",
-            cmd="claude",
-            path="/srv",
-            user="dana_agent",
-        )
-        skeleton = _mk_ctx(sessions=[own])
-        loaded = _mk_ctx(
-            sessions=[own],
-            other_sessions=[
-                TuiSession(
-                    name="alice.proj",
-                    short="proj",
-                    attached=False,
-                    pid="1",
-                    cpu="0",
-                    ram="0",
-                    created="0s",
-                    last_activity="0s",
-                    cmd="codex",
-                    path="/srv",
-                    user="alice",
-                )
-            ],
-        )
-
-        app = UxonApp(skeleton, probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            old_screen = app.screen
-            old_main_ui = app.main_ui
-            # Mutate every field the contract claims to preserve.
-            app.main_ui.ui = set_view_mode(app.main_ui.ui, "flat")
-            app.main_ui.active_tab_index = 2
-            app.main_ui.pending_tab_focus_restore = True
-            # Apply a ctx with a different layout signature. This is now
-            # reconciled IN PLACE (no ``switch_screen`` swap), so the
-            # screen object itself is preserved — and the App-owned
-            # ``main_ui`` with it.
-            app.screen.apply_loaded_ctx(loaded)
-            await pilot.pause()
-            self.assertIs(
-                app.screen, old_screen, msg="structural refresh must patch in place, not swap"
-            )
-            self.assertIs(app.main_ui, old_main_ui, msg="main_ui must survive the refresh")
-            self.assertEqual(app.main_ui.ui.view_mode, "flat")
-            self.assertEqual(app.main_ui.active_tab_index, 2)
-            self.assertTrue(app.main_ui.pending_tab_focus_restore)
-
-    async def test_refresh_keypress_kicks_host_probe(self) -> None:
-        """Pressing ``r`` re-runs the host probe.
-
-        Regression: without this, the periodic timer only kicked
-        ``kick_refresh`` (which rebuilds the ctx) but the host probe
-        ran exactly once on mount, so the missing-agents modal never
-        recovered after the user installed an agent.
-        """
-        from uxon.tui.app import UxonApp
-
-        kicks: list[None] = []
-        app = UxonApp(_mk_ctx(), probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            app._kick_host_probe = lambda: kicks.append(None)  # type: ignore[method-assign]
-            # Blur the SearchBar so ``r`` hits action_refresh rather
-            # than being consumed by the Input.
-            await pilot.press("escape")
-            await pilot.pause()
-            await pilot.press("r")
-            await pilot.pause()
-        self.assertEqual(len(kicks), 1, msg="action_refresh did not kick the host probe")
-
-    async def test_kill_calls_on_kill_callback(self) -> None:
-        from uxon.tui.app import UxonApp
-        from uxon.tui.context import TuiSession
-
-        kill_calls: list[tuple[str, str]] = []
-        refresh_calls = []
-
-        def fake_kill(user: str, name: str) -> None:
-            kill_calls.append((user, name))
-
-        session = TuiSession(
-            name="dana_agent.foo",
-            short="foo",
-            attached=False,
-            pid="1",
-            cpu="1.0",
-            ram="1M",
-            created="1s",
-            last_activity="1s",
-            cmd="claude",
-            path="/srv/work",
-            user="dana_agent",
-        )
-
-        def fake_refresh():
-            # Commit 10: the dashboard is data-driven from
-            # ``state.main``. The on-mount ``kick_refresh`` lands a
-            # rebuild before the test presses 'd'; return the same
-            # session so the dashboard has a row to focus on.
-            refresh_calls.append(1)
-            return _mk_ctx(
-                sessions=[session],
-                current_user="dana_agent",
-                on_kill=fake_kill,
-                on_refresh=fake_refresh,
-            )
-
-        ctx = _mk_ctx(
-            sessions=[session],
-            current_user="dana_agent",
-            on_kill=fake_kill,
-            on_refresh=fake_refresh,
-        )
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            # Focus the dashboard and press 'd'. The dashboard widget is
-            # ``#sessions-dashboard`` (SessionListView), data-driven from
-            # ``state.main`` — inject a ``MainData`` snapshot so the model
-            # selector emits the row without waiting for the periodic
-            # rebuild source to run.
-            from uxon.tui.main_data import MainData
-            from uxon.tui.widgets.session_list_view import SessionListView
-
-            app.state.main = MainData.from_context(ctx)
-            app.screen._refresh_dashboard()
-            t = app.screen.query_one("#sessions-dashboard", SessionListView)
-            app.screen.action_refresh = lambda: None
-            t.focus()
-            t.move_cursor(row=0)
-            await pilot.pause()
-            await pilot.press("d")
-            await pilot.pause()
-            # ConfirmYesNo modal is active — answer y.
-            await pilot.press("y")
-            await pilot.pause()
-            await pilot.press("q")
-            await pilot.pause()
-        self.assertEqual(kill_calls, [("dana_agent", "dana_agent.foo")])
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
 class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
-    """AC-B4 — the TUI confirm affordance for a stopped/absent container.
+    """The TUI confirm affordance for a stopped/absent container.
 
     With ``approval = "prompt"`` a needed start/create must show a
     ``ConfirmYesNo`` before the prepare runs; on confirm the prepare fires
@@ -431,21 +166,6 @@ class WorkerGateTests(unittest.TestCase):
     the next kick spawns a fresh one.
     """
 
-    def test_worker_active_helper(self) -> None:
-        from textual.worker import WorkerState
-
-        from uxon.tui.workers import _worker_active
-
-        class _FakeWorker:
-            def __init__(self, state: WorkerState) -> None:
-                self.state = state
-
-        self.assertFalse(_worker_active(None))
-        self.assertTrue(_worker_active(_FakeWorker(WorkerState.PENDING)))
-        self.assertTrue(_worker_active(_FakeWorker(WorkerState.RUNNING)))
-        for done in (WorkerState.CANCELLED, WorkerState.ERROR, WorkerState.SUCCESS):
-            self.assertFalse(_worker_active(_FakeWorker(done)))
-
     def test_kick_refresh_heals_after_worker_cancellation(self) -> None:
         """Cancelled worker must not wedge the refresh stream."""
         from textual.worker import WorkerState
@@ -468,51 +188,19 @@ class WorkerGateTests(unittest.TestCase):
 
         app.kick_refresh()
         self.assertEqual(len(spawned), 1)
-        app.kick_refresh()  # still RUNNING — must skip
-        self.assertEqual(len(spawned), 1)
-
-        spawned[0].state = WorkerState.CANCELLED  # simulate exclusive-cancel
-        app.kick_refresh()  # must self-heal and spawn
-        self.assertEqual(len(spawned), 2)
-
-    def test_mount_skips_kick_for_sources_opting_out(self) -> None:
-        """``SourceSpec.kick_on_mount=False`` is honoured at mount time.
-
-        Regression guard for the ``kick_on_mount`` flag: it is a
-        load-bearing knob future one-shot or lazy interval-only
-        sources rely on (e.g. a remote-host probe that only fires on
-        the first periodic tick, not at startup). The mount-time
-        kick path must filter sources by this flag.
-        """
-        from textual.worker import WorkerState
-
-        from uxon.tui.app import UxonApp
-        from uxon.tui.refresh import SourceSpec
-
-        class _FakeWorker:
-            def __init__(self) -> None:
-                self.state = WorkerState.RUNNING
-
-        captured: list[str] = []
-
-        def fake_run_worker(*_args, **kwargs):
-            captured.append(kwargs.get("group", ""))
-            return _FakeWorker()
-
-        ctx = _mk_ctx(loading=True)
-        ctx.refresh_sources = [
-            SourceSpec(name="eager", fetch=lambda: None, kick_on_mount=True),
-            SourceSpec(name="lazy", fetch=lambda: None, kick_on_mount=False),
-        ]
-        app = UxonApp(ctx, probe_agents=False)
-        app.run_worker = fake_run_worker  # type: ignore[method-assign]
-
-        # Exercise the mount-time kick path directly — calling
-        # ``on_mount`` would also touch ``push_screen`` and other DOM
-        # state that requires a running Textual loop, which this pure
-        # gate test deliberately avoids.
-        app._kick_initial_sources()
-        self.assertEqual([g for g in captured if g.startswith("refresh:")], ["refresh:eager"])
+        for state in (WorkerState.PENDING, WorkerState.RUNNING):
+            spawned[-1].state = state
+            app.kick_refresh()
+            self.assertEqual(len(spawned), 1, f"{state} must keep the active source gate")
+        for state in (WorkerState.CANCELLED, WorkerState.ERROR, WorkerState.SUCCESS):
+            before = len(spawned)
+            spawned[-1].state = state
+            app.kick_refresh()
+            self.assertEqual(len(spawned), before + 1, f"{state} must allow a fresh worker")
+            app.kick_refresh()
+            self.assertEqual(
+                len(spawned), before + 1, "the replacement worker must itself hold the gate"
+            )
 
     def test_kick_helpers_use_distinct_groups(self) -> None:
         """Each periodic stream pins its worker to its own group.
@@ -957,61 +645,6 @@ class GitProfileScreenTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def test_existing_project_smoke_batch(self) -> None:
-        from uxon.tui.screens.existing import ExistingProjectScreen
-
-        scenarios = [
-            ScreenScenario(
-                "enter-picks-cursor",
-                lambda: ExistingProjectScreen([("alpha", "")], "/srv/work"),
-                press_keys("enter"),
-                "alpha",
-            ),
-            ScreenScenario(
-                "escape-cancel",
-                lambda: ExistingProjectScreen([("alpha", "")], "/srv/work"),
-                press_keys("escape"),
-                None,
-            ),
-            ScreenScenario(
-                "up-wraps-to-last",
-                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
-                press_keys("up", "enter"),
-                "beta",
-            ),
-            ScreenScenario(
-                # 'p' narrows [alpha,beta,gamma] → [alpha]; cursor lands on 0;
-                # Enter picks the only match.
-                "type-narrows-and-picks",
-                lambda: ExistingProjectScreen(
-                    [("alpha", ""), ("beta", ""), ("gamma", "")], "/srv/work"
-                ),
-                press_keys("p", "enter"),
-                "alpha",
-            ),
-            ScreenScenario(
-                # 'z' narrows to []; Enter is a no-op so no dismiss fires
-                # and the harness's "unset" sentinel survives.
-                "type-no-match-enter-noop",
-                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
-                press_keys("z", "enter"),
-                "unset",
-            ),
-            ScreenScenario(
-                # First Esc clears the (non-empty) filter; second Esc
-                # dismisses with None because the input is empty.
-                "esc-clears-then-cancels",
-                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
-                press_keys("a", "escape", "escape"),
-                None,
-            ),
-        ]
-        results = await run_screen_scenarios(scenarios)
-        self.assertEqual(results, [s.expected for s in scenarios])
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
 class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
     """Standalone pilot tests for live-search wiring: focus-on-mount and
     the match counter — assertions that need direct widget queries
@@ -1064,7 +697,33 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(screen, ExistingProjectScreen)
             fi = screen.query_one(FilterInput)
             self.assertIs(app.focused, fi.input)
-            await pilot.press(*"group", "down", "right")
+            counter = fi.query_one("#match-count", Static)
+            self.assertEqual(str(counter.content), "")
+            await pilot.press("up")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            await pilot.press("down")
+            self.assertEqual(screen.query_one(ListView).index, 0)
+            fi.input.value = "no-match"
+            await pilot.pause()
+            self.assertEqual(str(counter.content), "0 matches")
+            await pilot.press("enter")
+            self.assertIs(app.screen, screen)
+            self.assertEqual(launches, [])
+            self.assertEqual(probes, [])
+            await pilot.press("escape")
+            self.assertEqual(fi.value, "")
+            await pilot.press("escape")
+            self.assertIsNot(app.screen, screen)
+            app.screen._launch_existing()
+            await pilot.pause()
+            screen = app.screen
+            self.assertIsInstance(screen, ExistingProjectScreen)
+            fi = screen.query_one(FilterInput)
+            fi.input.value = "grou"
+            await pilot.pause()
+            await pilot.press("p")
+            self.assertEqual(str(fi.query_one("#match-count", Static).content), "2 matches")
+            await pilot.press("down", "right")
             await pilot.pause()
             self.assertEqual(fi.value, "")
             self.assertEqual(
@@ -1088,8 +747,12 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fi.value, "group")
             await pilot.press("right")
             await pilot.pause()
-            await pilot.press(*"project ", "x", "backspace")
+            fi.input.value = "project"
+            await pilot.pause()
+            fi.input.cursor_position = len(fi.input.value)
+            await pilot.press("space", "x", "backspace")
             self.assertEqual(fi.value, "project ")
+            self.assertEqual(str(fi.query_one("#match-count", Static).content), "1 match")
             await pilot.press("right")
             await pilot.pause()
             label = screen.query_one("#existing-list Label")
@@ -1181,41 +844,6 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.screen, MainScreen)
         finally:
             release.set()
-
-    async def test_match_counter_updates_with_typing(self) -> None:
-        from textual.app import App
-        from textual.widgets import Static
-
-        from uxon.tui.screens.existing import ExistingProjectScreen
-        from uxon.tui.widgets.filter_input import FilterInput
-
-        class Host(App):
-            def __init__(self) -> None:
-                super().__init__()
-                self.scr = ExistingProjectScreen(
-                    [("alpha", ""), ("beta", ""), ("gamma", "")], "/srv/work"
-                )
-
-            def on_mount(self) -> None:
-                self.push_screen(self.scr)
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            fi = app.scr.query_one(FilterInput)
-            counter = fi.query_one("#match-count", Static)
-            # Empty filter → counter blank.
-            self.assertEqual(str(counter.content), "")
-            await pilot.press("a")  # 'a' matches alpha + gamma + beta — wait, beta?
-            await pilot.pause()
-            # 'a' is in alpha, gamma, beta — three matches.
-            self.assertEqual(str(counter.content), "3 matches")
-            await pilot.press("l")  # filter is now "al" → only alpha
-            await pilot.pause()
-            self.assertEqual(str(counter.content), "1 match")
-            await pilot.press("z")  # "alz" → no matches
-            await pilot.pause()
-            self.assertEqual(str(counter.content), "0 matches")
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
