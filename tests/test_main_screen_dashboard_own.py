@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -10,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from harness.textual_ready import painted, send_key, wait_until
 from helpers import land_dashboard_context as _land
 from helpers import make_dashboard_context as _mk_ctx
 from helpers import make_dashboard_session as _session
@@ -116,7 +118,12 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             _land(app, ctx)
             app.on__refresh_source_landed(_RefreshSourceLanded("remote:peer", _snapshot()))
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: app.screen.query_one("#sessions-dashboard", SessionListView).row_count == 3,
+                "local, foreign and peer rows",
+            )
+            main_screen = app.screen
             table = app.screen.query_one("#sessions-dashboard", SessionListView)
             # The external refresh boundary exposes whether kill bypasses cooldown.
             app.kick_refresh = lambda **kwargs: refreshes.append(kwargs)
@@ -134,22 +141,33 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
                             if (r.host, r.user, r.name) == target
                         )
                     )
-                    await pilot.press("enter")
-                    await pilot.pause()
                     args = target[1:] if target[0] is None else target
+                    await send_key(pilot, "enter")
+                    await wait_until(
+                        pilot,
+                        lambda args=args: bool(requests) and requests[-1].label == "/".join(args),
+                        "attach request",
+                    )
                     self.assertEqual(calls[-1], ("attach", *args))
                     self.assertEqual(requests[-1].label, "/".join(args))
-                    await pilot.press("d")
+                    await send_key(pilot, "d", "d")
                     self.assertIsInstance(app.screen, ConfirmYesNo)
                     self.assertIn(target[1], app.screen.prompt)
                     self.assertIn(target[2], app.screen.prompt)
                     before = list(calls)
                     if target[1] == "alice" or target[0] is not None:
-                        await pilot.press("escape")
+                        await send_key(pilot, "escape")
+                        self.assertIs(app.screen, main_screen)
                         self.assertEqual(calls, before)
-                        await pilot.press("d")
-                    await pilot.press("y")
-                    await pilot.pause()
+                        await send_key(pilot, "d", "d")
+                    await send_key(pilot, "y", "y")
+                    await wait_until(
+                        pilot,
+                        lambda args=args: (
+                            calls[-1] == ("kill", *args) and len(refreshes) == len(requests)
+                        ),
+                        "kill callback and refresh continuation",
+                    )
                     self.assertEqual(calls[-1], ("kill", *args))
                     self.assertEqual(refreshes[-1], {})
             self.assertEqual(
@@ -174,17 +192,20 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(refreshes, [{}, {}, {}])
             before = list(calls)
             table.focus()
-            await pilot.press("d")
+            await send_key(pilot, "d", "d")
+            self.assertIsInstance(app.screen, ConfirmYesNo)
             app.on__refresh_source_landed(
                 _RefreshSourceLanded("remote:peer", _snapshot(error="timeout"))
             )
-            await pilot.press("y")
-            await pilot.pause()
+            await send_key(pilot, "y", "y")
+            self.assertIs(app.screen, main_screen)
+            await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+            await painted(pilot)
             self.assertEqual(
                 calls, before, "a failed poll while confirmation is open must forbid kill"
             )
             app.on__refresh_source_landed(_RefreshSourceLanded("remote:peer", _snapshot()))
-            await pilot.pause()
+            await painted(pilot)
             table.focus()
             table.move_cursor(
                 row=next(i for i, r in enumerate(app.screen._dashboard_rows) if r.host)
@@ -195,36 +216,44 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
             )
             # A request captured before poll completion still rechecks live state.
             app.screen._launch_flow.attach_row(saved_row)
-            await pilot.pause()
+            await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+            await painted(pilot)
             self.assertEqual(calls, before, "stale remote rows must not attach")
             app.on__refresh_source_landed(_RefreshSourceLanded("remote:peer", _snapshot()))
-            await pilot.pause()
+            await painted(pilot)
             table.focus()
             table.move_cursor(
                 row=next(i for i, r in enumerate(app.screen._dashboard_rows) if r.host)
             )
             saved_row = app.screen._dashboard_rows[table.cursor_row]
-            await pilot.press("d")
+            await send_key(pilot, "d", "d")
+            self.assertIsInstance(app.screen, ConfirmYesNo)
             app.on__refresh_source_landed(
                 _RefreshSourceLanded("remote:peer", _snapshot(name="uxon-replacement@claude"))
             )
             self.assertIsNone(app.state.remote["peer"].last_error)
-            await pilot.press("y")
+            await send_key(pilot, "y", "y")
+            self.assertIs(app.screen, main_screen)
             app.screen._launch_flow.attach_row(saved_row)
-            await pilot.pause()
+            await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+            await painted(pilot)
             self.assertEqual(
                 calls,
                 before,
                 "a successful poll with the target absent must also deny stale requests",
             )
             app.on__refresh_source_landed(_RefreshSourceLanded("remote:peer", _snapshot()))
-            await pilot.pause()
+            await painted(pilot)
             table.focus()
             table.move_cursor(
                 row=next(i for i, r in enumerate(app.screen._dashboard_rows) if r.host)
             )
-            await pilot.press("enter", "d", "y")
-            await pilot.pause()
+            await send_key(pilot, "enter")
+            await wait_until(pilot, lambda: len(requests) == 4, "recovered peer attach")
+            await send_key(pilot, "d", "d")
+            self.assertIsInstance(app.screen, ConfirmYesNo)
+            await send_key(pilot, "y", "y")
+            await wait_until(pilot, lambda: len(refreshes) == 4, "recovered peer kill refresh")
             self.assertEqual(
                 calls[len(before) :],
                 [
@@ -250,15 +279,23 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
             app.ctx.refresh_sources = [SourceSpec("remote:peer", incompatible_poll)]
             del app.kick_refresh
             app.kick_refresh()
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: app.state.remote["peer"].value.error_code == "update_remote",
+                "failed incompatible poll landing",
+            )
             self.assertEqual(polled, ["failed"])
             self.assertEqual(app.state.remote["peer"].value.error_code, "update_remote")
             app.ctx.refresh_sources = [SourceSpec("remote:peer", poll)]
             app.kick_refresh()
-            await pilot.pause()
+            await painted(pilot)
             self.assertEqual(polled, ["failed"])
-            await pilot.press("r")
-            await pilot.pause()
+            await send_key(pilot, "r", "r")
+            await wait_until(
+                pilot,
+                lambda: app.state.remote["peer"].value.error is None,
+                "forced fresh poll landing",
+            )
             self.assertEqual(polled, ["failed", "fresh"])
             self.assertIsNone(app.state.remote["peer"].value.error)
             self.assertIn("uxon-remote", _visible(table))

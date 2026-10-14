@@ -1,4 +1,4 @@
-"""Pilot tests for textual screens (T8+).
+"""Pilot tests for Textual screens.
 
 Uses ``App.run_test()`` + ``Pilot`` to drive the TUI in-process.
 Covers MainScreen routing, kill flow, CallbackError → toast,
@@ -652,8 +652,10 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_nested_navigation_search_and_launch_keep_key_scopes(self) -> None:
         # Navigation and the launch continuation share worker and focus state.
+        import asyncio
         import threading
 
+        from harness.textual_ready import painted, send_key, wait_until
         from textual.widgets import ListView, Static
 
         from uxon.infra.agents import AgentAvailability
@@ -690,83 +692,131 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
         )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            await painted(pilot)
             app.screen._launch_existing()
-            await pilot.pause()
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ExistingProjectScreen), "project picker"
+            )
             screen = app.screen
             self.assertIsInstance(screen, ExistingProjectScreen)
             fi = screen.query_one(FilterInput)
             self.assertIs(app.focused, fi.input)
             counter = fi.query_one("#match-count", Static)
             self.assertEqual(str(counter.content), "")
-            await pilot.press("up")
+            await send_key(pilot, "up")
             self.assertEqual(screen.query_one(ListView).index, 1)
-            await pilot.press("down")
+            await send_key(pilot, "down")
             self.assertEqual(screen.query_one(ListView).index, 0)
             fi.input.value = "no-match"
-            await pilot.pause()
+            await wait_until(pilot, lambda: str(counter.content) == "0 matches", "empty search")
             self.assertEqual(str(counter.content), "0 matches")
-            await pilot.press("enter")
+            await send_key(pilot, "enter")
             self.assertIs(app.screen, screen)
             self.assertEqual(launches, [])
             self.assertEqual(probes, [])
-            await pilot.press("escape")
+            await send_key(pilot, "escape")
             self.assertEqual(fi.value, "")
-            await pilot.press("escape")
+            await send_key(pilot, "escape")
             self.assertIsNot(app.screen, screen)
             app.screen._launch_existing()
-            await pilot.pause()
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ExistingProjectScreen), "reopened picker"
+            )
             screen = app.screen
             self.assertIsInstance(screen, ExistingProjectScreen)
             fi = screen.query_one(FilterInput)
             fi.input.value = "grou"
-            await pilot.pause()
-            await pilot.press("p")
+            await wait_until(pilot, lambda: fi.value == "grou", "parent filter")
+            await send_key(pilot, "p", "p")
+            self.assertEqual(fi.value, "group")
             self.assertEqual(str(fi.query_one("#match-count", Static).content), "2 matches")
-            await pilot.press("down", "right")
-            await pilot.pause()
+            await send_key(pilot, "down")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            await send_key(pilot, "right")
+            await wait_until(
+                pilot,
+                lambda: (
+                    str(screen.query_one("#project-path", Static).content)
+                    == "  /srv/work/beta_group/"
+                ),
+                "first directory read",
+            )
             self.assertEqual(fi.value, "")
             self.assertEqual(
                 str(screen.query_one("#project-path", Static).content), "  /srv/work/beta_group/"
             )
             self.assertIs(app.focused, fi.input)
-            await pilot.press("down", "right")
-            await pilot.pause()
+            await send_key(pilot, "down")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            await send_key(pilot, "right")
+            await wait_until(
+                pilot,
+                lambda: (
+                    str(screen.query_one("#project-path", Static).content)
+                    == "  /srv/work/beta_group/project space/"
+                ),
+                "nested directory read",
+            )
             self.assertEqual(
                 str(screen.query_one("#project-path", Static).content),
                 "  /srv/work/beta_group/project space/",
             )
-            await pilot.press("left")
+            await send_key(pilot, "left")
             self.assertEqual(screen.query_one(ListView).index, 1)
-            await pilot.press("left")
+            await send_key(pilot, "left")
             self.assertEqual(fi.value, "group")
             self.assertEqual(screen.query_one(ListView).index, 1)
             cursor = fi.input.cursor_position
-            await pilot.press("left")
+            await send_key(pilot, "left")
             self.assertEqual(fi.input.cursor_position, cursor)
             self.assertEqual(fi.value, "group")
-            await pilot.press("right")
-            await pilot.pause()
+            await send_key(pilot, "right")
+            await wait_until(pilot, lambda: fi.value == "", "child directory resets parent filter")
             fi.input.value = "project"
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: str(fi.query_one("#match-count", Static).content) == "1 match",
+                "child search scope",
+            )
             fi.input.cursor_position = len(fi.input.value)
-            await pilot.press("space", "x", "backspace")
+            await send_key(pilot, "space", " ")
+            self.assertEqual(fi.value, "project ")
+            await send_key(pilot, "x", "x")
+            self.assertEqual(fi.value, "project x")
+            await wait_until(
+                pilot,
+                lambda: str(fi.query_one("#match-count", Static).content) == "0 matches",
+                "typed nonmatching child search",
+            )
+            await send_key(pilot, "backspace")
+            await wait_until(
+                pilot,
+                lambda: str(fi.query_one("#match-count", Static).content) == "1 match",
+                "backspace restores child match",
+            )
             self.assertEqual(fi.value, "project ")
             self.assertEqual(str(fi.query_one("#match-count", Static).content), "1 match")
-            await pilot.press("right")
-            await pilot.pause()
+            await send_key(pilot, "right")
+            await wait_until(
+                pilot,
+                lambda: "[leaf]" in str(screen.query_one("#existing-list Label").content),
+                "filtered child directory read",
+            )
             label = screen.query_one("#existing-list Label")
             self.assertIn("[leaf]", str(label.content))
-            await pilot.press("enter")
+            await send_key(pilot, "enter")
             self.assertIsInstance(app.screen, LaunchOptionsScreen)
             self.assertEqual(probes, [])
+            # The launch exits this App; a live-screen paint ACK is inapplicable.
             await pilot.press("enter")
-            await pilot.pause()
-            await pilot.pause()
+            await asyncio.wait_for(app.workers.wait_for_complete(), 5)
             self.assertEqual(
                 probes, [("/srv/work/beta_group/project space/[leaf]", "claude", "normal")]
             )
             self.assertEqual(launches, [("beta_group/project space/[leaf]", "claude", "normal")])
+            self.assertEqual(
+                [path for path, _ in calls], ["beta_group", "beta_group/project space"] * 2
+            )
             self.assertTrue(all(thread != loop_thread for _, thread in calls))
 
     async def test_failed_and_cancelled_reads_cannot_change_directory(self) -> None:
@@ -774,6 +824,7 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
         import threading
 
+        from harness.textual_ready import painted, send_key, wait_until
         from textual.widgets import ListView, Static
 
         from uxon.tui.app import UxonApp
@@ -801,46 +852,62 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause()
+                await painted(pilot)
                 app.screen._launch_existing()
-                await pilot.pause()
+                await painted(pilot)
                 screen = app.screen
-                await pilot.press("right")
-                await pilot.pause()
+                await send_key(pilot, "right")
+                await wait_until(
+                    pilot,
+                    lambda: (
+                        "access denied" in str(screen.query_one("#browser-status", Static).content)
+                    ),
+                    "directory read failure",
+                )
                 self.assertEqual(
                     str(screen.query_one("#project-path", Static).content), "  /srv/work/"
                 )
                 self.assertIn(
                     "access denied", str(screen.query_one("#browser-status", Static).content)
                 )
-                await pilot.press("down", "right")
+                await send_key(pilot, "down")
+                await send_key(pilot, "right")
                 await asyncio.wait_for(asyncio.to_thread(started.wait), 5)
-                await pilot.press("right", "enter", "left")
+                await send_key(pilot, "right")
+                await send_key(pilot, "enter")
+                self.assertIs(app.screen, screen)
+                await send_key(pilot, "left")
                 release.set()
-                await pilot.pause()
-                await pilot.pause()
+                await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+                await painted(pilot)
                 self.assertEqual(calls, ["alpha", "beta"])
                 self.assertEqual(
                     str(screen.query_one("#project-path", Static).content), "  /srv/work/"
                 )
                 self.assertEqual(screen.query_one(ListView).index, 1)
-                await pilot.press("right")
-                await pilot.pause()
+                await send_key(pilot, "right")
+                await wait_until(
+                    pilot,
+                    lambda: (
+                        str(screen.query_one("#browser-status", Static).content) == "No subfolders"
+                    ),
+                    "empty directory read",
+                )
                 self.assertEqual(
                     str(screen.query_one("#browser-status", Static).content), "No subfolders"
                 )
-                await pilot.press("enter")
+                await send_key(pilot, "enter")
                 self.assertIs(app.screen, screen)
-                await pilot.press("left")
+                await send_key(pilot, "left")
                 started.clear()
                 release.clear()
-                await pilot.press("right")
+                await send_key(pilot, "right")
                 await asyncio.wait_for(asyncio.to_thread(started.wait), 5)
-                await pilot.press("escape")
+                await send_key(pilot, "escape")
                 self.assertIsInstance(app.screen, MainScreen)
                 release.set()
-                await pilot.pause()
-                await pilot.pause()
+                await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+                await painted(pilot)
                 self.assertIsInstance(app.screen, MainScreen)
         finally:
             release.set()
