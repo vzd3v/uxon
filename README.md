@@ -124,7 +124,8 @@ Fleet automation can validate and render the full JSON form with
 `uxon config render --config-json config.json`; install the reviewed TOML at
 `/etc/uxon/config.toml` with an explicit root-owned `sudo install`.
 
-Uxon manages worktrees independently of the agent. See the
+Uxon manages worktrees independently of the agent and refuses occupied paths
+before changing the repository. See the
 [profile/mode reference](docs/reference/cli.md#--mode-id)
 and [worktree guide](docs/guides/customise/worktrees.md).
 

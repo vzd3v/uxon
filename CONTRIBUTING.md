@@ -159,9 +159,9 @@ when reproducing retained-pane failures locally.
    file-only; do not force them into scalar settings.
 4. Document it in [`docs/reference/configuration.md`](docs/reference/configuration.md)
    (use case + the reference table).
-5. Add a `load_config` test in `tests/test_uxon.py` and a
-   round-trip test in `tests/test_uxon_settings.py` if the value
-   has non-trivial encoding.
+5. Extend the public renderer/loader contracts in
+   `tests/test_install_config_renderer.py` and the persisted settings
+   round-trip in `tests/test_uxon_settings.py` when encoding is non-trivial.
 
 ## Reporting bugs and proposing features
 

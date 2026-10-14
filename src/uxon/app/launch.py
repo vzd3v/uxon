@@ -332,6 +332,14 @@ def plan_worktree_launch(
             "entry covering it, or set worktree_root to a path that is already mapped."
         )
 
+    # Git can create the branch before refusing an occupied worktree path.
+    # Reject collisions before any repository or filesystem mutation.
+    if execution.path_facts(cfg, launch_user, worktree_path).exists:
+        fail(
+            f"worktree path already exists or git refused the add: {worktree_path} "
+            "(pick another branch name)"
+        )
+
     prefix = identity.command_prefix_for_user(cfg, launch_user)
     base = cfg.worktree_base
     branch_exists = git._branch_exists_as_user(cfg, repo_root, branch_name, launch_user)

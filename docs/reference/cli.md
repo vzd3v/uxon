@@ -311,7 +311,8 @@ socket.
   `<repo>/.uxon/worktrees/<branch-slug>/` (excluded via `.git/info/exclude`),
   or under [`worktree_root`](configuration.md#top-level-keys) when set.
 - `run -w` always creates the worktree and fails if it already exists
-  (path taken, or the branch is checked out elsewhere). `new -w`
+  (path taken, or the branch is checked out elsewhere). An occupied path is
+  rejected before creating a branch or changing the repository. `new -w`
   additionally applies the repeat guard (attach vs new) when a matching
   **session** already exists. New branches are based per
   [`worktree_base`](configuration.md#top-level-keys).

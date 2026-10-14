@@ -56,8 +56,7 @@ class GitRemoteProfile:
         """REST API base URL used by the ``token`` backend."""
         if self.host == "github.com":
             return "https://api.github.com"
-        # Enterprise GitHub: api.<host>/api/v3 (not supported yet; flag
-        # at call time so the error is close to the attempt).
+        # GitHub Enterprise Server exposes its REST API on the same host.
         return f"https://{self.host}/api/v3"
 
 
