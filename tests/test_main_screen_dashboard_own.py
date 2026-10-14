@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
 
 from helpers import land_dashboard_context as _land
 from helpers import make_dashboard_context as _mk_ctx
@@ -24,6 +29,11 @@ from uxon.tui.widgets.session_list_view import SessionListView
 
 class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_loading_lands_rows_and_visible_destructive_footer(self):
+        from uxon.infra import events
+
+        logs = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch.dict(os.environ, {"UXON_LOG_DIR": logs}))
+        self.enterContext(patch.object(events, "_DEBUG_TOPICS", frozenset({"startup"})))
         app = UxonApp(_mk_ctx(loading=True), probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
@@ -38,6 +48,7 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertIn("Loading sessions", str(note.content))
             self.assertFalse(note.has_class("-hidden"))
+
             self.assertEqual(len(app.screen_stack), 2)
             screen.loading = False
             screen.loading = True
@@ -70,6 +81,16 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(table.row_count, 0)
             self.assertIn("No active sessions", str(note.content))
             self.assertFalse(note.has_class("-hidden"))
+
+        records = [
+            json.loads(line)
+            for file in Path(logs).glob("tui-debug-*.log")
+            for line in file.read_text().splitlines()
+        ]
+        landed = [r for r in records if r.get("at") == "first_data_landed"]
+        self.assertEqual(len(landed), 1)
+        self.assertEqual(landed[0]["source"], "main_ctx_rebuild")
+        self.assertGreater(landed[0]["ts"], 0)
 
     async def test_attach_kill_target_identity_cancel_and_confirm_time_recheck(self):
         calls = []
@@ -212,6 +233,35 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
             self.assertEqual(refreshes[-1], {})
+
+            # Restore real admission and use the mounted refresh binding.
+            from uxon.tui.refresh import SourceSpec
+
+            polled = []
+
+            def poll():
+                polled.append("fresh")
+                return _snapshot()
+
+            def incompatible_poll():
+                polled.append("failed")
+                return replace(_snapshot(error="schema mismatch"), error_code="update_remote")
+
+            app.ctx.refresh_sources = [SourceSpec("remote:peer", incompatible_poll)]
+            del app.kick_refresh
+            app.kick_refresh()
+            await pilot.pause()
+            self.assertEqual(polled, ["failed"])
+            self.assertEqual(app.state.remote["peer"].value.error_code, "update_remote")
+            app.ctx.refresh_sources = [SourceSpec("remote:peer", poll)]
+            app.kick_refresh()
+            await pilot.pause()
+            self.assertEqual(polled, ["failed"])
+            await pilot.press("r")
+            await pilot.pause()
+            self.assertEqual(polled, ["failed", "fresh"])
+            self.assertIsNone(app.state.remote["peer"].value.error)
+            self.assertIn("uxon-remote", _visible(table))
 
     async def test_remote_and_local_user_latch_filter_order_and_focus_survive_refresh(self):
         ctx = _mk_ctx(sessions=[_session()], remote_hosts=[RemoteHost("peer", "peer", "", "uxon")])

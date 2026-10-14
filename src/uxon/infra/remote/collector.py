@@ -146,16 +146,20 @@ def fetch_remote_snapshot(
     def _run_one(all_users: bool) -> tuple[str | None, str | None, str, int | None]:
         """Run one SSH attempt and return error, payload, stderr, and rc."""
         nonlocal error_code
-        argv = _build_fetch_argv(
-            host,
-            connect_timeout=eff_connect,
-            all_users=all_users,
-            correlation_id=correlation_id,
-            ssh_multiplex=ssh_multiplex,
-            ssh_control_persist_seconds=ssh_control_persist_seconds,
-        )
         try:
-            cp = run_query(argv, timeout=eff_total)
+            argv = _build_fetch_argv(
+                host,
+                connect_timeout=eff_connect,
+                all_users=all_users,
+                correlation_id=correlation_id,
+                ssh_multiplex=ssh_multiplex,
+                ssh_control_persist_seconds=ssh_control_persist_seconds,
+            )
+            try:
+                cp = run_query(argv, timeout=eff_total)
+            except FileNotFoundError:
+                error_code = "ssh_error"
+                return "ssh not installed on local host", None, "", 127
         except subprocess.TimeoutExpired:
             error_code = "timeout"
             # Slave hung — almost always wedged ControlMaster (the
@@ -166,12 +170,9 @@ def fetch_remote_snapshot(
             if ssh_multiplex != "off":
                 recover_wedged_master(host)
             return f"ssh timeout after {eff_total}s", None, "", 124
-        except FileNotFoundError:
-            error_code = "ssh_error"
-            return "ssh not installed on local host", None, "", 127
         except (KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:  # pragma: no cover — defensive only
+        except Exception as exc:
             error_code = "fetch_error"
             return f"{exc.__class__.__name__}: {exc}", None, "", None
         if cp.returncode != 0:

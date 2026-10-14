@@ -1,186 +1,170 @@
-"""Tests for ``uxon.wire_schema``.
-
-Pins down the wire contract that ``--json`` (next commit) and the
-multi-host remote collector (later commits) both depend on. The
-tests must fail loudly if the field set, types, or
-prefix-strip / attached-conversion semantics drift.
-
-These tests are pure: no tmux, no subprocess, no Textual. They use
-the real :class:`uxon.domain.session.SessionInfo` dataclass as input so they
-also catch a SessionInfo field rename that breaks the protocol.
-"""
+"""Complete independent session JSON expectations."""
 
 from __future__ import annotations
 
 import json
-import unittest
+from dataclasses import replace
 
 from uxon.domain.session import SessionInfo
-from uxon.domain.wire_schema import (
-    WIRE_SCHEMA_VERSION,
-    SessionRecord,
-    build_session_records,
-)
+from uxon.domain.wire_schema import build_session_records, make_envelope
+from uxon.infra.remote.envelope import decode_envelope
 
 
-def _make_session(**overrides: object) -> SessionInfo:
-    base: dict[str, object] = {
-        "user": "alice",
-        "name": "uxon-foo@claude",
-        "attached": "0",
-        "windows": "1",
-        "created": "2026-05-03T12:00:00+00:00",
-        "last_attached": "2026-05-03T12:30:00+00:00",
-        "pane_pids": (111, 222),
-        "active_pid": 111,
-        "active_cmd": "claude",
-        "active_path": "/home/alice/proj",
-        "cpu_pct": 1.5,
-        "rss_kib": 4096,
-        "agent": "claude",
-        "profile": "claude",
-        "legacy": False,
+def test_full_sparse_and_legacy_wire_records_round_trip_with_literal_envelope():
+    full = SessionInfo(
+        user="alice",
+        name="uxon-foo@fast",
+        attached="1",
+        windows="2",
+        created="2026-05-03T12:00:00+00:00",
+        last_attached="2026-05-03T12:30:00+00:00",
+        pane_pids=(111, 222),
+        active_pid=111,
+        active_cmd="codex",
+        active_path="/srv/work/project",
+        cpu_pct=1.5,
+        rss_kib=4096,
+        agent="codex",
+        profile="fast",
+        runtime="sandbox",
+        runtime_kind="docker",
+        runtime_resource="box",
+        execution_backend="worker",
+        runtime_down=True,
+        exited=True,
+        active_exit_status=7,
+        has_diagnostics=True,
+    )
+    sparse = replace(
+        full,
+        name="uxon_baz@claude",
+        attached="0",
+        windows="0",
+        created="",
+        last_attached="",
+        pane_pids=(),
+        active_pid=None,
+        active_cmd="",
+        active_path="",
+        cpu_pct=0,
+        rss_kib=0,
+        profile="claude",
+        agent="claude",
+        runtime="direct",
+        runtime_kind="direct",
+        runtime_resource="",
+        execution_backend="",
+        runtime_down=False,
+        exited=False,
+        active_exit_status=None,
+        has_diagnostics=False,
+        legacy=True,
+    )
+    expected = [
+        {
+            "user": "alice",
+            "name": "uxon-foo@fast",
+            "short_id": "foo@fast",
+            "profile": "fast",
+            "agent": "codex",
+            "runtime": "sandbox",
+            "runtime_kind": "docker",
+            "runtime_resource": "box",
+            "execution_backend": "worker",
+            "attached": True,
+            "windows": "2",
+            "created": "2026-05-03T12:00:00+00:00",
+            "last_attached": "2026-05-03T12:30:00+00:00",
+            "pane_pids": [111, 222],
+            "active_pid": 111,
+            "active_cmd": "codex",
+            "active_path": "/srv/work/project",
+            "cpu_pct": 1.5,
+            "rss_kib": 4096,
+            "runtime_down": True,
+            "exited": True,
+            "active_exit_status": 7,
+            "has_diagnostics": True,
+            "legacy": False,
+        },
+        {
+            "user": "alice",
+            "name": "uxon_baz@claude",
+            "short_id": "uxon_baz@claude",
+            "profile": "claude",
+            "agent": "claude",
+            "runtime": "direct",
+            "runtime_kind": "direct",
+            "runtime_resource": "",
+            "execution_backend": "",
+            "attached": False,
+            "windows": "0",
+            "created": "",
+            "last_attached": "",
+            "pane_pids": [],
+            "active_pid": None,
+            "active_cmd": "",
+            "active_path": "",
+            "cpu_pct": 0,
+            "rss_kib": 0,
+            "runtime_down": False,
+            "exited": False,
+            "active_exit_status": None,
+            "has_diagnostics": False,
+            "legacy": True,
+        },
+    ]
+    records = build_session_records([full, sparse], session_prefix="uxon-")
+    assert json.loads(json.dumps(records)) == expected
+    data = {
+        "all_users": True,
+        "scope_users": ["alice", "bob"],
+        "scope_skipped": ["bob"],
+        "session_prefix": "uxon-",
+        "sessions": records,
     }
-    base.update(overrides)
-    return SessionInfo(**base)  # type: ignore[arg-type]
-
-
-class WireSchemaVersionTests(unittest.TestCase):
-    def test_version_is_a_short_string(self) -> None:
-        # The version is shipped over the wire; it must be a plain
-        # string and short enough to be human-grep-able in transcripts.
-        self.assertIsInstance(WIRE_SCHEMA_VERSION, str)
-        self.assertTrue(WIRE_SCHEMA_VERSION)
-        self.assertLess(len(WIRE_SCHEMA_VERSION), 16)
-
-
-class BuildSessionRecordsTests(unittest.TestCase):
-    def test_empty_input_returns_empty_list(self) -> None:
-        self.assertEqual(build_session_records([], session_prefix="uxon-"), [])
-
-    def test_single_session_round_trip_fields(self) -> None:
-        s = _make_session()
-        [rec] = build_session_records([s], session_prefix="uxon-")
-        self.assertEqual(rec["user"], "alice")
-        self.assertEqual(rec["name"], "uxon-foo@claude")
-        self.assertEqual(rec["short_id"], "foo@claude")
-        self.assertEqual(rec["profile"], "claude")
-        self.assertEqual(rec["agent"], "claude")
-        self.assertEqual(rec["runtime"], "direct")
-        self.assertEqual(rec["runtime_kind"], "direct")
-        self.assertEqual(rec["runtime_resource"], "")
-        self.assertEqual(rec["execution_backend"], "")
-        self.assertFalse(rec["attached"])
-        self.assertEqual(rec["windows"], "1")
-        self.assertEqual(rec["created"], "2026-05-03T12:00:00+00:00")
-        self.assertEqual(rec["last_attached"], "2026-05-03T12:30:00+00:00")
-        self.assertEqual(rec["pane_pids"], [111, 222])
-        self.assertEqual(rec["active_pid"], 111)
-        self.assertEqual(rec["active_cmd"], "claude")
-        self.assertEqual(rec["active_path"], "/home/alice/proj")
-        self.assertEqual(rec["cpu_pct"], 1.5)
-        self.assertEqual(rec["rss_kib"], 4096)
-        self.assertFalse(rec["legacy"])
-
-    def test_attached_string_converted_to_bool(self) -> None:
-        attached = build_session_records([_make_session(attached="1")], session_prefix="uxon-")
-        self.assertTrue(attached[0]["attached"])
-        # Anything that is not literally "1" must be False — the tmux
-        # format emits "1"/"0", but defensive: blank strings, "true",
-        # etc., must not flip the bit.
-        for raw in ("0", "", "true", "yes", "2"):
-            recs = build_session_records([_make_session(attached=raw)], session_prefix="uxon-")
-            self.assertFalse(recs[0]["attached"], f"attached={raw!r} unexpectedly mapped to True")
-
-    def test_short_id_strips_current_prefix_only(self) -> None:
-        # Current prefix on the session: gets stripped.
-        modern = _make_session(name="uxon-bar@codex")
-        [m] = build_session_records([modern], session_prefix="uxon-")
-        self.assertEqual(m["short_id"], "bar@codex")
-
-        # Legacy-prefix session: name does NOT start with current
-        # prefix, so short_id is the full name verbatim. Mirrors
-        # print_list, which displays legacy sessions un-stripped so
-        # they are visually distinguishable.
-        legacy = _make_session(name="uxon_baz@claude", legacy=True)
-        [r] = build_session_records([legacy], session_prefix="uxon-")
-        self.assertEqual(r["short_id"], "uxon_baz@claude")
-        self.assertEqual(r["name"], "uxon_baz@claude")
-        self.assertTrue(r["legacy"])
-
-    def test_pane_pids_tuple_becomes_list(self) -> None:
-        # JSON has no tuples; the wire form must use a list so
-        # ``json.dumps`` works without a custom encoder.
-        s = _make_session(pane_pids=(1, 2, 3))
-        [rec] = build_session_records([s], session_prefix="uxon-")
-        self.assertEqual(rec["pane_pids"], [1, 2, 3])
-        self.assertIsInstance(rec["pane_pids"], list)
-
-    def test_empty_strings_passed_through_not_substituted(self) -> None:
-        # ``print_list`` substitutes empty ``active_cmd`` / ``active_path``
-        # with ``"-"`` at render time. The wire form must NOT do that —
-        # ``"-"`` is a display artefact, the data layer ships the empty
-        # string and lets each consumer apply its own placeholder.
-        s = _make_session(active_cmd="", active_path="")
-        [rec] = build_session_records([s], session_prefix="uxon-")
-        self.assertEqual(rec["active_cmd"], "")
-        self.assertEqual(rec["active_path"], "")
-
-    def test_active_pid_none_preserved(self) -> None:
-        s = _make_session(active_pid=None)
-        [rec] = build_session_records([s], session_prefix="uxon-")
-        self.assertIsNone(rec["active_pid"])
-
-    def test_record_is_json_serialisable(self) -> None:
-        # The whole point of the wire schema: a record must round-trip
-        # through json.dumps/loads without losing fields or types.
-        s = _make_session(active_pid=None, attached="1")
-        [rec] = build_session_records([s], session_prefix="uxon-")
-        encoded = json.dumps(rec)
-        decoded = json.loads(encoded)
-        self.assertEqual(decoded, rec)
-
-    def test_order_preserved(self) -> None:
-        a = _make_session(name="uxon-a@claude")
-        b = _make_session(name="uxon-b@claude")
-        c = _make_session(name="uxon-c@claude")
-        recs = build_session_records([a, b, c], session_prefix="uxon-")
-        self.assertEqual([r["short_id"] for r in recs], ["a@claude", "b@claude", "c@claude"])
-
-    def test_record_fields_are_a_fixed_set(self) -> None:
-        # Pin the field set. Adding a field is intentional and must
-        # also bump the optional-field documentation; this test
-        # forces the change to be noticed.
-        rec = build_session_records([_make_session()], session_prefix="uxon-")[0]
-        expected_keys = {
-            "user",
-            "name",
-            "short_id",
-            "profile",
-            "agent",
-            "runtime",
-            "runtime_kind",
-            "runtime_resource",
-            "execution_backend",
-            "attached",
-            "windows",
-            "created",
-            "last_attached",
-            "pane_pids",
-            "active_pid",
-            "active_cmd",
-            "active_path",
-            "cpu_pct",
-            "rss_kib",
-            "runtime_down",
-            "exited",
-            "active_exit_status",
-            "has_diagnostics",
-            "legacy",
-        }
-        self.assertEqual(set(rec.keys()), expected_keys)
-        self.assertEqual(set(SessionRecord.__annotations__.keys()), expected_keys)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    stats = {
+        "cpu_pct": 0,
+        "mem_used_kib": 0,
+        "mem_total_kib": 100,
+        "loadavg_1m": 0,
+        "uptime_s": 0,
+        "kernel": "fixture",
+    }
+    wire = json.dumps(
+        make_envelope("list", data, uxon_version="4.0.0", host="peer", host_stats=stats)
+    )
+    assert json.loads(wire) == {
+        "schema_version": "3",
+        "uxon_version": "4.0.0",
+        "kind": "list",
+        "host": "peer",
+        "host_stats": stats,
+        "data": {
+            "all_users": True,
+            "scope_users": ["alice", "bob"],
+            "scope_skipped": ["bob"],
+            "session_prefix": "uxon-",
+            "sessions": expected,
+        },
+    }
+    parsed = decode_envelope(wire)
+    assert parsed.sessions == expected and parsed.peer == {
+        "uxon_version": "4.0.0",
+        "schema_version": "3",
+    }
+    assert parsed.scope_skipped == ["bob"] and parsed.host_stats == stats and parsed.error is None
+    assert make_envelope("list", {"sessions": []}, uxon_version="4.0.0") == {
+        "schema_version": "3",
+        "uxon_version": "4.0.0",
+        "kind": "list",
+        "data": {"sessions": []},
+    }
+    assert build_session_records([], session_prefix="uxon-") == []
+    assert [
+        r["attached"]
+        for r in build_session_records(
+            [replace(sparse, attached=v) for v in ("0", "", "true", "yes", "2")],
+            session_prefix="uxon-",
+        )
+    ] == [False] * 5

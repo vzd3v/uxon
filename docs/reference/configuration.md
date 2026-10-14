@@ -395,6 +395,12 @@ accept bare seconds or the case-insensitive suffixes `ms`, `s` and `m`.
 SSH connect and fetch timeouts round upward to whole seconds, with a minimum
 of one second.
 
+Peer session snapshots are live-only. Failed polls return no sessions or host
+metrics; old successful rows are hidden. With default SSH multiplexing, control
+sockets use `${XDG_CACHE_HOME:-~/.cache}/uxon/`. Failure to create this directory
+reports a failed poll before SSH starts. Multiplexing `off`, or a custom command
+template without `{ssh_control_dir}`, does not create it.
+
 Remote retry policy is fixed per host: three transient failures open a bounded
 exponential breaker (factor 2, cap 60 seconds, ±25% jitter). A valid incompatible
 response opens immediately for 300 seconds with ±10% jitter, renewed without

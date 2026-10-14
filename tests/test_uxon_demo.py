@@ -1,417 +1,176 @@
-"""Tests for ``uxon.infra.demo``.
-
-Pin the contract used by the screenshot demo:
-
-- ``demo_hosts_dir()`` reads ``UXON_DEMO_HOSTS`` and returns ``None``
-  unless the env var points to an existing directory.
-- ``synthesize_remote_hosts()`` produces one :class:`RemoteHost` per
-  ``*.json`` file, sorted by name, with the ``demo:`` sentinel alias.
-- ``load_demo_snapshot()`` returns a fresh, in-memory
-  :class:`RemoteSnapshot` from a valid envelope; malformed / missing
-  envelopes yield an error snapshot (no exceptions).
-- ``fetch_remote_snapshot()`` short-circuits to the demo loader when
-  the env var is set AND the host carries the sentinel alias — no ssh
-  is spawned.
-- A sentinel alias seen without the env var set produces a clear error
-  snapshot rather than a silent ``ssh demo:foo`` invocation.
-"""
+"""One synthetic fleet forest, real decoders and observed external routing."""
 
 from __future__ import annotations
 
 import json
-import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import Any
-from unittest import mock
+import subprocess
+from dataclasses import replace
+from unittest.mock import patch
 
 from helpers import make_config
 
-from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
-from uxon.infra import demo as uxon_demo
-from uxon.infra import sessions_probe
+from uxon.domain.session import SessionInfo
+from uxon.infra import demo, sessions_probe
 from uxon.infra.remote.collector import fetch_remote_snapshot
 from uxon.infra.remote_hosts import RemoteHost
 
 
-def _envelope(sessions: list[dict[str, Any]], *, demo_color: str | None = None) -> dict[str, Any]:
-    env: dict[str, Any] = {
-        "schema_version": WIRE_SCHEMA_VERSION,
+def envelope(records, **extra):
+    return {
+        "schema_version": "3",
         "uxon_version": "demo",
         "kind": "list",
-        "data": {"sessions": sessions, "scope_users": [], "scope_skipped": []},
+        "data": {"sessions": records, "scope_users": ["alice", "bob"], "scope_skipped": []},
+        **extra,
     }
-    if demo_color is not None:
-        env["demo_color"] = demo_color
-    return env
 
 
-def _write(dir_path: Path, name: str, payload: dict[str, Any]) -> Path:
-    p = dir_path / f"{name}.json"
-    p.write_text(json.dumps(payload), encoding="utf-8")
-    return p
-
-
-class DemoHostsDirTests(unittest.TestCase):
-    def test_unset_returns_none(self) -> None:
-        with mock.patch.dict("os.environ", {}, clear=False):
-            import os
-
-            os.environ.pop(uxon_demo.DEMO_ENV_VAR, None)
-            self.assertIsNone(uxon_demo.demo_hosts_dir())
-
-    def test_blank_returns_none(self) -> None:
-        with mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: "   "}, clear=False):
-            self.assertIsNone(uxon_demo.demo_hosts_dir())
-
-    def test_nonexistent_returns_none(self) -> None:
-        with mock.patch.dict(
-            "os.environ", {uxon_demo.DEMO_ENV_VAR: "/no/such/dir/uxon-demo-xyzzy"}, clear=False
-        ):
-            self.assertIsNone(uxon_demo.demo_hosts_dir())
-
-    def test_existing_dir_returned(self) -> None:
-        with TemporaryDirectory() as tmp:
-            with mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: tmp}, clear=False):
-                got = uxon_demo.demo_hosts_dir()
-            self.assertEqual(got, Path(tmp))
-
-
-class SynthesizeRemoteHostsTests(unittest.TestCase):
-    def test_one_host_per_envelope_sorted(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            _write(d, "zulu", _envelope([]))
-            _write(d, "alpha", _envelope([]))
-            _write(d, "mike", _envelope([]))
-            hosts = uxon_demo.synthesize_remote_hosts(d)
-        self.assertEqual([h.name for h in hosts], ["alpha", "mike", "zulu"])
-        for h in hosts:
-            self.assertTrue(h.ssh_alias.startswith(uxon_demo.DEMO_SSH_ALIAS_PREFIX))
-            self.assertIn(h.name, h.ssh_alias)
-
-    def test_non_json_files_ignored(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            _write(d, "alpha", _envelope([]))
-            (d / "README.md").write_text("note", encoding="utf-8")
-            (d / "rendered.yaml").write_text("x: 1", encoding="utf-8")
-            hosts = uxon_demo.synthesize_remote_hosts(d)
-        self.assertEqual([h.name for h in hosts], ["alpha"])
-
-    def test_underscore_prefixed_files_skipped(self) -> None:
-        """``_local.json`` (and any ``_*.json``) is reserved, never a peer."""
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            _write(d, "alpha", _envelope([]))
-            _write(d, "_local", _envelope([]))
-            _write(d, "_scratch", _envelope([]))
-            hosts = uxon_demo.synthesize_remote_hosts(d)
-        self.assertEqual([h.name for h in hosts], ["alpha"])
-
-    def test_demo_color_extracted(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            _write(d, "alpha", _envelope([], demo_color="magenta"))
-            _write(d, "bravo", _envelope([]))
-            hosts = uxon_demo.synthesize_remote_hosts(d)
-        by_name = {h.name: h for h in hosts}
-        self.assertEqual(by_name["alpha"].color, "magenta")
-        self.assertIsNone(by_name["bravo"].color)
-
-
-class LoadDemoSnapshotTests(unittest.TestCase):
-    def test_valid_envelope_round_trips_sessions(self) -> None:
-        sessions = [
-            {
-                "user": "alice",
-                "name": "uxon-checkout@claude",
-                "short_id": "checkout@claude",
-                "agent": "claude",
-                "attached": True,
-                "windows": "3",
-                "created": "",
-                "last_attached": "",
-                "pane_pids": [1234],
-                "active_pid": 1234,
-                "active_cmd": "claude",
-                "active_path": "/home/alice/checkout",
-                "cpu_pct": 12.5,
-                "rss_kib": 524288,
-                "legacy": False,
-            }
+def test_demo_forest_activation_order_remote_routing_and_complete_local_conversion(
+    tmp_path, monkeypatch
+):
+    record = {
+        "user": "alice",
+        "name": "uxon-a@claude",
+        "attached": True,
+        "windows": "3",
+        "created": "2026-05-01T10:00:00+00:00",
+        "last_attached": "2026-05-20T14:00:00+00:00",
+        "pane_pids": [1234, 1235],
+        "active_pid": 1234,
+        "active_cmd": "claude",
+        "active_path": "/srv/work/project",
+        "cpu_pct": 12.5,
+        "rss_kib": 524288,
+        "agent": "claude",
+        "legacy": False,
+    }
+    (tmp_path / "alpha.json").write_text(
+        json.dumps(envelope([record], demo_color="magenta", demo_order=2))
+    )
+    (tmp_path / "bravo.json").write_text(json.dumps(envelope([], demo_order=2)))
+    (tmp_path / "zulu.json").write_text(json.dumps(envelope([], demo_order=1)))
+    (tmp_path / "last.json").write_text(json.dumps(envelope([])))
+    (tmp_path / "_scratch.json").write_text("{}")
+    (tmp_path / "README.md").write_text("note")
+    (tmp_path / "rendered.yaml").write_text("x: 1")
+    local = tmp_path / "_local.json"
+    local.write_text(
+        json.dumps(
+            envelope(
+                [
+                    record,
+                    {**record, "user": "bob", "name": "uxon-b@claude", "attached": False},
+                    {**record, "name": "uxon-c@claude", "attached": False},
+                ]
+            )
+        )
+    )
+    for raw in (None, "   ", str(tmp_path / "missing"), str(tmp_path / "README.md"), str(tmp_path)):
+        if raw is None:
+            monkeypatch.delenv(demo.DEMO_ENV_VAR, raising=False)
+        else:
+            monkeypatch.setenv(demo.DEMO_ENV_VAR, raw)
+        assert demo.demo_hosts_dir() == (tmp_path if raw == str(tmp_path) else None)
+    hosts = demo.synthesize_remote_hosts(tmp_path)
+    assert [(h.name, h.ssh_alias, h.color) for h in hosts] == [
+        ("zulu", "__uxon_demo__:zulu", None),
+        ("alpha", "__uxon_demo__:alpha", "magenta"),
+        ("bravo", "__uxon_demo__:bravo", None),
+        ("last", "__uxon_demo__:last", None),
+    ]
+    with (
+        patch("uxon.infra.remote.collector.run_query") as remote,
+        patch("uxon.infra.tmux.run_query") as tmux,
+        patch("uxon.infra.sessions_probe.run_query") as local_query,
+    ):
+        snap = fetch_remote_snapshot(hosts[1])
+        assert snap.host_name == "alpha" and snap.fetched_at_epoch > 0
+        assert (
+            snap.sessions == [record]
+            and snap.peer == {"uxon_version": "demo", "schema_version": "3"}
+            and snap.error is None
+        )
+        expected = SessionInfo(
+            user="alice",
+            name="uxon-a@claude",
+            attached="1",
+            windows="3",
+            created="2026-05-01T10:00:00+00:00",
+            last_attached="2026-05-20T14:00:00+00:00",
+            pane_pids=(1234, 1235),
+            active_pid=1234,
+            active_cmd="claude",
+            active_path="/srv/work/project",
+            cpu_pct=12.5,
+            rss_kib=524288,
+            agent="claude",
+            legacy=False,
+        )
+        assert sessions_probe.collect_sessions_for_user(make_config(), "alice", "uxon-", None) == [
+            expected,
+            replace(expected, name="uxon-c@claude", attached="0"),
         ]
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            _write(d, "laptop", _envelope(sessions))
-            snap = uxon_demo.load_demo_snapshot("laptop", d, fetched_at=12345.0)
-        self.assertIsNone(snap.error)
-        self.assertEqual(snap.host_name, "laptop")
-        self.assertEqual(snap.sessions, sessions)
-        self.assertEqual(snap.fetched_at_epoch, 12345.0)
-        self.assertEqual(snap.fetched_at_epoch, 12345.0)
-
-    def test_missing_file_yields_error_snapshot(self) -> None:
-        with TemporaryDirectory() as tmp:
-            snap = uxon_demo.load_demo_snapshot("ghost", Path(tmp), fetched_at=1.0)
-        self.assertIsNotNone(snap.error)
-        assert snap.error is not None
-        self.assertIn("not found", snap.error)
-        self.assertEqual(snap.sessions, [])
-
-    def test_schema_mismatch_yields_error_snapshot(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            payload = _envelope([])
-            payload["schema_version"] = "999"
-            _write(d, "laptop", payload)
-            snap = uxon_demo.load_demo_snapshot("laptop", d, fetched_at=1.0)
-        self.assertIsNotNone(snap.error)
-        assert snap.error is not None
-        self.assertIn("schema_version", snap.error)
-
-    def test_malformed_json_yields_error_snapshot(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            (d / "laptop.json").write_text("not json {", encoding="utf-8")
-            snap = uxon_demo.load_demo_snapshot("laptop", d, fetched_at=1.0)
-        self.assertIsNotNone(snap.error)
-        assert snap.error is not None
-        # Shape validation is delegated to ``decode_envelope`` (§B
-        # dedup): a readable-but-malformed-JSON file surfaces the
-        # shared validator's ``invalid JSON`` text rather than the old
-        # demo-specific ``unreadable`` message (which now applies only
-        # to a genuine OSError reading the bytes).
-        self.assertIn("invalid JSON", snap.error)
-
-
-class FetchRemoteSnapshotDemoHookTests(unittest.TestCase):
-    """Pin the short-circuit in ``fetch_remote_snapshot``."""
-
-    def _runner_must_not_run(self, *args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("subprocess runner invoked in demo mode")
-
-    def test_demo_alias_with_env_set_shortcircuits(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            _write(d, "laptop", _envelope([{"user": "alice", "name": "uxon-x@claude"}]))
-            host = RemoteHost(
-                name="laptop",
-                ssh_alias=f"{uxon_demo.DEMO_SSH_ALIAS_PREFIX}laptop",
-                description="",
-                remote_uxon="uxon",
-            )
-            with (
-                mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: str(d)}, clear=False),
-                mock.patch(
-                    "uxon.infra.remote.collector.run_query",
-                    side_effect=self._runner_must_not_run,
-                ),
-            ):
-                snap = fetch_remote_snapshot(host)
-        self.assertIsNone(snap.error)
-        self.assertEqual(len(snap.sessions), 1)
-
-    def test_demo_alias_without_env_yields_error_no_ssh(self) -> None:
-        host = RemoteHost(
-            name="laptop",
-            ssh_alias=f"{uxon_demo.DEMO_SSH_ALIAS_PREFIX}laptop",
-            description="",
-            remote_uxon="uxon",
+        assert sessions_probe.collect_sessions_for_user(make_config(), "bob", "uxon-", None) == [
+            replace(expected, user="bob", name="uxon-b@claude", attached="0")
+        ]
+        assert sessions_probe.collect_sessions_for_user(make_config(), "carol", "uxon-", None) == []
+    remote.assert_not_called()
+    tmux.assert_not_called()
+    local_query.assert_not_called()
+    with patch(
+        "uxon.infra.remote.collector.run_query",
+        return_value=subprocess.CompletedProcess([], 0, json.dumps(envelope([record])), ""),
+    ) as query:
+        snap = fetch_remote_snapshot(
+            RemoteHost("real", "real-alias", "", "uxon"), ssh_multiplex="off"
         )
-        # ``mock.patch.dict`` with a pop in the patched block guarantees
-        # the env var is restored after the test even if it was set in
-        # the caller's environment.
-        with (
-            mock.patch.dict("os.environ", {}, clear=False),
-            mock.patch(
-                "uxon.infra.remote.collector.run_query",
-                side_effect=self._runner_must_not_run,
-            ),
-        ):
-            import os
+        assert snap.sessions == [record]
+    query.assert_called_once()
+    assert query.call_args.args[0][-2] == "real-alias"
+    monkeypatch.delenv(demo.DEMO_ENV_VAR)
+    with patch("uxon.infra.remote.collector.run_query") as query:
+        assert fetch_remote_snapshot(hosts[1]).sessions == []
+        assert "unset" in fetch_remote_snapshot(hosts[1]).error
+    query.assert_not_called()
+    attempts = []
 
-            os.environ.pop(uxon_demo.DEMO_ENV_VAR, None)
+    def absent_tmux(argv, *, timeout):
+        assert (
+            "uxon.infra.tmux_server_probe" in argv
+            and argv[-1] == "--default-socket"
+            and timeout > 0
+        )
+        attempts.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, '{"state":"absent","sessions":[],"error":""}', ""
+        )
+
+    with patch("uxon.infra.tmux.run_query", side_effect=absent_tmux):
+        assert sessions_probe.collect_sessions_for_user(make_config(), "alice", "uxon-", None) == []
+    assert len(attempts) == 1
+
+
+def test_remote_and_independent_local_demo_validation_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv(demo.DEMO_ENV_VAR, str(tmp_path))
+    host = RemoteHost("peer", "__uxon_demo__:peer", "", "uxon")
+    peer, local = tmp_path / "peer.json", tmp_path / "_local.json"
+    with patch("uxon.infra.remote.collector.run_query") as query:
+        snap = fetch_remote_snapshot(host)
+        assert snap.sessions == [] and "not found" in snap.error
+        assert sessions_probe.collect_sessions_for_user(make_config(), "alice", "uxon-", None) == []
+        for payload, code in [
+            ("not json {", "invalid_response"),
+            (json.dumps({**envelope([]), "schema_version": "999"}), "update_local"),
+            ("[]", "invalid_response"),
+            (json.dumps({"schema_version": "3"}), "invalid_response"),
+            (json.dumps({"schema_version": "3", "data": {"sessions": {}}}), "invalid_response"),
+        ]:
+            peer.write_text(payload)
+            local.write_text(payload)
             snap = fetch_remote_snapshot(host)
-        self.assertIsNotNone(snap.error)
-        assert snap.error is not None
-        self.assertIn(uxon_demo.DEMO_ENV_VAR, snap.error)
-
-    def test_real_alias_with_env_set_is_not_intercepted(self) -> None:
-        """A real (non-demo) host must still go through ssh when env is set.
-
-        Guarantees the demo hook is keyed on the alias sentinel, not on
-        the env var alone — operators with a mixed config aren't
-        silently disabled.
-        """
-        host = RemoteHost(
-            name="prod1",
-            ssh_alias="prod1",
-            description="",
-            remote_uxon="uxon",
-        )
-        ran: dict[str, bool] = {"called": False}
-
-        def fake_runner(*args: Any, **kwargs: Any) -> Any:
-            ran["called"] = True
-            raise FileNotFoundError("ssh")
-
-        with TemporaryDirectory() as tmp:
-            with (
-                mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: tmp}, clear=False),
-                mock.patch(
-                    "uxon.infra.remote.collector.run_query",
-                    side_effect=fake_runner,
-                ),
-            ):
-                fetch_remote_snapshot(host)
-        self.assertTrue(ran["called"], "ssh runner was not invoked for non-demo host")
-
-
-class LoadDemoLocalSessionsTests(unittest.TestCase):
-    """Pin the synthetic-local-section loader: ``_local.json`` ⇒ SessionInfo."""
-
-    def _record(self, **overrides: Any) -> dict[str, Any]:
-        rec: dict[str, Any] = {
-            "user": "alice",
-            "name": "uxon-checkout@claude",
-            "short_id": "checkout@claude",
-            "agent": "claude",
-            "attached": True,
-            "windows": "3",
-            "created": "2026-05-01T10:00:00+00:00",
-            "last_attached": "2026-05-20T14:00:00+00:00",
-            "pane_pids": [1234, 1235],
-            "active_pid": 1234,
-            "active_cmd": "claude",
-            "active_path": "/home/alice/checkout",
-            "cpu_pct": 12.5,
-            "rss_kib": 524288,
-            "legacy": False,
-        }
-        rec.update(overrides)
-        return rec
-
-    def test_missing_file_returns_empty(self) -> None:
-        with TemporaryDirectory() as tmp:
-            got = uxon_demo.load_demo_local_sessions(Path(tmp), "alice")
-        self.assertEqual(got, [])
-
-    def test_malformed_json_returns_empty(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            (d / uxon_demo.LOCAL_ENVELOPE_NAME).write_text("not json {", encoding="utf-8")
-            got = uxon_demo.load_demo_local_sessions(d, "alice")
-        self.assertEqual(got, [])
-
-    def test_schema_mismatch_returns_empty(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            payload = _envelope([self._record()])
-            payload["schema_version"] = "999"
-            (d / uxon_demo.LOCAL_ENVELOPE_NAME).write_text(json.dumps(payload), encoding="utf-8")
-            got = uxon_demo.load_demo_local_sessions(d, "alice")
-        self.assertEqual(got, [])
-
-    def test_multi_user_envelope_is_filtered(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            payload = _envelope(
-                [
-                    self._record(user="alice", name="uxon-a@claude"),
-                    self._record(user="bob", name="uxon-b@claude"),
-                    self._record(user="alice", name="uxon-c@claude"),
-                ]
+            assert snap.sessions == [] and snap.host_stats is None and snap.error_code == code
+            assert (
+                sessions_probe.collect_sessions_for_user(make_config(), "alice", "uxon-", None)
+                == []
             )
-            (d / uxon_demo.LOCAL_ENVELOPE_NAME).write_text(json.dumps(payload), encoding="utf-8")
-            alice = uxon_demo.load_demo_local_sessions(d, "alice")
-            bob = uxon_demo.load_demo_local_sessions(d, "bob")
-            ghost = uxon_demo.load_demo_local_sessions(d, "carol")
-        self.assertEqual([s.name for s in alice], ["uxon-a@claude", "uxon-c@claude"])
-        self.assertEqual([s.name for s in bob], ["uxon-b@claude"])
-        self.assertEqual(ghost, [])
-
-    def test_record_fields_round_trip_into_session_info(self) -> None:
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            payload = _envelope([self._record(attached=True)])
-            (d / uxon_demo.LOCAL_ENVELOPE_NAME).write_text(json.dumps(payload), encoding="utf-8")
-            got = uxon_demo.load_demo_local_sessions(d, "alice")
-        self.assertEqual(len(got), 1)
-        s = got[0]
-        self.assertEqual(s.user, "alice")
-        self.assertEqual(s.name, "uxon-checkout@claude")
-        self.assertEqual(s.attached, "1")  # bool ⇒ tmux-style "1"/"0"
-        self.assertEqual(s.windows, "3")
-        self.assertEqual(s.pane_pids, (1234, 1235))
-        self.assertEqual(s.active_pid, 1234)
-        self.assertEqual(s.active_cmd, "claude")
-        self.assertEqual(s.cpu_pct, 12.5)
-        self.assertEqual(s.rss_kib, 524288)
-        self.assertEqual(s.agent, "claude")
-        self.assertFalse(s.legacy)
-
-
-class CollectSessionsDemoHookTests(unittest.TestCase):
-    """Pin the short-circuit in ``cli.collect_sessions_for_user``."""
-
-    def test_demo_env_set_does_not_spawn_subprocess(self) -> None:
-        """Demo mode must never invoke tmux — otherwise the operator's
-        real socket leaks into the demo's local section."""
-        with TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            payload = _envelope(
-                [
-                    {
-                        "user": "alice",
-                        "name": "uxon-x@claude",
-                        "agent": "claude",
-                        "attached": False,
-                        "windows": "1",
-                        "pane_pids": [42],
-                        "active_pid": 42,
-                        "active_cmd": "claude",
-                        "active_path": "/home/alice",
-                        "cpu_pct": 0.0,
-                        "rss_kib": 1024,
-                        "legacy": False,
-                    }
-                ]
-            )
-            (d / uxon_demo.LOCAL_ENVELOPE_NAME).write_text(json.dumps(payload), encoding="utf-8")
-
-            def boom(*args: Any, **kwargs: Any) -> Any:
-                raise AssertionError("subprocess.run invoked in demo mode")
-
-            with (
-                mock.patch.dict("os.environ", {uxon_demo.DEMO_ENV_VAR: str(d)}, clear=False),
-                mock.patch.object(sessions_probe, "run_query", side_effect=boom),
-            ):
-                got = sessions_probe.collect_sessions_for_user(
-                    make_config(), "alice", "uxon-", None
-                )
-        self.assertEqual([s.name for s in got], ["uxon-x@claude"])
-
-    def test_demo_env_unset_falls_through_to_tmux(self) -> None:
-        """Sanity: with the env unset the existing tmux path runs.
-
-        Mock ``subprocess.run`` to short-circuit the actual probe so the
-        test stays hermetic (no real tmux binary required)."""
-        with mock.patch.dict("os.environ", {}, clear=False):
-            import os
-
-            os.environ.pop(uxon_demo.DEMO_ENV_VAR, None)
-            with mock.patch.object(
-                sessions_probe.tmux,
-                "probe_tmux_server",
-                return_value=mock.Mock(state="absent", error=""),
-            ) as probe:
-                got = sessions_probe.collect_sessions_for_user(
-                    make_config(), "alice", "uxon-", None
-                )
-        self.assertEqual(got, [])
-        probe.assert_called_once()
-
-
-if __name__ == "__main__":
-    unittest.main()
+    query.assert_not_called()

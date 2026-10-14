@@ -30,11 +30,8 @@ The aggregator carries:
 
 - `~/.ssh/config` aliases for the fleet (re-derive from infra
   repo / config-management).
-- `~/.ssh/cm-*` control sockets (cosmetic — recreated on next
-  ssh).
-- `~/.local/state/uxon/remote/<peer>.json` snapshots — the cache
-  fallback for the TUI when a peer is briefly unreachable. This
-  is **safe to lose**: a fresh aggregator just refetches.
+- SSH control sockets, recreated on the next poll. Their location is
+  documented in the [peer configuration reference](../../reference/configuration.md#remote_hosts-table-array).
 - The **initiator side** of `correlation_id` pairs for in-flight
   remote gestures — orphaned. The target-side `session.attach.dispatch` or
   `session.kill` event carries the same id but has no matching initiator event to join
@@ -87,14 +84,10 @@ ssh <peer> uxon kill-all --force      # if you own the peer
 #    /etc/uxon/config.toml. The TUI picks it up on next refresh (r) or
 #    relaunch.
 
-# 3. Delete the cached snapshot — it's safe to leave but tidy
-#    not to:
-rm -f ~/.local/state/uxon/remote/<name>.json
-
-# 4. Remove the SSH alias from ~/.ssh/config (or leave it if
+# 3. Remove the SSH alias from ~/.ssh/config (or leave it if
 #    you keep it for ad-hoc SSH).
 
-# 5. If the peer host stays running for other purposes,
+# 4. If the peer host stays running for other purposes,
 #    optionally uninstall uxon there:
 ssh <peer> sudo pipx uninstall --global uxon
 ```
@@ -103,20 +96,17 @@ The peer's audit history is preserved on the peer's journald
 (or your central collector if you're forwarding). Nothing on
 the aggregator deletes it.
 
-## Recovering from corrupt aggregator-side cache
+## Restore polling after a local failure
 
-A `kill -9` to the TUI mid-write or a full disk on the
-aggregator can leave half-written cache files. The fail-soft
-loader prefers to ignore a malformed file rather than crash,
-but if the dashboard shows confusing data after a crash:
+Session snapshots are fetched live. After a failed poll the dashboard hides
+unconfirmed rows and shows the peer's error; there is no disk snapshot to clear.
+Run `uxon doctor --remote` and check the SSH alias, credentials and local
+control-socket directory. Fix the reported access or filesystem error, then
+press `r` to retry.
 
-```bash
-rm -rf ~/.local/state/uxon/remote/
-```
-
-Safe nuclear option. Next refresh repopulates from live
-fetches, and the dashboard shows `(loading)` briefly per peer
-until that lands. No peer-side state is touched.
+See [peer configuration](../../reference/configuration.md#remote_hosts-table-array)
+for transport settings and [debug logs](../debug/enable-debug-logs.md)
+for diagnostic capture.
 
 ## Multiple operators, multiple aggregators
 

@@ -3,8 +3,8 @@
 
 Disables the audit channel by default so unit tests can exercise CLI
 handlers without opening real ``AF_UNIX`` sockets to journald or
-``/dev/log``.  ``tests/test_uxon_audit.py`` opts back in (and resets
-state) per-test via its own ``_reset_audit_state`` helper.
+``/dev/log``. Audit delivery tests enable the channel explicitly; each test
+restores the complete cached socket, identity, correlation and configuration state.
 """
 
 from __future__ import annotations
@@ -122,11 +122,20 @@ def _stub_probe_host_by_default(request: pytest.FixtureRequest):
 def _disable_audit_by_default(request: pytest.FixtureRequest):
     """Default to ``audit.enabled = False`` for every test.
 
-    Tests that exercise the audit channel directly (under
-    ``tests/test_uxon_audit.py``) reset the module state in their own
-    ``setUp``; their explicit assignments override this fixture for the
-    duration of those tests.
+    Audit delivery tests enable the channel explicitly. Restore all cached
+    state and close any socket opened during the test at teardown.
     """
+    names = (
+        "enabled",
+        "sink",
+        "_initialized",
+        "_socket",
+        "_prefix",
+        "_prefix_subcmd",
+        "_syslog_facility_name",
+        "_correlation_id",
+    )
+    saved = {name: getattr(_audit, name) for name in names}
     # Reset to first-call shape so cached sockets / prefixes from prior
     # tests do not bleed across.  ``enabled=False`` then short-circuits
     # ``audit()`` before any socket work runs.
@@ -136,6 +145,7 @@ def _disable_audit_by_default(request: pytest.FixtureRequest):
     _audit.sink = "none"
     _audit._prefix = {}
     _audit._prefix_subcmd = ""
+    _audit._syslog_facility_name = "user"
     _audit._correlation_id = None
     yield
     # Best-effort post-test teardown: close any socket the test opened
@@ -146,6 +156,5 @@ def _disable_audit_by_default(request: pytest.FixtureRequest):
             sock.close()
         except OSError:
             pass
-    _audit._socket = None
-    _audit.sink = "none"
-    _audit._initialized = False
+    for name, value in saved.items():
+        setattr(_audit, name, value)
