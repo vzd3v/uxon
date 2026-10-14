@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -60,30 +61,42 @@ except ImportError:  # pragma: no cover
     _PTY_OK = False
 
 
-# Shared child-side script. Imports uxon.tui, builds a no-op TuiContext
-# shaped like what u-den would see on first launch (sudo, no sessions),
-# and enters run(). The test driver pipes keystrokes in, then reads the
-# rendered frames.
+# Shared empty-session operator context. A validated profile and installed
+# host report keep the initial screen independent of local installations;
+# the real runner still owns rendering, probing and key dispatch.
 _CHILD_SCRIPT = r"""
 import sys, os
 from uxon import tui as uxon_tui
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG
+from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.domain.sudo import SudoCapability
+from uxon.infra import probes
+from uxon.tui.context import LaunchProfileOption
+
+probes.probe_host = lambda cfg, user, catalog: HostReport(
+    tmux=BinaryStatus('tmux', '/usr/bin/tmux', ''),
+    agents={aid: BinaryStatus(spec.binary, f'/usr/bin/{spec.binary}', '')
+            for aid, spec in catalog.items()},
+    launch_user=user,
+)
 
 ctx = uxon_tui.TuiContext(
     sessions=[],
     total_cpu="0",
     total_ram="0",
-    version="ccw-test",
+    version="uxon-test",
     cwd="/tmp",
     cwd_short="tmp",
     new_project_root="/tmp/projects",
     existing_projects=[],
     cwd_writable=True,
-    current_user="u-den",
+    current_user="alice",
     agents=DEFAULT_AGENT_CATALOG,
+    enabled_profiles=("claude",),
+    default_profile="claude",
+    launch_profiles={"claude": LaunchProfileOption("claude", "Claude", "claude", "alice")},
     sudo_caps=SudoCapability(
-        reachable_users=frozenset({"_synthetic_"})
+        reachable_users=frozenset({"bob"})
     ),
     other_sessions=[],
 )
@@ -111,18 +124,79 @@ class PtyTuiIntegrationTests(unittest.TestCase):
             **kwargs,
         )
 
-    def test_pty_harness_provides_controlling_terminal(self) -> None:
-        from harness.pty_tui import run_python_snippet
+    def test_pty_harness_controls_terminal_and_bounds_failures(self) -> None:
+        from harness.pty_tui import run_pty, run_python_snippet
 
-        trace = run_python_snippet(
-            "import os; fd = os.open('/dev/tty', os.O_RDWR); "
-            "print(f'controlling-tty:{os.isatty(0)}:{os.isatty(1)}'); os.close(fd)",
-            [b""],
-            initial_drain=1.0,
-            final_drain=0.1,
-            timeout=3.0,
-        )
+        from uxon.infra.loop_guard import handoff_spawn
+
+        with (
+            mock.patch.dict(
+                os.environ, {"UXON_DISABLE_LOOP_GUARD": "1", "UXON_SPAWN_GUARD_STRICT": "1"}
+            ),
+            handoff_spawn(),
+        ):
+            trace = run_python_snippet(
+                "import os; fd = os.open('/dev/tty', os.O_RDWR); "
+                "print(f'controlling-tty:{os.isatty(0)}:{os.isatty(1)}'); os.close(fd); "
+                "print('guards:', os.getenv('UXON_DISABLE_LOOP_GUARD'), "
+                "os.getenv('UXON_SPAWN_GUARD_STRICT'))",
+                [],
+                initial_drain=1.0,
+                final_drain=0.1,
+                timeout=3.0,
+            )
         self.assertIn("controlling-tty:True:True", trace.plain)
+        self.assertIn("guards: None None", trace.plain)
+        self.assertEqual(trace.exit_code, 0, trace.plain)
+
+        with tempfile.TemporaryDirectory() as directory:
+            consumed = Path(directory) / "consumed"
+            pid_file = Path(directory) / "pid"
+            script = f"""
+import os, signal, tty
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+tty.setraw(0)
+Path({str(pid_file)!r}).write_text(str(os.getpid()))
+print('READY', flush=True)
+Path({str(consumed)!r}).write_bytes(os.read(0, 1))
+print('CONSUMED', flush=True)
+os.read(0, 1)
+"""
+            # READY from the initial stage cannot satisfy the next stage.
+            # A later key must never be sent after that stage fails; the
+            # SIGTERM-resistant child must still be killed and reaped.
+            with self.assertRaisesRegex(AssertionError, "key 1: missing marker 'READY'") as error:
+                run_python_snippet(
+                    script,
+                    [(0.5, b"x", "READY"), (0.5, b"y", "CONSUMED")],
+                    initial_wait_for="READY",
+                    initial_drain=1.0,
+                    timeout=3.0,
+                )
+            self.assertIn("CONSUMED", str(error.exception))
+            self.assertEqual(consumed.read_bytes(), b"x")
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
+
+            for fault in ("missing initial marker", "process start failure"):
+                with self.subTest(fault=fault):
+                    descriptors = set(os.listdir("/proc/self/fd"))
+                    if fault == "missing initial marker":
+                        with self.assertRaisesRegex(
+                            AssertionError, "initial render: missing marker"
+                        ):
+                            run_python_snippet(
+                                "print('EARLY_EXIT', flush=True); raise SystemExit(7)",
+                                [(0.5, b"x", "UNREACHABLE")],
+                                initial_wait_for="MISSING",
+                                initial_drain=1.0,
+                                timeout=3.0,
+                            )
+                    else:
+                        with self.assertRaises(FileNotFoundError):
+                            run_pty([str(Path(directory) / "missing-command")], [])
+                    self.assertEqual(set(os.listdir("/proc/self/fd")), descriptors)
 
     @pytest.mark.slow
     def test_project_picker_decodes_plain_folder_arrows_with_search(self) -> None:
