@@ -81,6 +81,7 @@ class TuiContext:
     refresh_tick: int = field(default=0, init=False)
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
+    tmux_set_terminal_title: bool = True
     tui_render_debounce_ms: int = 300
     tui_render_max_latency_ms: int = 1000
     # Multi-host transport knobs. Forwarded into per-host fetch

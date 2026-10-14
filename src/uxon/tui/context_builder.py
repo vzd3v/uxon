@@ -345,6 +345,7 @@ def build_tui_context(
         host_stats=host_stats,
         tui_refresh_interval_seconds=cfg.tui_refresh_interval_seconds,
         tui_ssh_refresh_interval_seconds=cfg.tui_ssh_refresh_interval_seconds,
+        tmux_set_terminal_title=cfg.tmux_set_terminal_title,
         ssh_multiplex=cfg.ssh_multiplex,
         ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         fetch_concurrency=cfg.fetch_concurrency,

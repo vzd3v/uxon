@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import pty
+import re
 import select
 import signal
 import sys
@@ -276,6 +277,88 @@ def test_session_titles_reach_the_terminal_and_can_be_disabled(
     assert terminal.command("show-options", "-t", _SESSION, "-v", "set-titles") == "off"
     terminal.command("detach-client")
     assert client.finish()["rc"] == 0
+
+
+def test_dashboard_title_returns_after_real_tmux_detach(terminal: _Terminal) -> None:
+    from harness.pty_tui import run_python_snippet
+
+    code = f"""
+import os
+from dataclasses import replace
+from types import SimpleNamespace
+from helpers import make_config
+from uxon.infra import probes, sessions_probe, tmux
+from uxon.infra.run import run_query
+from uxon.tui.context import CallbackError, LaunchProfileOption, TuiContext
+from uxon.tui.runner import run
+
+os.environ.pop('TMUX', None)
+os.environ['TERM'] = 'xterm-256color'
+cfg = make_config(tmux_socket_template={terminal.cfg.tmux_socket_template!r})
+user = {terminal.user!r}
+target = sessions_probe.collect_sessions([user], cfg)[0]
+request = tmux._build_tmux_attach_request(target, cfg, user)
+probes.probe_host = lambda *_args: SimpleNamespace(
+    tmux=SimpleNamespace(path='/usr/bin/tmux'),
+    agents={{'claude': SimpleNamespace(path='/usr/bin/claude')}},
+)
+rounds = 0
+def menu_agents(index):
+    spec = cfg.agents['claude']
+    mode = replace(spec.permission_modes[0], label=f'title-mode-{{index}}')
+    return {{'claude': replace(spec, permission_modes=(mode,))}}
+launches = 0
+def attach(*_args):
+    global launches
+    launches += 1
+    result = run_query(tmux.configured_tmux_base(cfg, user) + [
+        'respawn-pane', '-k', '-t', target.name, 'sh', '-c',
+        f'printf TITLE_WORKLOAD_READY-{{launches}}; sleep 600',
+    ], timeout=5)
+    assert result.returncode == 0, result.stderr
+    return request
+def refresh():
+    global rounds
+    rounds += 1
+    if rounds == 3:
+        raise CallbackError('title-refresh-failed')
+    return replace(ctx, cwd_short=f'menu-after-detach-{{rounds}}',
+                   tmux_set_terminal_title=rounds == 1, agents=menu_agents(rounds + 1))
+ctx = TuiContext(
+    sessions=[], total_cpu='0', total_ram='0', version='test',
+    cwd='/srv/projects/demo', cwd_short='menu-before-attach',
+    new_project_root='/srv/projects', existing_projects=[], cwd_writable=True,
+    current_user=user, agents=menu_agents(1), enabled_profiles=('claude',),
+    default_profile='claude',
+    launch_profiles={{'claude': LaunchProfileOption('claude', 'Claude', 'claude', user)}},
+    on_launch_cwd=attach, on_refresh=refresh,
+)
+rc = run(ctx)
+print('TITLE_RUNNER_EXITED', flush=True)
+raise SystemExit(rc)
+"""
+    keys = []
+    markers = ("menu-after-detach-1", "menu-after-detach-2", "title-refresh-failed")
+    for index, marker in enumerate(markers, start=1):
+        keys += [
+            (15.0, b"\r", f"1 title-mode-{index}"),
+            (10.0, b"\r", f"TITLE_WORKLOAD_READY-{index}"),
+        ]
+        keys += [(15.0, b"\x02d", marker)]
+    keys.append((10.0, b"q", "TITLE_RUNNER_EXITED"))
+    trace = run_python_snippet(
+        code,
+        keys,
+        extra_path=[str(Path(__file__).parent)],
+        initial_drain=20,
+        initial_wait_for="No active sessions",
+        timeout=120,
+    )
+    assert trace.exit_code == 0, trace.plain[-6000:]
+    assert "title-refresh-failed" in trace.plain
+    titles = re.findall(rb"\x1b\]0;([^\x07]*)\x07", trace.raw)
+    assert titles[:3] == [b"uxon", _SESSION.encode(), b"uxon"]
+    assert titles.count(b"uxon") == 2  # refreshed opt-out survives refresh failure
 
 
 @pytest.mark.parametrize("key", [b"\r", b"\x1b", b"q"], ids=["Enter", "Escape", "q"])

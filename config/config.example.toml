@@ -276,7 +276,7 @@ default_args = []
 
 # ─── uxon-managed tmux options ────────────────────────────────────
 # docs/reference/configuration.md ([tmux] managed options)
-# Session names appear in terminal titles by default. To disable, set
+# Session names and the dashboard's "uxon" appear in terminal titles. To disable, set
 # set_terminal_title = false under [tmux], independently of manage_options.
 #
 # Managed option tables are OFF BY DEFAULT. When enabled, uxon layers the set below

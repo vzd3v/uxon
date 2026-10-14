@@ -37,7 +37,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - The TUI Settings screen is read-only for non-root processes. Operators render configuration unprivileged, review it, and cross the privilege boundary explicitly with `sudo install`.
 
 ### Added
-- Entering a session shows its name in the terminal tab/window title, with native tmux updates as sessions switch or rename. Disable with `tmux.set_terminal_title = false` or through Settings.
+- Terminal tab/window titles show `uxon` in the dashboard and the session name while attached, following session switches and renames. Returning from detach restores `uxon`; disable updates with `tmux.set_terminal_title = false` or through Settings.
 - The project picker browses nested folders with plain arrow keys, shows the current path, and restores the previous search and selection when returning to a parent folder.
 - Generic command runtimes with deterministic resources, path mapping, readiness/start/create policy, optional cgroup telemetry, identity resolution, and safe per-session teardown.
 - Command execution backends accept one generic argv prefix, verify the effective target UID/GID and supplementary groups with a fixed internal probe, canonicalize target filesystem and telemetry reads inside the boundary, and keep credential-file reads plus token-authenticated HTTP inside that boundary. The built-in local backend uses argv-preserving non-login `sudo`.

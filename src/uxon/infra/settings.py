@@ -131,8 +131,8 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "tmux.set_terminal_title",
         "bool",
-        "Show the session name in the terminal title (on by default). "
-        "Changes take effect when entering a session.",
+        "Show session names and 'uxon' in terminal titles (on by default). "
+        "Changes take effect when entering a session or reopening the dashboard.",
     ),
     SettingSpec(
         "tmux.manage_options",
