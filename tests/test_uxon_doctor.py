@@ -191,8 +191,11 @@ def invoke(fixture, *, json_output=False, remote=False, public_main=False):
 def test_default_json_mixed_statuses_are_parallel_bounded_ordered_and_canonical(doctor_protocol):
     cfg, user, operator, cwd, calls = doctor_protocol
     cfg.remote_hosts = [RemoteHost("prod", "prod", "", "uxon")]
-    with patch.object(collector, "run_query", side_effect=AssertionError("unrequested SSH")):
+    with patch.object(
+        collector, "run_query", side_effect=AssertionError("unrequested SSH")
+    ) as remote_query:
         data = invoke(doctor_protocol, json_output=True, public_main=True)
+    remote_query.assert_not_called()
     assert list(data["agents"]) == ["claude", "codex", "cursor", "gone", "failed", "noversion"]
     assert data["agents"] == {
         "claude": {
