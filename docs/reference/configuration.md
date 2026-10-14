@@ -381,7 +381,7 @@ One entry per peer host the local `uxon` aggregates over SSH.
 | `remote_uxon` | string | no | `"uxon"` | Path to `uxon` on the peer (override when peer uses a non-PATH location). |
 | `interval` | duration | no | `tui_ssh_refresh_interval_seconds` | Per-peer poll cadence (`"5s"`, `"500ms"`, `"2m"`, or bare seconds). |
 | `connect_timeout` | duration | no | `5s` | SSH `ConnectTimeout`. |
-| `total_timeout` | duration | no | `15s` | Hard wall on the whole fetch (connect + remote run + parse). |
+| `total_timeout` | duration | no | `10s` | Hard wall on the whole fetch (connect + remote run + parse). |
 | `extra_ssh_options` | array | no | `[]` | Extra `ssh` tokens inserted immediately before `{ssh_alias}` in the default template. Use for `ProxyJump` / `-i identity` pinning per peer. |
 | `command_template` | array | no | `[]` | Full-argv override for the fetch. Replaces the entire SSH command. Substitutes `{ssh_alias}` / `{remote_uxon}` / `{connect_timeout}` / `{ssh_control_dir}` / `{ssh_control_persist_seconds}` / `{remote_command}`. When set, `extra_ssh_options` and `ssh_multiplex` are ignored — the operator owns the transport (kubectl-exec / docker-exec recipes). |
 | `color` | string | no | unset | Operator pin for the host's block colour. When unset, the TUI auto-assigns from `tui.color_palette`. Operator pins win unconditionally over the auto-cycle. |
@@ -389,6 +389,11 @@ One entry per peer host the local `uxon` aggregates over SSH.
 Unknown keys in a peer block are rejected at load time with a
 clear error so typos like `ssh_alaias` fail loud rather than
 silently disabling the host.
+
+Durations must be finite and positive. Numeric values are seconds; strings
+accept bare seconds or the case-insensitive suffixes `ms`, `s` and `m`.
+SSH connect and fetch timeouts round upward to whole seconds, with a minimum
+of one second.
 
 Remote retry policy is fixed per host: three transient failures open a bounded
 exponential breaker (factor 2, cap 60 seconds, ±25% jitter). A valid incompatible

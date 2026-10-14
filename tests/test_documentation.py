@@ -114,6 +114,7 @@ def test_public_relative_markdown_links_and_anchors_exist() -> None:
         if "agents" not in p.relative_to(ROOT / "docs").parts
     ]
     failures = []
+    anchors_by_destination: dict[Path, set[str]] = {}
     for page in pages:
         content = re.sub(r"^```.*?^```\s*$", "", page.read_text(), flags=re.M | re.S)
         for match in re.finditer(r"\]\(([^)]+)\)", content):
@@ -127,12 +128,11 @@ def test_public_relative_markdown_links_and_anchors_exist() -> None:
             )
             if not destination.exists():
                 failures.append(location)
-            elif (
-                parsed.fragment
-                and destination.suffix == ".md"
-                and unquote(parsed.fragment) not in _anchors(destination.read_text())
-            ):
-                failures.append(location)
+            elif parsed.fragment and destination.suffix == ".md":
+                if destination not in anchors_by_destination:
+                    anchors_by_destination[destination] = _anchors(destination.read_text())
+                if unquote(parsed.fragment) not in anchors_by_destination[destination]:
+                    failures.append(location)
     assert not failures, "broken relative links/anchors:\n" + "\n".join(failures)
 
 
