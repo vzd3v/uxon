@@ -349,9 +349,12 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
     and the launch proceeds.
     """
 
-    async def _settle(self, pilot) -> None:
-        for _ in range(12):
+    async def _wait_for(self, pilot, predicate, description) -> None:
+        for _ in range(20):
             await pilot.pause()
+            if predicate():
+                return
+        self.fail(f"Timed out waiting for {description}; screen={type(pilot.app.screen).__name__}")
 
     async def test_prompt_then_confirm_runs_prepare_and_launches(self) -> None:
         from uxon.app.launch import RuntimeGate
@@ -362,37 +365,45 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
 
         prepared: list[bool] = []
         launched: list[str] = []
+        order: list[str] = []
+
+        def prepare():
+            order.append("prepare")
+            prepared.append(True)
+
+        def launch(profile, mode, target_dir=None):
+            from uxon.tui.context import LaunchRequest
+
+            order.append(f"launch:{profile}:{mode}")
+            return LaunchRequest(cmd=("/bin/true",), label="cwd")
 
         gate = RuntimeGate(
             needs_prepare=True,
             needs_prompt=True,
             message="Container 'proj-work' is stopped — start and launch?",
             fail_message="",
-            prepare=lambda: prepared.append(True),
+            prepare=prepare,
         )
 
         ctx = _mk_ctx(
             on_runtime_gate=lambda *a: gate,
             on_probe_existing_sessions=lambda *a: (),
+            on_launch_cwd=launch,
             enabled_profiles=["claude"],
             agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
         )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
-            await self._settle(pilot)
+            await pilot.pause()
             app.request_launch = lambda req: launched.append(req.label)  # type: ignore[assignment, method-assign]
-            app.screen._launch_flow.launch_cwd()
-            opts = None
-            for _ in range(10):
-                await pilot.pause()
-                opts = next(
-                    (s for s in app.screen_stack if isinstance(s, LaunchOptionsScreen)), None
-                )
-                if opts is not None:
-                    break
-            self.assertIsNotNone(opts, msg="LaunchOptionsScreen was not reached")
-            opts.dismiss(("claude", "normal"))
-            await self._settle(pilot)
+            await pilot.press("enter")
+            await self._wait_for(
+                pilot, lambda: isinstance(app.screen, LaunchOptionsScreen), "launch options"
+            )
+            await pilot.press("enter")
+            await self._wait_for(
+                pilot, lambda: isinstance(app.screen, ConfirmYesNo), "runtime confirmation"
+            )
             # The container gate must have pushed the confirm BEFORE launching.
             confirm = next((s for s in app.screen_stack if isinstance(s, ConfirmYesNo)), None)
             self.assertIsNotNone(
@@ -400,10 +411,12 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(prepared, [], msg="prepare ran before the operator confirmed")
             self.assertEqual(launched, [], msg="launch committed before confirm")
+            self.assertEqual(order, [])
             await pilot.press("y")
-            await self._settle(pilot)
+            await self._wait_for(pilot, lambda: bool(launched), "prepared launch")
         self.assertEqual(prepared, [True], msg="prepare did not run after confirm")
         self.assertEqual(launched, ["cwd"], msg="launch did not proceed after prepare")
+        self.assertEqual(order, ["prepare", "launch:claude:normal"])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -552,9 +565,25 @@ class ConfirmModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press(*"kill-all")
             await pilot.press("enter")
 
+        async def wrong_phrase(app, pilot):
+            app.screen.query_one("#confirm-input", Input).value = "kill-al"
+            await pilot.press("enter")
+
         scenarios = [
             ScreenScenario("yesno-y", lambda: ConfirmYesNo("Kill foo?"), press_keys("y"), True),
             ScreenScenario("yesno-n", lambda: ConfirmYesNo("Kill foo?"), press_keys("n"), False),
+            ScreenScenario(
+                "yesno-cancel", lambda: ConfirmYesNo("Kill foo?"), press_keys("escape"), False
+            ),
+            ScreenScenario(
+                "phrase-mismatch", lambda: ConfirmPhrase("Danger!", "kill-all"), wrong_phrase, False
+            ),
+            ScreenScenario(
+                "phrase-empty",
+                lambda: ConfirmPhrase("Danger!", "kill-all"),
+                press_keys("enter"),
+                False,
+            ),
             ScreenScenario(
                 "phrase-match", lambda: ConfirmPhrase("Danger!", "kill-all"), phrase, True
             ),
@@ -582,7 +611,6 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
 
         async def assert_pending(app, pilot):
             screen = app.screen
-            self.assertIn("claude", screen._visible_agents)
             agent_list = screen.query_one("#agent-list")
             labels = [str(item.query_one("Static").content) for item in agent_list.children]
             self.assertTrue(
@@ -664,12 +692,14 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
             # Move highlight to cursor (2nd entry).
             await pilot.press("down")
             await pilot.pause()
-            self.assertEqual(screen._current_agent, "cursor")
             mode_list = screen.query_one("#mode-list", ListView)
             # cursor has exactly two modes in the catalog: normal, yolo.
             self.assertEqual(len(mode_list.children), 2)
             mode_ids = [item.id for item in mode_list.children]
             self.assertEqual(mode_ids, ["mode-normal", "mode-yolo"])
+            await pilot.press("right", "down", "enter")
+            await pilot.pause()
+            self.assertEqual(app.result, ("cursor", "yolo"))
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -1216,10 +1246,13 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def test_bool_toggle_saves_value(self):
+    async def test_bool_editor_save_return_and_git_remote_details(self):
         from textual.app import App
+        from textual.geometry import Region
+        from textual.widgets import DataTable
 
         from uxon.infra.settings import SettingEntry, SettingSpec
+        from uxon.tui.screens.git_remotes import GitRemotesScreen
         from uxon.tui.screens.settings import SettingsScreen
         from uxon.tui.screens.settings_modals import BoolToggleModal
 
@@ -1239,14 +1272,33 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
             # (the bool entry). Press Enter → BoolToggleModal pushed.
             await pilot.press("enter")
             await pilot.pause()
-            # Click True button.
-            from uxon.tui.screens.settings_modals import BoolToggleModal
-
             modal = app.screen_stack[-1]
             self.assertIsInstance(modal, BoolToggleModal)
-            btn = modal.query_one("#true")
-            btn.press()
+            self.assertTrue(await pilot.click("#true"))
             await pilot.pause()
+            self.assertIsInstance(app.screen, SettingsScreen)
+            self.assertEqual(saved, [("git_create_enabled", True)])
+            self.assertEqual(removed, [])
+            rows = [
+                ("foo", "github.com", "alice", "gh", "alice", "private", ""),
+                ("bar", "gitlab.com", "bob", "token", "bob", "public", "~/.tok"),
+            ]
+            dismissed = []
+            app.push_screen(GitRemotesScreen(rows), dismissed.append)
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            self.assertEqual(table.row_count, 2)
+            self.assertEqual([tuple(table.get_row_at(i)) for i in range(2)], rows)
+            rendered = "".join(
+                line.text
+                for line in table.render_lines(Region(0, 0, table.size.width, table.size.height))
+            )
+            for value in ("foo", "github.com", "alice", "bar", "gitlab.com", "bob", "~/.tok"):
+                self.assertIn(value, rendered)
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertEqual(dismissed, [None])
+            self.assertIsInstance(app.screen, SettingsScreen)
             await pilot.press("escape")
             await pilot.pause()
         self.assertEqual(saved, [("git_create_enabled", True)])
@@ -1254,169 +1306,94 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
-    """Behaviour of the single-Input edit modals (string/number/array/table).
+    async def test_fresh_editors_prefill_validate_and_save_exact_values(self):
+        from textual.widgets import Input
 
-    These pin the parse/initial-text/commit contract per kind so the
-    template-method base (``_ValueInputModal``) can be refactored without
-    silent regressions. Inputs are addressed via ``query_one(Input)``
-    (one Input per modal) rather than by id, so the assertions survive
-    the id being unified.
-    """
-
-    def _entry(self, key, kind, value, choices=None):
         from uxon.infra.settings import SettingEntry, SettingSpec
-
-        spec = SettingSpec(key, kind, "desc", choices=choices)
-        return SettingEntry(spec=spec, value=value, source="default", editable=True)
-
-    def _cbs(self):
         from uxon.tui.screens.settings import SettingsCallbacks
-
-        saved: list = []
-        return saved, SettingsCallbacks(
-            get_entries=lambda: [],
-            save_setting=lambda k, v: saved.append((k, v)),
-            remove_setting=lambda k: None,
-            save_mapping=lambda k, v: saved.append((k, v)),
+        from uxon.tui.screens.settings_modals import (
+            ArrayCsvModal,
+            NumberInputModal,
+            StringInputModal,
+            TableMappingModal,
         )
 
-    async def _drive(self, modal, text):
-        """Push ``modal``, type ``text`` into its Input, press Enter.
+        logs = []
 
-        Returns ``(result, still_open)`` where ``result`` is the dismiss
-        value (or ``_UNSET`` if never dismissed) and ``still_open`` says
-        whether the modal is still on the screen stack.
-        """
-        from textual.app import App
-        from textual.widgets import Input
+        def editor(modal_type, key, kind, initial):
+            saved, mappings = [], []
+            logs.append((saved, mappings))
+            cbs = SettingsCallbacks(
+                get_entries=lambda: [],
+                save_setting=lambda k, v: saved.append((k, v)),
+                remove_setting=lambda k: self.fail("editor removed a setting"),
+                save_mapping=lambda k, v: mappings.append((k, v)),
+            )
+            return modal_type(
+                SettingEntry(SettingSpec(key, kind, "desc"), initial, "default", True), cbs
+            )
 
-        _UNSET = object()
-        captured = {"r": _UNSET}
-
-        class Host(App):
-            def on_mount(self):
-                self.push_screen(modal, lambda r: captured.__setitem__("r", r))
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
+        async def number(app, pilot):
+            modal = app.screen
+            field = modal.query_one(Input)
+            self.assertEqual(field.value, "0")
+            field.value = ""
             await pilot.pause()
-            modal.query_one(Input).value = text
+            await pilot.press("a", "b", "c", "enter")
             await pilot.pause()
+            self.assertIs(app.screen, modal, "invalid number dismissed the editor")
+            self.assertEqual(logs[-1], ([], []))
+            self.assertEqual(field.value, "abc")
+            field.value = "42"
             await pilot.press("enter")
-            await pilot.pause()
-            still_open = app.screen is modal
-        return captured["r"], still_open
 
-    async def test_string_saves_raw(self):
-        from uxon.tui.screens.settings_modals import StringInputModal
+        async def array(app, pilot):
+            self.assertEqual(app.screen.query_one(Input).value, "p, q")
+            app.screen.query_one(Input).value = "a, b ,c,"
+            await pilot.press("enter")
 
-        saved, cbs = self._cbs()
-        modal = StringInputModal(self._entry("k", "string", ""), cbs)
-        result, _ = await self._drive(modal, "  hello world  ")
-        # String kind does not strip — the raw value is persisted verbatim.
-        self.assertEqual(saved, [("k", "  hello world  ")])
-        self.assertTrue(result)
+        async def string(app, pilot):
+            app.screen.query_one(Input).value = "  hello world  "
+            await pilot.press("enter")
 
-    async def test_number_saves_float(self):
-        from uxon.tui.screens.settings_modals import NumberInputModal
+        async def mapping(app, pilot):
+            app.screen.query_one(Input).value = "x=1, y=2 , bad, =skip"
+            await pilot.click("#save")
 
-        saved, cbs = self._cbs()
-        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
-        result, _ = await self._drive(modal, "42")
-        self.assertEqual(saved, [("k", 42.0)])
-        self.assertTrue(result)
-
-    async def test_number_rejects_non_number_and_stays_open(self):
-        from uxon.tui.screens.settings_modals import NumberInputModal
-
-        saved, cbs = self._cbs()
-        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
-        result, still_open = await self._drive(modal, "abc")
-        self.assertEqual(saved, [])
-        self.assertTrue(still_open)
-
-    async def test_array_parses_csv(self):
-        from uxon.tui.screens.settings_modals import ArrayCsvModal
-
-        saved, cbs = self._cbs()
-        modal = ArrayCsvModal(self._entry("k", "array", []), cbs)
-        await self._drive(modal, "a, b ,c,")
-        # Comma-split, each part stripped, empties dropped.
-        self.assertEqual(saved, [("k", ["a", "b", "c"])])
-
-    async def test_array_initial_text_renders_current(self):
-        from textual.app import App
-        from textual.widgets import Input
-
-        from uxon.tui.screens.settings_modals import ArrayCsvModal
-
-        saved, cbs = self._cbs()
-        modal = ArrayCsvModal(self._entry("k", "array", ["p", "q"]), cbs)
-
-        class Host(App):
-            def on_mount(self):
-                self.push_screen(modal)
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            self.assertEqual(modal.query_one(Input).value, "p, q")
-
-    async def test_number_prefills_falsy_zero(self):
-        # A current value of 0 must render as "0", not a blank field —
-        # ``str(value or "")`` would wrongly blank it.
-        from textual.app import App
-        from textual.widgets import Input
-
-        from uxon.tui.screens.settings_modals import NumberInputModal
-
-        _saved, cbs = self._cbs()
-        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
-
-        class Host(App):
-            def on_mount(self):
-                self.push_screen(modal)
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            self.assertEqual(modal.query_one(Input).value, "0")
-
-    async def test_table_parses_kv_via_save_mapping(self):
-        from uxon.tui.screens.settings_modals import TableMappingModal
-
-        saved, cbs = self._cbs()
-        modal = TableMappingModal(self._entry("k", "table", {}), cbs)
-        await self._drive(modal, "x=1, y=2 , bad, =skip")
-        # ``key=value`` pairs only; malformed/keyless parts dropped.
-        self.assertEqual(saved, [("k", {"x": "1", "y": "2"})])
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class GitRemotesScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def test_populates_and_esc_dismisses(self):
-        from textual.app import App
-
-        from uxon.tui.screens.git_remotes import GitRemotesScreen
-
-        rows = [
-            ("foo", "github.com", "alice", "gh", "alice", "private", ""),
-            ("bar", "gitlab.com", "bob", "token", "bob", "public", "~/.tok"),
+        scenarios = [
+            ScreenScenario(
+                "number-invalid-valid",
+                lambda: editor(NumberInputModal, "n", "number", 0),
+                number,
+                True,
+            ),
+            ScreenScenario(
+                "array-prefill-save",
+                lambda: editor(ArrayCsvModal, "a", "array", ["p", "q"]),
+                array,
+                True,
+            ),
+            ScreenScenario(
+                "raw-string", lambda: editor(StringInputModal, "s", "string", ""), string, True
+            ),
+            ScreenScenario(
+                "mapping-sink", lambda: editor(TableMappingModal, "m", "table", {}), mapping, True
+            ),
+            ScreenScenario(
+                "cancel-unsaved",
+                lambda: editor(StringInputModal, "cancel", "string", ""),
+                press_keys("x", "escape"),
+                False,
+            ),
         ]
-
-        class Host(App):
-            dismissed = False
-
-            def on_mount(self):
-                def done(_r):
-                    self.dismissed = True
-                    self.exit()
-
-                self.push_screen(GitRemotesScreen(rows), done)
-
-        app = Host()
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            await pilot.press("escape")
-            await pilot.pause()
-        self.assertTrue(app.dismissed)
+        self.assertEqual(await run_screen_scenarios(scenarios), [True, True, True, True, False])
+        self.assertEqual(
+            logs,
+            [
+                ([("n", 42.0)], []),
+                ([("a", ["a", "b", "c"])], []),
+                ([("s", "  hello world  ")], []),
+                ([], [("m", {"x": "1", "y": "2"})]),
+                ([], []),
+            ],
+        )
