@@ -128,6 +128,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # ``dict(...)`` copies keep the shared constant immutable from per-load
     # mutation.
     "tmux": {
+        "set_terminal_title": True,
         "manage_options": False,
         "options": dict(RECOMMENDED_TMUX_OPTIONS["options"]),
         "server_options": dict(RECOMMENDED_TMUX_OPTIONS["server_options"]),
@@ -185,6 +186,7 @@ class Config:
     local_host_color: str = "green"
     worktree_root: str = ""
     worktree_base: str = "local"
+    tmux_set_terminal_title: bool = True
     # uxon-managed tmux options (3.5.0). OFF BY DEFAULT, seeded from
     # ``RECOMMENDED_TMUX_OPTIONS`` to match ``DEFAULT_CONFIG`` — the three dicts
     # hold raw ``key -> value`` pairs per tmux scope (``-g`` / ``-s`` / ``-as``).

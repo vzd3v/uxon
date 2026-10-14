@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""Real terminal regressions for failed-screen acknowledgement and live siblings."""
+"""Real terminal regressions for session titles and failed-screen handoff."""
 
 from __future__ import annotations
 
 import json
 import os
 import pty
+import select
 import signal
 import sys
 import tempfile
@@ -211,6 +212,70 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Terminal]:
             terminal.command("kill-server", check=False)
             for client in terminal.clients:
                 client.close()
+
+
+def test_session_titles_reach_the_terminal_and_can_be_disabled(
+    terminal: _Terminal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def receive(client: _Client, marker: bytes) -> bytes:
+        output = bytearray()
+
+        def arrived() -> bool:
+            if select.select([client.fd], [], [], 0)[0]:
+                output.extend(os.read(client.fd, 65536))
+            return marker in output
+
+        _wait(arrived)
+        return bytes(output)
+
+    target = terminal.snapshot().sessions[0]
+    # A session-local workload title must not replace the stable session name.
+    terminal.command("select-pane", "-t", _SESSION, "-T", "WORKLOAD_TITLE")
+    terminal.command("set-option", "-g", "set-titles-string", "GLOBAL_TITLE")
+    client = terminal.attach(tmux._build_tmux_attach_request(target, terminal.cfg, terminal.user))
+    output = receive(client, b"\x1b]0;" + _SESSION.encode() + b"\x07")
+    assert b"\x1b]0;WORKLOAD_TITLE\x07" not in output
+    assert terminal.command("show-options", "-gv", "set-titles-string") == "GLOBAL_TITLE"
+
+    sibling = "uxon-other@claude"
+    terminal.command("new-session", "-d", "-s", sibling, "sleep", "600")
+    sibling_target = next(
+        session for session in terminal.snapshot().sessions if session.name == sibling
+    )
+    with monkeypatch.context() as nested:
+        nested.setenv("TMUX", f"{terminal.cfg.tmux_socket_template},0,0")
+        for session in (sibling_target, target):
+            request = tmux._build_tmux_attach_request(session, terminal.cfg, terminal.user)
+            assert "switch-client" in request.cmd
+            assert run_launch_request(request).rc == 0
+            receive(client, b"\x1b]0;" + session.name.encode() + b"\x07")
+    terminal.command("kill-session", "-t", sibling)
+
+    renamed = "uxon-renamed@claude"
+    terminal.command("rename-session", "-t", _SESSION, renamed)
+    receive(client, b"\x1b]0;" + renamed.encode() + b"\x07")
+    terminal.command("rename-session", "-t", renamed, _SESSION)
+    receive(client, b"\x1b]0;" + _SESSION.encode() + b"\x07")
+    terminal.command("detach-client")
+    assert client.finish()["rc"] == 0
+
+    # Off must override a previously enabled session on re-entry.
+    terminal.cfg.tmux_set_terminal_title = False
+    client = terminal.attach(tmux._build_tmux_attach_request(target, terminal.cfg, terminal.user))
+    terminal.command(
+        "respawn-pane",
+        "-k",
+        "-t",
+        _SESSION,
+        "sh",
+        "-c",
+        "printf TITLE_DISABLED_READY; sleep 600",
+    )
+    output = receive(client, b"TITLE_DISABLED_READY")
+    assert b"\x1b]0;" not in output
+    assert terminal.command("show-options", "-t", _SESSION, "-v", "set-titles") == "off"
+    terminal.command("detach-client")
+    assert client.finish()["rc"] == 0
 
 
 @pytest.mark.parametrize("key", [b"\r", b"\x1b", b"q"], ids=["Enter", "Escape", "q"])

@@ -603,6 +603,8 @@ class UxonTests(unittest.TestCase):
             "git_create_enabled = 1\n",
             '[audit]\nenabled = "yes"\n',
             "[tmux]\nmanage_options = 0\n",
+            '[tmux]\nset_terminal_title = "false"\n',
+            "[tmux]\nset_terminal_title = 0\n",
             '[agents.claude]\n[[agents.claude.mode]]\nid = "normal"\ndangerous = "no"\n',
         )
         for source in cases:
@@ -1630,6 +1632,7 @@ class UxonTests(unittest.TestCase):
             )
         create = _managed_create_cmd(req)
         self.assertIn("new-session", create)
+        self.assertIn("#{session_name}", req.cmd)
         self.assertIn("-d", create)
         self.assertNotIn("-As", create)
         self.assertIn("uxon-demo@claude", create)
@@ -2348,6 +2351,7 @@ class UxonTests(unittest.TestCase):
             )
         # Main cmd is the switch; creation happens in prelaunch.
         self.assertIn("switch-client", req.cmd)
+        self.assertIn("#{session_name}", req.cmd)
         self.assertIn("uxon-demo@claude", req.cmd)
         # Prelaunch only prepares the socket parent; detached creation is
         # finalized by the managed launch preparation.
@@ -2500,7 +2504,7 @@ class UxonTests(unittest.TestCase):
         )
 
     def test_build_attach_request_no_chain_when_disabled(self) -> None:
-        # managed options off → attach argv byte-identical to pre-3.5.0.
+        # Managed option tables stay dormant independently of terminal titles.
         target = self.make_session("uxon-demo", "/srv/repos/demo")
         with self._stub_socket_path():
             req = tmux._build_tmux_attach_request(target, self.make_config(), "u-vz")
@@ -2620,6 +2624,7 @@ class UxonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._write_and_load_cfg("", tmpdir)
         self.assertFalse(cfg.tmux_manage_options)
+        self.assertTrue(cfg.tmux_set_terminal_title)
         self.assertEqual(cfg.tmux_options, {"mouse": "on", "allow-passthrough": "on"})
         self.assertEqual(cfg.tmux_server_options, {"extended-keys": "on"})
         self.assertEqual(cfg.tmux_append_server_options, {"terminal-features": "xterm*:extkeys"})
@@ -2630,8 +2635,11 @@ class UxonTests(unittest.TestCase):
         # Operator opt-out: manage_options=false yields an empty chain even
         # though the (replaced) tables would otherwise be the default.
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = self._write_and_load_cfg("[tmux]\nmanage_options = false\n", tmpdir)
+            cfg = self._write_and_load_cfg(
+                "[tmux]\nmanage_options = false\nset_terminal_title = false\n", tmpdir
+            )
         self.assertFalse(cfg.tmux_manage_options)
+        self.assertFalse(cfg.tmux_set_terminal_title)
         self.assertEqual(tmux._tmux_set_chain(cfg), [])
 
     def test_load_config_tmux_tables_parse(self) -> None:

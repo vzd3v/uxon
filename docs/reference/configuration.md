@@ -463,8 +463,29 @@ For the multi-host operating model see
 
 ## `[tmux]` managed options (3.5.0)
 
-**Off by default.** When enabled, uxon layers a recommended set of `set`
-options (see below) on top of whatever the launch user's own tmux config
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `tmux.set_terminal_title` | bool | `true` | Show the full session name in the terminal's tab/window title when entering a new or existing session from the CLI or TUI. Independent of `manage_options`. Set `false` to disable title updates on the next entry. |
+
+Title updates use tmux's native `set-titles` and `set-titles-string` options,
+scoped to the entered session. The title follows session switches and renames;
+workload pane titles do not replace it. This setting takes precedence over
+global title options in `[tmux.options]` or the user's tmux configuration.
+For remote attach, the peer's uxon configuration controls the title. The
+terminal must support and permit application title changes; SSH carries them
+to the client terminal, while an outer multiplexer may apply its own policy.
+After detach, the shell or terminal controls the title; uxon does not restore
+an earlier title.
+
+To disable:
+
+```toml
+[tmux]
+set_terminal_title = false
+```
+
+**Managed option tables are off by default.** When enabled, uxon layers a
+recommended set of `set` options on top of whatever the launch user's own tmux config
 (`/etc/tmux.conf`, `~/.tmux.conf`, XDG) provides, at session launch, without
 editing anyone's files and without guessing config paths. The recommended
 tables ship built-in, so enabling is a one-line toggle — set
@@ -473,7 +494,7 @@ tables if you want to customise the set.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `tmux.manage_options` | bool | `false` | Master switch. Default (or absent) emits none — launch argv is byte-identical to pre-3.5.0. Set `true` to emit the configured `set` commands. |
+| `tmux.manage_options` | bool | `false` | Enable the three option tables below. Set `true` to emit the configured `set` commands. Independent of `set_terminal_title`. |
 | `[tmux.options]` | table | recommended (`mouse`, `allow-passthrough`) | Rendered as `set -g <key> <value>` (global session options). Applied only when `manage_options = true`. |
 | `[tmux.server_options]` | table | recommended (`extended-keys`) | Rendered as `set -s <key> <value>` (server options). Applied only when `manage_options = true`. |
 | `[tmux.append_server_options]` | table | recommended (`terminal-features`) | Rendered as `set -as <key> <value>` (append to a server option's list). Applied only when `manage_options = true`. |

@@ -276,8 +276,10 @@ default_args = []
 
 # ─── uxon-managed tmux options ────────────────────────────────────
 # docs/reference/configuration.md ([tmux] managed options)
+# Session names appear in terminal titles by default. To disable, set
+# set_terminal_title = false under [tmux], independently of manage_options.
 #
-# OFF BY DEFAULT. When enabled, uxon layers the recommended set below
+# Managed option tables are OFF BY DEFAULT. When enabled, uxon layers the set below
 # (mouse support, OSC-52 passthrough, extended keys, terminal-features
 # for agent TUIs) on top of whatever the launch user's own tmux config
 # (/etc/tmux.conf, ~/.tmux.conf, XDG) provides, at launch, without
@@ -298,6 +300,7 @@ default_args = []
 # recommended defaults.
 #
 # [tmux]
+# set_terminal_title = true
 # manage_options = true
 #
 # [tmux.options]            # set -g

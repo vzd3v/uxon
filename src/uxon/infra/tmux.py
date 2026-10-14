@@ -258,6 +258,28 @@ def _tmux_set_chain(cfg: Config, *, server_running: bool = False) -> list[str]:
     return chain
 
 
+def _tmux_title_chain(cfg: Config, session: str) -> list[str]:
+    """Use native terminal capabilities and keep title policy session-local.
+
+    Reassert on entry, including off, so existing sessions reflect config edits.
+    A live session format follows renames and ignores workload pane titles.
+    """
+    # set-option accepts a pane target; the colon makes '=' match the session.
+    target = f"={session}:"
+    chain = []
+    if cfg.tmux_set_terminal_title:
+        chain += ["set-option", "-t", target, "set-titles-string", "#{session_name}", ";"]
+    chain += [
+        "set-option",
+        "-t",
+        target,
+        "set-titles",
+        "on" if cfg.tmux_set_terminal_title else "off",
+        ";",
+    ]
+    return chain
+
+
 def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: str):
     """Return the LaunchRequest for attaching to an existing session.
 
@@ -274,6 +296,7 @@ def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: st
     # session, without a kill-server. ``-as`` is skipped (server_running) so
     # the append list does not grow. ``[]`` when managed options are off.
     set_chain = _tmux_set_chain(cfg, server_running=True)
+    set_chain += _tmux_title_chain(cfg, target.name)
     if target.active_pane_dead and target.live_pane_id:
         set_chain += [
             "select-window",
@@ -549,7 +572,7 @@ def _build_tmux_launch_request(
         diagnostics_prefix=tuple(base),
     )
     if mode == "switch":
-        switch = tuple(base + ["switch-client", "-t", session])
+        switch = tuple(base + _tmux_title_chain(cfg, session) + ["switch-client", "-t", session])
         return LaunchRequest(
             cmd=switch,
             prelaunch=(ensure_socket_parent,),
@@ -557,7 +580,7 @@ def _build_tmux_launch_request(
             managed=managed,
             handoff=TmuxHandoff(cfg, launch_user),
         )
-    attach = tuple(base + ["attach-session", "-t", session])
+    attach = tuple(base + _tmux_title_chain(cfg, session) + ["attach-session", "-t", session])
     return LaunchRequest(
         cmd=attach,
         prelaunch=(ensure_socket_parent,),
