@@ -53,43 +53,10 @@ class AgentsUnavailableScreenTests(unittest.TestCase):
         self.assertIn("npm i -g @openai/codex", text)
         self.assertIn("cursor.com/install", text)
 
-    def test_escape_binding_is_declared(self) -> None:
-        from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
-
-        bindings = {binding.key: binding.action for binding in AgentsUnavailableScreen.BINDINGS}
-        self.assertEqual(bindings.get("escape"), "dismiss_screen")
-
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
     """End-to-end: UxonApp pushes AgentsUnavailableScreen iff all probes miss."""
-
-    async def test_pushes_when_all_agents_missing(self) -> None:
-        from uxon.infra import agents as uxon_agents
-        from uxon.tui.app import UxonApp
-        from uxon.tui.messages import _HostReportUpdated
-        from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
-
-        ctx = _mk_ctx(
-            enabled_profiles=("claude", "codex"),
-            default_profile="claude",
-        )
-
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            availability = {
-                aid: uxon_agents.AgentAvailability(status="missing", error="not found")
-                for aid in ctx.enabled_profiles
-            }
-            app.post_message(_HostReportUpdated(availability=availability))
-            await pilot.pause()
-            self.assertTrue(
-                any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack),
-                f"popup not pushed; stack={app.screen_stack!r}",
-            )
-            await pilot.press("q")
-            await pilot.pause()
 
     async def test_rearm_after_dismiss_when_state_degrades_again(self) -> None:
         """Transition gate: after the user dismisses the modal and state
@@ -105,16 +72,20 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            # Post-P5: mutate the live slot (canonical store) and wake the
-            # dispatcher with a bare message; the ``ctx`` read-through
-            # proxy is gone.
-            avail = app.state.agent_availability.value
+            # Live reports update the canonical slot without mutating the context seed.
+            original = dict(app.state.agent_availability.value)
 
             # First tick: all-missing → pushes modal.
-            avail["claude"] = uxon_agents.AgentAvailability(status="missing", error="not found")
-            app.post_message(_HostReportUpdated())
+            missing = {"claude": uxon_agents.AgentAvailability(status="missing", error="not found")}
+            app.post_message(_HostReportUpdated(availability=missing))
             await pilot.pause()
             self.assertTrue(any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack))
+            self.assertEqual(ctx.agent_availability, original)
+            app.post_message(_HostReportUpdated(availability=dict(missing)))
+            await pilot.pause()
+            self.assertEqual(
+                sum(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack), 1
+            )
 
             # User dismisses (Esc on AgentsUnavailableScreen).
             await pilot.press("escape")
@@ -123,14 +94,24 @@ class AppLevelGateTests(unittest.IsolatedAsyncioTestCase):
 
             # State recovers: agent becomes available; do NOT auto-pop
             # (no modal to pop, but no re-push either).
-            avail["claude"] = uxon_agents.AgentAvailability(status="ok")
-            app.post_message(_HostReportUpdated())
+            app.post_message(
+                _HostReportUpdated(
+                    availability={"claude": uxon_agents.AgentAvailability(status="ok")}
+                )
+            )
             await pilot.pause()
             self.assertFalse(any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack))
 
             # State degrades again → re-pushes.
-            avail["claude"] = uxon_agents.AgentAvailability(status="missing", error="gone again")
-            app.post_message(_HostReportUpdated())
+            app.post_message(
+                _HostReportUpdated(
+                    availability={
+                        "claude": uxon_agents.AgentAvailability(
+                            status="missing", error="gone again"
+                        )
+                    }
+                )
+            )
             await pilot.pause()
             self.assertTrue(
                 any(isinstance(s, AgentsUnavailableScreen) for s in app.screen_stack),

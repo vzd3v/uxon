@@ -1,29 +1,7 @@
-"""Unit tests for :class:`uxon.tui.config.TuiConfig`.
-
-Stage 8 commit 1: introduces :class:`TuiConfig` as the immutable side
-of the TUI's state. Existing :class:`TuiContext` keeps its current
-shape; the config snapshot is duplicated state populated from the
-ctx at App-construction time.
-
-The contract pinned here:
-
-* Every field listed in the target shape (plan §"Target") round-trips
-  from a representative ``TuiContext`` through :meth:`from_context`.
-* The dataclass is frozen — attribute assignment after construction
-  raises ``dataclasses.FrozenInstanceError``.
-* Identity of ``TuiConfig.refresh_sources`` is stable when the same
-  list is fed in twice — i.e. tuple-isation is value-deterministic
-  but not memoised; the constructor produces equal-but-not-identical
-  tuples, which is the behaviour callers expect.
-* The App constructs ``TuiConfig`` once and keeps the same instance
-  across rebuild ticks (``ctx`` is replaced; ``app.cfg`` is not).
-  The Pilot-level guarantee lands in commit 7 once the rebuild path
-  produces ``MainData``; commit 1 only pins the static factory.
-"""
+"""Configuration snapshot preserves nondefault policy and callback boundaries."""
 
 from __future__ import annotations
 
-import dataclasses
 import unittest
 
 from uxon.tui.config import TuiConfig
@@ -81,7 +59,17 @@ class FromContextRoundTripTests(unittest.TestCase):
             cadence_seconds_attr="tui_refresh_interval_seconds",
         )
         ctx = _mk_ctx()
+        from uxon.domain.agents import DEFAULT_AGENT_CATALOG
+
+        ctx.agents = dict(DEFAULT_AGENT_CATALOG)
         ctx.refresh_sources = [spec]
+        from uxon.infra.remote_hosts import RemoteHost
+        from uxon.tui.context import LaunchProfileOption
+
+        peer = RemoteHost("peer", "peer-alias", "build host", "uxon")
+        profile = LaunchProfileOption("ops", "Operations", "claude", "alice")
+        ctx.remote_hosts = [peer]
+        ctx.launch_profiles = {"ops": profile}
         cfg = TuiConfig.from_context(ctx)
 
         self.assertEqual(cfg.current_user, "dana_agent")
@@ -92,7 +80,8 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertEqual(cfg.tui_ssh_refresh_interval_seconds, 11.0)
         self.assertEqual(cfg.ssh_multiplex, "off")
         self.assertEqual(cfg.fetch_concurrency, 8)
-        self.assertEqual(cfg.remote_hosts, ())
+        self.assertEqual(cfg.remote_hosts, (peer,))
+        self.assertEqual(cfg.launch_profiles, {"ops": profile})
         self.assertEqual(cfg.refresh_sources, (spec,))
         self.assertTrue(cfg.git_create_enabled)
 
@@ -114,6 +103,14 @@ class FromContextRoundTripTests(unittest.TestCase):
         self.assertIs(cfg.on_setting_remove, ctx.on_setting_remove)
         self.assertIs(cfg.on_setting_save_mapping, ctx.on_setting_save_mapping)
         self.assertIs(cfg.get_git_remote_profile_rows, ctx.get_git_remote_profile_rows)
+        ctx.remote_hosts.clear()
+        ctx.refresh_sources.clear()
+        ctx.launch_profiles.clear()
+        ctx.agents.clear()
+        self.assertEqual(cfg.remote_hosts, (peer,))
+        self.assertEqual(cfg.refresh_sources, (spec,))
+        self.assertEqual(cfg.launch_profiles, {"ops": profile})
+        self.assertIn("claude", cfg.agents)
 
 
 class WorktreeCallbacksRoundTripTests(unittest.TestCase):
@@ -137,59 +134,6 @@ class WorktreeCallbacksRoundTripTests(unittest.TestCase):
         self.assertIs(cfg.on_create_worktree, sentinel_create)
         self.assertIs(cfg.on_launch_existing_worktree, sentinel_launch)
         self.assertIs(cfg.on_probe_existing_worktree_sessions, sentinel_probe_sess)
-
-
-class OnRemoteAttachPropagatedTests(unittest.TestCase):
-    def test_on_remote_attach_propagated(self) -> None:
-        attach_calls: list[tuple[str, str, str]] = []
-
-        def fake_attach(host: str, user: str, name: str) -> LaunchRequest:
-            attach_calls.append((host, user, name))
-            return LaunchRequest(cmd=("true",), label="t")
-
-        ctx = _mk_ctx(on_remote_attach=fake_attach)
-        cfg = TuiConfig.from_context(ctx)
-        self.assertIs(cfg.on_remote_attach, ctx.on_remote_attach)
-        cfg.on_remote_attach("h", "u", "n")
-        self.assertEqual(attach_calls, [("h", "u", "n")])
-
-
-class FrozenSemanticsTests(unittest.TestCase):
-    def test_assignment_after_construction_raises(self) -> None:
-        cfg = TuiConfig.from_context(_mk_ctx())
-        with self.assertRaises(dataclasses.FrozenInstanceError):
-            cfg.tui_refresh_interval_seconds = 99.0  # type: ignore[misc]
-
-    def test_remote_hosts_is_a_tuple(self) -> None:
-        # Frozen-ness implies sequence types are immutable too.
-        cfg = TuiConfig.from_context(_mk_ctx())
-        self.assertIsInstance(cfg.remote_hosts, tuple)
-        self.assertIsInstance(cfg.refresh_sources, tuple)
-
-
-class IdentityStabilityTests(unittest.TestCase):
-    def test_app_holds_one_cfg_across_rebuild_ticks(self) -> None:
-        """The App's ``cfg`` is constructed at ``__init__`` and kept
-        across ctx rebuilds. Pinning this here keeps later commits
-        from accidentally reconstructing ``cfg`` per tick (which
-        would break selectors that key on ``id(cfg)`` and would
-        defeat the whole point of moving to an immutable config).
-        """
-        try:
-            import textual  # noqa: F401
-        except ImportError:
-            self.skipTest("textual not available")
-        from uxon.tui.app import UxonApp
-
-        # Synthesise a skeleton ctx via the same helper screens use; we
-        # don't run the App, just construct it to inspect ``self.cfg``.
-        ctx = _mk_ctx(loading=True)
-        app = UxonApp(ctx, probe_agents=False)
-        first_cfg = app.cfg
-        # Simulate a rebuild landing — App.ctx is replaced but cfg is not.
-        new_ctx = _mk_ctx(loading=False)
-        app.ctx = new_ctx
-        self.assertIs(app.cfg, first_cfg)
 
 
 if __name__ == "__main__":

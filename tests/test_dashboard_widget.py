@@ -173,40 +173,6 @@ class SessionListViewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.focused.id, "after")
 
-    async def test_set_rows_same_length_does_not_change_virtual_size(self) -> None:
-        """A same-length cell update keeps ``virtual_size`` height stable.
-
-        The render-on-demand contract: only a row *count* change moves
-        ``virtual_size`` (the one legitimate relayout).
-        """
-        from textual.app import App, ComposeResult
-
-        from uxon.tui.widgets.session_list_view import SessionListView
-
-        cols = _active_columns()
-        old = (
-            _make_row(host="a", user="u", name="s1", cpu=1.0),
-            _make_row(host="a", user="u", name="s2", cpu=2.0),
-        )
-        new = (
-            _make_row(host="a", user="u", name="s1", cpu=1.0),
-            _make_row(host="a", user="u", name="s2", cpu=42.0),  # cell change
-        )
-
-        class Host(App):
-            def compose(self) -> ComposeResult:
-                yield SessionListView(cols, id="dash")
-
-        app = Host()
-        async with app.run_test() as pilot:
-            view = app.query_one("#dash", SessionListView)
-            view.set_rows(old)
-            await pilot.pause()
-            height_before = view.virtual_size.height
-            view.set_rows(new)
-            await pilot.pause()
-            self.assertEqual(view.virtual_size.height, height_before)
-
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

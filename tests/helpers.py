@@ -84,54 +84,6 @@ def run_off_loop_sync(fn, *, on_success=None, on_error=None, label="action"):
         on_success(value)
 
 
-class LoopBlockMonitor:
-    """Empirical event-loop responsiveness probe (the watchdog layer).
-
-    Schedules a self-rescheduling timer every ``interval`` seconds and
-    records the gap between consecutive ticks. A gap much larger than
-    ``interval`` means the loop could not service the timer — i.e. some
-    callback blocked it. This measures the loop directly, independent of
-    *how* it was blocked (subprocess, sleep, CPU loop), complementing the
-    subprocess boundary guard.
-
-    Usage::
-
-        mon = LoopBlockMonitor()
-        mon.start(app)
-        ...drive a blocking action...
-        mon.stop()
-        assert mon.max_block < 0.25  # loop stayed responsive
-    """
-
-    def __init__(self, interval: float = 0.01) -> None:
-        self.interval = interval
-        self.gaps: list[float] = []
-        self._last: float | None = None
-        self._timer = None
-
-    def start(self, app) -> None:
-        import time
-
-        def beat() -> None:
-            now = time.monotonic()
-            if self._last is not None:
-                self.gaps.append(now - self._last)
-            self._last = now
-            self._timer = app.set_timer(self.interval, beat)
-
-        self._last = time.monotonic()
-        self._timer = app.set_timer(self.interval, beat)
-
-    def stop(self) -> None:
-        if self._timer is not None:
-            self._timer.stop()
-            self._timer = None
-
-    @property
-    def max_block(self) -> float:
-        return max(self.gaps, default=0.0)
-
-
 def make_session(name: str = "uxon-demo@claude", *, user: str = "u-vz") -> SessionInfo:
     return SessionInfo(
         user=user,
@@ -145,3 +97,69 @@ def make_session(name: str = "uxon-demo@claude", *, user: str = "u-vz") -> Sessi
         active_cmd="claude",
         active_path="/srv/repos/demo",
     )
+
+
+def make_dashboard_context(**overrides):
+    from uxon.tui.context import LaunchRequest, TuiContext
+
+    base = dict(
+        sessions=[],
+        total_cpu="0",
+        total_ram="0",
+        version="4.0.0",
+        cwd="/srv/work",
+        cwd_short="work",
+        new_project_root="/srv/work",
+        existing_projects=[],
+        cwd_writable=True,
+        current_user="alice",
+        refresh_sources=[],
+        tui_render_debounce_ms=0,
+        on_launch_cwd=lambda p, m, target_dir=None: LaunchRequest(("true",), label="cwd"),
+        on_launch_new=lambda n, p, m, g: LaunchRequest(("true",), label="new"),
+        on_launch_existing=lambda n, p, m: LaunchRequest(("true",), label="existing"),
+    )
+    base.update(overrides)
+    return TuiContext(**base)
+
+
+def make_dashboard_session(name="uxon-local@claude", *, user="alice", cpu="1.0"):
+    from uxon.tui.context import TuiSession
+
+    return TuiSession(name, name, False, "42", cpu, "1M", "1s", "1s", "claude", "/srv/work", user)
+
+
+def make_dashboard_snapshot(*, user="bob", name="uxon-remote@claude", error=None):
+    from uxon.domain.wire_schema import RemoteSnapshot
+
+    return RemoteSnapshot(
+        "peer",
+        1.0,
+        error,
+        sessions=[
+            {
+                "user": user,
+                "name": name,
+                "short_id": name,
+                "agent": "claude",
+                "attached": False,
+                "active_pid": 43,
+                "cpu_pct": 3.0,
+                "rss_kib": 1024,
+                "active_cmd": "claude",
+                "active_path": "/srv/remote",
+            }
+        ],
+    )
+
+
+def land_dashboard_context(app, ctx):
+    from uxon.tui.messages import _RefreshSourceLanded
+
+    app.on__refresh_source_landed(
+        _RefreshSourceLanded("main_ctx_rebuild", ctx, instance_epoch=app._instance_epoch)
+    )
+
+
+def visible_dashboard_text(widget):
+    return " ".join(widget.render_line(i).text for i in range(widget.size.height))
