@@ -39,6 +39,8 @@ from uxon.infra import identity
 
 
 def _reset_audit_state() -> None:
+    if au._socket is not None:
+        au._socket.close()
     au.enabled = True
     au.sink = ""
     au._initialized = False
@@ -52,8 +54,25 @@ def _reset_audit_state() -> None:
 @unittest.skipUnless(os.environ.get("UXON_PERF") == "1", "UXON_PERF not set")
 class AuditOverheadTests(unittest.TestCase):
     def setUp(self) -> None:
+        names = (
+            "enabled",
+            "sink",
+            "_initialized",
+            "_socket",
+            "_prefix",
+            "_prefix_subcmd",
+            "_syslog_facility_name",
+            "_correlation_id",
+        )
+        saved = {name: getattr(au, name) for name in names}
+
+        def restore():
+            _reset_audit_state()
+            for name, value in saved.items():
+                setattr(au, name, value)
+
         _reset_audit_state()
-        self.addCleanup(_reset_audit_state)
+        self.addCleanup(restore)
 
     def test_channel_machinery_latency_under_budget(self) -> None:
         for sink in ("journal", "syslog"):
@@ -169,6 +188,9 @@ class _Datagram:
 
     def connect(self, path: str) -> None:
         self.connected = path
+
+    def close(self) -> None:
+        pass
 
     def send(self, payload: bytes) -> int:
         self.sent += 1

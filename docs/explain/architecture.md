@@ -46,11 +46,13 @@ costs a single set-membership check when the env var is unset.
 `metrics` is gated on `UXON_METRICS=1` and writes per-fetch latency
 for the remote-collector pollers.
 
+The emitters live in `infra/audit.py` and `infra/events.py` respectively.
+
 ## Top-level layout
 
 The package is layered; the layering is enforced by import-linter
-in CI (`lint-imports`). Each layer may import only from the ones
-above it.
+in CI (`lint-imports`). Imports follow the direction described under
+[module boundaries](#module-boundaries).
 
 ```
 src/uxon/                     Python package (pipx / uv tool / pip installable).
@@ -66,7 +68,7 @@ src/uxon/                     Python package (pipx / uv tool / pip installable).
                               and round-trip write (`settings_toml`), audit emit,
                               agent catalog + probe, tmux launch builder, worktree
                               creation, debug/metrics channels, and the `remote/`
-                              SSH transport + on-disk snapshot cache for peers.
+                              SSH transport + live peer snapshots.
   app/                        Use-cases wiring domain + infra: list / attach /
                               kill / new / run / doctor, the launch planner
                               (`plan_worktree_launch`), and the `--json` emitters.
@@ -81,7 +83,7 @@ config/
   config.example.toml         Tracked example. Real config.toml is gitignored.
 examples/
   uxon-config.json            Example payload for render_uxon_config.py.
-tests/                        unittest.TestCase, run via `pytest -n auto`.
+tests/                        pytest functions and unittest.TestCase classes.
 ```
 
 ## Data flow
@@ -113,10 +115,11 @@ Ambiguous release failures are not retried: uxon kills the exact new session and
 removes its pending record.
 
 The TUI runs **inside** a re-entrant outer loop. When the user picks
-an action, the TUI calls `App.exit()` returning a `LaunchRequest`.
-The outer loop in `src/uxon/tui/app.py::run()` then forks `tmux`
-**outside** the textual context (so the agent gets the real terminal),
-waits for it, and re-creates the `App` for the next round-trip.
+an action, the TUI stores a pending `LaunchRequest` and exits the `App`.
+The outer loop in `src/uxon/tui/runner.py::run()` hands the request to
+`app.session_handoff` **outside** the Textual context, so the interactive
+client gets the real terminal. It waits for the client and creates a fresh
+`App` for the next round-trip.
 
 ## TUI internals
 
@@ -126,14 +129,13 @@ Sub-modules under `src/uxon/tui/`:
   `LaunchRequest`, `Item`, `build_items`, `CallbackError`.
   No `textual` imports, no I/O.
 - `state.py` — pure UI state decisions (filter, validation, key
-  routing, focus transitions). Tested with plain `unittest`,
+  routing, focus transitions). Tested without mounting an App,
   no `Pilot`.
-- `events.py` — `debug` and `metrics` channels (both off by default).
-  The audit channel lives in `uxon.audit`, not here.
-- `launch.py` — fork-and-wait helper plus the failure-pause banner.
+- `launch.py` — failure-pause banner.
   Runs **outside** the Textual `App` between round-trips.
 - `hints.py` — `TEXTUAL_MISSING_HINT` install guidance.
-- `app.py` — `UxonApp(App)` and the outer `run(ctx)` re-entrant loop.
+- `app.py` — `UxonApp(App)` and pending launch-request handling.
+- `runner.py` — the outer `run(ctx)` re-entrant loop and terminal handoff.
 - `refresh.py` — pluggable refresh-source registry (`SourceSpec`,
   `SourceResult`, `run_source`). One source per stream — local
   tmux, each `[[remote_hosts]]` peer — runs in its own worker
@@ -187,14 +189,14 @@ widget shell at
    they go through the model selector.
 2. **`columns.py` — `ColumnSpec` registry.** The single source of
    truth for which columns exist, how each one renders, and how
-   each one sorts. `REGISTRY` is the column id → spec map;
+   each one sorts. `REGISTRY` is an ordered tuple of specs;
    formatters return `rich.text.Text` with inline style (no CSS
    class names). `sort_keys` exposes the key function used by the
    model layer. The attach indicator is a glyph in the NAME
    column (`●` filled / `○` hollow); per-host block colour is
    carried by the same `assign_block_colors` map shared with
    `HostTabStrip` and `HostStatusBar`.
-3. **`layout.py` — `build_active_columns(flags, cfg)`.** Pure
+3. **`layout.py` — `build_active_columns(...)`.** Pure
    selector that picks the active column subset from `REGISTRY`
    based on runtime flags (`multi_host`, `cross_user`) and the
    operator-supplied `[tui.table] columns`. Unknown ids in `cfg`
@@ -214,7 +216,7 @@ The selector, bucket layer, and stable-order placer tie those to
 the widget:
 
 5. **`model.py` — `select_dashboard_model(...)`.** Identity-stable
-   selector: returns the same `(rows, columns, ui)` tuple by `is`
+   selector: returns the same row tuple by `is`
    when nothing changed since the previous call, so a no-op tick
    repaints nothing. The cache lives in `_LAST_OUTPUT`.
 6. **`buckets.py` — `select_host_buckets(...)`,
@@ -245,7 +247,7 @@ departure. This is the render-on-demand replacement for the old
 `DataTable`-backed table, whose every structural mutation forced a
 screen-global relayout. Edge-aware navigation (releasing focus at
 the list boundary) is reproduced through `BINDINGS` actions only —
-no `on_key` override, per the AGENTS.md hard rule.
+no `on_key` override.
 
 ## Module boundaries
 
@@ -314,7 +316,7 @@ together. Don't touch one without the other.
 - `tests/test_tui_integration.py` — end-to-end pty harness.
 
 Add a new branchy decision? Put it in `src/uxon/tui/state.py` and
-test it with plain `unittest`. Reach for `Pilot` only when the
+test it without mounting an App. Reach for `Pilot` only when the
 behaviour depends on Textual lifecycle.
 
 ## Configuration

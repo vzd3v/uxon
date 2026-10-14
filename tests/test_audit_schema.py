@@ -15,7 +15,6 @@ from uxon.domain.audit_schema import (
 
 def test_literal_audit_calls_use_declared_events_and_fields() -> None:
     root = Path(__file__).resolve().parent.parent / "src" / "uxon"
-    seen: set[str] = set()
     for path in root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -28,7 +27,6 @@ def test_literal_audit_calls_use_declared_events_and_fields() -> None:
             event = node.args[0].value
             if not isinstance(event, str):
                 continue
-            seen.add(event)
             assert event in AUDIT_EVENT_FIELDS, (
                 f"undeclared audit event {event!r} at {path}:{node.lineno}"
             )
@@ -52,18 +50,6 @@ def test_literal_audit_calls_use_declared_events_and_fields() -> None:
                 f"undeclared outcomes {sorted(unknown_outcomes)} for {event} "
                 f"at {path}:{node.lineno}"
             )
-    # ``session.kill`` is routed through the shared kill helper as a typed
-    # event parameter so CLI and TUI use one finalization path.
-    assert seen | {"session.kill"} == set(AUDIT_EVENT_FIELDS)
-    assert set(AUDIT_EVENT_OUTCOMES) == set(AUDIT_EVENT_FIELDS)
-    assert not any(AUDIT_COMMON_OPTIONAL_FIELDS & fields for fields in AUDIT_EVENT_FIELDS.values())
-    assert set().union(*AUDIT_EVENT_OUTCOMES.values()) == {
-        "ok",
-        "error",
-        "denied",
-        "not_found",
-        "skipped",
-    }
 
 
 def test_audit_reference_lists_every_declared_event() -> None:

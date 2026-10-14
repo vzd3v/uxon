@@ -9,6 +9,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Unavailable SSH control-socket directories report a failed peer poll instead of interrupting the dashboard or CLI listing.
 - Worktree path collisions are rejected before creating a branch or changing the repository.
 - GitHub repository checks and creation use the configured profile host, including GitHub Enterprise Server, regardless of the `gh` default host.
 - Peer polling accepts documented duration strings and rejects malformed or non-finite durations with a configuration error.

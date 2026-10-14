@@ -120,9 +120,9 @@ def recover_wedged_master(
     3. ``unlink`` the socket file if anything is left.
 
     Skipped when the host uses a custom ``command_template`` (we don't
-    own that argv) or when multiplexing is off (no master to clean).
-    Never raises — failure of any step is acceptable, the next tick's
-    breaker half-open will get another chance.
+    own that argv). Callers skip recovery when multiplexing is off.
+    Filesystem and subprocess OS failures are best effort; user control
+    exceptions still propagate. The next poll can try again.
 
     The ssh spawns go through :func:`uxon.infra.run.run_query` (stubbed in
     tests by patching that function); the ``/proc`` scan and the kill
@@ -137,7 +137,10 @@ def recover_wedged_master(
     find_pid = _find_master_pid_by_path if _find_pid is None else _find_pid
     kill = os.kill if _kill is None else _kill
 
-    control_dir = _ssh_control_dir()
+    try:
+        control_dir = _ssh_control_dir()
+    except OSError:
+        return
     template = f"{control_dir}/ssh-%C"
 
     # Step 1: graceful exit through the control socket. Output is ignored;
@@ -153,15 +156,17 @@ def recover_wedged_master(
     # Step 2: hard-kill any master that survived, then unlink the stale
     # socket so the next ssh becomes a fresh master (a stale socket
     # left behind would keep ``ControlMaster=auto`` trying the slave
-    # path and hang). Both steps are gated on the same ``exists()``
-    # check so a socket that appeared between Step 1 and Step 2 (a
-    # concurrent fetch on the same host raced past us) is left alone
-    # rather than killed-and-unlinked from under the new master.
+    # path and hang). Continue only if the resolved path can be inspected
+    # and still exists. This check does not identify a socket generation.
     resolved = resolve(host.ssh_alias, control_dir)
     if resolved is None:
         return
     socket_path = Path(resolved)
-    if not socket_path.exists():
+    try:
+        exists = socket_path.exists()
+    except OSError:
+        return
+    if not exists:
         return
     pid = find_pid(resolved)
     if pid is not None:

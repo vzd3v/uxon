@@ -93,9 +93,9 @@ See [client setup](docs/clients.md), [privacy](docs/privacy.md),
 - **Open existing project** — browse and pick a directory at any depth under
   `new_project_root` and launch.
 
-The dashboard combines your sessions, authorized other-user sessions and
-configured SSH peers. Search across configured session fields, then choose a
-session to attach or stop it with confirmation.
+The dashboard combines your sessions, authorized other-user sessions and live
+data from configured SSH peers. Failed polls show errors. Search configured
+session fields, then attach or stop a session with confirmation.
 The launch picker uses the selected profile's agent modes; it preserves that
 choice through workspace selection. See [TUI keys](docs/reference/keybindings.md)
 and [dashboard recipes](docs/guides/customise/customise-dashboard.md).

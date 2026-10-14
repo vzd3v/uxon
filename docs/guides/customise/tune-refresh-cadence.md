@@ -46,7 +46,7 @@ fast repaints produce.
 
 The SSH poll is meaningfully more expensive — even with
 `ControlMaster` warm, each tick spawns `ssh` to run a remote
-command, parses JSON, and writes the snapshot cache. 10 s is
+command and parses its live JSON response. 10 s is
 fine for ~10 peers on a LAN; bump to 30 s for ~50 peers or for
 peers across a slow link.
 
