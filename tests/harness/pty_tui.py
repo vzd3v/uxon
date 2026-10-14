@@ -42,10 +42,13 @@ _IDLE_MS = 100
 # contention) between the title bar and the interactive body. The 100 ms
 # steady-state idle window fires in one of those gaps and returns the drain
 # while the screen is still painting and the ListView/focus is not yet
-# mounted, so the next keypress is dropped. After a marker match we instead
-# wait for this longer quiet period, which clears those inter-burst gaps and
-# guarantees the app is input-ready before the test sends its next key.
+# mounted, so the next keypress is dropped. After a marker match we retain
+# this empirical quiet period until a child readiness acknowledgement can
+# replace it; output silence alone does not guarantee input readiness.
 _SETTLE_MS = 1500
+
+_EXIT_WAIT = 0.1
+_KILL_WAIT = 1.0
 
 
 def _make_controlling_tty(slave_fd: int) -> None:
@@ -115,8 +118,8 @@ def run_pty(
       * a list of ``(delay_seconds, bytes)`` tuples,
       * or ``(delay_seconds, bytes, wait_for_text)`` tuples — drain continues
         past the idle window until ``wait_for_text`` appears in the rendered
-        trace or the budget is exhausted. Use this to synchronize on textual
-        rendering boundaries instead of guessing a fixed delay.
+        output produced after that key. Exhausting the budget without the
+        marker raises an assertion with stage output and child status.
 
     ``initial_drain``, ``per_key_drain``, and ``final_drain`` are **upper
     bounds**, not fixed sleeps. Each drain waits for the full remaining budget
@@ -138,34 +141,32 @@ def run_pty(
     Returns a :class:`PtyTrace` with the combined raw output, per-frame
     snapshots, and the child's exit code.
     """
-    fd, slave_fd = os.openpty()
-    try:
-        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    except Exception:
-        pass
-
     child_env = dict(os.environ)
+    # Ambient troubleshooting flags must not disable the child regression
+    # checks. Tests of those flags may opt in explicitly through ``env``.
+    child_env.pop("UXON_DISABLE_LOOP_GUARD", None)
+    child_env.pop("UXON_SPAWN_GUARD_STRICT", None)
     if env:
         child_env.update(env)
     child_env.setdefault("TERM", "xterm-256color")
     child_env.setdefault("COLUMNS", str(cols))
     child_env.setdefault("LINES", str(rows))
 
-    proc = subprocess.Popen(
-        argv,
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=slave_fd,
-        env=child_env,
-        preexec_fn=lambda: _make_controlling_tty(slave_fd),
-        close_fds=True,
-    )
-    os.close(slave_fd)
-
     trace = PtyTrace()
     deadline_outer = time.monotonic() + timeout
+    fd, slave_fd = os.openpty()
+    proc: subprocess.Popen | None = None
 
-    def _drain(max_secs: float, wait_for_text: str | None = None) -> None:
+    def _failure(stage: str, offset: int, pending: str) -> AssertionError:
+        status = proc.poll() if proc is not None else None
+        return AssertionError(
+            f"PTY {stage}: {pending}; child exit={status}; "
+            f"remaining={max(0.0, deadline_outer - time.monotonic()):.3f}s; "
+            f"stage output tail={strip_ansi(trace.raw[offset:])[-3000:]!r}"
+        )
+
+    def _drain(max_secs: float, wait_for_text: str | None = None, *, stage: str) -> None:
+        offset = len(trace.raw)
         idle = _IDLE_MS / 1000.0
         settle = _SETTLE_MS / 1000.0
         deadline = min(time.monotonic() + max_secs, deadline_outer)
@@ -181,7 +182,7 @@ def run_pty(
         # clears textual's inter-burst render gaps so that cycle completes.
         matched = False
         while time.monotonic() < deadline:
-            if wait_for_text and not matched and wait_for_text in trace.plain:
+            if wait_for_text and not matched and wait_for_text in strip_ansi(trace.raw[offset:]):
                 matched = True
             remaining = deadline - time.monotonic()
             if got_data and matched:
@@ -203,21 +204,35 @@ def run_pty(
             if not rlist:
                 # select timed out — truly idle (marker seen or none asked),
                 # or hit `remaining` near deadline. Stop.
-                return
+                break
             try:
                 chunk = os.read(fd, 8192)
             except OSError:
-                return
+                break
             if not chunk:
-                return
+                break
             got_data = True
             trace.raw += chunk
+        if wait_for_text and wait_for_text not in strip_ansi(trace.raw[offset:]):
+            raise _failure(stage, offset, f"missing marker {wait_for_text!r}")
 
     try:
-        _drain(initial_drain, initial_wait_for)
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        proc = subprocess.Popen(
+            argv,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=child_env,
+            preexec_fn=lambda: _make_controlling_tty(slave_fd),
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        _drain(initial_drain, initial_wait_for, stage="initial render")
         trace.frames.append(trace.plain)
 
-        for item in keys:
+        for index, item in enumerate(keys, start=1):
             wait_for: str | None = None
             if isinstance(item, tuple):
                 if len(item) == 3:
@@ -228,26 +243,45 @@ def run_pty(
                 delay, payload = per_key_drain, item
             try:
                 os.write(fd, payload)
-            except OSError:
+            except OSError as exc:
+                if wait_for:
+                    raise _failure(
+                        f"key {index}", len(trace.raw), f"input write failed before {wait_for!r}"
+                    ) from exc
                 break
-            _drain(delay, wait_for)
+            _drain(delay, wait_for, stage=f"key {index}")
             trace.frames.append(trace.plain)
 
-        _drain(final_drain)
+        _drain(final_drain, stage="final output")
         trace.frames.append(trace.plain)
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=0.1)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-        trace.exit_code = proc.returncode
+        # A final marker may precede interpreter shutdown. Give that exit a
+        # bounded chance to complete before cleanup sends a signal.
         try:
-            os.close(fd)
-        except OSError:
+            proc.wait(timeout=min(_EXIT_WAIT, max(0.0, deadline_outer - time.monotonic())))
+        except subprocess.TimeoutExpired:
             pass
+    finally:
+        try:
+            if proc is not None:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=_EXIT_WAIT)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=_KILL_WAIT)
+                        except subprocess.TimeoutExpired as exc:
+                            raise _failure(
+                                "cleanup", 0, "child did not exit after SIGKILL"
+                            ) from exc
+                trace.exit_code = proc.returncode
+        finally:
+            try:
+                if slave_fd >= 0:
+                    os.close(slave_fd)
+            finally:
+                os.close(fd)
 
     return trace
 
@@ -263,9 +297,9 @@ def run_python_snippet(
     entries prepended. Used by tests to drive ``uxon_tui.run(ctx)`` with a
     fake TuiContext without involving the full uxon binary.
     """
-    env = dict(os.environ)
+    env: dict[str, str] = {}
     if extra_path:
-        existing = env.get("PYTHONPATH", "")
+        existing = os.environ.get("PYTHONPATH", "")
         prepend = os.pathsep.join(extra_path)
         env["PYTHONPATH"] = prepend + (os.pathsep + existing if existing else "")
     argv = [sys.executable, "-c", code]
