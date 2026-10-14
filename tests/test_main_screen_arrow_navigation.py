@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unittest
 
+from harness.textual_ready import painted, send_key, wait_until
+
 
 def _textual_available() -> bool:
     try:
@@ -86,14 +88,10 @@ class TopActionStackNavigationTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             table = app.screen.query_one("#sessions-dashboard", SessionListView)
             app.kick_refresh()
-            for _ in range(20):
-                await pilot.pause()
-                table = app.screen.query_one("#sessions-dashboard", SessionListView)
-                if table.row_count == 3:
-                    break
+            await wait_until(pilot, lambda: table.row_count == 3, "three dashboard rows")
             self.assertEqual(table.row_count, 3, "main data did not land")
             app.screen.query_one("#action-cwd", ActionRow).focus()
-            await pilot.pause()
+            await painted(pilot)
             self.assertEqual(app.focused.id, "action-cwd")
             for key, focused_id, cursor in (
                 ("down", "action-new", None),
@@ -111,16 +109,14 @@ class TopActionStackNavigationTests(unittest.IsolatedAsyncioTestCase):
                 ("up", "sessions-dashboard", 2),
             ):
                 with self.subTest(key=key, focused_id=focused_id, cursor=cursor):
-                    await pilot.press(key)
-                    await pilot.pause()
+                    await send_key(pilot, key)
                     self.assertEqual(app.focused.id, focused_id)
                     if cursor is not None:
                         self.assertEqual(table.cursor_row, cursor)
                         self.assertEqual(table.selected_row_key, f"local/me/{'abc'[cursor]}")
             # Entering down must reset an independently parked last-row cursor.
             app.screen.query_one("#action-open", ActionRow).focus()
-            await pilot.press("down")
-            await pilot.pause()
+            await send_key(pilot, "down")
             self.assertEqual(app.focused.id, "sessions-dashboard")
             self.assertEqual(table.cursor_row, 0)
             self.assertIn("a", table.render_line(1).text)
@@ -209,11 +205,7 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(140, 30)) as pilot:
             table = app.screen.query_one("#sessions-dashboard", SessionListView)
             app.kick_refresh()
-            for _ in range(20):
-                await pilot.pause()
-                table = app.screen.query_one("#sessions-dashboard", SessionListView)
-                if table.row_count == 1:
-                    break
+            await wait_until(pilot, lambda: table.row_count == 1, "local dashboard row")
             self.assertEqual(table.row_count, 1, "local data did not land")
             for name in ("kris", "ada"):
                 app.on__refresh_source_landed(
@@ -229,10 +221,9 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
                         ),
                     )
                 )
-            await pilot.pause()
+            await wait_until(pilot, lambda: table.row_count == 3, "both peer rows")
             self.assertEqual(table.row_count, 3)
-            await pilot.press("v")
-            await pilot.pause()
+            await send_key(pilot, "v", "v")
             strip = app.screen.query_one("#host-tabs", HostTabStrip)
 
             def assert_host(index, name):
@@ -257,8 +248,16 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
                 ("left", 1, "kris"),
                 ("left", 0, "local"),
             ):
-                await pilot.press(key)
-                await pilot.pause()
+                await send_key(pilot, key)
+                await wait_until(
+                    pilot,
+                    lambda index=index, name=name: (
+                        app.main_ui.active_tab_index == index
+                        and table.selected_row_key
+                        == f"{'local' if index == 0 else name}/me/match-{name}"
+                    ),
+                    "selected host tab and rendered row",
+                )
                 assert_host(index, name)
             self.assertTrue(await pilot.click("#tab-1"))
             await pilot.pause()
@@ -278,8 +277,14 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
                 ("right", "local"),
                 ("left", "ada"),
             ):
-                await pilot.press(key)
-                await pilot.pause()
+                await send_key(pilot, key)
+                await wait_until(
+                    pilot,
+                    lambda expected=expected: (
+                        table.selected_row_key == f"{expected}/me/match-{expected}"
+                    ),
+                    "filtered block cursor",
+                )
                 self.assertEqual(app.main_ui.active_tab_index, 1)
                 self.assertEqual(table.selected_row_key, f"{expected}/me/match-{expected}")
                 self.assertIn(f"match-{expected}", table.render_line(table.cursor_row + 1).text)
