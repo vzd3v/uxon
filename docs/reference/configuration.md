@@ -409,7 +409,7 @@ One entry per allowed GitHub repo-creation target.
 | Field | Type | Required | Purpose |
 |-------|------|----------|---------|
 | `name` | string | yes | Profile id; selected via `--git-remote <name>`. |
-| `host` | string | yes | Currently `"github.com"`. |
+| `host` | string | yes | GitHub hostname, such as `"github.com"` or a GitHub Enterprise Server hostname. Repository checks, creation and clone URLs use this host regardless of `gh`'s default host. |
 | `owner` | string | yes | Repo owner (user or org). |
 | `auth` | `"gh"` / `"token"` | yes | Backend. `gh` shells out to `gh repo create` under `creds_user`; `token` calls the REST API directly with a fine-grained PAT. |
 | `creds_user` | string | no | OS user whose credentials are used for the create step. Defaults to launch user. Local `git init`/`commit`/`push` always run under launch user. |

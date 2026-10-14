@@ -86,7 +86,7 @@ def preflight(
             "gh",
             "repo",
             "view",
-            f"{profile.owner}/{repo_name}",
+            f"{profile.host}/{profile.owner}/{repo_name}",
             "--json",
             "name",
         ]
@@ -119,7 +119,7 @@ def create_remote(
         "gh",
         "repo",
         "create",
-        f"{profile.owner}/{repo_name}",
+        f"{profile.host}/{profile.owner}/{repo_name}",
         f"--{profile.visibility}",
     ]
     if dry_run:
@@ -150,6 +150,6 @@ def describe_command(
         "gh",
         "repo",
         "create",
-        f"{profile.owner}/{repo_name}",
+        f"{profile.host}/{profile.owner}/{repo_name}",
         f"--{profile.visibility}",
     ]

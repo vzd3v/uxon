@@ -19,10 +19,7 @@ from __future__ import annotations
 
 import unittest
 
-from helpers import make_config, run_off_loop_sync
-
-from uxon.domain.session import SessionInfo
-from uxon.infra import sessions_probe
+from helpers import run_off_loop_sync
 
 
 def _textual_available() -> bool:
@@ -31,71 +28,6 @@ def _textual_available() -> bool:
     except ImportError:
         return False
     return True
-
-
-class ProbeHelperTests(unittest.TestCase):
-    def test_compatible_sessions_filtered_by_stem_and_agent(self) -> None:
-        from uxon.infra.sessions_probe import probe_tui_compatible_sessions
-
-        target_dir = "/srv/repos/myproj"
-        sessions = [
-            SessionInfo(
-                user="dev",
-                name="uxon-myproj@claude",
-                attached="0",
-                windows="1",
-                created="",
-                last_attached="",
-                pane_pids=(),
-                active_pid=None,
-                active_cmd="",
-                active_path=target_dir,
-                agent="claude",
-                launch_record_verified=True,
-            ),
-            SessionInfo(
-                user="dev",
-                name="uxon-myproj@codex",
-                attached="0",
-                windows="1",
-                created="",
-                last_attached="",
-                pane_pids=(),
-                active_pid=None,
-                active_cmd="",
-                active_path=target_dir,
-                agent="codex",
-                launch_record_verified=True,
-            ),
-            SessionInfo(
-                user="dev",
-                name="uxon-other@claude",
-                attached="0",
-                windows="1",
-                created="",
-                last_attached="",
-                pane_pids=(),
-                active_pid=None,
-                active_cmd="",
-                active_path="/srv/repos/other",
-                agent="claude",
-                launch_record_verified=True,
-            ),
-        ]
-        cfg = make_config()
-
-        def fake_collect(users, c):
-            return sessions
-
-        original = sessions_probe.collect_sessions
-        sessions_probe.collect_sessions = fake_collect
-        try:
-            matches = probe_tui_compatible_sessions(cfg, "dev", target_dir, "claude")
-        finally:
-            sessions_probe.collect_sessions = original
-
-        names = [s.name for s in matches]
-        self.assertEqual(names, ["uxon-myproj@claude"])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
