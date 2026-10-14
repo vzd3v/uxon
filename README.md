@@ -10,6 +10,7 @@ Session manager for development teams using terminal AI coding
 agents (Claude Code, Codex, Cursor CLI) on one or more Linux
 servers. Team visibility via OS accounts, cross-host visibility
 via SSH, supervision via sudoers.
+Session names appear in terminal tab titles; see [title settings](docs/reference/configuration.md#tmux-managed-options-350).
 
 ![uxon dashboard — a lead sees the whole team's agent sessions across hosts](https://raw.githubusercontent.com/vzd3v/uxon/main/docs/images/uxon-full-team-n.png)
 

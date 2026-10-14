@@ -97,7 +97,9 @@ TUI_TABLE_KEYS = frozenset({"columns", "default_view"})
 TUI_SEARCH_KEYS = frozenset({"fields"})
 LOCAL_HOST_KEYS = frozenset({"color"})
 AUDIT_KEYS = frozenset({"enabled", "syslog_facility"})
-TMUX_KEYS = frozenset({"manage_options", "options", "server_options", "append_server_options"})
+TMUX_KEYS = frozenset(
+    {"set_terminal_title", "manage_options", "options", "server_options", "append_server_options"}
+)
 GIT_REMOTE_KEYS = frozenset(
     {"name", "host", "owner", "auth", "creds_user", "token_file", "visibility"}
 )
@@ -316,6 +318,7 @@ def validate_public_config(payload: Any) -> dict[str, Any]:
     _optional_type(audit, "syslog_facility", str, source="audit")
     tmux = require_table(raw.get("tmux", {}), source="tmux")
     _optional_type(tmux, "manage_options", bool, source="tmux")
+    _optional_type(tmux, "set_terminal_title", bool, source="tmux")
     for key in ("options", "server_options", "append_server_options"):
         if key in tmux:
             option_table = require_table(tmux[key], source=f"tmux.{key}")

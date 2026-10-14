@@ -129,6 +129,12 @@ SETTINGS_SPECS: tuple[SettingSpec, ...] = (
         "Must be > 0; disable multiplexing via ssh_multiplex=off.",
     ),
     SettingSpec(
+        "tmux.set_terminal_title",
+        "bool",
+        "Show the session name in the terminal title (on by default). "
+        "Changes take effect when entering a session.",
+    ),
+    SettingSpec(
         "tmux.manage_options",
         "bool",
         "Apply uxon-managed tmux options to launched sessions (off by default). "

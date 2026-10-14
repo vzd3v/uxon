@@ -18,6 +18,7 @@ from uxon.infra.config_renderer import render_config
 def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
     payload = {
         "default_launch_mode": "caller",
+        "tmux": {"set_terminal_title": False},
         "agents": {"claude": {"default_args": []}},
         "launch": {
             "enabled_profiles": ["claude_box"],
@@ -53,6 +54,7 @@ def test_renderer_emits_execution_launch_and_generic_runtime_tables() -> None:
         },
     }
     parsed = tomllib.loads(render_config(payload))
+    assert parsed["tmux"]["set_terminal_title"] is False
     assert parsed["tmux_socket_template"] == "/tmp/tmux-{uid}/uxon-{execution_backend}.sock"
     assert parsed["execution"]["backends"]["netns"]["kind"] == "command"
     assert parsed["launch"]["profiles"]["claude_box"]["runtime"] == "box"
@@ -94,6 +96,8 @@ def test_renderer_rejects_removed_v3_isolation_keys_as_unknown(payload: dict) ->
         {"git_create_enabled": 1},
         {"audit": {"enabled": "yes"}},
         {"tmux": {"manage_options": 0}},
+        {"tmux": {"set_terminal_title": "false"}},
+        {"tmux": {"set_terminal_title": 0}},
         {"agents": {"claude": {"mode": [{"id": "normal", "dangerous": "no"}]}}},
         {"fetch_concurrency": True},
         {"execution": {"backends": {"box": {"probe_timeout_seconds": False}}}},

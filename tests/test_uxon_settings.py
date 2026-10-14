@@ -354,6 +354,23 @@ class TmuxManageOptionsSpecTests(unittest.TestCase):
             parsed = tomllib.loads(text)
         self.assertTrue(parsed["tmux"]["manage_options"])
 
+    def test_terminal_title_toggle_round_trip(self) -> None:
+        from uxon.infra.config_loader import load_config
+
+        spec = next(spec for spec in cs.SETTINGS_SPECS if spec.key == "tmux.set_terminal_title")
+        self.assertEqual(spec.kind, "bool")
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text("# Operator preferences\n[tmux]\nmanage_options = true\n")
+            for enabled in (False, True):
+                with mock.patch("os.geteuid", return_value=0), mock.patch("os.fchown"):
+                    cs.persist_operator_config_updates(path, {spec.key: enabled})
+                with mock.patch("uxon.infra.config_loader.OPERATOR_CONFIG_PATH", path):
+                    cfg = load_config()
+                self.assertEqual(cfg.tmux_set_terminal_title, enabled)
+                self.assertTrue(cfg.tmux_manage_options)
+                self.assertIn("# Operator preferences", path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

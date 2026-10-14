@@ -853,14 +853,23 @@ def _parse_config_or_fail(raw: dict[str, Any]) -> Config:
         fail("'tmux' must be a TOML table")
     _reject_unknown_keys(
         tmux_tbl,
-        {"manage_options", "options", "server_options", "append_server_options"},
+        {
+            "set_terminal_title",
+            "manage_options",
+            "options",
+            "server_options",
+            "append_server_options",
+        },
         source="tmux",
     )
-    # Off by default (matches DEFAULT_CONFIG): nothing is applied until the
+    # Off by default (matches DEFAULT_CONFIG): option tables are dormant until the
     # operator sets ``manage_options = true``. ``merged`` is seeded from
     # DEFAULT_CONFIG, so the recommended scope tables are present-but-dormant —
     # flipping the toggle on yields the recommended set with no further config.
     tmux_manage_options = tmux_tbl.get("manage_options", False)
+    tmux_set_terminal_title = tmux_tbl.get(
+        "set_terminal_title", DEFAULT_CONFIG["tmux"]["set_terminal_title"]
+    )
     tmux_scope_tables: dict[str, dict] = {}
     for _scope in ("options", "server_options", "append_server_options"):
         # Per-scope fallback to the recommended default (mirrors how [audit]
@@ -914,6 +923,7 @@ def _parse_config_or_fail(raw: dict[str, Any]) -> Config:
         worktree_root=worktree_root,
         worktree_base=worktree_base,
         tmux_manage_options=tmux_manage_options,
+        tmux_set_terminal_title=tmux_set_terminal_title,
         tmux_options=tmux_scope_tables["options"],
         tmux_server_options=tmux_scope_tables["server_options"],
         tmux_append_server_options=tmux_scope_tables["append_server_options"],
