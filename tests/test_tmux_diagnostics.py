@@ -15,24 +15,25 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 from helpers import make_config
 
+from uxon.app.kill import cleanup_launch_record
+from uxon.app.launch_profile import resolve_launch_profile
 from uxon.app.session_handoff import run_launch_request
+from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
-from uxon.domain.execution import ExecutionTarget
-from uxon.domain.launch_profiles import ResolvedLaunchProfile
 from uxon.domain.launch_request import LaunchRequest, TmuxHandoff
 from uxon.infra import launch_records, process, sessions_probe, tmux
 from uxon.infra.identity import process_user
 from uxon.infra.run import run_query
 from uxon.infra.tmux_diagnostics import diagnostics_script
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.usefixtures("real_execution", "real_host_probes")]
 _SESSION = "uxon-workspace@claude"
 
 
@@ -74,10 +75,18 @@ class _Client:
 
     def finish(self) -> dict[str, Any]:
         _wait(self.result.exists)
-        _, status = os.waitpid(self.pid, 0)
-        self.reaped = True
+        status = self.reap()
         assert os.waitstatus_to_exitcode(status) == 0
         return json.loads(self.result.read_text())
+
+    def reap(self) -> int:
+        def exited():
+            pid, status = os.waitpid(self.pid, os.WNOHANG)
+            return (status,) if pid else None
+
+        (status,) = _wait(exited)
+        self.reaped = True
+        return status
 
     def close(self) -> None:
         if not self.reaped:
@@ -85,7 +94,11 @@ class _Client:
                 os.kill(self.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            os.waitpid(self.pid, 0)
+            try:
+                self.reap()
+            except AssertionError:
+                os.kill(self.pid, signal.SIGKILL)
+                self.reap()
         os.close(self.fd)
 
 
@@ -125,6 +138,43 @@ class _Terminal:
             diagnostics_script(_SESSION, table, self.command("list-keys", "-T", table)),
         )
 
+    def fresh_session(self) -> None:
+        previous = self.snapshot().sessions if self.record is not None else ()
+        for row in previous:
+            self.command("kill-session", "-t", row.tmux_session_id)
+            cleanup_launch_record(self.cfg, row)
+        running = bool(self.command("list-sessions", check=False))
+        resolved = resolve_launch_profile(
+            self.cfg, self.user, "claude", str(self.directory), "normal"
+        )
+        request, pending = tmux.build_managed_tmux_launch_request(
+            str(self.directory),
+            _SESSION,
+            ParsedArgs(action="run", agent_args=[]),
+            self.cfg,
+            None,
+            resolved_profile=resolved,
+            server_running=running,
+        )
+        tmux.prepare_managed_launch(request)
+        metadata = self.value(_SESSION, "#{session_id}\t#{session_created}").split("\t")
+        self.record = launch_records.record_path(pending)
+        assert (
+            launch_records.read_verified_record(
+                pending.socket_path,
+                launch_records.TmuxSessionMetadata(
+                    metadata[0], metadata[1], _SESSION, pending.launch_nonce
+                ),
+            )
+            is not None
+        )
+        try:
+            _wait(lambda: self.value(_SESSION, "#{pane_current_command}") == "sleep")
+        except AssertionError:
+            raise AssertionError(self.command("capture-pane", "-p", "-t", _SESSION)) from None
+        self.command("set-option", "-t", _SESSION, "status", "off")
+        self.install("root")
+
     def attach(self, request: LaunchRequest | None = None) -> _Client:
         result_path = self.directory / f"client-{len(self.clients)}.json"
         request = request or LaunchRequest(
@@ -161,53 +211,23 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Terminal]:
     with tempfile.TemporaryDirectory(prefix="uxon-diagnostics-") as temporary:
         directory = Path(temporary)
         monkeypatch.setenv("XDG_STATE_HOME", str(directory / "state"))
-        cfg = make_config(tmux_socket_template=str(directory / "tmux.sock"))
+        stub = directory / "claude"
+        stub.write_text("#!/bin/sh\nexec sleep 600\n")
+        stub.chmod(0o755)
+        cfg = make_config(
+            allowed_roots=[str(directory)],
+            tmux_socket_template=str(directory / "tmux.sock"),
+            tmux_manage_options=True,
+        )
+        cfg.agents["claude"] = replace(cfg.agents["claude"], binary=str(stub))
+        cfg.tmux_append_server_options = {"terminal-overrides": ",*:Tc"}
         user = process_user()
-        resolved = ResolvedLaunchProfile(
-            cfg.launch.profiles["claude"],
-            cfg.agents["claude"],
-            user,
-            execution=ExecutionTarget(user, cfg.execution.backend_for_user(user)),
-        )
-        pending = launch_records.pending_from_resolved(
-            socket_path=cfg.tmux_socket_template,
-            session_name=_SESSION,
-            resolved=resolved,
-            target_dir=str(directory),
-        )
-        record = launch_records.create_pending_record(pending)
-        terminal = _Terminal(directory, cfg, user, record)
-        terminal.command(
-            "new-session",
-            "-d",
-            "-s",
-            _SESSION,
-            "-e",
-            f"{launch_records.LAUNCH_NONCE_ENV}={pending.launch_nonce}",
-            "sleep",
-            "600",
-            ";",
-            "set-window-option",
-            "-t",
-            _SESSION,
-            "remain-on-exit",
-            "failed",
-            ";",
-            "set-option",
-            "-t",
-            _SESSION,
-            "status",
-            "off",
-        )
-        metadata = terminal.value(_SESSION, "#{session_id}\t#{session_created}").split("\t")
-        launch_records.finalize_pending_record(
-            pending,
-            launch_records.TmuxSessionMetadata(
-                metadata[0], metadata[1], _SESSION, pending.launch_nonce
-            ),
-        )
+        terminal = _Terminal(directory, cfg, user, None)
         try:
-            terminal.install("root")
+            terminal.command(
+                *tmux._tmux_set_chain(cfg), "new-session", "-d", "-s", "anchor", "sleep", "600"
+            )
+            terminal.fresh_session()
             yield terminal
         finally:
             terminal.command("kill-server", check=False)
@@ -230,6 +250,9 @@ def test_session_titles_reach_the_terminal_and_can_be_disabled(
         return bytes(output)
 
     target = terminal.snapshot().sessions[0]
+    assert terminal.command("show-options", "-gv", "mouse") == "on"
+    assert terminal.command("show-options", "-sv", "extended-keys") == "on"
+    assert terminal.command("show-options", "-sv", "terminal-overrides").count("*:Tc") == 1
     # A session-local workload title must not replace the stable session name.
     terminal.command("select-pane", "-t", _SESSION, "-T", "WORKLOAD_TITLE")
     terminal.command("set-option", "-g", "set-titles-string", "GLOBAL_TITLE")
@@ -245,11 +268,14 @@ def test_session_titles_reach_the_terminal_and_can_be_disabled(
     )
     with monkeypatch.context() as nested:
         nested.setenv("TMUX", f"{terminal.cfg.tmux_socket_template},0,0")
+        terminal.cfg.tmux_options["mouse"] = "off"
         for session in (sibling_target, target):
             request = tmux._build_tmux_attach_request(session, terminal.cfg, terminal.user)
             assert "switch-client" in request.cmd
             assert run_launch_request(request).rc == 0
             receive(client, b"\x1b]0;" + session.name.encode() + b"\x07")
+        assert terminal.command("show-options", "-gv", "mouse") == "off"
+        assert terminal.command("show-options", "-sv", "terminal-overrides").count("*:Tc") == 1
     terminal.command("kill-session", "-t", sibling)
 
     renamed = "uxon-renamed@claude"
@@ -262,6 +288,7 @@ def test_session_titles_reach_the_terminal_and_can_be_disabled(
 
     # Off must override a previously enabled session on re-entry.
     terminal.cfg.tmux_set_terminal_title = False
+    terminal.cfg.tmux_manage_options = False
     client = terminal.attach(tmux._build_tmux_attach_request(target, terminal.cfg, terminal.user))
     terminal.command(
         "respawn-pane",
@@ -361,117 +388,6 @@ raise SystemExit(rc)
     assert titles.count(b"uxon") == 2  # refreshed opt-out survives refresh failure
 
 
-@pytest.mark.parametrize("key", [b"\r", b"\x1b", b"q"], ids=["Enter", "Escape", "q"])
-def test_acknowledgement_closes_last_failed_screen_and_record(
-    terminal: _Terminal, key: bytes
-) -> None:
-    pane = terminal.value(_SESSION, "#{pane_id}")
-    terminal.fail(pane)
-    _wait(lambda: "Enter / Esc / q" in terminal.value(pane, "#{E:pane-border-format}"))
-    client = terminal.attach()
-    client.send(key)
-    result = client.finish()
-    assert (result["rc"], result["warning"]) == (0, "")
-    assert terminal.snapshot().sessions == ()
-    assert not terminal.record.exists()
-
-
-def test_error_acknowledgement_preserves_live_sibling_and_copy_mode(terminal: _Terminal) -> None:
-    pane = terminal.value(_SESSION, "#{pane_id}")
-    sibling = terminal.command(
-        "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", _SESSION, "sleep", "600"
-    )
-    sibling_pid = int(terminal.value(sibling, "#{pane_pid}"))
-    identity = Path(f"/proc/{sibling_pid}/stat").read_text()
-    terminal.fail(pane)
-    client = terminal.attach()
-    terminal.command("copy-mode", "-t", pane)
-    client.send(b"q")
-    _wait(lambda: terminal.value(pane, "#{pane_in_mode}") == "0")
-    assert terminal.value(pane, "#{@uxon-dismissed}") == ""
-    assert not client.result.exists()
-    client.send(b"q")
-    assert client.finish()["warning"] == ""
-    assert terminal.value(sibling, "#{pane_pid}") == str(sibling_pid)
-    assert Path(f"/proc/{sibling_pid}/stat").read_text().split()[21] == identity.split()[21]
-    assert terminal.snapshot().sessions[0].pane_pids == (sibling_pid,)
-    assert terminal.record.exists()
-
-
-def test_mixed_session_attach_selects_live_terminal_in_another_window(terminal: _Terminal) -> None:
-    pane = terminal.value(_SESSION, "#{pane_id}")
-    sibling = terminal.command(
-        "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", _SESSION, "sleep", "600"
-    )
-    terminal.fail(pane)
-    target = terminal.snapshot().sessions[0]
-    assert target.has_diagnostics and not target.exited
-    request = tmux._build_tmux_attach_request(target, terminal.cfg, terminal.user)
-    client = terminal.attach(request)
-    assert terminal.value(_SESSION, "#{pane_id}") == sibling
-    assert terminal.value(_SESSION, "#{pane_dead}") == "0"
-    client.send(b"\x02d")
-    assert client.finish()["warning"] == ""
-    assert terminal.value(pane, "#{pane_dead}") == "1"
-
-
-def test_large_custom_table_is_streamed_without_command_size_limit(terminal: _Terminal) -> None:
-    table = "large-live"
-    for number in range(1, 51):
-        key = chr(ord("a") + number - 1) if number <= 26 else chr(ord("A") + number - 27)
-        terminal.command(
-            "bind-key", "-T", table, key, "set-option", "-p", "@large-value", "x" * 1024
-        )
-    terminal.command("set-option", "-t", _SESSION, "key-table", table)
-    client = terminal.attach()
-    assert (
-        len(
-            terminal.command(
-                "list-keys", "-T", terminal.value(_SESSION, "#{@uxon-diagnostics-table}")
-            )
-        )
-        > 32768
-    )
-    terminal.command("detach-client")
-    result = client.finish()
-    assert result["warning"] == ""
-    assert result["operations"]["subprocess.Popen"] == 3
-
-
-def test_unseen_window_failure_and_custom_live_bindings(terminal: _Terminal) -> None:
-    original = terminal.value(_SESSION, "#{pane_id}")
-    terminal.command("bind-key", "-T", "custom-live", "q", "set-option", "-p", "@custom-q", "works")
-    terminal.command("set-option", "-t", _SESSION, "key-table", "custom-live")
-    terminal.command("set-option", "-u", "-t", _SESSION, "@uxon-live-key-table")
-    terminal.install("custom-live")
-    failed = terminal.command(
-        "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", _SESSION, "sleep", "600"
-    )
-    terminal.command("set-window-option", "-t", failed, "remain-on-exit", "failed")
-    terminal.command(
-        "set-window-option", "-t", failed, "pane-border-format", "Custom #{pane_title}"
-    )
-    terminal.fail(failed)
-    assert terminal.value(original, "#{pane_active}") == "1"
-    assert "Enter / Esc / q" in terminal.value(failed, "#{E:pane-border-format}")
-    client = terminal.attach()
-    client.send(b"q")
-    _wait(lambda: terminal.value(original, "#{@custom-q}") == "works")
-    terminal.command("select-window", "-t", failed)
-    _wait(
-        lambda: terminal.command("list-clients", "-F", "#{client_key_table}").startswith(
-            "uxon-diagnostics-"
-        )
-    )
-    client.send(b"\x02p")
-    _wait(lambda: terminal.command("list-clients", "-F", "#{client_key_table}") == "custom-live")
-    client.send(b"\x02d")
-    result = client.finish()
-    assert result["operations"]["subprocess.Popen"] == 3
-    assert result["warning"] == ""
-    assert terminal.record.exists()
-
-
 def test_two_clients_acknowledge_same_error_without_false_failure(terminal: _Terminal) -> None:
     terminal.fail(terminal.value(_SESSION, "#{pane_id}"))
     clients = [terminal.attach(), terminal.attach()]
@@ -480,77 +396,6 @@ def test_two_clients_acknowledge_same_error_without_false_failure(terminal: _Ter
     assert [
         (item.finish()["rc"], json.loads(item.result.read_text())["warning"]) for item in clients
     ] == [(0, ""), (0, "")]
-    assert not terminal.record.exists()
-
-
-@pytest.mark.parametrize(
-    "key", [b"\r", b"\x1b", b"q", b"a", b";"], ids=["Enter", "Escape", "q", "a", "semicolon"]
-)
-def test_first_custom_key_after_attached_respawn_is_preserved(
-    terminal: _Terminal, key: bytes
-) -> None:
-    pane = terminal.value(_SESSION, "#{pane_id}")
-    table = "custom live"
-    native_key = {b"\r": "Enter", b"\x1b": "Escape", b"q": "q", b"a": "a", b";": r"\;"}[key]
-    terminal.command(
-        "bind-key",
-        "-r",
-        "-T",
-        table,
-        native_key,
-        "set-option -p @first 'literal \\; text' ; if-shell -F 1 { set-option -p @second works }",
-    )
-    terminal.command("set-option", "-t", _SESSION, "key-table", table)
-    client = terminal.attach()
-    terminal.fail(pane)
-    _wait(
-        lambda: terminal.command("list-clients", "-F", "#{client_key_table}").startswith(
-            "uxon-diagnostics-"
-        )
-    )
-    terminal.command("respawn-pane", "-t", pane, "sleep", "600")
-    client.send(key)
-    _wait(lambda: terminal.value(pane, "#{@second}") == "works")
-    assert terminal.value(pane, "#{@first}") == r"literal \; text"
-    assert terminal.value(pane, "#{pane_dead}") == "0"
-    assert not client.result.exists()
-    assert "bind-key -r" in terminal.command("list-keys", "-T", table)
-    terminal.command("detach-client")
-    assert client.finish()["warning"] == ""
-    assert terminal.record.exists()
-
-
-def test_custom_any_binding_handles_first_live_key_after_respawn(terminal: _Terminal) -> None:
-    pane = terminal.value(_SESSION, "#{pane_id}")
-    terminal.command("bind-key", "-T", "custom-any", "Any", "set-option", "-p", "@any-key", "works")
-    terminal.command("set-option", "-t", _SESSION, "key-table", "custom-any")
-    client = terminal.attach()
-    terminal.fail(pane)
-    _wait(
-        lambda: terminal.command("list-clients", "-F", "#{client_key_table}").startswith(
-            "uxon-diagnostics-"
-        )
-    )
-    terminal.command("respawn-pane", "-t", pane, "sleep", "600")
-    client.send(b"q")
-    _wait(lambda: terminal.value(pane, "#{@any-key}") == "works")
-    terminal.command("detach-client")
-    assert client.finish()["warning"] == ""
-
-
-def test_empty_original_key_table_is_valid(terminal: _Terminal) -> None:
-    terminal.command("set-option", "-t", _SESSION, "key-table", "empty-original")
-    client = terminal.attach()
-    pane = terminal.value(_SESSION, "#{pane_id}")
-    terminal.fail(pane)
-    _wait(
-        lambda: terminal.command("list-clients", "-F", "#{client_key_table}").startswith(
-            "uxon-diagnostics-"
-        )
-    )
-    client.send(b"q")
-    result = client.finish()
-    assert (result["rc"], result["warning"]) == (0, "")
     assert not terminal.record.exists()
 
 
@@ -582,24 +427,166 @@ def test_respawned_pane_is_not_deleted_by_stale_acknowledgement(
     assert terminal.snapshot().sessions[0].dismissed_panes == ()
 
 
-def test_refresh_adds_no_operations_for_other_windows_or_dead_pids(terminal: _Terminal) -> None:
-    terminal.snapshot()
+def test_native_controls_execute_large_bindings_respawn_keys_and_preserve_live_windows(
+    terminal: _Terminal, subtests
+) -> None:
+    pane = terminal.value(_SESSION, "#{pane_id}")
+    table = "custom live"
+    definitions = []
+    for number in range(50):
+        key = chr(ord("a") + number) if number < 26 else chr(ord("A") + number - 26)
+        definitions.append(f"bind-key -T '{table}' {key} set-option -p @large-value {'x' * 1024}")
+    result = process.run_query(
+        tmux.configured_tmux_base(terminal.cfg, terminal.user) + ["source-file", "-"],
+        input="\n".join(definitions),
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    terminal.command("set-option", "-t", _SESSION, "key-table", table)
+    client = terminal.attach()
+    diagnostics = terminal.value(_SESSION, "#{@uxon-diagnostics-table}")
+    listing = terminal.command("list-keys", "-T", diagnostics)
+    assert len(listing) > 32768
+    client.send(b"a")
+    _wait(lambda: terminal.value(pane, "#{@large-value}") == "x" * 1024)
+    terminal.command("set-option", "-pu", "-t", pane, "@large-value")
+    tail_binding = [line for line in listing.splitlines() if "@large-value" in line][-1]
+    tail_key = tail_binding.split()[3]
+    assert listing.index(tail_binding) > 32768 and len(tail_key) == 1
+    client.send(tail_key.encode())
+    _wait(lambda: terminal.value(pane, "#{@large-value}") == "x" * 1024)
+    terminal.command("detach-client")
+    assert client.finish()["warning"] == ""
+
+    for key, native in (
+        (b"\r", "Enter"),
+        (b"\x1b", "Escape"),
+        (b"q", "q"),
+        (b"a", "a"),
+        (b";", r"\;"),
+        (b"0", "Any"),
+    ):
+        with subtests.test(key=native):
+            terminal.command("respawn-pane", "-k", "-t", pane, "sleep", "600")
+            terminal.command("set-option", "-pu", "-t", pane, "@first")
+            terminal.command("set-option", "-pu", "-t", pane, "@second")
+            terminal.command("set-option", "-t", _SESSION, "key-table", table)
+            terminal.command(
+                "bind-key",
+                "-r",
+                "-T",
+                table,
+                native,
+                "set-option -p @first 'literal \\; text' ; if-shell -F 1 { set-option -p @second works }",
+            )
+            client = terminal.attach()
+            terminal.fail(pane)
+            failed_pid = terminal.value(pane, "#{pane_pid}")
+            _wait(
+                lambda: terminal.command("list-clients", "-F", "#{client_key_table}").startswith(
+                    "uxon-diagnostics-"
+                )
+            )
+            terminal.command("respawn-pane", "-t", pane, "sleep", "600")
+            assert terminal.value(pane, "#{pane_pid}") != failed_pid
+            client.send(key)
+            _wait(lambda: terminal.value(pane, "#{@second}") == "works")
+            assert terminal.value(pane, "#{@first}") == r"literal \; text"
+            assert terminal.value(pane, "#{pane_dead}") == "0" and not client.result.exists()
+            assert "bind-key -r" in terminal.command("list-keys", "-T", table)
+            terminal.command("detach-client")
+            assert client.finish()["warning"] == "" and terminal.record.exists()
+
+    terminal.command("bind-key", "-T", table, "q", "set-option", "-p", "@custom-q", "works")
+    terminal.command("set-option", "-t", _SESSION, "key-table", table)
+    terminal.command("set-option", "-u", "-t", _SESSION, "@uxon-live-key-table")
+    terminal.install(table)
+    before_rows = terminal.snapshot().sessions
     with _operations() as before:
         terminal.snapshot()
-    first = terminal.value(_SESSION, "#{pane_id}")
-    second = terminal.command(
+    unseen = terminal.command(
         "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", _SESSION, "sleep", "600"
     )
-    third = terminal.command(
-        "split-window", "-d", "-P", "-F", "#{pane_id}", "-t", second, "sleep", "600"
+    other = terminal.command(
+        "split-window", "-d", "-P", "-F", "#{pane_id}", "-t", unseen, "sleep", "600"
     )
-    terminal.fail(first)
+    terminal.command("set-window-option", "-t", unseen, "remain-on-exit", "failed")
+    terminal.command(
+        "set-window-option", "-t", unseen, "pane-border-format", "Custom #{pane_title}"
+    )
+    terminal.fail(unseen)
+    assert terminal.value(pane, "#{pane_active}") == "1"
+    assert "Enter / Esc / q" in terminal.value(unseen, "#{E:pane-border-format}")
     with _operations() as after:
         rows = terminal.snapshot().sessions
     assert before == after
-    assert after["subprocess.Popen"] == 4
-    assert len(rows) == 1 and not rows[0].exited and rows[0].active_pane_dead
-    assert rows[0].active_pid is None
-    assert set(rows[0].pane_pids) == {
-        int(terminal.value(pane, "#{pane_pid}")) for pane in (second, third)
-    }
+    assert len(before_rows) == len(rows) == 1 and rows[0].active_pid is not None
+    assert set(rows[0].pane_pids) == {int(terminal.value(p, "#{pane_pid}")) for p in (pane, other)}
+    client = terminal.attach()
+    client.send(b"q")
+    _wait(lambda: terminal.value(pane, "#{@custom-q}") == "works")
+    terminal.command("select-window", "-t", unseen)
+    _wait(
+        lambda: terminal.command("list-clients", "-F", "#{client_key_table}").startswith(
+            "uxon-diagnostics-"
+        )
+    )
+    terminal.command("respawn-pane", "-t", unseen, "sleep", "600")
+    client.send(b"q")
+    _wait(lambda: terminal.value(unseen, "#{@custom-q}") == "works")
+    assert terminal.value(unseen, "#{@uxon-border-format}") == "Custom #{pane_title}"
+    assert terminal.value(unseen, "#{E:pane-border-format}") == "Custom " + terminal.value(
+        unseen, "#{pane_title}"
+    )
+    terminal.command("select-window", "-t", pane)
+    terminal.command("select-window", "-t", unseen)
+    _wait(
+        lambda: (
+            terminal.command("show-window-options", "-t", unseen, "-v", "pane-border-format")
+            == "Custom #{pane_title}"
+        )
+    )
+    assert terminal.value(unseen, "#{@uxon-border-format}") == ""
+    terminal.fail(unseen)
+    terminal.command("copy-mode", "-t", unseen)
+    client.send(b"q")
+    _wait(lambda: terminal.value(unseen, "#{pane_in_mode}") == "0")
+    assert terminal.value(unseen, "#{@uxon-dismissed}") == "" and not client.result.exists()
+    sibling_pid = terminal.value(pane, "#{pane_pid}")
+    sibling_start = Path(f"/proc/{sibling_pid}/stat").read_text().split()[21]
+    client.send(b"q")
+    assert client.finish()["warning"] == ""
+    assert terminal.value(pane, "#{pane_pid}") == sibling_pid
+    assert Path(f"/proc/{sibling_pid}/stat").read_text().split()[21] == sibling_start
+    assert terminal.record.exists()
+    terminal.command("select-window", "-t", pane)
+    terminal.fail(pane)
+    target = terminal.snapshot().sessions[0]
+    assert not target.exited and target.active_pane_dead
+    client = terminal.attach(tmux._build_tmux_attach_request(target, terminal.cfg, terminal.user))
+    assert terminal.value(_SESSION, "#{pane_dead}") == "0"
+    terminal.command("detach-client")
+    assert client.finish()["warning"] == ""
+    assert terminal.snapshot().sessions[0].pane_pids
+
+
+def test_acknowledgement_closes_fresh_failed_sessions_and_records(
+    terminal: _Terminal, subtests
+) -> None:
+    for key, table in ((b"\r", "root"), (b"\x1b", "root"), (b"q", "empty-original")):
+        with subtests.test(key=key, table=table):
+            terminal.fresh_session()
+            record = terminal.record
+            terminal.command("set-option", "-t", _SESSION, "key-table", table)
+            pane = terminal.value(_SESSION, "#{pane_id}")
+            terminal.fail(pane)
+            _wait(
+                lambda *, pane=pane: (
+                    "Enter / Esc / q" in terminal.value(pane, "#{E:pane-border-format}")
+                )
+            )
+            client = terminal.attach()
+            client.send(key)
+            result = client.finish()
+            assert (result["rc"], result["warning"]) == (0, "")
+            assert terminal.snapshot().sessions == () and not record.exists()

@@ -273,13 +273,10 @@ above closes this:
   PID is no longer the agent and **skips** the stop command (audited as
   `outcome=skipped reason=stale_identity`) rather than killing an unrelated process.
 
-Teardown is **best-effort**: if it fails (missing helper, daemon
-unreachable, …), Uxon reports the failure and does not count the operation as
-successful workload cleanup. The tmux session may already be gone. If
-you **omit** `stop_command`, the agent orphans as before and `uxon`
-appends a reminder at every kill; in that case treat the container path
-as requiring an explicit "also stop the container" step when responding
-to a rogue agent — see
+Teardown is **best-effort**: the tmux session may already be gone when workload
+cleanup fails. See the [failure and record-retention behavior](../../reference/configuration.md#runtimesid-table).
+Without a configured stop command, plan an explicit "also stop the container"
+step when responding to a rogue agent — see
 [`../operate/respond-to-rogue-agent.md`](../operate/respond-to-rogue-agent.md#container-path-also-stop-the-container).
 
 ## Reference

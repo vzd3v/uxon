@@ -1,640 +1,545 @@
+"""Real path policy and launch planners under a strict target command boundary."""
+
 from __future__ import annotations
 
 import dataclasses
-import os
-import tempfile
-import unittest
+import io
+import json
+import shlex
+import subprocess
+from contextlib import redirect_stdout
 from pathlib import Path
-from unittest import mock
 
-from helpers import make_config, make_session_snapshot
+import pytest
+from harness.target_commands import TargetCommands, target_config
 
-import uxon.app.launch as launch_app
-import uxon.app.launch_profile as launch_profile_app
-import uxon.app.new as new_app
-import uxon.app.run as run_app
-import uxon.app.tui_planning as tui_planning
-from uxon.domain.agents import default_agent_catalog
+from uxon.app import launch, new, run
+from uxon.app.launch_profile import resolve_launch_profile
 from uxon.domain.args import ParsedArgs
-from uxon.domain.host_report import BinaryStatus, HostReport
-from uxon.domain.launch_profiles import (
-    GitRemotePolicy,
-    LaunchConfig,
-    LaunchPathRule,
-    LaunchProfile,
-    ResolvedLaunchProfile,
-    builtin_launch_profiles,
-)
-from uxon.domain.launch_request import LaunchRequest
-from uxon.gitremote.create import CreationResult
+from uxon.domain.git_profiles import GitRemoteProfile
+from uxon.domain.launch_profiles import GitRemotePolicy, LaunchConfig, LaunchPathRule, LaunchProfile
+from uxon.domain.runtime import WorkloadRuntimeSpec
+from uxon.infra.worktrees import compute_worktree_path
+from uxon.tui.bridge import TuiBridge
+
+pytestmark = pytest.mark.usefixtures("real_execution", "real_host_probes")
 
 
-def _report(launch_user: str, installed: tuple[str, ...]) -> HostReport:
-    agents = default_agent_catalog()
-    return HostReport(
-        tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
-        agents={
-            aid: BinaryStatus(
-                aid, f"/usr/bin/{agents[aid].binary}" if aid in installed else None, ""
-            )
-            for aid in agents
+def _cp(stdout="", rc=0):
+    return subprocess.CompletedProcess([], rc, stdout, "")
+
+
+def _cfg(root, **changes):
+    return target_config(
+        allowed_roots=[str(root)],
+        new_project_root=str(root),
+        tmux_manage_options=False,
+        tmux_options={},
+        tmux_server_options={},
+        tmux_append_server_options={},
+        **changes,
+    )
+
+
+def _server(user, command, kwargs):
+    assert user in {"alice", "bob"}
+    if "uxon.infra.tmux_server_probe" in command:
+        return _cp(json.dumps({"state": "absent", "sessions": [], "error": ""}))
+    raise AssertionError(command)
+
+
+def _pinned(cfg, profile="claude_fast", runtime="direct"):
+    cfg.launch = LaunchConfig(
+        default_profile=profile,
+        enabled_profiles=(profile,),
+        profiles={
+            profile: LaunchProfile(id=profile, agent="claude", launch_user="alice", runtime=runtime)
         },
-        launch_user=launch_user,
     )
 
 
-def _cfg_with_launch(launch: LaunchConfig, **overrides):
-    agents = default_agent_catalog()
-    return make_config(agents=agents, launch=launch, **overrides)
-
-
-def _resolved(
-    cfg,
-    profile_id: str,
-    *,
-    launch_user: str = "dana_agent",
-    mode: str = "normal",
-) -> ResolvedLaunchProfile:
-    profile = cfg.launch.profiles[profile_id]
-    return ResolvedLaunchProfile(
-        profile=profile,
-        agent=cfg.agents[profile.agent],
-        launch_user=launch_user,
-        mode_id=mode,
-        git_remote=profile.git_remote,
-    )
-
-
-class LaunchProfileResolutionTests(unittest.TestCase):
-    def _builtin_launch(self, *, enabled=(), default="claude", rules=()) -> LaunchConfig:
-        agents = default_agent_catalog()
-        return LaunchConfig(
-            enabled_profiles=tuple(enabled),
-            default_profile=default,
-            profiles=builtin_launch_profiles(agents),
-            path_rules=tuple(rules),
-        )
-
-    def test_path_disallowed_profile_fails_before_probe(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            app = str(Path(tmp) / "app")
-            Path(app).mkdir()
-            launch = self._builtin_launch(
-                enabled=("claude", "codex"),
-                default="claude",
-                rules=(
-                    LaunchPathRule(
-                        path_prefix=app,
-                        allowed_profiles=("codex",),
-                        default_profile="codex",
-                    ),
-                ),
-            )
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp])
-
-            with mock.patch("uxon.infra.probes.probe_host") as probe:
-                with self.assertRaises(SystemExit) as cm:
-                    launch_profile_app.resolve_launch_profile(
-                        cfg, "alice", "claude", str(Path(app) / "sub"), "normal"
-                    )
-
-            probe.assert_not_called()
-            msg = getattr(cm.exception, "uxon_msg", "")
-            self.assertIn("valid profiles: codex", msg)
-
-    def test_path_rule_matching_is_component_aware(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            app = Path(tmp) / "app"
-            app_old = Path(tmp) / "app-old"
-            app.mkdir()
-            app_old.mkdir()
-            launch = self._builtin_launch(
-                enabled=("claude", "codex"),
-                default="claude",
-                rules=(
-                    LaunchPathRule(
-                        path_prefix=str(app),
-                        allowed_profiles=("codex",),
-                        default_profile="codex",
-                    ),
-                ),
-            )
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp])
-
-            with mock.patch(
-                "uxon.infra.probes.probe_host",
-                return_value=_report("alice", ("claude", "codex")),
-            ):
-                resolved = launch_profile_app.resolve_launch_profile(
-                    cfg, "alice", None, str(app_old), "normal"
-                )
-
-            self.assertEqual(resolved.profile.id, "claude")
-
-    def test_existing_target_canonicalizes_symlinks_before_path_rules(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            real = Path(tmp) / "real"
-            real.mkdir()
-            project = real / "project"
-            project.mkdir()
-            link = Path(tmp) / "link"
-            os.symlink(real, link)
-            launch = self._builtin_launch(
-                enabled=("claude", "codex"),
-                default="claude",
-                rules=(
-                    LaunchPathRule(
-                        path_prefix=str(real),
-                        allowed_profiles=("codex",),
-                        default_profile="codex",
-                    ),
-                ),
-            )
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp])
-
-            with mock.patch(
-                "uxon.infra.probes.probe_host",
-                return_value=_report("alice", ("codex",)),
-            ):
-                resolved = launch_profile_app.resolve_launch_profile(
-                    cfg, "alice", None, str(link / "project"), "normal"
-                )
-
-            self.assertEqual(resolved.profile.id, "codex")
-
-    def test_auto_mode_probes_only_builtin_os_user_profiles_and_freezes_one(self) -> None:
-        agents = default_agent_catalog()
-        profiles = builtin_launch_profiles(agents)
-        profiles["claude_sub1"] = LaunchProfile(
-            id="claude_sub1",
-            agent="claude",
-            launch_user="dana_agent",
-        )
-        launch = LaunchConfig(profiles=profiles)
-        cfg = _cfg_with_launch(launch)
-        seen_catalogs: list[tuple[str, ...]] = []
-
-        def fake_probe(_cfg, launch_user, catalog):
-            seen_catalogs.append(tuple(catalog))
-            return _report(launch_user, ("codex",))
-
-        with mock.patch("uxon.infra.probes.probe_host", side_effect=fake_probe):
-            resolved = launch_profile_app.resolve_launch_profile(
-                cfg, "alice", None, "/srv/repos/demo", None
-            )
-
-        self.assertEqual(resolved.profile.id, "codex")
-        self.assertEqual(seen_catalogs, [("claude", "codex", "cursor")])
-
-    def test_pinned_launch_user_controls_tmux_and_agent_probe(self) -> None:
-        agents = default_agent_catalog()
-        profiles = builtin_launch_profiles(agents)
-        profiles["claude_sub1"] = LaunchProfile(
-            id="claude_sub1",
-            agent="claude",
-            launch_user="dana_agent",
-        )
-        launch = LaunchConfig(
-            enabled_profiles=("claude_sub1",),
-            default_profile="claude_sub1",
-            profiles=profiles,
-        )
-        cfg = _cfg_with_launch(launch)
-
-        with mock.patch(
-            "uxon.infra.probes.probe_host",
-            return_value=_report("dana_agent", ("claude",)),
-        ) as probe:
-            resolved = launch_profile_app.resolve_launch_profile(
-                cfg, "alice", "claude_sub1", "/srv/repos/demo", "normal"
-            )
-
-        self.assertEqual(resolved.launch_user, "dana_agent")
-        probe.assert_called_once()
-        self.assertIs(probe.call_args.args[0], cfg)
-        self.assertEqual(probe.call_args.args[1], "dana_agent")
-        self.assertEqual(tuple(probe.call_args.args[2]), ("claude",))
-
-    def test_unknown_disabled_and_path_disallowed_messages_list_choices(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            app = Path(tmp) / "app"
-            app.mkdir()
-            launch = self._builtin_launch(
-                enabled=("codex",),
-                default="codex",
-                rules=(
-                    LaunchPathRule(
-                        path_prefix=str(app),
-                        allowed_profiles=("codex",),
-                        default_profile="codex",
-                    ),
-                ),
-            )
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp])
-
-            with self.assertRaises(SystemExit) as unknown:
-                launch_profile_app.resolve_launch_profile(cfg, "alice", "missing", str(app), None)
-            self.assertIn("valid profiles: codex", getattr(unknown.exception, "uxon_msg", ""))
-
-            with self.assertRaises(SystemExit) as disabled:
-                launch_profile_app.resolve_launch_profile(cfg, "alice", "claude", str(app), None)
-            self.assertIn("valid profiles: codex", getattr(disabled.exception, "uxon_msg", ""))
-
-
-class LaunchProfileRuntimeGateTests(unittest.TestCase):
-    def test_run_allocates_session_with_profile_suffix(self) -> None:
-        agents = default_agent_catalog()
-        profiles = builtin_launch_profiles(agents)
-        profiles["claude_sub1"] = LaunchProfile(id="claude_sub1", agent="claude")
-        launch = LaunchConfig(
-            enabled_profiles=("claude_sub1",),
-            default_profile="claude_sub1",
-            profiles=profiles,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp])
-            resolved = dataclasses.replace(
-                _resolved(cfg, "claude_sub1", launch_user="alice"), canonical_target=tmp
-            )
-            captured: dict[str, object] = {}
-
-            def fake_launch(target_dir, session, *args, **kwargs):
-                captured["session"] = session
-                captured["target_dir"] = target_dir
-                captured["server_running"] = kwargs["server_running"]
-                return 0
-
-            with (
-                mock.patch.object(os, "getcwd", return_value=tmp),
-                mock.patch.object(
-                    run_app.launch_profile_app, "resolve_launch_profile", return_value=resolved
-                ),
-                mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
-                mock.patch(
-                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
-                    return_value=make_session_snapshot(user="alice", server_state="running"),
-                ),
-                mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
-                mock.patch("uxon.app.session_handoff.launch_in_tmux", side_effect=fake_launch),
-            ):
-                rc = run_app.do_run(ParsedArgs(action="run", profile="claude_sub1"), cfg, "alice")
-
-        self.assertEqual(rc, 0)
-        self.assertTrue(str(captured["session"]).endswith("@claude_sub1"))
-        self.assertIs(captured["server_running"], True)
-
-    def test_run_worktree_rejects_profile_for_worktree_path_before_probe(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "demo"
-            repo.mkdir()
-            worktree = repo / ".uxon" / "worktrees" / "feature-x"
-            launch = LaunchConfig(
-                enabled_profiles=("claude", "codex"),
-                default_profile="claude",
-                profiles=builtin_launch_profiles(default_agent_catalog()),
+def test_profile_rejections_precede_host_discovery_and_mutations(tmp_path, subtests):
+    target = tmp_path / "app"
+    target.mkdir()
+    for label in ("unknown", "disabled", "path-denied", "mode"):
+        with subtests.test(label=label):
+            cfg = _cfg(tmp_path)
+            cfg.launch = dataclasses.replace(
+                cfg.launch,
+                enabled_profiles=("codex",) if label == "disabled" else ("claude", "codex"),
                 path_rules=(
                     LaunchPathRule(
-                        path_prefix=str(worktree),
+                        path_prefix=str(target),
                         allowed_profiles=("codex",),
                         default_profile="codex",
                     ),
-                ),
-            )
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp])
-            args = ParsedArgs(
-                action="run",
-                profile="claude",
-                worktree_branch="feature/x",
-                dry_run=True,
-            )
-
-            with (
-                mock.patch.object(os, "getcwd", return_value=str(repo)),
-                mock.patch("uxon.infra.git.git_repo_root_nonint_as_user", return_value=str(repo)),
-                mock.patch("uxon.infra.git.git_common_dir_root_as_user", return_value=str(repo)),
-                mock.patch("uxon.infra.probes.probe_host") as probe,
-                mock.patch.object(launch_app, "plan_worktree_launch") as plan,
-            ):
-                with self.assertRaises(SystemExit) as cm:
-                    run_app.do_run(args, cfg, "alice")
-
-        self.assertIn("valid profiles: codex", getattr(cm.exception, "uxon_msg", ""))
-        probe.assert_not_called()
-        plan.assert_not_called()
-
-    def test_new_worktree_rejects_profile_for_worktree_path_before_probe(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "demo"
-            project.mkdir()
-            worktree = project / ".uxon" / "worktrees" / "feature-x"
-            launch = LaunchConfig(
-                enabled_profiles=("claude", "codex"),
-                default_profile="claude",
-                profiles=builtin_launch_profiles(default_agent_catalog()),
-                path_rules=(
-                    LaunchPathRule(
-                        path_prefix=str(worktree),
-                        allowed_profiles=("codex",),
-                        default_profile="codex",
-                    ),
-                ),
-            )
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp], new_project_root=tmp)
-            args = ParsedArgs(
-                action="new",
-                target_id="demo",
-                profile="claude",
-                worktree_branch="feature/x",
-                dry_run=True,
-            )
-
-            with (
-                mock.patch("uxon.infra.git.git_repo_root_as_user", return_value=str(project)),
-                mock.patch("uxon.infra.git.git_common_dir_root_as_user", return_value=str(project)),
-                mock.patch("uxon.infra.probes.probe_host") as probe,
-                mock.patch.object(launch_app, "plan_worktree_launch") as plan,
-            ):
-                with self.assertRaises(SystemExit) as cm:
-                    new_app.do_new(args, cfg, "alice")
-
-        self.assertIn("valid profiles: codex", getattr(cm.exception, "uxon_msg", ""))
-        probe.assert_not_called()
-        plan.assert_not_called()
-
-    def test_new_revalidates_after_mkdir_before_git_remote_create(self) -> None:
-        profile = {"name": "work", "host": "github.com", "owner": "acme", "auth": "gh"}
-        from uxon.domain import git_profiles
-
-        agents = default_agent_catalog()
-        profiles = builtin_launch_profiles(agents)
-        profiles["claude"] = dataclasses.replace(
-            profiles["claude"],
-            git_remote=GitRemotePolicy(allowed_profiles=("work",), default_profile="work"),
-        )
-        launch = LaunchConfig(default_profile="claude", profiles=profiles)
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = _cfg_with_launch(
-                launch,
-                allowed_roots=[tmp],
-                new_project_root=tmp,
-                git_create_enabled=True,
-                git_remote_profiles=git_profiles.load_profiles([profile]),
-            )
-            resolved = dataclasses.replace(
-                _resolved(cfg, "claude", launch_user="alice"),
-                canonical_target=str(Path(tmp) / "demo"),
-            )
-            calls: list[list[str]] = []
-
-            def fake_run_cmd(cmd, **kwargs):
-                calls.append(cmd)
-                Path(tmp, "demo").mkdir(exist_ok=True)
-
-                class CP:
-                    returncode = 0
-                    stdout = ""
-                    stderr = ""
-
-                return CP()
-
-            with (
-                mock.patch.object(
-                    new_app.launch_profile_app, "resolve_launch_profile", return_value=resolved
-                ),
-                mock.patch.object(
-                    new_app.launch_profile_app,
-                    "revalidate_launch_profile",
-                    side_effect=SystemExit(2),
-                ),
-                mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
-                mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
-                mock.patch(
-                    "uxon.gitremote.create.create_project_remote",
-                    return_value=CreationResult("work", "git@github.com:acme/demo.git"),
-                ) as create_remote,
-            ):
-                with self.assertRaises(SystemExit):
-                    new_app.do_new(
-                        ParsedArgs(action="new", target_id="demo", git_remote="default"),
-                        cfg,
-                        "alice",
-                    )
-
-        self.assertTrue(calls)
-        create_remote.assert_not_called()
-
-    def test_tui_new_revalidates_after_mkdir_before_git_remote_create(self) -> None:
-        profile = {"name": "work", "host": "github.com", "owner": "acme", "auth": "gh"}
-        from uxon.domain import git_profiles
-
-        agents = default_agent_catalog()
-        profiles = builtin_launch_profiles(agents)
-        profiles["claude"] = dataclasses.replace(
-            profiles["claude"],
-            git_remote=GitRemotePolicy(allowed_profiles=("work",), default_profile="work"),
-        )
-        launch = LaunchConfig(default_profile="claude", profiles=profiles)
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = _cfg_with_launch(
-                launch,
-                allowed_roots=[tmp],
-                new_project_root=tmp,
-                git_create_enabled=True,
-                git_remote_profiles=git_profiles.load_profiles([profile]),
-            )
-            resolved = dataclasses.replace(
-                _resolved(cfg, "claude", launch_user="alice"),
-                canonical_target=str(Path(tmp) / "demo"),
-            )
-            calls: list[list[str]] = []
-
-            def fake_run_cmd(cmd, **kwargs):
-                calls.append(cmd)
-                Path(tmp, "demo").mkdir(exist_ok=True)
-
-                class CP:
-                    returncode = 0
-                    stdout = ""
-                    stderr = ""
-
-                return CP()
-
-            with (
-                mock.patch.object(
-                    tui_planning.launch_profile_app,
-                    "resolve_launch_profile",
-                    return_value=resolved,
-                ),
-                mock.patch.object(
-                    tui_planning.launch_profile_app,
-                    "revalidate_launch_profile",
-                    side_effect=SystemExit(2),
-                ),
-                mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
-                mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
-                mock.patch.object(tui_planning.new_app, "_do_create_git_remote") as create_remote,
-                mock.patch.object(tui_planning.launch_app, "ensure_runtime_ready"),
-            ):
-                with self.assertRaises(SystemExit):
-                    tui_planning._plan_tui_create_new_profile(
-                        cfg, "alice", "alice", "demo", "claude", "normal", "default"
-                    )
-
-        self.assertTrue(calls)
-        create_remote.assert_not_called()
-
-    def test_tui_new_uses_caller_for_resolution_and_resolved_user_for_container(self) -> None:
-        launch = LaunchConfig(
-            default_profile="claude",
-            profiles=builtin_launch_profiles(default_agent_catalog()),
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp], new_project_root=tmp)
-            resolved = dataclasses.replace(
-                _resolved(cfg, "claude", launch_user="profile_user"),
-                canonical_target=str(Path(tmp) / "demo"),
-            )
-
-            def fake_run_cmd(cmd, **kwargs):
-                Path(tmp, "demo").mkdir(exist_ok=True)
-
-                class CP:
-                    returncode = 0
-                    stdout = ""
-                    stderr = ""
-
-                return CP()
-
-            def fake_resolve(cfg_arg, caller_user, *args, **kwargs):
-                self.assertIs(cfg_arg, cfg)
-                self.assertEqual(caller_user, "erin")
-                return resolved
-
-            def fake_revalidate(cfg_arg, caller_user, *args, **kwargs):
-                self.assertIs(cfg_arg, cfg)
-                self.assertEqual(caller_user, "erin")
-                return resolved
-
-            with (
-                mock.patch.object(
-                    tui_planning.launch_profile_app,
-                    "resolve_launch_profile",
-                    side_effect=fake_resolve,
-                ),
-                mock.patch.object(
-                    tui_planning.launch_profile_app,
-                    "revalidate_launch_profile",
-                    side_effect=fake_revalidate,
-                ),
-                mock.patch("uxon.infra.identity.probe_cwd_writable", return_value=True),
-                mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
-                mock.patch(
-                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
-                    return_value=make_session_snapshot(user="alice"),
-                ),
-                mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
-                mock.patch.object(tui_planning.launch_app, "ensure_runtime_ready") as ready,
-                mock.patch(
-                    "uxon.infra.tmux._build_tmux_launch_request",
-                    return_value=LaunchRequest(cmd=("true",), label="launch x"),
-                ),
-            ):
-                tui_planning._plan_tui_create_new_profile(
-                    cfg, "erin", "dana_agent", "demo", "claude", "normal", ""
                 )
-
-        ready.assert_called_once_with(cfg, str(Path(tmp) / "demo"), resolved)
-
-    def test_tui_open_existing_resolves_before_gate_and_does_not_mkdir(self) -> None:
-        launch = LaunchConfig(
-            default_profile="claude",
-            profiles=builtin_launch_profiles(default_agent_catalog()),
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "group" / "demo"
-            project.mkdir(parents=True)
-            cfg = _cfg_with_launch(launch, allowed_roots=[tmp], new_project_root=tmp)
-            resolved = dataclasses.replace(
-                _resolved(cfg, "claude", launch_user="profile_user"),
-                canonical_target=str(project),
+                if label == "path-denied"
+                else (),
             )
-
-            with (
-                mock.patch.object(
-                    tui_planning.launch_profile_app,
-                    "resolve_launch_profile",
-                    return_value=resolved,
-                ) as resolve,
-                mock.patch.object(tui_planning.launch_app, "ensure_launch_target_allowed") as gate,
-                mock.patch("uxon.infra.process.run_cmd") as run_cmd,
-                mock.patch(
-                    "uxon.infra.sessions_probe.collect_current_session_snapshot",
-                    return_value=make_session_snapshot(user="alice"),
-                ),
-                mock.patch("uxon.infra.sessions_probe.legacy_compatible_sessions", return_value=[]),
-                mock.patch(
-                    "uxon.infra.tmux._build_tmux_launch_request",
-                    return_value=LaunchRequest(cmd=("true",), label="launch x"),
-                ),
-            ):
-                tui_planning._plan_tui_open_existing_profile(
-                    cfg, "erin", "startup_user", "group/demo", "claude", "normal"
-                )
-
-        resolve.assert_called_once()
-        self.assertEqual(resolve.call_args.args[1], "erin")
-        self.assertEqual(resolve.call_args.args[3], str(project))
-        gate.assert_called_once_with(cfg, "profile_user", str(project))
-        run_cmd.assert_not_called()
-
-    def test_worktree_revalidates_after_add_before_runtime_prepare(self) -> None:
-        cfg = make_config(allowed_roots=["/srv/work"])
-        resolved = _resolved(cfg, "claude")
-        calls: list[list[str]] = []
-
-        def fake_run_cmd(cmd, check=True, **kwargs):
-            calls.append(cmd)
-
-            class CP:
-                returncode = 0
-                stdout = ""
-                stderr = ""
-
-            return CP()
-
-        with (
-            mock.patch.object(launch_app, "is_worktree_target_allowed", return_value=True),
-            mock.patch(
-                "uxon.infra.sessions_probe.collect_current_session_snapshot",
-                return_value=make_session_snapshot(user="alice"),
-            ),
-            mock.patch("uxon.infra.git._branch_exists_as_user", return_value=True),
-            mock.patch("uxon.infra.process.run_cmd", side_effect=fake_run_cmd),
-            mock.patch("uxon.infra.git.write_uxon_exclude_entry", lambda *a, **k: None),
-            mock.patch(
-                "uxon.infra.tmux._build_tmux_launch_request",
-                return_value=type("Req", (), {"cmd": ("true",), "prelaunch": (), "label": "x"})(),
-            ),
-            mock.patch.object(
-                launch_app.launch_profile_app,
-                "revalidate_launch_profile",
-                side_effect=SystemExit(2),
-            ),
-            mock.patch.object(launch_app, "ensure_runtime_ready") as runtime_ready,
-        ):
-            with self.assertRaises(SystemExit):
-                launch_app.plan_worktree_launch(
+            commands = TargetCommands()
+            with commands.installed_boundary(), pytest.raises(SystemExit) as error:
+                resolve_launch_profile(
                     cfg,
                     "alice",
-                    resolved,
-                    "/srv/work/myapp",
-                    "feature/auth",
-                    requested_profile="claude",
+                    "unknown" if label == "unknown" else "claude",
+                    str(target),
+                    "invalid" if label == "mode" else "normal",
+                )
+            assert {
+                "unknown": "unknown --profile",
+                "disabled": "disabled",
+                "path-denied": "not allowed",
+                "mode": "unknown --mode",
+            }[label] in error.value.uxon_msg
+            assert ("valid modes" if label == "mode" else "valid profiles") in error.value.uxon_msg
+            assert not any(command[:2] == ["sh", "-c"] for _, command, _ in commands.calls)
+
+
+def test_path_rules_apply_to_canonical_component_boundaries(tmp_path, subtests):
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "nested").mkdir()
+    neighbor = tmp_path / "app-old"
+    neighbor.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(app, target_is_directory=True)
+    cfg = _cfg(tmp_path)
+    cfg.launch = dataclasses.replace(
+        cfg.launch,
+        path_rules=(
+            LaunchPathRule(
+                path_prefix=str(app), allowed_profiles=("codex",), default_profile="codex"
+            ),
+        ),
+    )
+    with TargetCommands().installed_boundary():
+        for path, profile, canonical in (
+            (app, "codex", app),
+            (app / "nested", "codex", app / "nested"),
+            (alias / "nested", "codex", app / "nested"),
+            (neighbor, "claude", neighbor),
+        ):
+            with subtests.test(path=path):
+                resolved = resolve_launch_profile(cfg, "alice", None, str(path), "normal")
+                assert (resolved.profile.id, resolved.canonical_target) == (profile, str(canonical))
+
+
+def test_profile_selection_freezes_auto_and_effective_user_before_filesystem(tmp_path, subtests):
+    target = tmp_path / "repo"
+    target.mkdir()
+    cfg = _cfg(tmp_path)
+    cfg.runtimes["box"] = WorkloadRuntimeSpec(
+        id="box",
+        resource_name_template="box-{project_slug}",
+        exec_prefix=("engine", "exec", "{resource}"),
+    )
+    profiles = dict(cfg.launch.profiles)
+    profiles["operator"] = LaunchProfile(id="operator", agent="claude", launch_user="bob")
+    profiles["runtime"] = LaunchProfile(
+        id="runtime", agent="claude", runtime="box", launch_user="bob"
+    )
+    for label, installed, requested, user, profile, error in (
+        ("auto", ("tmux", "codex"), None, "alice", "codex", None),
+        ("pinned", ("tmux", "claude"), "operator", "bob", "operator", None),
+        ("runtime", ("tmux",), "runtime", "bob", "runtime", None),
+        ("direct-missing", ("tmux",), "claude", "alice", None, "not installed"),
+    ):
+        with subtests.test(label=label):
+            cfg.launch = (
+                LaunchConfig(profiles=dict(profiles), default_profile="", enabled_profiles=())
+                if label == "auto"
+                else LaunchConfig(
+                    profiles=dict(profiles),
+                    default_profile=requested,
+                    enabled_profiles=(requested,),
+                )
+            )
+            commands = TargetCommands(installed=installed)
+            with commands.installed_boundary():
+                if error:
+                    with pytest.raises(SystemExit) as exc:
+                        resolve_launch_profile(cfg, "alice", requested, str(target), "normal")
+                    assert error in exc.value.uxon_msg
+                else:
+                    resolved = resolve_launch_profile(
+                        cfg, "alice", requested, str(target), "normal"
+                    )
+                    assert (resolved.profile.id, resolved.launch_user, resolved.mode_id) == (
+                        profile,
+                        user,
+                        "normal",
+                    )
+                    request = __import__(
+                        "uxon.infra.tmux", fromlist=["tmux"]
+                    )._build_tmux_launch_request(
+                        str(target),
+                        f"uxon-repo@{profile}",
+                        ParsedArgs(action="run"),
+                        cfg,
+                        None,
+                        resolved_profile=resolved,
+                    )
+                    assert (
+                        request.managed.launch_user == user
+                        and request.managed.launch_profile == profile
+                    )
+            assert (
+                commands.calls[0][0] == user
+                and commands.calls[0][1][-1] == "uxon.infra.execution_probe"
+            )
+            assert all(actual_user == user for actual_user, _, _ in commands.calls)
+            if label == "auto":
+                discovery = [
+                    command[2] for _, command, _ in commands.calls if command[:2] == ["sh", "-c"]
+                ]
+                assert len(discovery) == 1 and "claude codex cursor-agent" in discovery[0]
+                assert "engine" not in discovery[0]
+
+
+def test_cli_run_emits_profile_suffix_and_preserves_running_empty_server(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("TMUX", raising=False)
+    cfg = _cfg(tmp_path)
+    cfg.tmux_manage_options = True
+    cfg.tmux_server_options = {"exit-empty": False}
+    cfg.tmux_append_server_options = {"terminal-overrides": ",*:Tc"}
+    _pinned(cfg)
+
+    def respond(user, command, kwargs):
+        if "uxon.infra.tmux_server_probe" in command:
+            return _cp(json.dumps({"state": "running", "sessions": [], "error": ""}))
+        assert command[:1] == ["tmux"] and command[3] == "list-sessions"
+        return _cp()
+
+    with TargetCommands(respond).installed_boundary(), redirect_stdout(io.StringIO()) as output:
+        assert (
+            run.do_run(
+                ParsedArgs(action="run", profile="claude_fast", dry_run=True), cfg, "operator"
+            )
+            == 0
+        )
+    lines = output.getvalue().splitlines()
+    assert "session=uxon-repo@claude_fast" in lines
+    create = shlex.split(
+        next(line.removeprefix("tmux_create=") for line in lines if line.startswith("tmux_create="))
+    )
+    assert create[:3] == ["boundary", "alice", "--"] and "new-session" in create
+    assert "exit-empty" in create and "-as" not in create and ",*:Tc" not in create
+
+
+def test_cli_worktree_routes_reject_final_profile_path_before_discovery_or_git_mutation(
+    tmp_path, monkeypatch, subtests
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    worktree = Path(
+        compute_worktree_path(repo_root=str(repo), branch="feature/x", worktree_root="")
+    )
+    cfg = _cfg(tmp_path)
+    cfg.launch = dataclasses.replace(
+        cfg.launch,
+        path_rules=(
+            LaunchPathRule(
+                path_prefix=str(worktree), allowed_profiles=("codex",), default_profile="codex"
+            ),
+        ),
+    )
+    for action in ("run", "new"):
+        with subtests.test(action=action):
+
+            def respond(user, command, kwargs):
+                assert user == "operator" and command[:3] == ["git", "-C", str(repo)]
+                assert "rev-parse" in command
+                return _cp(str(repo / ".git" if "--git-common-dir" in command else repo) + "\n")
+
+            commands = TargetCommands(respond)
+            with commands.installed_boundary(), pytest.raises(SystemExit) as error:
+                args = ParsedArgs(
+                    action=action,
+                    target_id="repo",
+                    profile="claude",
+                    worktree_branch="feature/x",
+                    dry_run=True,
+                )
+                (run.do_run if action == "run" else new.do_new)(args, cfg, "operator")
+            assert "valid profiles: codex" in error.value.uxon_msg
+            assert not any(
+                command[:2] in (["mkdir", "-p"], ["sh", "-c"]) or "add" in command
+                for _, command, _ in commands.calls
+            )
+
+
+def test_new_planners_revalidate_actual_postcreate_path_and_rules_before_remote_create(
+    tmp_path, monkeypatch, subtests
+):
+    for caller in ("cli", "tui"):
+        for mutation in ("symlink", "rule"):
+            with subtests.test(caller=caller, mutation=mutation):
+                root = tmp_path / f"{caller}-{mutation}"
+                root.mkdir()
+                escape = root / "elsewhere"
+                escape.mkdir()
+                target = root / "project"
+                cfg = _cfg(
+                    root,
+                    git_create_enabled=True,
+                    git_remote_profiles=[
+                        GitRemoteProfile(
+                            "work", "github.com", "example", "gh", "alice", "", "private"
+                        )
+                    ],
+                )
+                _pinned(cfg, "claude")
+                cfg.launch = dataclasses.replace(
+                    cfg.launch,
+                    profiles={
+                        "claude": dataclasses.replace(
+                            cfg.launch.profiles["claude"],
+                            git_remote=GitRemotePolicy(("work",), "work"),
+                        ),
+                        "codex": LaunchProfile(id="codex", agent="codex"),
+                    },
+                    enabled_profiles=("claude", "codex"),
+                )
+                mutations = []
+
+                def respond(
+                    user,
+                    command,
+                    kwargs,
+                    *,
+                    cfg=cfg,
+                    escape=escape,
+                    mutation=mutation,
+                    mutations=mutations,
+                    target=target,
+                ):
+                    assert user == "alice" and command == ["mkdir", "-p", str(target)]
+                    mutations.append(command)
+                    if mutation == "symlink":
+                        target.symlink_to(escape, target_is_directory=True)
+                    else:
+                        target.mkdir()
+                        cfg.launch = dataclasses.replace(
+                            cfg.launch,
+                            path_rules=(
+                                LaunchPathRule(
+                                    path_prefix=str(target),
+                                    allowed_profiles=("codex",),
+                                    default_profile="codex",
+                                ),
+                            ),
+                        )
+                    return _cp()
+
+                with (
+                    TargetCommands(respond).installed_boundary(),
+                    pytest.raises(SystemExit) as error,
+                ):
+                    if caller == "cli":
+                        new.do_new(
+                            ParsedArgs(
+                                action="new",
+                                target_id="project",
+                                profile="claude",
+                                git_remote="work",
+                            ),
+                            cfg,
+                            "operator",
+                        )
+                    else:
+                        TuiBridge(cfg, "operator", "startup", str(root)).on_launch_new(
+                            "project", "claude", "normal", "work"
+                        )
+                assert (
+                    len(mutations) == 1
+                    and ("policy changed" if mutation == "symlink" else "not allowed")
+                    in error.value.uxon_msg
                 )
 
-        self.assertTrue([cmd for cmd in calls if "worktree" in cmd and "add" in cmd])
-        runtime_ready.assert_not_called()
+
+def test_tui_new_existing_and_cwd_callbacks_execute_real_planner_with_effective_user(
+    tmp_path, monkeypatch, subtests
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("TMUX", raising=False)
+    cfg = _cfg(tmp_path)
+    _pinned(cfg)
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    cwd = tmp_path / "linked"
+    cwd.mkdir()
+    existing = tmp_path / "group" / "existing"
+    existing.mkdir(parents=True)
+    bridge = TuiBridge(cfg, "operator", "startup", str(cwd))
+    mutations = []
+
+    def respond(user, command, kwargs):
+        if command[:2] == ["mkdir", "-p"]:
+            assert user == "alice" and command == ["mkdir", "-p", str(tmp_path / "created")]
+            Path(command[-1]).mkdir()
+            mutations.append(command)
+            return _cp()
+        return _server(user, command, kwargs)
+
+    external = TargetCommands(respond)
+    with external.installed_boundary():
+        for kind, target in (
+            ("new", tmp_path / "created"),
+            ("existing", existing),
+            ("override", primary),
+            ("fallback", cwd),
+        ):
+            with subtests.test(kind=kind):
+                before = len(mutations)
+                if kind == "new":
+                    request = bridge.on_launch_new("created", "claude_fast", "normal", "")
+                elif kind == "existing":
+                    request = bridge.on_launch_existing("group/existing", "claude_fast", "normal")
+                else:
+                    request = bridge.on_launch_cwd(
+                        "claude_fast", "normal", str(target) if kind == "override" else None
+                    )
+                assert request.managed.project == str(target)
+                assert request.managed.record_session == f"uxon-{target.name}@claude_fast"
+                assert (
+                    request.managed.launch_user == "alice"
+                    and request.managed.launch_profile == "claude_fast"
+                )
+                assert request.managed.create_cmd[:3] == ("boundary", "alice", "--")
+                assert request.managed.create_cmd[
+                    request.managed.create_cmd.index("-c") + 1
+                ] == str(target)
+                assert len(mutations) - before == int(kind == "new")
+    assert all(user == "alice" for user, _, _ in external.calls)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_worktree_planner_revalidates_after_real_add_mutation_and_maps_final_workload(
+    tmp_path, monkeypatch, subtests
+):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for label in ("symlink", "rule", "mapped", "empty-map", "unmapped", "component-neighbor"):
+        with subtests.test(label=label):
+            root = tmp_path / label
+            root.mkdir()
+            repo = root / "repo"
+            repo.mkdir()
+            workroot = root / "worktrees"
+            path = Path(
+                compute_worktree_path(
+                    repo_root=str(repo), branch="feature/x", worktree_root=str(workroot)
+                )
+            )
+            escape = root / "elsewhere"
+            escape.mkdir()
+            mapping = (
+                ()
+                if label == "empty-map"
+                else ((str(repo), "/work"),)
+                if label == "unmapped"
+                else ((str(workroot) + "-other", "/work"),)
+                if label == "component-neighbor"
+                else ((str(workroot), "/work"),)
+            )
+            cfg = _cfg(root, worktree_root=str(workroot))
+            cfg.runtimes["box"] = WorkloadRuntimeSpec(
+                id="box",
+                resource_name_template="box-{project_slug}",
+                exec_prefix=("engine", "exec", "-w", "{runtime_dir}", "{resource}"),
+                path_map=mapping,
+                ready_command=("engine", "ready", "{resource}"),
+            )
+            _pinned(cfg, "claude", "box")
+            mutations = []
+
+            def respond(
+                user,
+                command,
+                kwargs,
+                *,
+                cfg=cfg,
+                escape=escape,
+                label=label,
+                mutations=mutations,
+                path=path,
+                repo=repo,
+            ):
+                assert user == "alice"
+                if command[:2] == ["mkdir", "-p"]:
+                    assert command[-1] == str(path.parent)
+                    path.parent.mkdir(parents=True)
+                    return _cp()
+                if command[:3] == ["git", "-C", str(repo)]:
+                    if command[3:5] == ["rev-parse", "--verify"]:
+                        return _cp()
+                    assert command[3:] == ["worktree", "add", str(path), "feature/x"]
+                    mutations.append(command)
+                    if label == "symlink":
+                        path.symlink_to(escape, target_is_directory=True)
+                    else:
+                        path.mkdir()
+                    if label == "rule":
+                        cfg.launch = dataclasses.replace(
+                            cfg.launch,
+                            path_rules=(
+                                LaunchPathRule(
+                                    path_prefix=str(path), allowed_profiles=(), default_profile=""
+                                ),
+                            ),
+                        )
+                    return _cp()
+                if command[:2] == ["engine", "ready"]:
+                    return _cp()
+                if command[:2] == ["engine", "exec"]:
+                    assert command[-1] == "claude" and "uxon-agent-probe" in command
+                    return _cp()
+                return _server(user, command, kwargs)
+
+            with TargetCommands(respond).installed_boundary():
+                resolved = resolve_launch_profile(
+                    cfg, "operator", "claude", str(path), "normal", target_may_not_exist=True
+                )
+                if label in {"symlink", "rule", "unmapped", "component-neighbor"}:
+                    with pytest.raises(SystemExit) as error:
+                        launch.plan_worktree_launch(
+                            cfg,
+                            "operator",
+                            resolved,
+                            str(repo),
+                            "feature/x",
+                            requested_profile="claude",
+                        )
+                    assert (
+                        "policy changed"
+                        if label == "symlink"
+                        else "not allowed"
+                        if label == "rule"
+                        else "path_map"
+                    ) in error.value.uxon_msg
+                else:
+                    request = launch.plan_worktree_launch(
+                        cfg,
+                        "operator",
+                        resolved,
+                        str(repo),
+                        "feature/x",
+                        requested_profile="claude",
+                    )
+                    create = request.managed.create_cmd
+                    index = create.index("engine")
+                    expected = str(path) if label == "empty-map" else "/work/repo/feature-x"
+                    assert create[index : index + 5] == (
+                        "engine",
+                        "exec",
+                        "-w",
+                        expected,
+                        "box-feature-x",
+                    )
+                    assert request.managed.project == str(path)
+            assert len(mutations) == int(label not in {"unmapped", "component-neighbor"})

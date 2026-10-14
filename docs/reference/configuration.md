@@ -291,8 +291,10 @@ With `session.stop_command`, the workload wrapper requires Linux procfs and `sh`
 and writes `PID start_ticks` into a private, nonce-keyed `{pidfile}`. The stop
 adapter must validate process identity, signal only that workload and report
 success only after termination; Uxon does not interpret the adapter's command.
-Missing/unverifiable launch records skip unsafe teardown. A failed teardown is
-reported even if tmux has already removed the session.
+Missing or unverifiable launch records refuse a managed kill before tmux mutation.
+If workload teardown cannot be prepared or completed, the operation reports
+failure and retains the launch record even if tmux has already removed the
+session. Omitting `session.stop_command` intentionally requests no workload teardown.
 
 `telemetry = "cgroup"` uses the resource identity to measure workload usage.
 Per-launch attribution requires readable process environments and matches the

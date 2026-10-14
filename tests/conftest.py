@@ -19,20 +19,6 @@ import pytest
 from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.infra import audit as _audit
 
-# Fully-installed CATALOG, used as the autouse ``probe_host`` stub. Tests
-# that exercise the install-gate path explicitly mock ``probe_host`` in
-# their own scope (the inner ``with mock.patch`` shadows this fixture for
-# the duration of that block).
-_STUB_HOST_REPORT = HostReport(
-    tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
-    agents={
-        "claude": BinaryStatus("claude", "/usr/local/bin/claude", ""),
-        "codex": BinaryStatus("codex", "/usr/local/bin/codex", ""),
-        "cursor": BinaryStatus("cursor-agent", "/usr/local/bin/cursor-agent", ""),
-    },
-    launch_user="",
-)
-
 
 @pytest.fixture(scope="session", autouse=True)
 def _install_loop_guard():
@@ -58,10 +44,13 @@ def _isolate_operator_config(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _stub_execution_identity_probe_by_default():
+def _stub_execution_identity_probe_by_default(request: pytest.FixtureRequest):
     """Keep generic launch tests focused; execution tests override this stub."""
     from uxon.infra.execution import ExecutionProbe
 
+    if "real_execution" in request.fixturenames:
+        yield
+        return
     with mock.patch(
         "uxon.infra.execution.require_probe",
         return_value=ExecutionProbe(backend="local", ok=True),
@@ -77,7 +66,7 @@ def _synthetic_target_filesystem(request: pytest.FixtureRequest):
     Run the fixed probe against their fixture tree; execution-boundary tests and
     integration tests remain unmocked, including actual permission checks.
     """
-    if request.node.fspath.basename not in {
+    if "real_execution" in request.fixturenames or request.node.fspath.basename not in {
         "test_uxon.py",
         "test_uxon_runtime.py",
         "test_uxon_launch_profiles.py",
@@ -111,11 +100,35 @@ def _stub_probe_host_by_default(request: pytest.FixtureRequest):
     ``tests/test_uxon_probes.py`` exercise the probe internals
     directly and opt out so the real implementation runs.
     """
-    if request.node.fspath.basename == "test_uxon_probes.py":
+    if (
+        "real_host_probes" in request.fixturenames
+        or request.node.fspath.basename == "test_uxon_probes.py"
+    ):
         yield
         return
-    with mock.patch("uxon.infra.probes.probe_host", return_value=_STUB_HOST_REPORT):
+
+    def report(_cfg, user, catalog):
+        return HostReport(
+            tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
+            agents={
+                aid: BinaryStatus(aid, f"/usr/local/bin/{spec.binary}", spec.install_hint)
+                for aid, spec in catalog.items()
+            },
+            launch_user=user,
+        )
+
+    with mock.patch("uxon.infra.probes.probe_host", side_effect=report):
         yield
+
+
+@pytest.fixture
+def real_execution():
+    """Exercise execution attestation and filesystem adapters without defaults."""
+
+
+@pytest.fixture
+def real_host_probes():
+    """Exercise host availability through the external command boundary."""
 
 
 @pytest.fixture(autouse=True)

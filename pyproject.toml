@@ -46,7 +46,7 @@ uxon = "uxon.cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
+    "pytest>=9.0",
     "pytest-xdist",
     "ruff",
     "pyright",

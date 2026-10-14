@@ -40,10 +40,10 @@ Aggregation is client-side, with [configurable peer polling](docs/reference/conf
 The lead's TUI fans out over SSH; each host stays independently authorised.
 No daemon, database or central server is required.
 
-Two composable boundaries cover advanced deployments. `[execution]` owns every
-target-user command, including the tmux server itself, and can enter an
-operator-managed host namespace. A launch profile may then select a generic
-`[runtimes.<id>]` workload adapter; containers are one implementation. See the
+Two composable boundaries cover advanced deployments. `[execution]` owns all
+target-user commands, including tmux, and can enter a host namespace. Profiles
+select `[runtimes.<id>]` workload adapters, including containers. Incomplete
+cleanup retains the launch record and reports failure. See the
 [configuration reference](docs/reference/configuration.md).
 
 ## Install
