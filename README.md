@@ -36,9 +36,9 @@ deployment, one tool:
   UUID `correlation_id` joining initiating-host and target-host
   events.
 
-Aggregation is client-side: the lead's TUI fans out over SSH.
-No daemon, no database, no central server to deploy. Each host
-stays independently configured and independently authorised.
+Aggregation is client-side, with [configurable peer polling](docs/reference/configuration.md#remote_hosts-table-array).
+The lead's TUI fans out over SSH; each host stays independently authorised.
+No daemon, database or central server is required.
 
 Two composable boundaries cover advanced deployments. `[execution]` owns every
 target-user command, including the tmux server itself, and can enter an

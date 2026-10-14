@@ -151,7 +151,13 @@ def _optional_type(raw: dict[str, Any], key: str, expected: type, *, source: str
 
 
 def _number(value: Any, *, source: str) -> None:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+    valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if valid:
+        try:
+            valid = math.isfinite(value)
+        except OverflowError:
+            valid = False
+    if not valid:
         raise ConfigSchemaError(f"'{source}' must be a finite number")
 
 
@@ -350,7 +356,7 @@ def validate_public_config(payload: Any) -> dict[str, Any]:
             ):
                 _optional_type(host, key, str, source=f"remote_hosts[{index}]")
             for key in ("interval", "connect_timeout", "total_timeout"):
-                if key in host:
+                if key in host and not isinstance(host[key], str):
                     _number(host[key], source=f"remote_hosts[{index}].{key}")
             for key in ("extra_ssh_options", "command_template"):
                 _optional_string_list(host, key, source=f"remote_hosts[{index}]")

@@ -9,6 +9,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Peer polling accepts documented duration strings and rejects malformed or non-finite durations with a configuration error.
 - Dashboard search honors configured fields, including host, path and command, for local and remote sessions.
 - Failed remote polls immediately hide outdated sessions and metrics, with compact persistent status below the table. Incompatible peers show their version and which side needs updating; automatic retries wait about five minutes, while `r` retries immediately. Remote CLI listings return nonzero on any failed peer and preserve healthy partial results. Remote session snapshots are no longer written to disk.
 - Permission-mode selection follows the chosen launch profile even when its id matches another agent; committing a mode preserves its displayed id.
