@@ -49,6 +49,7 @@ cleanup retains the launch record and reports failure. See the
 ## Install
 
 Requires **Python 3.11+**, `tmux` 3.2+, and Linux.
+Native tmux socket permissions work without modification inside a private user directory; see [socket configuration](docs/reference/configuration.md#top-level-keys).
 
 ```bash
 # Team / shared host (recommended): one root-owned binary in

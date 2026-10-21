@@ -24,7 +24,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Container, GitHub-project and migration examples validate against the current config schema. Team setup recipes protect personal trees from peer writes and reserve group-write permissions for shared projects; audit collector examples use the current actor fields.
 - Failed managed processes retain their output with an on-screen close-and-return hint. Reviewed errors disappear without stopping live siblings; the dashboard distinguishes finished sessions and sessions containing errors. Launch choices omit fully finished sessions, and attaching to a mixed session selects a live terminal. Fast successful non-managed exits no longer claim that missing output appeared above.
 - Codex `auto` mode now uses the current `--approve-for-me` flag instead of the removed `--full-auto` flag.
-- Dedicated tmux sockets with owner-only mode `0700` are accepted alongside `0600`, matching tmux behavior without weakening the per-user boundary.
+- Native tmux socket modes `0660` and `0770` are accepted alongside `0600` and `0700` inside a launch-user-owned `0700` directory; unrelated default-server sessions no longer prevent listing or starting sessions.
 - The interactive TUI now exits when its controlling terminal disappears instead of leaving an orphaned process that can spin at 100% CPU after an SSH or ET disconnect.
 - Session lifecycle checks now distinguish absent, running, and unreachable tmux servers: a residual socket from a normal shutdown is absent, while a live server with zero sessions remains running.
 - Installed wheels no longer report a surrounding consumer repository's Git commit as Uxon's source identity.
