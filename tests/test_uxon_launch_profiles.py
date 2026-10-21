@@ -120,7 +120,7 @@ def test_path_rules_apply_to_canonical_component_boundaries(tmp_path, subtests):
             (alias / "nested", "codex", app / "nested"),
             (neighbor, "claude", neighbor),
         ):
-            with subtests.test(path=path):
+            with subtests.test(path=str(path)):
                 resolved = resolve_launch_profile(cfg, "alice", None, str(path), "normal")
                 assert (resolved.profile.id, resolved.canonical_target) == (profile, str(canonical))
 
