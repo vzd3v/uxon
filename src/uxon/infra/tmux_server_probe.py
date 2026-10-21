@@ -22,7 +22,9 @@ from uxon.infra.tmux_socket import (
 
 _SOCKET_CONNECT_TIMEOUT_SECONDS = 0.25
 _TMUX_QUERY_TIMEOUT_SECONDS = 2.0
-_PRIVATE_SOCKET_MODES = frozenset({0o600, 0o700})
+# The verified 0700 parent excludes other users even when native tmux gives
+# its default socket group bits; attaching also adds execute bits.
+_TMUX_SOCKET_MODES = frozenset({0o600, 0o700, 0o660, 0o770})
 
 
 def _socket_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -42,8 +44,8 @@ def _inspect_socket(directory_fd: int, leaf: str) -> os.stat_result:
         raise SocketDirectoryError("tmux socket path is not a socket")
     if metadata.st_uid != os.geteuid():
         raise SocketDirectoryError("tmux socket is not owned by the launch user")
-    if stat.S_IMODE(metadata.st_mode) not in _PRIVATE_SOCKET_MODES:
-        raise SocketDirectoryError("tmux socket permissions must be owner-only (0600 or 0700)")
+    if stat.S_IMODE(metadata.st_mode) not in _TMUX_SOCKET_MODES:
+        raise SocketDirectoryError("tmux socket permissions must be 0600, 0700, 0660 or 0770")
     return metadata
 
 

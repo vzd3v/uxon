@@ -9,6 +9,7 @@ import shutil
 import socket as unix_socket
 import stat
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1184,6 +1185,38 @@ def test_native_server_release_failure_clean_exit_empty_and_reuse(tmp_path, monk
         socket.unlink(missing_ok=True)
 
 
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+def test_native_default_socket_does_not_block_unrelated_sessions(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="uxon-tmux-") as directory:
+        monkeypatch.setenv("TMUX_TMPDIR", directory)
+        monkeypatch.delenv("TMUX", raising=False)
+        socket = Path(directory) / f"tmux-{os.geteuid()}" / "default"
+        base = ["tmux", "-f", "/dev/null"]
+        try:
+            subprocess.run(
+                base + ["new-session", "-d", "-s", "unrelated-service", "sleep", "30"],
+                capture_output=True,
+                check=True,
+                timeout=5,
+            )
+            assert stat.S_IMODE(socket.stat().st_mode) == 0o660
+            for mode in (0o660, 0o770):
+                socket.chmod(mode)
+                assert tmux_server_probe.collect(socket) == {
+                    "state": "running",
+                    "sessions": ["unrelated-service"],
+                    "error": "",
+                }
+                snapshot = sessions_probe.collect_session_snapshot_for_user(
+                    make_config(), identity.process_user(), "uxon-", None
+                )
+                assert snapshot.server_state == "running" and snapshot.sessions == ()
+                assert stat.S_IMODE(socket.stat().st_mode) == mode
+        finally:
+            subprocess.run(base + ["kill-server"], capture_output=True, timeout=5)
+
+
 def test_socket_state_policy_and_replacement_never_adopt_foreign_listener(tmp_path, subtests):
     cases = (
         ("missing", "absent", ""),
@@ -1193,7 +1226,9 @@ def test_socket_state_policy_and_replacement_never_adopt_foreign_listener(tmp_pa
         ("foreign", "unreachable", "foreign listener"),
         ("mode600", "running", ""),
         ("mode700", "running", ""),
-        ("group", "unreachable", "owner-only"),
+        ("mode660", "running", ""),
+        ("mode770", "running", ""),
+        ("world", "unreachable", "permissions"),
         ("symlink", "unreachable", "not a socket"),
         ("replaced", "unreachable", "foreign listener"),
     )
@@ -1209,7 +1244,13 @@ def test_socket_state_policy_and_replacement_never_adopt_foreign_listener(tmp_pa
                 listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
                 listeners.append(listener)
                 listener.bind(str(path))
-                path.chmod(0o700 if label == "mode700" else 0o660 if label == "group" else 0o600)
+                path.chmod(
+                    int(label[4:], 8)
+                    if label.startswith("mode")
+                    else 0o666
+                    if label == "world"
+                    else 0o600
+                )
                 if label in {"closed", "replaced"}:
                     listener.close()
                 else:
@@ -1232,9 +1273,9 @@ def test_socket_state_policy_and_replacement_never_adopt_foreign_listener(tmp_pa
                     replacement.listen(1)
                     listeners.append(replacement)
                 return _cp(
-                    stdout="zeta\nalpha\n" if label in {"mode600", "mode700"} else "",
+                    stdout="zeta\nalpha\n" if label.startswith("mode") else "",
                     stderr="foreign listener",
-                    returncode=int(label not in {"mode600", "mode700"}),
+                    returncode=int(not label.startswith("mode")),
                 )
 
             try:
