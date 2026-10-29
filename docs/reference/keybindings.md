@@ -4,6 +4,11 @@
 menu keys go through Textual `BINDINGS` declarations — the footer shows
 the visible subset.
 
+All modal lists wrap: `↑` on the first item selects the last, and `↓` on
+the last selects the first. This includes sessions, workspaces, launch
+profiles, permission modes, git remote profiles, filtered folders and settings
+choices, as well as the git remote details table. Disabled items are skipped.
+
 ## Main screen
 
 | Key | Action |
@@ -90,6 +95,7 @@ access validation follow folder selection.
 
 | Key | Action |
 |---|---|
+| `↑` / `↓` | Navigate the profile list |
 | `0`–`9` | Pick profile by number |
 | `Enter` | Confirm |
 | `Esc` | Cancel |

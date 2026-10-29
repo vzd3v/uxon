@@ -98,7 +98,8 @@ The dashboard combines your sessions, authorized other-user sessions and live
 data from configured SSH peers. Failed polls show errors. Search configured
 session fields, then attach or stop a session with confirmation.
 The launch picker uses the selected profile's agent modes; it preserves that
-choice through workspace selection. See [TUI keys](docs/reference/keybindings.md)
+choice through workspace selection. Modal lists support cyclic navigation;
+see [TUI keys](docs/reference/keybindings.md)
 and [dashboard recipes](docs/guides/customise/customise-dashboard.md).
 
 Failed processes keep their output visible with an on-screen return hint,

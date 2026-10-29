@@ -76,6 +76,68 @@ def _mk_ctx(**overrides):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
+class CyclicModalListTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_single_disabled_and_unselected_lists(self) -> None:
+        from harness.textual_ready import painted, send_key
+        from textual.app import App
+        from textual.widgets import ListItem, Static
+
+        from uxon.tui.widgets.cyclic_list_view import CyclicListView
+
+        cases = [
+            ((), None, None, None),
+            ((False,), 0, 0, 0),
+            ((True, False, True, False, True), 1, 3, 3),
+            ((True, False, True, False, True), 3, 1, 1),
+            ((True, True), None, None, None),
+            ((True, False, True, False, True), None, 3, 1),
+        ]
+
+        class Host(App):
+            def compose(self):
+                for disabled, *_ in cases:
+                    yield CyclicListView(
+                        *(ListItem(Static(str(i)), disabled=d) for i, d in enumerate(disabled))
+                    )
+
+        app = Host()
+        async with app.run_test() as pilot:
+            await painted(pilot)
+            for widget, (_, initial, previous, following) in zip(
+                app.query(CyclicListView), cases, strict=True
+            ):
+                with self.subTest(initial=initial, count=len(widget.children)):
+                    widget.focus()
+                    widget.index = initial
+                    await send_key(pilot, "up")
+                    self.assertEqual(widget.index, previous)
+                    widget.index = initial
+                    await send_key(pilot, "down")
+                    self.assertEqual(widget.index, following)
+
+    async def test_settings_choice_wraps_and_saves(self) -> None:
+        from types import SimpleNamespace
+
+        from uxon.tui.screens.settings_modals import EnumCycleModal
+
+        saved = []
+        entry = SimpleNamespace(
+            spec=SimpleNamespace(key="choice", description="Choice", choices=("first", "last")),
+            value="first",
+        )
+        scenario = ScreenScenario(
+            "enum-wrap",
+            lambda: EnumCycleModal(
+                entry, SimpleNamespace(save_setting=lambda *args: saved.append(args))
+            ),
+            press_keys("up", "down", "up", "enter"),
+            True,
+        )
+        self.assertEqual(await run_screen_scenarios([scenario]), [True])
+        self.assertEqual(saved, [("choice", "last")])
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
 class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
     """The TUI confirm affordance for a stopped/absent container.
 
@@ -377,15 +439,15 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             screen = app.screen
-            # Move highlight to cursor (2nd entry).
-            await pilot.press("down")
+            # Wrap from the first profile to cursor (last entry).
+            await pilot.press("up")
             await pilot.pause()
             mode_list = screen.query_one("#mode-list", ListView)
             # cursor has exactly two modes in the catalog: normal, yolo.
             self.assertEqual(len(mode_list.children), 2)
             mode_ids = [item.id for item in mode_list.children]
             self.assertEqual(mode_ids, ["mode-normal", "mode-yolo"])
-            await pilot.press("right", "down", "enter")
+            await pilot.press("right", "up", "down", "up", "enter")
             await pilot.pause()
             self.assertEqual(app.result, ("cursor", "yolo"))
 
@@ -409,7 +471,7 @@ class WorkspaceScreenTests(unittest.IsolatedAsyncioTestCase):
             ScreenScenario(
                 "primary",
                 lambda: WorkspaceScreen(rows, repo_root="/srv/work"),
-                press_keys("enter"),
+                press_keys("up", "down", "enter"),
                 ("primary", "/srv/work"),
             ),
             ScreenScenario(
@@ -421,7 +483,7 @@ class WorkspaceScreenTests(unittest.IsolatedAsyncioTestCase):
             ScreenScenario(
                 "new",
                 lambda: WorkspaceScreen(rows, repo_root="/srv/work"),
-                press_keys("down", "down", "enter"),
+                press_keys("up", "enter"),
                 ("new", None),
             ),
             ScreenScenario(
@@ -636,7 +698,7 @@ class GitProfileScreenTests(unittest.IsolatedAsyncioTestCase):
             ScreenScenario(
                 "default-profile-enter",
                 lambda: GitProfileScreen([("profA", "A"), ("profB", "B")], default_profile="profB"),
-                press_keys("enter"),
+                press_keys("down", "up", "enter"),
                 "profB",
             ),
         ]
@@ -990,6 +1052,10 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
             )
             for value in ("foo", "github.com", "alice", "bar", "gitlab.com", "bob", "~/.tok"):
                 self.assertIn(value, rendered)
+            await pilot.press("up")
+            self.assertEqual(table.cursor_row, 1)
+            await pilot.press("down")
+            self.assertEqual(table.cursor_row, 0)
             await pilot.press("escape")
             await pilot.pause()
             self.assertEqual(dismissed, [None])

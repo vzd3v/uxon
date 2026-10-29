@@ -25,6 +25,7 @@ from ..state import (
     pick_visible_agent,
     update_launch_options_after_availability,
 )
+from ..widgets.cyclic_list_view import CyclicListView
 
 
 class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
@@ -138,10 +139,10 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
                             id=f"agent-{aid}",
                         )
                     )
-                yield ListView(*items, id="agent-list")
+                yield CyclicListView(*items, id="agent-list")
             with Vertical(id="mode-panel"):
                 yield Static("Permission mode", classes="panel-title")
-                yield ListView(id="mode-list")
+                yield CyclicListView(id="mode-list")
 
     async def on_mount(self) -> None:
         if not self._visible_agents:

@@ -11,6 +11,7 @@ from textual.widgets import ListItem, ListView, Static
 from uxon.infra.worktrees import Workspace
 
 from ..keymap import bindings_with_aliases
+from ..widgets.cyclic_list_view import CyclicListView
 from .modal_base import CardModal
 
 
@@ -40,7 +41,7 @@ class WorkspaceScreen(CardModal["tuple | None"]):
                 for index, w in enumerate(self._workspaces)
             ]
             items.append(ListItem(Static("+ New worktree…"), id="workspace-new"))
-            yield ListView(*items, id="workspace-list")
+            yield CyclicListView(*items, id="workspace-list")
 
     def action_submit(self) -> None:
         selected = self.query_one("#workspace-list", ListView).highlighted_child

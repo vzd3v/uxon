@@ -33,6 +33,7 @@ from textual.binding import Binding
 from textual.widgets import Label, ListItem, ListView, Static
 
 from ..keymap import bindings_with_aliases
+from ..widgets.cyclic_list_view import CyclicListView
 from .modal_base import CardModal
 
 
@@ -133,7 +134,7 @@ class SessionChoiceScreen(CardModal[SessionChoiceResult]):
             # Trailing action row — the new-alongside choice, mirroring
             # LaunchOptionsScreen's "+ New worktree…" sentinel row.
             items.append(ListItem(Label(_NEW_ROW_LABEL), id="sess-new"))
-            yield ListView(*items, id="session-list")
+            yield CyclicListView(*items, id="session-list")
             yield Static(
                 "↑/↓ select · enter confirm · esc cancel",
                 classes="hint",

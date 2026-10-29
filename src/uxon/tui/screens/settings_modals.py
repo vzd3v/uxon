@@ -22,6 +22,7 @@ from textual.widgets import (
     Static,
 )
 
+from ..widgets.cyclic_list_view import CyclicListView
 from .modal_base import ButtonCardModal
 
 
@@ -87,7 +88,7 @@ class EnumCycleModal(_EditModalBase):
             items = []
             for c in choices:
                 items.append(ListItem(Label(c)))
-            lv = ListView(*items, id="enum-list")
+            lv = CyclicListView(*items, id="enum-list")
             self._lv_default = 0
             for i, c in enumerate(choices):
                 if c == current:

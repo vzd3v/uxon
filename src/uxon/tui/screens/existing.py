@@ -22,6 +22,7 @@ from textual.widgets import Footer, Input, Label, ListItem, ListView, Static
 
 from ..keymap import bindings_with_aliases
 from ..state import ProjectBrowserLevel, filter_existing_projects
+from ..widgets.cyclic_list_view import CyclicListView
 from ..widgets.filter_input import FilterChanged, FilterInput
 from .modal_base import CardModal
 
@@ -119,7 +120,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
                 ListItem(Label(_row_label(name, mtime), markup=False))
                 for (name, mtime) in self._filtered
             ]
-            yield ListView(*items, id="existing-list")
+            yield CyclicListView(*items, id="existing-list")
             yield Static("", id="browser-status", markup=False)
             yield Footer()
 
@@ -225,9 +226,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
     def _move_cursor_wrapped(self, delta: int) -> None:
         if self._loading or not self._filtered:
             return
-        lv = self.query_one(ListView)
-        current = lv.index if lv.index is not None else 0
-        lv.index = (current + delta) % len(self._filtered)
+        self.query_one(CyclicListView).move_cursor(delta)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_pick()

@@ -48,7 +48,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             ScreenScenario(
                 "first-enter",
                 lambda: SessionChoiceScreen("myproj", existing),
-                press_keys("enter"),
+                press_keys("up", "down", "enter"),
                 ("attach", "uxon-myproj@claude", "alice"),
             ),
             ScreenScenario(
@@ -72,7 +72,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             ScreenScenario(
                 "trailing-new",
                 lambda: SessionChoiceScreen("myproj", existing),
-                press_keys("down", "down", "enter"),
+                press_keys("up", "enter"),
                 ("new", None, None),
             ),
             ScreenScenario(

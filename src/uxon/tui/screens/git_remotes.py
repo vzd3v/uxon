@@ -30,6 +30,8 @@ class GitRemotesScreen(ModalScreen[None]):
     BINDINGS: ClassVar[list[Binding]] = bindings_with_aliases(
         Binding("escape", "back", "Back", show=True),
         Binding("q", "back", "Back", show=False),
+        Binding("up", "cursor_up", "", show=False, priority=True),
+        Binding("down", "cursor_down", "", show=False, priority=True),
     )
 
     # Framework-managed initial focus (rationale: SessionChoiceScreen).
@@ -54,3 +56,14 @@ class GitRemotesScreen(ModalScreen[None]):
 
     def action_back(self) -> None:
         self.dismiss(None)
+
+    def action_cursor_up(self) -> None:
+        self._move_cursor(-1)
+
+    def action_cursor_down(self) -> None:
+        self._move_cursor(1)
+
+    def _move_cursor(self, direction: int) -> None:
+        table = self.query_one(DataTable)
+        if table.row_count:
+            table.move_cursor(row=(table.cursor_row + direction) % table.row_count)
