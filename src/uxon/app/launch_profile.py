@@ -365,8 +365,7 @@ def resolve_launch_profile(
     if profile.agent not in cfg.agents:
         fail(f"launch profile {selected!r} references unknown agent {profile.agent!r}")
     agent = cfg.agents[profile.agent]
-    requested_mode = None if mode_id in (None, "", "default") else mode_id
-    resolved_mode = requested_mode or agent.permission_modes[0].id
+    resolved_mode = agent.permission_modes[0].id if mode_id is None else mode_id
     if permission_mode_for(agent, resolved_mode) is None:
         valid = ", ".join(mode.id for mode in agent.permission_modes)
         fail(f"unknown --mode {resolved_mode!r} for agent {agent.id!r}; valid modes: {valid}")

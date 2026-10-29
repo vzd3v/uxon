@@ -19,6 +19,7 @@ from uxon.domain.args import ParsedArgs
 from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.domain.launch_profiles import GitRemotePolicy, LaunchConfig, LaunchPathRule, LaunchProfile
 from uxon.domain.runtime import WorkloadRuntimeSpec
+from uxon.infra.config_loader import parse_config
 from uxon.infra.worktrees import compute_worktree_path
 from uxon.tui.bridge import TuiBridge
 
@@ -94,6 +95,48 @@ def test_profile_rejections_precede_host_discovery_and_mutations(tmp_path, subte
             }[label] in error.value.uxon_msg
             assert ("valid modes" if label == "mode" else "valid profiles") in error.value.uxon_msg
             assert not any(command[:2] == ["sh", "-c"] for _, command, _ in commands.calls)
+
+
+def test_permission_mode_ids_are_literal_and_only_omission_selects_first(tmp_path, subtests):
+    cfg = _cfg(tmp_path)
+    cfg.agents = parse_config(
+        {
+            "agents": {
+                "custom": {
+                    "binary": "custom-bin",
+                    "mode": [
+                        {"id": "inspect", "flags": ["--read-only"]},
+                        {"id": "default", "flags": ["--write"], "dangerous": True},
+                        {"id": "review:read", "flags": ["--review"]},
+                    ],
+                }
+            }
+        }
+    ).agents
+    cfg.launch = LaunchConfig(
+        enabled_profiles=("custom_profile",),
+        profiles={"custom_profile": LaunchProfile(id="custom_profile", agent="custom")},
+    )
+    for requested, expected in (
+        (None, "inspect"),
+        ("default", "default"),
+        ("review:read", "review:read"),
+    ):
+        with subtests.test(requested=requested):
+            with TargetCommands(installed=("tmux", "custom-bin")).installed_boundary():
+                resolved = resolve_launch_profile(
+                    cfg, "alice", "custom_profile", str(tmp_path), requested
+                )
+            assert resolved.mode_id == expected
+    for mode_id in ("", "missing"):
+        with subtests.test(invalid=mode_id):
+            with TargetCommands().installed_boundary(), pytest.raises(SystemExit) as error:
+                resolve_launch_profile(cfg, "alice", "custom_profile", str(tmp_path), mode_id)
+            assert f"unknown --mode {mode_id!r}" in error.value.uxon_msg
+    cfg.agents = parse_config({"agents": {"custom": {"mode": [{"id": "inspect"}]}}}).agents
+    with TargetCommands().installed_boundary(), pytest.raises(SystemExit) as error:
+        resolve_launch_profile(cfg, "alice", "custom_profile", str(tmp_path), "default")
+    assert "unknown --mode 'default'" in error.value.uxon_msg
 
 
 def test_path_rules_apply_to_canonical_component_boundaries(tmp_path, subtests):

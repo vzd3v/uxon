@@ -356,6 +356,7 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         return AgentAvailability(status=status)
 
     async def test_launch_options_layout_smoke_batch(self) -> None:
+        from uxon.infra.config_loader import parse_config
         from uxon.tui.context import LaunchProfileOption
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
@@ -397,6 +398,42 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
                 ("cursor", "auto"),
             ),
         ]
+
+        custom_catalog = parse_config(
+            {
+                "agents": {
+                    "custom": {
+                        "mode": [
+                            {"id": "inspect"},
+                            {"id": "review:read"},
+                            {"id": "default"},
+                        ]
+                    }
+                }
+            }
+        ).agents
+        for mode_id, keys in (("review:read", ("down", "enter")), ("default", ("up", "enter"))):
+            scenarios.append(
+                ScreenScenario(
+                    f"literal-custom-mode-{mode_id}",
+                    lambda: LaunchOptionsScreen(
+                        _mk_ctx(
+                            agents=custom_catalog,
+                            enabled_profiles=("custom_profile",),
+                            default_profile="custom_profile",
+                            launch_auto_mode=False,
+                            launch_profiles={
+                                "custom_profile": LaunchProfileOption(
+                                    "custom_profile", "Custom", "custom", "alice"
+                                )
+                            },
+                            agent_availability={"custom_profile": self._make_avail("ok")},
+                        )
+                    ),
+                    press_keys(*keys),
+                    ("custom_profile", mode_id),
+                )
+            )
 
         results = await run_screen_scenarios(scenarios)
         self.assertEqual(results, [s.expected for s in scenarios])
@@ -445,8 +482,8 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
             mode_list = screen.query_one("#mode-list", ListView)
             # cursor has exactly two modes in the catalog: normal, yolo.
             self.assertEqual(len(mode_list.children), 2)
-            mode_ids = [item.id for item in mode_list.children]
-            self.assertEqual(mode_ids, ["mode-normal", "mode-yolo"])
+            labels = [str(item.query_one("Static").content) for item in mode_list.children]
+            self.assertEqual(labels, ["1 normal", "2 yolo (--yolo)"])
             await pilot.press("right", "up", "down", "up", "enter")
             await pilot.pause()
             self.assertEqual(app.result, ("cursor", "yolo"))

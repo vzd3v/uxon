@@ -81,7 +81,7 @@ def launch_boundary(tmp_path, monkeypatch):
             f'for c in tmux {name}; do\n    printf "%s\\t%s\\n" "$c" "$(command -v "$c" 2>/dev/null)"\ndone': name
             for name in names
         }
-        assert argv[:2] == ["sh", "-lc"] and argv[2] in scripts
+        assert argv[:2] == ["sh", "-c"] and argv[2] in scripts
         name = scripts[argv[2]]
         calls.append(("binaries", name))
         return subprocess.CompletedProcess(
@@ -568,7 +568,7 @@ def test_public_main_missing_tmux_agent_and_list_without_agents(
             + " ".join(names)
             + '; do\n    printf "%s\\t%s\\n" "$c" "$(command -v "$c" 2>/dev/null)"\ndone'
         )
-        assert argv == ["sh", "-lc", script] and timeout == 2.0
+        assert argv == ["sh", "-c", script] and timeout == 2.0
         calls.append(names)
         return subprocess.CompletedProcess(
             argv,

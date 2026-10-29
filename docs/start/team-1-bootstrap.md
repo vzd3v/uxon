@@ -18,8 +18,8 @@ adding a developer afterwards is the
 
 - Root or sudo on the host.
 - Existing developer and supervisor shell accounts on the host.
-- One or more agents (`claude`, `codex`, `cursor-agent`)
-  installable for the launch users.
+- A terminal coding tool installable for the launch users, using a built-in
+  preset or a [custom catalog entry](../reference/configuration.md#agentsid-catalog).
 
 ## Step 1 — Install host-wide
 

@@ -94,7 +94,8 @@ def config_sources() -> tuple[Path, ...]:
 def _parse_modes(aid: str, raw_modes: Any) -> tuple[PermissionMode, ...]:
     """Parse a ``[[agents.<id>.mode]]`` array-of-tables into PermissionModes.
 
-    First entry is the default mode. Each table: required ``id``, optional
+    First entry is the default mode; IDs are unique within the agent.
+    Each table: required ``id``, optional
     ``label`` (defaults to ``id``), optional ``flags`` (list of strings),
     optional ``dangerous`` (bool). REPLACE-not-merge: the caller only calls
     this when at least one mode table is present.
@@ -102,11 +103,15 @@ def _parse_modes(aid: str, raw_modes: Any) -> tuple[PermissionMode, ...]:
     if not isinstance(raw_modes, list) or not all(isinstance(m, dict) for m in raw_modes):
         fail(f"'agents.{aid}.mode' must be an array of tables")
     modes: list[PermissionMode] = []
+    mode_ids: set[str] = set()
     for m in raw_modes:
         _reject_unknown_keys(m, {"id", "label", "flags", "dangerous"}, source=f"agents.{aid}.mode")
         mid = m.get("id")
         if not isinstance(mid, str) or not mid:
             fail(f"'agents.{aid}.mode' entry requires a non-empty string 'id'")
+        if mid in mode_ids:
+            fail(f"duplicate mode id {mid!r} in agents.{aid}.mode")
+        mode_ids.add(mid)
         label = m.get("label", "")
         if not isinstance(label, str):
             fail(f"'agents.{aid}.mode.{mid}.label' must be a string")

@@ -62,6 +62,18 @@ selected tool's own flag documentation.
 underlying agent catalog (for example `--mode auto` or `--mode yolo`).
 Omitting it picks the agent's first mode.
 
+## Add a coding tool
+
+Install the tool for the selected launch account, following the tool's own
+instructions. Add its executable and at least one permission mode to the
+[agent catalog](../../reference/configuration.md#agentsid-catalog), then enable
+a launch profile pointing to that entry. The reference includes a complete
+custom-tool configuration; replace its example executable with your tool's.
+
+Run `uxon doctor` to check availability, refresh the TUI, and select the new
+profile. No Uxon plugin or source change is required. Adding a catalog entry
+alone does not enable it in the launch picker.
+
 ## Auto-mode
 
 With `launch.enabled_profiles` empty or absent, `uxon` uses the
@@ -75,4 +87,4 @@ be enabled by the operator.
 
 - [`../../reference/configuration.md`](../../reference/configuration.md) — `[launch]`, `[launch.profiles.<id>]`, path rules, and `[agents.<id>]`.
 - [`../../reference/cli.md`](../../reference/cli.md) — `--profile`, `--mode`, and session naming.
-- README's [Supported agents](../../../README.md#supported-agents) — install commands per agent.
+- README's [Coding tools](../../../README.md#coding-tools) — extensible catalog and built-in presets.

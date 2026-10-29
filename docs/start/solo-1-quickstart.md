@@ -15,8 +15,9 @@ runs as a separate `<user>-agent`).
 ## What you'll need
 
 - A Linux host meeting the [Python and tmux requirements](install.md#requirements).
-- One of `claude`, `codex`, or `cursor-agent` installed for your
-  user.
+- A terminal coding tool installed for your user. Built-in presets cover
+  Claude Code, Codex and Cursor CLI; [configure another tool](../guides/customise/choose-launch-profile.md#add-a-coding-tool)
+  before starting if you use one.
 - Optional but useful: `et` (Eternal Terminal) on the laptop —
   see [`docs/clients.md`](../clients.md).
 
@@ -92,7 +93,7 @@ allowed_roots       = ["/srv/projects"]
 new_project_root    = "/srv/projects"
 ```
 
-Install the agent binary for `wes-agent` (claude / codex / cursor)
+Install your chosen coding tool for `wes-agent`
 — run `sudo -H -u wes-agent -- /bin/bash` and use the agent's installer there.
 The shell is deliberately non-login; configure an explicit PATH or an absolute
 agent binary in `config.toml`. Then:

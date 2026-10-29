@@ -55,6 +55,11 @@ copying the old public-parent path into the new file will not work.
 The user-facing selector is `--profile`; `--agent` is now an ordinary argument
 forwarded to the selected agent.
 
+Replace Uxon's former `--auto` and `--dsp` / `--dap` / `-dap` / `-dsp`
+shortcuts with `--mode auto` or `--mode yolo`, where the selected coding tool
+defines those modes. These old flags now pass through to the tool unchanged.
+See the [mode reference](reference/cli.md#--mode-id).
+
 ```toml
 [launch]
 enabled_profiles = ["claude_work", "codex_safe"]
@@ -127,6 +132,9 @@ Audit schema 2 uses `process_user` / `process_uid`, replacing `caller_user` /
 `caller_uid`. Native journal fields are `PROCESS_USER` / `PROCESS_UID`; parsed
 syslog JSON uses lowercase. Query retained schema-1 events separately when
 reviewing history across the upgrade.
+
+The `cli.start` field `agents_enabled` becomes `profiles_enabled` and contains
+launch-profile ids rather than coding-tool ids. Update queries using that field.
 
 Debug and metrics output requires a private directory owned by the controller.
 An existing shared directory is refused without changing its permissions.

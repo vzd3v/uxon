@@ -34,8 +34,8 @@ class PermissionMode:
 
 @dataclass(frozen=True)
 class AgentSpec:
-    id: str  # agent id; the session suffix ``@<id>`` is derived where needed
-    binary: str  # executable name on PATH
+    id: str  # catalog key referenced by launch profiles
+    binary: str  # executable name on PATH or an absolute executable path
     permission_modes: tuple[PermissionMode, ...]
     install_hint: str = ""  # shown by doctor / agent-select / TUI
     version_args: tuple[str, ...] = ("--version",)  # doctor probe; () → no version line

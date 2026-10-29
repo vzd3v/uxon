@@ -107,9 +107,10 @@ default_git_remote_profile = "work"
 
 ## `[agents.<id>]` catalog
 
-Each `[agents.<id>]` table customises one agent in the catalog, or
-declares a brand-new one. The shipped presets are `claude`, `codex`,
-`cursor`; supplying a table for a new id adds it (the id must match
+Each `[agents.<id>]` table customises a shipped preset or adds any terminal
+coding tool by executable and arguments; no source change is required.
+The shipped presets are `claude`, `codex`, and `cursor`. Supplying a table for a
+new id adds it to the catalog (the id must match
 `[a-z][a-z0-9_]*` and contain no `:` / `.`).
 
 | Key | Type | Default | Purpose |
@@ -121,7 +122,8 @@ declares a brand-new one. The shipped presets are `claude`, `codex`,
 
 Permission modes are an array-of-tables — **order is significant,
 the first entry is the default mode** (used when `--mode` is
-omitted). `--mode <id>` selects one by `id`; the mode ids and the
+omitted). IDs must be unique within each agent and are interpreted literally,
+including `default`. `--mode <id>` selects one by `id`; the mode ids and the
 flags they map to per shipped agent are in
 [`reference/cli.md`](cli.md#--mode-id).
 
@@ -143,23 +145,25 @@ single mode); supplying none inherits the defaults. A brand-new id
 ["--version"]`, `default_args = []`, `install_hint = ""`, and **must**
 declare at least one `[[agents.<id>.mode]]` or load fails.
 
-```toml
-[agents.claude]
-default_args = ["--model", "claude-sonnet-4-6"]
+Adding a tool to the catalog does not enable a launch profile automatically.
+This complete example enables a custom tool. `my-agent` is a placeholder for
+an executable installed by the operator; use only flags that executable accepts.
 
+```toml
 # A custom agent: declares a binary and at least one mode.
 [agents.myagent]
 binary       = "my-agent"
-install_hint = "install: pipx install my-agent"
+install_hint = "Install the team's coding tool for the launch account."
 
 [[agents.myagent.mode]]
 id    = "normal"          # first entry → the default mode
 
-[[agents.myagent.mode]]
-id        = "yolo"
-label     = "yolo (unrestricted)"
-flags     = ["--auto-approve"]
-dangerous = true
+[launch]
+enabled_profiles = ["mytool"]
+default_profile = "mytool"
+
+[launch.profiles.mytool]
+agent = "myagent"
 ```
 
 **File-only.** The agent catalog, execution backends, and runtime

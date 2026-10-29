@@ -60,7 +60,7 @@ _DISPATCH = textwrap.dedent("""
             if argv[-3:] == ["status", "--porcelain", "--untracked-files=no"]:
                 calls.append("git-status")
                 return subprocess.CompletedProcess(argv, 0, "", "")
-        if action == "list" and argv[:2] == ["sh", "-lc"] and "command -v" in argv[2]:
+        if action == "list" and argv[:2] == ["sh", "-c"] and "command -v" in argv[2]:
             assert argv[2] == 'for c in tmux claude codex cursor-agent; do\\n    printf "%s\\\\t%s\\\\n" "$c" "$(command -v "$c" 2>/dev/null)"\\ndone'
             assert kwargs["timeout"] == 2.0
             calls.append("host-binaries")

@@ -7,10 +7,10 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)
 
 Session manager for development teams using terminal AI coding
-agents (Claude Code, Codex, Cursor CLI) on one or more Linux
-servers. Team visibility via OS accounts, cross-host visibility
+tools on one or more Linux servers. Configure any tool's executable,
+arguments and permission modes; Claude Code, Codex and Cursor CLI come with
+built-in presets. Team visibility via OS accounts, cross-host visibility
 via SSH, supervision via sudoers.
-Terminal tab titles follow the active session and return to `uxon` in the dashboard; see [title settings](docs/reference/configuration.md#tmux-managed-options-350).
 
 ![uxon dashboard — a lead sees the whole team's agent sessions across hosts](docs/images/uxon-full-team-n.svg)
 
@@ -40,18 +40,15 @@ Aggregation is client-side, with [configurable peer polling](docs/reference/conf
 The lead's TUI fans out over SSH; each host stays independently authorised.
 No daemon, database or central server is required.
 
-`[execution]` owns target-user commands, including tmux, and can enter a host namespace.
-Profiles select `[runtimes.<id>]` workload adapters, including containers. Incomplete
-cleanup retains the launch record and reports failure; concurrent clients can acknowledge the same direct-session error. Session actions preserve launch
-identity across renames, including launch handoff and recovery; shared supervision requires protected shared records.
-Failures include their concrete cause in the interface and audit trail; malformed peer snapshots are rejected without hiding healthy peers, and SSH recovery leaves process and socket cleanup to SSH.
-See the [configuration reference](docs/reference/configuration.md).
+Launch profiles choose the coding tool, launch account and optional workload
+runtime, including containers. Execution backends can place target-user commands
+and tmux inside an operator-managed boundary. Shared supervision requires
+[protected launch records](docs/reference/configuration.md#launch-records).
 
 ## Install
 
 Requires **Python 3.11+**, Linux, and a maintained `tmux` build (3.8 recommended;
 see [requirements](docs/start/install.md#requirements)).
-Native tmux socket permissions work without modification inside a private user directory; see [socket configuration](docs/reference/configuration.md#top-level-keys).
 
 ```bash
 # Team / shared host (recommended): one root-owned binary in
@@ -93,32 +90,35 @@ See [client setup](docs/clients.md), [privacy](docs/privacy.md),
 - **Create new project** — prompt for a name, create
   `<new_project_root>/<name>`, optionally create a GitHub repo,
   launch the agent.
-  Optional GitHub creation supports organization-scoped fine-grained tokens;
-  see [setup](docs/guides/customise/configure-github-on-new-project.md).
 - **Open existing project** — browse and pick a directory at any depth under
   `new_project_root` and launch.
 
 The dashboard combines your sessions, authorized other-user sessions and live
 data from configured SSH peers. Failed polls show errors. Search configured
 session fields, then attach or stop a session with confirmation.
-The launch picker uses the selected profile's agent modes; it preserves that
-choice through workspace selection. Modal lists support cyclic navigation;
-see [TUI keys](docs/reference/keybindings.md)
+Terminal titles follow the active session and return to `uxon` in the dashboard.
+See [TUI keys](docs/reference/keybindings.md)
 and [dashboard recipes](docs/guides/customise/customise-dashboard.md).
 
 Failed processes keep their output visible with an on-screen return hint,
 without stopping other running terminals.
 See [failed-process controls](docs/reference/keybindings.md#failed-process-terminal).
 
-## Supported agents
+## Coding tools
 
-| Agent id | Binary | Install |
-|----------|--------|---------|
-| `claude` | `claude` | [Claude Code](https://docs.claude.com/claude-code) |
-| `codex` | `codex` | `npm i -g @openai/codex` |
-| `cursor` | `cursor-agent` | `curl https://cursor.com/install -fsSL \| bash` |
+The coding-tool catalog is extensible through configuration. Add a tool's
+executable and modes, then enable a launch profile for it; no Uxon code change
+is needed. See [add a coding tool](docs/guides/customise/choose-launch-profile.md#add-a-coding-tool).
 
-Expose launch profiles in `/etc/uxon/config.toml`:
+The built-in presets are examples you can use or override:
+
+| Preset | Executable |
+|--------|------------|
+| `claude` | `claude` |
+| `codex` | `codex` |
+| `cursor` | `cursor-agent` |
+
+For example, expose two built-in launch profiles in `/etc/uxon/config.toml`:
 
 ```toml
 [launch]
@@ -130,17 +130,12 @@ Fleet automation can validate and render the full JSON form with
 `uxon config render --config-json config.json`; install the reviewed TOML at
 `/etc/uxon/config.toml` with an explicit root-owned `sudo install`.
 
-Uxon manages worktrees independently of the agent and refuses occupied paths
-before changing the repository. See the
+Uxon manages worktrees independently of the agent. See the
 [profile/mode reference](docs/reference/cli.md#--mode-id)
 and [worktree guide](docs/guides/customise/worktrees.md).
 
-`uxon doctor` probes the agent catalog and prints each path,
+`uxon doctor` probes the configured catalog and prints each tool's path,
 version, and status.
-
-Launch profiles can optionally wrap agents in a generic workload runtime,
-composed on top of the execution backend — see
-[`[runtimes.<id>]`](docs/reference/configuration.md#runtimesid-table).
 
 ## Versioning
 

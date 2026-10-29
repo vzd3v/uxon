@@ -67,10 +67,7 @@ def test_public_host_probe_batches_catalog_and_normalizes_failures(subtests):
                         calls.append(argv)
                         assert timeout == PROBE_TIMEOUT_SEC
                         assert argv[: len(prefix)] == prefix
-                        assert argv[len(prefix) : len(prefix) + 2] == [
-                            "sh",
-                            "-lc" if backend == "local" and user == "alice" else "-c",
-                        ]
+                        assert argv[len(prefix) : len(prefix) + 2] == ["sh", "-c"]
                         assert "'custom tool;literal'" in argv[-1]
                         assert "omitted" in argv[-1] and "tmux" in argv[-1]
                         if outcome == "timeout":
@@ -82,10 +79,6 @@ def test_public_host_probe_batches_catalog_and_normalizes_failures(subtests):
                         )
 
                     with (
-                        mock.patch(
-                            "uxon.infra.probes.pwd.getpwuid",
-                            return_value=mock.Mock(pw_name="alice"),
-                        ),
                         mock.patch("uxon.infra.execution.process_user", return_value="alice"),
                         mock.patch("uxon.infra.probes.run_query", side_effect=run),
                     ):
@@ -108,7 +101,6 @@ def test_public_host_probe_batches_catalog_and_normalizes_failures(subtests):
                     }
 
     with (
-        mock.patch("uxon.infra.probes.pwd.getpwuid", return_value=mock.Mock(pw_name="alice")),
         mock.patch("uxon.infra.execution.process_user", return_value="alice"),
         mock.patch(
             "uxon.infra.probes.run_query",

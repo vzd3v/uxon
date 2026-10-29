@@ -136,7 +136,7 @@ The trust boundaries are:
 ## Out of scope
 
 - **Sandbox escape from inside the agent binary.** uxon does not
-  constrain what `claude`, `codex`, or `cursor-agent` can do once
+  constrain what a configured coding tool can do once
   launched. Anything the agent's OS account can do, the agent can
   do.
 - **The operator's `sudoers` configuration.** A misconfigured
@@ -165,7 +165,7 @@ The trust boundaries are:
 - **Centralised RBAC, SSO, or audit infrastructure.** uxon is the
   runtime layer beneath these — it emits structured audit events
   to the host's platform log channel (journald native or `/dev/log`
-  syslog; see [`docs/audit-events.md`](docs/reference/audit-events.md)) and
+  syslog; see the [audit reference](docs/reference/audit-events.md)) and
   the host's own `sudo` trail covers cross-user invocations, but
   uxon is not a replacement for an enterprise audit pipeline.
 

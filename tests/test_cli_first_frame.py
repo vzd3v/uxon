@@ -37,7 +37,7 @@ def query(argv,*,timeout):
     return subprocess.CompletedProcess(argv,0,json.dumps({'state':'absent','sessions':[],'error':''}),'')
 tmux.run_query=query
 def discovery(argv,*,timeout):
-    assert argv == ['sh','-lc','for c in tmux claude codex cursor-agent; do\n    printf "%s\\t%s\\n" "$c" "$(command -v "$c" 2>/dev/null)"\ndone']
+    assert argv == ['sh','-c','for c in tmux claude codex cursor-agent; do\n    printf "%s\\t%s\\n" "$c" "$(command -v "$c" 2>/dev/null)"\ndone']
     assert timeout == 2.0
     (root/'blocked').write_text('entered')
     deadline=time.monotonic()+30

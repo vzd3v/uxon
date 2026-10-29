@@ -2,7 +2,9 @@
 
 from copy import deepcopy
 
-from uxon.infra.config_loader import parse_config
+import pytest
+
+from uxon.infra.config_loader import ConfigValidationError, parse_config
 
 
 def test_catalog_overrides_and_custom_agent_survive_public_parsing() -> None:
@@ -47,3 +49,27 @@ def test_catalog_overrides_and_custom_agent_survive_public_parsing() -> None:
     assert raw == original
     raw["agents"]["claude"]["default_args"].append("--changed")
     assert claude.default_args == ("--model", "example")
+
+
+@pytest.mark.parametrize("agent_id", ["custom", "claude"])
+def test_duplicate_mode_ids_fail_configuration_instead_of_selecting_another_policy(agent_id):
+    with pytest.raises(
+        ConfigValidationError, match=f"duplicate mode id 'inspect' in agents.{agent_id}.mode"
+    ):
+        parse_config(
+            {
+                "agents": {
+                    agent_id: {
+                        "mode": [
+                            {"id": "inspect", "label": "Read only", "flags": ["--read-only"]},
+                            {
+                                "id": "inspect",
+                                "label": "Write",
+                                "flags": ["--write"],
+                                "dangerous": True,
+                            },
+                        ]
+                    }
+                }
+            }
+        )

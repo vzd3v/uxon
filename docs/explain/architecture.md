@@ -8,11 +8,12 @@ like and why*.
 ## What `uxon` is
 
 `uxon` is a Python package that wraps `tmux` so a host can run several
-terminal AI coding agents (`claude`, `codex`, `cursor-agent`)
+terminal AI coding tools from a configurable catalog
 concurrently for one or more OS users, with predictable session
 naming, per-user tmux sockets, optional `git` worktree support,
 optional GitHub repo creation on new projects, and an interactive
-TUI session picker.
+TUI session picker. Claude Code, Codex and Cursor CLI are shipped presets;
+other tools are configured with their executable, arguments and modes.
 
 There is no daemon. There is no database. State lives in:
 - `tmux` sessions on a per-user dedicated socket;

@@ -121,11 +121,11 @@ sudo install -o root -g root -m 0644 /tmp/uxon-config.toml \
   /etc/uxon/config.toml
 ```
 
-You'll need at least one of `claude`, `codex`, or `cursor-agent`
-installed for the launch user — see the agent table in
-[`README.md`](../../README.md#supported-agents). Refresh the TUI after
-installation; in strict mode the operator must add the corresponding launch
-profile to `enabled_profiles`.
+Install your chosen terminal coding tool for the launch user using its own
+installation instructions. Claude Code, Codex and Cursor CLI have built-in
+presets; [add other tools through configuration](../guides/customise/choose-launch-profile.md#add-a-coding-tool).
+Refresh the TUI after installation. Custom tools also need an enabled launch
+profile; see [profile selection](../reference/configuration.md#launch-table).
 
 ## Where to go next
 

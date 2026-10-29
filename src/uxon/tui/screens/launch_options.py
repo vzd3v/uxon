@@ -28,6 +28,13 @@ from ..state import (
 from ..widgets.cyclic_list_view import CyclicListView
 
 
+class _PermissionModeItem(ListItem):
+    def __init__(self, mode_id: str, label: str) -> None:
+        super().__init__(Static(label))
+        # Catalog IDs are opaque values, not Textual CSS identifiers.
+        self.mode_id = mode_id
+
+
 class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     DEFAULT_CSS = """
     LaunchOptionsScreen { align: center middle; }
@@ -179,7 +186,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         await mode_list.clear()
         modes = launch_permission_modes(self.cfg.agents, profile_id, self._launch_profiles())
         items = [
-            ListItem(Static(f"{idx} {mode.label}"), id=f"mode-{mode.id}")
+            _PermissionModeItem(mode.id, f"{idx} {mode.label}")
             for idx, mode in enumerate(modes, start=1)
         ]
         if items:
@@ -217,7 +224,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
 
     def action_commit(self) -> None:
         selected = self.query_one("#mode-list", ListView).highlighted_child
-        selected_mode_id = selected.id.removeprefix("mode-") if selected and selected.id else None
+        selected_mode_id = selected.mode_id if isinstance(selected, _PermissionModeItem) else None
         decision = launch_commit_decision(
             active_panel=self._active_panel,
             current_agent=self._current_agent,

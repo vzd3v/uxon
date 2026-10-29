@@ -1,14 +1,12 @@
 """Binary availability probes for tmux and coding agents on a host.
 
-Pure-data dataclasses + a single batched probe. No textual, no TUI imports.
-Uses only stdlib: subprocess, shlex, dataclasses, pwd.
+Pure-data dataclasses + a single batched probe through the execution backend.
+No textual or TUI imports.
 """
 
 from __future__ import annotations
 
-import os
 import platform
-import pwd
 import shlex
 import subprocess
 import time
@@ -16,7 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from uxon.domain.host_report import BinaryStatus, HostReport
-from uxon.infra.execution import ExecutionConfigured, binary_probe_prefix, resolve_target
+from uxon.infra.execution import ExecutionConfigured, binary_probe_prefix
 from uxon.infra.run import run_query
 
 if TYPE_CHECKING:
@@ -27,51 +25,7 @@ if TYPE_CHECKING:
 PROBE_TIMEOUT_SEC = 2.0  # `command -v` is fast; 2s is plenty for hung shells
 
 
-def _current_user() -> str:
-    """Return the effective user of the running process."""
-    return pwd.getpwuid(os.getuid()).pw_name
-
-
-def _resolve_paths_local(names: list[str]) -> dict[str, str | None]:
-    """Resolve paths for binaries using `sh -lc 'command -v X'` (same user).
-
-    Returns a dict mapping binary name to absolute path (or None if not found).
-    """
-    if not names:
-        return {}
-
-    # Build the sh script: for each name, output "name\tpath" or "name\t(empty)" on not found.
-    lines = ["for c in " + " ".join(shlex.quote(n) for n in names) + "; do"]
-    lines.append('    printf "%s\\t%s\\n" "$c" "$(command -v "$c" 2>/dev/null)"')
-    lines.append("done")
-    script = "\n".join(lines)
-
-    try:
-        cp = run_query(
-            ["sh", "-lc", script],
-            timeout=PROBE_TIMEOUT_SEC,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # sh not found or timeout: treat all as missing.
-        return {name: None for name in names}
-
-    result: dict[str, str | None] = {}
-    if cp.returncode == 0:
-        for line in (cp.stdout or "").splitlines():
-            if not line.strip():
-                continue
-            parts = line.split("\t", 1)
-            if len(parts) == 2:
-                name, path = parts
-                result[name] = path if path else None
-    # Fill in any missing results as None.
-    for name in names:
-        if name not in result:
-            result[name] = None
-    return result
-
-
-def _resolve_paths_remote(
+def _resolve_paths(
     cfg: ExecutionConfigured,
     names: list[str],
     launch_user: str,
@@ -90,7 +44,7 @@ def _resolve_paths_remote(
     if not names:
         return {}
 
-    # Build the sh script (same as local, but run as launch_user).
+    # Batch names as quoted shell literals, preserving the backend's PATH.
     lines = ["for c in " + " ".join(shlex.quote(n) for n in names) + "; do"]
     lines.append('    printf "%s\\t%s\\n" "$c" "$(command -v "$c" 2>/dev/null)"')
     lines.append("done")
@@ -102,7 +56,7 @@ def _resolve_paths_remote(
             timeout=PROBE_TIMEOUT_SEC,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        # sudo not found or timeout: treat all as missing.
+        # An unavailable boundary or shell leaves every binary unresolved.
         return {name: None for name in names}
 
     result: dict[str, str | None] = {}
@@ -132,7 +86,7 @@ def _tmux_install_hint() -> str:
 
 # tmux is infra, not an agent — its hint stays here. Per-agent install hints
 # are now read from the merged catalog (``AgentSpec.install_hint``), so there
-# is no second hardcoded agent-hint source to drift (C1).
+# is no second hardcoded agent-hint source to drift.
 _INSTALL_HINTS = {
     "tmux": _tmux_install_hint(),
 }
@@ -158,19 +112,15 @@ def probe_host(
         Each agent's ``install_hint`` is read from its catalog entry.
       - ``launch_user``: the user for which the probe was run
 
-    The probe uses ``sh -lc 'command -v X'`` via sudo if ``launch_user``
-    differs from the current user, or directly if it's the same user.
-    This matches the login-shell semantics used by the launch builder.
+    The probe uses one bounded ``sh -c`` command through the selected execution
+    backend, retaining its PATH without sourcing login-shell configuration.
     """
     all_agent_ids = list(catalog.keys())
     all_agent_names = [catalog[aid].binary for aid in all_agent_ids]
 
     # Single round-trip probe: tmux + every catalogued agent.
     probe_names = ["tmux", *all_agent_names]
-    if launch_user == _current_user() and resolve_target(cfg, launch_user).backend.kind == "local":
-        paths = _resolve_paths_local(probe_names)
-    else:
-        paths = _resolve_paths_remote(cfg, probe_names, launch_user)
+    paths = _resolve_paths(cfg, probe_names, launch_user)
 
     tmux_status = BinaryStatus(
         name="tmux",

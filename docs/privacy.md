@@ -6,8 +6,8 @@ link as part of new-developer setup.
 
 ## The short version
 
-`uxon` records one structured audit event per substantive
-gesture you make — opening the TUI, launching a session,
+`uxon` records structured audit events for substantive
+gestures you make — opening the TUI, launching a session,
 attaching, killing. The trail goes to the host's system log
 channel (journald or syslog). Your operator queries it with
 `journalctl`, possibly forwarded to a central log collector.
@@ -31,7 +31,7 @@ Every event carries:
 Per-event extras:
 
 - **Launching a session** → the launch profile, the underlying
-  agent (`claude` / `codex` / `cursor`), the absolute project path,
+  coding-tool id from the configured catalog, the absolute project path,
   the worktree branch if any, the session name.
 - **Attaching** → the session name, target user, `profile` and `agent` for a
   resolved local session, and `dry_run`.

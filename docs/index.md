@@ -25,6 +25,7 @@ kinds of pages, four different purposes:
 - **[guides/](guides/) — how-to recipes.** "I have a working
   setup, now I want to *do* something." Operate (onboard,
   incident, upgrade), harden, customise, debug — including
+  [adding a coding tool](guides/customise/choose-launch-profile.md#add-a-coding-tool),
   [running agents in a container](guides/customise/run-agents-in-a-container.md)
   (and [hardening that container](guides/harden/harden-a-container.md))
   and [diagnosing dashboard input](guides/debug/enable-debug-logs.md).
