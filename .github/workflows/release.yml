@@ -1,17 +1,14 @@
 name: Release
 
-# Triggered by pushing a tag matching `v*` (e.g. `v3.0.0`, `v3.0.1rc1`,
-# `v3.0.0.post1`). PEP 440 pre-releases are supported. The full check
-# suite (tests, lint, typecheck, secrets scan) runs against the tagged
-# commit before any artifact is built or published — a red commit can
-# never be released. Tests run on a single Python version here for
-# speed; CI on `main` covers the full matrix. To run the matrix on a
-# release too, pass `python-versions` to the `checks` job below.
-
+# Tagged source, distributions and curated notes are validated together before
+# either publication job can run. CI on main supplies the full Python matrix.
 on:
   push:
     tags:
       - "v*"
+
+permissions:
+  contents: read
 
 jobs:
   checks:
@@ -23,29 +20,46 @@ jobs:
     uses: ./.github/workflows/_integration.yml
 
   build:
-    name: Build sdist + wheel
+    name: Build and validate release
     needs: [checks, integration]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
+          check-latest: true
 
-      - name: Install build tools
-        run: python3 -m pip install --upgrade pip build twine
+      - name: Install declared development tools
+        run: python3 -m pip install -e ".[dev]"
 
       - name: Build distributions
         run: python3 -m build
 
-      - name: Verify metadata
-        run: python3 -m twine check dist/*
+      - name: Validate release inputs and prepare notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          python3 -m twine check dist/*
+          python3 .github/scripts/prepare_release.py "$RELEASE_TAG" "$RELEASE_REPOSITORY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release/release-notes.md
+          if-no-files-found: error
 
   publish-pypi:
     name: Publish to PyPI
@@ -55,16 +69,15 @@ jobs:
       name: pypi
       url: https://pypi.org/p/uxon
     permissions:
-      id-token: write   # OIDC for Trusted Publisher; no API token needed
+      id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist/
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        # PEP 740 attestations are generated and uploaded automatically
-        # since v1.11.0; no extra signing step required.
+      # Trusted Publisher OIDC and PEP 740 attestations; no API token.
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   github-release:
     name: Create GitHub Release
@@ -73,63 +86,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          # need full tag history to compute the compare link to the
-          # previous release
-          fetch-depth: 0
-
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist/
 
-      - name: Build release notes from CHANGELOG.md
-        env:
-          REPO: ${{ github.repository }}
-          REF: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          VERSION="${REF#v}"
-          # Previous v* tag, by version sort. Empty on first release —
-          # the compare link is then omitted.
-          PREV=$(git tag -l 'v*' --sort=-v:refname \
-            | awk -v cur="$REF" 'cur==$0{getline; print; exit}')
-          {
-            echo '## Install / upgrade'
-            echo
-            echo '```bash'
-            echo 'uv tool install --upgrade uxon          # recommended'
-            echo 'pipx upgrade uxon                       # alt'
-            echo 'pip install --upgrade --user uxon       # alt'
-            echo '```'
-            echo
-            echo '## What changed'
-            echo
-            # Extract the section for this version: everything between
-            # `## [VERSION]` and the next `## [` heading.
-            awk -v ver="$VERSION" '
-              $0 ~ "^## \\[" ver "\\]" { p = 1; next }
-              p && /^## \[/ { exit }
-              p { print }
-            ' CHANGELOG.md
-            echo
-            echo "**Full changelog:** [\`CHANGELOG.md\`](https://github.com/${REPO}/blob/${REF}/CHANGELOG.md)"
-            if [ -n "$PREV" ]; then
-              echo
-              echo "**Compare:** [\`${PREV}...${REF}\`](https://github.com/${REPO}/compare/${PREV}...${REF})"
-            fi
-          } > release-notes.md
-          # Fail loudly if the CHANGELOG didn't have an entry for this
-          # version — better than silently shipping a notes file that
-          # only contains the install snippet.
-          if ! grep -q '^### \|^- ' release-notes.md; then
-            echo "ERROR: no CHANGELOG entry found for version $VERSION" >&2
-            echo "       expected a '## [$VERSION]' heading in CHANGELOG.md" >&2
-            exit 1
-          fi
-          echo '--- generated release notes ---'
-          cat release-notes.md
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: release/
 
       - name: Publish release
         env:
@@ -138,4 +103,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md
+            --notes-file release/release-notes.md

@@ -12,17 +12,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
+          check-latest: true
       - run: python3 -m pip install -e ".[dev]"
       # tmux 3.4 with libutempter can lose pane exit status (tmux #4559).
       # Use an upstream fixed version without replacing the host installation.
       - name: Install tmux with reliable retained-pane status
         env:
-          TMUX_TEST_VERSION: "3.6a"
-          TMUX_TEST_SHA256: b6d8d9c76585db8ef5fa00d4931902fa4b8cbe8166f528f44fc403961a3f3759
+          TMUX_TEST_VERSION: "3.8"
+          TMUX_TEST_SHA256: e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -34,9 +35,12 @@ jobs:
           echo "$TMUX_TEST_SHA256  tmux.tar.gz" | sha256sum --check
           tar -xzf tmux.tar.gz
           cd "tmux-${TMUX_TEST_VERSION}"
-          ./configure --prefix="$tmux_test_dir/install"
+          ./configure --prefix="$tmux_test_dir/install" --enable-utempter
+          grep -q -- '-DHAVE_UTEMPTER=1' Makefile
           make -j2
           make install
+          "$tmux_test_dir/install/bin/tmux" -V
+          ldd "$tmux_test_dir/install/bin/tmux" | grep libutempter
           echo "$tmux_test_dir/install/bin" >> "$GITHUB_PATH"
       - name: Run slow process and terminal tests
         run: pytest tests/ -m slow -rs
