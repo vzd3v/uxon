@@ -161,16 +161,14 @@ def build_tui_context(
     cwd_short = cwd.replace(home, "~") if cwd.startswith(home) else cwd
 
     # Wrap all callbacks so failures surface on the TUI status line instead of
-    # killing uxon silently (blessed's fullscreen context hides stderr + tracebacks).
+    # losing stderr and tracebacks during fullscreen rendering.
     _CbErr = CallbackError
     on_attach = _wrap_tui_callback(bridge.on_attach, _CbErr)
     on_kill = _wrap_tui_callback(bridge.on_kill, _CbErr)
     on_kill_all = _wrap_tui_callback(bridge.on_kill_all, _CbErr)
     on_kill_all_reachable = _wrap_tui_callback(bridge.on_kill_all_reachable, _CbErr)
     on_remote_kill = _wrap_tui_callback(bridge.on_remote_kill, _CbErr)
-    # on_remote_attach already raises CallbackError directly (see
-    # TuiBridge.on_remote_attach) — no _wrap_tui_callback shim needed.
-    on_remote_attach = bridge.on_remote_attach
+    on_remote_attach = _wrap_tui_callback(bridge.on_remote_attach, _CbErr)
     on_refresh = _wrap_tui_callback(bridge.on_refresh, _CbErr)
     on_probe_link_health = _wrap_tui_callback(bridge.on_probe_link_health, _CbErr)
     on_probe_cwd_writable = _wrap_tui_callback(bridge.on_probe_cwd_writable, _CbErr)

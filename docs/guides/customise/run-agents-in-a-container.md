@@ -3,48 +3,15 @@
 You want the agent process inside a container (project deps pinned,
 a stronger escape boundary than UID separation alone) while keeping
 `uxon`'s paired-account model. The two compose — the container runs
-*as* `<user>-agent`. There are two ways to wire it; pick one.
+*as* `<user>-agent`. Use a managed workload runtime so Uxon can track lifecycle and cleanup.
 
 > Read [`../../explain/isolation-model.md`](../../explain/isolation-model.md)
 > and [`SECURITY.md`](../../../SECURITY.md) first if you have not — a
 > container is an isolation *gain*, but it does not relocate the
 > credential exposures, and a rootful daemon hands the launch user
-> host root. Both recipes below require a **rootless** runtime.
+> host root. The recipe below requires a **rootless** runtime.
 
-## Recipe 1 — a PATH wrapper (no `uxon` config)
-
-The lowest-friction approach needs zero `uxon` changes: put an
-executable named like the agent binary (`claude`) early on the
-launch user's `PATH` that re-execs into the container. `uxon` launches
-the agent with the execution backend's inherited `PATH`; it does not source a
-login shell. Either make that PATH explicit in the backend or configure the
-wrapper's absolute path as `agents.claude.binary`.
-
-```bash
-# /opt/uxon/wrappers/claude
-#!/usr/bin/env bash
-exec docker exec -i -w "$PWD" my-project-container claude "$@"
-```
-
-```bash
-chmod +x /opt/uxon/wrappers/claude
-```
-
-Mechanically: `uxon` builds the same launch command it always does
-and runs the configured binary; the execution environment resolves it to this wrapper; the
-wrapper hands off to `docker exec` in the already-running container.
-`uxon` is unaware of the container — it sees a normal agent process.
-Because of that, `uxon` cannot ready a stopped container for you, and —
-since `uxon` does not build the exec here — the `stop_command` teardown
-cannot apply either, so the agent orphans on kill (the omit-`stop_command`
-case under [Teardown](#teardown--reap-the-agent-on-kill)).
-Install the wrapper on your own host and run a session to confirm it
-resolves before relying on it.
-
-This is the right recipe when you want containerisation for **one**
-agent on **one** account without touching shared config.
-
-## Recipe 2 — a command workload runtime
+## Configure a command workload runtime
 
 A command runtime lets `uxon` itself wrap selected launch profiles,
 resolve the container per (launch user, project), and — when you
@@ -108,7 +75,7 @@ services:
 
 Container UID 0 maps to the rootless daemon owner's host UID, not host root.
 The launch user must own that daemon and be able to write the project. See
-[UID mapping](../harden/harden-a-container.md#fix-the-rootless-uid-mapping-footgun).
+[UID mapping](../harden/harden-a-container.md#verify-identity-and-lifecycle).
 Image layers, the definition and the stopper remain read-only to the workload.
 
 ### Configure the launch profile
@@ -180,7 +147,7 @@ the agent can write is a file a yolo or prompt-injected agent can edit
 to grant itself host access at the next rebuild. Keep it operator-owned
 and outside the mount — the full rationale and the rest of the
 lockdown are in
-[`../harden/harden-a-container.md`](../harden/harden-a-container.md#the-container-definition-must-not-be-agent-writable).
+[`../harden/harden-a-container.md`](../harden/harden-a-container.md#protect-the-definition-and-control-interface).
 `ready_command` must exit non-zero unless the container is *running* —
 `docker top` does this; `docker inspect` does not (it exits 0 for a
 stopped container too), which is why `exists_command` is the inspect call.
@@ -212,16 +179,14 @@ is different from Docker rootless; changing binary names alone is insufficient.
 Run rootless. Driving a **rootful** daemon needs docker-group
 membership (or rootful-socket access), which is root-equivalent on
 the host — a yolo agent in such an account can escalate to host root
-via the daemon and defeat the paired-account sandbox. Rootless keeps
-the sandbox intact at zero template cost. It is necessary but not
-sufficient: a `--privileged`, host-namespace (`--network=host` /
+via the daemon and defeat the paired-account sandbox. Rootless avoids that grant but requires the reviewed mapping above. It is
+not sufficient by itself: a `--privileged`, host-namespace (`--network=host` /
 `--pid=host`), broad-bind (`-v /:/host`), or socket-mounting
 container *definition* re-grants host access, and `uxon` cannot
 prevent that — the `create_command` is opaque to it. Harden the
 definition yourself:
 [`../harden/harden-a-container.md`](../harden/harden-a-container.md)
-covers a hardened template, default-deny egress, file-based secrets,
-and the rest.
+covers the definition, credential and lifecycle boundaries.
 
 ### The agent need not be installed on the host
 
@@ -252,14 +217,9 @@ a silent idle `0`/`-`. The lifecycle is audited too —
 
 ## Teardown — reap the agent on kill
 
-`tmux kill-session` only severs `uxon`'s client-side exec; the
-in-container agent does **not** die on that disconnect under docker or
-podman — it orphans. An orphaned `--dangerously-skip-permissions` agent
-keeps running and consuming resources. (It is still **visible** — `uxon
-list` and the dashboard report a container session's real in-container
-CPU/RAM, and the kill itself is audited — but a still-running agent
-after a kill is a containment failure regardless.) The `stop_command`
-above closes this:
+A detached container process can survive the outer exec client's termination.
+Use the configured stop adapter and inspect its result rather than assuming
+terminal removal stopped the workload. The adapter works as follows:
 
 - **At launch** `uxon` wraps the agent so it records its in-container
   PID and Linux process start ticks into a nonce-keyed pidfile (`{pidfile}`, a
@@ -278,6 +238,14 @@ cleanup fails. See the [failure and record-retention behavior](../../reference/c
 Without a configured stop command, plan an explicit "also stop the container"
 step when responding to a rogue agent — see
 [`../operate/respond-to-rogue-agent.md`](../operate/respond-to-rogue-agent.md#container-path-also-stop-the-container).
+
+## Alternative: an opaque wrapper
+
+A PATH wrapper can invoke a pre-existing container instead of the host binary,
+but Uxon cannot discover its workload identity or apply managed readiness and
+stop commands. Container processes may survive session removal. Use the managed
+runtime above when lifecycle control is required; an opaque wrapper needs its
+own external lifecycle supervision.
 
 ## Reference
 

@@ -8,8 +8,8 @@ creating a fresh app instance. This is the ``exit()``-based TTY handoff
 runner boundary described by the package architecture
 (``request_launch`` → ``exit()`` → runner handoff).
 
-The ``import textual`` presence check
-stays here (it is the optional-textual UX guard, sanctioned).
+The ``import textual`` presence check reports repair guidance for incomplete
+installations without loading the dependency in non-TUI commands.
 """
 
 from __future__ import annotations
@@ -109,8 +109,8 @@ def run(ctx: TuiContext) -> int:
     """
     try:
         import textual  # noqa: F401 — presence check
-    except ImportError:
-        print(TEXTUAL_MISSING_HINT, file=sys.stderr)
+    except ImportError as error:
+        print(f"{TEXTUAL_MISSING_HINT}\n  Import error: {error}", file=sys.stderr)
         return 1
 
     # Root invariant: from here on this process runs an event loop. Any
@@ -122,10 +122,8 @@ def run(ctx: TuiContext) -> int:
 
     install_subprocess_guard()
 
-    # Lowest in-process keystroke witness: log every stdin read (payload,
-    # byte count, gap since the previous read) so a swallowed key is a
-    # provable gap in the log instead of unobservable silence. Installs
-    # only under ``UXON_DEBUG=keys``; no-op (and zero cost) otherwise.
+    # Record stdin read categories, byte counts and timing without retaining
+    # input contents. Enabled only under ``UXON_DEBUG=keys``.
     from .keylog import install_stdin_tap
 
     install_stdin_tap()
@@ -163,22 +161,26 @@ def run(ctx: TuiContext) -> int:
             # Defensive: App exited without setting quit_rc or launch —
             # treat as a clean quit.
             return 0
-        # Audit-channel ``session.new`` is emitted by the per-callback
-        # sites in ``cli.py::on_launch_*``; here we keep only the
-        # developer-facing ``debug`` record (off by default,
-        # ``UXON_DEBUG=tui`` opts in) so the dev-only fields (stage / cmd
-        # head / label) survive the migration to journald.
+        from uxon.domain.launch_request import session_name_from_launch_label
+
+        _session = session_name_from_launch_label(req.label)
+        # Managed launch preparation emits ``session.new``. This optional
+        # debug record describes the dashboard's launch selection.
         _debug(
             "launch",
             caller_user=caller_user,
             launch_user=ctx.current_user,
             label=req.label,
+            session=_session,
+            session_id=req.identity.session_id if req.identity else "",
+            launch_nonce=req.identity.launch_nonce
+            if req.identity
+            else req.managed.record_nonce
+            if req.managed
+            else "",
             cmd=list(req.cmd)[:2],
         )
         sys.stdout.flush()
-        from uxon.domain.launch_request import session_name_from_launch_label
-
-        _session = session_name_from_launch_label(req.label)
         _t0 = time.monotonic()
         try:
             result = run_launch_request(req)
@@ -193,18 +195,29 @@ def run(ctx: TuiContext) -> int:
                 "session.ended",
                 outcome="error",
                 session=_session,
+                session_id=req.identity.session_id if req.identity else "",
+                launch_nonce=req.identity.launch_nonce
+                if req.identity
+                else req.managed.record_nonce
+                if req.managed
+                else "",
+                target_user=req.identity.user
+                if req.identity
+                else req.managed.launch_user
+                if req.managed
+                else "",
+                execution_backend=req.identity.execution_backend
+                if req.identity
+                else req.managed.execution_backend
+                if req.managed
+                else "",
+                **({"correlation_id": req.correlation_id} if req.correlation_id else {}),
+                **({"peer_name": req.peer_name} if req.peer_name else {}),
                 rc=-1,
                 wall_seconds=round(time.monotonic() - _t0, 3),
                 error=str(exc)[:256],
             )
             raise
-        _audit.audit(
-            "session.ended",
-            outcome="ok" if rc == 0 and not result.warning else "error",
-            session=_session,
-            rc=rc,
-            wall_seconds=round(wall_seconds, 3),
-        )
         pause_on_launch_failure(sys.stdout, req, rc, stage, wall_seconds)
         try:
             ctx = ctx.on_refresh()

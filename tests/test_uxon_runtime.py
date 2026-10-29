@@ -589,6 +589,8 @@ def test_teardown_rechecks_each_authority_dimension_and_retains_failed_stop_for_
 
             def respond(user, command, kwargs, *, emitted=emitted, label=label, stopped=stopped):
                 assert user == "alice"
+                if command[0] == "tmux" and "list-sessions" in command:
+                    return _cp("")
                 emitted.append(command)
                 if command[:2] == ["engine", "identity"]:
                     assert command == [
@@ -658,7 +660,7 @@ def test_teardown_rechecks_each_authority_dimension_and_retains_failed_stop_for_
                         "saved-id",
                         "saved-epoch",
                     }:
-                        assert teardown is False
+                        assert isinstance(teardown, kill.CleanupResult) and not teardown
                         assert not kill.finish_killed_session(
                             cfg, session, teardown, target_user="alice"
                         )
@@ -675,7 +677,7 @@ def test_teardown_rechecks_each_authority_dimension_and_retains_failed_stop_for_
                         result = kill.finish_killed_session(
                             cfg, session, teardown, target_user="alice"
                         )
-                        assert result == (label == "exact")
+                        assert bool(result) == (label == "exact")
                         assert path.exists() == (label != "exact")
                     [event] = audit.call_args_list
                     assert event.args == ("runtime.session_stop",)

@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+from uxon.domain.session import SessionIdentity
 from uxon.tui.context import TuiSession
 from uxon.tui.dashboard.row import from_tui_session, from_wire_record
 
@@ -111,7 +112,32 @@ def test_adapters_project_values_and_distinct_routing_keys() -> None:
         1777636800.0,
         1777640400.0,
     )
-    assert (local.key, remote.key) == ("local/alice/uxon-proj@fast", "peer-a/bob/uxon-proj@fast")
+    assert (local.key, remote.key) == (
+        "local/alice/uxon-proj@fast",
+        "remote:peer-a/bob/uxon-proj@fast",
+    )
+
+
+def test_row_identity_distinguishes_peer_local_and_preserves_launch_continuity():
+    identity = SessionIdentity(
+        "alice",
+        "uxon-proj@fast",
+        "$1",
+        "100",
+        "a" * 32,
+        "/tmp/tmux-1001/uxon-local.sock",
+        "local",
+        "fingerprint",
+    )
+    local = replace(from_tui_session(_local()), identity=identity)
+    assert local.key != replace(local, host="local").key
+    assert (
+        local.key == replace(local, name="renamed", identity=replace(identity, name="renamed")).key
+    )
+    legacy = replace(identity, launch_nonce="")
+    assert legacy.key == replace(legacy, name="renamed").key
+    assert legacy.key != replace(legacy, created="101").key
+    assert identity.key != replace(identity, launch_nonce="b" * 32).key
 
 
 def test_local_numeric_units_and_invalid_metadata() -> None:

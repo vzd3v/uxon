@@ -38,7 +38,7 @@ from typing import Any
 
 import msgspec
 
-from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION, RemoteSnapshot
+from uxon.domain.wire_schema import RemoteSnapshot
 from uxon.infra.remote.envelope import decode_envelope
 from uxon.infra.remote_hosts import RemoteHost
 
@@ -258,24 +258,14 @@ def load_demo_local_sessions(dir_path: Path, user: str) -> list[Any]:
 
     env_path = dir_path / LOCAL_ENVELOPE_NAME
     try:
-        blob: Any = msgspec.json.decode(env_path.read_bytes())
-    except (FileNotFoundError, OSError, msgspec.DecodeError):
+        parsed = decode_envelope(env_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
         return []
-    if not isinstance(blob, dict):
-        return []
-    if blob.get("schema_version") != WIRE_SCHEMA_VERSION:
-        return []
-    data = blob.get("data")
-    if not isinstance(data, dict):
-        return []
-    records = data.get("sessions")
-    if not isinstance(records, list):
+    if parsed.sessions is None:
         return []
 
     out: list[SessionInfo] = []
-    for rec in records:
-        if not isinstance(rec, dict):
-            continue
+    for rec in parsed.sessions:
         if rec.get("user") != user:
             continue
         out.append(_session_info_from_record(rec, SessionInfo))
@@ -285,14 +275,8 @@ def load_demo_local_sessions(dir_path: Path, user: str) -> list[Any]:
 def _session_info_from_record(rec: dict[str, Any], cls: type) -> Any:
     """Build one :class:`uxon.domain.session.SessionInfo` from a wire record.
 
-    Every field is read defensively (``.get(...)``) so an envelope
-    authored by a future or past producer can't crash the loader —
-    same forward-compat posture as
-    :func:`uxon.infra.remote.envelope.decode_envelope`. Type-narrowing of
-    primitive fields uses ``str()`` / ``int()`` / ``float()`` /
-    ``bool()`` rather than ``isinstance`` checks because the
-    envelope is JSON (so the input is already one of those types) and
-    we'd rather coerce than drop the record for a stray ``None``.
+    Known present fields have passed the shared envelope validator. Defaults
+    preserve display-only records that omit optional session fields.
 
     ``cls`` is passed in by the caller (rather than imported here) to
     keep this helper free of the lazy-import dance — it's only ever

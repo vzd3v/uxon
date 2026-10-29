@@ -5,7 +5,7 @@ Sits above the pure :mod:`uxon.domain.args` data model: these
 functions read TTY state and pop the audit correlation-id out of argv
 (side-effecting), then build a :class:`~uxon.domain.args.ParsedArgs`.
 Kept free of ``uxon.tui`` / ``textual`` imports so module-load of
-``uxon.cli`` stays fast (latency invariant #7).
+``uxon.cli`` stays fast.
 """
 
 from __future__ import annotations
@@ -139,6 +139,7 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
     ``--host <alias>`` (route over SSH). Unknown flags fail loudly.
     Returns a populated :class:`ParsedArgs` with ``action="kill"``.
     """
+    from uxon.domain.session import SessionIdentity
     from uxon.infra.audit import extract_correlation_id, set_correlation_id
 
     corr_id, rest = extract_correlation_id(rest)
@@ -149,6 +150,7 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
     json_out = False
     user: str | None = None
     host: str | None = None
+    expected = None
     extras: list[str] = []
     i = 0
     while i < len(rest):
@@ -169,6 +171,11 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
             if i >= len(rest):
                 fail("--host requires a host name")
             host = rest[i]
+        elif token == "--expect-session":
+            i += 1
+            if i >= len(rest) or expected is not None:
+                fail("--expect-session requires exactly one identity JSON object")
+            expected = SessionIdentity.from_json(rest[i])
         else:
             extras.append(token)
         i += 1
@@ -183,6 +190,7 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
         user=user,
         host=host,
         audit_correlation_id=corr_id,
+        expected_session=expected,
     )
 
 
@@ -194,6 +202,7 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
     ``--user`` — implicit peer-login-user defaults invite
     "where did this attach actually go?" surprises.
     """
+    from uxon.domain.session import SessionIdentity
     from uxon.infra.audit import extract_correlation_id, set_correlation_id
 
     corr_id, rest = extract_correlation_id(rest)
@@ -202,6 +211,7 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
     dry = False
     user: str | None = None
     host: str | None = None
+    expected = None
     extras: list[str] = []
     i = 0
     while i < len(rest):
@@ -218,6 +228,11 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
             if i >= len(rest):
                 fail("--host requires a host name")
             host = rest[i]
+        elif token == "--expect-session":
+            i += 1
+            if i >= len(rest) or expected is not None:
+                fail("--expect-session requires exactly one identity JSON object")
+            expected = SessionIdentity.from_json(rest[i], require_nonce=False)
         else:
             extras.append(token)
         i += 1
@@ -235,6 +250,7 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
         user=user,
         host=host,
         audit_correlation_id=corr_id,
+        expected_session=expected,
     )
 
 

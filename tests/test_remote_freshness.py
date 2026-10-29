@@ -48,7 +48,12 @@ def _snapshot(host="build-box", **changes):
     return replace(snap, **changes)
 
 
-def test_first_failure_removes_ram_rows_metrics_and_foreign_user_discovery():
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_first_failure_removes_ram_rows_metrics_and_foreign_user_discovery(duplicate):
+    import subprocess
+
+    from uxon.infra.remote.collector import fetch_remote_snapshot
+
     app = SimpleNamespace(state=TuiState(), main_ui=MainScreenUiState(), _render=Mock())
     app.main_ui.seen_users.add("alice")
     healthy = _snapshot()
@@ -58,14 +63,23 @@ def test_first_failure_removes_ram_rows_metrics_and_foreign_user_discovery():
     cfg = SimpleNamespace(remote_hosts=[SimpleNamespace(name=n) for n in ("build-box", "test-box")])
     ui = app.main_ui.ui
     assert len(select_dashboard_model(app.state, cfg, ui)) == 2
-    failed = _snapshot(
-        error="schema mismatch",
-        error_code="update_remote",
-        peer={"uxon_version": "[bold]\n" + "x" * 10000},
-        sessions=[{"name": "stale", "user": "bob"}],
-    )
+    rows = [{"name": "stale", "user": "bob", "cpu_pct": {}}]
+    if duplicate:
+        rows = [{"name": "stale", "user": "bob"}] * 2
+    with (
+        patch(
+            "uxon.infra.remote.collector.run_query",
+            return_value=subprocess.CompletedProcess([], 0, _envelope(sessions=rows), ""),
+        ),
+        patch("uxon.infra.audit.audit") as audit,
+    ):
+        failed = fetch_remote_snapshot(
+            RemoteHost("build-box", "edge", "", "uxon"), ssh_multiplex="off"
+        )
+    assert failed.error_code == "invalid_response" and "sessions[" in failed.error
+    assert audit.call_args.kwargs["error"] == failed.error[:256]
     result = run_source(SourceSpec("remote:build-box", lambda: failed))
-    assert result.error == "schema mismatch"
+    assert result.error == failed.error
     handle_remote_snapshot(app, _RefreshSourceLanded(result.name, result.value, result.error or ""))
     assert [r.host for r in select_dashboard_model(app.state, cfg, ui)] == ["test-box"]
     assert "bob" not in app.main_ui.seen_users
@@ -75,8 +89,9 @@ def test_first_failure_removes_ram_rows_metrics_and_foreign_user_discovery():
     lines = select_host_status_block((), app.state, None, cfg)
     line = lines[1]
     assert line.session_count == line.mem_total_kib == line.cpu_pct_sum == 0
-    assert "update remote" in line.failure and "\n" not in line.failure
-    assert len(line.failure) < 100
+    assert "invalid response" in line.failure and "\n" not in line.failure
+    assert "duplicate identity" in line.failure if duplicate else "cpu_pct" in line.failure
+    assert len(line.failure) < 300
     assert select_fleet_summary(lines).alerts == ("test-box mem 90%",)
     handle_remote_snapshot(app, _RefreshSourceLanded("remote:build-box", healthy))
     assert len(select_dashboard_model(app.state, cfg, ui)) == 2

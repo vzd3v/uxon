@@ -15,6 +15,7 @@ from textual.widgets import Input
 
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG
 from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
+from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity
 from uxon.infra import execution
 from uxon.infra.agents import AgentAvailability
 from uxon.infra.loop_guard import (
@@ -71,7 +72,8 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
         calls, launches = [], []
         loop_thread = threading.get_ident()
 
-        def kill(user, name):
+        def kill(expected):
+            user, name = expected.user, expected.name
             calls.append(("kill", user, name, threading.get_ident(), _on_loop()))
             started.set()
             try:
@@ -79,10 +81,17 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
                     raise TimeoutError("kill release missing")
             finally:
                 completed.set()
+            return KillResult(expected, "killed", "ok")
 
         def attach(*target):
+            if isinstance(target[-1], SessionIdentity):
+                target = target[:-1]
             calls.append(("attach", *target, threading.get_ident(), _on_loop()))
             return LaunchRequest(("true",), label="/".join(target))
+
+        def kill_all(targets):
+            calls.append(("all", threading.get_ident(), _on_loop()))
+            return BulkKillResult(tuple(KillResult(target, "killed", "ok") for target in targets))
 
         ctx = _mk_ctx(
             sessions=[_session("uxon-a@claude"), _session("uxon-b@claude")],
@@ -90,7 +99,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             on_kill=kill,
             on_attach=attach,
             on_remote_attach=attach,
-            on_kill_all=lambda: calls.append(("all", threading.get_ident(), _on_loop())),
+            on_kill_all=kill_all,
         )
         app = UxonApp(ctx, probe_agents=False)
         app.request_launch = lambda request: launches.append(

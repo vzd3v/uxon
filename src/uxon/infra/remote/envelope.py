@@ -7,18 +7,56 @@ shape checks against the same :data:`uxon.domain.wire_schema.WIRE_SCHEMA_VERSION
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
 import msgspec
 
+from uxon.domain.session import SessionIdentity
 from uxon.domain.wire_schema import (
     REMOTE_ERROR_CODES,
     WIRE_SCHEMA_VERSION,
+    HostStats,
     PeerInfo,
     RemoteErrorCode,
     RemoteSessionPayload,
+    SessionRecord,
 )
+
+_SESSION_FIELDS = {
+    key: value for key, value in get_type_hints(SessionRecord).items() if key != "identity"
+}
+_HOST_FIELDS = get_type_hints(HostStats)
+_NONNEGATIVE_FIELDS = {
+    "cpu_pct",
+    "rss_kib",
+    "mem_used_kib",
+    "mem_total_kib",
+    "loadavg_1m",
+    "uptime_s",
+}
+
+
+def _validate_fields(value: dict[str, Any], fields: dict[str, Any], path: str) -> str | None:
+    """Validate present known fields; missing and unknown additions stay usable."""
+    for key, annotation in fields.items():
+        if key not in value:
+            continue
+        try:
+            checked = msgspec.convert(value[key], type=annotation, strict=True)
+        except msgspec.ValidationError as exc:
+            return f"{path}.{key}: {exc}"
+        if key in _NONNEGATIVE_FIELDS and (
+            checked < 0 or isinstance(checked, float) and not math.isfinite(checked)
+        ):
+            return f"{path}.{key}: expected a finite nonnegative number"
+        if key == "active_pid" and checked is not None and checked <= 0:
+            return f"{path}.{key}: expected a positive PID or null"
+        if key == "pane_pids" and isinstance(checked, list) and any(pid <= 0 for pid in checked):
+            return f"{path}.{key}: expected positive PIDs"
+    return None
+
 
 # Stable substring emitted by a peer whose ``enable_all_users_list =
 # false`` rejects ``list --all-users``. The collector greps stderr for
@@ -106,9 +144,37 @@ def decode_envelope(payload: str) -> ParsedEnvelope:
         return failure("envelope.data.sessions is not a list")
     if any(not isinstance(record, dict) for record in sessions):
         return failure("envelope.data.sessions contains a non-object record")
-    raw_skipped = data.get("scope_skipped", [])
-    skipped = (
-        [u for u in raw_skipped if isinstance(u, str)] if isinstance(raw_skipped, list) else []
+    seen: dict[str, int] = {}
+    for index, record in enumerate(sessions):
+        path = f"envelope.data.sessions[{index}]"
+        error = _validate_fields(record, _SESSION_FIELDS, path)
+        if error:
+            return failure(error)
+        identity = None
+        if "identity" in record:
+            try:
+                identity = msgspec.convert(record["identity"], type=SessionIdentity, strict=True)
+            except msgspec.ValidationError as exc:
+                return failure(f"{path}.identity: {exc}")
+            invalid = identity.invalid_fields(require_nonce=False)
+            if invalid:
+                return failure(f"{path}.identity: invalid {', '.join(invalid)}")
+            if identity.user != record.get("user") or identity.name != record.get("name"):
+                return failure(f"{path}.identity: user/name differ from the session record")
+        key = identity.key if identity else f"{record.get('user', '')}/{record.get('name', '')}"
+        if key in seen:
+            return failure(f"{path}: duplicate identity already reported at sessions[{seen[key]}]")
+        seen[key] = index
+    error = _validate_fields(
+        data, {"scope_skipped": list[str], "scope_users": list[str]}, "envelope.data"
     )
+    if error:
+        return failure(error)
     stats = env.get("host_stats")
-    return ParsedEnvelope(sessions, skipped, stats if isinstance(stats, dict) else None, peer=peer)
+    if stats is not None:
+        if not isinstance(stats, dict):
+            return failure("envelope.host_stats is not an object or null")
+        error = _validate_fields(stats, _HOST_FIELDS, "envelope.host_stats")
+        if error:
+            return failure(error)
+    return ParsedEnvelope(sessions, data.get("scope_skipped", []), stats, peer=peer)

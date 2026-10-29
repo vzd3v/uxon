@@ -232,7 +232,8 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([tab.id for tab in strip.query(".-active")], [f"tab-{index}"])
                 self.assertEqual(table.row_count, 1)
                 self.assertEqual(
-                    table.selected_row_key, f"{'local' if index == 0 else name}/me/match-{name}"
+                    table.selected_row_key,
+                    f"{'local' if index == 0 else 'remote:' + name}/me/match-{name}",
                 )
                 self.assertIn(f"match-{name}", table.render_line(1).text)
                 for other in {"local", "kris", "ada"} - {name}:
@@ -254,7 +255,7 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
                     lambda index=index, name=name: (
                         app.main_ui.active_tab_index == index
                         and table.selected_row_key
-                        == f"{'local' if index == 0 else name}/me/match-{name}"
+                        == f"{'local' if index == 0 else 'remote:' + name}/me/match-{name}"
                     ),
                     "selected host tab and rendered row",
                 )
@@ -281,12 +282,16 @@ class ByHostTabCyclingTests(unittest.IsolatedAsyncioTestCase):
                 await wait_until(
                     pilot,
                     lambda expected=expected: (
-                        table.selected_row_key == f"{expected}/me/match-{expected}"
+                        table.selected_row_key
+                        == f"{'local' if expected == 'local' else 'remote:' + expected}/me/match-{expected}"
                     ),
                     "filtered block cursor",
                 )
                 self.assertEqual(app.main_ui.active_tab_index, 1)
-                self.assertEqual(table.selected_row_key, f"{expected}/me/match-{expected}")
+                self.assertEqual(
+                    table.selected_row_key,
+                    f"{'local' if expected == 'local' else 'remote:' + expected}/me/match-{expected}",
+                )
                 self.assertIn(f"match-{expected}", table.render_line(table.cursor_row + 1).text)
             await pilot.press("s", "escape")
             await pilot.pause()

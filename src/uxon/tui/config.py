@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from uxon.domain.agents import AgentSpec
     from uxon.domain.execution import ExecutionConfig
     from uxon.domain.launch_request import LaunchRequest
+    from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity
     from uxon.infra.remote_hosts import RemoteHost
     from uxon.tui.refresh import SourceSpec
 
@@ -79,12 +80,12 @@ class TuiConfig:
     git_create_enabled: bool
 
     # ── Callbacks (injected by ``tui.context_builder.build_tui_context``) ──
-    on_attach: Callable[[str, str], LaunchRequest]
-    on_kill: Callable[[str, str], None]
-    on_kill_all: Callable[[], None]
-    on_kill_all_reachable: Callable[[], None]
-    on_remote_kill: Callable[[str, str, str], None]
-    on_remote_attach: Callable[[str, str, str], LaunchRequest]
+    on_attach: Callable[..., LaunchRequest]
+    on_kill: Callable[[SessionIdentity], KillResult]
+    on_kill_all: Callable[[tuple[SessionIdentity, ...]], BulkKillResult]
+    on_kill_all_reachable: Callable[[tuple[SessionIdentity, ...]], BulkKillResult]
+    on_remote_kill: Callable[[str, SessionIdentity], KillResult]
+    on_remote_attach: Callable[..., LaunchRequest]
     on_refresh: Callable[[], TuiContext]
     on_probe_link_health: Callable[[], Any]
     on_probe_cwd_writable: Callable[[], bool]

@@ -29,6 +29,10 @@ It does **not** let the lead `sudo -H -u nadia --` or `sudo -H -u liam --` —
 the grant targets the agent accounts only. The lead never becomes
 the developer.
 
+Uxon removal also requires a [protected shared record store](../reference/configuration.md#launch-records)
+accessible to each controller, including for direct workloads. Target-account
+access alone permits listing and attaching, not another controller's cleanup.
+
 ## Why this matters
 
 The agent account holds the project working tree, the agent

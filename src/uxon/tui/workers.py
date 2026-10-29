@@ -93,11 +93,7 @@ class WorkerCoordinator:
 
     def __init__(self, app: UxonApp) -> None:
         # The App is the single injection point. ``run_worker`` /
-        # ``post_message`` are read LIVE off it (see the properties
-        # below) rather than captured here, so a test that patches
-        # ``app.run_worker`` / ``app.post_message`` after construction
-        # is honoured — exactly the pre-P7 ``self.run_worker`` /
-        # ``self.post_message`` semantics. ``_instance_epoch`` is read
+        # ``post_message`` are read live off it. ``_instance_epoch`` is read
         # live at post time (the cross-instance drop gate). ``cfg`` is
         # stable for the App's lifetime so it is captured directly;
         # ``ctx`` / ``workers`` / ``probe_agents`` are read live off the
@@ -504,7 +500,8 @@ class WorkerCoordinator:
         """Cancel every tracked worker and wait briefly for completion.
 
         Before ``App.run()`` returns, every in-flight worker is cancelled and
-        given a bounded grace period. No worker thread may outlive its App.
+        given a bounded grace period. Cancellation cannot interrupt a running
+        Python thread; result handlers discard updates from an earlier App.
 
         Cancel-then-poll-until-grace is the simplest portable
         implementation: textual's :meth:`Worker.cancel` flips the

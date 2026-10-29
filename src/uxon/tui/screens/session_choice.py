@@ -32,6 +32,8 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widgets import Label, ListItem, ListView, Static
 
+from uxon.domain.session import SessionIdentity
+
 from ..keymap import bindings_with_aliases
 from ..widgets.cyclic_list_view import CyclicListView
 from .modal_base import CardModal
@@ -47,7 +49,7 @@ def _row_label(name: str, attached: bool) -> str:
 _NEW_ROW_LABEL = "+ Start new session alongside"
 
 
-SessionChoiceRow = tuple[str, bool] | tuple[str, str, bool]
+SessionChoiceRow = tuple[str, bool] | tuple[str, str, bool] | tuple[str, str, bool, SessionIdentity]
 SessionChoiceResult = tuple[str, str | None, str | None] | None
 
 
@@ -115,7 +117,7 @@ class SessionChoiceScreen(CardModal[SessionChoiceResult]):
         # being opened (cwd path, or project name). Display-only.
         self.target_label = target_label
         self.existing = tuple(
-            (row[0], row[1], row[2]) if len(row) == 3 else ("", row[0], row[1]) for row in existing
+            (row[0], row[1], row[2]) if len(row) >= 3 else ("", row[0], row[1]) for row in existing
         )
 
     def compose(self) -> ComposeResult:

@@ -168,4 +168,3 @@ alone does not grant the shell account access.
 
 - [`scenarios/team-1.md`](../../scenarios/team-1.md) — the scenario.
 - [`explain/isolation-model.md`](../../explain/isolation-model.md) — what OS-user separation provides without ACLs.
-- [`apply-resource-limits.md`](apply-resource-limits.md) — composes with these limits per UID.

@@ -3,9 +3,8 @@
 
 This is the composition root. It keeps the ``uxon.tui`` and ``audit``
 imports lazy so module-load of ``uxon.cli`` never pulls ``uxon.tui`` /
-Textual (latency invariant #7); the two ``except ImportError`` guards
-in :func:`do_interactive` implement the optional-textual UX and are
-sanctioned.
+Textual. :func:`do_interactive` reports how to repair an incomplete
+installation when its TUI dependency cannot be imported.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from uxon.infra import config_loader, identity, version_probe
 # The TUI context-builder lives in ``uxon.tui.context_builder`` and is
 # imported lazily inside ``do_interactive`` so module-load of
 # ``uxon.cli`` never pulls ``uxon.tui`` / Textual (~90 ms saved on
-# ``uxon version`` / ``uxon list``; latency invariant #7).
+# ``uxon version`` / ``uxon list``).
 
 
 def format_version() -> str:
@@ -40,19 +39,20 @@ def format_version() -> str:
 def do_interactive(cfg: Config, caller_user: str, launch_user: str) -> int:
     try:
         from uxon import tui as uxon_tui
-    except ImportError:
+    except ImportError as error:
         try:
             from uxon.tui.hints import TEXTUAL_MISSING_HINT
 
-            eprint(TEXTUAL_MISSING_HINT)
+            eprint(f"{TEXTUAL_MISSING_HINT}\n  Import error: {error}")
         except ImportError:
             eprint(
-                "uxon: interactive mode requires the 'textual' package "
-                "(pip install --user textual)."
+                "uxon: interactive mode could not load its Textual dependency; "
+                "repair this Uxon installation using its original package manager.\n"
+                f"  Import error: {error}"
             )
         return 1
     # Lazy import: the bridge pulls in Textual-adjacent tui modules, which
-    # must stay out of ``import uxon.cli`` (latency invariant #7).
+    # must stay out of ``import uxon.cli``.
     from uxon.tui.context_builder import build_tui_context
 
     cwd = os.path.normpath(os.path.abspath(os.getcwd()))

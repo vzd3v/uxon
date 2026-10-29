@@ -3,7 +3,7 @@
 options ``set`` chain, and the agent + tmux launch/attach command builders.
 
 ``_build_tmux_launch_request`` is the single place where an agent command
-line is assembled (see AGENTS.md hard rules) — do not add any other
+line is assembled — do not add any other
 agent-exec call site. It reads the agent's spec from the merged catalog
 ``cfg.agents`` (built from :data:`uxon.domain.agents.DEFAULT_AGENT_CATALOG`
 ⊕ operator config in ``load_config``).
@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import os
 import pwd
+import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -33,7 +35,7 @@ from uxon.domain.runtime import (
     runtime_pidfile,
     wrap_agent_for_runtime,
 )
-from uxon.domain.session import SessionInfo, slugify
+from uxon.domain.session import SessionIdentity, SessionInfo, slugify
 from uxon.errors import fail
 from uxon.infra import launch_records, process
 from uxon.infra.execution import command_prefix, wrap_command
@@ -42,6 +44,7 @@ from uxon.infra.tmux_diagnostics import diagnostics_query, diagnostics_script
 
 _LAUNCH_HANDSHAKE_TIMEOUT_SECONDS = 60.0
 _TMUX_CONTROL_TIMEOUT_SECONDS = 10.0
+_IDENTITY_REFUSED = "selected session identity changed; operation refused"
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,136 @@ def exact_session_exists(cfg: Config, user: str, session_id: str) -> bool:
     raise AssertionError("unreachable")
 
 
+def validate_session_context(
+    cfg: Config, expected: SessionIdentity, *, require_nonce: bool = True
+) -> None:
+    expected.validate(require_nonce=require_nonce)
+    backend = cfg.execution.backend_for_user(expected.user)
+    if (
+        expected.socket_path != tmux_socket_path(cfg, expected.user)
+        or expected.execution_backend != backend.id
+        or expected.execution_fingerprint != backend.fingerprint
+    ):
+        fail(f"session {expected.name!r} ({expected.session_id}) has a stale execution context", 1)
+
+
+def exact_identity_exists(
+    cfg: Config, expected: SessionIdentity, *, require_nonce: bool = True
+) -> bool:
+    """Prove full identity absence; a refused/unreachable query is unknown."""
+    validate_session_context(cfg, expected, require_nonce=require_nonce)
+    result = run_query(
+        configured_tmux_base(cfg, expected.user, nonint=True)
+        + ["list-sessions", "-F", "#{session_id}\t#{session_created}\t#{E:UXON_LAUNCH_NONCE}"],
+        timeout=cfg.execution.backend_for_user(expected.user).probe_timeout_seconds,
+    )
+    if result.returncode == 0:
+        rows = result.stdout.splitlines()
+        if any(len(row.split("\t")) != 3 for row in rows):
+            fail("unable to prove terminal removal: malformed identity query", 1)
+        for row in rows:
+            session_id, created, nonce = row.split("\t")
+            if (
+                session_id == expected.session_id
+                and created == expected.created
+                and nonce != expected.launch_nonce
+            ):
+                fail(
+                    "session launch marker changed while the tmux identity still exists; removal is unproven",
+                    1,
+                )
+        return f"{expected.session_id}\t{expected.created}\t{expected.launch_nonce}" in rows
+    server = probe_tmux_server(cfg, expected.user, expected.socket_path)
+    if server.state == "absent":
+        return False
+    detail = (result.stderr or result.stdout or server.error).strip()
+    fail(
+        f"unable to prove removal of {expected.name!r} ({expected.session_id}): {detail or 'tmux query failed'}",
+        1,
+    )
+    raise AssertionError("unreachable")
+
+
+def conditional_kill_argv(cfg: Config, expected: SessionIdentity) -> list[str]:
+    """Check and mutate the same target on tmux's synchronous native queue."""
+    validate_session_context(cfg, expected)
+    return configured_tmux_base(cfg, expected.user, nonint=True) + guarded_session_commands(
+        expected,
+        f"display-message -p uxon-kill-matched ; kill-session -t {expected.session_id}",
+    )
+
+
+def guarded_session_commands(
+    expected: SessionIdentity | launch_records.TmuxSessionMetadata, commands: str
+) -> list[str]:
+    """Assert captured identity and execute native commands on the same queue."""
+    return [
+        "if-shell",
+        "-F",
+        "-t",
+        expected.session_id,
+        session_identity_predicate(expected),
+        commands,
+        f"display-message -p {shlex.quote('uxon: ' + _IDENTITY_REFUSED)} ; run-shell 'exit 1'",
+    ]
+
+
+def _command_text(chain: list[str]) -> str:
+    """Quote the fixed native command chains used for titles and pane selection."""
+    commands: list[str] = []
+    start = 0
+    for index, value in enumerate(chain):
+        if value == ";":
+            commands.append(shlex.join(chain[start:index]))
+            start = index + 1
+    if start < len(chain):
+        commands.append(shlex.join(chain[start:]))
+    return " ; ".join(commands)
+
+
+def _control_error(result: subprocess.CompletedProcess[str]) -> str:
+    if _IDENTITY_REFUSED in result.stdout:
+        return _IDENTITY_REFUSED
+    return (result.stderr or result.stdout).strip()
+
+
+def session_identity_predicate(
+    expected: SessionIdentity | launch_records.TmuxSessionMetadata,
+) -> str:
+    if isinstance(expected, SessionIdentity):
+        expected.validate(require_nonce=False)
+    elif (
+        re.fullmatch(r"\$[0-9]+", expected.session_id) is None
+        or re.fullmatch(r"[0-9]+", expected.created) is None
+        or re.fullmatch(r"[A-Za-z0-9_-]{16,64}", expected.launch_nonce) is None
+    ):
+        fail("invalid captured tmux identity", 1)
+    return (
+        "#{&&:#{==:#{session_id}," + expected.session_id + "},#{&&:"
+        "#{==:#{session_created}," + expected.created + "},"
+        "#{==:#{E:UXON_LAUNCH_NONCE}," + expected.launch_nonce + "}}}"
+    )
+
+
+def conditional_kill(cfg: Config, expected: SessionIdentity) -> tuple[bool, str]:
+    try:
+        result = run_query(
+            conditional_kill_argv(cfg, expected),
+            timeout=cfg.execution.backend_for_user(expected.user).probe_timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"conditional kill response unavailable: {exc}"
+    if result.returncode == 0 and result.stdout.strip() == "uxon-kill-matched":
+        return True, ""
+    detail = _control_error(result)
+    if detail == _IDENTITY_REFUSED:
+        return False, "selected session identity changed; removal refused"
+    return (
+        False,
+        f"conditional kill failed (rc={result.returncode}): {detail or 'no identity acknowledgement'}",
+    )
+
+
 def tmux_base(
     cfg: Config, target_user: str, socket_path: str | None = None, *, nonint: bool = False
 ) -> list[str]:
@@ -176,8 +309,8 @@ def tmux_host_socket() -> str | None:
 def tmux_nesting_mode(cfg: Config, launch_user: str, target_socket: str) -> str:
     """Decide how to launch/attach a tmux session given the current ``$TMUX``.
 
-    Returns ``"execvp"`` when the process is not already inside tmux
-    (classic flow: ``execvp tmux attach-session`` / ``new-session``).
+    Returns ``"execvp"`` for the external interactive-client mode when the
+    process is not already inside tmux.
     Returns ``"switch"`` when the process is inside a tmux client on the
     same socket that owns ``target_socket`` — the caller should then use
     ``tmux switch-client -t <name>`` (plus a detached ``new-session`` for
@@ -265,7 +398,7 @@ def _tmux_title_chain(cfg: Config, session: str) -> list[str]:
     A live session format follows renames and ignores workload pane titles.
     """
     # set-option accepts a pane target; the colon makes '=' match the session.
-    target = f"={session}:"
+    target = f"{session}:" if session.startswith("$") else f"={session}:"
     chain = []
     if cfg.tmux_set_terminal_title:
         chain += ["set-option", "-t", target, "set-titles-string", "#{session_name}", ";"]
@@ -296,9 +429,10 @@ def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: st
     # session, without a kill-server. ``-as`` is skipped (server_running) so
     # the append list does not grow. ``[]`` when managed options are off.
     set_chain = _tmux_set_chain(cfg, server_running=True)
-    set_chain += _tmux_title_chain(cfg, target.name)
+    target_id = target.tmux_session_id or target.name
+    target_chain = _tmux_title_chain(cfg, target_id)
     if target.active_pane_dead and target.live_pane_id:
-        set_chain += [
+        target_chain += [
             "select-window",
             "-t",
             target.live_pane_id,
@@ -310,11 +444,30 @@ def _build_tmux_attach_request(target: SessionInfo, cfg: Config, launch_user: st
         ]
     handoff = TmuxHandoff(cfg, launch_user, target.name, target.launch_record_verified)
     mode = tmux_nesting_mode(cfg, launch_user, tmux_socket_path(cfg, launch_user))
+    action = "switch-client" if mode == "switch" else "attach-session"
+    attach = [action, "-t", target_id]
+    if target.tmux_session_id:
+        validate_session_context(cfg, target.identity, require_nonce=False)
+        # Only refusal runs a shell, to give the client a nonzero status.
+        # The matching native branch contains no wait between check and attach.
+        attach = guarded_session_commands(target.identity, _command_text(target_chain + attach))
+    else:
+        attach = target_chain + attach
     if mode == "switch":
-        full = tuple(base + set_chain + ["switch-client", "-t", target.name])
-        return LaunchRequest(cmd=full, label=f"switch-client {target.name}", handoff=handoff)
-    full = tuple(base + set_chain + ["attach-session", "-t", target.name])
-    return LaunchRequest(cmd=full, label=f"attach {target.name}", handoff=handoff)
+        full = tuple(base + set_chain + attach)
+        return LaunchRequest(
+            cmd=full,
+            label=f"switch-client {target.name}",
+            handoff=handoff,
+            identity=target.identity if target.tmux_session_id else None,
+        )
+    full = tuple(base + set_chain + attach)
+    return LaunchRequest(
+        cmd=full,
+        label=f"attach {target.name}",
+        handoff=handoff,
+        identity=target.identity if target.tmux_session_id else None,
+    )
 
 
 def prepare_diagnostics_attach(req: LaunchRequest) -> tuple[str, ...]:
@@ -323,29 +476,44 @@ def prepare_diagnostics_attach(req: LaunchRequest) -> tuple[str, ...]:
     if context is None or not context.diagnostics:
         return req.cmd
     base = configured_tmux_base(context.config, context.user)
-    query = diagnostics_query(context.session)[1:]
+    if req.identity is None:
+        fail("cannot configure diagnostics: captured session identity is unavailable", 1)
+    validate_session_context(context.config, req.identity, require_nonce=False)
+    query = guarded_session_commands(
+        req.identity, _command_text(diagnostics_query(req.identity.session_id)[1:])
+    )
     result = process.run_query(
         base + _tmux_set_chain(context.config, server_running=True) + query,
         timeout=_TMUX_CONTROL_TIMEOUT_SECONDS,
     )
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip()
+        detail = _control_error(result)
         fail(f"could not read tmux bindings: {detail or 'tmux query failed'}")
     live_table, _, bindings = result.stdout.partition("\n")
     if not live_table:
         fail("tmux did not return the live key table")
-    _install_diagnostics(base, diagnostics_script(context.session, live_table, bindings))
+    _install_diagnostics(
+        base,
+        diagnostics_script(req.identity.session_id, live_table, bindings),
+        expected=req.identity,
+    )
     return req.cmd
 
 
-def _install_diagnostics(base: list[str], script: str, after: list[str] | None = None) -> None:
+def _install_diagnostics(
+    base: list[str],
+    script: str,
+    after: list[str] | None = None,
+    *,
+    expected: SessionIdentity,
+) -> None:
     """Feed native configuration through stdin without files or argv limits."""
+    body = script + ("\n" + shlex.join(after) if after else "")
+    script = shlex.join(guarded_session_commands(expected, body)) + "\n"
     command = [*base, "source-file", "-"]
-    if after:
-        command += [";", *after]
     result = process.run_query(command, input=script, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS)
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip()
+        detail = _control_error(result)
         fail(f"could not configure tmux diagnostics: {detail or 'tmux rejected configuration'}")
 
 
@@ -493,12 +661,9 @@ def _build_tmux_launch_request(
         sys.executable,
         "-m",
         "uxon.infra.launch_bootstrap",
-        "--socket",
-        socket_path,
-        "--session",
-        session,
-        "--nonce",
-        pending_record.launch_nonce,
+        f"--socket={socket_path}",
+        f"--session={session}",
+        f"--nonce={pending_record.launch_nonce}",
         "--timeout",
         str(_LAUNCH_HANDSHAKE_TIMEOUT_SECONDS),
         "--",
@@ -510,13 +675,12 @@ def _build_tmux_launch_request(
         + ["new-session", "-d", "-s", session, "-c", target_dir]
         + session_env
         + bootstrap_cmd
-        # ``failed`` is available at Uxon's tmux 3.2 minimum. Do not customize
-        # ``remain-on-exit-format`` here: that option was added in tmux 3.3.
+        # Retain failed terminals with tmux's native diagnostic format.
         + [
             ";",
             "set-window-option",
             "-t",
-            session,
+            "=" + session + ":",
             "remain-on-exit",
             "failed",
         ]
@@ -527,12 +691,12 @@ def _build_tmux_launch_request(
             "display-message",
             "-p",
             "-t",
-            session,
+            "=" + session + ":",
             "#{session_id}\t#{session_created}\t#{session_name}\t#{E:"
             + launch_records.LAUNCH_NONCE_ENV
             + "}",
         ]
-        + diagnostics_query(session)
+        + diagnostics_query("=" + session + ":")
     )
     release_cmd = tuple(
         base
@@ -644,7 +808,7 @@ def pending_record_from_request(req: LaunchRequest) -> launch_records.PendingLau
 
 def prepare_managed_launch(
     req: LaunchRequest, pending: launch_records.PendingLaunchRecord | None = None
-) -> None:
+) -> launch_records.TmuxSessionMetadata | None:
     managed = req.managed
     if managed is None:
         return
@@ -661,6 +825,9 @@ def prepare_managed_launch(
         "branch": managed.branch,
         "session": managed.record_session,
         "dry_run": False,
+        "session_id": "",
+        "launch_nonce": managed.record_nonce,
+        "execution_backend": managed.execution_backend,
     }
     create_attempted = False
     metadata: launch_records.TmuxSessionMetadata | None = None
@@ -682,10 +849,12 @@ def prepare_managed_launch(
             list(managed.query_cmd), check=True, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
         )
         metadata = _parse_tmux_launch_metadata(meta_cp.stdout)
+        if metadata.name == pending.session_name and metadata.launch_nonce == pending.launch_nonce:
+            audit_fields["session_id"] = metadata.session_id
         script = ""
         if managed.diagnostics_prefix:
             _, live_table, bindings = meta_cp.stdout.split("\n", 2)
-            script = diagnostics_script(managed.record_session, live_table, bindings)
+            script = diagnostics_script(metadata.session_id, live_table, bindings)
         launch_records.finalize_pending_record(
             pending,
             metadata,
@@ -696,10 +865,12 @@ def prepare_managed_launch(
             shared=managed.record_shared,
         )
         if script:
+            expected_identity = managed_session_identity(managed, metadata)
             _install_diagnostics(
                 list(managed.diagnostics_prefix),
                 script,
                 list(managed.release_cmd[len(managed.diagnostics_prefix) :]),
+                expected=expected_identity,
             )
         else:
             process.run_cmd(
@@ -718,11 +889,12 @@ def prepare_managed_launch(
             "session.new",
             outcome="error",
             **audit_fields,
-            error="launch preparation failed",
+            error=(getattr(exc, "uxon_msg", None) or str(exc) or type(exc).__name__)[:512],
             error_type=type(exc).__name__,
         )
         raise
     _audit.audit("session.new", **audit_fields)
+    return metadata
 
 
 def _kill_created_session_if_owned(
@@ -730,27 +902,62 @@ def _kill_created_session_if_owned(
     pending: launch_records.PendingLaunchRecord,
     expected: launch_records.TmuxSessionMetadata | None,
 ) -> None:
-    """Best-effort rollback only after re-identifying our exact session."""
+    """Best-effort rollback asserting the captured identity on the native queue."""
     try:
-        cp = process.run_cmd(
-            list(managed.query_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
-        )
-        if cp.returncode != 0:
-            return
-        observed = _parse_tmux_launch_metadata(cp.stdout)
+        observed = expected
+        if observed is None:
+            cp = process.run_cmd(
+                list(managed.query_cmd), check=False, timeout=_TMUX_CONTROL_TIMEOUT_SECONDS
+            )
+            if cp.returncode != 0:
+                return
+            observed = _parse_tmux_launch_metadata(cp.stdout)
         if observed.name != pending.session_name or observed.launch_nonce != pending.launch_nonce:
             return
-        if expected is not None and (
-            observed.session_id != expected.session_id or observed.created != expected.created
-        ):
-            return
         process.run_cmd(
-            [*managed.rollback_kill_prefix, observed.session_id],
+            [*managed.rollback_kill_prefix[:-2]]
+            + guarded_session_commands(
+                managed_session_identity(managed, observed),
+                f"kill-session -t {observed.session_id}",
+            ),
             check=False,
             timeout=_TMUX_CONTROL_TIMEOUT_SECONDS,
         )
     except BaseException:
         return
+
+
+def managed_session_identity(
+    managed: ManagedTmuxLaunch, metadata: launch_records.TmuxSessionMetadata
+) -> SessionIdentity:
+    return SessionIdentity(
+        managed.launch_user,
+        metadata.name,
+        metadata.session_id,
+        metadata.created,
+        metadata.launch_nonce,
+        managed.record_socket,
+        managed.execution_backend,
+        managed.execution_fingerprint,
+    )
+
+
+def prepared_launch_command(req: LaunchRequest, expected: SessionIdentity) -> tuple[str, ...]:
+    """Bind a new launch's deferred terminal handoff to finalized metadata."""
+    assert req.managed is not None and req.handoff is not None
+    cfg = req.handoff.config
+    validate_session_context(cfg, expected)
+    action = req.cmd[-3]
+    assert action in {"attach-session", "switch-client"}
+    return tuple(
+        configured_tmux_base(cfg, expected.user)
+        + guarded_session_commands(
+            expected,
+            _command_text(
+                _tmux_title_chain(cfg, expected.session_id) + [action, "-t", expected.session_id]
+            ),
+        )
+    )
 
 
 def _parse_tmux_launch_metadata(stdout: str) -> launch_records.TmuxSessionMetadata:

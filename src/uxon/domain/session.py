@@ -10,9 +10,10 @@ layers.
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from uxon.domain.authz import is_under
 from uxon.domain.format import compact_time, format_cpu_pct, format_rss_kib
@@ -22,6 +23,148 @@ from uxon.errors import fail
 def slugify(name: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
     return slug or "workspace"
+
+
+@dataclass(frozen=True)
+class SessionIdentity:
+    """A captured target; name is a label, never a destructive selector."""
+
+    user: str
+    name: str
+    session_id: str
+    created: str
+    launch_nonce: str
+    socket_path: str
+    execution_backend: str
+    execution_fingerprint: str
+
+    @property
+    def key(self) -> str:
+        # Display-only records may lack native identity. Names distinguish those
+        # rows without granting authority; legacy IDs include creation to avoid
+        # carrying selection over to a reused ID after a server restart.
+        if self.launch_nonce:
+            launch = f"nonce:{self.launch_nonce}"
+        elif self.session_id and self.created:
+            launch = f"native:{self.session_id}/{self.created}"
+        else:
+            launch = f"display:{self.name}"
+        return f"{self.user}/{self.execution_backend}/{self.execution_fingerprint}/{self.socket_path}/{launch}"
+
+    def matches(self, other: SessionIdentity) -> bool:
+        return all(
+            getattr(self, field) == getattr(other, field)
+            for field in self.__dataclass_fields__
+            if field != "name"
+        )
+
+    def invalid_fields(self, *, require_nonce: bool = True) -> tuple[str, ...]:
+        """Return invalid identity fields without emitting CLI diagnostics."""
+        checks = (
+            ("session_id", re.fullmatch(r"\$[0-9]+", self.session_id) is not None),
+            ("created", re.fullmatch(r"[0-9]+", self.created) is not None),
+            (
+                "launch_nonce",
+                (not require_nonce and not self.launch_nonce)
+                or re.fullmatch(r"[A-Za-z0-9_-]{16,64}", self.launch_nonce) is not None,
+            ),
+            ("user", bool(self.user)),
+            ("name", bool(self.name)),
+            ("socket_path", self.socket_path.startswith("/")),
+            ("execution_backend", bool(self.execution_backend)),
+            ("execution_fingerprint", bool(self.execution_fingerprint)),
+        )
+        return tuple(name for name, valid in checks if not valid)
+
+    def validate(self, *, require_nonce: bool = True) -> None:
+        invalid = self.invalid_fields(require_nonce=require_nonce)
+        if invalid:
+            hint = (
+                "; destructive actions require launch authority: drain older sessions "
+                "before upgrading or remove them explicitly with tmux"
+                if require_nonce and "launch_nonce" in invalid
+                else ""
+            )
+            fail(
+                f"invalid captured identity for {self.name!r} ({self.session_id or 'unknown ID'}): "
+                f"missing or invalid {', '.join(invalid)}{hint}",
+                1,
+            )
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), separators=(",", ":"))
+
+    @classmethod
+    def from_wire(cls, value: object) -> SessionIdentity | None:
+        """Missing identities remain visible but cannot enable a kill action."""
+        fields = cls.__dataclass_fields__
+        if not isinstance(value, dict) or not set(fields).issubset(value):
+            return None
+        if not all(isinstance(value[key], str) for key in fields):
+            return None
+        return cls(**{key: value[key] for key in fields})
+
+    @classmethod
+    def from_json(cls, value: str, *, require_nonce: bool = True) -> SessionIdentity:
+        try:
+            payload = json.loads(value)
+            if not isinstance(payload, dict) or set(payload) != set(cls.__dataclass_fields__):
+                raise ValueError("unexpected identity fields")
+            if not all(isinstance(item, str) for item in payload.values()):
+                raise ValueError("identity fields must be strings")
+            result = cls(**payload)
+        except (TypeError, ValueError) as exc:
+            fail(f"invalid --expect-session: {exc}")
+        result.validate(require_nonce=require_nonce)
+        return result
+
+
+@dataclass(frozen=True)
+class KillResult:
+    identity: SessionIdentity
+    action: str
+    cleanup_outcome: str = "not_run"
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.action in {"killed", "already_absent", "would-kill"}
+            and self.cleanup_outcome != "error"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.identity.name,
+            "session_id": self.identity.session_id,
+            "launch_nonce": self.identity.launch_nonce,
+            "user": self.identity.user,
+            "action": self.action,
+            "cleanup_outcome": self.cleanup_outcome,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class BulkKillResult:
+    results: tuple[KillResult, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return all(result.ok for result in self.results)
+
+    @property
+    def killed_count(self) -> int:
+        return sum(result.action == "killed" for result in self.results)
+
+    @property
+    def failed_count(self) -> int:
+        return sum(not result.ok for result in self.results)
+
+    @property
+    def summary(self) -> str:
+        absent = sum(result.action == "already_absent" for result in self.results)
+        return f"Removed {self.killed_count}/{len(self.results)} sessions; already absent {absent}; failed {self.failed_count}"
 
 
 @dataclass
@@ -44,6 +187,7 @@ class SessionInfo:
     tmux_session_id: str = ""
     tmux_session_created: str = ""
     launch_nonce: str = ""
+    socket_path: str = ""
     launch_record_verified: bool = False
     launch_user: str = ""
     execution_backend: str = ""
@@ -57,11 +201,9 @@ class SessionInfo:
     # authority; it only lets destructive paths explain why teardown was skipped
     # for an older or unmanaged workload session.
     runtime_marker: str = ""
-    # Runtime telemetry markers, read from the session env via the existing
-    # ``list-sessions -F`` batch (``#{E:VAR}`` expands to "" for an unset var,
-    # i.e. a direct-runtime session). ``runtime_resource`` is the bare workload
-    # resource; ``runtime_cgroup`` is the host-side cgroup path telemetry reads
-    # to enumerate workload PIDs. Both default to "" for the direct runtime.
+    # Runtime resource/context comes from the verified launch record.
+    # ``runtime_cgroup`` identifies the cgroup telemetry reads to enumerate
+    # workload PIDs. Direct sessions have no workload resource or cgroup.
     runtime_resource: str = ""
     runtime_dir: str = ""
     project_slug: str = ""
@@ -79,6 +221,19 @@ class SessionInfo:
     active_exit_status: int | None = None
     live_pane_id: str = ""
     dismissed_panes: tuple[str, ...] = ()
+
+    @property
+    def identity(self) -> SessionIdentity:
+        return SessionIdentity(
+            self.user,
+            self.name,
+            self.tmux_session_id,
+            self.tmux_session_created,
+            self.launch_nonce,
+            self.socket_path,
+            self.execution_backend,
+            self.execution_fingerprint,
+        )
 
 
 @dataclass
@@ -100,7 +255,7 @@ class TuiSession:
     stem: str = ""  # bare project stem, e.g. "myproject"
     agent: str = ""  # underlying agent id when known
     profile: str = ""  # launch profile id when known
-    legacy: bool = False  # True when parsed from old cc-<stem> naming
+    legacy: bool = False  # True when the name matches a configured legacy prefix
     # Raw ISO 8601 timestamps preserved alongside the pre-formatted
     # display strings so dashboard sort by ``new`` / ``last`` ranks
     # local rows correctly. Empty string mirrors the wire schema
@@ -113,6 +268,7 @@ class TuiSession:
     runtime_down: bool = False
     exited: bool = False
     has_diagnostics: bool = False
+    identity: SessionIdentity | None = None
     active_exit_status: int | None = None
 
 
@@ -321,4 +477,5 @@ def to_tui_session(
         exited=s.exited,
         active_exit_status=s.active_exit_status,
         has_diagnostics=s.has_diagnostics,
+        identity=s.identity,
     )

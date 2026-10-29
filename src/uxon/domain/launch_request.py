@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from uxon.domain.config import Config
+    from uxon.domain.session import SessionIdentity
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,8 @@ class HandoffResult:
     stage: str
     wall_seconds: float
     warning: str = ""
+    session_id: str = ""
+    launch_nonce: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,12 @@ class LaunchRequest:
     label: str = ""
     managed: ManagedTmuxLaunch | None = None
     handoff: TmuxHandoff | None = None
+    identity: SessionIdentity | None = None
+    correlation_id: str | None = None
+    peer_name: str | None = None
+    # Only the default forced-PTY SSH transport separates local diagnostics
+    # from remote workload output. Custom transports retain their own streams.
+    capture_ssh_diagnostics: bool = False
 
 
 def session_name_from_launch_label(label: str) -> str:

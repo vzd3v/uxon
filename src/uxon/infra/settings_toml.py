@@ -10,8 +10,7 @@ Two render paths:
 * :func:`render_operator_config_toml` — minimal from-scratch emit (no
   comments), used only when no file exists yet. Pure stdlib.
 * :func:`update_operator_config_text` — comment-preserving round-trip that
-  mutates only the changed keys, lazily importing ``tomlkit`` (the
-  AGENTS.md "config writes require tomlkit" rule); CLI read paths stay
+  mutates only the changed keys, lazily importing ``tomlkit``; CLI read paths stay
   on stdlib ``tomllib``.
 """
 

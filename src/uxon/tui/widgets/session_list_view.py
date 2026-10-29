@@ -11,8 +11,7 @@ public surface is:
 * ``RowSelected`` (carries ``cursor_row``) and ``HostNavigate`` (carries a
   direction) messages;
 * mouse select / hover;
-* edge-release via ``BINDINGS`` actions only (no ``on_key`` — AGENTS.md hard
-  rule), reproducing the ``FocusReleasingDataTable`` contract.
+* edge-release via ``BINDINGS`` actions only (no ``on_key`` override), reproducing the ``FocusReleasingDataTable`` contract.
 
 Layout
 ------

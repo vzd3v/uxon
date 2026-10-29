@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from uxon.domain.host_report import HostReport
+from uxon.domain.session import SessionIdentity
 
 USAGE = """Usage:
   uxon                              (interactive session picker if TTY, else this help)
@@ -86,6 +87,7 @@ class ParsedArgs:
     # Stripped from argv by :func:`uxon.infra.audit.extract_correlation_id` before
     # the per-parser walk sees it; never surfaces in ``--help``.
     audit_correlation_id: str | None = None
+    expected_session: SessionIdentity | None = None
     # Populated by ``main()``'s non-launch preflight and by selected TUI
     # paths. Launch profile resolution reuses it only when it was probed for
     # the same effective launch user.

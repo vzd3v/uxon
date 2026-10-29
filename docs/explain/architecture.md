@@ -121,224 +121,41 @@ The outer loop in `src/uxon/tui/runner.py::run()` hands the request to
 client gets the real terminal. It waits for the client and creates a fresh
 `App` for the next round-trip.
 
-## TUI internals
+## Session identity
 
-Sub-modules under `src/uxon/tui/`:
+Uxon already assigns its own random launch ID: `launch_nonce`, generated from
+24 random bytes (192 bits). That single ID follows the launch through its
+protected record, workload PID file and peer operations; no second UUID is
+needed. A tmux session name is a display label. Its native `$id` locates the
+terminal, and creation time provides an additional check.
 
-- `context.py` — pure data: `TuiContext`, `TuiSession`,
-  `LaunchRequest`, `Item`, `build_items`, `CallbackError`.
-  No `textual` imports, no I/O.
-- `state.py` — pure UI state decisions (filter, validation, key
-  routing, focus transitions). Tested without mounting an App,
-  no `Pilot`.
-- `launch.py` — failure-pause banner.
-  Runs **outside** the Textual `App` between round-trips.
-- `hints.py` — `TEXTUAL_MISSING_HINT` install guidance.
-- `app.py` — `UxonApp(App)` and pending launch-request handling.
-- `runner.py` — the outer `run(ctx)` re-entrant loop and terminal handoff.
-- `refresh.py` — pluggable refresh-source registry (`SourceSpec`,
-  `SourceResult`, `run_source`). One source per stream — local
-  tmux, each `[[remote_hosts]]` peer — runs in its own worker
-  group so a slow peer never stalls the others. The external-tool
-  spawns these probes make all route through `infra.run.run_query`,
-  which sets `start_new_session=True` — the child has no controlling
-  terminal and so cannot flush the operator's buffered keystrokes.
-  A wedged probe is its own session leader: it is orphaned only until
-  its own `timeout=` fires (on both clean teardown and a crash) and
-  never holds the terminal. The interactive `attach`/launch handoff is
-  the one path that keeps the terminal — it runs after `App.exit()`
-  with no reader alive (see § Data flow).
-- `screens/` — one module per screen and per multi-step flow:
-  `main`, `confirm`, `launch_options`, `launch_flow`, `kill_flow`,
-  `session_choice` (the attach-vs-new prompt), `worktree_branch`
-  (new-worktree name input), `new_project`, `git_profile`,
-  `existing`, `settings`, `agents_unavailable`, plus the shared
-  `modal_base` chrome.
-- `widgets/` — `ActionRow`, `SessionListView` (the unified session
-  table — a render-on-demand `ScrollView` on Textual's Line API),
-  `HostTabStrip` (per-host tabs above the table in `by_host`
-  view), `HostStatusBar` (compact per-host CPU/RAM line under the
-  active tab in `by_host`), `FleetStatusBar` (collapsible fleet
-  summary below the table in both views — counts + alerts collapsed,
-  per-host detail when expanded with `h`), `SearchBar` (summoned
-  filter input), and `GatedFooter` (footer that only repaints when
-  the binding set changes). Everything else is stock `textual`.
-- `dashboard/` — pure layers behind `SessionListView`
-  (`row.py`, `columns.py`, `layout.py`, `ui_state.py`, `model.py`,
-  `order.py`, `buckets.py`). See § "Session dashboard" below.
-- `keymap.py` — `bindings_with_aliases(...)` decorator that
-  attaches JCUKEN twins to QWERTY bindings so the keymap survives
-  a Russian layout without `xkb`.
-- `styles.tcss` — Textual CSS for the whole app.
+The launch ID distinguishes a replacement even when tmux reuses a name or
+native ID. It does not eliminate the interval between checking a terminal and
+acting on it. Uxon therefore checks the captured identity and performs the
+action together on tmux's command queue, then verifies removal before workload
+cleanup. The protected record supplies cleanup authority and original runtime
+context; pane metadata alone cannot replace it.
+The same check covers launch handoff, rollback, and session-specific terminal
+controls. Closing a reviewed error acknowledges that terminal's current failure;
+a later failure after respawn requires a new acknowledgement.
 
-## Session dashboard
-
-`SessionListView` (one row per visible session — local own,
-local other-user under sudo, and one row per session on every
-configured peer) is built on pure layers under
-[`src/uxon/tui/dashboard/`](../../src/uxon/tui/dashboard/) plus the
-widget shell at
-[`src/uxon/tui/widgets/session_list_view.py`](../../src/uxon/tui/widgets/session_list_view.py):
-
-1. **`row.py` — `SessionRow`.** A single frozen dataclass is the
-   unified row type. Two adapters land the source shapes onto it:
-   `from_tui_session(...)` for local rows (own + sudo), and
-   `from_wire_record(host, rec)` for one row of a peer
-   `RemoteSnapshot`. Equality is value-based — two ticks producing
-   identical rows compare equal under `is`-stable identity once
-   they go through the model selector.
-2. **`columns.py` — `ColumnSpec` registry.** The single source of
-   truth for which columns exist, how each one renders, and how
-   each one sorts. `REGISTRY` is an ordered tuple of specs;
-   formatters return `rich.text.Text` with inline style (no CSS
-   class names). `sort_keys` exposes the key function used by the
-   model layer. The attach indicator is a glyph in the NAME
-   column (`●` filled / `○` hollow); per-host block colour is
-   carried by the same `assign_block_colors` map shared with
-   `HostTabStrip` and `HostStatusBar`.
-3. **`layout.py` — `build_active_columns(...)`.** Pure
-   selector that picks the active column subset from `REGISTRY`
-   based on runtime flags (`multi_host`, `cross_user`) and the
-   operator-supplied `[tui.table] columns`. Unknown ids in `cfg`
-   are silently dropped — older operator configs survive a column
-   removal. `path` and `cmd` are hidden by default and require an
-   explicit opt-in via `[tui.table] columns`.
-4. **`ui_state.py` — `DashboardUiState`.** Frozen dataclass
-   holding `view_mode` (`"by_host" | "flat"`), `filter_text`, and
-   `active_tab_index`. `set_view_mode`, `set_filter`, and
-   `set_active_tab_index` are pure reducers, wired to `v`, the
-   search bar, and the tab strip respectively. An active filter
-   forces `flat` until the query is cleared. Sort is **not** UI
-   state — it is a fixed contract owned by the model selector
-   (locals → cfg-order remotes → within-block by recency).
-
-The selector, bucket layer, and stable-order placer tie those to
-the widget:
-
-5. **`model.py` — `select_dashboard_model(...)`.** Identity-stable
-   selector: returns the same row tuple by `is`
-   when nothing changed since the previous call, so a no-op tick
-   repaints nothing. The cache lives in `_LAST_OUTPUT`.
-6. **`buckets.py` — `select_host_buckets(...)`,
-   `select_host_status_block(...)`.** Two pure selectors layered
-   on the row tuple. The first groups rows into a `HostBucket`
-   per configured host (locals + each `[[remote_hosts]]` peer,
-   preserved across empty hosts so the tab strip is stable). The
-   second aggregates per-bucket CPU / RAM / uptime / kernel into a
-   `HostStatusLine` tuple consumed by `HostStatusBar`. (Load
-   average is carried on the `host_stats` envelope but no longer
-   rendered — see the fleet-status-bar redesign.) Per-host metrics
-   ride the wire envelope as the optional additive `host_stats`
-   block; absence renders the bar without metrics.
-7. **`order.py` — `place(persisted_order, current_rows)`.** Pure
-   stable-order placer that replaced the per-tick re-sort. An
-   existing key keeps its established slot, so a telemetry tick
-   that only changes recency never moves a row; a new key lands at
-   its position within its own host block; a vanished key drops
-   out in place. Cold start (no persisted order) yields
-   `current_rows` verbatim.
-
-The widget at `widgets/session_list_view.py` is a `ScrollView` on
-Textual's Line API: it owns the current row list and paints **only
-the visible viewport lines** via `render_line`. `set_rows(new)`
-repaints the visible lines; the virtual size (and thus a layout)
-changes only when the row *count* changes — a real arrival or
-departure. This is the render-on-demand replacement for the old
-`DataTable`-backed table, whose every structural mutation forced a
-screen-global relayout. Edge-aware navigation (releasing focus at
-the list boundary) is reproduced through `BINDINGS` actions only —
-no `on_key` override.
+See [launch records](../reference/configuration.md#launch-records) for storage,
+shared-controller access and migration requirements.
 
 ## Module boundaries
 
-These are enforced by tests and CI (`lint-imports` runs the
-import-linter contracts):
+Imports flow from CLI and TUI through application use cases and infrastructure
+adapters to pure domain types. The TUI receives callbacks for side effects;
+blocking probes run outside its event loop. Textual is loaded only for
+interactive use, so listing and diagnostics do not load the UI framework.
 
-- **The layers import only downward: `cli` → `tui` → `app` →
-  `gitremote` → `infra` → `domain` → `errors`.** `domain` imports
-  nothing from the others; lower layers never reach back up. (The
-  layered import-linter contract lists this exact order.)
-- **`src/uxon/tui/*` may not import `subprocess` or `pwd`** or touch
-  the filesystem directly. Side effects flow through callbacks on
-  `TuiContext` / `SettingsCallbacks`. This keeps the TUI testable
-  with Textual `Pilot` without spawning real processes.
-- **`textual` is imported lazily inside the interactive dispatch.**
-  Non-TUI subcommands (`uxon list`, `uxon doctor`, `uxon version`)
-  must run with `textual` absent — `python -c "import uxon.cli"`
-  must not pull it in.
-- **All key handling goes through `BINDINGS`.** No `on_key`
-  overrides on screen classes; a drift guard test
-  (`tests/test_uxon_tui_bindings.py`) refuses any PR that adds one.
-- **One launch builder.** `_build_tmux_launch_request` in
-  `src/uxon/infra/tmux.py` is the single place that builds agent
-  command lines (it consults the merged `cfg.agents` catalog). Don't
-  add direct `claude` / `codex` / `cursor-agent` exec calls
-  anywhere else.
-- **One worktree-creation site.** Both the CLI `-w` flag and the
-  TUI new-worktree path route through `plan_worktree_launch`
-  (`src/uxon/app/launch.py`); there is no second `git worktree add`
-  call site.
-- **Config writes use `tomlkit`.** The round-trip writer in
-  `src/uxon/infra/settings_toml.py` preserves comments and
-  formatting. CLI read paths stay on stdlib `tomllib`.
-- **One tmux socket per launch user and execution backend.** No code path
-  silently falls back to the default socket, and unreachable is distinct from
-  absent.
+One launch builder assembles coding-tool commands from the selected catalog and
+profile. Both CLI and TUI worktree flows use the same planner. Configuration is
+read from the operator-owned host file; project policy is expressed with path
+rules rather than project-owned config files.
 
-## Session naming
-
-```
-uxon-<stem>@<profile>           plain sessions
-uxon-<repo>-<branch>@<profile>  worktree sessions
-```
-
-Parallels append `-2`, `-3`, … *after* the launch-profile suffix:
-`uxon-myproj@codex_safe-2`. The default prefix is `uxon-`, configurable
-via `session_prefix`. Names matching any prefix listed in
-`legacy_session_prefixes` are recognised by `list` / `attach` /
-`kill` (so existing sessions stay reachable across renames) but
-are never *created*.
-
-`parse_session_name` and `candidate_session_name` (in the
-session-naming module under `src/uxon/domain/`) must move
-together. Don't touch one without the other.
-
-## Tests
-
-- `tests/test_uxon*.py` — pure unit tests; the bulk of branchy logic
-  lives here.
-- `tests/test_uxon_tui*.py` — Textual `Pilot` and `pty` tests; one
-  smoke path per feature, batched via
-  `tests/harness/textual_scenarios.py::run_screen_scenarios` where
-  possible.
-- `tests/test_uxon_tui_bindings.py` — drift guards (`BINDINGS`,
-  destructive bindings have `show=True`).
-- `tests/test_tui_integration.py` — end-to-end pty harness.
-
-Add a new branchy decision? Put it in `src/uxon/tui/state.py` and
-test it without mounting an App. Reach for `Pilot` only when the
-behaviour depends on Textual lifecycle.
-
-## Configuration
-
-One operator-owned runtime config is read: `/etc/uxon/config.toml`.
-Project-owned `.uxon.toml` files are ignored; path-specific launch
-policy lives in `[[launch.path_rules]]`.
-
-The single source of truth for known **scalar** keys is
-`src/uxon/infra/settings.py::SETTINGS_SPECS`. Add a key there in
-the same commit as the matching `DEFAULT_CONFIG` / `Config`
-changes in `src/uxon/domain/config.py` and the `load_config`
-read path in `src/uxon/infra/config_loader.py`.
-
-The nested structures — the agent catalog (`[agents.<id>]`
-array-of-modes), `[launch.profiles.<id>]`, `[[launch.path_rules]]`,
-`[execution]`, and `[runtimes.<id>]` argv-list templates — are
-**file-only**: `SettingSpec` cannot model array-of-tables or dynamic
-keys, so they are edited in the config file directly and are not on
-the ⚙ Settings screen. Their canonical reference is
-[`reference/configuration.md`](../reference/configuration.md), not
-`SETTINGS_SPECS`.
+See [CONTRIBUTING.md](../../CONTRIBUTING.md) for development checks and
+[configuration](../reference/configuration.md) for the public contract.
 
 ## Security boundaries
 

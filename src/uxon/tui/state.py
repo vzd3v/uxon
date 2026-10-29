@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from uxon.domain.authz import project_directory
-from uxon.domain.session import TuiSession
+from uxon.domain.session import SessionIdentity, TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
 
 from .context import (
@@ -37,9 +37,6 @@ def should_show_agents_unavailable(
 
     Not the live launch gate — the app drives the modal via the transition
     gate (:func:`should_push_agents_unavailable` over :func:`compute_all_missing`).
-    This latch-based predicate is retained for its tests and for parity with the
-    spec's named surface.
-
     The live launch gate (``resolve_launch_profile``) suppresses host-presence
     on a per-profile ``runtime`` basis; that selection is not known at
     modal-eval time, so this predicate does not branch on it.
@@ -486,6 +483,7 @@ class MainIntent:
     user: str = ""
     session_name: str = ""
     host: str = ""
+    identity: SessionIdentity | None = None
 
 
 def main_action_intent(kind: str) -> MainIntent | None:
@@ -505,6 +503,7 @@ def session_intent(session: TuiSession, current_user: str) -> MainIntent:
         "attach",
         user=session.user or current_user,
         session_name=session.name,
+        identity=session.identity,
     )
 
 
@@ -522,11 +521,21 @@ def activate_main_index(ctx: TuiContext, idx: int) -> MainIntent | None:
         return None
     if idx < other_start:
         session = ctx.sessions[idx - own_start]
-        return MainIntent("attach", index=idx, user=ctx.current_user, session_name=session.name)
+        return MainIntent(
+            "attach",
+            index=idx,
+            user=ctx.current_user,
+            session_name=session.name,
+            identity=session.identity,
+        )
     if has_super and idx < settings_idx:
         intent = session_intent(ctx.other_sessions[idx - other_start], ctx.current_user)
         return MainIntent(
-            intent.kind, index=idx, user=intent.user, session_name=intent.session_name
+            intent.kind,
+            index=idx,
+            user=intent.user,
+            session_name=intent.session_name,
+            identity=intent.identity,
         )
     if has_super and idx == settings_idx:
         return MainIntent("open-settings", index=idx)

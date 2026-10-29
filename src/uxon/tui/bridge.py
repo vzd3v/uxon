@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 import threading
 from typing import TYPE_CHECKING
 
@@ -28,14 +27,18 @@ import uxon.app.launch_profile as launch_profile_app
 import uxon.app.project_browsing as project_browsing
 import uxon.app.tui_planning as tui_planning
 from uxon.domain.config import Config
-from uxon.domain.session import session_stem_for_worktree
+from uxon.domain.session import (
+    BulkKillResult,
+    KillResult,
+    SessionIdentity,
+    session_stem_for_worktree,
+)
 from uxon.errors import fail
 from uxon.infra import (
     config_loader,
     git,
     host_status_probe,
     identity,
-    process,
     sessions_probe,
     tmux,
 )
@@ -73,26 +76,37 @@ class TuiBridge:
 
     # ── attach / kill ──
 
-    def on_attach(self, user: str, name: str):
+    def on_attach(self, user: str, name: str, expected: SessionIdentity | None = None):
         # TUI Enter on a local row dispatches a direct
         # ``tmux attach-session`` (no ``uxon`` wrapper) — emit
         # ``session.attach.dispatch`` here so the handoff is auditable.
         # ``do_attach``'s dispatch emit only covers the CLI-side ``uxon attach``
         # invocation; the TUI request bypasses that path entirely.
+        from uxon.app.kill import _target_for_identity
         from uxon.infra import audit as _audit
 
-        fresh = sessions_probe.collect_sessions([user], self.cfg)
-        target = sessions_probe._resolve_or_audit_not_found(
-            name,
-            fresh,
-            self.cfg,
-            audit_event="session.attach.dispatch",
-            target_user=user,
-            extra={"profile": "", "agent": ""},
+        if expected is not None and expected.user != user:
+            fail("selected session user differs from attach user", 1)
+
+        fresh = sessions_probe.collect_sessions([user], self.cfg) if expected is None else []
+        target = (
+            _target_for_identity(self.cfg, expected, require_nonce=False)
+            if expected is not None
+            else sessions_probe._resolve_or_audit_not_found(
+                name,
+                fresh,
+                self.cfg,
+                audit_event="session.attach.dispatch",
+                target_user=user,
+                extra={"profile": "", "agent": ""},
+            )
         )
         _audit.audit(
             "session.attach.dispatch",
             session=target.name,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
             target_user=user,
             profile=target.profile,
             agent=target.agent,
@@ -100,107 +114,28 @@ class TuiBridge:
         )
         return tmux._build_tmux_attach_request(target, self.cfg, user)
 
-    def on_kill(self, user: str, name: str) -> None:
-        # TUI 'k' on a local row runs ``tmux kill-session`` directly
-        # via ``run_kill_session`` — emit ``session.kill`` after success so the
-        # operation is auditable (mirrors do_kill same-user pattern).
-        fresh = sessions_probe.collect_sessions([user], self.cfg)
-        target = sessions_probe._resolve_or_audit_not_found(
-            name,
-            fresh,
-            self.cfg,
-            audit_event="session.kill",
-            target_user=user,
-            extra={"force": True, "dry_run": False, "profile": "", "agent": ""},
-        )
-        # TUI-driven kill: no TTY available, use non-interactive sudo.
-        full = tmux.configured_tmux_base(self.cfg, user, nonint=True) + [
-            "kill-session",
-            "-t",
-            target.name,
-        ]
-        # Capture teardown before the kill, reap the orphaned workload
-        # agent after kill-session — the same best-effort path as CLI do_kill.
-        from uxon.app.kill import (
-            _complete_kill,
-            prepare_runtime_teardown,
-            run_kill_session,
-        )
+    def on_kill(self, expected: SessionIdentity) -> KillResult:
+        from uxon.app.kill import kill_expected
 
-        teardown = prepare_runtime_teardown(self.cfg, target)
-        run_kill_session(
-            full,
-            audit_event="session.kill",
-            session=target.name,
-            target_user=user,
-            profile=target.profile,
-            agent=target.agent,
-            force=True,
-            dry_run=False,
-        )
-        _complete_kill(
-            self.cfg,
-            target,
-            teardown,
-            audit_event="session.kill",
-            target_user=user,
-            force=True,
-            dry_run=False,
-        )
+        allowed = {self.launch_user, *(self.sudo_caps.reachable_users if self.sudo_caps else ())}
+        return kill_expected(self.cfg, expected, allowed_users=frozenset(allowed))
 
-    def on_kill_all(self) -> None:
-        # TUI 'D' / kill-all-mine. Mirrors ``on_kill_all_reachable``'s
-        # audit shape (``target_users``, ``killed_count``, ``dry_run``)
-        # for the single-user case.
-        from uxon.app.kill import (
-            emit_kill_all_completion,
-            finish_killed_session,
-            prepare_runtime_teardown,
-        )
+    def on_kill_all(self, targets: tuple[SessionIdentity, ...]) -> BulkKillResult:
+        from uxon.app.kill import kill_snapshot
 
-        fresh = sessions_probe.collect_sessions([self.launch_user], self.cfg)
-        attempted = 0
-        killed_count = 0
-        failed = 0
-        cleanup_failed = 0
-        try:
-            for s in fresh:
-                full = tmux.configured_tmux_base(self.cfg, self.launch_user, nonint=True) + [
-                    "kill-session",
-                    "-t",
-                    s.name,
-                ]
-                teardown = prepare_runtime_teardown(self.cfg, s)
-                cp = process.run_cmd(full, check=False)
-                attempted += 1
-                if cp.returncode != 0:
-                    failed += 1
-                    continue
-                killed_count += 1
-                if not finish_killed_session(self.cfg, s, teardown, target_user=self.launch_user):
-                    cleanup_failed += 1
-        except BaseException:
-            failed += 1
-            raise
-        finally:
-            emit_kill_all_completion(
-                target_users=[self.launch_user],
-                attempted_count=attempted,
-                killed_count=killed_count,
-                failed_count=failed,
-                cleanup_failed_count=cleanup_failed,
-                dry_run=False,
-            )
+        return kill_snapshot(self.cfg, targets, allowed_users=frozenset({self.launch_user}))
 
-    def on_remote_attach(self, host_name: str, user: str, name: str) -> LaunchRequest:
+    def on_remote_attach(
+        self, host_name: str, user: str, name: str, expected: SessionIdentity | None = None
+    ) -> LaunchRequest:
         """TUI dispatch: attach to ``name`` belonging to ``user`` on peer ``host_name``.
 
         Mirrors :meth:`on_remote_kill`'s SSH gesture but allocates a TTY
         and forces ``ssh_multiplex="off"`` — an interactive attach must
         not share the poller's ControlMaster (a wedged master would hang
         the TUI handoff at ``unix_wait_for_peer``). Raises
-        :class:`CallbackError` directly (no ``_wrap_tui_callback`` shim)
-        on an unknown host.
+        :class:`CallbackError` on an unknown host; the bound callback also
+        converts lower-layer failures into the same structured error.
         """
         import uuid as _uuid
 
@@ -225,10 +160,18 @@ class TuiBridge:
                 correlation_id=corr_id,
             )
             raise CallbackError(f"unknown remote host: {host_name}")
+        from uxon.app.kill import resolve_remote_identity
+
+        expected = expected or resolve_remote_identity(self.cfg, peer, name, user)
+        expected.validate(require_nonce=False)
+        if expected.user != user:
+            fail("selected session user differs from attach user", 1)
+        name = expected.name
         # target first (see _do_attach_remote for rationale).
         remote_cmd = (
             f"{shlex.quote(peer.remote_uxon)} attach {shlex.quote(name)} "
             f"--user {shlex.quote(user)} "
+            f"--expect-session {shlex.quote(expected.to_json())} "
             f"--audit-correlation-id {shlex.quote(corr_id)}"
         )
         argv = build_peer_ssh_argv(
@@ -254,167 +197,31 @@ class TuiBridge:
             ssh_alias=peer.ssh_alias,
             target_user=user,
             target_session=name,
+            session_id=expected.session_id,
+            launch_nonce=expected.launch_nonce,
+            execution_backend=expected.execution_backend,
             dry_run=False,
             correlation_id=corr_id,
         )
-        return LaunchRequest(cmd=tuple(argv), label=f"attach {name}@{host_name}")
-
-    def on_remote_kill(self, host_name: str, user: str, name: str) -> None:
-        """TUI dispatch: kill ``name`` belonging to ``user`` on peer ``host_name``.
-
-        Reuses the same SSH gesture as the CLI's ``uxon kill --host
-        <alias> --user <user> --force <id>``: the peer's own ``uxon
-        kill`` runs the per-target sudo probe, so the local side does
-        not need to know the peer's user table. ``--force`` is passed
-        on the wire because confirmation is a local-UI concern (the TUI
-        already prompted before this callback fires).
-
-        Failures surface as :class:`CallbackError` via the
-        ``_wrap_tui_callback`` shim — :meth:`MainScreen.action_kill`
-        renders them as a red toast (the dashboard's ``d`` binding
-        dispatches here when the cursor sits on a remote row).
-        """
-        import uuid as _uuid
-
-        from uxon.infra import audit as _audit
-        from uxon.infra.remote.collector import (
-            DEFAULT_CONNECT_TIMEOUT_SEC,
-            DEFAULT_TOTAL_TIMEOUT_SEC,
-        )
-        from uxon.infra.remote.master_recovery import recover_wedged_master
-        from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
-        from uxon.infra.remote_hosts import find_host
-
-        corr_id = str(_uuid.uuid4())
-        peer = find_host(self.cfg.remote_hosts, host_name)
-        if peer is None:
-            _audit.audit(
-                "kill.remote.out",
-                outcome="not_found",
-                peer_name=host_name,
-                ssh_alias="",
-                target_user=user,
-                target_session=name,
-                force=True,
-                dry_run=False,
-                correlation_id=corr_id,
-            )
-            fail(f"unknown remote host: {host_name}", 1)
-        # See on_remote_attach: TUI process outlives the dispatch, so we
-        # avoid the module-level correlation_id global to keep state from
-        # bleeding into the next local emit.
-        # target first (see _do_attach_remote for rationale).
-        remote_cmd = (
-            f"{shlex.quote(peer.remote_uxon)} kill {shlex.quote(name)} --force "
-            f"--user {shlex.quote(user)} "
-            f"--audit-correlation-id {shlex.quote(corr_id)}"
-        )
-        ssh_argv = build_peer_ssh_argv(
-            command_template=peer.command_template,
-            extra_ssh_options=peer.extra_ssh_options,
-            ssh_alias=peer.ssh_alias,
-            remote_uxon=peer.remote_uxon,
-            remote_command=remote_cmd,
-            allocate_tty=False,
-            connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
-            ssh_multiplex=self.cfg.ssh_multiplex,
-            ssh_control_persist_seconds=self.cfg.ssh_control_persist_seconds,
-        )
-
-        # Mirrors ``_do_kill_remote::_emit_kill_remote_error`` (CLI
-        # path) so the TUI and CLI failure trails are symmetric: an
-        # operator querying ``EVENT=kill.remote.out OUTCOME=error``
-        # finds TUI-originated ssh failures alongside CLI ones.
-        def _emit_kill_remote_error(error: str, rc: int) -> None:
-            _audit.audit(
-                "kill.remote.out",
-                outcome="error",
-                peer_name=peer.name,
-                ssh_alias=peer.ssh_alias,
-                target_user=user,
-                target_session=name,
-                force=True,
-                dry_run=False,
-                correlation_id=corr_id,
-                rc=rc,
-                error=error[:256],
-            )
-
-        try:
-            cp = run_query(
-                ssh_argv,
-                timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
-            )
-        except subprocess.TimeoutExpired:
-            if self.cfg.ssh_multiplex != "off":
-                recover_wedged_master(peer)
-            _emit_kill_remote_error("ssh timeout", 124)
-            fail(f"ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s talking to {host_name}", 1)
-        except FileNotFoundError:
-            _emit_kill_remote_error("ssh binary missing", 127)
-            fail("ssh not installed on local host", 1)
-        if cp.returncode != 0:
-            stderr = (cp.stderr or "").strip().splitlines()
-            tail = stderr[-1] if stderr else f"ssh exited {cp.returncode}"
-            _emit_kill_remote_error(f"non-zero ssh rc: {tail}", cp.returncode)
-            fail(f"remote kill on {host_name} failed: {tail}", 1)
-        _audit.audit(
-            "kill.remote.out",
-            peer_name=peer.name,
-            ssh_alias=peer.ssh_alias,
-            target_user=user,
-            target_session=name,
-            force=True,
-            dry_run=False,
+        return LaunchRequest(
+            cmd=tuple(argv),
+            label=f"attach {name}@{host_name}",
+            identity=expected,
             correlation_id=corr_id,
-            rc=0,
+            peer_name=host_name,
+            capture_ssh_diagnostics=not peer.command_template,
         )
 
-    def on_kill_all_reachable(self) -> None:
-        # Iterate the launch user plus every reachable peer user. An
-        # empty ``reachable_users`` collapses to "kill all my own sessions".
-        from uxon.app.kill import (
-            emit_kill_all_completion,
-            finish_killed_session,
-            prepare_runtime_teardown,
-        )
+    def on_remote_kill(self, host_name: str, expected: SessionIdentity) -> KillResult:
+        from uxon.app.kill import remote_kill_expected
 
-        reachable = self.sudo_caps.reachable_users if self.sudo_caps else frozenset()
-        users = sorted({self.launch_user, *reachable})
-        killed_count = 0
-        attempted = 0
-        failed = 0
-        cleanup_failed = 0
-        try:
-            for u in users:
-                fresh = sessions_probe.collect_sessions([u], self.cfg)
-                for s in fresh:
-                    full = tmux.configured_tmux_base(self.cfg, u, nonint=True) + [
-                        "kill-session",
-                        "-t",
-                        s.name,
-                    ]
-                    teardown = prepare_runtime_teardown(self.cfg, s)
-                    cp = process.run_cmd(full, check=False)
-                    attempted += 1
-                    if cp.returncode != 0:
-                        failed += 1
-                        continue
-                    killed_count += 1
-                    if not finish_killed_session(self.cfg, s, teardown, target_user=u):
-                        cleanup_failed += 1
-        except BaseException:
-            failed += 1
-            raise
-        finally:
-            emit_kill_all_completion(
-                target_users=users,
-                attempted_count=attempted,
-                killed_count=killed_count,
-                failed_count=failed,
-                cleanup_failed_count=cleanup_failed,
-                dry_run=False,
-            )
+        return remote_kill_expected(self.cfg, host_name, expected)
+
+    def on_kill_all_reachable(self, targets: tuple[SessionIdentity, ...]) -> BulkKillResult:
+        from uxon.app.kill import kill_snapshot
+
+        allowed = {self.launch_user, *(self.sudo_caps.reachable_users if self.sudo_caps else ())}
+        return kill_snapshot(self.cfg, targets, allowed_users=frozenset(allowed))
 
     # ── refresh / link health ──
 
@@ -520,7 +327,7 @@ class TuiBridge:
 
     def on_probe_existing_sessions(
         self, target_dir: str, profile_id: str, mode_id: str
-    ) -> tuple[tuple[str, str, bool], ...]:
+    ) -> tuple[tuple[str, str, bool, SessionIdentity], ...]:
         """TUI probe: return (name, attached) pairs for the profile's
         compatible sessions under ``target_dir``.
 
@@ -541,7 +348,7 @@ class TuiBridge:
         matches = sessions_probe.probe_tui_compatible_sessions(
             self.cfg, resolved.launch_user, resolved.canonical_target, resolved.profile.id
         )
-        return tuple((s.user, s.name, s.attached == "1") for s in matches)
+        return tuple((s.user, s.name, s.attached == "1", s.identity) for s in matches)
 
     def on_git_remote_options(
         self, name: str, profile_id: str, mode_id: str
@@ -651,7 +458,7 @@ class TuiBridge:
 
     def on_probe_existing_worktree_sessions(
         self, worktree_path: str, repo_root: str, branch: str, profile_id: str, mode_id: str
-    ) -> tuple[tuple[str, str, bool], ...]:
+    ) -> tuple[tuple[str, str, bool, SessionIdentity], ...]:
         resolved = launch_profile_app.resolve_launch_profile(
             self.cfg,
             self.caller_user,
@@ -668,7 +475,7 @@ class TuiBridge:
             stem=session_stem_for_worktree(repo_root, branch),
             compatibility_root=resolved.canonical_target,
         )
-        return tuple((s.user, s.name, s.attached == "1") for s in matches)
+        return tuple((s.user, s.name, s.attached == "1", s.identity) for s in matches)
 
     def on_runtime_gate(self, target_dir: str, profile_id: str, mode_id: str):
         """Probe the workload runtime for ``target_dir``; return the TUI gate or None.

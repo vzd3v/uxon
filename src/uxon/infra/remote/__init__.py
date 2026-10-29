@@ -1,6 +1,5 @@
 """Multi-host: SSH-driven remote-snapshot collection, split by concern.
 
-The package that was once a single 934-line collector module.
 Four single-purpose modules, no re-exports here — import the concrete
 symbol from its concrete module:
 
@@ -8,7 +7,7 @@ symbol from its concrete module:
   ``validate_command_template`` (a true leaf: stdlib + ``platformdirs``
   + ``RemoteSessionPayload`` from ``domain.wire_schema`` only).
 - :mod:`uxon.infra.remote.master_recovery` — ``recover_wedged_master``
-  and its ``/proc`` + ``ssh -O exit`` helpers.
+  uses a bounded native ``ssh -O exit`` request.
 - :mod:`uxon.infra.remote.envelope` — ``decode_envelope`` (wire-shape
   validation, shared with ``infra.demo``).
 - :mod:`uxon.infra.remote.collector` — ``fetch_remote_snapshot``, the
@@ -20,7 +19,7 @@ parses the wire-schema envelope, and returns an in-memory
 :class:`uxon.domain.wire_schema.RemoteSnapshot`. On any failure it
 returns a snapshot with ``error`` populated rather than raising.
 
-Design constraints (from the multi-host spec):
+Collection guarantees:
 
 - **Fail-soft.** A bad host must never raise into the TUI event loop
   or block another host's poll. Every error path returns a snapshot

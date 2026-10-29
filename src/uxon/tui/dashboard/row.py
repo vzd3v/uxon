@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from uxon.domain.session import SessionIdentity
+
 from ..context import TuiSession
 
 
@@ -57,20 +59,21 @@ class SessionRow:
     exited: bool = False
     active_exit_status: int | None = None
     has_diagnostics: bool = False
+    identity: SessionIdentity | None = None
 
     @property
     def key(self) -> str:
         """Stable identity for this row across ticks.
 
-        ``host`` defaults to ``"local"`` when ``None`` so local rows
-        share a deterministic prefix and never collide with peer-named
-        rows. This is the canonical row-identity key — the placement
+        Local and remote scopes have distinct prefixes, including for a peer
+        literally named ``local``. This is the canonical row-identity key — the placement
         function (:mod:`uxon.tui.dashboard.order`), the dashboard widget
         selection, and the block-meta map all key off it. A ``property``
         is a class-level descriptor, so it is ``slots=True``-compatible
         (``key`` is not a declared field).
         """
-        return f"{self.host or 'local'}/{self.user}/{self.name}"
+        scope = "local" if self.host is None else f"remote:{self.host}"
+        return f"{scope}/{self.identity.key if self.identity else self.user + '/' + self.name}"
 
 
 def _parse_pid(raw: str) -> int | None:
@@ -183,6 +186,7 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         exited=s.exited,
         active_exit_status=s.active_exit_status,
         has_diagnostics=s.has_diagnostics,
+        identity=s.identity,
     )
 
 
@@ -198,6 +202,7 @@ def from_wire_record(host: str, rec: dict[str, Any]) -> SessionRow:
     short = str(rec.get("short_id", "") or "") or name
     return SessionRow(
         host=host,
+        identity=SessionIdentity.from_wire(rec.get("identity")),
         user=str(rec.get("user", "") or ""),
         name=name,
         short=short,

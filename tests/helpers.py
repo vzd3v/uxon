@@ -124,12 +124,41 @@ def make_dashboard_context(**overrides):
 
 
 def make_dashboard_session(name="uxon-local@claude", *, user="alice", cpu="1.0"):
+    import hashlib
+
+    from uxon.domain.session import SessionIdentity
     from uxon.tui.context import TuiSession
 
-    return TuiSession(name, name, False, "42", cpu, "1M", "1s", "1s", "claude", "/srv/work", user)
+    nonce = hashlib.sha256(name.encode()).hexdigest()[:32]
+    identity = SessionIdentity(
+        user,
+        name,
+        f"${int(nonce[:6], 16)}",
+        "100",
+        nonce,
+        f"/run/uxon/{user}.sock",
+        "local",
+        "f" * 64,
+    )
+    return TuiSession(
+        name,
+        name,
+        False,
+        "42",
+        cpu,
+        "1M",
+        "1s",
+        "1s",
+        "claude",
+        "/srv/work",
+        user,
+        identity=identity,
+    )
 
 
 def make_dashboard_snapshot(*, user="bob", name="uxon-remote@claude", error=None):
+    from dataclasses import asdict
+
     from uxon.domain.wire_schema import RemoteSnapshot
 
     return RemoteSnapshot(
@@ -140,6 +169,7 @@ def make_dashboard_snapshot(*, user="bob", name="uxon-remote@claude", error=None
             {
                 "user": user,
                 "name": name,
+                "identity": asdict(make_dashboard_session(name, user=user).identity),
                 "short_id": name,
                 "agent": "claude",
                 "attached": False,

@@ -73,7 +73,7 @@ _DISPATCH = textwrap.dedent("""
         demo.mkdir()
         os.environ["UXON_DEMO_HOSTS"] = str(demo)
         from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
-        (demo / "_local.json").write_text(json.dumps({"schema_version": WIRE_SCHEMA_VERSION,
+        (demo / "_local.json").write_text(json.dumps({"schema_version": WIRE_SCHEMA_VERSION, "kind": "list",
             "data": {"sessions": [{"user": user, "name": "uxon-example@claude",
                 "attached": True, "windows": "2", "active_cmd": "claude", "active_path": "/work/example",
                 "cpu_pct": 12.5, "rss_kib": 4096}]}}))

@@ -157,6 +157,8 @@ def _managed_request_for_race(directory):
         launch_profile=pending.launch_profile,
         agent=pending.agent,
         launch_user=pending.launch_user,
+        execution_backend=pending.execution_backend,
+        execution_fingerprint=pending.execution_fingerprint,
         runtime_id="container-id",
         runtime_epoch="epoch-1",
         runtime_cgroup="/box.scope",
@@ -234,7 +236,6 @@ def test_managed_release_reads_fsynced_full_authority_and_rejects_metadata_tampe
     for changed in (
         dataclasses.replace(metadata, session_id="$2"),
         dataclasses.replace(metadata, created="101"),
-        dataclasses.replace(metadata, name="uxon-other@claude_box"),
         dataclasses.replace(metadata, launch_nonce="b" * 32),
     ):
         assert (
@@ -243,6 +244,14 @@ def test_managed_release_reads_fsynced_full_authority_and_rejects_metadata_tampe
             )
             is None
         )
+    assert (
+        launch_records.read_verified_record(
+            pending.socket_path,
+            dataclasses.replace(metadata, name="manual-title"),
+            override_dir=tmp_path / "records",
+        )
+        is not None
+    )
 
 
 def test_managed_launch_failures_remove_pending_without_adopting_or_killing_winner(
@@ -309,13 +318,14 @@ def test_managed_launch_failures_remove_pending_without_adopting_or_killing_winn
                         stderr="create denied",
                     )
                 if command == managed.query_cmd:
-                    if label == "conflict":
+                    if label in {"conflict", "name", "nonce"}:
                         queries.append(observed)
                         return _cp(stdout="\t".join(dataclasses.astuple(observed)) + "\n")
                     meta = owned if not queries else observed
                     queries.append(meta)
                     return _cp(stdout="\t".join(dataclasses.astuple(meta)) + "\n")
-                assert command == (*managed.rollback_kill_prefix, "$1")
+                assert command[:5] == ("tmux", "if-shell", "-F", "-t", "$1")
+                assert owned.launch_nonce in command[5] and command[6] == "kill-session -t $1"
                 return _cp()
 
             with (
@@ -339,24 +349,27 @@ def test_managed_launch_failures_remove_pending_without_adopting_or_killing_winn
                     == "winner-id"
                 )
             assert managed.release_cmd not in calls
-            rollback = [call for call in calls if call[:3] == managed.rollback_kill_prefix]
-            assert rollback == (
-                [(*managed.rollback_kill_prefix, "$1")]
-                if label in {"partial_create", "owned"}
-                else []
-            )
+            rollback = [call for call in calls if "if-shell" in call]
+            assert len(rollback) == int(label not in {"conflict", "name", "nonce"})
             assert [
                 (call.args[0], call.kwargs.get("outcome")) for call in audit.call_args_list
             ] == [("session.new", "error")]
+            failure = audit.call_args.kwargs
+            assert failure["launch_nonce"] == pending.launch_nonce
+            if label in {"name", "nonce", "conflict"}:
+                assert failure["session_id"] == ""
 
 
-def test_bootstrap_release_timeout_and_cleanup_failures_never_execute_workload(subtests):
+def test_bootstrap_release_timeout_and_cleanup_failures_never_execute_workload(
+    subtests, monkeypatch
+):
     from uxon.infra import launch_bootstrap
 
+    monkeypatch.delenv("TMUX_PANE", raising=False)
     nonce = "a" * 32
     channel = launch_records.handshake_channel(nonce, "release")
     base = ["tmux", "-S", "/tmp/owned.sock"]
-    for fault in ("timeout", "cleanup", "nonzero", "transport", "released"):
+    for fault in ("timeout", "cleanup", "nonzero", "transport", "replacement", "released"):
         with subtests.test(fault=fault):
             calls = []
 
@@ -370,15 +383,26 @@ def test_bootstrap_release_timeout_and_cleanup_failures_never_execute_workload(s
                     if fault == "transport":
                         raise OSError("wait transport lost")
                     return _cp(
-                        returncode=int(fault == "nonzero"),
+                        returncode=int(fault in {"nonzero", "replacement"}),
                         stderr="wait rejected" if fault == "nonzero" else "",
                     )
                 assert kwargs["timeout"] == 5
-                assert argv == base + (
-                    ["wait-for", "-S", channel]
-                    if len(calls) == 2
-                    else ["kill-session", "-t", "uxon-repo@claude"]
-                )
+                if len(calls) == 2:
+                    assert argv == base + ["wait-for", "-S", channel]
+                elif len(calls) == 3:
+                    assert argv == base + [
+                        "display-message",
+                        "-p",
+                        "-t",
+                        "=uxon-repo@claude:",
+                        "#{session_id}\t#{session_created}\t#{session_name}\t#{E:UXON_LAUNCH_NONCE}",
+                    ]
+                    if fault != "cleanup":
+                        observed_nonce = "b" * 32 if fault == "replacement" else nonce
+                        return _cp(stdout=f"$1\t123\tuxon-repo@claude\t{observed_nonce}")
+                else:
+                    assert argv[:7] == base + ["if-shell", "-F", "-t", "$1"]
+                    assert nonce in argv[-3] and argv[-2] == "kill-session -t $1"
                 if fault == "cleanup":
                     raise OSError("cleanup transport lost")
                 return _cp()
@@ -409,20 +433,21 @@ def test_bootstrap_release_timeout_and_cleanup_failures_never_execute_workload(s
                         timeout_seconds=0.01,
                     ) == (124 if fault in {"timeout", "cleanup"} else 1)
                     execute.assert_not_called()
-                    assert len(calls) == 3
+                    assert len(calls) == (3 if fault in {"cleanup", "replacement"} else 4)
 
 
 @pytest.mark.parametrize("failure", ("timeout", "nonzero"))
-def test_process_failures_never_echo_workload_argv_or_output(failure: str) -> None:
+def test_control_process_failures_keep_cause_without_echoing_argv(failure: str) -> None:
     secret = "api-key-super-secret"
-    command = ["agent", "--api-key", secret, "private prompt"]
+    command = ["git", "fetch", "origin", secret, "private prompt"]
+    diagnostic = "permission denied by control backend"
     if failure == "timeout":
-        effect = subprocess.TimeoutExpired(command, 1.0)
+        effect = subprocess.TimeoutExpired(command, 1.0, stderr=diagnostic.encode())
         context = mock.patch("uxon.infra.process.run_query", side_effect=effect)
     else:
         context = mock.patch(
             "uxon.infra.process.run_query",
-            return_value=subprocess.CompletedProcess(command, 7, "", secret),
+            return_value=subprocess.CompletedProcess(command, 7, "", diagnostic),
         )
     with context, pytest.raises(SystemExit) as raised:
         from uxon.infra.process import run_cmd
@@ -430,6 +455,7 @@ def test_process_failures_never_echo_workload_argv_or_output(failure: str) -> No
         run_cmd(command, timeout=1.0)
     message = str(getattr(raised.value, "uxon_msg", ""))
     assert message.strip()
+    assert diagnostic in message
     assert secret not in message
     assert "private prompt" not in message
 
@@ -725,6 +751,19 @@ def test_shared_store_checks_owner_mode_membership_acl_and_record_access(tmp_pat
                 launch_records.finalize_pending_record(
                     pending, meta, override_dir=directory, shared=True
                 )
+                # Another controller in the same protected control group may
+                # read authority; the launch user remains outside that group.
+                with mock.patch("uxon.infra.launch_records.os.geteuid", return_value=1004):
+                    assert (
+                        launch_records.read_verified_record(
+                            pending.socket_path,
+                            meta,
+                            override_dir=directory,
+                            shared=True,
+                            launch_user="alice",
+                        )
+                        is not None
+                    )
                 assert (
                     launch_records.read_verified_record(
                         pending.socket_path,
@@ -911,8 +950,10 @@ def test_public_adapters_keep_server_files_git_workload_and_kill_inside_one_boun
     server_state = "running"
     emitted = []
     socket = "/tmp/uxon-alice.sock"
+    session_live = True
 
     def respond(user, command, kwargs):
+        nonlocal session_live
         if user == "bob":
             assert kwargs["timeout"] in (20, 60)
             if command == ["sh", "-c", "command -v gh"]:
@@ -962,12 +1003,18 @@ def test_public_adapters_keep_server_files_git_workload_and_kill_inside_one_boun
         assert command[:3] == ["tmux", "-S", socket], command
         if command[3] == "list-sessions":
             assert kwargs["timeout"] == 1.25
-            return _cp(stdout="uxon-demo@claude\t$1\t0\t1\t100\t110\t\t\t\n")
+            if not session_live:
+                return _cp()
+            if command[-1].startswith("#{session_id}"):
+                return _cp(stdout="$1\t100\t" + "a" * 32 + "\n")
+            return _cp(stdout="uxon-demo@claude\t$1\t0\t1\t100\t110\t" + "a" * 32 + "\t\t\n")
         if command[3] == "list-panes":
             assert kwargs["timeout"] == 1.25
             return _cp(stdout=f"1\t111\tclaude\t{target}\t1\t%0\t0\t\t\n")
-        assert command[3:] == ["kill-session", "-t", "uxon-demo@claude"], command
-        return _cp()
+        assert command[3:7] == ["if-shell", "-F", "-t", "$1"], command
+        assert "kill-session -t $1" in command[-2]
+        session_live = False
+        return _cp(stdout="uxon-kill-matched\n")
 
     external = TargetCommands(respond)
     with external.installed_boundary():
@@ -1019,11 +1066,18 @@ def test_public_adapters_keep_server_files_git_workload_and_kill_inside_one_boun
         assert create[index : index + 5] == ("engine", "exec", "-w", "/work/repo", "box-project")
         assert "claude" in create[index + 5 :]
         assert not any(str(tmp_path / "state") in arg for arg in create)
+        from harness.launch_records import save_launch_record
+
+        save_launch_record(
+            cfg, resolved, target_dir=str(target), name="uxon-demo@claude", nonce="a" * 32
+        )
         snapshot = sessions_probe.collect_session_snapshot_for_user(cfg, "alice", "uxon-", socket)
         assert snapshot.server_state == "running" and [s.name for s in snapshot.sessions] == [
             "uxon-demo@claude"
         ]
-        assert (snapshot.sessions[0].rss_kib, snapshot.sessions[0].cpu_pct) == (32, 1.5)
+        # Verified runtime authority without a telemetry catalog cannot use
+        # the host-side runtime client's usage as workload usage.
+        assert (snapshot.sessions[0].rss_kib, snapshot.sessions[0].cpu_pct) == (0, 0.0)
         attach = tmux._build_tmux_attach_request(snapshot.sessions[0], cfg, "alice")
         assert attach.cmd[:6] == ("boundary", "alice", "--", "tmux", "-S", socket)
         assert (
@@ -1032,7 +1086,7 @@ def test_public_adapters_keep_server_files_git_workload_and_kill_inside_one_boun
             )
             == 0
         )
-    assert sum(c[3:] == ["kill-session", "-t", "uxon-demo@claude"] for c in emitted) == 1
+    assert sum(c[3:7] == ["if-shell", "-F", "-t", "$1"] for c in emitted) == 1
     assert {user for user, _, _ in external.calls} == {"alice", "bob"}
     assert [command[0] for user, command, _ in external.calls if user == "bob"] == [
         "sh",

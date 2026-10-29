@@ -27,7 +27,7 @@ kinds of pages, four different purposes:
   incident, upgrade), harden, customise, debug — including
   [running agents in a container](guides/customise/run-agents-in-a-container.md)
   (and [hardening that container](guides/harden/harden-a-container.md))
-  and [tuning dashboard render performance](guides/debug/render-performance.md).
+  and [diagnosing dashboard input](guides/debug/enable-debug-logs.md).
 - **[reference/](reference/) — reference.** Every command, every
   flag, every config key, every audit event. Look up, don't read.
 - **[explain/](explain/) — explanation.** Why uxon's model looks

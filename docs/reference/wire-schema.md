@@ -5,6 +5,13 @@
 multi-host aggregator consumes the same shape over SSH, so the
 schema is part of the public contract.
 
+The collector validates present known session and host-stat fields. Missing
+fields and unknown additions remain usable within the same schema version.
+Wrong types, invalid identities, duplicate session identities, nonpositive PIDs,
+and negative or nonfinite metrics reject that peer's snapshot as
+`invalid_response`, with the field or row in the diagnostic. Other peers remain
+available; rejected rows cannot be selected for actions.
+
 ## Envelope
 
 ```json
@@ -79,11 +86,21 @@ schema is part of the public contract.
 
 - `all_users` — `true` when invoked with `--all-users` (or peer
   invoked with the same flag through the aggregator).
-- `scope_users` — the *reachable* subset of `session_users` (only
-  users whose selected execution backend passes the fixed target probe).
+- `scope_users` — the launch user plus configured session users whose selected
+  execution backend passes the fixed cross-user target probe. The launch user
+  is always included and never appears in `scope_skipped`.
 - `scope_skipped` — configured session users whose target probe failed.
 - `legacy` — `true` when the session lives under one of
   `legacy_session_prefixes` rather than the active `session_prefix`.
+- `identity` — optional object with string fields `user`, `name`, `session_id`,
+  `created`, `launch_nonce`, `socket_path`, `execution_backend` and
+  `execution_fingerprint`. `created` is the raw tmux creation value, distinct
+  from the row's ISO timestamp. The nonce identifies a launch; tmux IDs are
+  scoped to one server lifetime. Names are mutable labels. Consumers preserve
+  this object through confirmation and send it as `--expect-session` for attach
+  and kill. Missing identity permits display but does not enable a conditional
+  row action; missing nonce or protected authority refuses removal. Identity
+  fields are additive within wire version 3.
 - `windows` — kept as a string (tmux emits it as text via
   `#{session_windows}`).
 - `profile` — launch profile id from the verified launch record. For
@@ -116,7 +133,7 @@ schema is part of the public contract.
     "config_paths": ["/etc/uxon/config.toml"],
     "allowed_roots": ["/srv/projects"],
     "new_project_root": "/srv/projects",
-    "tmux": {"path": "/usr/bin/tmux", "socket": "/tmp/uxon-nadia-agent-local.sock"},
+    "tmux": {"path": "/usr/bin/tmux", "socket": "/tmp/tmux-1001/uxon-local.sock"},
     "agents": {"claude": {"path": "...", "status": "ok", "version": "...", "error": null}},
     "launch_profiles": [...],
     "execution_backends": [...],
@@ -133,7 +150,8 @@ schema is part of the public contract.
 ```
 
 `remote_hosts` is present only when `uxon doctor --remote` was
-invoked; the default `uxon doctor` does zero SSH I/O.
+invoked; default doctor does not poll configured peers. Operator-defined
+execution helpers may themselves use remote transports.
 
 `audit.sink` carries the raw sink id: `"journal"`, `"syslog"`,
 or `"none"`. The human `uxon doctor` text output uppercases this
@@ -162,79 +180,60 @@ released wheels carry version only.
 
 ## `kind = "kill"`
 
-Local kill (own user):
-
 ```json
 {
   "kind": "kill",
   "data": {
     "target": "uxon-myproj@claude_work",
-    "user": "nadia-agent",
-    "socket": "/tmp/uxon-nadia-agent-local.sock",
+    "name": "uxon-myproj@claude_work",
+    "user": "alice",
+    "target_user": "alice",
+    "session_id": "$1",
+    "launch_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "socket": "/run/uxon/alice/tmux.sock",
     "action": "killed",
+    "cleanup_outcome": "ok",
+    "error": "",
     "dry_run": false
   }
 }
 ```
 
-A cross-user kill (`--user <name>` where the target differs from
-the caller's launch user) adds two fields:
+- `target` / `name` — current session label when observed, or the captured
+  label when the session is already absent.
+- `user` / `target_user` — target launch account.
+- `session_id` / `launch_nonce` — the captured identity of the requested session.
+- `socket` — target tmux socket; local responses include it.
+- `reachable` — local responses include `true` after target authorization.
+- `action` — `"killed"`, `"already_absent"`, `"would-kill"` or `"failed"`.
+  `already_absent` means the identity is proved absent without an acknowledged
+  removal by this request, including a lost response followed by safe verification.
+- `cleanup_outcome` — `"ok"`, `"error"` or `"not_run"`.
+- `error` — concrete mutation, authority, reachability or cleanup reason;
+  empty on success. Cleanup failure can accompany `action = "killed"`.
 
-```json
-    "target_user": "liam-agent",
-    "reachable": true
-```
+Remote responses include the configured peer in the envelope's `host`.
+A remote dry-run also includes `ssh_argv`; it resolves the target but does
+not dispatch a removal. `kill --json` requires `--force` or `--dry-run`.
 
-Remote kill (`--host <alias>`) carries an extra `ssh_argv`
-field on `--dry-run` (the SSH command line that would be run);
-non-dry-run remote kill goes through and emits the same
-`action`/`dry_run` shape.
-
-- `target` — the resolved session name as `tmux` sees it.
-- `user` — the launch user the kill ran under (caller's launch
-  user for self-only, the `--user` argument for cross-user).
-- `socket` — path of the per-user tmux socket the kill ran
-  against.
-- `target_user` — **cross-user only.** The target's launch user.
-  Absent on a self-kill (where it would just equal `user`).
-- `reachable` — **cross-user only.** `true` when the per-target
-  sudo probe succeeded. Absent on a self-kill.
-- `action` — `"killed"`, `"would-kill"` (dry-run), or
-  `"failed"`.
-
-`kill --json` is non-interactive — refuses to run without
-`--force` or `--dry-run`.
-
-The audit channel records `kill.remote.out` on the initiating host and
-`session.kill` on the target host, with the operational
-fields (`session`, `target_user`, `force`, `dry_run`,
-`outcome`); the JSON envelope describes the **operator-facing
-result** of the call rather than the audit-record shape.
+The initiating host emits `kill.remote.out`; the target emits
+`session.kill`. Their correlation UUID and captured session identity join
+the operation. JSON describes its operator-facing result; see the
+[audit reference](audit-events.md) for event fields.
 
 ## `kind = "kill-all"`
 
-```json
-{
-  "kind": "kill-all",
-  "data": {
-    "user": "nadia-agent",
-    "socket": "/tmp/uxon-nadia-agent-local.sock",
-    "dry_run": false,
-    "sessions": [
-      {"name": "uxon-foo@claude",  "action": "killed", "cleanup_outcome": "ok"},
-      {"name": "uxon-bar@codex",   "action": "failed", "cleanup_outcome": "not_run"}
-    ]
-  }
-}
-```
+The `data` object contains `user`, `socket`, `dry_run`, `killed_count`,
+`failed_count` and `sessions`. Each entry in `sessions` contains `name`,
+`user`, `session_id`, `launch_nonce`, `action`, `cleanup_outcome` and `error`,
+with the same semantics as single removal. `failed_count` includes required
+cleanup failures; `killed_count` counts terminals removed even when their
+subsequent cleanup failed. An empty list means no targets were selected.
 
-`sessions[].action` is `"killed"`, `"would-kill"`, or
-`"failed"`. `sessions[].cleanup_outcome` is `"ok"`, `"error"`, or
-`"not_run"`; a cleanup failure does not rewrite a successful tmux kill into a
-different action. An empty `sessions` array means there were no matching
-sessions to reap.
-
-`kill-all --json` requires `--force` or `--dry-run`.
+The target set is frozen before confirmation. Every selected target receives
+a result; one failure does not prevent independent targets from being attempted.
+A partial failure returns exit code `1`. `kill-all --json` requires `--force`
+or `--dry-run`.
 
 ## Stable error tags
 

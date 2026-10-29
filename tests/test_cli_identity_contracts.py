@@ -4,15 +4,23 @@ import os
 import pwd
 import socket
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 
 import pytest
 from helpers import make_config
 
 from uxon.cli.main import main
-from uxon.errors import fail
+from uxon.domain.session import SessionIdentity
+from uxon.errors import eprint, fail
 from uxon.infra import audit, config_loader, identity
+from uxon.infra.remote_hosts import RemoteHost
 from uxon.tui.callback_wrap import _wrap_tui_callback
+from uxon.tui.context import CallbackError
+from uxon.tui.context_builder import build_tui_context
 
 
 def test_kernel_login_identity_overrides_forged_environment_and_falls_back(monkeypatch, subtests):
@@ -88,7 +96,7 @@ def test_callback_wrapper_preserves_values_and_complete_human_failures(monkeypat
     assert _wrap_tui_callback(lambda x, y: x + y, CallbackError)(2, 3) == 5
 
     def rejected():
-        print("upstream warning", file=sys.stderr)
+        eprint("upstream warning")
         fail("directory must be under one of:\nuxon:   - /srv/projects\nuxon: got: /tmp")
 
     with pytest.raises(CallbackError) as caught:
@@ -103,3 +111,85 @@ def test_callback_wrapper_preserves_values_and_complete_human_failures(monkeypat
 
     with pytest.raises(CallbackError, match="^command exited with code 7$"):
         _wrap_tui_callback(exited, CallbackError)()
+
+
+def test_concurrent_callbacks_keep_errors_separate_and_parser_quiet(capsys):
+    original = sys.stderr
+    first_entered, second_entered, release_first, first_finished = (
+        threading.Event() for _ in range(4)
+    )
+
+    def first():
+        first_entered.set()
+        assert second_entered.wait(5)
+        assert release_first.wait(5)
+        with pytest.raises(config_loader.ConfigValidationError):
+            config_loader.parse_config({"unsupported-setting": True})
+        eprint("alpha warning")
+        fail("alpha failure")
+
+    def second():
+        second_entered.set()
+        assert first_finished.wait(5)
+        eprint("beta warning")
+        fail("beta failure")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(_wrap_tui_callback(first, CallbackError))
+        assert first_entered.wait(5)
+        b = pool.submit(_wrap_tui_callback(second, CallbackError))
+        assert second_entered.wait(5)
+        print("outside", file=sys.stderr)
+        release_first.set()
+        try:
+            with pytest.raises(CallbackError, match="^alpha warning\nalpha failure$"):
+                a.result(timeout=5)
+        finally:
+            first_finished.set()
+        with pytest.raises(CallbackError, match="^beta warning\nbeta failure$"):
+            b.result(timeout=5)
+    assert sys.stderr is original
+    assert capsys.readouterr().err == "outside\n"
+
+
+def test_callback_diagnostics_survive_screen_redirect_with_an_old_worker():
+    original = sys.stderr
+    old_screen, new_screen = StringIO(), StringIO()
+    entered, release = threading.Event(), threading.Event()
+
+    def old_callback():
+        entered.set()
+        assert release.wait(5)
+        eprint("old warning")
+        fail("old failure")
+
+    def new_callback():
+        eprint("new warning")
+        fail("new failure")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with redirect_stderr(old_screen):
+            old = pool.submit(_wrap_tui_callback(old_callback, CallbackError))
+            assert entered.wait(5)
+        try:
+            with redirect_stderr(new_screen):
+                with pytest.raises(CallbackError, match="^new warning\nnew failure$"):
+                    _wrap_tui_callback(new_callback, CallbackError)()
+                print("third-party output", file=sys.stderr)
+                release.set()
+                with pytest.raises(CallbackError, match="^old warning\nold failure$"):
+                    old.result(timeout=5)
+        finally:
+            release.set()
+    assert sys.stderr is original
+    assert old_screen.getvalue() == ""
+    assert new_screen.getvalue() == "third-party output\n"
+
+
+def test_remote_attach_identity_failure_reaches_bound_callback(tmp_path, capsys):
+    cfg = make_config(remote_hosts=[RemoteHost("peer", "edge", "", "uxon")])
+    ctx = build_tui_context(cfg, "alice", "alice", str(tmp_path), skeleton=True)
+    expected = SessionIdentity("alice", "job", "", "", "", "", "local", "fingerprint")
+    with pytest.raises(CallbackError, match="invalid captured identity.*session_id"):
+        ctx.on_remote_attach("peer", "alice", "job", expected)
+    assert capsys.readouterr().err == ""

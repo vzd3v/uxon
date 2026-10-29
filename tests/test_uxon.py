@@ -190,8 +190,11 @@ class DoInteractiveTextualMissingTests(unittest.TestCase):
                     rc = do_interactive(cfg, "nobody", "nobody")
                 self.assertEqual(rc, 1)
                 err_text = buf_err.getvalue()
-                self.assertIn("requires", err_text)
-                self.assertIn("textual", err_text)
+                self.assertIn("Textual dependency", err_text)
+                self.assertIn("uv tool install --reinstall uxon", err_text)
+                self.assertIn("pipx reinstall uxon", err_text)
+                self.assertIn("Import error:", err_text)
+                self.assertNotIn("pip install --user textual", err_text)
                 self.assertNotIn("Traceback", err_text)
         finally:
             if saved_uxon_tui_module is None:

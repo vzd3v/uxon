@@ -11,8 +11,8 @@ Wires the two responsibilities together for a single ``uxon new`` call:
 3. **Under launch_user**: ``git remote add origin <url>`` and
    ``git push -u origin main``.
 
-The two backends (:mod:`uxon_git_backend_gh` and
-:mod:`uxon_git_backend_token`) share the ``BackendError`` type so the
+The two backends (:mod:`uxon.gitremote.backend_gh` and
+:mod:`uxon.gitremote.backend_token`) share the ``BackendError`` type so the
 orchestrator can translate failures into a single
 :class:`CreationError` with a ``stage`` field for caller diagnostics.
 """

@@ -147,7 +147,7 @@ def _run_prepare_audited(cfg: Config, plan: RuntimePlan, target_dir: str, launch
             outcome="error",
             action=plan.action,
             runtime_resource=plan.resource,
-            error="runtime preparation failed",
+            error=(getattr(exc, "uxon_msg", None) or str(exc) or type(exc).__name__)[:512],
             error_type=type(exc).__name__,
         )
         raise

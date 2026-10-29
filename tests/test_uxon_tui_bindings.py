@@ -5,8 +5,7 @@ Two architectural contracts:
       and a non-empty description.
   (b) No Screen subclass in ``src/uxon/tui/screens/`` — and no custom
       widget in ``src/uxon/tui/widgets/`` — overrides ``on_key``. All
-      keystroke handling must go through ``BINDINGS`` (AGENTS.md hard
-      rule). Catches the ``g`` footgun from PR 10 where a dev added
+      keystroke handling must go through ``BINDINGS``. Catches the ``g`` footgun from PR 10 where a dev added
       ``if event.key == "g": ...`` in ``on_key``, bypassing the
       declarative registry, and holds the render-on-demand widget
       (``SessionListView``) + the ``GatedFooter`` to the same rule.

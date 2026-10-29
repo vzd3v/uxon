@@ -56,4 +56,4 @@ and [container setup checks](run-agents-in-a-container.md#verify-the-rootless-se
 ## Related
 
 - [Diagnose multi-host state](../debug/diagnose-multi-host.md).
-- [Profile refresh/render cost](../debug/render-performance.md).
+- [Capture diagnostic timing](../debug/enable-debug-logs.md).

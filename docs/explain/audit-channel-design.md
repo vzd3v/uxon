@@ -18,11 +18,9 @@ see [`guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-a
 - **journald carries metadata for free.** `_PID`, `_UID`,
   `_AUDIT_LOGINUID`, `_CMDLINE`, `_HOSTNAME`, `_SYSTEMD_UNIT` —
   `uxon` does not duplicate those.
-- **Tamper-evidence by file ownership.** Under the host-wide
-  install (`/opt/uxon/venv`, root-owned), the launch user can
-  append events but cannot edit the trail. `uxon` does **not**
-  try to defend at runtime against a launch user running their
-  own copy — that's what the install path enforces.
+- **Platform-owned retention.** Normal users cannot rewrite stored system
+  journals. Uxon events remain application records: users can bypass Uxon or
+  run another program, so root-owned installation does not guarantee completeness.
 - **Stdlib only.** No `python-systemd` dependency; the wire layer
   speaks the journald native protocol directly. Systems without a
   journald socket fall through to `/dev/log` (RFC-style syslog
@@ -48,9 +46,10 @@ The event alphabet covers:
   `kill.remote.out`, `list.remote.out`) plus the target host's normal local event.
 - Git-remote creation (`git.remote.create`).
 
-Launch and kill emit a terminal success or failure. Attach replaces the
-uxon process image, so it emits a dispatch event: `ok` means the tmux or SSH
-client was handed off, not that the later interactive session succeeded.
+Launch and kill emit success or failure. Attach emits a dispatch event before
+starting the tmux or SSH client, then `session.ended` when the client returns.
+A successful dispatch does not establish the interactive client's outcome;
+the completion event records its exit status and any concrete control error.
 
 ## Cross-host truthfulness
 
@@ -84,11 +83,8 @@ forwarding is an exercise in patience. See
 [`guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-audit-to-collector.md)
 for the central-forwarding patterns.
 
-Older peers that don't recognise `--audit-correlation-id` reject
-the SSH invocation outright. Silent fallback would lose the
-correlation property exactly when an operator is debugging across
-hosts. This is enforced as a wire-schema-version-equivalent
-contract — peers must run the same major version.
+Peer compatibility is defined by the [wire contract](../reference/wire-schema.md#versioning).
+Unsupported operations fail rather than silently discarding correlation.
 
 ## Outcome semantics
 

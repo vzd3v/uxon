@@ -52,17 +52,11 @@ git-remote profiles are allowed for a project tree.
 
 ## Agent defaults and modes
 
-```toml
-[agents.claude]
-default_args = ["--model", "claude-sonnet-4-6"]
-
-[agents.codex]
-default_args = ["--reasoning-effort", "high"]
-```
-
-These flags are prepended whenever a launch profile selects that
-agent. CLI flags passed through `uxon run -- ...` are appended after
-these, so explicit invocations can override config defaults.
+Configure per-agent `default_args` only for flags supported by the installed
+coding tool. Uxon prepends these arguments and appends explicitly forwarded
+arguments; the coding tool decides how duplicates behave. See the
+[agent catalog](../../reference/configuration.md#agentsid-catalog) and the
+selected tool's own flag documentation.
 
 `--mode <id>` selects a permission mode from the selected profile's
 underlying agent catalog (for example `--mode auto` or `--mode yolo`).

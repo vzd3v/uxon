@@ -2,16 +2,15 @@
 """Callback-stderr plumbing for the TUI bridge (stdlib leaf).
 
 Converts uxon's ``fail() → SystemExit`` style into a structured error the
-TUI can render in red without the blessed fullscreen context swallowing
-the message. Imports nothing from ``uxon`` — the error class is injected
-by the caller.
+TUI can render without losing the message during fullscreen handoff.
+The error class is injected by the caller.
 """
 
 from __future__ import annotations
 
-import contextlib
-import io as _io
 from typing import Any
+
+from uxon.errors import capture_diagnostics
 
 
 def _sanitize_callback_stderr(raw: str) -> str:
@@ -39,23 +38,22 @@ def _sanitize_callback_stderr(raw: str) -> str:
 def _wrap_tui_callback(fn: Any, callback_error_cls: type[Exception]) -> Any:
     """Wrap a callback so exceptions surface on the TUI status line.
 
-    Captures anything the callback writes to ``stderr`` (e.g. the message
-    :func:`fail` prints before ``raise SystemExit``), and on exception
+    Captures Uxon diagnostics written through ``eprint`` / ``fail``, and on exception
     raises ``callback_error_cls`` with the captured text as its payload.
-    A plain return is passed through untouched.
+    A plain return is passed through untouched. Third-party direct stderr stays
+    with the current terminal or Textual capture; no process-global stream is changed.
 
     This is the single place that converts uxon's ``fail() → SystemExit``
     style into a structured error the TUI can render in red without the
-    blessed fullscreen context swallowing the message.
+    fullscreen context swallowing the message.
     """
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        buf = _io.StringIO()
         try:
-            with contextlib.redirect_stderr(buf):
+            with capture_diagnostics() as buf:
                 return fn(*args, **kwargs)
         except SystemExit as exc:
-            msg = _sanitize_callback_stderr(buf.getvalue())
+            msg = _sanitize_callback_stderr(buf.getvalue()) or getattr(exc, "uxon_msg", "")
             if not msg:
                 code = exc.code if exc.code is not None else "?"
                 msg = f"command exited with code {code}"

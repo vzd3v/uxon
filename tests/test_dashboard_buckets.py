@@ -109,7 +109,7 @@ def test_mixed_host_status_zeroes_failed_snapshot_metrics() -> None:
             None,
             None,
             "unreachable",
-            "last-error · unreachable",
+            "last-error · unreachable · failed",
         ),
         HostStatusLine(
             "first-error",
@@ -122,7 +122,7 @@ def test_mixed_host_status_zeroes_failed_snapshot_metrics() -> None:
             None,
             None,
             "pending…",
-            "first-error · unreachable",
+            "first-error · unreachable · failed",
         ),
     )
 

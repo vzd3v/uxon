@@ -10,6 +10,9 @@ import shlex
 from uxon.infra.launch_records import LAUNCH_NONCE_ENV
 
 DISMISS_EXIT_CODE = 125
+ACKNOWLEDGED_FORMAT = (
+    "#{&&:#{!=:#{@uxon-death-generation},},#{==:#{@uxon-dismissed},#{@uxon-death-generation}}}"
+)
 _HOOK_INDEX = 42000
 _LIVE_TABLE = (
     "#{?#{==:#{key-table},#{@uxon-diagnostics-table}},#{@uxon-live-key-table},#{key-table}}"
@@ -58,7 +61,7 @@ def diagnostics_query(session: str) -> list[str]:
 
 
 def _diagnostics_commands(session: str, live_table: str, bindings: str) -> list[list[str]]:
-    """Install idempotent, managed-session-only controls on tmux 3.2+."""
+    """Install idempotent controls scoped to managed sessions."""
     # Share by original table, not session name: the native commands resolve
     # session options at execution time, and finished sessions leave no new
     # table behind for every historical launch.
@@ -150,7 +153,15 @@ def _diagnostics_commands(session: str, live_table: str, bindings: str) -> list[
     update = native(["if-shell", "-F", managed, sync_border + " ; " + sync_table])
     ack = " ; ".join(
         (
-            native(["set-option", "-pF", "@uxon-dismissed", "#{pane_pid}"]),
+            native(
+                [
+                    "if-shell",
+                    "-F",
+                    "#{==:#{@uxon-death-generation},}",
+                    native(["set-option", "-p", "@uxon-death-generation", "1"]),
+                ]
+            ),
+            native(["set-option", "-pF", "@uxon-dismissed", "#{@uxon-death-generation}"]),
             native(["detach-client", "-E", f"exit {DISMISS_EXIT_CODE}"]),
         )
     )
@@ -190,7 +201,22 @@ def _diagnostics_commands(session: str, live_table: str, bindings: str) -> list[
     # Pane/window events are window-scoped in tmux. A guarded global hook
     # covers new and linked windows without installing per-window watchers.
     for hook in ("pane-died", "window-pane-changed", "window-layout-changed"):
-        add("set-hook", "-g", f"{hook}[{_HOOK_INDEX}]", update)
+        command = update
+        if hook == "pane-died":
+            # PID is empty for dead panes on newer tmux. Each death advances a
+            # native witness, so respawning cannot reuse an acknowledgement.
+            advance = native(
+                [
+                    "set-option",
+                    "-pF",
+                    "@uxon-death-generation",
+                    "#{e|+:#{?@uxon-death-generation,#{@uxon-death-generation},0},1}",
+                ]
+            )
+            command = native(
+                ["if-shell", "-F", managed, advance + " ; " + sync_border + " ; " + sync_table]
+            )
+        add("set-hook", "-g", f"{hook}[{_HOOK_INDEX}]", command)
     for hook in ("session-window-changed", "client-attached", "client-session-changed"):
         add("set-hook", "-t", session, f"{hook}[{_HOOK_INDEX}]", update)
     add("if-shell", "-F", "-t", session, "1", update)

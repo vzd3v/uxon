@@ -2,8 +2,7 @@
 
 Dismiss value: the entered branch name (stripped) or ``None`` on cancel.
 Unlike NewProjectScreen, slashes are allowed — git branch names routinely
-contain ``/`` (``feature/auth``). BINDINGS-only key handling (no on_key),
-per the AGENTS.md drift guard.
+contain ``/`` (``feature/auth``). Key handling uses BINDINGS so navigation remains declarative.
 """
 
 from __future__ import annotations

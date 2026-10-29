@@ -9,6 +9,7 @@ from conftest import (
     BASE_IMAGE,
     COMPOSE_TEMPLATE,
     PROBE_TIMEOUT_SEC,
+    STOP_HELPER,
     STUB_AGENT_SELECTABLE,
     Runtime,
     operator_runtime_table,
@@ -125,7 +126,13 @@ def test_managed_runtime_lifecycle_reaps_exact_nonce_preserves_sibling_and_repor
     stub.chmod(0o755)
     (target / "compose.yml").write_text(
         COMPOSE_TEMPLATE.format(
-            image=BASE_IMAGE, name=runtime.runtime_name, project_dir=target, stub_path=stub
+            image=BASE_IMAGE,
+            name=runtime.runtime_name,
+            uid=runtime.container_uid,
+            gid=runtime.container_gid,
+            project_dir=target,
+            stub_path=stub,
+            stopper_path=STOP_HELPER,
         )
     )
     cfg = make_config(
@@ -160,8 +167,9 @@ def test_managed_runtime_lifecycle_reaps_exact_nonce_preserves_sibling_and_repor
         if len(sessions) == 2 and all(
             s.launch_record_verified and s.runtime_id and s.runtime_epoch for s in sessions
         ):
+            busy, idle = sorted(sessions, key=lambda session: session.name)
             if runtime.binary != "docker" or (
-                sessions[0].cpu_pct > 50 and all(s.rss_kib > 0 for s in sessions)
+                busy.cpu_pct > 50 and idle.cpu_pct < 50 and all(s.rss_kib > 0 for s in sessions)
             ):
                 break
         time.sleep(0.2)

@@ -40,9 +40,9 @@ are operator-owned.
 | `worktree_root` | string | `""` | Base directory for uxon-managed worktrees. Empty = default `<repo>/.uxon/worktrees/<branch-slug>/` (excluded from git via `.git/info/exclude`). When set: `<worktree_root>/<repo-slug>/<branch-slug>/` — the admin must ensure it is writable by the launch user and inside `allowed_roots`. |
 | `worktree_base` | `"local"` / `"remote"` | `"local"` | Base ref for a *new* worktree branch. `local` (default): branch off the local `origin/HEAD` if present, else local `HEAD` — no `git fetch`, no network. `remote`: `git fetch origin` first, then branch off the fetched `origin/HEAD` (claude-like; needs network + credentials). |
 | `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
-| `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=<ssh_control_persist_seconds>s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
+| `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=<ssh_control_persist_seconds>s` to the default fetch template. `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
 | `ssh_control_persist_seconds` | int | `300` | `ControlPersist` lifetime (seconds) for the multiplex master. Must be `> 0`; to disable multiplexing entirely set `ssh_multiplex = "off"` rather than zeroing this out. Ignored when `ssh_multiplex = "off"` and per-host when `command_template` is set. |
-| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. Not exposed on the TUI's ⚙ Settings screen — edit `config.toml` directly. |
+| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide to bound simultaneous SSH processes and file descriptors. Not exposed on the TUI's ⚙ Settings screen — edit `config.toml` directly. |
 
 ## `[launch]` table
 
@@ -211,27 +211,37 @@ not a lifecycle or continuity guarantee.
 ## Launch records
 
 Every managed tmux session has a controller-side record. The record binds the
-tmux session id, creation time and launch nonce to its launch profile, execution
+tmux session id, creation time and Uxon's own random `launch_nonce` to its launch profile, execution
 backend and workload runtime. It is finalized and fsynced before the pane is
 released. The record path is never passed into the execution backend or workload.
 
-Schema 3 also saves the original mapped runtime directory and project slug.
+Schema 4 keys records by socket and launch nonce, so a session rename preserves
+its authority. It also saves the original mapped runtime directory and project slug.
 Identity checks and teardown reuse this context rather than a pane's current
 directory or environment. The launch nonce keys workload PID records and process
 attribution across independent tmux servers. Older record schemas are refused;
-drain their managed-runtime sessions before upgrading.
+drain all their sessions, including direct-runtime launches, before upgrading.
 
 With `launch_record_dir = ""`, records are private to one controller under its
 XDG state directory (`0700` directory, `0600` files). Use this default when one
-controller account owns supervision.
+controller account owns supervision. An existing private record directory with
+a different mode is rejected without changing its permissions. Reading records
+never creates a missing directory.
 
-Multiple trusted controller accounts must use one explicitly provisioned
+Multiple trusted controller accounts, including supervisors of direct-runtime
+sessions, must use one explicitly provisioned
 directory, for example `/var/lib/uxon/launch-records`. It must be root-owned,
 mode `2770`, have no POSIX access ACL, and use a control group containing every
 controller but no launch user. Shared records are `0640`; the launch user must
-not be able to create, replace, or delete them.
+not be able to create, replace, or delete them. Without this shared store,
+another controller can list and attach but cannot remove the session through Uxon.
 
-Finalized records are removed after a verified successful kill. Each complete
+Removal checks the captured tmux ID, creation value and nonce on tmux's command
+queue and proves that exact terminal absent before stopping its workload or
+deleting its record. Unreachable backends and changed launch markers are not
+proof of absence. Finalized records are removed only after successful cleanup.
+A fresh request after record deletion reports unavailable authority rather than guessing
+whether workload cleanup previously completed. Each complete
 per-user enumeration garbage-collects only records for that authoritatively
 enumerated `launch_user`, at most 1,024 per pass. A protected per-user rotating
 cursor guarantees eventual examination even in a shared store. Pending records
@@ -403,6 +413,14 @@ sockets use `${XDG_CACHE_HOME:-~/.cache}/uxon/`. Failure to create this director
 reports a failed poll before SSH starts. Multiplexing `off`, or a custom command
 template without `{ssh_control_dir}`, does not create it.
 
+After a default multiplexed fetch or remote kill times out, Uxon makes one
+best-effort `ssh -O exit` request with that peer's `extra_ssh_options`, bounded
+to two seconds. It does not kill processes by PID or unlink control sockets.
+A failed control request leaves the
+original timeout visible; recovery is not guaranteed. Set `ssh_multiplex = "off"`
+to bypass an unresponsive master with a fresh connection on each operation.
+Custom command templates own their transport recovery.
+
 Remote retry policy is fixed per host: three transient failures open a bounded
 exponential breaker (factor 2, cap 60 seconds, ±25% jitter). A valid incompatible
 response opens immediately for 300 seconds with ±10% jitter, renewed without
@@ -421,7 +439,7 @@ One entry per allowed GitHub repo-creation target.
 | `owner` | string | yes | Repo owner (user or org). |
 | `auth` | `"gh"` / `"token"` | yes | Backend. `gh` shells out to `gh repo create` under `creds_user`; `token` calls the REST API directly with a fine-grained PAT. |
 | `creds_user` | string | no | OS user whose credentials are used for the create step. Defaults to launch user. Local `git init`/`commit`/`push` always run under launch user. |
-| `token_file` | string | when `auth = "token"` | Absolute path to the PAT, readable by `creds_user`. Token is held in memory only for the API call, never logged, never echoed in `--dry-run`. `repo` scope is the minimum. |
+| `token_file` | string | when `auth = "token"` | Absolute path to the PAT, readable by `creds_user`. Token is held in memory for the preflight or creation operation, never logged, never echoed in `--dry-run`. For organization creation, fine-grained tokens need repository Administration (write) or Repository creation (write), subject to the owner's policy. Classic tokens need `public_repo` or `repo` for public repositories and `repo` for private ones. See [GitHub's create-repository permissions](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository). Creation failures preserve the provider's status and reason. |
 | `visibility` | `"private"` / `"public"` | no | Default when `--git-visibility` is not passed. |
 
 `uxon` only ever creates repos for profiles in this whitelist —
@@ -454,7 +472,7 @@ touching `xkb`.
 |----------|--------|
 | `UXON_REPEAT_NONINTERACTIVE_POLICY` | Overrides `repeat_noninteractive_mode` per invocation (`fail` / `attach` / `new`). |
 | `UXON_LOG_DIR` | Overrides the directory used for off-by-default `debug` and `metrics` channels. Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. New diagnostic directories are `0700`, files `0600`. An existing directory must be owned by the controller with no group/other access; otherwise logging refuses it without changing permissions. Symlink/nonregular files are refused. The audit channel goes to journald/syslog independently. |
-| `UXON_DEBUG` | Comma-separated topic list enabling the `debug` JSONL channel (e.g. `tui,startup,tui-table`). Off by default. |
+| `UXON_DEBUG` | Comma-separated topic list enabling the `debug` JSONL channel (e.g. `keys,startup`). Off by default. |
 | `UXON_METRICS` | When set to `1`, writes per-fetch latency rows to `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files). |
 
 ## Rendering config from JSON (multi-host fleets)

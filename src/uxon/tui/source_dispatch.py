@@ -152,9 +152,7 @@ def build_source_dispatch(
     tests (no Pilot required). Adding a new source means adding an entry
     here in the same change as the source-spec registration.
 
-    Handlers are partially-applied free reducers (``lambda event``
-    closing over ``app``) so the routing surface stays identical to the
-    pre-P7 bound-method registry while the reducer bodies live here.
+    Handlers bind the free reducers to ``app`` through ``lambda event`` closures.
     """
     exact: dict[str, Callable[[_RefreshSourceLanded], None]] = {
         "main_ctx_rebuild": lambda event: handle_main_ctx_rebuild(app, event),

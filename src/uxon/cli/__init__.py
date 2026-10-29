@@ -10,7 +10,7 @@ The ``cli`` package is ``parse → dispatch → main``:
 Only :func:`main` is re-exported here — it backs the
 ``uxon = "uxon.cli:main"`` console-script and ``python -m uxon``. This
 module (and the ``__init__ → main → dispatch → parsing`` load chain) MUST
-stay free of ``uxon.tui`` / ``textual`` imports (latency invariant #7).
+stay free of ``uxon.tui`` / ``textual`` imports.
 """
 
 from __future__ import annotations

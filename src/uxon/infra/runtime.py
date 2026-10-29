@@ -238,7 +238,8 @@ def run_teardown(
     except OSError:
         return False, f"workload runtime command {stop_cmd[0]!r} is unavailable"
     if cp.returncode != 0:
-        return False, (cp.stderr or cp.stdout or "").strip() or "runtime session stop failed"
+        detail = (cp.stderr or cp.stdout or "").strip() or "runtime session stop failed"
+        return False, f"runtime session stop failed (rc={cp.returncode}): {detail}"
     return True, ""
 
 

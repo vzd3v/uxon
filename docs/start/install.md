@@ -9,11 +9,12 @@ points.
 ## Requirements
 
 - **Python ≥ 3.11** (stdlib `tomllib` is used for config reads).
-- **`tmux` ≥ 3.2** on the host.
+- **`tmux` ≥ 3.6**, or a maintained distribution build backporting the
+  child-status fix below; 3.8 is recommended.
 - **Linux.** The runtime assumes per-user `tmux` sockets and
   `sudo -H -u USER --` style cross-user invocation. macOS / WSL work for
   development but aren't supported targets.
-- Runtime deps `textual >= 0.80, < 9` and `tomlkit` come in
+- Runtime deps, including the pinned Textual release and `tomlkit`, come in
   automatically through every install path below.
 - **`gh` CLI** only when an `auth = "gh"` git-remote profile is
   configured.
@@ -24,9 +25,12 @@ Some tmux builds, including 3.4 with libutempter, can lose a child-status
 notification: a failed pane remains dead but its exit status is empty. This is
 [upstream issue 4559](https://github.com/tmux/tmux/issues/4559), fixed by
 [commit fa5f3ce](https://github.com/tmux/tmux/commit/fa5f3cef3d651b0eb9abfa77fc37ccade81679b5).
-Use a distribution package containing that fix, or a fixed upstream release
-such as 3.6a, when diagnosing retained-pane failures or running the heavy tests.
-Uxon does not work around it by weakening exit-status checks.
+Use a maintained distribution package containing that fix, such as 3.7c, or
+upstream 3.8. The operational minimum reflects reliable child-status handling.
+Integration CI uses
+3.8 with libutempter enabled to exercise the affected branch. Libutempter is
+optional tmux login accounting, not a Uxon dependency. Uxon does not work around
+the defect by weakening exit-status checks.
 
 ## Two flavours
 
@@ -36,9 +40,8 @@ Pick by who owns the binary on the host:
   one root-owned `uxon` in `/usr/local/bin/`. Operator owns the
   version, the update path, and the install location; launch
   users can append audit events but cannot edit the binary or
-  the trail. Prerequisite for the TUI's cross-user dashboard
-  (combined with passwordless `sudo` to launch users plus a
-  `session_users` list).
+  the trail. Cross-user access also needs execution grants and `session_users`;
+  cross-controller removal needs a protected shared record store.
 - **Per-user install** — each OS user manages their own copy.
   Independently versioned, no `sudo` needed, easy to uninstall.
   Suits a single-owner host where the developer is also the
@@ -66,27 +69,13 @@ sudo python3 install/install_uxon.py \
 # Updates: re-run with --reinstall
 ```
 
-Both isolate `uxon`'s Python deps in a dedicated venv and put the
-console script on `PATH` via a `/usr/local/bin/uxon` shim. The
-package files end up root-owned, which is what makes the audit
-trail tamper-evident — `uxon` does **not** try to defend at
-runtime against a launch user running their own copy; the
-host-wide, root-owned install is what enforces the property.
+Both isolate Python dependencies and install a host-wide entrypoint. Root-owned
+package files prevent launch users from editing that installation; they do not
+prevent users from executing other programs or forging application messages.
 
 `install/install_uxon.py` creates a venv at `--venv-dir` (default
 `/opt/uxon/venv`), `pip install`s the package into it, and
 symlinks `/opt/uxon/venv/bin/uxon` to `--install-path`.
-
-If `uv` is available you can skip the script:
-
-```bash
-sudo uv tool install --force git+https://github.com/vzd3v/uxon.git@<tag>
-# uv places the entrypoint in /root/.local/bin or similar; symlink as needed
-```
-
-**Don't** use `sudo pip install uxon` — it dumps `textual` /
-`tomlkit` into the system `site-packages` and conflicts with the
-distro's package manager (this is what PEP 668 protects against).
 
 ## Per-user install
 
@@ -97,25 +86,15 @@ uv tool install uxon
 # pipx — equivalent. Same console-script entrypoint.
 pipx install uxon
 
-# pip --user — no isolation. See PEP 668 caveat below.
-pip install --user uxon
 ```
 
 Updates:
 
 ```bash
 uv tool upgrade uxon
+# or, for a pipx installation:
 pipx upgrade uxon
-pip install --user --upgrade uxon
 ```
-
-### PEP 668 caveat
-
-On Debian / Ubuntu / Fedora system Python, PEP 668 blocks
-`pip install --user`; use `pipx` (recommended) or
-`pip install --user --break-system-packages uxon` if you know what
-you're doing. With your own Python (pyenv / asdf / uv-managed)
-PEP 668 doesn't apply.
 
 ### Unreleased changes from `main`
 
@@ -157,11 +136,7 @@ profile to `enabled_profiles`.
 
 ## Client side
 
-For the laptop / phone / tablet that connects to the host — and the
-SSH practices that make `uxon`'s session persistence useful in daily
-work — see [`docs/clients.md`](../clients.md). Short version:
-prefer Eternal Terminal (`et`) over bare `ssh`; put hosts in
-`~/.ssh/config`; use a hardware-protected SSH key.
+See [Connect to a Uxon host](../clients.md) for SSH entry and reconnection.
 
 ## Audit channel
 

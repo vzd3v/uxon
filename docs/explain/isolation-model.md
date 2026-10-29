@@ -24,8 +24,8 @@ dotfiles, SSH keys, credentials.
 In both directions:
 
 - **Caller → agent.** A yolo run (`--mode yolo`) blasts only what
-  `<user>-agent` can write to. The developer's `~/.ssh`,
-  `~/.gnupg`, `~/.config/gh`, `~/.aws` are not in reach.
+  `<user>-agent` can write to. Personal directories stay out of reach when their filesystem permissions
+  exclude that account.
 - **Agent → caller.** `<user>-agent` is a separate OS user with
   its own home, so the agent has no implicit access to the
   developer's files. Anything the developer wants the agent to
@@ -69,7 +69,7 @@ credential-exposure caveats elsewhere — in places it widens them:
 - **Bind-mounted auth dirs keep (or widen) the secrets reach.**
   Making `~/.claude`, `~/.gitconfig`, `~/.aws/`, or an SSH-agent
   socket usable inside the container means bind-mounting it in, so
-  the secrets are reachable inside exactly as they were from
+  the secrets are reachable inside as they were from
   `<user>-agent`'s home.
 - **`uxon`'s writable-probe checks the host path.** Under UID
   mapping the container-side writability of that path can diverge,
@@ -78,8 +78,8 @@ credential-exposure caveats elsewhere — in places it widens them:
 - **Driving a rootful daemon is host-root-equivalent.**
   docker-group membership (or rootful-socket access) lets the
   launch user reach host root and defeats the pairing; **rootless**
-  docker/podman keeps the sandbox intact at zero template cost, and
-  is necessary but not sufficient (a `--privileged` / host-namespace
+  runtimes avoid that rootful-daemon grant, but require reviewed identity
+  mapping and adapters. Rootless operation is necessary but not sufficient (a `--privileged` / host-namespace
   / broad-bind / socket-mounting container definition re-grants host
   access, which `uxon` cannot prevent).
 
@@ -113,19 +113,28 @@ trust what runs.
 
 ## What you keep on the same kernel
 
-- Same kernel, same network namespace, same `/proc` (unless
-  `hidepid=2` is mounted — see
-  [`guides/harden/enable-hidepid-correctly.md`](../guides/harden/enable-hidepid-correctly.md)).
+- Shared host kernel and, without additional isolation, network and process
+  visibility. Uxon does not configure these host policies.
 - Same systemd, same loginds, same DNS resolver, same firewall.
-- Per-user/backend tmux socket at `/tmp/uxon-<user>-<backend>.sock` — only that
-  user's processes can attach.
+- A protected per-user/backend tmux socket; see the
+  [socket contract](../reference/configuration.md#top-level-keys).
 - Per-user home, per-user `~/.claude/` config / cache, per-user
   `~/.gitconfig`. A team-shared launch user (`default_launch_user =
-  "team-agent"`, mode (b) in
-  [`start/team-1-bootstrap.md`](../start/team-1-bootstrap.md))
+  "team-agent"`, configured through
+  [launch-user settings](../reference/configuration.md#top-level-keys))
   collapses these into one shared home and shares the blast
   radius across developers — useful when agents legitimately
   need shared workspace, painful when they don't.
+
+## Resource and telemetry boundaries
+
+Uxon does not size workloads or enforce resource limits. Apply resource policy
+where the execution or workload runtime actually places the processes; UID
+changes alone do not establish cgroup membership. Measure the real workload.
+
+Session telemetry runs through the target-user execution boundary. Process
+visibility restrictions there, or inside a runtime, may limit metrics; granting
+the dashboard caller blanket cross-user process access is not a prerequisite.
 
 ## Threat model summary
 

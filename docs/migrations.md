@@ -3,6 +3,21 @@
 Uxon 4.0 is intentionally breaking. Upgrade every controller and peer in one
 rollout; mixed wire majors are unsupported.
 
+## Drain existing sessions before upgrading
+
+Drain every existing session, including direct-runtime sessions, before replacing
+Uxon. Launch-record schema 4 uses the existing launch nonce as its storage key;
+older records are not migrated or trusted for removal. Older sessions remain
+visible and attachable, but Uxon refuses destructive actions when the nonce or
+protected record is unavailable. If draining was missed, use an explicit tmux
+operator action under the correct account and socket.
+
+Before resuming team launches, provision the protected shared
+[`launch_record_dir`](reference/configuration.md#launch-records) for every
+controller and supervisor that must remove those sessions. This applies to
+direct workloads as well as container runtimes. A private record store supports
+one controller; sudo reachability alone does not share launch authority.
+
 ## Install the host-wide config
 
 Uxon reads only `/etc/uxon/config.toml`. There is no checkout, XDG,
@@ -17,6 +32,23 @@ sudo install -o root -g root -m 0644 config/config.example.toml \
 Move any operator-owned settings from the previous checkout config into this
 file. Move project `.uxon.toml` policy into `[[launch.path_rules]]`, then remove
 those project files so they cannot be mistaken for active policy.
+
+## Rename fixed-user settings and replace legacy sockets
+
+| 3.6 setting | 4.0 setting |
+|---|---|
+| `runtime_user` | `default_launch_user` |
+| Explicit `/tmp/uxon-{user}.sock` template | Remove it to use the private-directory default, or provision a template meeting the [socket contract](reference/configuration.md#top-level-keys). |
+
+For a fixed launch account:
+
+```toml
+default_launch_mode = "fixed"
+default_launch_user = "team-agent"
+```
+
+The removed key is rejected. Drain the old socket before changing its template;
+copying the old public-parent path into the new file will not work.
 
 ## Replace agent selection with launch profiles
 
@@ -84,24 +116,10 @@ prove lifecycle continuity across an operator-managed boundary.
 
 ## Provision launch records for multi-controller hosts
 
-Drain managed-runtime sessions with the old installation before upgrading.
-Launch-record schema 3 saves the original runtime directory and project slug
-alongside the workload nonce. Older records lack that context and are refused;
-they cannot safely authorize teardown after the upgrade. Do not recreate records
-from pane environment or current working directories.
-
-The default launch-record store is controller-private. If several trusted
-controller accounts supervise the same sessions, provision one root-owned
-setgid directory, exclude launch users from its group, and set
-`launch_record_dir` explicitly.
-
-```bash
-sudo install -d -o root -g uxon-control -m 2770 /var/lib/uxon/launch-records
-```
-
-```toml
-launch_record_dir = "/var/lib/uxon/launch-records"
-```
+Every controller that must remove another controller's sessions needs the same
+protected record store. Follow the [team setup](start/team-1-bootstrap.md#share-protected-launch-records)
+and [storage contract](reference/configuration.md#launch-records). Schema 4 has
+no fallback to old records; complete the drain above before upgrading.
 
 ## Update audit queries and diagnostic storage
 

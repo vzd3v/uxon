@@ -30,7 +30,8 @@ Both pull `ruff`, `pyright`, `pytest`, `textual`, `tomlkit`
 automatically. The test suite requires pytest 9+ for built-in subtests;
 the dev extra installs the required version.
 
-`uxon` requires Python 3.11+. The TUI uses `textual >=0.80,<9`; config
+`uxon` requires Python 3.11+. The TUI uses the Textual version pinned in
+`pyproject.toml`; config
 writes use `tomlkit`. Both are hard runtime dependencies (pulled in by
 `pip install` / `pipx install` / `uv tool install`).
 
@@ -68,18 +69,18 @@ If something passes locally but breaks CI, add a regression for the cause.
 
 ## When to bump `__version__`
 
-Bump `__version__` in [`src/uxon/__init__.py`](src/uxon/__init__.py)
-in the same commit as any user-visible behaviour change. Hatch reads
-the same string at build time, so wheels and the in-tree CLI always
-agree. Semver:
+Keep `__version__` unchanged while preparing unreleased changes; add
+user-visible changes to [`CHANGELOG.md`](CHANGELOG.md) under `## [Unreleased]`.
+Set the release version in [`src/uxon/__init__.py`](src/uxon/__init__.py)
+when preparing a release. Hatch reads the same string at build time.
+Follow SemVer:
 - **Major** for breaking changes to the CLI surface, the config
   schema, or the on-disk session-naming scheme.
 - **Minor** for new features that don't break existing config or
   session names.
 - **Patch** for bug fixes and doc-only changes that affect users.
 
-Then add a matching entry to [`CHANGELOG.md`](CHANGELOG.md) under
-`## [Unreleased]`.
+At release, rename the changelog's unreleased section to that version.
 
 ## Architectural rules a contributor will hit
 
@@ -145,7 +146,9 @@ Keep failed measurements when comparing results; a successful retry does not
 establish a stable latency baseline.
 
 Some tmux builds have an upstream libutempter child-status defect; integration
-CI uses a pinned fixed build. See the [installation caveat](docs/start/install.md#tmux-child-status-caveat)
+CI uses tmux 3.8 with libutempter explicitly enabled and verifies the linkage,
+so that the affected branch is exercised. Uxon itself does not require
+libutempter. See the [installation caveat](docs/start/install.md#tmux-child-status-caveat)
 when reproducing retained-pane failures locally.
 
 ## Adding a config key

@@ -6,8 +6,7 @@ runtime/remote commands — must go through :func:`run_query`. It detaches the
 child from uxon's controlling terminal *by construction* so the child can never
 flush the TUI's pending keystrokes.
 
-The swallow this prevents (see
-``docs/specs/2026-06-18-tui-subprocess-terminal-isolation.md``): a worker's
+Without this isolation, a worker's
 ``tmux`` / ``ssh`` / ``sudo`` / ``git`` child inherits uxon's controlling
 terminal, switches it to raw mode, and on entry or restore-at-exit *flushes its
 input queue* (``tcflush``), dropping whatever the user typed while the child

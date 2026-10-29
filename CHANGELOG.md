@@ -9,9 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Installations use the tested Textual release; incomplete TUI installations report how to repair Uxon in its existing environment.
+- Operational guides now focus on Uxon configuration, authority, session cleanup and recovery; unsupported host backup and credential-rotation recipes have been removed. Demo scenarios use the current wire schema, and the dashboard preview is generated from the current interface.
+- Session actions preserve the selected launch identity through confirmation, refresh and SSH. Renames cannot redirect attach, launch recovery or removal to a same-name replacement; bulk removal freezes its targets and reports individual failures and cleanup errors. Launch records survive renames, and multi-controller removal requires a protected shared record store. Drain existing sessions before upgrading to record schema 4.
 - GitHub organization repository creation accepts fine-grained tokens without requiring organization-listing access; denied creation reports the provider's status and reason.
+- Concurrent dashboard operations preserve their own complete diagnostics. Failed control commands and default SSH transport errors retain a bounded concrete cause in the interface and audit trail; default attach forces a PTY after extra options, while custom transport output remains in the terminal. Echoed GitHub tokens are redacted. Malformed peer records and duplicate identities reject that peer's snapshot while healthy peers remain available.
 - Modal list navigation wraps from the first item to the last with ↑ and from the last to the first with ↓, including session, workspace, profile, permission-mode and settings choices.
 - Unavailable SSH control-socket directories report a failed peer poll instead of interrupting the dashboard or CLI listing.
+- SSH timeout recovery preserves the peer's user/port options and uses a bounded native control request without killing processes by a stale PID or deleting a replacement control socket. Unresponsive masters keep the original timeout visible; multiplexing can be disabled to bypass them.
 - Worktree path collisions are rejected before creating a branch or changing the repository.
 - GitHub repository checks and creation use the configured profile host, including GitHub Enterprise Server, regardless of the `gh` default host.
 - Peer polling accepts documented duration strings and rejects malformed or non-finite durations with a configuration error.
@@ -24,7 +29,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Live runtime identity checks reuse the saved launch directory and template context. Failed or refused runtime cleanup preserves launch records and reports failure, including when the stop command cannot be prepared; inaccessible process markers fall back to shared-resource usage instead of false zero usage.
 - Key diagnostics retain timing and navigation metadata without recording typed or pasted content. Diagnostic files are private, and unsafe existing log directories or rotation entries are rejected without changing them.
 - Container, GitHub-project and migration examples validate against the current config schema. Team setup recipes protect personal trees from peer writes and reserve group-write permissions for shared projects; audit collector examples use the current actor fields.
-- Failed managed processes retain their output with an on-screen close-and-return hint. Reviewed errors disappear without stopping live siblings; the dashboard distinguishes finished sessions and sessions containing errors. Launch choices omit fully finished sessions, and attaching to a mixed session selects a live terminal. Fast successful non-managed exits no longer claim that missing output appeared above.
+- Failed managed processes retain their output with an on-screen close-and-return hint. Reviewed errors disappear without stopping live siblings or removing unread failures; a respawned terminal requires a fresh acknowledgement. Concurrent clients can close the same direct-session error without a false cleanup failure. The dashboard distinguishes finished sessions and sessions containing errors. Launch choices omit fully finished sessions, and attaching to a mixed session selects a live terminal. Fast successful non-managed exits no longer claim that missing output appeared above.
 - Codex `auto` mode now uses the current `--approve-for-me` flag instead of the removed `--full-auto` flag.
 - Native tmux socket modes `0660` and `0770` are accepted alongside `0600` and `0700` inside a launch-user-owned `0700` directory; unrelated default-server sessions no longer prevent listing or starting sessions.
 - The interactive TUI now exits when its controlling terminal disappears instead of leaving an orphaned process that can spin at 100% CPU after an SSH or ET disconnect.
@@ -34,16 +39,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `kill-all --json` keeps `action` to its closed operation enum and reports post-kill cleanup separately as `cleanup_outcome`.
 
 ### Changed (breaking)
+- Supported tmux builds require the retained-child-status fix from 3.6 or a distribution backport; 3.8 is recommended.
 - Runtime selection moved from `agents.enabled` / `agents.default` and the old global `[container]` block to operator-owned launch profiles and `[runtimes.<id>]`. A launch profile selects `runtime = "direct"` by default; project `.uxon.toml` files are no longer read.
 - `uxon run` and `uxon new` now select runnable lanes with `--profile <id>`. Other flags, including `--agent`, are forwarded to the selected agent. New sessions use the launch-profile suffix (`<prefix><stem>@<profile>[-N]`).
 - Target-user commands now traverse `[execution]`. The built-in `local` backend preserves host/sudo behavior; command backends own tmux server/list/attach/kill, git/worktrees/filesystem, probes, runtime lifecycle, and agent launch. The default socket is `/tmp/tmux-{uid}/uxon-{execution_backend}.sock` under a launch-user-owned private directory.
-- Wire schema 3, launch-record schema 3, and audit schema 2 replace container-specific fields/events with `execution_backend`, `runtime`, `runtime_kind`, `runtime_resource`, `runtime.prepare`, and `runtime.session_stop`. Older managed sessions must be drained before upgrading; see [migration notes](docs/migrations.md#provision-launch-records-for-multi-controller-hosts).
+- Wire schema 3, launch-record schema 4, and audit schema 2 replace container-specific fields/events with `execution_backend`, `runtime`, `runtime_kind`, `runtime_resource`, `runtime.prepare`, and `runtime.session_stop`. Older managed sessions must be drained before upgrading; see [migration notes](docs/migrations.md#provision-launch-records-for-multi-controller-hosts).
 - `uxon doctor --json` now reports `execution_backends` and `runtimes`; launch-profile rows expose `runtime_kind` and `uses_runtime`.
 - Audit: the `cli.start` event's `agents_enabled` field is renamed `profiles_enabled` and now lists launch-profile ids (it listed agent ids). Update audit/SIEM queries that filter on `agents_enabled`.
-- Removed configuration fields, including `tui.table.default_sort_by`, are rejected as unknown in v4.
+- Fixed-user configuration now uses `default_launch_user` instead of `runtime_user`. Removed fields, including `tui.table.default_sort_by`, are rejected as unknown in v4.
 - The TUI Settings screen is read-only for non-root processes. Operators render configuration unprivileged, review it, and cross the privilege boundary explicitly with `sudo install`.
 
 ### Added
+- Python 3.14 and 3.15 are supported alongside Python 3.11–3.13.
 - Terminal tab/window titles show `uxon` in the dashboard and the session name while attached, following session switches and renames. Returning from detach restores `uxon`; disable updates with `tmux.set_terminal_title = false` or through Settings.
 - The project picker browses nested folders with plain arrow keys, shows the current path, and restores the previous search and selection when returning to a parent folder.
 - Generic command runtimes with deterministic resources, path mapping, readiness/start/create policy, optional cgroup telemetry, identity resolution, and safe per-session teardown.

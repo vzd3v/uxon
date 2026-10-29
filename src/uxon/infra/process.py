@@ -14,18 +14,33 @@ import subprocess
 from uxon.errors import fail
 from uxon.infra.run import run_query
 
+_DIAGNOSTIC_LIMIT = 512
+
+
+def _diagnostic(stderr: str | bytes | None, stdout: str | bytes | None = None) -> str:
+    value = stderr or stdout or ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return value.strip()[-_DIAGNOSTIC_LIMIT:]
+
 
 def run_cmd(
     cmd: list[str], check: bool = True, *, timeout: float | None = None
 ) -> subprocess.CompletedProcess[str]:
+    """Run a control command, retaining its bounded diagnostic but never argv.
+
+    Interactive workload output belongs to the terminal, not this adapter.
+    """
     # Always spawn with ``check=False`` and translate here: ``run_cmd``'s
     # ``fail() -> SystemExit`` contract is what its callers expect, not the
     # ``CalledProcessError`` that ``run_query(check=True)`` would raise.
     try:
         cp = run_query(cmd, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        fail(f"command timed out after {timeout:g}s", 1)
+    except subprocess.TimeoutExpired as exc:
+        detail = _diagnostic(exc.stderr)
+        fail(f"command timed out after {exc.timeout:g}s" + (f": {detail}" if detail else ""), 1)
         raise AssertionError("unreachable") from None
     if check and cp.returncode != 0:
-        fail(f"command exited with status {cp.returncode}", 1)
+        detail = _diagnostic(cp.stderr, cp.stdout)
+        fail(f"command exited with status {cp.returncode}" + (f": {detail}" if detail else ""), 1)
     return cp

@@ -40,6 +40,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from uxon.domain.session import SessionIdentity
+
 from .row import SessionRow, from_tui_session, from_wire_record
 
 if TYPE_CHECKING:
@@ -114,7 +116,9 @@ def _build(
     return tuple(rows)
 
 
-def remote_session_available(state: TuiState, host: str, user: str, name: str) -> bool:
+def remote_session_available(
+    state: TuiState, host: str, user: str, name: str, expected=None
+) -> bool:
     """Recheck a captured row against current live data before an action."""
     slot = state.remote.get(host)
     snap = slot.value if slot is not None else None
@@ -123,7 +127,16 @@ def remote_session_available(state: TuiState, host: str, user: str, name: str) -
         and not slot.last_error
         and snap is not None
         and snap.is_live
-        and any(rec.get("user") == user and rec.get("name") == name for rec in snap.sessions)
+        and any(
+            rec.get("user") == user
+            and (
+                expected.matches(identity)
+                if expected is not None
+                and (identity := SessionIdentity.from_wire(rec.get("identity"))) is not None
+                else expected is None and rec.get("name") == name
+            )
+            for rec in snap.sessions
+        )
     )
 
 

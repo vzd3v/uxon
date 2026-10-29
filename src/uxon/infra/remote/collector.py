@@ -72,6 +72,7 @@ def fetch_remote_snapshot(
     total_timeout: int = DEFAULT_TOTAL_TIMEOUT_SEC,
     ssh_multiplex: str = "auto",
     ssh_control_persist_seconds: int = 300,
+    all_users: bool = True,
 ) -> RemoteSnapshot:
     """Fetch one host's session list. Always returns a snapshot.
 
@@ -162,11 +163,9 @@ def fetch_remote_snapshot(
                 return "ssh not installed on local host", None, "", 127
         except subprocess.TimeoutExpired:
             error_code = "timeout"
-            # Slave hung — almost always wedged ControlMaster (the
-            # subprocess timeout already killed our slave; siblings
-            # share the same %C socket and would loop on the same
-            # wedge). Cleanup is a no-op for non-multiplexed paths
-            # and operator-supplied command_template hosts.
+            # The timeout may come from an unresponsive shared master. Ask SSH
+            # to close it, but keep reporting the original failed operation.
+            # Custom transports own their recovery.
             if ssh_multiplex != "off":
                 recover_wedged_master(host)
             return f"ssh timeout after {eff_total}s", None, "", 124
@@ -187,14 +186,14 @@ def fetch_remote_snapshot(
         error_code = None
         return None, cp.stdout, "", 0
 
-    error, payload, stderr, final_rc = _run_one(all_users=True)
-    scope_limited = False
+    error, payload, stderr, final_rc = _run_one(all_users=all_users)
+    scope_limited = not all_users
     # Fallback: peer rejected ``--all-users`` (its
     # ``enable_all_users_list = false``). Retry with own-only so
     # the TUI still sees something for that peer.
     # The marker is the stable substring documented in
     # ``ALL_USERS_DISABLED_MARKER``; anything else is a hard error.
-    if error is not None and ALL_USERS_DISABLED_MARKER in stderr:
+    if all_users and error is not None and ALL_USERS_DISABLED_MARKER in stderr:
         scope_limited = True
         error, payload, _, final_rc = _run_one(all_users=False)
 

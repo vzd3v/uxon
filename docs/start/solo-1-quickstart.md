@@ -3,7 +3,7 @@
 Get `uxon` managing your agent sessions on one Linux box, in
 about 10 minutes. Two flavours below: the simplest setup (agent
 runs as you), and the recommended paired-account setup (agent
-runs as a sandboxed `<user>-agent`).
+runs as a separate `<user>-agent`).
 
 ## What you'll learn
 
@@ -14,7 +14,7 @@ runs as a sandboxed `<user>-agent`).
 
 ## What you'll need
 
-- A Linux host with `tmux` ≥ 3.2 and Python ≥ 3.11.
+- A Linux host meeting the [Python and tmux requirements](install.md#requirements).
 - One of `claude`, `codex`, or `cursor-agent` installed for your
   user.
 - Optional but useful: `et` (Eternal Terminal) on the laptop —
@@ -35,9 +35,8 @@ That's it. The TUI shows three actions:
 3. **Open existing project** — picks a directory under
    `new_project_root` and launches there.
 
-Before every launch the TUI asks whether to start in normal mode
-or with `--dangerously-skip-permissions` ("yolo"). Say no the
-first time around.
+Choose the launch profile and a permission mode from its coding tool's catalog.
+Start with the default mode. See the [mode reference](../reference/cli.md#--mode-id).
 
 If you want `uxon new <name>` (project scaffolding), set up the
 project root once:
@@ -66,7 +65,8 @@ Pair your shell user (say `wes`) with a low-privilege agent
 account (`wes-agent`). The agent runs as `wes-agent` via
 `sudo -H -u USER --`; your shell user stays the trust boundary that holds
 your dotfiles, SSH keys, and credentials. A yolo-mode (`--mode yolo`)
-run blasts `wes-agent`'s files, not yours.
+run can access anything allowed by `wes-agent`'s Unix permissions, including
+your files or shared files when those permissions grant access.
 
 One-time host setup:
 
@@ -76,6 +76,7 @@ sudo useradd -m -s /bin/bash wes-agent
 # Allow your shell user to sudo into the agent account without a password:
 echo 'wes ALL=(wes-agent) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/uxon-wes-agent
 sudo chmod 440 /etc/sudoers.d/uxon-wes-agent
+sudo visudo -c -f /etc/sudoers.d/uxon-wes-agent
 
 # Give wes-agent a workspace it owns:
 sudo install -d -o wes-agent -g wes-agent /srv/projects
@@ -104,10 +105,9 @@ You'll see your sessions running as `wes-agent`. The TUI's
 superuser block doesn't appear in solo because there's only one
 launch user.
 
-If the agent needs your SSH keys (e.g. to push to private repos),
-forward them explicitly: `ssh -A` from your laptop, and ensure
-`wes-agent` can read your `SSH_AUTH_SOCK` (group ACL, or set up
-the agent forwarding inside the `sudo -H -u USER --` step).
+Provision any required coding-tool or Git credentials for the launch account.
+Delegated credentials remain accessible to the workload; see the
+[isolation model](../explain/isolation-model.md).
 
 ## Daily flow
 
@@ -131,7 +131,6 @@ Non-interactive equivalents:
 uxon list                     # show your sessions
 uxon attach myproj            # reattach by stem
 uxon kill myproj              # kill one
-uxon run -- --model haiku     # forward agent flags
 uxon new mynew                # create + launch
 ```
 

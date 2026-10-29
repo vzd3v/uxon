@@ -29,7 +29,7 @@ LAUNCH_AGENT_ENV = "UXON_AGENT"
 RUNTIME_ENV = "UXON_RUNTIME"
 RUNTIME_FINGERPRINT_ENV = "UXON_RUNTIME_FINGERPRINT"
 
-_RECORD_VERSION = 3
+_RECORD_VERSION = 4
 _STORE_MODE = 0o700
 _RECORD_MODE = 0o600
 _SHARED_STORE_MODE = 0o2770
@@ -123,7 +123,7 @@ def _record_path(
 ) -> Path:
     import hashlib
 
-    key = hashlib.sha256(f"{socket_path}\0{session_name}\0{launch_nonce}".encode()).hexdigest()
+    key = hashlib.sha256(f"{socket_path}\0{launch_nonce}".encode()).hexdigest()
     return default_launch_record_dir(override=override_dir) / f"{key}.json"
 
 
@@ -213,8 +213,10 @@ def read_finalized_record(
 ) -> dict[str, Any] | None:
     directory = default_launch_record_dir(override=override_dir)
     try:
-        _ensure_store_ready(override_dir=directory, shared=shared, launch_user=launch_user)
-    except SystemExit:
+        _ensure_store_ready(
+            override_dir=directory, shared=shared, launch_user=launch_user, create=False
+        )
+    except (OSError, SystemExit):
         return None
     path = _record_path(socket_path, session_name, launch_nonce, directory)
     try:
@@ -234,11 +236,7 @@ def read_finalized_record(
         for key in ("runtime_dir", "project_slug", "launch_user", "profile", "agent")
     ):
         return None
-    if (
-        payload.get("socket_path") != socket_path
-        or payload.get("session_name") != session_name
-        or payload.get("launch_nonce") != launch_nonce
-    ):
+    if payload.get("socket_path") != socket_path or payload.get("launch_nonce") != launch_nonce:
         return None
     return payload
 
@@ -266,13 +264,39 @@ def read_verified_record(
     )
     if payload is None:
         return None
+    if launch_user and payload.get("launch_user") != launch_user:
+        return None
     if (
         payload.get("tmux_session_id") != metadata.session_id
         or payload.get("tmux_session_created") != metadata.created
-        or payload.get("tmux_session_name") != metadata.name
     ):
         return None
     return payload
+
+
+def record_is_absent(
+    socket_path: str,
+    metadata: TmuxSessionMetadata,
+    *,
+    override_dir: Path | None = None,
+    shared: bool = False,
+    launch_user: str = "",
+) -> bool:
+    """Prove a missing record without creating or repairing its protected store."""
+    if not metadata.launch_nonce:
+        return False
+    try:
+        directory = _ensure_store_ready(
+            override_dir=override_dir, shared=shared, launch_user=launch_user, create=False
+        )
+        path = _record_path(socket_path, metadata.name, metadata.launch_nonce, directory)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return True
+    except (OSError, SystemExit):
+        return False
+    return False
 
 
 def delete_verified_record(
@@ -294,11 +318,13 @@ def delete_verified_record(
         launch_user=launch_user,
     )
     if payload is None:
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            return True
-        return False
+        return record_is_absent(
+            socket_path,
+            metadata,
+            override_dir=override_dir,
+            shared=shared,
+            launch_user=launch_user,
+        )
     try:
         path.unlink()
     except FileNotFoundError:
@@ -329,6 +355,7 @@ def garbage_collect_records(
         override_dir=override_dir, shared=shared, launch_user=launch_user
     )
     current = time.time() if now is None else now
+    live_nonces = {(socket, nonce) for socket, _name, nonce in live}
     removed = 0
     try:
         entries = sorted(
@@ -365,7 +392,7 @@ def garbage_collect_records(
             status = payload.get("status")
             timestamp = float(payload.get("finalized_at", payload.get("created_at", current)))
             retention = _STALE_PENDING_SECONDS if status == "pending" else _STALE_FINALIZED_SECONDS
-            if key in live or current - timestamp < retention:
+            if (key[0], key[2]) in live_nonces or current - timestamp < retention:
                 continue
             path.unlink()
             removed += 1
@@ -433,12 +460,13 @@ def _ensure_store_ready(
     override_dir: Path | None,
     shared: bool = False,
     launch_user: str = "",
+    create: bool = True,
 ) -> Path:
     directory = default_launch_record_dir(override=override_dir)
     if shared:
         _validate_shared_dir(directory, launch_user)
     else:
-        _ensure_private_dir(directory)
+        _ensure_private_dir(directory, create=create)
     return directory
 
 
@@ -489,7 +517,7 @@ def _validate_shared_dir(path: Path, launch_user: str) -> None:
             fail("launch user must not belong to launch_record_dir's control group")
 
 
-def _ensure_private_dir(path: Path) -> None:
+def _ensure_private_dir(path: Path, *, create: bool = True) -> None:
     if not path.is_absolute():
         fail(f"launch record directory must be absolute: {path}")
     current = Path(path.anchor)
@@ -498,6 +526,8 @@ def _ensure_private_dir(path: Path) -> None:
         try:
             metadata = os.lstat(current)
         except FileNotFoundError:
+            if not create:
+                raise
             current.mkdir(mode=_STORE_MODE)
             metadata = os.lstat(current)
         if stat.S_ISLNK(metadata.st_mode):
@@ -508,8 +538,7 @@ def _ensure_private_dir(path: Path) -> None:
             fail(f"launch record directory is not owned by the control plane: {current}")
         mode = stat.S_IMODE(metadata.st_mode)
         if current == path and mode != _STORE_MODE:
-            os.chmod(current, _STORE_MODE)
-            mode = stat.S_IMODE(os.lstat(current).st_mode)
+            fail(f"launch record directory must have mode 0700: {current}")
         if mode & 0o022 and not mode & stat.S_ISVTX:
             fail(f"launch record path component is writable by other users: {current}")
 
@@ -585,7 +614,10 @@ def _read_json(
             raise PermissionError("launch record has unsafe ownership or mode")
         with os.fdopen(fd, "rb") as f:
             close_fd = False
-            return json.loads(f.read().decode("utf-8"))
+            payload = json.loads(f.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("launch record is not an object")
+            return payload
     except Exception:
         if close_fd:
             os.close(fd)

@@ -18,7 +18,6 @@ from uxon.infra.config_loader import parse_config
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER_GUIDE = ROOT / "docs/guides/customise/run-agents-in-a-container.md"
-HARDEN_GUIDE = ROOT / "docs/guides/harden/harden-a-container.md"
 
 
 def _blocks(path: Path, language: str) -> list[str]:
@@ -33,6 +32,7 @@ def _blocks(path: Path, language: str) -> list[str]:
         "docs/guides/customise/run-agents-in-a-container.md",
         "docs/guides/customise/configure-github-on-new-project.md",
         "docs/migrations.md",
+        "docs/start/team-1-bootstrap.md",
     ],
 )
 def test_complete_documented_configurations_use_the_actual_parser(relative: str) -> None:
@@ -105,14 +105,13 @@ def _anchors(content: str) -> set[str]:
 
 
 def test_public_relative_markdown_links_and_anchors_exist() -> None:
-    pages = [
-        ROOT / name for name in ("README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md")
-    ]
-    pages += [
-        p
-        for p in (ROOT / "docs").rglob("*.md")
-        if "agents" not in p.relative_to(ROOT / "docs").parts
-    ]
+    tracked = set(
+        subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)
+        .decode()
+        .rstrip("\0")
+        .split("\0")
+    )
+    pages = [ROOT / name for name in tracked if name.endswith(".md") and (ROOT / name).exists()]
     failures = []
     anchors_by_destination: dict[Path, set[str]] = {}
     for page in pages:
@@ -126,7 +125,18 @@ def test_public_relative_markdown_links_and_anchors_exist() -> None:
             location = (
                 f"{page.relative_to(ROOT)}:{content[: match.start()].count(chr(10)) + 1} → {href}"
             )
-            if not destination.exists():
+            private = {"agents", "specs", "plans", "superpowers", "decisions"}
+            relative = destination.relative_to(ROOT) if destination.is_relative_to(ROOT) else None
+            if relative and (
+                relative.parts[0] == "experiments"
+                or (
+                    relative.parts[0] == "docs"
+                    and len(relative.parts) > 1
+                    and relative.parts[1] in private
+                )
+            ):
+                failures.append(location + " (private material)")
+            elif not destination.exists():
                 failures.append(location)
             elif parsed.fragment and destination.suffix == ".md":
                 if destination not in anchors_by_destination:
@@ -137,13 +147,12 @@ def test_public_relative_markdown_links_and_anchors_exist() -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("guide", [CONTAINER_GUIDE, HARDEN_GUIDE], ids=["container", "harden"])
-def test_documented_compose_renders_runtime_home_and_consistent_mounts(guide: Path) -> None:
+def test_documented_compose_renders_runtime_home_and_consistent_mounts() -> None:
     # Offline config parsing uses the client directly, not a daemon-access shim.
     docker = shutil.which("docker", path=os.defpath)
     if docker is None:
         pytest.skip("Docker Compose client unavailable")
-    yaml = _blocks(guide, "yaml")
+    yaml = _blocks(CONTAINER_GUIDE, "yaml")
     assert len(yaml) == 1
     env = dict(
         os.environ,

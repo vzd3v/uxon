@@ -37,18 +37,12 @@ total_timeout    = "5s"
 Use this when peers have wildly different latency or workload
 shape (a high-traffic prod box vs. a quiet scratch VM).
 
-## Cost
+## Measure the cost
 
-The local-tmux poll is cheap — it's a `tmux list-sessions` call
-on the per-user socket. 0.5 s would work; the 2 s default
-balances responsiveness against the dashboard flicker that very
-fast repaints produce.
-
-The SSH poll is meaningfully more expensive — even with
-`ControlMaster` warm, each tick spawns `ssh` to run a remote
-command and parses its live JSON response. 10 s is
-fine for ~10 peers on a LAN; bump to 30 s for ~50 peers or for
-peers across a slow link.
+Local and peer collection both run probes. Increase intervals when collection
+cost or network latency is high; use the
+[diagnostic timing channel](../debug/enable-debug-logs.md) to measure the result.
+A successful response updates the view; a failed peer is not shown from cache.
 
 ## Related
 

@@ -85,8 +85,8 @@ The trust boundaries are:
    reduce the developer's attack surface; it would break every
    time an agent binary, launcher, or wrapper changed. Lead-side
    visibility is anchored to uxon-managed sessions on the configured execution
-   backend. The lead's `ALL=(<dev>_agent)` grant is what permits the built-in
-   local backend to list, attach, and kill those sessions.
+   backend. The lead's target-user grant permits backend access. Removal through Uxon also
+   requires the same protected record store as the launching controller.
 
 2. **Per-peer authority.** Cross-host operation does not delegate
    authority from one peer to another. Every target host independently
@@ -111,7 +111,7 @@ The trust boundaries are:
 4. **Git remote profiles.** Repo creation is limited to the
    explicit `git_remote_profiles` whitelist. With `auth = "token"`,
    uxon reads the PAT from `token_file` (read by `creds_user`),
-   holds it in memory only for the duration of the API call, never
+   holds it in memory for the operation, never
    logs it, and never echoes it in `--dry-run` output.
 
 5. **Config writes.** The TUI Settings screen is read-only for non-root
@@ -121,13 +121,14 @@ The trust boundaries are:
    file, inspect it, then cross the privilege boundary explicitly with
    `sudo install -o root -g root -m 0644`.
 
-6. **Launch records.** Managed runtime teardown trusts a finalized controller-side
+6. **Launch records.** All managed session removal, including direct workloads, trusts a finalized controller-side
    record, not pane environment alone. The default record store is private to one
    controller (`0700`/`0600`). Multi-controller supervision requires an explicit
    root-owned `2770` directory whose control group contains controllers but no
    launch user; shared records are `0640` and directories with access ACLs are
    rejected. Records contain operational session, profile, runtime, and timestamp
-   metadata and are retained for at most seven days after becoming stale.
+   metadata. Enumeration removes absent-session records older than seven days
+   from finalization, in bounded batches; this is not a maximum retention time.
    Machine-readable bulk-kill results keep the tmux action and post-kill
    runtime/record cleanup as separate closed fields, so cleanup failure cannot
    be mistaken for a failed kill or silently hidden.
@@ -170,152 +171,47 @@ The trust boundaries are:
 
 ## Why OS users, and where containers fit
 
-`uxon` pairs each developer with a dedicated low-privilege Linux
-user (`<user>_agent`) and runs the agent under it. The built-in local backend
-uses `sudo -H -u USER --`; command backends use their configured helper.
-That OS-user pairing is `uxon`'s isolation default — but it is
-**orthogonal to whether the agent also runs in a container**, not an
-alternative to it. The two compose: you can run a containerised
-agent *as* `<user>_agent`, and the pairing keeps the sandbox intact
-(see
-[`docs/guides/customise/run-agents-in-a-container.md`](docs/guides/customise/run-agents-in-a-container.md)).
+Paired accounts provide ordinary Unix permission separation. Files readable or
+writable by the workload account remain accessible regardless of which developer
+owns them. Protect personal directories and explicitly delegated credentials
+with appropriate permissions. Uxon does not impose resource, network or kernel
+isolation merely by changing UID.
 
-What OS-user pairing provides is ordinary Linux UID separation: the
-agent cannot read files outside its UID's reach, cannot signal
-another UID's processes, cannot read another user's `~/.ssh/`. That
-is enough when the host's threat model is "developers on this team,
-plus their agents running yolo by accident". It is not enough when
-you do not trust the developers logging into the box — for that, run
-`uxon` itself inside a VM (or container) per team and keep the
-OS-user model inside it. The layers compose.
-
-### What you keep on the same kernel
-
-OS-user separation alone does not narrow these, whether or not the
-agent is containerised with shared namespaces:
-
-- **Same kernel.** A kernel-level escape from inside the agent
-  binary reaches the host. Containers narrow this surface via
-  default seccomp / AppArmor profiles; `<user>_agent` does not.
-- **Same network namespace.** The agent can reach `127.0.0.1`
-  services on the host and scan the LAN. `iptables` / `nftables`
-  rules per UID can mitigate, but uxon does not configure them.
-  A container run with `--network=host` keeps this exposure.
-- **Same `/proc`.** Without `hidepid=2` mounted on `/proc`, every
-  user can see every other user's command lines and environments
-  (not their memory).
-- **Bind-mount UID mapping.** With naive `docker run` defaults,
-  files created in the container come back owned by `root` (or
-  whatever UID was baked in) on the host, breaking save-and-edit.
-  Rootless Podman with the `:U` mount option, and rootless Docker
-  via `subuid` / `subgid`, close this — at the cost of per-host
-  setup that is itself non-trivial.
+An execution backend can place all target-user commands, including the tmux
+server, in an operator-managed boundary. A workload runtime can then wrap the
+coding-tool process inside that boundary. See the
+[isolation model](docs/explain/isolation-model.md).
 
 ### Containerising does not relocate the credential exposures
 
-Wrapping the agent in a container does **not** move the
-home-secrets, `ForwardAgent`, or `allowed_roots` exposures
-elsewhere — in several ways it widens them:
+Bind-mounted credentials and delegated sockets remain usable by the workload.
+A host-side path permission check does not prove that the container mapping is
+writable or isolated. Test ownership in the actual runtime.
 
-- **Bind-mounting auth dirs preserves or widens secrets reach.** To
-  make `~/.claude`, `~/.gitconfig`, `~/.aws/`, or an SSH-agent
-  socket usable inside the container you bind-mount them in. Those
-  same secrets are then reachable from inside the container exactly
-  as they were from `<user>_agent`'s home — the four sudo/attach
-  caveats above still apply, and a broader mount widens the reach.
-- **The host writable-probe is a UX hint, not a container-side
-  control.** uxon's `allowed_roots` / write-access check inspects
-  the **host** path. Under UID mapping the container-side
-  writability of that path can diverge, so the probe carries **no
-  security meaning inside the container** — treat it as a
-  convenience hint, not an enforcement boundary.
+A rootful Docker daemon grants host-root authority to accounts controlling it;
+this defeats paired-account containment. The maintained
+[container integration](docs/guides/customise/run-agents-in-a-container.md) uses
+rootless Docker with an explicit UID mapping. Podman requires its own reviewed
+adapter, mapping and Compose provider; swapping a binary name is insufficient.
 
-### The docker-group caveat (root-equivalence)
+Keep definitions and control interfaces outside workload-writable paths.
+Operator-provided runtime templates are trusted commands, not policies Uxon can
+prove safe. Rootless operation does not compensate for broad host mounts or
+exposed runtime sockets. Follow the [runtime boundary review](docs/guides/harden/harden-a-container.md)
+and the runtime's own security documentation.
 
-For `<launch_user>` to drive `docker exec / inspect / start /
-compose` against a **rootful** daemon it needs docker-group
-membership (or rootful-socket access), which is **root-equivalent on
-the host** (`docker run -v /:/host …` reads and writes anything).
-That negates the paired-account isolation the rest of this document
-relies on: a yolo agent in a docker-group account can escalate to
-host root via the daemon.
+## Operational boundaries
 
-**Run rootless, and the templates do not change.** Under rootless
-docker the `docker` CLI and `docker compose` are byte-for-byte the
-same invocations — only the daemon/socket differ (run as the user,
-socket under `$XDG_RUNTIME_DIR`, not root-owned). Rootless podman
-differs only in the binary name. So the recommended posture
-(rootless, daemon-as-user) costs zero template divergence and keeps
-the `<user>_agent` sandbox intact. Keep the `subuid` / `subgid` and
-"files come back owned by root" caveats above in mind — they are
-more relevant, not less, once containers are actually used.
+Uxon records its own application operations, not all activity on the host.
+Developers with shell or target-account access can perform operations outside
+Uxon. Root-owned installation and logging protect stored history; they do not
+turn the application log into a complete enforcement record.
 
-**Rootless is necessary but not sufficient.** The sandbox holds only
-if the container *definition* does not itself re-grant host access.
-A `--privileged` container, host namespaces (`--network=host` /
-`--pid=host`), broad bind mounts (`-v /:/host`), or mounting the
-runtime socket all undo it. uxon cannot enforce this — the
-operator-supplied `create_command` is opaque by design — so a safe
-container definition is an operator responsibility, not a property
-uxon guarantees.
+Use the existing host controls for account lifecycle, resource limits, process
+visibility, credential revocation and audit retention. Uxon does not configure
+those controls. Telemetry probes run through the selected target-user execution
+boundary; restrictive process visibility inside that boundary may limit metrics.
 
-## Hardening recommendations
-
-- **Run agents as a dedicated, low-privilege OS user.** The
-  paired-account pattern (`alice` shell user + `alice_agent`
-  launch user) is the recommended team setup. See
-  [`docs/reference/configuration.md`](docs/scenarios/team-1.md)
-  for the full template.
-
-- **Audit `sudo` invocations against `*_agent` accounts.** uxon's
-  own audit channel (journald / syslog) records who attached, who
-  killed, and what was launched at the application level — see
-  [`docs/audit-events.md`](docs/reference/audit-events.md). For an
-  authoritative OS-level record (and full keystroke I/O), pair it
-  with `sudo`'s own log via the following in `/etc/sudoers.d/`
-  alongside the operator grants:
-
-  ```
-  Defaults!UXON_AGENT_OPS log_input, log_output
-  Cmnd_Alias UXON_AGENT_OPS = /usr/bin/tmux, /bin/bash, /bin/sh
-  ```
-
-  See [`examples/sudoers/audit.example`](examples/sudoers/audit.example)
-  for a complete fragment, including I/O log path layout and
-  retention notes. I/O logs land under
-  `/var/log/sudo-io/<lead>/<timestamp>/` by default.
-
-- **`hidepid=2` on `/proc`.** Without it, every OS user can read
-  every other user's command lines and environment via `/proc`.
-  Mount with `mount -o remount,hidepid=2,gid=<adm-group> /proc`
-  (and persist via `/etc/fstab`).
-
-- **`ControlMaster` for multi-host operators.** Without SSH
-  connection multiplexing, every TUI refresh tick to a peer opens
-  a fresh handshake — slow, noisy in the peer's `auth.log`. See
-  [`docs/explain/multi-host-philosophy.md`](docs/explain/multi-host-philosophy.md)
-  for the recommended `~/.ssh/config` snippet.
-
-- **Do not store long-lived credentials in `<user>_agent` home.**
-  Anyone who can `sudo -H -u <user>_agent --` reads them. Prefer
-  ephemeral credentials (`aws-vault`-shaped helpers, short-lived
-  tokens, OAuth refresh in a session-scoped agent).
-
-- **Avoid blanket `ForwardAgent yes`.** Forward only for the
-  duration of an operation that needs it; the SSH agent socket is
-  a live delegation of the developer's identity into whatever the
-  agent is running.
-
-- **Keep `git_remote_profiles` short and explicit.** Prefer
-  `auth = "gh"` (delegated to a logged-in `gh` CLI) over storing
-  a long-lived PAT on disk.
-
-- **Set `enable_all_users_list = false` unless multi-user
-  inspection is genuinely required.** The cross-user list probes each target
-  through its selected execution backend; turning it off reduces target probes
-  and the chance of accidental visibility.
-
-- **Restrict write access to `/etc/uxon/config.toml` to
-  administrators.** Settings is read-only for non-root users. A root process
-  writes the file atomically; non-root operators render a candidate separately
-  and install it through an explicit privileged operator action.
+For product-specific setup, use [team bootstrap](docs/start/team-1-bootstrap.md),
+[shared project access](docs/guides/harden/lay-out-shared-projects.md), and the
+[launch-record contract](docs/reference/configuration.md#launch-records).

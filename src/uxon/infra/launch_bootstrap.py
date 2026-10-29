@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 
@@ -14,18 +15,40 @@ from uxon.infra.run import run_query
 _CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
-def _kill_exact_session(socket_path: str, session_name: str) -> None:
+def _kill_exact_session(socket_path: str, session_name: str, launch_nonce: str) -> None:
     """Best-effort cleanup after the release wait cannot complete."""
     try:
-        run_query(
-            ["tmux", "-S", socket_path, "kill-session", "-t", session_name],
+        from uxon.infra.tmux import guarded_session_commands
+
+        base = ["tmux", "-S", socket_path]
+        pane = os.environ.get("TMUX_PANE", "")
+        locator = pane if re.fullmatch(r"%[0-9]+", pane) else "=" + session_name + ":"
+        result = run_query(
+            base
+            + [
+                "display-message",
+                "-p",
+                "-t",
+                locator,
+                "#{session_id}\t#{session_created}\t#{session_name}\t#{E:UXON_LAUNCH_NONCE}",
+            ],
             timeout=_CLEANUP_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
+        fields = result.stdout.strip().split("\t")
+        if result.returncode or len(fields) != 4 or fields[3] != launch_nonce:
+            return
+        metadata = launch_records.TmuxSessionMetadata(*fields)
+        run_query(
+            base + guarded_session_commands(metadata, f"kill-session -t {metadata.session_id}"),
+            timeout=_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired, SystemExit):
         pass
 
 
-def _release_cleanup_then_kill(socket_path: str, session_name: str, release: str) -> None:
+def _release_cleanup_then_kill(
+    socket_path: str, session_name: str, release: str, launch_nonce: str
+) -> None:
     """Consume/clear the nonce channel once, then kill the exact session."""
     try:
         run_query(
@@ -34,7 +57,7 @@ def _release_cleanup_then_kill(socket_path: str, session_name: str, release: str
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
-    _kill_exact_session(socket_path, session_name)
+    _kill_exact_session(socket_path, session_name, launch_nonce)
 
 
 def wait_then_exec(
@@ -55,15 +78,15 @@ def wait_then_exec(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
-        _release_cleanup_then_kill(socket_path, session_name, release)
+        _release_cleanup_then_kill(socket_path, session_name, release, launch_nonce)
         print("uxon: launch record was not finalized in time", file=sys.stderr)
         return 124
     except OSError as exc:
-        _release_cleanup_then_kill(socket_path, session_name, release)
+        _release_cleanup_then_kill(socket_path, session_name, release, launch_nonce)
         print(f"uxon: tmux release wait failed: {exc}", file=sys.stderr)
         return 1
     if wait.returncode != 0:
-        _release_cleanup_then_kill(socket_path, session_name, release)
+        _release_cleanup_then_kill(socket_path, session_name, release, launch_nonce)
         detail = (wait.stderr or wait.stdout or "tmux release wait failed").strip()
         print(f"uxon: {detail}", file=sys.stderr)
         return 1

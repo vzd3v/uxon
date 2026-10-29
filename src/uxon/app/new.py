@@ -189,6 +189,9 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
                 _audit.audit(
                     "session.attach.dispatch",
                     session=attach_target.name,
+                    session_id=attach_target.tmux_session_id,
+                    launch_nonce=attach_target.launch_nonce,
+                    execution_backend=attach_target.execution_backend,
                     target_user=launch_user,
                     profile=attach_target.profile,
                     agent=attach_target.agent,
@@ -291,13 +294,15 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         )
         if decision == "attach":
             # Same physical operation as ``do_attach`` for an existing
-            # session — emit the same event before ``attach_session``'s
-            # execvp; audit fires before the image is replaced.
+            # session — record dispatch before the shared terminal handoff.
             from uxon.infra import audit as _audit
 
             _audit.audit(
                 "session.attach.dispatch",
                 session=attach_target.name,
+                session_id=attach_target.tmux_session_id,
+                launch_nonce=attach_target.launch_nonce,
+                execution_backend=attach_target.execution_backend,
                 target_user=launch_user,
                 profile=attach_target.profile,
                 agent=attach_target.agent,

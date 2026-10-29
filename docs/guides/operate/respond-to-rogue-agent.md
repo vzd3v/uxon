@@ -1,281 +1,72 @@
-# Respond to a rogue agent
+# Stop a runaway session
 
-A yolo-mode (`--mode yolo`) session is destroying files, eating CPU, or
-making API calls you can't afford. Stop it, preserve enough
-state to understand what happened, then revoke whatever it had
-access to. Order matters: stop fast, forensics second, recovery
-third.
+Use Uxon to stop the exact session and inspect cleanup. Project recovery,
+credential revocation and host incident response belong to your existing
+operational procedures.
 
-## Solo·1 without a paired account — short branch
+## Identify and stop the session
 
-If you're solo and the agent runs as your own shell user (no
-`<user>-agent`), the OS-user containment isn't there. The
-recipe collapses to:
-
-1. `Ctrl-c` inside the agent's pane (or detach with `Ctrl-b d`
-   and `uxon kill <session>` from another shell). The agent
-   sees a SIGINT — most yolo runs unwind cleanly.
-2. If the agent is wedged: `pgrep -f claude` (or `codex` /
-   `cursor-agent`) and `kill -STOP <pid>` to freeze, then
-   `kill -TERM <pid>`.
-3. `git status && git diff` in the project tree to see what
-   the agent left uncommitted. Stash unwanted changes,
-   `git restore` deleted files (within reflog window).
-4. Revoke API keys at the provider if the run could have
-   leaked them. Solo means *all* your keys are in the agent's
-   reach — yes, including `~/.aws/`, `~/.claude/`, anything
-   sourced from `.envrc`.
-
-The rest of this page assumes a team setup with paired
-accounts. After the next quiet moment, set up a `<user>-agent`
-— [`start/solo-1-quickstart.md`](../../start/solo-1-quickstart.md#recommended-paired-account)
-shows the 5-line one-time setup that prevents this branch from
-existing again.
-
-## Triage in 30 seconds
-
-1. **Identify** the offending session in the TUI. Sort is a
-   fixed contract (locals first, then `[[remote_hosts]]` order,
-   within-block by last-attach desc) — a runaway under heavy CPU
-   stands out by the red `CPU` cell. This now fires for
-   **container sessions** too: their CPU/RAM reflect the
-   in-container agent, so a containerized runaway reddens its row
-   like any other (and a stopped container shows a distinct `down`
-   marker rather than a misleading idle `0`). `s` (or `/`) summons
-   the search bar to narrow by `user` / `name` / `host` / `path` /
-   `cmd` if you already have a lead — for a container session
-   `cmd` matches the agent id. Note the `USER`, `HOST`, `NAME`,
-   and the `cmd` / `path`.
-2. **Suspend** before killing if you want to inspect state. From
-   another shell on the same host. The signal example below is for the built-in
-   local backend; with a command backend, send the same `kill` argv through its
-   configured helper prefix so it reaches the target namespace:
-   ```bash
-   # Find the active PID without bypassing the configured execution backend:
-   uxon list --all-users --json \
-     | jq -r '.data.sessions[] | select(.name == "<session>") | .active_pid'
-   # Suspend everything in that process tree:
-   sudo kill -STOP -- -<pid>           # negative = process group
-   ```
-   Suspended processes consume no CPU and make no syscalls until
-   you `kill -CONT` or kill them outright.
-3. **Or kill immediately** if forensics aren't needed: in the
-   TUI press `d` on the row, type `kill`, `Enter`. The audit
-   channel records `session.kill` with `target_user`, `force`,
-   `dry_run = false`, `outcome`.
-
-For a full host-wide stop ("the agent broke into the wider
-filesystem and we need everything down"), use the TUI's
-`kill-all-reachable` action (typing `kill-all-reachable` to
-confirm). That covers every reachable user in `session_users`
-on the local host. There is no fleet-wide equivalent — see
-"Across hosts" below.
-
-## Forensics: capture before reaping
-
-Before killing the suspended session, grab evidence:
-
-**Pane scrollback:** attach with `uxon attach --user <user>-agent <session>`,
-enter tmux copy mode, and save the relevant terminal output with your terminal
-client. uxon does not expose a backend-safe non-interactive `capture-pane`
-command; do not bypass a command execution backend with raw tmux.
-
-**Process tree:**
-
-The following host-root probes are local-backend examples. With a command
-backend, run equivalent fixed probes through its configured helper prefix; a
-controller-side `/proc` view may describe different processes.
+Find its host, launch user and full name in the dashboard or
+`uxon list --all-users --json`. CPU/RAM are diagnostic signals, not proof of
+which process caused damage. On the affected host:
 
 ```bash
-sudo ps -fH -p <pid> --forest
-sudo lsof -p <pid> | head -50
+uxon kill --user nadia-agent uxon-project@claude --json --force
 ```
 
-**Recent filesystem changes by the offending agent account:**
+For a configured peer:
 
 ```bash
-sudo find / -newer /tmp/onset-marker -user <user>-agent 2>/dev/null \
-  | head -200
+uxon kill --host build-host --user nadia-agent uxon-project@claude --json --force
 ```
 
-(Create `/tmp/onset-marker` with `touch` at the moment you
-noticed; otherwise use a `find -mtime -1` filter.)
+In the TUI, select the session, press `d`, then confirm `kill`. Uxon captures
+its identity and refuses to act on a replacement with the same name. A peer
+applies its own execution and protected-record checks.
 
-**Audit trail for the session in question:**
+If you need terminal output before stopping, attach through Uxon and inspect
+scrollback. Attaching is read-write. Do not delay an urgent stop solely to
+collect output.
 
-```bash
-journalctl SYSLOG_IDENTIFIER=uxon \
-  --since "1 hour ago" \
-  | grep -E "(session=$SESSION|launch_user=${USER}-agent)"
-```
+## Check the result
 
-If you have central forwarding (see
-[`forward-audit-to-collector.md`](forward-audit-to-collector.md)),
-do this query against the collector — it has the cross-host
-correlation if the agent had been doing remote things.
+Terminal removal and workload cleanup have separate outcomes. Inspect the exit
+status and [structured kill result](../../reference/wire-schema.md#kind--kill).
 
-## Reap the session
+- An unreachable backend does not prove the session is gone.
+- A missing or mismatched protected record prevents automated removal.
+- A failed runtime stop requires investigation in the configured runtime.
+  Preserve the record while resolving that failure.
 
-Once you have what you need:
-
-```bash
-sudo kill -CONT -- -<pid>            # un-suspend so kill is graceful
-uxon kill --user <user>-agent <session> --force
-# or, in the TUI: d on the row, type kill, Enter.
-```
-
-`session.kill` audit event lands with `outcome = ok`. Any
-already-running child processes the agent forked outside its
-pane (background `npm install`, `docker compose up`, etc.) are
-**not** reaped automatically — these belong to the user's
-session manager, not `tmux`. Look them up with `pgrep -u
-<user>-agent` and kill explicitly.
+Cross-controller removal requires the
+[shared launch-record store](../../reference/configuration.md#launch-records),
+even for direct workloads. Do not bypass a refusal by guessing a tmux socket
+or signaling a pane PID: that PID is not an authoritative workload identity.
 
 ## Container path: also stop the container
 
-If the session ran inside a container (a containerized launch profile, or
-a PATH wrapper that `docker exec`s — see
-[`../customise/run-agents-in-a-container.md`](../customise/run-agents-in-a-container.md)),
-`tmux kill-session` reaps only the **client-side** `docker exec`
-process; the in-container agent does **not** die on that disconnect
-under docker or podman — it orphans, leaving a
-`--dangerously-skip-permissions` agent running with full authority,
-no longer tied to a session you can kill from `uxon`, possibly
-mid-write. That is a containment failure, not just a leaked process.
+For a managed runtime, Uxon runs `session.stop_command` after verifying terminal
+removal. The supported adapter stops the launch-specific process; it leaves the
+container running. See [runtime teardown](../customise/run-agents-in-a-container.md#teardown--reap-the-agent-on-kill).
 
-While a container session is live, `uxon list` and the TUI **do**
-show it at parity with a host-level agent — the CPU/RAM figures are
-the in-container agent's own, so a containerized runaway reddens its
-row and a stopped container shows a distinct `down` marker. The
-orphan above is the agent that has already outlived its session, not
-the live one.
+An opaque PATH wrapper or a runtime without `session.stop_command` cannot
+provide that cleanup. Inspect and stop remaining workloads using the runtime
+owner's procedure in the same execution boundary. Stopping a shared container
+may interrupt unrelated sessions.
 
-`uxon` closes this when the launch record names a workload runtime
-with `session.stop_command`: the kill reaps the agent process by the
-per-session PID the launch wrapper recorded (the container itself is
-left running). **Confirm it worked:**
+Direct workloads may also leave processes that detached from the terminal.
+Uxon is not a host-wide process supervisor.
+
+## Review Uxon events
 
 ```bash
-sudo -n -H -u <user>-agent -- docker top <container-name>    # the agent's process should be gone
+journalctl SYSLOG_IDENTIFIER=uxon TARGET_USER=nadia-agent --since "1 hour ago"
 ```
 
-That command is for the built-in local backend. With a command backend, prepend
-the exact configured `command_prefix` (substituting `{user}`) to the `docker top`
-argv so the check observes the same boundary as uxon.
+Use the recorded session ID, launch nonce and correlation ID to distinguish
+launches and join peer operations. Fields and outcomes are in the
+[audit reference](../../reference/audit-events.md).
+A [central collector](forward-audit-to-collector.md) can join cross-host history.
 
-If `session.stop_command` is **not** set — or the session used a PATH-wrapper
-that `uxon` is unaware of — the agent orphans and you must stop it
-yourself; the bluntest sure thing is to stop the container:
-
-```bash
-sudo -n -H -u <user>-agent -- docker stop <container-name>   # or: podman stop
-sudo -n -H -u <user>-agent -- docker top <container-name>    # errors once stopped
-```
-
-Those are local-backend examples. For a command backend, issue the same runtime
-argv through its configured helper prefix; invoking the runtime directly on the
-controller may inspect or stop a different resource.
-
-`uxon` never stops or removes a user's container for you — only the
-agent *process* it launched, and only when `session.stop_command` is set.
-
-## Revoke whatever it had access to
-
-The agent may have had ambient credentials. Assume compromised:
-
-- **API keys** stored under `~/.claude/`,
-  `~/.config/openai/`, `~/.config/anthropic/`, or in `.env`
-  files inside the project tree. Revoke at the provider, not on
-  the host.
-- **`gh` token** under `creds_user`. Revoke at GitHub, then
-  re-issue. See
-  [`rotate-credentials.md`](rotate-credentials.md).
-- **`token_file`** referenced from `[[git_remote_profiles]]`.
-  Re-issue and rewrite the file.
-- **SSH-agent socket** if the agent had `ForwardAgent yes`
-  delegated. There's nothing to revoke at the agent level —
-  just unforward (`SSH_AUTH_SOCK` connection drops on next
-  login). The developer's underlying private key was never
-  exposed if they used a hardware key.
-
-## Recover the project tree
-
-If the agent rewrote files you needed:
-
-- Most projects are git repos. `git status` then `git stash`
-  the unwanted changes, or `git reset --hard HEAD@{1}` if a
-  commit was made. The local `.git/objects/` keeps deleted
-  commits for ~14 days.
-- For non-git scratch dirs, restore from your backup
-  (see [`back-up-and-restore.md`](back-up-and-restore.md)).
-- If files in `/srv/projects/<other_user>/` were touched by an
-  account that wasn't supposed to reach there, audit your group
-  / ACL setup —
-  [`guides/harden/lay-out-shared-projects.md`](../harden/lay-out-shared-projects.md).
-
-## Across hosts (team·N)
-
-The local TUI's `kill-all-reachable` covers only the local host
-deliberately. For a remote host, SSH in and run the gesture
-there — there's no fan-out kill primitive (see
-[`explain/multi-host-philosophy.md`](../../explain/multi-host-philosophy.md)).
-
-For per-session remote kills the TUI's `d` on a remote row works
-the same way (dispatches `uxon kill --host <peer> --user <name>
-<id>` over SSH).
-
-If the agent had been making cross-host calls, chase the
-`correlation_id`:
-
-```bash
-journalctl SYSLOG_IDENTIFIER=uxon CORRELATION_ID=<uuid> --since today
-# Or, against the central collector, the same query — pulls both sides.
-```
-
-Without central forwarding you have to query each host
-separately; this is exactly when central forwarding pays off.
-
-## Post-incident
-
-Open an incident note (your team's tracker, not GitHub —
-incidents involving credentials shouldn't sit in a public repo).
-Include:
-
-- the audit-event sweep (`OUTCOME != "ok"` since onset);
-- the scrollback capture path;
-- which credentials were rotated;
-- which files were touched / restored;
-- whether the agent was running in yolo mode (`--mode yolo`).
-
-If the agent was running in yolo mode, consider whether your
-team's policy on yolo mode is right for the current threat shape —
-the per-launch confirmation is a UI gesture, not a host-wide
-deny. (Host-level yolo deny isn't currently a `uxon` config
-knob; if your team needs it, file a feature request and audit
-the launched process for `--dangerously-skip-permissions` in the
-meantime.)
-
-## Common mistakes
-
-- **Killing the `tmux` session before capturing scrollback.**
-  Reverse the order: stop, capture, kill.
-- **Killing the agent process directly without notifying tmux.**
-  `tmux` then leaves a zombie session. Use `uxon kill`, which traverses the
-  selected execution backend, not raw `tmux` or `kill -9`.
-- **Forgetting child processes outside the pane.** `npm`,
-  `docker`, `pytest -n auto`, background watchers. `pgrep -u`
-  is your friend.
-- **Skipping credential revocation because "the agent didn't
-  exfiltrate anything."** Assume compromise. Rotate.
-
-## Related
-
-- [`back-up-and-restore.md`](back-up-and-restore.md) — recovery
-  side.
-- [`rotate-credentials.md`](rotate-credentials.md) — the
-  revoke-and-reissue procedure.
-- [`forward-audit-to-collector.md`](forward-audit-to-collector.md)
-  — why central audit pays off in incident response.
-- [`../customise/run-agents-in-a-container.md`](../customise/run-agents-in-a-container.md)
-  — the container path and its kill caveat.
-- [`SECURITY.md`](../../../SECURITY.md) — threat-model recap.
+Bulk removal is local only. The TUI's reachable-user action affects the
+confirmed set on that host; there is no fleet-wide kill operation.

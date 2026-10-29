@@ -185,6 +185,9 @@ def _failure_line(label: str, slot) -> str:
     if version:
         parts.append(f"uxon {version}")
     parts.append(captions.get(code or "", "unreachable"))
+    detail = _display_token(getattr(snap, "error", None) or getattr(slot, "last_error", ""), 160)
+    if detail and detail != parts[-1]:
+        parts.append(detail)
     return " · ".join(parts)
 
 

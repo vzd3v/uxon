@@ -66,8 +66,7 @@ class _TabButton(Static):
     is in the focus chain so Tab / ↑ / ↓ enter and leave the strip
     in one step instead of stopping on every tab.
 
-    Navigation goes through ``BINDINGS`` (no ``on_key`` — AGENTS.md hard
-    rule, enforced by ``tests/test_uxon_tui_bindings.py``).
+    Navigation uses ``BINDINGS`` so the declarative registry owns key handling.
     """
 
     # Class default: not focusable. The owning strip flips this to

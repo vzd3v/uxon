@@ -1,7 +1,9 @@
 """CLI interactive handoff through external commands and protected records."""
 
 import json
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -13,9 +15,65 @@ from uxon.app import attach, session_handoff
 from uxon.app.launch_profile import resolve_launch_profile
 from uxon.domain.args import ParsedArgs
 from uxon.domain.launch_request import LaunchRequest, TmuxHandoff
+from uxon.domain.session import SessionIdentity
 from uxon.infra import launch_records, sessions_probe, tmux, tmux_socket
 
 pytestmark = pytest.mark.usefixtures("real_execution", "real_host_probes")
+
+
+@pytest.mark.parametrize("rc", [0, 255])
+@pytest.mark.parametrize("default_transport", [True, False])
+def test_remote_transport_diagnostic_is_streamed_and_bounded_in_result_and_audit(
+    tmp_path, monkeypatch, capfd, rc, default_transport
+):
+    client = tmp_path / "ssh"
+    diagnostic = "connection refused by peer" if default_transport else "private workload stderr"
+    client.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "os.write(1, b'private workload output')\n"
+        f"data = b'warning\\n' * 20000 + {(diagnostic + chr(10)).encode()!r}\n"
+        "while data:\n"
+        "    data = data[os.write(2, data):]\n"
+        f"raise SystemExit({rc})\n"
+    )
+    client.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    identity = SessionIdentity(
+        "alice", "uxon-job@fast", "$7", "123", "a" * 32, "/run/uxon/alice.sock", "local", "f" * 64
+    )
+    request = LaunchRequest(
+        ("ssh", "-tt"),
+        identity=identity,
+        peer_name="build-box",
+        correlation_id="correlated",
+        capture_ssh_diagnostics=default_transport,
+    )
+    with mock.patch("uxon.infra.audit.audit") as audit:
+        result = session_handoff.run_launch_request(request)
+    output = capfd.readouterr()
+    assert output.out == "private workload output"
+    assert output.err.endswith(diagnostic + "\n")
+    assert result.rc == rc and len(result.warning) <= 512
+    assert (
+        result.warning.endswith("connection refused by peer")
+        if rc and default_transport
+        else not result.warning
+    )
+    event = audit.call_args.kwargs
+    assert event["session_id"] == "$7" and event["launch_nonce"] == identity.launch_nonce
+    assert event["session"] == identity.name and event["correlation_id"] == "correlated"
+    assert event["outcome"] == ("error" if rc else "ok")
+    assert event.get("error", "") == (
+        result.warning
+        if rc and default_transport
+        else f"terminal client exited with status {rc}"
+        if rc
+        else ""
+    )
+    assert "private workload" not in repr(event)
+    if not default_transport:
+        assert "warning" not in repr(event) and "connection refused" not in repr(event)
 
 
 def test_cli_managed_launch_finalizes_and_releases_before_waiting_for_interactive_client(
@@ -23,6 +81,7 @@ def test_cli_managed_launch_finalizes_and_releases_before_waiting_for_interactiv
 ):
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(launch_records, "new_launch_nonce", lambda: "-" + "a" * 31)
     target = tmp_path / "repo"
     target.mkdir()
     cfg = session_config(target, tmux_socket_template=str(tmp_path / "socket" / "tmux.sock"))
@@ -42,7 +101,8 @@ def test_cli_managed_launch_finalizes_and_releases_before_waiting_for_interactiv
                 "-s",
                 "uxon-repo@fast",
             ]
-            nonce = command[command.index("--nonce") + 1]
+            nonce = next(arg.split("=", 1)[1] for arg in command if arg.startswith("--nonce="))
+            assert nonce.startswith("-")
             metadata = launch_records.TmuxSessionMetadata("$1", "100", "uxon-repo@fast", nonce)
             [path] = list(launch_records.default_launch_record_dir().glob("*.json"))
             assert json.loads(path.read_text())["status"] == "pending"
@@ -64,14 +124,11 @@ def test_cli_managed_launch_finalizes_and_releases_before_waiting_for_interactiv
                 "-S",
                 cfg.tmux_socket_template,
                 "source-file",
-            ] and command[4:] == [
-                "-",
-                ";",
-                "wait-for",
-                "-S",
-                launch_records.handshake_channel(metadata.launch_nonce, "release"),
-            ]
-            assert "bind-key" in kwargs["input"]
+            ] and command[4:] == ["-"]
+            script = kwargs["input"]
+            assert "bind-key" in script and "if-shell" in script
+            assert launch_records.handshake_channel(metadata.launch_nonce, "release") in script
+            assert metadata.session_id in script and metadata.launch_nonce in script
             payload = launch_records.read_verified_record(cfg.tmux_socket_template, metadata)
             assert (
                 payload is not None
@@ -87,7 +144,8 @@ def test_cli_managed_launch_finalizes_and_releases_before_waiting_for_interactiv
 
     def interactive(argv):
         assert argv[:3] == ["boundary", "alice", "--"] and argv.count("boundary") == 1
-        assert argv[-3:] == ["attach-session", "-t", "uxon-repo@fast"]
+        assert shlex.split(argv[-2])[-3:] == ["attach-session", "-t", "$1"]
+        assert "if-shell" in argv and metadata.launch_nonce in argv[-3]
         assert sequence == ["socket", "create", "metadata", "release"]
         assert launch_records.read_verified_record(cfg.tmux_socket_template, metadata) is not None
         sequence.append("interactive")
@@ -96,6 +154,7 @@ def test_cli_managed_launch_finalizes_and_releases_before_waiting_for_interactiv
     with (
         TargetCommands(respond).installed_boundary(),
         mock.patch("uxon.app.session_handoff.subprocess.call", side_effect=interactive) as spawn,
+        mock.patch("uxon.infra.tmux.exact_identity_exists", return_value=True),
     ):
         resolved = resolve_launch_profile(cfg, "alice", "fast", str(target), "normal")
         assert (
@@ -151,7 +210,7 @@ def test_attach_preparation_and_dismissal_failures_preserve_exact_handoff_result
                     )
                 if mode == "unverified-dismissal" and "list-panes" in command:
                     return subprocess.CompletedProcess(
-                        command, 0, "1\t111\tengine\t/mutable\t1\t%1\t1\t17\t111", ""
+                        command, 0, "1\t111\tengine\t/mutable\t1\t%1\t1\t17\t1", ""
                     )
                 return original(user, command, kwargs)
 

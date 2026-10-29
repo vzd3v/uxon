@@ -8,6 +8,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import signal
 import sys
 import tempfile
@@ -136,6 +137,9 @@ class _Terminal:
         tmux._install_diagnostics(
             tmux.configured_tmux_base(self.cfg, self.user),
             diagnostics_script(_SESSION, table, self.command("list-keys", "-T", table)),
+            expected=next(
+                session.identity for session in self.snapshot().sessions if session.name == _SESSION
+            ),
         )
 
     def fresh_session(self) -> None:
@@ -177,11 +181,10 @@ class _Terminal:
 
     def attach(self, request: LaunchRequest | None = None) -> _Client:
         result_path = self.directory / f"client-{len(self.clients)}.json"
-        request = request or LaunchRequest(
-            tuple(
-                tmux.configured_tmux_base(self.cfg, self.user) + ["attach-session", "-t", _SESSION]
-            ),
-            handoff=TmuxHandoff(self.cfg, self.user, _SESSION, True),
+        request = request or tmux._build_tmux_attach_request(
+            next(session for session in self.snapshot().sessions if session.name == _SESSION),
+            self.cfg,
+            self.user,
         )
         pid, fd = pty.fork()
         if pid == 0:
@@ -271,7 +274,12 @@ def test_session_titles_reach_the_terminal_and_can_be_disabled(
         terminal.cfg.tmux_options["mouse"] = "off"
         for session in (sibling_target, target):
             request = tmux._build_tmux_attach_request(session, terminal.cfg, terminal.user)
-            assert "switch-client" in request.cmd
+            assert shlex.split(request.cmd[-2])[-3:] == [
+                "switch-client",
+                "-t",
+                session.tmux_session_id,
+            ]
+            assert session.launch_nonce in request.cmd[-3]
             assert run_launch_request(request).rc == 0
             receive(client, b"\x1b]0;" + session.name.encode() + b"\x07")
         assert terminal.command("show-options", "-gv", "mouse") == "off"
@@ -399,12 +407,71 @@ def test_two_clients_acknowledge_same_error_without_false_failure(terminal: _Ter
     assert not terminal.record.exists()
 
 
+def test_new_launch_handoff_keeps_finalized_id_after_rename(
+    terminal: _Terminal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = "-uxon-new@claude"
+    monkeypatch.setattr(launch_records, "new_launch_nonce", lambda: "-" + "a" * 31)
+    resolved = resolve_launch_profile(
+        terminal.cfg, terminal.user, "claude", str(terminal.directory), "normal"
+    )
+    request, pending = tmux.build_managed_tmux_launch_request(
+        str(terminal.directory),
+        name,
+        ParsedArgs(action="run"),
+        terminal.cfg,
+        None,
+        resolved_profile=resolved,
+        server_running=True,
+    )
+    prepare = tmux.prepare_managed_launch
+
+    def renamed(req):
+        metadata = prepare(req)
+        terminal.command("rename-session", "-t", metadata.session_id, "manual-new")
+        terminal.command("new-session", "-d", "-s", name, "sleep", "600")
+        terminal.command("set-environment", "-t", name, "UXON_LAUNCH_NONCE", "b" * 32)
+        return metadata
+
+    monkeypatch.setattr(tmux, "prepare_managed_launch", renamed)
+    client = terminal.attach(request)
+    assert terminal.command("list-clients", "-F", "#{session_name}") == "manual-new"
+    original_id = terminal.value("manual-new", "#{session_id}")
+    assert terminal.value("=" + name + ":", "#{session_id}") != original_id
+    terminal.command("detach-client")
+    result = client.finish()
+    assert result["rc"] == 0 and result["session_id"] == original_id
+    assert result["launch_nonce"] == pending.launch_nonce
+
+
+def test_acknowledgement_never_closes_unread_dead_sibling(terminal: _Terminal) -> None:
+    first = terminal.value(_SESSION, "#{pane_id}")
+    second = terminal.command(
+        "split-window", "-d", "-P", "-F", "#{pane_id}", "-t", _SESSION, "sleep", "600"
+    )
+    terminal.fail(first)
+    terminal.fail(second)
+    assert terminal.snapshot().sessions[0].dismissed_panes == ()
+    terminal.command("select-pane", "-t", first)
+    client = terminal.attach()
+    client.send(b"q")
+    assert client.finish()["rc"] == 0
+    remaining = terminal.snapshot().sessions[0]
+    assert remaining.active_pane_id == second and remaining.dismissed_panes == ()
+    assert terminal.record.exists()
+
+
 def test_respawned_pane_is_not_deleted_by_stale_acknowledgement(
     terminal: _Terminal, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pane = terminal.value(_SESSION, "#{pane_id}")
     terminal.fail(pane)
-    terminal.command("set-option", "-pF", "-t", pane, "@uxon-dismissed", "#{pane_pid}")
+    first_generation = terminal.value(pane, "#{@uxon-death-generation}")
+    assert first_generation
+    terminal.command(
+        "set-option", "-pF", "-t", pane, "@uxon-dismissed", "#{@uxon-death-generation}"
+    )
     respawned = False
 
     def query(argv, **kwargs):
@@ -424,6 +491,8 @@ def test_respawned_pane_is_not_deleted_by_stale_acknowledgement(
     assert terminal.value(pane, "#{pane_dead}") == "0"
     assert terminal.record.exists()
     terminal.fail(pane)
+    assert terminal.value(pane, "#{@uxon-death-generation}") != first_generation
+    assert terminal.value(pane, "#{@uxon-dismissed}") == first_generation
     assert terminal.snapshot().sessions[0].dismissed_panes == ()
 
 

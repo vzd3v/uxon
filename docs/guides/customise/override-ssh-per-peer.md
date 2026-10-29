@@ -43,50 +43,10 @@ command_template = [
 ]
 ```
 
-## Per-peer knobs
-
-- **`interval`** — poll cadence override. Duration string
-  (`"3s"`, `"500ms"`, `"2m"`) or bare seconds.
-- **`connect_timeout`** — `ssh ConnectTimeout` override. Default
-  `5s`.
-- **`total_timeout`** — hard wall on the whole fetch (connect +
-  remote run + parse). Default `15s`.
-- **`extra_ssh_options`** — extra `ssh` tokens inserted
-  immediately before `{ssh_alias}` in the default template.
-  Use for `ProxyJump`, per-peer `IdentityFile`, custom
-  `Cipher`, etc.
-- **`command_template`** — full argv override. Replaces the
-  entire SSH command. Substitutes:
-  - `{ssh_alias}`
-  - `{remote_uxon}`
-  - `{connect_timeout}`
-  - `{ssh_control_dir}`
-  - `{ssh_control_persist_seconds}`
-  - `{remote_command}` (the standard `<remote_uxon> list
-    --all-users --json …` string)
-
-  When `command_template` is set, `extra_ssh_options` and
-  `ssh_multiplex` are **ignored** — the operator owns the
-  transport.
-
-## Fleet-wide knobs
-
-`ssh_multiplex = "off"` strips `ControlMaster` /
-`ControlPersist` from the default fetch template. Useful for
-environments that prohibit `ControlPersist` sockets entirely
-(some hardened distros). Default `"auto"` gives ~5–20 ms
-warm-tick SSH cost vs. 200–500 ms cold.
-
-`ssh_control_persist_seconds` (default `300`, must be `> 0`)
-sets the `ControlPersist` lifetime when `ssh_multiplex = "auto"`.
-Bump it for fleets with sparse polling intervals — the master
-stays alive between ticks instead of cold-starting each one. To
-disable multiplexing entirely set `ssh_multiplex = "off"` rather
-than zeroing this out. Ignored when `ssh_multiplex = "off"` and
-per-host when `command_template` is set.
-
-`fetch_concurrency` (default `16`) caps concurrent SSH workers
-fleet-wide.
+Exact template placeholders, timeout defaults and multiplexing behavior are in
+the [peer configuration reference](../../reference/configuration.md#remote_hosts-table-array).
+Custom command templates own their transport and must support the intended
+interactive and non-interactive operations.
 
 ## When to use each
 

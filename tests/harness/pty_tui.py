@@ -136,7 +136,7 @@ def run_pty(
     app. Without it, under heavy CPU contention textual's import+first-render
     can outlast a fixed ``initial_drain`` and the keys hit a blank screen — the
     captured trace then contains only the echoed input bytes. This is the
-    render-race source fix for the pty click/launch tests (Phase P9a).
+    render race that the pty click/launch tests must avoid.
 
     Returns a :class:`PtyTrace` with the combined raw output, per-frame
     snapshots, and the child's exit code.
@@ -254,10 +254,11 @@ def run_pty(
 
         _drain(final_drain, stage="final output")
         trace.frames.append(trace.plain)
-        # A final marker may precede interpreter shutdown. Give that exit a
-        # bounded chance to complete before cleanup sends a signal.
+        # EOF or a final marker may precede interpreter finalization. Normal
+        # exit owns the remaining scenario budget; _EXIT_WAIT is only the
+        # grace period after forced termination, not a second exit deadline.
         try:
-            proc.wait(timeout=min(_EXIT_WAIT, max(0.0, deadline_outer - time.monotonic())))
+            proc.wait(timeout=max(0.0, deadline_outer - time.monotonic()))
         except subprocess.TimeoutExpired:
             pass
     finally:

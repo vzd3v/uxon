@@ -5,16 +5,15 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-import sys
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias
+from typing import TypeAlias
 
 import uxon.app.listing as listing_app
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
-from uxon.domain.session import SessionInfo
+from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity, SessionInfo
 from uxon.errors import eprint, fail
-from uxon.infra import identity, process, sessions_probe, tmux
+from uxon.infra import identity, sessions_probe, tmux
 from uxon.infra.run import run_query
 
 
@@ -38,18 +37,21 @@ class RuntimeTeardown:
     agent: str
     launch_user: str
     launch_epoch: str = ""
+    session_id: str = ""
+    launch_nonce: str = ""
+    execution_backend: str = ""
 
 
-# None means no stop is required; False means a required stop could not be prepared.
-RuntimeTeardownPreparation: TypeAlias = RuntimeTeardown | Literal[False] | None
+@dataclass(frozen=True)
+class CleanupResult:
+    ok: bool
+    error: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ok
 
 
-def _print_killed(name: str, cfg: Config) -> None:
-    """Print the kill-success line.
-
-    Runtime-specific cleanup is handled by ``stop_command`` before this line.
-    """
-    print(f"killed: {name}")
+RuntimeTeardownPreparation: TypeAlias = RuntimeTeardown | CleanupResult | None
 
 
 def _teardown_skip(
@@ -60,7 +62,10 @@ def _teardown_skip(
     runtime: str = "",
     resource: str = "",
     target_user: str = "",
-) -> None:
+    session_id: str = "",
+    launch_nonce: str = "",
+    execution_backend: str = "",
+) -> CleanupResult:
     eprint(f"uxon: runtime session stop for {session_name} skipped: {reason}")
     if reason_code is not None:
         from uxon.infra import audit as _audit
@@ -73,8 +78,13 @@ def _teardown_skip(
             runtime_resource=resource,
             action="skip",
             session=session_name,
+            session_id=session_id,
+            launch_nonce=launch_nonce,
+            execution_backend=execution_backend,
             target_user=target_user,
         )
+
+    return CleanupResult(False, reason)
 
 
 def cleanup_launch_record(cfg: Config, target: SessionInfo) -> None:
@@ -111,7 +121,7 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
     server to talk to. Kill the session first, then reap the orphan the
     severed exec leaves behind.
 
-    ``None`` means no workload stop is configured. ``False`` means teardown
+    ``None`` means no workload stop is configured. A failed ``CleanupResult`` means teardown
     could not be prepared: the tmux kill remains available, but post-kill
     cleanup must report failure and retain the launch record. A runtime-managed
     session without its authoritative launch record fails closed before tmux
@@ -128,47 +138,55 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             "no authoritative launch record is available"
         )
     if not target.runtime:
-        _teardown_skip(
+        return _teardown_skip(
             target.name,
             "missing workload runtime",
             reason_code="missing_runtime",
             resource=target.runtime_resource,
             target_user=target.user,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
         )
-        return False
     profile = cfg.runtimes.get(target.runtime)
     if profile is None:
-        _teardown_skip(
+        return _teardown_skip(
             target.name,
             f"workload runtime {target.runtime!r} is unavailable",
             reason_code="missing_profile",
             runtime=target.runtime,
             resource=target.runtime_resource,
             target_user=target.user,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
         )
-        return False
     if profile.fingerprint != target.runtime_fingerprint:
-        _teardown_skip(
+        return _teardown_skip(
             target.name,
             "workload runtime changed since launch",
             reason_code="fingerprint_mismatch",
             runtime=target.runtime,
             resource=target.runtime_resource,
             target_user=target.user,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
         )
-        return False
     if not profile.stop_command:
         return None
     if not target.runtime_id or not target.runtime_epoch:
-        _teardown_skip(
+        return _teardown_skip(
             target.name,
             "missing runtime resource identity",
             reason_code="identity_unresolved",
             runtime=target.runtime,
             resource=target.runtime_resource,
             target_user=target.user,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
         )
-        return False
     try:
         from uxon.domain.runtime import (
             is_valid_runtime_resource,
@@ -178,15 +196,17 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
 
         name = target.runtime_resource
         if not name or not is_valid_runtime_resource(name):
-            _teardown_skip(
+            return _teardown_skip(
                 target.name,
                 "missing runtime resource",
                 reason_code="missing_resource",
                 runtime=target.runtime,
                 resource=target.runtime_resource,
                 target_user=target.user,
+                session_id=target.tmux_session_id,
+                launch_nonce=target.launch_nonce,
+                execution_backend=target.execution_backend,
             )
-            return False
         pidfile = runtime_pidfile(target.launch_nonce)
         stop_cmd = render_profile_template(
             profile.stop_command,
@@ -206,6 +226,9 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             resource=name,
             runtime_id=target.runtime_id,
             runtime_fingerprint=target.runtime_fingerprint,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
             runtime_dir=target.runtime_dir,
             project_slug=target.project_slug,
             launch_profile=target.profile,
@@ -213,38 +236,41 @@ def prepare_runtime_teardown(cfg: Config, target: SessionInfo) -> RuntimeTeardow
             launch_user=target.launch_user,
             launch_epoch=target.runtime_epoch,
         )
-    except SystemExit:  # template render failure must never abort the kill
-        _teardown_skip(
+    except SystemExit as exc:  # template render failure must never abort the kill
+        return _teardown_skip(
             target.name,
-            "invalid runtime stop configuration",
+            f"invalid runtime stop configuration: {getattr(exc, 'uxon_msg', str(exc))}",
             reason_code="invalid_stop_config",
             runtime=target.runtime,
             resource=target.runtime_resource,
             target_user=target.user,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
         )
-        return False
-    except Exception:  # noqa: BLE001 — teardown must never block kill-session
-        _teardown_skip(
+    except (OSError, ValueError) as exc:  # noqa: BLE001 — teardown must never block kill-session
+        return _teardown_skip(
             target.name,
-            "runtime stop preparation failed",
+            f"runtime stop preparation failed: {exc}",
             reason_code="prepare_failed",
             runtime=target.runtime,
             resource=target.runtime_resource,
             target_user=target.user,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
         )
-        return False
 
 
 def run_runtime_teardown(
     cfg: Config, teardown: RuntimeTeardown, target_user: str, session_name: str
-) -> bool:
+) -> CleanupResult:
     """Run a prepared teardown (best-effort) — after ``kill-session``.
 
     The single shared teardown-call site: every kill path (CLI self/cross-user,
     kill-all, and the three TUI bridge paths) routes through here so the
-    ``runtime.session_stop`` audit event is emitted uniformly with
-    ``name``, ``session``, and ``outcome`` (``ok`` / ``error`` / ``skipped``).
-    Carries zero secrets; the runtime resource is operator-chosen.
+    ``runtime.session_stop`` audit event carries the captured session identity
+    and execution backend with its ``ok`` / ``error`` / ``skipped`` outcome.
 
     **PID-recycle guard:** when the launch stashed a start-epoch, the
     live epoch is re-resolved *here* — immediately before the kill, after
@@ -256,8 +282,9 @@ def run_runtime_teardown(
     and the kill itself — fully closing it would need an epoch-conditional
     ``stop_command`` (an operator-template concern), but re-resolving here
     rather than at capture time shrinks it to a single resolve→kill round-trip.
-    Otherwise reaps the workload agent the severed ``exec`` orphaned. Never
-    raises; a failure is surfaced as a note and the kill is already done.
+    Expected stop failures return a concrete cleanup result. Probe exceptions
+    propagate to the caller, which reports incomplete cleanup and retains the
+    protected launch record after the tmux session has been removed.
     """
     from uxon.infra import audit as _audit
     from uxon.infra import runtime as runtime_infra
@@ -273,9 +300,12 @@ def run_runtime_teardown(
             runtime_resource=teardown.resource,
             action="skip",
             session=session_name,
+            session_id=teardown.session_id,
+            launch_nonce=teardown.launch_nonce,
+            execution_backend=teardown.execution_backend,
             target_user=target_user,
         )
-        return False
+        return CleanupResult(False, f"workload runtime {teardown.runtime!r} is unavailable")
     if profile.fingerprint != teardown.runtime_fingerprint:
         _teardown_skip(session_name, "workload runtime changed since launch")
         _audit.audit(
@@ -286,9 +316,12 @@ def run_runtime_teardown(
             runtime_resource=teardown.resource,
             action="skip",
             session=session_name,
+            session_id=teardown.session_id,
+            launch_nonce=teardown.launch_nonce,
+            execution_backend=teardown.execution_backend,
             target_user=target_user,
         )
-        return False
+        return CleanupResult(False, "workload runtime changed since launch")
     live = runtime_infra.current_runtime_identity_for_profile(
         cfg,
         profile,
@@ -309,9 +342,12 @@ def run_runtime_teardown(
             runtime_resource=teardown.resource,
             action="skip",
             session=session_name,
+            session_id=teardown.session_id,
+            launch_nonce=teardown.launch_nonce,
+            execution_backend=teardown.execution_backend,
             target_user=target_user,
         )
-        return False
+        return CleanupResult(False, "live runtime resource identity could not be resolved")
     if live.id != teardown.runtime_id or live.epoch != teardown.launch_epoch:
         _teardown_skip(
             session_name,
@@ -325,9 +361,12 @@ def run_runtime_teardown(
             runtime_resource=teardown.resource,
             action="skip",
             session=session_name,
+            session_id=teardown.session_id,
+            launch_nonce=teardown.launch_nonce,
+            execution_backend=teardown.execution_backend,
             target_user=target_user,
         )
-        return False
+        return CleanupResult(False, "the runtime resource identity changed since launch")
 
     ok, detail = runtime_infra.run_teardown(
         cfg, teardown.stop_cmd, target_user, profile.stop_timeout_seconds
@@ -341,78 +380,13 @@ def run_runtime_teardown(
         runtime_resource=teardown.resource,
         action="stop",
         session=session_name,
+        session_id=teardown.session_id,
+        launch_nonce=teardown.launch_nonce,
+        execution_backend=teardown.execution_backend,
         target_user=target_user,
         **({"error": detail[:256]} if not ok and detail else {}),
     )
-    return ok
-
-
-def run_kill_session(
-    full: list[str],
-    *,
-    audit_event: str,
-    session: str,
-    target_user: str,
-    profile: str,
-    agent: str,
-    force: bool,
-    dry_run: bool,
-) -> None:
-    """Run a ``kill-session`` command; on a non-zero exit emit the failure audit
-    (with the command's real rc) before the failure propagates.
-
-    The single shared kill-spawn site (CLI self / cross-user / kill-all and the
-    TUI bridge). ``run_cmd(check=True)`` cannot be used here: its failure path
-    is ``fail() -> SystemExit``, never ``CalledProcessError``, so an
-    ``except subprocess.CalledProcessError`` around it is dead and the error
-    audit is skipped. We run with ``check=False`` and translate explicitly so
-    the ``<event> outcome=error`` record fires before ``fail()``.
-    """
-    from uxon.infra import audit as _audit
-
-    cp = process.run_cmd(full, check=False)
-    if cp.returncode != 0:
-        _audit.audit(
-            audit_event,
-            outcome="error",
-            session=session,
-            target_user=target_user,
-            profile=profile,
-            agent=agent,
-            force=force,
-            dry_run=dry_run,
-            rc=cp.returncode,
-        )
-        fail(f"kill-session failed (rc={cp.returncode})", 1)
-
-
-def _complete_kill(
-    cfg: Config,
-    target: SessionInfo,
-    teardown: RuntimeTeardownPreparation,
-    *,
-    audit_event: str,
-    target_user: str,
-    force: bool,
-    dry_run: bool,
-) -> None:
-    """Run post-kill cleanup and emit exactly one terminal kill event."""
-    from uxon.infra import audit as _audit
-
-    cleanup_ok = finish_killed_session(cfg, target, teardown, target_user=target_user)
-    _audit.audit(
-        audit_event,
-        outcome="ok" if cleanup_ok else "error",
-        session=target.name,
-        target_user=target_user,
-        profile=target.profile,
-        agent=target.agent,
-        force=force,
-        dry_run=dry_run,
-        **({"error": "post-kill cleanup failed"} if not cleanup_ok else {}),
-    )
-    if not cleanup_ok:
-        fail("tmux session was killed, but post-kill cleanup failed", 1)
+    return CleanupResult(ok, detail)
 
 
 def finish_killed_session(
@@ -421,55 +395,89 @@ def finish_killed_session(
     teardown: RuntimeTeardownPreparation,
     *,
     target_user: str,
-) -> bool:
+) -> CleanupResult:
     """Complete runtime/record cleanup after a proven tmux kill.
 
-    Returns a truthful aggregate status and never raises, allowing single and
-    bulk callers to guarantee their one terminal audit event.
+    Return concrete expected failures; user interruption still propagates.
     """
-    if teardown is False:
-        return False
-    cleanup_ok = True
-    if teardown is not None:
-        try:
-            cleanup_ok = run_runtime_teardown(cfg, teardown, target_user, target.name)
-        except BaseException:  # cleanup must not erase the proven tmux kill
-            cleanup_ok = False
-    if not cleanup_ok:
-        return False  # retain the authoritative identity for failed workload teardown
     try:
+        if tmux.exact_identity_exists(cfg, target.identity):
+            eprint(
+                f"uxon: session {target.name!r} ({target.tmux_session_id}) still exists; cleanup refused"
+            )
+            return CleanupResult(False, "exact selected session still exists; cleanup refused")
+    except (OSError, subprocess.SubprocessError, SystemExit) as exc:
+        eprint(f"uxon: cleanup refused: {getattr(exc, 'uxon_msg', str(exc))}")
+        return CleanupResult(
+            False, f"cannot prove terminal removal: {getattr(exc, 'uxon_msg', str(exc))}"
+        )
+    if target.launch_record_verified:
+        from pathlib import Path
+
+        from uxon.infra import launch_records
+
+        metadata = launch_records.TmuxSessionMetadata(
+            target.tmux_session_id,
+            target.tmux_session_created,
+            target.name,
+            target.launch_nonce,
+        )
+        record_dir = Path(cfg.launch_record_dir) if cfg.launch_record_dir else None
+        record = launch_records.read_verified_record(
+            target.socket_path,
+            metadata,
+            override_dir=record_dir,
+            shared=bool(cfg.launch_record_dir),
+            launch_user=target.user,
+        )
+        if (
+            record is None
+            and teardown is None
+            and target.runtime == "direct"
+            and target.runtime_kind == "direct"
+            and launch_records.record_is_absent(
+                target.socket_path,
+                metadata,
+                override_dir=record_dir,
+                shared=bool(cfg.launch_record_dir),
+                launch_user=target.user,
+            )
+        ):
+            # Another client completed direct cleanup after both captured authority.
+            return CleanupResult(True)
+        fields = {
+            "launch_user": target.launch_user,
+            "execution_backend": target.execution_backend,
+            "execution_fingerprint": target.execution_fingerprint,
+            "runtime": target.runtime,
+            "runtime_kind": target.runtime_kind,
+            "runtime_fingerprint": target.runtime_fingerprint,
+            "runtime_resource": target.runtime_resource,
+            "runtime_dir": target.runtime_dir,
+            "project_slug": target.project_slug,
+            "runtime_id": target.runtime_id,
+            "runtime_epoch": target.runtime_epoch,
+            "profile": target.profile,
+            "agent": target.agent,
+        }
+        if record is None or any(record.get(key, "") != value for key, value in fields.items()):
+            eprint(
+                f"uxon: protected launch record changed for {target.name!r} ({target.tmux_session_id}); cleanup refused"
+            )
+            return CleanupResult(
+                False, "protected launch record changed or cannot be verified; cleanup refused"
+            )
+    if isinstance(teardown, CleanupResult):
+        return teardown
+    try:
+        if teardown is not None:
+            result = run_runtime_teardown(cfg, teardown, target_user, target.name)
+            if not result:
+                return result
         cleanup_launch_record(cfg, target)
-    except BaseException:
-        cleanup_ok = False
-    return cleanup_ok
-
-
-def emit_kill_all_completion(
-    *,
-    target_users: list[str],
-    attempted_count: int,
-    killed_count: int,
-    failed_count: int,
-    cleanup_failed_count: int,
-    dry_run: bool,
-) -> None:
-    """Emit one truthful terminal event for a completed or aborted bulk kill."""
-    from uxon.infra import audit as _audit
-
-    _audit.audit(
-        "session.kill_all",
-        outcome=(
-            "ok"
-            if failed_count == 0 and killed_count == attempted_count and cleanup_failed_count == 0
-            else "error"
-        ),
-        target_users=target_users,
-        attempted_count=attempted_count,
-        killed_count=killed_count,
-        failed_count=failed_count,
-        cleanup_failed_count=cleanup_failed_count,
-        dry_run=dry_run,
-    )
+    except (OSError, subprocess.SubprocessError, SystemExit) as exc:
+        return CleanupResult(False, getattr(exc, "uxon_msg", str(exc)))
+    return CleanupResult(True)
 
 
 def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
@@ -493,482 +501,527 @@ def _confirm_kill_or_fail(prompt: str, args: ParsedArgs) -> None:
         fail("cancelled", 130)
 
 
-def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
-    """Handle ``uxon kill <id> --host <alias>`` (optionally with ``--user``).
+def remote_kill_command(
+    executable: str,
+    name: str,
+    user: str,
+    expected: SessionIdentity | None,
+    correlation_id: str,
+    *,
+    json_output: bool = True,
+) -> str:
+    parts = [executable, "kill", name, "--force", "--user", user]
+    if expected is not None:
+        parts += ["--expect-session", expected.to_json()]
+    if json_output:
+        parts.append("--json")
+    parts += ["--audit-correlation-id", correlation_id]
+    return shlex.join(parts)
 
-    Looks up the configured peer, optionally confirms with the user
-    locally, then dispatches the kill to the peer over SSH. The
-    peer's own ``uxon kill`` does the target execution gating, so
-    the local side does not need to know the peer's user table —
-    this matches the design constraint that bulk destructive ops
-    stay local while per-session kill may cross hosts.
 
-    Confirmation shape mirrors :func:`do_kill` for the local case:
-    ``--json`` requires ``--force`` or ``--dry-run``; an interactive
-    TTY without ``--force`` prompts for the literal phrase ``kill``.
-
-    On the wire we always pass ``--force`` to the peer — local
-    confirmation is a UI gesture, not a wire concern; the peer
-    must not re-prompt.
-    """
-    import uuid as _uuid
-
-    from uxon.infra import audit as _audit
-    from uxon.infra.remote.collector import (
-        DEFAULT_CONNECT_TIMEOUT_SEC,
-        DEFAULT_TOTAL_TIMEOUT_SEC,
-    )
-    from uxon.infra.remote.master_recovery import recover_wedged_master
+def _remote_kill_argv(cfg: Config, peer, expected: SessionIdentity, corr_id: str) -> list[str]:
+    from uxon.infra.remote.collector import DEFAULT_CONNECT_TIMEOUT_SEC
     from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
-    from uxon.infra.remote_hosts import find_host
 
-    corr_id = str(_uuid.uuid4())
-    _audit.set_correlation_id(corr_id)
-    if not cfg.remote_hosts:
-        _audit.audit(
-            "kill.remote.out",
-            outcome="not_found",
-            peer_name=args.host or "",
-            ssh_alias="",
-            target_user=args.user,
-            target_session=args.target_id,
-            force=args.force,
-            dry_run=args.dry_run,
-            correlation_id=corr_id,
-        )
-        fail("no [[remote_hosts]] configured; --host requires at least one peer")
-    target_host = find_host(cfg.remote_hosts, args.host or "")
-    if target_host is None:
-        _audit.audit(
-            "kill.remote.out",
-            outcome="not_found",
-            peer_name=args.host or "",
-            ssh_alias="",
-            target_user=args.user,
-            target_session=args.target_id,
-            force=args.force,
-            dry_run=args.dry_run,
-            correlation_id=corr_id,
-        )
-        names = ", ".join(h.name for h in cfg.remote_hosts) or "<none>"
-        fail(f"unknown --host {args.host!r}; configured: {names}")
-
-    target_user_part = f" (user={args.user})" if args.user else ""
-    prompt = f"Kill {args.target_id}@{target_host.name}{target_user_part}?"
-    _confirm_kill_or_fail(prompt, args)
-
-    # ``target_id`` MUST come first after the verb: peer-side
-    # ``parse_subcommand`` reads ``argv[1]`` as the target, flags are
-    # tail-parsed afterwards.  Mirrors ``_do_attach_remote`` ordering.
-    remote_cmd_parts = [
-        shlex.quote(target_host.remote_uxon),
-        "kill",
-        shlex.quote(str(args.target_id)),
-        "--force",
-    ]
-    if args.user:
-        remote_cmd_parts.extend(["--user", shlex.quote(args.user)])
-    if args.json_output:
-        remote_cmd_parts.append("--json")
-    # Correlation-id append must precede the join.  ``_do_kill_remote``
-    # uses ``run_query`` (not ``os.execvp``), so process replacement is not
-    # a concern and the dispatch event can be emitted immediately before it.
-    remote_cmd_parts.extend(["--audit-correlation-id", shlex.quote(corr_id)])
-    remote_cmd = " ".join(remote_cmd_parts)
-    ssh_argv = build_peer_ssh_argv(
-        command_template=target_host.command_template,
-        extra_ssh_options=target_host.extra_ssh_options,
-        ssh_alias=target_host.ssh_alias,
-        remote_uxon=target_host.remote_uxon,
-        remote_command=remote_cmd,
+    return build_peer_ssh_argv(
+        command_template=peer.command_template,
+        extra_ssh_options=peer.extra_ssh_options,
+        ssh_alias=peer.ssh_alias,
+        remote_uxon=peer.remote_uxon,
+        remote_command=remote_kill_command(
+            peer.remote_uxon, expected.name, expected.user, expected, corr_id
+        ),
         allocate_tty=False,
         connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
         ssh_multiplex=cfg.ssh_multiplex,
         ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
     )
 
-    if args.dry_run:
-        _audit.audit(
-            "kill.remote.out",
-            peer_name=target_host.name,
-            ssh_alias=target_host.ssh_alias,
-            target_user=args.user,
-            target_session=args.target_id,
-            force=args.force,
-            dry_run=True,
-            correlation_id=corr_id,
-        )
-        if args.json_output:
-            listing_app._emit_json_with_host(
-                "kill",
-                {
-                    "target": args.target_id,
-                    "target_user": args.user,
-                    "action": "would-kill",
-                    "dry_run": True,
-                    "ssh_argv": ssh_argv,
-                },
-                host=target_host.name,
-            )
-        else:
-            print(f"dry-run: {shlex.join(ssh_argv)}")
-        return 0
 
-    def _emit_kill_remote_error(error: str, rc: int) -> None:
-        _audit.audit(
-            "kill.remote.out",
-            outcome="error",
-            peer_name=target_host.name,
-            ssh_alias=target_host.ssh_alias,
-            target_user=args.user,
-            target_session=args.target_id,
-            force=args.force,
-            dry_run=args.dry_run,
-            correlation_id=corr_id,
-            rc=rc,
-            error=error[:256],
-        )
+def remote_kill_expected(
+    cfg: Config,
+    host: str,
+    expected: SessionIdentity,
+    *,
+    dry_run: bool = False,
+    correlation_id: str | None = None,
+) -> KillResult:
+    """Share conditional dispatch, response validation and initiator audit."""
+    import json
+    import uuid
+    from dataclasses import replace
 
+    from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION
+    from uxon.infra import audit as _audit
+    from uxon.infra.remote.collector import DEFAULT_TOTAL_TIMEOUT_SEC
+    from uxon.infra.remote.master_recovery import recover_wedged_master
+    from uxon.infra.remote_hosts import find_host
+
+    expected.validate()
+    peer = find_host(cfg.remote_hosts, host)
+    if peer is None:
+        fail(f"unknown remote host: {host}", 1)
+    corr_id = correlation_id or str(uuid.uuid4())
+    result = KillResult(expected, "failed", error="remote operation did not complete")
+    rc = 0
     try:
-        cp = run_query(
-            ssh_argv,
-            timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
-        )
+        if dry_run:
+            result = KillResult(expected, "would-kill")
+        else:
+            cp = run_query(
+                _remote_kill_argv(cfg, peer, expected, corr_id), timeout=DEFAULT_TOTAL_TIMEOUT_SEC
+            )
+            rc = cp.returncode
+            try:
+                env = json.loads(cp.stdout)
+                if not isinstance(env, dict):
+                    raise ValueError("response is not an object")
+                payload = env["data"]
+                if (
+                    env.get("schema_version") != WIRE_SCHEMA_VERSION
+                    or env.get("kind") != "kill"
+                    or not isinstance(payload, dict)
+                    or payload.get("session_id") != expected.session_id
+                    or payload.get("launch_nonce") != expected.launch_nonce
+                    or payload.get("target_user") != expected.user
+                    or payload.get("action") not in {"killed", "already_absent", "failed"}
+                    or payload.get("cleanup_outcome") not in {"ok", "error", "not_run"}
+                    or not isinstance(payload.get("error", ""), str)
+                    or not isinstance(payload.get("name"), str)
+                    or not payload.get("name")
+                    or (
+                        payload.get("action") in {"killed", "already_absent"}
+                        and payload.get("cleanup_outcome") == "not_run"
+                    )
+                    or (payload.get("cleanup_outcome") == "error" and not payload.get("error"))
+                    or (payload.get("action") == "failed" and not payload.get("error"))
+                    or (
+                        payload.get("action") != "failed"
+                        and payload.get("cleanup_outcome") == "ok"
+                        and payload.get("error")
+                    )
+                ):
+                    raise ValueError("unexpected response identity or outcome")
+                result = KillResult(
+                    replace(expected, name=payload["name"]),
+                    payload["action"],
+                    payload["cleanup_outcome"],
+                    payload.get("error", ""),
+                )
+                if cp.returncode != 0 and result.ok:
+                    result = KillResult(expected, "failed", error=f"ssh exited {cp.returncode}")
+            except (TypeError, KeyError, ValueError) as exc:
+                detail = (cp.stderr or "").strip()
+                result = KillResult(
+                    expected, "failed", error=f"invalid conditional-kill response: {detail or exc}"
+                )
     except subprocess.TimeoutExpired:
-        # Same wedge-recovery as the polling path — without it a CLI
-        # ``uxon kill --host`` invoked when no TUI is running has no
-        # other consumer to drive recovery, and every retry will hang
-        # identically until the master is killed by hand. See
-        # ``fetch_remote_snapshot._run_one`` for the rationale.
+        rc = 124
         if cfg.ssh_multiplex != "off":
-            recover_wedged_master(target_host)
-        _emit_kill_remote_error("ssh timeout", 124)
-        eprint(f"uxon: --host {target_host.name}: ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s")
-        return 1
-    except FileNotFoundError:
-        _emit_kill_remote_error("ssh binary missing", 127)
-        eprint("uxon: ssh not installed on local host")
-        return 1
-
-    if cp.stdout:
-        sys.stdout.write(cp.stdout)
-    if cp.stderr:
-        sys.stderr.write(cp.stderr)
-    if cp.returncode != 0:
-        _emit_kill_remote_error("non-zero ssh rc", cp.returncode)
-        return 1
+            recover_wedged_master(peer)
+        result = KillResult(
+            expected,
+            "failed",
+            error=f"ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s talking to {host}",
+        )
+    except OSError as exc:
+        rc = 127
+        result = KillResult(expected, "failed", error=f"ssh unavailable: {exc}")
     _audit.audit(
         "kill.remote.out",
-        peer_name=target_host.name,
-        ssh_alias=target_host.ssh_alias,
-        target_user=args.user,
-        target_session=args.target_id,
-        force=args.force,
-        dry_run=False,
+        outcome="ok" if result.ok else "error",
+        peer_name=peer.name,
+        ssh_alias=peer.ssh_alias,
+        target_user=expected.user,
+        target_session=result.identity.name,
+        session_id=expected.session_id,
+        launch_nonce=expected.launch_nonce,
+        execution_backend=expected.execution_backend,
+        force=True,
+        dry_run=dry_run,
         correlation_id=corr_id,
-        rc=0,
+        rc=rc,
+        action=result.action,
+        cleanup_outcome=result.cleanup_outcome,
+        **({"error": result.error} if result.error else {}),
     )
-    return 0
+    return result
+
+
+def resolve_remote_identity(cfg: Config, peer, selector: str, user: str | None) -> SessionIdentity:
+    """Resolve a friendly selector once, before confirmation or handoff."""
+    from uxon.infra.remote.collector import fetch_remote_snapshot
+
+    snapshot = fetch_remote_snapshot(
+        peer,
+        all_users=user is not None,
+        ssh_multiplex=cfg.ssh_multiplex,
+        ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
+    )
+    if snapshot.error:
+        fail(f"cannot resolve session on {peer.name}: {snapshot.error}", 1)
+    candidates = []
+    for record in snapshot.sessions:
+        if user is not None and record.get("user") != user:
+            continue
+        identity_data = record.get("identity")
+        candidate = SessionInfo(
+            user=record.get("user", ""),
+            name=record.get("name", ""),
+            attached="0",
+            windows="0",
+            created="",
+            last_attached="",
+            pane_pids=(),
+            active_pid=record.get("active_pid"),
+            active_cmd="",
+            active_path="",
+        )
+        ident = SessionIdentity.from_wire(identity_data)
+        if ident is not None:
+            candidate.tmux_session_id, candidate.tmux_session_created = (
+                ident.session_id,
+                ident.created,
+            )
+            candidate.launch_nonce, candidate.socket_path = ident.launch_nonce, ident.socket_path
+            candidate.execution_backend, candidate.execution_fingerprint = (
+                ident.execution_backend,
+                ident.execution_fingerprint,
+            )
+        candidates.append(candidate)
+    return sessions_probe.resolve_session(
+        selector or "",
+        candidates,
+        cfg.session_prefix,
+        legacy_prefixes=cfg.legacy_session_prefixes,
+    ).identity
+
+
+def _do_kill_remote(args: ParsedArgs, cfg: Config) -> int:
+    import uuid
+
+    from uxon.infra import audit as _audit
+    from uxon.infra.remote_hosts import find_host
+
+    peer = find_host(cfg.remote_hosts, args.host or "")
+    if peer is None:
+        _audit.audit(
+            "kill.remote.out",
+            outcome="not_found",
+            peer_name=args.host or "",
+            target_user=args.user,
+            target_session=args.target_id,
+            session_id="",
+        )
+        if not cfg.remote_hosts:
+            fail("no [[remote_hosts]] configured; --host requires at least one peer")
+        fail(
+            f"unknown --host {args.host!r}; configured: {', '.join(host.name for host in cfg.remote_hosts)}"
+        )
+    if args.json_output and not args.force and not args.dry_run:
+        fail("kill --json requires --force or --dry-run")
+    expected = args.expected_session
+    if expected is None:
+        expected = resolve_remote_identity(cfg, peer, args.target_id or "", args.user)
+    expected.validate()
+    if args.user is not None and expected.user != args.user:
+        fail("--expect-session user differs from --user", 1)
+    _confirm_kill_or_fail(
+        f"Kill {expected.name} ({expected.session_id}, user={expected.user}) on {peer.name}?", args
+    )
+    corr_id = str(uuid.uuid4())
+    result = remote_kill_expected(
+        cfg, peer.name, expected, dry_run=args.dry_run, correlation_id=corr_id
+    )
+    if args.json_output:
+        listing_app._emit_json_with_host(
+            "kill",
+            {
+                **result.to_dict(),
+                "target": result.identity.name,
+                "target_user": expected.user,
+                "dry_run": args.dry_run,
+                **(
+                    {"ssh_argv": _remote_kill_argv(cfg, peer, expected, corr_id)}
+                    if args.dry_run
+                    else {}
+                ),
+            },
+            host=peer.name,
+        )
+    elif result.ok and args.dry_run:
+        print(f"dry-run: {shlex.join(_remote_kill_argv(cfg, peer, expected, corr_id))}")
+    elif result.ok:
+        print(
+            f"{result.action}: {result.identity.name} ({result.identity.session_id}) on {peer.name}"
+        )
+    if result.error:
+        eprint(f"uxon: {expected.name} ({expected.session_id}) on {peer.name}: {result.error}")
+    return int(not result.ok)
+
+
+def _target_for_identity(
+    cfg: Config, expected: SessionIdentity, *, require_nonce: bool = True
+) -> SessionInfo:
+    """Refresh descriptive state without ever replacing the captured target."""
+    from pathlib import Path
+
+    from uxon.infra import launch_records
+
+    tmux.validate_session_context(cfg, expected, require_nonce=require_nonce)
+    snapshot = sessions_probe.collect_session_snapshot_for_user(
+        cfg,
+        expected.user,
+        cfg.session_prefix,
+        expected.socket_path,
+        legacy_prefixes=cfg.legacy_session_prefixes,
+        session_id=expected.session_id,
+        for_dismissal=True,
+    )
+    target = next((row for row in snapshot.sessions if expected.matches(row.identity)), None)
+    if target is None:
+        target = SessionInfo(
+            user=expected.user,
+            name=expected.name,
+            attached="0",
+            windows="0",
+            created="",
+            last_attached="",
+            pane_pids=(),
+            active_pid=None,
+            active_cmd="",
+            active_path="",
+            tmux_session_id=expected.session_id,
+            tmux_session_created=expected.created,
+            launch_nonce=expected.launch_nonce,
+            socket_path=expected.socket_path,
+            execution_backend=expected.execution_backend,
+            execution_fingerprint=expected.execution_fingerprint,
+        )
+    record = launch_records.read_verified_record(
+        expected.socket_path,
+        launch_records.TmuxSessionMetadata(
+            expected.session_id, expected.created, expected.name, expected.launch_nonce
+        ),
+        override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
+        shared=bool(cfg.launch_record_dir),
+        launch_user=expected.user,
+    )
+    if require_nonce and record is None:
+        fail(
+            f"cannot safely remove {target.name!r} ({expected.session_id}): "
+            "the authoritative launch record is unavailable; drain older sessions "
+            "before upgrading or remove them explicitly with tmux",
+            1,
+        )
+    if record is not None:
+        if (
+            record.get("launch_user") != expected.user
+            or record.get("execution_backend") != expected.execution_backend
+            or record.get("execution_fingerprint") != expected.execution_fingerprint
+        ):
+            fail("protected launch record has a different execution identity", 1)
+        target.launch_record_verified = True
+        for attr, key in (
+            ("agent", "agent"),
+            ("profile", "profile"),
+            ("launch_user", "launch_user"),
+            ("runtime", "runtime"),
+            ("runtime_kind", "runtime_kind"),
+            ("runtime_fingerprint", "runtime_fingerprint"),
+            ("runtime_resource", "runtime_resource"),
+            ("runtime_dir", "runtime_dir"),
+            ("project_slug", "project_slug"),
+            ("runtime_cgroup", "runtime_cgroup"),
+            ("runtime_id", "runtime_id"),
+            ("runtime_epoch", "runtime_epoch"),
+        ):
+            setattr(target, attr, str(record.get(key, "")))
+    return target
+
+
+def kill_expected(
+    cfg: Config,
+    expected: SessionIdentity,
+    *,
+    force: bool = True,
+    dry_run: bool = False,
+    allowed_users: frozenset[str] | None = None,
+) -> KillResult:
+    """One conditional destructive operation shared by CLI and TUI."""
+    from uxon.infra import audit as _audit
+
+    target = None
+    removed = False
+    result = KillResult(expected, "failed", error="operation did not complete")
+    try:
+        if allowed_users is not None and expected.user not in allowed_users:
+            fail(f"target user {expected.user!r} is outside the permitted action scope", 1)
+        target = _target_for_identity(cfg, expected)
+        current = target.identity
+        if dry_run:
+            result = KillResult(current, "would-kill")
+        else:
+            teardown = prepare_runtime_teardown(cfg, target)
+            if tmux.exact_identity_exists(cfg, current):
+                matched, error = tmux.conditional_kill(cfg, current)
+                # An acknowledgement can be lost. Exact absence, rather than
+                # a transport exit status, is the prerequisite for cleanup.
+                if tmux.exact_identity_exists(cfg, current):
+                    fail(error or "the exact selected session is still alive", 1)
+                removed = matched
+            action = "killed" if removed else "already_absent"
+            cleanup = finish_killed_session(cfg, target, teardown, target_user=current.user)
+            result = KillResult(
+                current,
+                action,
+                "ok" if cleanup else "error",
+                "" if cleanup else f"{cleanup.error}; launch record retained",
+            )
+    except (SystemExit, OSError, subprocess.SubprocessError) as exc:
+        result = KillResult(
+            target.identity if target is not None else expected,
+            "failed",
+            error=getattr(exc, "uxon_msg", str(exc)) or type(exc).__name__,
+        )
+    _audit.audit(
+        "session.kill",
+        outcome="ok" if result.ok else "error",
+        session=result.identity.name,
+        session_id=result.identity.session_id,
+        launch_nonce=result.identity.launch_nonce,
+        target_user=result.identity.user,
+        execution_backend=result.identity.execution_backend,
+        profile=target.profile if target else "",
+        agent=target.agent if target else "",
+        action=result.action,
+        cleanup_outcome=result.cleanup_outcome,
+        force=force,
+        dry_run=dry_run,
+        **({"error": result.error} if result.error else {}),
+    )
+    return result
+
+
+def kill_snapshot(
+    cfg: Config,
+    targets: tuple[SessionIdentity, ...],
+    *,
+    dry_run: bool = False,
+    allowed_users: frozenset[str] | None = None,
+) -> BulkKillResult:
+    """Attempt precisely the frozen target set and retain individual errors."""
+    from uxon.infra import audit as _audit
+
+    result = BulkKillResult(
+        tuple(
+            kill_expected(cfg, target, dry_run=dry_run, allowed_users=allowed_users)
+            for target in targets
+        )
+    )
+    _audit.audit(
+        "session.kill_all",
+        outcome="ok" if result.ok else "error",
+        target_users=sorted({target.user for target in targets}),
+        attempted_count=0 if dry_run else len(targets),
+        killed_count=result.killed_count,
+        already_absent_count=sum(row.action == "already_absent" for row in result.results),
+        failed_count=sum(row.action == "failed" for row in result.results),
+        cleanup_failed_count=sum(row.cleanup_outcome == "error" for row in result.results),
+        dry_run=dry_run,
+        sessions=[row.to_dict() for row in result.results],
+    )
+    return result
 
 
 def do_kill(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     if not args.target_id:
         fail("kill requires an identifier")
-
-    from uxon.infra import audit as _audit
-
-    # Remote dispatch: --host routes to a configured peer over SSH.
-    # Per-target execution gating happens on the peer (its own ``uxon kill``
-    # runs the probe), so the local side does not need to know the
-    # peer's user table. Bulk kill stays strictly local.
     if args.host is not None:
         return _do_kill_remote(args, cfg)
+    from uxon.infra import audit as _audit
 
-    # The target host records the actual local kill. A correlation id may join
-    # it to the initiating host's ``kill.remote.out`` event, but never changes
-    # event classification.
-    kill_event = "session.kill"
-
-    # Local cross-user kill: --user X where X != launch_user requires
-    # per-target NOPASSWD. Probe once for the single target (the same
-    # probe machinery the TUI uses on startup, but a single-target
-    # subset). Matches the TUI's per-target execution gating.
     target_user = args.user or launch_user
     if target_user != launch_user:
         from uxon.infra.sudo_probe import probe_sudo_capability
 
         caps = probe_sudo_capability(cfg, [target_user])
-        reachable = target_user in caps.reachable_users
-        if not reachable:
+        if target_user not in caps.reachable_users:
             _audit.audit(
-                kill_event,
+                "session.kill",
                 outcome="denied",
-                session=args.target_id or "",
+                session=args.target_id,
+                session_id=args.expected_session.session_id if args.expected_session else "",
                 target_user=target_user,
-                profile="",
-                agent="",
                 force=args.force,
                 dry_run=args.dry_run,
             )
-            # Stable error tag — mirrors the ``all-users-disabled``
-            # precedent. Callers (and the SSH peer-aggregator) parse
-            # this exact substring. Surface the verdict on dry-run too:
-            # without sudo we cannot resolve the session name, so the
-            # honest answer is "this would fail" rather than a faked
-            # would-kill envelope.
             eprint(
-                f"uxon-error: not-reachable (execution backend cannot reach {target_user}; "
-                "check the selected backend helper and target policy)"
+                f"uxon-error: not-reachable (execution backend cannot reach {target_user}; check the selected backend helper and target policy)"
             )
             return 1
 
-        prompt = f"Kill {args.target_id} (user={target_user})?"
-        _confirm_kill_or_fail(prompt, args)
-
+    expected = args.expected_session
+    if expected is None:
         sessions = sessions_probe.collect_sessions([target_user], cfg)
         target = sessions_probe._resolve_or_audit_not_found(
             args.target_id,
             sessions,
             cfg,
-            audit_event=kill_event,
+            audit_event="session.kill",
             target_user=target_user,
             extra={"force": args.force, "dry_run": args.dry_run, "profile": "", "agent": ""},
         )
-        # Non-interactive sudo: there's no TTY in the kill path even
-        # for the CLI; if NOPASSWD is missing we want a fast failure
-        # rather than a blocked password prompt.
-        full = tmux.configured_tmux_base(cfg, target_user, nonint=True) + [
-            "kill-session",
-            "-t",
-            target.name,
-        ]
-        if args.dry_run:
-            _audit.audit(
-                kill_event,
-                session=target.name,
-                target_user=target_user,
-                profile=target.profile,
-                agent=target.agent,
-                force=args.force,
-                dry_run=True,
-            )
-            if args.json_output:
-                listing_app._emit_json(
-                    "kill",
-                    {
-                        "target": target.name,
-                        "user": launch_user,
-                        "target_user": target_user,
-                        "reachable": reachable,
-                        "socket": tmux.tmux_socket_path(cfg, target_user),
-                        "action": "would-kill",
-                        "dry_run": True,
-                    },
-                )
-            else:
-                print(f"dry-run: {shlex.join(full)}")
-            return 0
-        # Prepare teardown from the verified launch record before tmux removes
-        # the session; run it after kill-session severs the workload exec.
-        teardown = prepare_runtime_teardown(cfg, target)
-        run_kill_session(
-            full,
-            audit_event=kill_event,
-            session=target.name,
-            target_user=target_user,
-            profile=target.profile,
-            agent=target.agent,
-            force=args.force,
-            dry_run=args.dry_run,
+        expected = target.identity
+    elif expected.user != target_user:
+        fail("--expect-session user differs from --user", 1)
+    # Capture before prompting, for self and cross-user paths alike.
+    if target_user != launch_user:
+        _confirm_kill_or_fail(
+            f"Kill {expected.name} ({expected.session_id}, user={target_user})?", args
         )
-        _complete_kill(
-            cfg,
-            target,
-            teardown,
-            audit_event=kill_event,
-            target_user=target_user,
-            force=args.force,
-            dry_run=args.dry_run,
-        )
-        if args.json_output:
-            listing_app._emit_json(
-                "kill",
-                {
-                    "target": target.name,
-                    "user": launch_user,
-                    "target_user": target_user,
-                    "reachable": True,
-                    "socket": tmux.tmux_socket_path(cfg, target_user),
-                    "action": "killed",
-                    "dry_run": False,
-                },
-            )
-        else:
-            _print_killed(target.name, cfg)
-        return 0
-
-    # Self-only path: unchanged from the pre-3.4.0 behaviour.
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    target = sessions_probe._resolve_or_audit_not_found(
-        args.target_id,
-        sessions,
-        cfg,
-        audit_event=kill_event,
-        target_user=launch_user,
-        extra={"force": args.force, "dry_run": args.dry_run, "profile": "", "agent": ""},
-    )
-    full = tmux.configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", target.name]
-    if args.dry_run:
-        _audit.audit(
-            kill_event,
-            session=target.name,
-            target_user=launch_user,
-            profile=target.profile,
-            agent=target.agent,
-            force=args.force,
-            dry_run=True,
-        )
-        if args.json_output:
-            listing_app._emit_json(
-                "kill",
-                {
-                    "target": target.name,
-                    "user": launch_user,
-                    "socket": tmux.tmux_socket_path(cfg, launch_user),
-                    "action": "would-kill",
-                    "dry_run": True,
-                },
-            )
-        else:
-            print(f"dry-run: {shlex.join(full)}")
-        return 0
-    # Prepare teardown from the verified launch record before tmux removes the
-    # session; run it after kill-session severs the workload exec.
-    teardown = prepare_runtime_teardown(cfg, target)
-    run_kill_session(
-        full,
-        audit_event=kill_event,
-        session=target.name,
-        target_user=launch_user,
-        profile=target.profile,
-        agent=target.agent,
-        force=args.force,
-        dry_run=args.dry_run,
-    )
-    _complete_kill(
-        cfg,
-        target,
-        teardown,
-        audit_event=kill_event,
-        target_user=launch_user,
-        force=args.force,
-        dry_run=args.dry_run,
-    )
+    result = kill_expected(cfg, expected, force=args.force, dry_run=args.dry_run)
     if args.json_output:
         listing_app._emit_json(
             "kill",
             {
-                "target": target.name,
-                "user": launch_user,
-                "socket": tmux.tmux_socket_path(cfg, launch_user),
-                "action": "killed",
-                "dry_run": False,
+                **result.to_dict(),
+                "target": result.identity.name,
+                "user": target_user,
+                "target_user": target_user,
+                "reachable": True,
+                "socket": expected.socket_path,
+                "dry_run": args.dry_run,
             },
         )
-    else:
-        _print_killed(target.name, cfg)
-    return 0
+    elif result.ok:
+        if args.dry_run:
+            print(f"dry-run: {shlex.join(tmux.conditional_kill_argv(cfg, expected))}")
+        else:
+            print(f"{result.action}: {result.identity.name} ({result.identity.session_id})")
+    if result.error:
+        eprint(f"uxon: {result.identity.name} ({result.identity.session_id}): {result.error}")
+    return int(not result.ok)
 
 
 def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
-    sessions = sessions_probe.collect_sessions([launch_user], cfg)
-    if not sessions:
-        emit_kill_all_completion(
-            target_users=[launch_user],
-            attempted_count=0,
-            killed_count=0,
-            failed_count=0,
-            cleanup_failed_count=0,
-            dry_run=args.dry_run,
-        )
+    targets = tuple(row.identity for row in sessions_probe.collect_sessions([launch_user], cfg))
+    if targets and not args.dry_run and not args.force:
         if args.json_output:
-            listing_app._emit_json(
-                "kill-all",
-                {
-                    "user": launch_user,
-                    "socket": tmux.tmux_socket_path(cfg, launch_user),
-                    "dry_run": args.dry_run,
-                    "sessions": [],
-                },
-            )
-        else:
-            print(f"uxon: no {cfg.session_prefix}* sessions for {launch_user}")
-        return 0
-    if not args.dry_run and not args.force:
-        if args.json_output:
-            # --json is a non-interactive surface; we never prompt with
-            # JSON enabled. Force the caller to be explicit.
             fail("kill-all --json requires --force or --dry-run")
         if not identity.is_interactive_tty():
             fail(
                 "kill-all is destructive; rerun with --force, or use 'uxon list' / 'uxon doctor' first"
             )
-        names = ", ".join(s.name for s in sessions)
-        response = input(
-            f"Kill all {len(sessions)} session(s) on {tmux.tmux_socket_path(cfg, launch_user)}: {names}\nType 'kill-all' to confirm: "
-        )
-        if response.strip() != "kill-all":
+        labels = ", ".join(f"{target.name} ({target.session_id})" for target in targets)
+        if (
+            input(
+                f"Kill all {len(targets)} sessions: {labels}\nType 'kill-all' to confirm: "
+            ).strip()
+            != "kill-all"
+        ):
             fail("cancelled", 130)
-    results: list[dict[str, Any]] = []
-    attempted = 0
-    killed = 0
-    failed = 0
-    cleanup_failed = 0
-    try:
-        for s in sessions:
-            full = tmux.configured_tmux_base(cfg, launch_user) + ["kill-session", "-t", s.name]
-            if args.dry_run:
-                if not args.json_output:
-                    print(f"dry-run: {shlex.join(full)}")
-                results.append(
-                    {"name": s.name, "action": "would-kill", "cleanup_outcome": "not_run"}
-                )
-                continue
-            # Capture teardown before the kill, reap the orphan after it.
-            teardown = prepare_runtime_teardown(cfg, s)
-            cp = process.run_cmd(full, check=False)
-            attempted += 1
-            ok = cp.returncode == 0
-            action = "failed"
-            if ok:
-                killed += 1
-                cleanup_ok = finish_killed_session(cfg, s, teardown, target_user=launch_user)
-                action = "killed"
-                cleanup_outcome = "ok" if cleanup_ok else "error"
-                if not cleanup_ok:
-                    cleanup_failed += 1
-            else:
-                failed += 1
-                cleanup_outcome = "not_run"
-            if not args.json_output:
-                if action == "killed":
-                    suffix = "" if cleanup_outcome == "ok" else " (post-kill cleanup failed)"
-                    print(f"killed: {s.name}{suffix}")
-                else:
-                    print(f"failed: {s.name}")
-            results.append({"name": s.name, "action": action, "cleanup_outcome": cleanup_outcome})
-    except BaseException:
-        failed += 1
-        raise
-    finally:
-        emit_kill_all_completion(
-            target_users=[launch_user],
-            attempted_count=attempted,
-            killed_count=killed,
-            failed_count=failed,
-            cleanup_failed_count=cleanup_failed,
-            dry_run=args.dry_run,
-        )
+    result = kill_snapshot(cfg, targets, dry_run=args.dry_run)
     if args.json_output:
         listing_app._emit_json(
             "kill-all",
@@ -976,7 +1029,19 @@ def do_kill_all(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 "user": launch_user,
                 "socket": tmux.tmux_socket_path(cfg, launch_user),
                 "dry_run": args.dry_run,
-                "sessions": results,
+                "sessions": [row.to_dict() for row in result.results],
+                "killed_count": result.killed_count,
+                "failed_count": result.failed_count,
             },
         )
-    return 0
+    else:
+        for row in result.results:
+            if args.dry_run:
+                print(f"dry-run: {shlex.join(tmux.conditional_kill_argv(cfg, row.identity))}")
+                continue
+            print(
+                f"{row.action}: {row.identity.name} ({row.identity.session_id})"
+                + (f": {row.error}" if row.error else "")
+            )
+        print(result.summary)
+    return int(not result.ok)

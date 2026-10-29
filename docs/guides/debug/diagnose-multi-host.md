@@ -21,7 +21,8 @@ layers narrow it down.
 ssh <ssh_alias> uxon list --all-users --json | head
 ```
 
-Replicates exactly what `uxon`'s collector does. Check:
+This checks the default SSH route. Custom transports and SSH options may
+differ; inspect the configured peer settings. Check:
 
 - Does SSH connect at all? (Network / firewall / known_hosts.)
 - Does it land on the right peer? (`hostname` after the
@@ -77,34 +78,20 @@ see [the retry policy](../../reference/configuration.md#remote_hosts-table-array
 
 ## Layer 7 — SSH multiplex socket stale
 
-A wedged `ControlMaster` (still alive but unresponsive — typically
-after a network blip) makes new ssh slaves block at
-`unix_wait_for_peer` against the multiplex socket under
-`~/.cache/uxon/ssh-*`. The polling path self-heals on the next
-tick after a fetch timeout: graceful `ssh -O exit`, then `SIGKILL`
-the master via `/proc`, then unlink the stale socket. The CLI
-`uxon kill --host` and the TUI's remote-row kill do the same on
-their own timeout. Interactive `uxon attach --host` is immune by
-construction (it never multiplexes — see `docs/reference/cli.md`).
+A wedged `ControlMaster` can leave new SSH clients waiting at
+`unix_wait_for_peer`. Uxon asks SSH to close the master after a fetch or remote
+kill timeout, but an unresponsive master may remain. The failed operation keeps
+its timeout status; see [transport recovery](../../reference/configuration.md#remote_hosts-table-array).
+Interactive attach uses a fresh connection with the default template; custom
+templates own their transport behavior. See [remote attach](../../reference/cli.md).
 
-If you want to clear a wedge by hand without waiting for the next
-poll tick:
+Use the reported peer and configured control-socket path when diagnosing a
+persistent failure. Avoid deleting unrelated sockets or killing SSH processes
+by a broad name pattern.
 
-```bash
-ssh -O exit <ssh_alias>           # graceful
-# If that hangs, pkill the master and remove its socket:
-pkill -f 'ssh: .*uxon/ssh-.* \[mux\]'
-rm -f ~/.cache/uxon/ssh-*
-```
-
-If multiplexing is more trouble than it's worth in your
-environment:
-
-```toml
-ssh_multiplex = "off"
-```
-
-You'll pay 200–500 ms per tick instead of 5–20 ms.
+To bypass the shared master, disable multiplexing through
+[`ssh_multiplex`](../../reference/configuration.md#top-level-keys), then retry.
+Each operation establishes a fresh connection, increasing connection overhead.
 
 ## Layer 8 — peer-side audit channel
 

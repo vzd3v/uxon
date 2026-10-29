@@ -75,7 +75,7 @@ Goes to `${state_dir}/metrics.jsonl`, rotated at 1 MiB, capped at
 ## Reading the JSONL
 
 ```bash
-# Today's debug log (substitute the launch user / date):
+# Today's debug log (substitute the controller user / date):
 DBG=~/.local/state/uxon/tui-debug-$(id -un)-$(date +%Y%m%d).log
 
 # Pretty-print:
@@ -139,8 +139,8 @@ DBG=~/.local/state/uxon/tui-debug-$(id -un)-$(date +%Y%m%d).log
 jq -c 'select(.topic == "keys")' "$DBG"
 ```
 
-See [`render-performance.md`](render-performance.md) for the full
-dropped-keystroke / idle-CPU playbook.
+Include the captured timing and navigation categories when reporting an input
+problem; review operational paths before publishing logs.
 
 **Per-peer SSH cost across the fleet:**
 

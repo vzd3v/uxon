@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uxon.domain.agents import AgentSpec
 from uxon.domain.execution import ExecutionConfig
 from uxon.domain.launch_request import LaunchRequest
-from uxon.domain.session import TuiSession
+from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity, TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
 from uxon.domain.sudo import SudoCapability
 
@@ -23,7 +23,9 @@ if TYPE_CHECKING:
     from uxon.app.launch import RuntimeGate
     from uxon.infra.probes import HostStatsResult
 
-ExistingSessionChoice = tuple[str, bool] | tuple[str, str, bool]
+ExistingSessionChoice = (
+    tuple[str, bool] | tuple[str, str, bool] | tuple[str, str, bool, SessionIdentity]
+)
 
 
 @dataclass(frozen=True)
@@ -145,26 +147,32 @@ class TuiContext:
     # Callbacks — TUI calls these, uxon provides them.
     # Launch/attach callbacks return a LaunchRequest; the outer run() loop
     # runs the command and re-enters the TUI main screen on exit.
-    on_attach: Callable[[str, str], LaunchRequest] = lambda user, name: LaunchRequest(
+    on_attach: Callable[..., LaunchRequest] = lambda user, name, expected=None: LaunchRequest(
         cmd=("true",), label="noop-attach"
     )
-    on_kill: Callable[[str, str], None] = lambda user, name: None  # (user, session) -> kill
-    on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
-    on_kill_all_reachable: Callable[[], None] = lambda: None  # kill all sessions across users
+    on_kill: Callable[[SessionIdentity], KillResult] = lambda target: KillResult(
+        target, "failed", error="kill callback unavailable"
+    )
+    on_kill_all: Callable[[tuple[SessionIdentity, ...]], BulkKillResult] = lambda targets: (
+        BulkKillResult()
+    )
+    on_kill_all_reachable: Callable[[tuple[SessionIdentity, ...]], BulkKillResult] = (
+        lambda targets: BulkKillResult()
+    )
     # Multi-host per-session kill (3.4.0). Args: (host_name, user, session).
     # Implementation runs ``uxon kill --force --host <h> --user <u> <s>``
     # over SSH on the local CLI side; the peer's own ``uxon kill`` does the
     # per-target sudo gating. Bulk kill remains strictly local — no
     # ``on_remote_kill_all`` exists by design.
-    on_remote_kill: Callable[[str, str, str], None] = (
-        lambda host, user, name: None  # (host, user, session) -> kill on peer
+    on_remote_kill: Callable[[str, SessionIdentity], KillResult] = lambda host, target: KillResult(
+        target, "failed", error="remote kill callback unavailable"
     )
     # Multi-host per-session attach (parallel to on_remote_kill).
     # Args: (host_name, user, session). Implementation builds an
     # interactive ssh LaunchRequest via build_peer_ssh_argv; the TUI
     # hands it to request_launch (fork-and-wait, returns to TUI on
     # tmux detach).
-    on_remote_attach: Callable[[str, str, str], LaunchRequest] = lambda host, user, name: (
+    on_remote_attach: Callable[..., LaunchRequest] = lambda host, user, name, expected=None: (
         LaunchRequest(cmd=("true",), label="noop-remote-attach")
     )
     on_refresh: Callable[[], TuiContext] = lambda: None  # type: ignore[return-value]

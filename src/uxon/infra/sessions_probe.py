@@ -41,6 +41,7 @@ from uxon.infra.launch_records import (
 )
 from uxon.infra.process import run_cmd
 from uxon.infra.run import run_query
+from uxon.infra.tmux_diagnostics import ACKNOWLEDGED_FORMAT
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,17 +441,34 @@ def collect_session_snapshot_for_user(
             runtime_marker,
             _runtime_cgroup_marker,
         ) = parts
-        if not any(name.startswith(p) for p in known_prefixes):
-            continue
         if socket_path is not None and launch_nonce:
             live_record_keys.add((socket_path, name, launch_nonce))
+        record = None
+        if socket_path is not None and launch_nonce:
+            record = read_verified_record(
+                socket_path,
+                TmuxSessionMetadata(row_session_id, created_ts, name, launch_nonce),
+                override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
+                require_owner=not bool(cfg.launch_record_dir),
+                shared=bool(cfg.launch_record_dir),
+                launch_user=user,
+            )
+            if record is not None and (
+                record.get("launch_user") != user
+                or record.get("execution_backend") != cfg.execution.backend_for_user(user).id
+                or record.get("execution_fingerprint")
+                != cfg.execution.backend_for_user(user).fingerprint
+            ):
+                record = None
+        if record is None and not any(name.startswith(p) for p in known_prefixes):
+            continue
         if session_id is not None and row_session_id != session_id:
             continue
 
         pane_fmt = (
             "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
             "\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}"
-            "\t#{@uxon-dismissed}"
+            "\t" + ACKNOWLEDGED_FORMAT
         )
         pane_result = run_cmd(
             base + ["list-panes", "-s", "-t", row_session_id, "-F", pane_fmt],
@@ -489,7 +507,7 @@ def collect_session_snapshot_for_user(
                 pane_pids.append(pane_pid)
             if dead != "1" and not live_pane_id:
                 live_pane_id = pane_id
-            if dead == "1" and dismissed == pid_s:
+            if dead == "1" and dismissed == "1":
                 dismissed_panes.append(pane_id)
             if is_active != "1" or window_active != "1":
                 continue
@@ -504,24 +522,9 @@ def collect_session_snapshot_for_user(
                 active_exit_status = None
 
         _parsed = parse_session_name(name, prefix=session_prefix, legacy_prefixes=legacy_prefixes)
-        if _parsed is None:
+        if _parsed is None and record is None:
             continue  # dual-prefix filter matched but parser disagreed — skip
-        _, _profile, _, _legacy = _parsed
-        record = None
-        if socket_path is not None:
-            record = read_verified_record(
-                socket_path,
-                TmuxSessionMetadata(
-                    session_id=row_session_id,
-                    created=created_ts,
-                    name=name,
-                    launch_nonce=launch_nonce,
-                ),
-                override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
-                require_owner=not bool(cfg.launch_record_dir),
-                shared=bool(cfg.launch_record_dir),
-                launch_user=user,
-            )
+        _, _profile, _, _legacy = _parsed or (name, "", 1, False)
         sessions.append(
             SessionInfo(
                 user=user,
@@ -540,12 +543,11 @@ def collect_session_snapshot_for_user(
                 tmux_session_id=row_session_id,
                 tmux_session_created=created_ts,
                 launch_nonce=launch_nonce,
+                socket_path=socket_path or "",
                 launch_record_verified=record is not None,
                 launch_user=str(record.get("launch_user", "")) if record else "",
-                execution_backend=(str(record.get("execution_backend", "")) if record else ""),
-                execution_fingerprint=(
-                    str(record.get("execution_fingerprint", "")) if record else ""
-                ),
+                execution_backend=cfg.execution.backend_for_user(user).id,
+                execution_fingerprint=cfg.execution.backend_for_user(user).fingerprint,
                 runtime=str(record.get("runtime", "")) if record else "",
                 runtime_kind=str(record.get("runtime_kind", "")) if record else "",
                 runtime_fingerprint=(str(record.get("runtime_fingerprint", "")) if record else ""),

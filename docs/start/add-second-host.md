@@ -16,10 +16,8 @@ with several hosts (`team·N`). The mechanics are the same.
 
 ## What you'll need
 
-- The same `uxon` version on both hosts (peer protocol requires
-  match).
-- An aggregator host (typically your laptop or operator
-  workstation).
+- [Compatible wire versions](../reference/wire-schema.md#versioning) on both hosts.
+- A Linux aggregator host.
 - One or more peer hosts already set up as in
   [`start/solo-1-quickstart.md`](solo-1-quickstart.md) (solo·N)
   or [`start/team-1-bootstrap.md`](team-1-bootstrap.md) (team·N).
@@ -33,25 +31,14 @@ ssh user / port / identity in its own config.
 
 In the aggregator's `~/.ssh/config`:
 
-```
+```sshconfig
 Host gpu-box
-    HostName     10.0.0.42
-    User         wes             # solo·N: your shell user, paired with wes-agent on the peer
-                                 # team·N: an operator-class user with sudo to *-agent on the peer
-    IdentityFile ~/.ssh/id_ed25519_uxon
-    Port         22
-    # Reuse one TCP connection — saves handshake round trips for the periodic poller:
-    ControlMaster auto
-    ControlPath  ~/.ssh/cm-%r@%h:%p
-    ControlPersist 10m
+    HostName 10.0.0.42
+    User lead
 ```
 
-`ControlMaster` / `ControlPersist` matter once you have more than
-two or three peers — without them every refresh tick reopens a
-fresh TCP + auth handshake to every peer. `uxon`'s default
-`ssh_multiplex = "auto"` adds matching options to the fetch
-command itself, but a stanza in `ssh_config` plays nicely with
-both `uxon` and any other tool that hits the host.
+Use an existing authorized SSH identity. Uxon configures polling multiplexing
+through its [transport settings](../reference/configuration.md#remote_hosts-table-array).
 
 For bastion / kubectl-exec / docker-exec patterns see
 [`guides/customise/override-ssh-per-peer.md`](../guides/customise/override-ssh-per-peer.md).
@@ -68,14 +55,8 @@ description = "leased GPU box"   # optional, shown in TUI tooltips
 remote_uxon = "uxon"         # optional, default "uxon"
 ```
 
-`name` must be unique across the array, ASCII, and match
-`[A-Za-z0-9_.-]+` — it ends up in a cache filename.
-
-Required fields are `name` and `ssh_alias`. Per-peer overrides
-(`interval`, `connect_timeout`, `total_timeout`,
-`extra_ssh_options`, `command_template`) are optional and
-documented in
-[`reference/configuration.md`](../reference/configuration.md#remote_hosts-table-array).
+Use a unique peer name. Exact fields, name validation and transport overrides
+are in the [peer reference](../reference/configuration.md#remote_hosts-table-array).
 
 ## Step 3 — Verify
 
@@ -90,10 +71,8 @@ uxon list --host gpu-box    # one peer
 uxon                         # TUI: HOST column appears automatically
 ```
 
-In the TUI, peer rows are grouped under the `HOST` column with
-per-host colour glyphs; locals come first, then peers. Per-host
-health badges (`[ok]`, `[cache 12s]`, `[err: …]`, `[loading]`)
-live in the section header.
+The dashboard groups peer rows by host. A failed peer has a compact error below
+the table; unconfirmed rows stay hidden until a live response succeeds.
 
 ## Step 4 (team·N only) — peer-side `enable_all_users_list`
 
@@ -102,7 +81,7 @@ requirements must hold on the peer:
 
 1. The peer's `config.toml` sets `enable_all_users_list = true`.
 2. The SSH user landing on the peer has passwordless sudo
-   (per-target NOPASSWD or root NOPASSWD) to the launch users in
+   (per-target NOPASSWD for the local execution backend) to the launch users in
    the peer's `session_users`.
 
 If (1) is not set, the peer exits with the stable error tag
@@ -110,6 +89,11 @@ If (1) is not set, the peer exits with the stable error tag
 and falls back to the own-only command, stamping the
 snapshot with `scope_limited = true`. The TUI labels that peer
 `(own only)` in the HOST column. **No silent partial data.**
+
+For cross-controller removal, the peer-side SSH controller must also belong to
+its protected launch-record control group. Follow the
+[team setup](team-1-bootstrap.md#share-protected-launch-records); listing and
+attaching do not by themselves prove removal authority.
 
 ## Repeat for the next peer
 
@@ -119,7 +103,7 @@ restart.
 
 ## Operations to read next
 
-- **Roll fleet upgrades** — peer protocol requires version match:
+- **Roll fleet upgrades** — preserve wire compatibility:
   [`guides/operate/roll-fleet-upgrade.md`](../guides/operate/roll-fleet-upgrade.md).
 - **Aggregator dies** — what's lost vs. recoverable:
   [`guides/operate/survive-aggregator-loss.md`](../guides/operate/survive-aggregator-loss.md).

@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-import os
 import shlex
 
 from uxon.app.session_handoff import run_launch_request
 from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
+from uxon.domain.launch_request import LaunchRequest
 from uxon.domain.session import SessionInfo
 from uxon.errors import eprint, fail
 from uxon.infra import sessions_probe, tmux
@@ -18,7 +18,7 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     """Handle ``uxon attach <id> --host <alias> --user <u>``.
 
     Looks up the configured peer, builds an interactive ssh argv via
-    :func:`build_peer_ssh_argv`, and execvp's it. Peer's own
+    :func:`build_peer_ssh_argv`, and waits for it through the shared handoff. Peer's own
     ``uxon attach --user`` runs the target execution probe, so the
     local side does not need to know the peer's user table.
 
@@ -36,7 +36,6 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
     from uxon.infra.remote_hosts import find_host
 
     corr_id = str(_uuid.uuid4())
-    _audit.set_correlation_id(corr_id)
     peer = find_host(cfg.remote_hosts, args.host or "")
     if peer is None:
         _audit.audit(
@@ -52,13 +51,22 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         names = ", ".join(h.name for h in cfg.remote_hosts) or "(none)"
         fail(f"unknown --host {args.host!r}; configured: {names}")
     assert args.user is not None  # parser-enforced
+    from uxon.app.kill import resolve_remote_identity
+
+    expected = args.expected_session or resolve_remote_identity(
+        cfg, peer, args.target_id or "", args.user
+    )
+    expected.validate(require_nonce=False)
+    if expected.user != args.user:
+        fail("--expect-session user differs from --user", 1)
     # ``target_id`` MUST come first after the verb: peer-side
     # ``parse_subcommand`` reads ``argv[1]`` as the target, with flags
     # tail-parsed afterwards.  Putting flags first makes the peer parse
     # the flag name as the target and reject the rest.
     remote_cmd = (
-        f"{shlex.quote(peer.remote_uxon)} attach {shlex.quote(args.target_id or '')} "
+        f"{shlex.quote(peer.remote_uxon)} attach {shlex.quote(expected.name)} "
         f"--user {shlex.quote(args.user)} "
+        f"--expect-session {shlex.quote(expected.to_json())} "
         f"--audit-correlation-id {shlex.quote(corr_id)}"
     )
     ssh_argv = build_peer_ssh_argv(
@@ -77,27 +85,46 @@ def _do_attach_remote(args: ParsedArgs, cfg: Config) -> int:
         ssh_multiplex="off",
         ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
     )
-    # Lane B — interactive terminal handoff: ``execvp`` replaces this image
-    # with the ssh client, which keeps the controlling terminal. Bypasses
-    # ``Popen``/the loop guard by construction.
-    # Audit must fire *before* ``os.execvp`` — once the process
-    # image is replaced the cached socket is gone.  ``audit()`` is a
-    # non-blocking ``socket.send``, so the kernel buffers the datagram
-    # and the data is handed off before we exec.
     _audit.audit(
         "attach.remote.out.dispatch",
         peer_name=peer.name,
         ssh_alias=peer.ssh_alias,
         target_user=args.user,
-        target_session=args.target_id,
+        target_session=expected.name,
+        session_id=expected.session_id,
+        launch_nonce=expected.launch_nonce,
+        execution_backend=expected.execution_backend,
         dry_run=args.dry_run,
         correlation_id=corr_id,
     )
     if args.dry_run:
         print(shlex.join(ssh_argv))
         return 0
-    os.execvp(ssh_argv[0], ssh_argv)
-    return 0  # unreachable
+    result = run_launch_request(
+        LaunchRequest(
+            cmd=tuple(ssh_argv),
+            label=f"attach {expected.name}@{peer.name}",
+            identity=expected,
+            correlation_id=corr_id,
+            peer_name=peer.name,
+            capture_ssh_diagnostics=not peer.command_template,
+        )
+    )
+    if result.warning:
+        fail(result.warning)
+    return result.rc
+
+
+def _resolve_attach_target(
+    args: ParsedArgs, sessions: list[SessionInfo], cfg: Config, **kwargs
+) -> SessionInfo:
+    if args.expected_session is not None:
+        from uxon.app.kill import _target_for_identity
+
+        if args.expected_session.user != kwargs["target_user"]:
+            fail("--expect-session user differs from --user", 1)
+        return _target_for_identity(cfg, args.expected_session, require_nonce=False)
+    return sessions_probe._resolve_or_audit_not_found(args.target_id or "", sessions, cfg, **kwargs)
 
 
 def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
@@ -140,8 +167,8 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             )
             return 1
         sessions = sessions_probe.collect_sessions([target_user], cfg)
-        target = sessions_probe._resolve_or_audit_not_found(
-            args.target_id,
+        target = _resolve_attach_target(
+            args,
             sessions,
             cfg,
             audit_event=attach_event,
@@ -154,6 +181,9 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             _audit.audit(
                 attach_event,
                 session=target.name,
+                session_id=target.tmux_session_id,
+                launch_nonce=target.launch_nonce,
+                execution_backend=target.execution_backend,
                 target_user=target_user,
                 profile=target.profile,
                 agent=target.agent,
@@ -169,6 +199,9 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         _audit.audit(
             attach_event,
             session=target.name,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
             target_user=target_user,
             profile=target.profile,
             agent=target.agent,
@@ -194,20 +227,23 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
                 f"no sessions found on dedicated socket {tmux.tmux_socket_path(cfg, launch_user)}, "
                 f"but legacy default-socket sessions still exist. Use 'uxon doctor' for details."
             )
-    target = sessions_probe._resolve_or_audit_not_found(
-        args.target_id,
+    target = _resolve_attach_target(
+        args,
         sessions,
         cfg,
         audit_event=attach_event,
         target_user=launch_user,
         extra={"profile": "", "agent": ""},
     )
-    # Same-user dispatch audit fires once before ``attach_session``'s execvp.
+    # Same-user dispatch audit fires once before the interactive handoff.
     # Emitting from ``do_attach`` (not ``attach_session``) keeps the
     # call exactly once per CLI invocation.
     _audit.audit(
         attach_event,
         session=target.name,
+        session_id=target.tmux_session_id,
+        launch_nonce=target.launch_nonce,
+        execution_backend=target.execution_backend,
         target_user=launch_user,
         profile=target.profile,
         agent=target.agent,
@@ -218,20 +254,14 @@ def do_attach(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
 def _tui_launch_request_cls() -> type:
     """Lazy-load ``LaunchRequest`` from ``uxon.domain.launch_request`` (pure
-    data; no textual import). Kept as a function so the module-top import
-    surface of cli.py stays small."""
+    data; no textual import). Defers the request import until needed."""
     from uxon.domain.launch_request import LaunchRequest
 
     return LaunchRequest
 
 
 def _session_name_from_launch_label(label: str) -> str:
-    """Thin wrapper so cli.py call sites keep their local symbol.
-
-    Helper lives next to LaunchRequest (``uxon.domain.launch_request``) so
-    the TUI run-loop can reuse it for ``session.ended`` without a circular
-    dep on cli.py.
-    """
+    """Reuse the pure launch-label parser shared with terminal handoff logging."""
     from uxon.domain.launch_request import session_name_from_launch_label
 
     return session_name_from_launch_label(label)

@@ -32,11 +32,10 @@ List-data optional fields (forward-compatible additions, no version bump):
 
 - ``data.scope_skipped`` (``list[str]``): users in ``session_users``
   whose selected execution backend did *not* pass the target probe
-  via ``sudo -n -H -u <U>``. ``data.scope_users`` is the *reachable*
-  subset; the union ``scope_users ∪ scope_skipped`` is the set of
-  candidates actually probed. Users in ``session_users`` that were
-  never asked (e.g. the caller themselves, filtered before probing)
-  appear in neither field. Older peers that don't emit the key are
+  for cross-user listing. ``data.scope_users`` includes the launch user
+  and reachable configured users; the launch user does not require that
+  cross-user probe and never appears in ``scope_skipped``.
+  Older peers that don't emit the key are
   treated as ``[]`` by the aggregator — no schema bump.
 
 Top-level optional fields (also forward-compatible, no version bump):
@@ -55,6 +54,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, get_args
 
+from uxon.domain.session import SessionIdentity
+
 WIRE_SCHEMA_VERSION = "3"
 """Current wire-schema version. Bump on incompatible changes only."""
 
@@ -69,9 +70,8 @@ class SessionRecord(TypedDict):
 
     - ``user``: OS user that owns the tmux socket the session lives
       on.
-    - ``name``: full tmux session name, including the configured
-      ``session_prefix`` (or a legacy prefix for ``legacy=True``
-      records).
+    - ``name``: current full tmux session name. Managed sessions remain
+      discoverable after a rename outside the configured prefixes.
     - ``short_id``: ``name`` with the *current* ``session_prefix``
       stripped, mirroring the human table. For ``legacy=True``
       records the current prefix does not match, so ``short_id``
@@ -81,8 +81,8 @@ class SessionRecord(TypedDict):
     - ``agent``: underlying agent id from the verified launch record, or ``""``
       when the session is unmanaged.
     - ``runtime`` / ``runtime_resource``: verified launch-record runtime id
-      and resolved workload resource, or ``""`` for direct and unmanaged
-      sessions.
+      and resolved workload resource. Direct sessions use runtime ``"direct"``
+      with an empty resource; unmanaged sessions have no verified runtime.
     - ``attached``: ``True`` iff a tmux client is currently attached.
     - ``windows``: tmux window count, as reported by
       ``#{session_windows}``. Kept as a string because tmux emits it
@@ -127,6 +127,7 @@ class SessionRecord(TypedDict):
     active_exit_status: int | None
     has_diagnostics: bool
     legacy: bool
+    identity: NotRequired[dict[str, str]]
 
 
 class HostStats(TypedDict, total=False):
@@ -151,13 +152,11 @@ RemoteSessionPayload = dict[str, Any]
 
 Shape mirrors :class:`SessionRecord` (the producer-side total TypedDict
 written by :func:`build_session_records`), but
-:func:`uxon.infra.remote.envelope.decode_envelope` validates the envelope
-only and treats individual records as opaque. Forward-compatibility
-with peers running a newer or older release of the same major is the goal: a peer
-that adds, renames, or omits a per-session field must not blank a
-whole snapshot. Consumers therefore read fields defensively
-(``rec.get(...)``) and cannot assume any field is present even after a
-successful fetch — hence the deliberately permissive type.
+:func:`uxon.infra.remote.envelope.decode_envelope` validates present known
+fields and rejects malformed values or duplicate identities. Missing fields
+and unknown additions remain usable within the same schema version. Consumers
+read fields defensively (``rec.get(...)``), since a successful fetch does not
+guarantee every producer field is present.
 """
 
 
@@ -216,8 +215,8 @@ class RemoteSnapshot:
             failure surfaces here.
         sessions: List of peer-emitted session records
             (:data:`RemoteSessionPayload`). Each record's shape mirrors
-            :class:`SessionRecord` but is unvalidated at decode time —
-            consumers must read fields defensively. Empty when the
+            :class:`SessionRecord`. Present known fields are validated;
+            missing fields still require defensive reads. Empty when the
             live fetch failed.
         scope_limited: ``True`` when the peer rejected
             ``list --all-users`` (because its
@@ -286,6 +285,9 @@ class _SessionLike(Protocol):
     has_diagnostics: bool
     legacy: bool
 
+    @property
+    def identity(self) -> SessionIdentity: ...
+
 
 def build_session_records(
     sessions: Sequence[_SessionLike],
@@ -305,12 +307,14 @@ def build_session_records(
       keep the full name; that mirrors how the human ``print_list``
       table identifies them.
     - ``pane_pids``: tuple → list, so the result is JSON-serialisable.
+    - ``identity``: omitted for display-only rows without native witnesses.
 
     Order is preserved (input list order = output list order). No
     deduping; if the input contains duplicates, the output does too.
     """
     records: list[SessionRecord] = []
     for s in sessions:
+        captured = s.identity
         if s.name.startswith(session_prefix):
             short_id = s.name[len(session_prefix) :]
         else:
@@ -343,6 +347,10 @@ def build_session_records(
                 legacy=s.legacy,
             )
         )
+        if not captured.invalid_fields(require_nonce=False):
+            records[-1]["identity"] = {
+                key: getattr(captured, key) for key in captured.__dataclass_fields__
+            }
     return records
 
 

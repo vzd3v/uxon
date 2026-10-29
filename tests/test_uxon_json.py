@@ -2,7 +2,7 @@
 
 import io
 import json
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 import pytest
@@ -72,11 +72,15 @@ def test_public_list_uses_verified_records_and_reports_actual_reachable_scope(
             and not unverified.runtime_id
             and not unverified.launch_user
         )
-        with pytest.raises(SystemExit) as failure:
-            kill.do_kill(ParsedArgs(action="kill", target_id=spoof.name, force=True), cfg, "alice")
-        assert (
-            failure.value.code == 2 and "no authoritative launch record" in failure.value.uxon_msg
-        )
+        with redirect_stderr(io.StringIO()) as errors:
+            assert (
+                kill.do_kill(
+                    ParsedArgs(action="kill", target_id=spoof.name, force=True), cfg, "alice"
+                )
+                == 1
+            )
+        assert "authoritative launch record is unavailable" in errors.getvalue()
+        assert spoof.session_id in errors.getvalue()
         assert not external.mutations and not external.stops
     probes = [
         user for user, cmd, _ in external.calls if cmd[-2:] == ["-m", "uxon.infra.execution_probe"]
@@ -107,11 +111,26 @@ def test_public_bulk_json_preserves_mixed_kill_stop_and_record_results(tmp_path,
                 kill.do_kill_all(
                     ParsedArgs(action="kill-all", force=True, json_output=True), cfg, "alice"
                 )
-                == 0
+                == 1
             )
-    results = json.loads(output.getvalue())["data"]["sessions"]
-    assert results == [
-        {"name": row.name, "action": action, "cleanup_outcome": cleanup}
+    data = json.loads(output.getvalue())["data"]
+    results = data["sessions"]
+    assert (data["killed_count"], data["failed_count"]) == (3, 3)
+    assert [
+        {
+            key: result[key]
+            for key in ("name", "session_id", "launch_nonce", "user", "action", "cleanup_outcome")
+        }
+        for result in results
+    ] == [
+        {
+            "name": row.name,
+            "session_id": row.session_id,
+            "launch_nonce": row.nonce,
+            "user": "alice",
+            "action": action,
+            "cleanup_outcome": cleanup,
+        }
         for row, action, cleanup in zip(
             rows,
             ("failed", "killed", "killed", "killed"),
@@ -119,8 +138,11 @@ def test_public_bulk_json_preserves_mixed_kill_stop_and_record_results(tmp_path,
             strict=True,
         )
     ]
+    assert "rc=9" in results[0]["error"] and "tmux refused" in results[0]["error"]
+    assert "rc=7" in results[1]["error"] and "stop refused" in results[1]["error"]
+    assert "protected launch record" in results[2]["error"] and results[3]["error"] == ""
     assert external.mutations == [("alice", row.name) for row in rows]
-    assert external.stops == [row.name for row in rows[1:]]
+    assert external.stops == [rows[1].name, rows[3].name]
     assert [row.visible for row in rows] == [True, False, False, False]
     assert [row.path.exists() for row in rows] == [True, True, True, False]
     assert [row.path.read_bytes() for row in rows[:3]] == snapshots[:3]
@@ -131,9 +153,11 @@ def test_public_bulk_json_preserves_mixed_kill_stop_and_record_results(tmp_path,
             "target_users": ["alice"],
             "attempted_count": 4,
             "killed_count": 3,
+            "already_absent_count": 0,
             "failed_count": 1,
             "cleanup_failed_count": 2,
             "dry_run": False,
+            "sessions": results,
         }
     ]
     stop_events = [
@@ -141,6 +165,5 @@ def test_public_bulk_json_preserves_mixed_kill_stop_and_record_results(tmp_path,
     ]
     assert [(event["session"], event["outcome"]) for event in stop_events] == [
         (rows[1].name, "error"),
-        (rows[2].name, "ok"),
         (rows[3].name, "ok"),
     ]

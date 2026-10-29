@@ -13,7 +13,7 @@ reads what `uxon list --json` returns over SSH. There is **no**
 shared state, **no** cluster coordinator, **no** remote auth
 handshake — just `ssh <alias> uxon list --json` parsed locally.
 
-Two destructive operations cross hosts:
+Two interactive or mutating operations cross hosts:
 
 - **Per-session `uxon kill --host <alias> [--user <name>] <id>`** —
   routes the kill to the peer over SSH. The peer's own per-target
@@ -43,15 +43,13 @@ configured, independently audited, independently authorised.
 
 `uxon` deliberately does not accept `ssh_user`, `port`,
 `identity_file`, or `proxy_command` in `[[remote_hosts]]` blocks.
-Put those in `~/.ssh/config` for the launch user instead. Auth,
+Put those in `~/.ssh/config` for the controller invoking the transport instead. Auth,
 port, ProxyJump, IdentityAgent, ConnectTimeout — all standard
 SSH options apply.
 
-`ControlMaster`/`ControlPersist` matter when more than two or
-three peers are configured: `ssh_multiplex = "auto"` (default)
-adds them to the default fetch template (warm tick: 5–20 ms vs.
-cold 200–500 ms). On hosts that prohibit `ControlPersist`
-sockets, set `ssh_multiplex = "off"`.
+Polling can reuse SSH connections; interactive attach uses a fresh connection.
+The [transport reference](../reference/configuration.md#remote_hosts-table-array)
+owns the defaults and overrides.
 
 ## Live session data
 
@@ -107,10 +105,13 @@ peer exits with code 1 and the stable stderr tag
 `uxon-error: all-users-disabled`. The collector detects that tag
 and retries once with own-only `list --json`, stamping the
 snapshot with `scope_limited = true`. The
-TUI labels that peer `(own only)` — single-host case appends to
-the section header, multi-host case appends to the peer's name in
-the HOST column. **No silent partial data**: the badge is always
-shown when a peer's view is degraded.
+TUI marks the peer's limited scope. Failed polls hide unconfirmed rows rather
+than presenting old data as current.
+
+Listing and attaching do not imply removal authority. The peer-side controller
+must also have the protected record for the exact launch. Multiple controllers
+share the store described in [launch records](../reference/configuration.md#launch-records),
+including for direct workloads.
 
 ## Cross-host audit correlation
 
@@ -146,7 +147,7 @@ fleet, see
 - [`scenarios/team-n.md`](../scenarios/team-n.md) — the
   scenario hub for team multi-host.
 - [`guides/operate/roll-fleet-upgrade.md`](../guides/operate/roll-fleet-upgrade.md) —
-  the procedure for keeping versions in lockstep.
+  the procedure for compatible rolling upgrades and major cutovers.
 - [`guides/operate/survive-aggregator-loss.md`](../guides/operate/survive-aggregator-loss.md) —
   what happens when the aggregator dies.
 - [`reference/configuration.md`](../reference/configuration.md) — the `[[remote_hosts]]` schema.

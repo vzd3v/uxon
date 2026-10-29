@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from uxon.domain.session import SessionIdentity
+
 from ..dashboard.model import remote_session_available
 from .confirm import ConfirmYesNo
 from .git_profile import GitProfileScreen
@@ -115,9 +117,14 @@ class LaunchFlow:
         elif intent.kind == "kill-all-global":
             host._kill_all_global()
         elif intent.kind == "attach":
-            host._attach_session(intent.user, intent.session_name)
+            if intent.identity is not None:
+                host._attach_session(intent.user, intent.session_name, intent.identity)
+            else:
+                host._attach_session(intent.user, intent.session_name)
 
-    def attach_session(self, user: str, session_name: str) -> None:
+    def attach_session(
+        self, user: str, session_name: str, expected: SessionIdentity | None = None
+    ) -> None:
         host = self.host
         # ``on_attach`` shells out to tmux — run it off the event loop so
         # the keystroke pump never starves.
@@ -125,7 +132,7 @@ class LaunchFlow:
         # swap ``host.cfg`` while the worker runs.
         fn = host.cfg.on_attach
         host.app.run_off_loop(  # type: ignore[attr-defined]
-            lambda: fn(user, session_name),
+            lambda: fn(user, session_name, expected),
             on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
             on_error=lambda exc: host.app.notify(
                 f"Attach failed: {exc}", severity="error", timeout=6
@@ -145,12 +152,14 @@ class LaunchFlow:
             # Remote: dispatch via ctx.on_remote_attach over SSH — a network
             # round-trip, so it MUST run off the event loop.
             user = row.user or host.cfg.current_user
-            if not remote_session_available(host.state, row.host, user, row.name):
+            if row.identity is None or not remote_session_available(
+                host.state, row.host, user, row.name, row.identity
+            ):
                 host.app.notify("Remote session is no longer available.", severity="warning")
                 return
             fn = host.cfg.on_remote_attach
             host.app.run_off_loop(  # type: ignore[attr-defined]
-                lambda: fn(row.host, user, row.name),
+                lambda: fn(row.host, user, row.name, row.identity),
                 on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
                 on_error=lambda exc: host.app.notify(
                     f"Remote attach failed: {exc}", severity="error", timeout=6
@@ -159,7 +168,7 @@ class LaunchFlow:
             )
             return
         session_user = row.user or host.cfg.current_user
-        host._attach_session(session_user, row.name)
+        host._attach_session(session_user, row.name, row.identity)
 
     def maybe_show_session_choice(
         self,
@@ -212,7 +221,18 @@ class LaunchFlow:
                     # overrides ``_attach_session`` on a stub host still sees
                     # the call (and audit/LaunchRequest construction stays in
                     # one place).
-                    host._attach_session(user or launch_user, name)
+                    expected = next(
+                        (
+                            row[3]
+                            for row in existing
+                            if len(row) == 4 and row[0] == user and row[1] == name
+                        ),
+                        None,
+                    )
+                    if expected is not None:
+                        host._attach_session(user or launch_user, name, expected)
+                    else:
+                        host._attach_session(user or launch_user, name)
                 elif action == "new":
                     on_new()
 

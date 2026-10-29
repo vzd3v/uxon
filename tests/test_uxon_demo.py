@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import runpy
 import subprocess
 from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
 
 from helpers import make_config
@@ -13,6 +16,21 @@ from uxon.domain.session import SessionInfo
 from uxon.infra import demo, sessions_probe
 from uxon.infra.remote.collector import fetch_remote_snapshot
 from uxon.infra.remote_hosts import RemoteHost
+
+
+def test_rendered_scenario_is_accepted_by_current_demo_decoders(tmp_path):
+    renderer = runpy.run_path(str(Path(__file__).resolve().parents[1] / "demo/render.py"))
+    now = datetime(2026, 10, 29, tzinfo=UTC)
+    record = {"user": "alice", "slot": "example", "agent": "codex", "path": "/srv/projects/example"}
+    peer = renderer["_build_envelope"]({"name": "peer", "sessions": [record]}, {}, now, 0)
+    local = renderer["_build_local_envelope"]([record], {}, now)
+    (tmp_path / "peer.json").write_text(json.dumps(peer))
+    (tmp_path / "_local.json").write_text(json.dumps(local))
+    snapshot = demo.load_demo_snapshot("peer", tmp_path, now.timestamp())
+    assert snapshot.error is None
+    assert snapshot.sessions[0]["name"] == "uxon-example@codex"
+    sessions = demo.load_demo_local_sessions(tmp_path, "alice")
+    assert len(sessions) == 1 and sessions[0].name == "uxon-example@codex"
 
 
 def envelope(records, **extra):

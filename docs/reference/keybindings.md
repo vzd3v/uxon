@@ -1,8 +1,6 @@
 # TUI keybindings
 
-`uxon` with no arguments on a TTY opens the interactive picker. All
-menu keys go through Textual `BINDINGS` declarations — the footer shows
-the visible subset.
+`uxon` with no arguments on a TTY opens the interactive picker. The footer shows the available menu actions.
 
 All modal lists wrap: `↑` on the first item selects the last, and `↓` on
 the last selects the first. This includes sessions, workspaces, launch
@@ -142,14 +140,6 @@ Destructive actions (`d`, `D`, `kill-all-reachable`) require typing
 the literal phrase — `kill`, `kill-all`, or `kill-all-reachable`
 respectively — before `Enter` confirms.
 
-## Drift guard
-
-`tests/test_uxon_tui_bindings.py` enforces that all key handling
-goes through `BINDINGS` (no `on_key` overrides) and that every
-destructive binding has `show=True` plus a non-empty description.
-The footer of the running TUI is the source of truth — if a
-binding isn't shown, it's intentionally hidden, not missing.
-
 ## Failed-process terminal
 
 These controls run inside tmux, not the Textual menu. A managed process that
@@ -166,10 +156,5 @@ sessions with unread errors `[error]`. Launch choices offer running sessions
 only. Attaching to a mixed session selects a live terminal; existing tmux
 navigation still lets you inspect the finished ones.
 
-Live terminals keep their existing keys and tmux prefix. Uxon snapshots native
-bindings once at launch or attach, without editing tmux configuration files.
-Opening an existing managed session uses two setup calls to tmux: capture and
-install bindings. New launches reuse their metadata query and release call.
-Configuration is streamed through stdin without temporary files or an argv
-size limit. Refresh keeps the same query count and
-inspects all windows in the existing per-session query. No watcher is started.
+Live terminals keep their existing keys and tmux prefix. Uxon does not edit
+user tmux configuration files.

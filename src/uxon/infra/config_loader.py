@@ -37,7 +37,7 @@ from uxon.domain.runtime import (
     validate_path_map,
     validate_runtime,
 )
-from uxon.errors import fail
+from uxon.errors import capture_diagnostics, fail
 from uxon.infra import demo
 
 try:
@@ -932,14 +932,11 @@ def _parse_config_or_fail(raw: dict[str, Any]) -> Config:
 
 def parse_config(raw: dict[str, Any]) -> Config:
     """Return the typed config or raise one renderer/loader-safe error type."""
-    import contextlib
-    import io
-
     try:
         # ``fail`` is the CLI-facing primitive and writes to stderr.  The
         # semantic parser is also used by the JSON renderer, where validation
         # must be a typed result with no incidental output.
-        with contextlib.redirect_stderr(io.StringIO()):
+        with capture_diagnostics():
             return _parse_config_or_fail(raw)
     except SystemExit as exc:
         message = getattr(exc, "uxon_msg", None) or str(exc.code)

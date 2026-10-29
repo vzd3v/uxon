@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import builtins
 import json
 import shlex
-import signal
 import socket
 import subprocess
 from pathlib import Path
@@ -27,12 +25,13 @@ STATS = {"cpu_pct": 0, "mem_total_kib": 100, "mem_used_kib": 0}
 
 
 def envelope(**data):
+    stats = data.pop("host_stats", STATS)
     return json.dumps(
         {
             "schema_version": "3",
             "uxon_version": "4.0.0",
             "kind": "list",
-            "host_stats": STATS,
+            "host_stats": stats,
             "data": {"sessions": [ROW], "scope_skipped": ["bob"], **data},
         }
     )
@@ -112,12 +111,32 @@ def test_peer_builder_command_ownership(tmp_path, monkeypatch, interactive, mult
             ]
         expected += ["-o", "ProxyJump=bastion", "edge", command]
     if interactive and expected[0] == "ssh":
-        expected.insert(1, "-tt")
+        expected.insert(1 if template else expected.index("edge"), "-tt")
     assert argv == expected
     assert all("{" not in t for t in argv)
     assert (tmp_path / "uxon").exists() == (template is None and multiplex == "auto")
     if (tmp_path / "uxon").exists():
         assert (tmp_path / "uxon").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("options", [("-T",), ("-qT",), ("-o", "RequestTTY=no")])
+def test_default_attach_forces_native_pty_after_extra_option_overrides(options):
+    from uxon.infra.run import run_query
+
+    argv = build_peer_ssh_argv(
+        command_template=None,
+        extra_ssh_options=("-F", "/dev/null", *options),
+        ssh_alias="peer.invalid",
+        remote_uxon="uxon",
+        remote_command="uxon attach job --user alice",
+        allocate_tty=True,
+        connect_timeout=2,
+        ssh_multiplex="off",
+    )
+    assert argv[-3] == "-tt"
+    # Native option expansion reads no user config and opens no connection.
+    result = run_query([argv[0], "-G", *argv[1:]], timeout=2)
+    assert result.returncode == 0 and "requesttty force" in result.stdout.splitlines()
 
 
 @pytest.mark.parametrize(
@@ -366,10 +385,9 @@ def test_control_exceptions_propagate_from_poll_and_recovery(tmp_path, monkeypat
 
 def test_decoder_normalizes_optional_fields_and_retains_compatibility_diagnostics():
     for skipped, stats, expected_skipped, expected_stats in [
-        (["alice", 7, "bob"], STATS, ["alice", "bob"], STATS),
-        (False, [], [], None),
+        (["alice", "bob"], STATS, ["alice", "bob"], STATS),
         ([], {}, [], {}),
-        (None, None, [], None),
+        ([], None, [], None),
     ]:
         result = decode_envelope(
             json.dumps(
@@ -439,6 +457,59 @@ def test_decoder_normalizes_optional_fields_and_retains_compatibility_diagnostic
     assert decode_envelope(envelope(sessions=[])).sessions == []
 
 
+def test_decoder_rejects_malformed_known_fields_and_duplicate_rows_without_coercion():
+    identity = {
+        "user": "alice",
+        "name": "uxon-job@claude",
+        "session_id": "$1",
+        "created": "123456",
+        "launch_nonce": "abcdefghijklmnopqrstuvwx",
+        "socket_path": "/run/user/1001/uxon/local.sock",
+        "execution_backend": "local",
+        "execution_fingerprint": "a" * 64,
+    }
+    valid = {"user": "alice", "name": "uxon-job@claude", "identity": identity}
+    for field, value in [
+        ("cpu_pct", {}),
+        ("cpu_pct", "1.0"),
+        ("cpu_pct", -1),
+        ("rss_kib", True),
+        ("rss_kib", -1),
+        ("attached", "false"),
+        ("active_pid", 0),
+        ("pane_pids", [1, False]),
+        ("pane_pids", [-1]),
+        ("identity", None),
+        ("identity", {**identity, "created": 123456}),
+        ("identity", {**identity, "name": "another"}),
+        ("identity", {**identity, "launch_nonce": "invalid"}),
+    ]:
+        result = decode_envelope(envelope(sessions=[{**valid, field: value}]))
+        assert result.sessions is None and result.error_code == "invalid_response"
+        assert f"sessions[0].{field}" in result.error
+    for payload, field in [
+        (envelope(sessions=[valid, valid]), "duplicate identity"),
+        (envelope(sessions=[ROW, ROW]), "duplicate identity"),
+        (envelope(scope_skipped=["alice", 7]), "scope_skipped"),
+        (envelope(scope_users=False), "scope_users"),
+        (envelope(host_stats=[]), "host_stats"),
+        (envelope(host_stats={"mem_total_kib": -1}), "mem_total_kib"),
+        (envelope(host_stats={"cpu_pct": "high"}), "cpu_pct"),
+        (
+            envelope(sessions=[{**valid, "cpu_pct": 1}]).replace(
+                '"cpu_pct": 1', '"cpu_pct": 1e999'
+            ),
+            "Number out of range",
+        ),
+    ]:
+        result = decode_envelope(payload)
+        assert result.sessions is None and result.host_stats is None
+        assert result.error_code == "invalid_response" and field in result.error
+    additive = {**valid, "future": {"arbitrary": True}, "identity": {**identity, "future": 1}}
+    result = decode_envelope(envelope(sessions=[additive, {"name": "sparse"}]))
+    assert result.error is None and result.sessions == [additive, {"name": "sparse"}]
+
+
 @pytest.mark.parametrize(
     "template,diagnostic",
     [
@@ -456,24 +527,9 @@ def test_config_rejects_invalid_transport_templates(template, diagnostic):
 
 @pytest.mark.parametrize(
     "case",
-    [
-        "residual",
-        "removed",
-        "nonzero",
-        "timeout",
-        "missing-exec",
-        "missing-path",
-        "no-pid",
-        "kill-error",
-        "stat-error",
-        "custom",
-        "graceful-timeout",
-        "graceful-oserror",
-    ],
+    ["ok", "options", "nonzero", "timeout", "oserror", "custom"],
 )
-def test_recovery_uses_bounded_ssh_resolver_exact_proc_identity_and_safe_effects(
-    tmp_path, monkeypatch, case
-):
+def test_recovery_only_uses_bounded_native_ssh_control(tmp_path, monkeypatch, case):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     socket_path = tmp_path / "socket"
     control = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -481,93 +537,41 @@ def test_recovery_uses_bounded_ssh_resolver_exact_proc_identity_and_safe_effects
         control.bind(str(socket_path))
     finally:
         control.close()
-    proc = tmp_path / "proc"
-    proc.mkdir()
-    for pid, title in [
-        (111, f"ssh: {socket_path}-other [mux]"),
-        (222, f"ssh: {socket_path} [mux] extra"),
-        (4242, f"ssh: {socket_path} [mux]"),
-    ]:
-        folder = proc / str(pid)
-        folder.mkdir()
-        (folder / "cmdline").write_bytes(title.encode() + b"\0ssh\0-O\0exit\0")
-    attempts, killed, reads = [], [], []
-    real_open, real_stat = builtins.open, Path.stat
-
-    def listdir(path):
-        assert path == "/proc"
-        return ["self", "111", "222", "4242"] if case != "no-pid" else ["111", "222"]
-
-    def open_proc(path, *args, **kwargs):
-        assert str(path).startswith("/proc/") and str(path).endswith("/cmdline")
-        reads.append(str(path))
-        return real_open(proc / str(path).split("/")[2] / "cmdline", *args, **kwargs)
-
-    def stat(path, *args, **kwargs):
-        if case == "stat-error" and path == socket_path:
-            raise PermissionError("socket inspection denied")
-        return real_stat(path, *args, **kwargs)
+    original_inode = socket_path.stat().st_ino
+    attempts = []
+    options = ("-p", "2222", "-l", "bob") if case == "options" else ()
 
     def query(argv, *, timeout):
         attempts.append(argv)
         option = f"ControlPath={tmp_path}/cache/uxon/ssh-%C"
-        assert timeout == 2
-        if len(attempts) == 1:
-            assert argv == ["ssh", "-O", "exit", "-o", option, "edge"]
-            if case == "removed":
-                socket_path.unlink()
-            if case == "graceful-timeout":
-                raise subprocess.TimeoutExpired(argv, timeout)
-            if case == "graceful-oserror":
-                raise OSError("graceful command failed")
-            return subprocess.CompletedProcess(argv, 0, "", "")
-        assert len(attempts) == 2 and argv == ["ssh", "-G", "-o", option, "edge"]
+        assert len(attempts) == 1 and timeout == 2
+        assert argv == ["ssh", "-O", "exit", "-o", option, *options, "edge"]
         if case == "timeout":
             raise subprocess.TimeoutExpired(argv, timeout)
-        if case == "missing-exec":
-            raise FileNotFoundError("ssh")
-        return subprocess.CompletedProcess(
-            argv,
-            255 if case == "nonzero" else 0,
-            "user alice\n"
-            if case == "missing-path"
-            else f"user alice\ncontrolpath {socket_path}\nport 22\n",
-            "",
-        )
-
-    def kill(pid, sig):
-        assert len(attempts) == 2 and pid == 4242 and sig == signal.SIGKILL
-        killed.append((pid, sig))
-        if case == "kill-error":
-            raise ProcessLookupError(pid)
+        if case == "oserror":
+            raise OSError("control request failed")
+        return subprocess.CompletedProcess(argv, 255 if case == "nonzero" else 0, "", "")
 
     with (
         patch("uxon.infra.remote.master_recovery.run_query", side_effect=query),
-        patch("uxon.infra.remote.master_recovery.os.listdir", side_effect=listdir),
-        patch("builtins.open", side_effect=open_proc),
-        patch.object(Path, "stat", stat),
+        patch("os.kill") as kill,
+        patch("os.unlink") as unlink,
     ):
         recover_wedged_master(
-            host(command_template=("kubectl", "{remote_command}") if case == "custom" else None),
-            _kill=kill,
+            host(
+                command_template=("kubectl", "{remote_command}") if case == "custom" else None,
+                extra_ssh_options=options,
+            ),
         )
-    assert len(attempts) == (0 if case == "custom" else 2)
-    assert killed == (
-        [(4242, signal.SIGKILL)]
-        if case in {"residual", "kill-error", "graceful-timeout", "graceful-oserror"}
-        else []
-    )
-    assert socket_path.exists() == (
-        case in {"custom", "nonzero", "timeout", "missing-exec", "missing-path", "stat-error"}
-    )
-    assert bool(reads) == (
-        case in {"residual", "no-pid", "kill-error", "graceful-timeout", "graceful-oserror"}
-    )
+    assert len(attempts) == (0 if case == "custom" else 1)
+    kill.assert_not_called()
+    unlink.assert_not_called()
+    assert socket_path.stat().st_ino == original_inode
 
 
 @pytest.mark.parametrize(
     "multiplex,template,recovery_count",
-    [("auto", None, 2), ("off", None, 0), ("auto", ("kubectl", "{remote_command}"), 0)],
+    [("auto", None, 1), ("off", None, 0), ("auto", ("kubectl", "{remote_command}"), 0)],
 )
 def test_poll_timeout_recovery_obeys_transport_ownership(
     tmp_path, monkeypatch, multiplex, template, recovery_count
@@ -580,19 +584,19 @@ def test_poll_timeout_recovery_obeys_transport_ownership(
         if len(attempts) == 1:
             assert timeout == 10
             raise subprocess.TimeoutExpired(argv, timeout)
-        assert timeout == 2 and argv == (
-            ["ssh", "-O", "exit", "-o", f"ControlPath={tmp_path}/uxon/ssh-%C", "edge"]
-            if len(attempts) == 2
-            else ["ssh", "-G", "-o", f"ControlPath={tmp_path}/uxon/ssh-%C", "edge"]
-        )
-        return subprocess.CompletedProcess(argv, 0, "user alice\n", "")
+        assert len(attempts) == 2 and timeout == 2
+        assert argv == ["ssh", "-O", "exit", "-o", f"ControlPath={tmp_path}/uxon/ssh-%C", "edge"]
+        raise subprocess.TimeoutExpired(argv, timeout)
 
     with (
         patch("uxon.infra.remote.collector.run_query", side_effect=query),
         patch("uxon.infra.remote.master_recovery.run_query", side_effect=query),
         patch("os.kill") as kill,
+        patch("os.unlink") as unlink,
     ):
         snap = fetch_remote_snapshot(host(command_template=template), ssh_multiplex=multiplex)
     assert snap.error_code == "timeout" and snap.sessions == []
+    assert snap.error == "ssh timeout after 10s"
     assert len(attempts) == 1 + recovery_count
     kill.assert_not_called()
+    unlink.assert_not_called()

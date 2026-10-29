@@ -1,82 +1,21 @@
 # Team on multiple hosts
 
-Several developers, several Linux hosts. Each host is configured
-as [Team on a single host](team-1.md) with its own users, its own
-low-priv accounts, its own allowed-roots. One designated host
-(typically the operator's workstation) aggregates the rest over
-SSH and shows everything in one TUI.
+Configure each peer as a team host, then aggregate its sessions over the configured transport. Each peer enforces target-user access and protected launch-record authority locally. Bulk removal remains local to one host.
 
-## What you get
+## Tasks
 
-- Everything in [`scenarios/team-1.md`](team-1.md), per host.
-- Plus: a single dashboard with `HOST` and `USER` columns mounting
-  every reachable session on every reachable peer.
-- Per-host health badges (`[ok]`, `[cache 12s]`, `[err: …]`,
-  `[loading]`) so an operator can tell at a glance whether a
-  silent peer is empty or unreachable.
-- Cross-host audit correlation: the initiating host emits
-  `attach.remote.out.dispatch` / `kill.remote.out`; the target host emits
-  `session.attach.dispatch` / `session.kill` for each command attempt that
-  reaches Uxon. Caller and peer events share a UUID `correlation_id`. One
-  `journalctl … CORRELATION_ID=<uuid>` query (against a central
-  collector) returns the full attempt chain.
-- **Per-peer authority.** Cross-host operation does not delegate
-  trust between peers — each peer's execution policy is evaluated
-  independently (`sudoers` for the built-in local backend). A reused SSH
-  credential can still reach every peer that accepts it; revoke a compromised
-  credential on each peer or at its issuer, as well as removing the peer's
-  local grants.
-- Bulk destructive actions stay strictly local — there is no
-  `kill-all --host`. Reaping every agent on a peer is the
-  operator's deliberate SSH gesture.
+- [Bootstrap each host](../start/team-1-bootstrap.md).
+- [Add peers to the dashboard](../start/add-second-host.md).
+- [Add a developer](../guides/operate/onboard-developer.md).
+- [Remove a developer](../guides/operate/offboard-developer.md).
+- [Upgrade the fleet](../guides/operate/roll-fleet-upgrade.md).
+- [Recover an aggregator](../guides/operate/survive-aggregator-loss.md).
+- [Collect Uxon audit events](../guides/operate/forward-audit-to-collector.md).
+- [Diagnose peer access](../guides/debug/diagnose-multi-host.md).
 
-## Get started
+## Reference and background
 
-1. **Install on every host** — [`start/install.md`](../start/install.md).
-   Pin the **same version** on every host (peer protocol requires
-   match).
-2. **Bootstrap each host as `team·1`** —
-   [`start/team-1-bootstrap.md`](../start/team-1-bootstrap.md), per host.
-3. **Wire up the aggregator** —
-   [`start/add-second-host.md`](../start/add-second-host.md) sets
-   up SSH multiplex and adds `[[remote_hosts]]` blocks. Repeat per
-   peer.
-4. **Verify** — `uxon doctor --remote` probes every peer once and
-   reports reachability, latency, and session count.
-5. **Centralise the audit channel** —
-   [`guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-audit-to-collector.md)
-   ships per-host journald to a central collector, which is the
-   only way `correlation_id` queries actually pay off across the
-   fleet.
-
-## Operations runbooks
-
-- [`guides/operate/onboard-developer.md`](../guides/operate/onboard-developer.md) — including which hosts they get access to.
-- [`guides/operate/offboard-developer.md`](../guides/operate/offboard-developer.md) — across the fleet.
-- [`guides/operate/respond-to-rogue-agent.md`](../guides/operate/respond-to-rogue-agent.md) — on a remote host.
-- [`guides/operate/roll-fleet-upgrade.md`](../guides/operate/roll-fleet-upgrade.md) — rolling-upgrade procedure across N hosts.
-- [`guides/operate/survive-aggregator-loss.md`](../guides/operate/survive-aggregator-loss.md) — your laptop dies; what's lost vs. recoverable.
-- [`guides/operate/forward-audit-to-collector.md`](../guides/operate/forward-audit-to-collector.md) — central log forwarding.
-- [`guides/operate/back-up-and-restore.md`](../guides/operate/back-up-and-restore.md).
-- [`guides/operate/rotate-credentials.md`](../guides/operate/rotate-credentials.md).
-
-## Likely customisations
-
-- [`guides/customise/override-ssh-per-peer.md`](../guides/customise/override-ssh-per-peer.md) — bastion / kubectl-exec / docker-exec per peer.
-- [`guides/customise/tune-refresh-cadence.md`](../guides/customise/tune-refresh-cadence.md) — per-peer or fleet-wide.
-
-## Reference
-
-- [`reference/cli.md`](../reference/cli.md) — `--host`, `--all-hosts`, `attach --host --user`, `kill --host`, `doctor --remote`.
-- [`reference/configuration.md`](../reference/configuration.md) — `[[remote_hosts]]` (with `interval`, `connect_timeout`, `total_timeout`, `extra_ssh_options`, `command_template`), `ssh_multiplex`, `fetch_concurrency`.
-- [`reference/wire-schema.md`](../reference/wire-schema.md) — what travels over the SSH wire.
-- [`reference/audit-events.md`](../reference/audit-events.md) — remote dispatch/inbound semantics and `correlation_id`.
-
-## Worth understanding once
-
-- [`explain/multi-host-philosophy.md`](../explain/multi-host-philosophy.md)
-  — read-mostly, per-peer authority, no cluster coordinator.
-- [`explain/audit-channel-design.md`](../explain/audit-channel-design.md)
-  — why `correlation_id` is the headline 3.3.0 feature and what it costs you operationally.
-- [`explain/supervision-without-impersonation.md`](../explain/supervision-without-impersonation.md)
-  — same property as team·1, valid per-host across the fleet.
+- [CLI](../reference/cli.md), [configuration](../reference/configuration.md) and [keybindings](../reference/keybindings.md).
+- [Isolation model](../explain/isolation-model.md) and [supervision](../explain/supervision-without-impersonation.md).
+- [Peer compatibility](../reference/wire-schema.md#versioning) and [multi-host model](../explain/multi-host-philosophy.md).
+- [Shared launch records](../reference/configuration.md#launch-records) and [audit events](../reference/audit-events.md).

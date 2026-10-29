@@ -25,8 +25,10 @@ import uxon.tui.bridge as tui_bridge
 from uxon.cli.parsing import parse_args
 from uxon.domain.args import ParsedArgs
 from uxon.domain.launch_profiles import ResolvedLaunchProfile
+from uxon.domain.session import SessionIdentity
 from uxon.infra import execution, launch_records
 from uxon.infra.remote_hosts import RemoteHost
+from uxon.infra.tmux_diagnostics import ACKNOWLEDGED_FORMAT
 
 
 @pytest.mark.parametrize("producer", ["cli", "bridge"])
@@ -55,6 +57,9 @@ def test_actual_remote_attach_producer_quotes_and_peer_parser(
         ]
     )
     target, user = "job 'quoted@codex", "alice"
+    identity = SessionIdentity(
+        user, target, "$1", "123", "a" * 32, "/run/uxon/alice.sock", "local", "f" * 64
+    )
     output = io.StringIO()
     with (
         mock.patch("uxon.infra.audit.audit") as audit,
@@ -66,7 +71,12 @@ def test_actual_remote_attach_producer_quotes_and_peer_parser(
             assert (
                 attach_app.do_attach(
                     ParsedArgs(
-                        action="attach", host="peer", user=user, target_id=target, dry_run=True
+                        action="attach",
+                        host="peer",
+                        user=user,
+                        target_id=target,
+                        dry_run=True,
+                        expected_session=identity,
                     ),
                     cfg,
                     "bob",
@@ -76,10 +86,11 @@ def test_actual_remote_attach_producer_quotes_and_peer_parser(
             argv = shlex.split(output.getvalue().strip())
         else:
             req = tui_bridge.TuiBridge(cfg, "bob", "bob", str(tmp_path)).on_remote_attach(
-                "peer", user, target
+                "peer", user, target, identity
             )
             argv = list(req.cmd)
             assert req.label == f"attach {target}@peer"
+            assert req.capture_ssh_diagnostics == (not template)
     query.assert_not_called()
     execute.assert_not_called()
     remote = shlex.split(argv[-1])
@@ -93,6 +104,7 @@ def test_actual_remote_attach_producer_quotes_and_peer_parser(
         False,
     )
     assert parsed.audit_correlation_id is not None
+    assert parsed.expected_session == identity
     if template:
         expected = [
             t.replace("{ssh_alias}", "edge").replace("{remote_command}", argv[-1]) for t in template
@@ -102,7 +114,6 @@ def test_actual_remote_attach_producer_quotes_and_peer_parser(
     else:
         expected = [
             "ssh",
-            "-tt",
             "-o",
             "BatchMode=yes",
             "-o",
@@ -113,6 +124,7 @@ def test_actual_remote_attach_producer_quotes_and_peer_parser(
             "ConnectTimeout=5",
             "-o",
             "ProxyJump=bastion",
+            "-tt",
             "edge",
             argv[-1],
         ]
@@ -123,6 +135,9 @@ def test_actual_remote_attach_producer_quotes_and_peer_parser(
         ssh_alias="edge",
         target_user=user,
         target_session=target,
+        session_id=identity.session_id,
+        launch_nonce=identity.launch_nonce,
+        execution_backend=identity.execution_backend,
         dry_run=producer == "cli",
         correlation_id=parsed.audit_correlation_id,
     )
@@ -139,6 +154,61 @@ def test_attach_parser_public_grammar():
     ):
         with pytest.raises(SystemExit):
             parse_args(argv)
+
+
+@pytest.mark.parametrize("producer", ["cli", "bridge"])
+def test_remote_attach_shared_handoff_preserves_target_and_correlation(producer, tmp_path):
+    from uxon.app.session_handoff import run_launch_request
+
+    cfg = _make_config(remote_hosts=[RemoteHost("peer", "edge", "", "uxon")])
+    expected = SessionIdentity(
+        "alice",
+        "uxon-job@claude",
+        "$7",
+        "123",
+        "a" * 32,
+        "/run/uxon/alice.sock",
+        "remote-backend",
+        "f" * 64,
+    )
+    with (
+        mock.patch("uxon.infra.audit.audit") as audit,
+        mock.patch("uxon.infra.audit.set_correlation_id") as global_correlation,
+        mock.patch("uxon.app.session_handoff._run_ssh_client", return_value=(255, "")) as transport,
+    ):
+        if producer == "cli":
+            rc = attach_app.do_attach(
+                ParsedArgs(
+                    action="attach",
+                    host="peer",
+                    user="alice",
+                    target_id=expected.name,
+                    expected_session=expected,
+                ),
+                cfg,
+                "bob",
+            )
+        else:
+            request = tui_bridge.TuiBridge(cfg, "bob", "bob", str(tmp_path)).on_remote_attach(
+                "peer",
+                "alice",
+                expected.name,
+                expected,
+            )
+            rc = run_launch_request(request).rc
+    assert rc == 255 and "-tt" in transport.call_args.args[0]
+    global_correlation.assert_not_called()
+    dispatch, ended = audit.call_args_list
+    assert (dispatch.args, ended.args) == (("attach.remote.out.dispatch",), ("session.ended",))
+    for event in (dispatch.kwargs, ended.kwargs):
+        assert (
+            event["session_id"] == expected.session_id
+            and event["launch_nonce"] == expected.launch_nonce
+        )
+        assert event["target_user"] == "alice" and event["peer_name"] == "peer"
+        assert event["execution_backend"] == expected.execution_backend
+    assert ended.kwargs["correlation_id"] == dispatch.kwargs["correlation_id"]
+    assert ended.kwargs["rc"] == 255 and ended.kwargs["outcome"] == "error"
 
 
 def test_unknown_peer_cli_and_bridge_forbid_execution_and_report_not_found(tmp_path):
@@ -246,7 +316,10 @@ def test_target_attach_real_resolver_execution_boundary_title_and_audit(
     def snapshot(argv, *, check=False, timeout):
         base = nonint_prefix + ["tmux", "-S", socket_path]
         session_format = "#{session_name}\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_created}\t#{session_activity}\t#{E:UXON_LAUNCH_NONCE}\t#{E:UXON_RUNTIME_RESOURCE}\t#{E:UXON_RUNTIME_CGROUP}"
-        pane_format = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@uxon-dismissed}"
+        pane_format = (
+            "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t"
+            + ACKNOWLEDGED_FORMAT
+        )
         assert (
             allowed
             and check is False
@@ -296,6 +369,7 @@ def test_target_attach_real_resolver_execution_boundary_title_and_audit(
     assert fields["target_user"] == target
     assert fields.get("outcome", "ok") == ("ok" if allowed else "denied")
     if not allowed:
+        assert "execution_backend" not in fields
         assert "uxon-error: not-reachable" in error.getvalue() and output.getvalue() == ""
         assert fields["session"] == "demo@claude_fast" and collected == []
         return
@@ -303,30 +377,26 @@ def test_target_attach_real_resolver_execution_boundary_title_and_audit(
         next(line[5:] for line in output.getvalue().splitlines() if line.startswith("exec "))
     )
     prefix = [] if target == "bob" else ["/usr/bin/sudo", "-H", "-u", "alice", "--"]
-    assert argv == prefix + [
+    assert argv[: len(prefix) + 7] == prefix + [
         "tmux",
         "-S",
         str(tmp_path / f"{target}.sock"),
-        "set-option",
+        "if-shell",
+        "-F",
         "-t",
-        "=uxon-demo@claude_fast:",
-        "set-titles-string",
-        "#{session_name}",
-        ";",
-        "set-option",
-        "-t",
-        "=uxon-demo@claude_fast:",
-        "set-titles",
-        "on",
-        ";",
-        "attach-session",
-        "-t",
-        "uxon-demo@claude_fast",
+        "$1",
     ]
+    assert pending.launch_nonce in argv[-3] and "#{session_created},123" in argv[-3]
+    assert (
+        argv[-2]
+        == "set-option -t '$1:' set-titles-string '#{session_name}' ; set-option -t '$1:' set-titles on ; attach-session -t '$1'"
+    )
+    assert "operation refused" in argv[-1]
     assert (
         fields["session"] == "uxon-demo@claude_fast"
         and fields["agent"] == "claude"
         and fields["profile"] == "claude_fast"
         and fields["dry_run"] is True
+        and fields["execution_backend"] == pending.execution_backend
     )
     assert collected == ["server", "sessions", "panes", "usage"]

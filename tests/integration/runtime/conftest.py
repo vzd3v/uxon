@@ -26,6 +26,7 @@ Run them explicitly with a working runtime::
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -97,6 +98,8 @@ class Runtime:
 
     binary: str
     runtime_name: str
+    container_uid: int
+    container_gid: int
 
 
 @pytest.fixture(params=RUNTIMES)
@@ -115,7 +118,30 @@ def runtime(request: pytest.FixtureRequest, runtime_availability: dict[str, bool
     # Unique per run: pid + a uuid shard. Stays within the runtime name
     # charset (leading alnum, then alnum/dash/underscore/dot).
     name = f"uxon-it-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    rt = Runtime(binary=binary, runtime_name=name)
+    uid, gid = os.getuid(), os.getgid()
+    if binary == "docker":
+        # Rootless Docker maps container root to the daemon owner's host UID.
+        # A numeric host UID inside that namespace cannot write the bind mount.
+        # Inspect the selected daemon; never change its endpoint or context.
+        try:
+            info = subprocess.run(
+                [binary, "info", "--format", "{{json .SecurityOptions}}"],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=PROBE_TIMEOUT_SEC,
+                check=True,
+            )
+            security_options = json.loads(info.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            pytest.fail(f"Docker security-options probe failed: {error}")
+        if not isinstance(security_options, list) or not all(
+            isinstance(option, str) for option in security_options
+        ):
+            pytest.fail(f"Docker returned invalid security options: {info.stdout!r}")
+        if "name=rootless" in security_options:
+            uid, gid = 0, 0
+    rt = Runtime(binary=binary, runtime_name=name, container_uid=uid, container_gid=gid)
 
     def cleanup():
         errors = _teardown(rt)
@@ -185,8 +211,7 @@ exec python3 -c 'import time; payload = bytearray(2 * 1024 * 1024); time.sleep(3
 # create_command = ["<runtime>", "compose", "up", "-d"] path. PID 1 idles
 # on ``tail`` so ``<runtime> top`` distinguishes container liveness from
 # workload liveness; the container stays up across a workload stop.
-COMPOSE_TEMPLATE = (
-    """\
+COMPOSE_TEMPLATE = """\
 services:
   agent:
     image: {image}
@@ -198,10 +223,7 @@ services:
       - {stub_path}:/usr/local/bin/claude:ro
       - {stopper_path}:/usr/local/libexec/uxon-runtime-stop.py:ro
     working_dir: /work
-""".replace("{uid}", str(os.getuid()))
-    .replace("{gid}", str(os.getgid()))
-    .replace("{stopper_path}", str(STOP_HELPER))
-)
+"""
 
 
 def operator_runtime_table(rt: Runtime, project_dir: Path) -> dict[str, object]:

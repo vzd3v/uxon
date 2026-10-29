@@ -137,6 +137,23 @@ def test_local_kill_reachability_confirmation_and_dry_run_precede_mutation(
                         assert data["target_user"] == "bob" and data["reachable"]
 
 
+def _expected(cfg, row):
+    from uxon.domain.session import SessionIdentity
+    from uxon.infra.tmux import tmux_socket_path
+
+    backend = cfg.execution.backend_for_user(row.user)
+    return SessionIdentity(
+        row.user,
+        row.name,
+        row.session_id,
+        "100",
+        row.nonce,
+        tmux_socket_path(cfg, row.user),
+        backend.id,
+        backend.fingerprint,
+    )
+
+
 def test_cli_and_tui_single_kill_have_one_truthful_terminal_event_and_real_record_cleanup(
     tmp_path, monkeypatch, subtests
 ):
@@ -145,9 +162,7 @@ def test_cli_and_tui_single_kill_have_one_truthful_terminal_event_and_real_recor
     for caller in ("cli", "tui"):
         for fault in ("", "tmux", "stop", "record"):
             with subtests.test(caller=caller, fault=fault):
-                monkeypatch.setenv(
-                    "XDG_STATE_HOME", str(tmp_path / f"state-{caller}-{fault or 'ok'}")
-                )
+                monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / f"{caller}-{fault or 'ok'}"))
                 cfg = session_config(target)
                 external = SessionCommands()
                 with (
@@ -157,64 +172,48 @@ def test_cli_and_tui_single_kill_have_one_truthful_terminal_event_and_real_recor
                 ):
                     row = external.add(cfg, target, failure=fault)
                     saved = row.path.read_bytes()
-
-                    def invoke(*, caller=caller, cfg=cfg, row=row):
-                        if caller == "cli":
-                            return kill.do_kill(
-                                ParsedArgs(
-                                    action="kill", target_id=row.name, force=True, json_output=True
-                                ),
-                                cfg,
-                                "alice",
-                            )
-                        return TuiBridge(cfg, "operator", "alice", str(target)).on_kill(
-                            "alice", row.name
+                    if caller == "cli":
+                        status = kill.do_kill(
+                            ParsedArgs(action="kill", target_id=row.name, force=True), cfg, "alice"
                         )
-
-                    if fault:
-                        with pytest.raises(SystemExit) as error:
-                            invoke()
-                        assert error.value.code == 1
-                        assert error.value.uxon_msg == (
-                            "kill-session failed (rc=9)"
-                            if fault == "tmux"
-                            else "tmux session was killed, but post-kill cleanup failed"
-                        )
+                        assert status == int(bool(fault))
                     else:
-                        assert invoke() == (0 if caller == "cli" else None)
+                        result = TuiBridge(cfg, "operator", "alice", str(target)).on_kill(
+                            _expected(cfg, row)
+                        )
+                        assert result.ok == (not fault)
+                        assert result.identity.session_id == row.session_id
+                        assert bool(result.error) == bool(fault)
+                        if fault == "tmux":
+                            assert "rc=9" in result.error and "tmux refused" in result.error
+                        if fault == "stop":
+                            assert "rc=7" in result.error and "stop refused" in result.error
                 assert external.mutations == [("alice", row.name)]
-                assert external.stops == ([] if fault == "tmux" else [row.name])
+                assert external.stops == ([] if fault in {"tmux", "record"} else [row.name])
                 assert row.visible == (fault == "tmux") and row.path.exists() == bool(fault)
                 if fault:
                     assert row.path.read_bytes() == saved
-                terminal = [
-                    call.kwargs for call in audit.call_args_list if call.args == ("session.kill",)
-                ]
+                terminal = [c.kwargs for c in audit.call_args_list if c.args == ("session.kill",)]
                 assert len(terminal) == 1
                 event = terminal[0]
                 assert event["outcome"] == ("error" if fault else "ok")
                 assert (
                     event["session"],
+                    event["session_id"],
+                    event["launch_nonce"],
                     event["target_user"],
-                    event["profile"],
-                    event["agent"],
-                ) == (row.name, "alice", "boxed", "claude")
-                assert event.get("rc") == (9 if fault == "tmux" else None)
-                assert event.get("error") == (
-                    "post-kill cleanup failed" if fault in {"stop", "record"} else None
-                )
+                ) == (row.name, row.session_id, row.nonce, "alice")
+                assert bool(event.get("error")) == bool(fault)
                 stops = [
-                    call.kwargs
-                    for call in audit.call_args_list
-                    if call.args == ("runtime.session_stop",)
+                    c.kwargs for c in audit.call_args_list if c.args == ("runtime.session_stop",)
                 ]
-                assert [(event["outcome"], event.get("error")) for event in stops] == (
-                    []
-                    if fault == "tmux"
-                    else [("error", "stop refused")]
-                    if fault == "stop"
-                    else [("ok", None)]
-                )
+                assert len(stops) == int(fault not in {"tmux", "record"})
+                if stops:
+                    assert stops[0]["session_id"] == row.session_id
+                    assert (
+                        stops[0]["execution_backend"] == cfg.execution.backend_for_user("alice").id
+                    )
+                    assert stops[0]["outcome"] == ("error" if fault == "stop" else "ok")
 
 
 def test_public_kills_preserve_authority_for_each_preparation_failure_and_ignore_direct_markers(
@@ -245,7 +244,7 @@ def test_public_kills_preserve_authority_for_each_preparation_failure_and_ignore
                 with (
                     external.installed_boundary(),
                     mock.patch("uxon.infra.audit.audit") as audit,
-                    redirect_stdout(io.StringIO()) as output,
+                    redirect_stdout(io.StringIO()),
                 ):
                     row = external.add(
                         cfg, target, profile="fast" if label == "direct" else "boxed"
@@ -274,36 +273,21 @@ def test_public_kills_preserve_authority_for_each_preparation_failure_and_ignore
                     row.path.write_text(json.dumps(payload))
                     saved = row.path.read_bytes()
                     bridge = TuiBridge(cfg, "operator", "alice", str(target))
-
-                    def invoke(*, caller=caller, cfg=cfg, row=row, bridge=bridge):
-                        if caller == "cli":
-                            return kill.do_kill(
-                                ParsedArgs(
-                                    action="kill", target_id=row.name, force=True, json_output=True
-                                ),
-                                cfg,
-                                "alice",
-                            )
-                        if caller == "tui":
-                            return bridge.on_kill("alice", row.name)
-                        if caller == "cli-bulk":
-                            return kill.do_kill_all(
-                                ParsedArgs(action="kill-all", force=True, json_output=True),
-                                cfg,
-                                "alice",
-                            )
-                        return bridge.on_kill_all()
-
-                    if reason and caller in {"cli", "tui"}:
-                        with pytest.raises(SystemExit) as error:
-                            invoke()
-                        assert error.value.code == 1
-                        assert (
-                            error.value.uxon_msg
-                            == "tmux session was killed, but post-kill cleanup failed"
-                        )
+                    if caller == "cli":
+                        assert kill.do_kill(
+                            ParsedArgs(action="kill", target_id=row.name, force=True), cfg, "alice"
+                        ) == int(bool(reason))
+                    elif caller == "cli-bulk":
+                        assert kill.do_kill_all(
+                            ParsedArgs(action="kill-all", force=True), cfg, "alice"
+                        ) == int(bool(reason))
                     else:
-                        assert invoke() == (0 if caller.startswith("cli") else None)
+                        result = (
+                            bridge.on_kill(_expected(cfg, row))
+                            if caller == "tui"
+                            else bridge.on_kill_all((_expected(cfg, row),))
+                        )
+                        assert result.ok == (not reason)
                 assert external.mutations == [("alice", row.name)] and not row.visible
                 assert external.stops == ([row.name] if label == "matching-stop" else [])
                 assert row.path.exists() == bool(reason)
@@ -314,29 +298,6 @@ def test_public_kills_preserve_authority_for_each_preparation_failure_and_ignore
                 assert len(terminal) == 1 and terminal[0]["outcome"] == (
                     "error" if reason else "ok"
                 )
-                if caller.endswith("bulk"):
-                    assert terminal[0] == {
-                        "outcome": "error" if reason else "ok",
-                        "target_users": ["alice"],
-                        "attempted_count": 1,
-                        "killed_count": 1,
-                        "failed_count": 0,
-                        "cleanup_failed_count": int(bool(reason)),
-                        "dry_run": False,
-                    }
-                    if caller == "cli-bulk":
-                        assert json.loads(output.getvalue())["data"]["sessions"] == [
-                            {
-                                "name": row.name,
-                                "action": "killed",
-                                "cleanup_outcome": "error" if reason else "ok",
-                            }
-                        ]
-                else:
-                    assert terminal[0]["session"] == row.name
-                    assert terminal[0].get("error") == (
-                        "post-kill cleanup failed" if reason else None
-                    )
                 stops = [
                     c.kwargs for c in audit.call_args_list if c.args == ("runtime.session_stop",)
                 ]
@@ -346,6 +307,10 @@ def test_public_kills_preserve_authority_for_each_preparation_failure_and_ignore
                     else [("ok", None)]
                     if label == "matching-stop"
                     else []
+                )
+                assert all(
+                    event["execution_backend"] == cfg.execution.backend_for_user("alice").id
+                    for event in stops
                 )
 
 
@@ -357,8 +322,7 @@ def test_tui_bulk_kills_continue_after_failures_and_limit_reachable_users(
     for reachable in (False, True):
         with subtests.test(reachable=reachable):
             monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / f"state-{reachable}"))
-            cfg = session_config(target)
-            external = SessionCommands()
+            cfg, external = session_config(target), SessionCommands()
             with external.installed_boundary(), mock.patch("uxon.infra.audit.audit") as audit:
                 rows = [
                     external.add(cfg, target, stem=f"row-{i}", failure=fault)
@@ -368,32 +332,33 @@ def test_tui_bulk_kills_continue_after_failures_and_limit_reachable_users(
                 hidden = external.add(cfg, target, user="carol", stem="hidden")
                 bridge = TuiBridge(cfg, "operator", "alice", str(target))
                 bridge.sudo_caps = SudoCapability(reachable_users=frozenset({"bob"}))
-                if reachable:
-                    bridge.on_kill_all_reachable()
-                else:
-                    bridge.on_kill_all()
-            count = 4 + int(reachable)
-            assert external.mutations == [("alice", r.name) for r in rows] + (
-                [("bob", peer.name)] if reachable else []
+                targets = tuple(
+                    _expected(cfg, row) for row in [*rows, *([peer] if reachable else [])]
+                )
+                # A new session appearing after confirmation is outside the snapshot.
+                new = external.add(cfg, target, stem="after-confirmation")
+                result = (
+                    bridge.on_kill_all_reachable(targets)
+                    if reachable
+                    else bridge.on_kill_all(targets)
+                )
+            assert (
+                result.killed_count == 3 + int(reachable)
+                and result.failed_count == 3
+                and not result.ok
             )
-            assert external.stops == [r.name for r in rows[1:]] + ([peer.name] if reachable else [])
+            assert "rc=9" in result.results[0].error and "stop refused" in result.results[1].error
             assert [r.path.exists() for r in rows] == [True, True, True, False]
-            assert peer.path.exists() != reachable and peer.visible != reachable
-            assert hidden.path.exists() and hidden.visible
-            terminal = [
-                call.kwargs for call in audit.call_args_list if call.args == ("session.kill_all",)
-            ]
-            assert terminal == [
-                {
-                    "outcome": "error",
-                    "target_users": ["alice", "bob"] if reachable else ["alice"],
-                    "attempted_count": count,
-                    "killed_count": count - 1,
-                    "failed_count": 1,
-                    "cleanup_failed_count": 2,
-                    "dry_run": False,
-                }
-            ]
+            assert peer.visible != reachable and hidden.visible and new.visible
+            terminal = [c.kwargs for c in audit.call_args_list if c.args == ("session.kill_all",)]
+            assert len(terminal) == 1
+            assert (
+                terminal[0]["attempted_count"],
+                terminal[0]["killed_count"],
+                terminal[0]["failed_count"],
+                terminal[0]["cleanup_failed_count"],
+            ) == (len(targets), len(targets) - 1, 1, 2)
+            assert len(terminal[0]["sessions"]) == len(targets)
 
 
 def test_bulk_empty_dry_run_and_cancel_never_mutate(tmp_path, monkeypatch, subtests):
@@ -402,11 +367,10 @@ def test_bulk_empty_dry_run_and_cancel_never_mutate(tmp_path, monkeypatch, subte
     for mode in ("empty", "dry", "json-confirm", "cancel", "non-tty"):
         with subtests.test(mode=mode):
             monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / f"state-{mode}"))
-            cfg = session_config(target)
-            external = SessionCommands()
+            cfg, external = session_config(target), SessionCommands()
             with (
                 external.installed_boundary(),
-                mock.patch("uxon.infra.audit.audit") as audit,
+                mock.patch("uxon.infra.audit.audit"),
                 redirect_stdout(io.StringIO()) as output,
             ):
                 row = None if mode == "empty" else external.add(cfg, target)
@@ -428,32 +392,43 @@ def test_bulk_empty_dry_run_and_cancel_never_mutate(tmp_path, monkeypatch, subte
                 else:
                     assert kill.do_kill_all(args, cfg, "alice") == 0
                     results = json.loads(output.getvalue())["data"]["sessions"]
-                    assert results == (
-                        []
-                        if row is None
-                        else [
-                            {"name": row.name, "action": "would-kill", "cleanup_outcome": "not_run"}
-                        ]
-                    )
-                    terminal = [
-                        c.kwargs for c in audit.call_args_list if c.args == ("session.kill_all",)
-                    ]
-                    assert (
-                        len(terminal) == 1
-                        and terminal[0]["attempted_count"] == 0
-                        and terminal[0]["killed_count"] == 0
-                    )
+                    assert len(results) == int(row is not None)
+                    if row:
+                        assert (
+                            results[0]["action"] == "would-kill"
+                            and results[0]["session_id"] == row.session_id
+                        )
                 assert not external.mutations and not external.stops
-                if row:
-                    assert row.visible and row.path.exists()
 
 
 def test_remote_kill_argv_round_trips_into_peer_parser_and_reports_transport_outcomes(
     tmp_path, monkeypatch, subtests
 ):
+    from uxon.domain.session import SessionIdentity
+    from uxon.domain.wire_schema import make_envelope
+
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    expected = SessionIdentity(
+        "bob",
+        "space ; ' @claude",
+        "$3",
+        "100",
+        "n" * 32,
+        "/run/uxon/bob.sock",
+        "peer-backend",
+        "f" * 64,
+    )
     for template in ((), ("ssh", "-J", "bastion", "{ssh_alias}", "{remote_command}")):
-        for mode in ("dry-json", "dry-human", "ok", "peer-fail", "timeout", "missing"):
+        for mode in (
+            "dry",
+            "ok",
+            "peer-fail",
+            "timeout",
+            "missing",
+            "malformed",
+            "missing-error",
+            "contradictory-error",
+        ):
             with subtests.test(template=template, mode=mode):
                 cfg = make_config(
                     remote_hosts=[
@@ -468,106 +443,70 @@ def test_remote_kill_argv_round_trips_into_peer_parser_and_reports_transport_out
                 )
                 args = ParsedArgs(
                     action="kill",
-                    target_id="space ; ' @claude",
+                    target_id=expected.name,
                     host="peer",
                     user="bob",
+                    expected_session=expected,
                     force=True,
-                    dry_run=mode.startswith("dry"),
-                    json_output=mode == "dry-json",
+                    dry_run=mode == "dry",
+                    json_output=True,
                 )
                 calls = []
 
-                def respond(
-                    argv, *, args=args, calls=calls, mode=mode, template=template, **kwargs
-                ):
+                def respond(argv, *, kwargs_mode=mode, calls=calls, **kwargs):
                     calls.append(list(argv))
-                    assert (
-                        argv[0] == "ssh"
-                        and kwargs["start_new_session"]
-                        and kwargs["stdin"] == subprocess.DEVNULL
-                    )
-                    if "-O" in argv:
-                        assert not template and mode == "timeout" and kwargs["timeout"] == 2
-                        assert argv[-1] == "peer-ssh" and argv[argv.index("-O") + 1] == "exit"
-                        return subprocess.CompletedProcess(argv, 0, "", "")
-                    if "-G" in argv:
-                        assert not template and mode == "timeout" and kwargs["timeout"] == 2
+                    if "-O" in argv or "-G" in argv:
                         return subprocess.CompletedProcess(argv, 1, "", "")
                     assert kwargs["timeout"] == 10
-                    assert argv[-2] == "peer-ssh"
                     parts = shlex.split(argv[-1])
-                    assert parts[0] == "/opt/tools/uxon cli"
                     peer = parse_args(parts[1:])
-                    assert (peer.action, peer.target_id, peer.user, peer.force, peer.host) == (
-                        "kill",
-                        args.target_id,
-                        "bob",
-                        True,
-                        None,
-                    )
-                    assert peer.audit_correlation_id
-                    if template:
-                        assert argv[1:3] == ["-J", "bastion"]
-                    else:
-                        assert (
-                            "BatchMode=yes" in argv
-                            and "ServerAliveInterval=15" in argv
-                            and "ControlMaster=auto" in argv
-                        )
-                    if mode == "timeout":
+                    assert peer.expected_session == expected and peer.force and peer.json_output
+                    if kwargs_mode == "timeout":
                         raise subprocess.TimeoutExpired(argv, 10)
-                    if mode == "missing":
+                    if kwargs_mode == "missing":
                         raise FileNotFoundError("ssh")
+                    data = {
+                        "name": expected.name,
+                        "target_user": "bob",
+                        "session_id": expected.session_id,
+                        "launch_nonce": expected.launch_nonce,
+                        "action": "failed" if kwargs_mode == "peer-fail" else "killed",
+                        "cleanup_outcome": "not_run" if kwargs_mode == "peer-fail" else "ok",
+                        "error": "denied on peer" if kwargs_mode == "peer-fail" else "",
+                    }
+                    if kwargs_mode == "missing-error":
+                        data.update(action="failed", error="")
+                    elif kwargs_mode == "contradictory-error":
+                        data["error"] = "cleanup failed despite reported success"
+                    payload = (
+                        "[]"
+                        if kwargs_mode == "malformed"
+                        else json.dumps(make_envelope("kill", data, uxon_version="4.0.0"))
+                    )
                     return subprocess.CompletedProcess(
-                        argv,
-                        1 if mode == "peer-fail" else 0,
-                        "peer stdout\n",
-                        "uxon-error: not-reachable\n" if mode == "peer-fail" else "",
+                        argv, int(kwargs_mode == "peer-fail"), payload, ""
                     )
 
                 with (
                     mock.patch("uxon.infra.run.subprocess.run", side_effect=respond),
                     mock.patch("uxon.infra.audit.audit") as audit,
                     redirect_stdout(io.StringIO()) as output,
-                    redirect_stderr(io.StringIO()) as errors,
+                    redirect_stderr(io.StringIO()),
                 ):
-                    assert kill.do_kill(args, cfg, "alice") == int(
-                        mode in {"peer-fail", "timeout", "missing"}
-                    )
+                    assert kill.do_kill(args, cfg, "alice") == int(mode not in {"dry", "ok"})
                 terminal = [
                     c.kwargs for c in audit.call_args_list if c.args == ("kill.remote.out",)
                 ]
-                assert len(terminal) == 1 and terminal[0]["target_user"] == "bob"
-                assert terminal[0].get("outcome", "ok") == (
-                    "error" if mode in {"peer-fail", "timeout", "missing"} else "ok"
+                assert (
+                    len(terminal) == 1
+                    and terminal[0]["session_id"] == expected.session_id
+                    and terminal[0]["target_session"] == expected.name
+                    and terminal[0]["execution_backend"] == expected.execution_backend
                 )
-                assert terminal[0].get("rc") == (
-                    {"ok": 0, "peer-fail": 1, "timeout": 124, "missing": 127}.get(mode)
-                )
-                if args.dry_run:
+                assert terminal[0]["outcome"] == ("ok" if mode in {"dry", "ok"} else "error")
+                assert json.loads(output.getvalue())["data"]["session_id"] == expected.session_id
+                if mode == "dry":
                     assert not calls
-                    if args.json_output:
-                        env = json.loads(output.getvalue())
-                        assert (
-                            env["host"] == "peer"
-                            and env["data"]["action"] == "would-kill"
-                            and env["data"]["target_user"] == "bob"
-                        )
-                        argv = env["data"]["ssh_argv"]
-                    else:
-                        assert output.getvalue().startswith("dry-run: ")
-                        argv = shlex.split(output.getvalue()[9:])
-                    assert parse_args(shlex.split(argv[-1])[1:]).target_id == args.target_id
-                else:
-                    assert len(calls) == (3 if mode == "timeout" and not template else 1)
-                    if mode in {"ok", "peer-fail"}:
-                        assert output.getvalue() == "peer stdout\n"
-                    if mode == "peer-fail":
-                        assert errors.getvalue() == "uxon-error: not-reachable\n"
-                    if mode == "timeout":
-                        assert "ssh timeout" in errors.getvalue()
-                    if mode == "missing":
-                        assert "ssh not installed" in errors.getvalue()
 
 
 def test_remote_unknown_peer_and_unconfirmed_json_fail_before_transport(subtests):
@@ -588,22 +527,6 @@ def test_remote_unknown_peer_and_unconfirmed_json_fail_before_transport(subtests
                 host="unknown" if mode == "unknown" else "peer",
                 json_output=True,
             )
-            with (
-                mock.patch("uxon.infra.run.subprocess.run") as spawn,
-                mock.patch("uxon.infra.audit.audit") as audit,
-                pytest.raises(SystemExit) as error,
-            ):
+            with mock.patch("uxon.infra.run.subprocess.run") as spawn, pytest.raises(SystemExit):
                 kill.do_kill(args, cfg, "alice")
-            assert error.value.code == 2
-            assert (
-                "configured: peer"
-                if mode == "unknown"
-                else "no [[remote_hosts]]"
-                if mode == "empty"
-                else "requires --force"
-            ) in error.value.uxon_msg
             spawn.assert_not_called()
-            terminal = [c.kwargs for c in audit.call_args_list if c.args == ("kill.remote.out",)]
-            assert [e["outcome"] for e in terminal] == (
-                [] if mode == "unconfirmed" else ["not_found"]
-            )

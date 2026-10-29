@@ -172,7 +172,7 @@ class MainScreen(Screen):
         self.state = state
         # Controllers hold the heavy bodies of the launch/kill/refresh
         # flows; the screen's ``action_*``/``on_*`` handlers stay thin
-        # delegators (AGENTS.md). Each reaches back into this screen via
+        # delegators. Each reaches back into this screen via
         # ``host=self`` so per-build state has one source of truth.
         self._launch_flow = LaunchFlow(self)
         self._kill_flow = KillFlow(self)
@@ -490,8 +490,8 @@ class MainScreen(Screen):
     def _run_intent(self, intent: MainIntent | None) -> None:
         self._launch_flow.run_intent(intent)
 
-    def _attach_session(self, user: str, session_name: str) -> None:
-        self._launch_flow.attach_session(user, session_name)
+    def _attach_session(self, user: str, session_name: str, expected=None) -> None:
+        self._launch_flow.attach_session(user, session_name, expected)
 
     def _maybe_show_session_choice(
         self,

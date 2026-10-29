@@ -105,6 +105,23 @@ class PtyTuiIntegrationTests(unittest.TestCase):
         self.assertEqual(trace.exit_code, 0, trace.plain)
 
         with tempfile.TemporaryDirectory() as directory:
+            finalized = Path(directory) / "finalized"
+            # Closing the terminal streams need not finish the interpreter.
+            # Honor the scenario deadline while bounded finalization completes.
+            trace = run_python_snippet(
+                "import os, time; from pathlib import Path; "
+                "print('FINALIZING', flush=True); "
+                "os.close(0); os.close(1); os.close(2); time.sleep(0.3); "
+                f"Path({str(finalized)!r}).write_text('complete')",
+                [],
+                initial_wait_for="FINALIZING",
+                initial_drain=1.0,
+                final_drain=0.1,
+                timeout=3.0,
+            )
+            self.assertEqual(trace.exit_code, 0, trace.plain)
+            self.assertEqual(finalized.read_text(), "complete")
+
             consumed = Path(directory) / "consumed"
             pid_file = Path(directory) / "pid"
             script = f"""
@@ -265,10 +282,14 @@ from uxon.tui.screens.main import MainScreen
 from uxon.tui.screens.settings import SettingsScreen
 from uxon.tui.screens.launch_options import LaunchOptionsScreen
 readiness_counts = {{"MAIN":0,"SETTINGS":0,"OPTIONS":0}}
+app_generations = [0]
 class ReadyApp(app_module.UxonApp):
     CSS_PATH = Path(app_module.__file__).with_name("styles.tcss")
     def on_mount(self):
         super().on_mount()
+        app_generations[0] += 1
+        self.generation = app_generations[0]
+        self.acknowledged_app = False
         self.previous_role = None
         self.guard_verified = False
         self.set_interval(0.02, lambda: self.call_after_refresh(self.ack))
@@ -295,6 +316,11 @@ class ReadyApp(app_module.UxonApp):
             return
         elif role == "OPTIONS" and (getattr(self.focused, "id", None) != "mode-list" or screen.query_one("#mode-list").index is None):
             return
+        # A dismissed launch picker can briefly reveal Main while the old
+        # App prepares its handoff. Only a fresh App can acknowledge reentry.
+        if role == "MAIN" and not self.acknowledged_app:
+            self.acknowledged_app = True
+            os.write(1, f"READY_APP_{{self.generation}}\n".encode())
         self.previous_role = role
         readiness_counts[role] += 1
         os.write(1, f"READY_{{role}}_{{readiness_counts[role]}}\n".encode())
@@ -343,12 +369,12 @@ ctx.on_refresh = lambda: ctx
                 # Enter would open a new launch modal if delivered after reentry.
                 yield (0.2, b"\r")
                 release.touch()
-                yield (10.0, b"", "READY_MAIN_2")
+                yield (10.0, b"", "READY_APP_2")
                 yield (10.0, b"q", "PTY_EXIT:0")
 
             with mock.patch("harness.pty_tui._SETTLE_MS", 100):
                 trace = run_python_snippet(
-                    script, keys(), initial_wait_for="READY_MAIN_1", initial_drain=20, timeout=60
+                    script, keys(), initial_wait_for="READY_APP_1", initial_drain=20, timeout=60
                 )
             self.assertEqual(trace.exit_code, 0, trace.plain[-3000:])
             self.assertEqual(marker.read_text(), "cwd:claude:normal\n")

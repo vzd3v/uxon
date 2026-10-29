@@ -9,11 +9,28 @@ cycle.
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from io import StringIO
 from typing import NoReturn
+
+_stderr_target: ContextVar[StringIO | None] = ContextVar("uxon_stderr_target", default=None)
+
+
+@contextmanager
+def capture_diagnostics() -> Iterator[StringIO]:
+    """Capture Uxon diagnostics in this context, preserving the terminal stream."""
+    buffer = StringIO()
+    token = _stderr_target.set(buffer)
+    try:
+        yield buffer
+    finally:
+        _stderr_target.reset(token)
 
 
 def eprint(msg: str) -> None:
-    print(msg, file=sys.stderr)
+    print(msg, file=_stderr_target.get() or sys.stderr)
 
 
 def fail(msg: str, code: int = 2) -> NoReturn:

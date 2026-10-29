@@ -1,68 +1,17 @@
 # Solo on a single host
 
-You're the only user of one Linux box (a daily-driver, a dev VM,
-or a small VPS) and you'd like `uxon` to manage your agent
-sessions on it.
+Run persistent coding sessions on one Linux host. A paired launch account is optional; its filesystem permissions define what the workload can access.
 
-## What you get
+## Tasks
 
-- A persistent TUI over `tmux` that survives terminal disconnects.
-- One sortable dashboard listing every agent session on the host
-  (yours).
-- Optional confinement of agents to a low-privilege OS account
-  (`<user>-agent`), so a yolo-mode (`--mode yolo`) run can damage only
-  what that account can write to — not your `$HOME`, SSH keys,
-  or credentials.
+- [Start a session](../start/solo-1-quickstart.md).
+- [Choose launch profiles](../guides/customise/choose-launch-profile.md).
+- [Use worktrees](../guides/customise/worktrees.md).
+- [Create a GitHub repository](../guides/customise/configure-github-on-new-project.md).
+- [Stop a runaway session](../guides/operate/respond-to-rogue-agent.md).
+- [Add another host](../start/add-second-host.md).
 
-## Get started
+## Reference and background
 
-1. **Install** — pick a flavour in [`start/install.md`](../start/install.md).
-   Per-user `uv tool install uxon` is fine for solo.
-2. **First session** — [`start/solo-1-quickstart.md`](../start/solo-1-quickstart.md)
-   walks the simplest setup ("agent runs as you") in 10 minutes.
-3. **Recommended hardening** — set up the paired `<user>-agent`
-   account so yolo-mode is sandboxed; see
-   [`start/solo-1-quickstart.md` § Recommended](../start/solo-1-quickstart.md#recommended-paired-account).
-
-## Likely customisations
-
-- **Choose launch profiles** —
-  [`guides/customise/choose-launch-profile.md`](../guides/customise/choose-launch-profile.md)
-- **Auto-create a GitHub repo on `uxon new`** —
-  [`guides/customise/configure-github-on-new-project.md`](../guides/customise/configure-github-on-new-project.md)
-- **Move old project-local overrides into operator config** —
-  [`migrations.md`](../migrations.md#install-the-host-wide-config)
-- **Tune dashboard refresh on a slow link** —
-  [`guides/customise/tune-refresh-cadence.md`](../guides/customise/tune-refresh-cadence.md)
-- **Work in a git worktree** —
-  [`guides/customise/worktrees.md`](../guides/customise/worktrees.md)
-- **Run the agent in a container** —
-  [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md),
-  hardened per
-  [`guides/harden/harden-a-container.md`](../guides/harden/harden-a-container.md)
-
-## Reference
-
-- [`reference/cli.md`](../reference/cli.md) — every subcommand and flag.
-- [`reference/configuration.md`](../reference/configuration.md) — every config key.
-- [`reference/keybindings.md`](../reference/keybindings.md) — TUI keys.
-
-## Worth understanding
-
-- [`explain/isolation-model.md`](../explain/isolation-model.md)
-  — the OS-user model, and how a container composes on top of it.
-- [`explain/audit-channel-design.md`](../explain/audit-channel-design.md)
-  — what `uxon` records and why (also relevant for solo, since the
-  channel is on by default; you can disable it via `audit.enabled
-  = false` if you don't need a personal trail).
-
-## What you don't need (yet)
-
-- Multi-host setup — when you add a second machine, see
-  [`scenarios/solo-n.md`](solo-n.md).
-- Cross-user supervision — the superuser block, `session_users`,
-  `enable_all_users_list` are team features and stay invisible on
-  a solo host.
-- Operations runbooks under `guides/operate/` — those are written
-  for team operators. Solo failure modes are smaller and the
-  recovery is "delete the offending project and start over".
+- [CLI](../reference/cli.md), [configuration](../reference/configuration.md) and [keybindings](../reference/keybindings.md).
+- [Isolation model](../explain/isolation-model.md) and [supervision](../explain/supervision-without-impersonation.md).

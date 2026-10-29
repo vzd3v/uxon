@@ -7,7 +7,16 @@ AUDIT_COMMON_OPTIONAL_FIELDS = frozenset({"correlation_id"})
 
 AUDIT_EVENT_FIELDS: dict[str, frozenset[str]] = {
     "attach.remote.out.dispatch": frozenset(
-        {"peer_name", "ssh_alias", "target_user", "target_session", "dry_run"}
+        {
+            "peer_name",
+            "ssh_alias",
+            "target_user",
+            "target_session",
+            "session_id",
+            "launch_nonce",
+            "execution_backend",
+            "dry_run",
+        }
     ),
     "cli.start": frozenset(
         {
@@ -30,6 +39,11 @@ AUDIT_EVENT_FIELDS: dict[str, frozenset[str]] = {
             "ssh_alias",
             "target_user",
             "target_session",
+            "session_id",
+            "launch_nonce",
+            "execution_backend",
+            "action",
+            "cleanup_outcome",
             "force",
             "dry_run",
             "rc",
@@ -40,21 +54,72 @@ AUDIT_EVENT_FIELDS: dict[str, frozenset[str]] = {
     "list.remote.out": frozenset({"peer_name", "ssh_alias", "scope", "from_cache", "rc", "error"}),
     "runtime.prepare": frozenset({"action", "runtime_resource", "error", "error_type"}),
     "runtime.session_stop": frozenset(
-        {"runtime", "runtime_resource", "action", "reason", "session", "target_user", "error"}
+        {
+            "runtime",
+            "runtime_resource",
+            "action",
+            "reason",
+            "session",
+            "session_id",
+            "launch_nonce",
+            "execution_backend",
+            "target_user",
+            "error",
+        }
     ),
-    "session.attach.dispatch": frozenset({"session", "target_user", "profile", "agent", "dry_run"}),
-    "session.ended": frozenset({"session", "rc", "wall_seconds", "error"}),
+    "session.attach.dispatch": frozenset(
+        {
+            "session",
+            "session_id",
+            "launch_nonce",
+            "execution_backend",
+            "target_user",
+            "profile",
+            "agent",
+            "dry_run",
+        }
+    ),
+    "session.ended": frozenset(
+        {
+            "session",
+            "session_id",
+            "launch_nonce",
+            "target_user",
+            "execution_backend",
+            "stage",
+            "peer_name",
+            "rc",
+            "wall_seconds",
+            "error",
+        }
+    ),
     "session.kill": frozenset(
-        {"session", "target_user", "profile", "agent", "force", "dry_run", "rc", "error"}
+        {
+            "session",
+            "session_id",
+            "launch_nonce",
+            "execution_backend",
+            "target_user",
+            "profile",
+            "agent",
+            "force",
+            "dry_run",
+            "rc",
+            "error",
+            "action",
+            "cleanup_outcome",
+        }
     ),
     "session.kill_all": frozenset(
         {
             "target_users",
             "attempted_count",
             "killed_count",
+            "already_absent_count",
             "failed_count",
             "cleanup_failed_count",
             "dry_run",
+            "sessions",
         }
     ),
     "session.new": frozenset(
@@ -65,6 +130,9 @@ AUDIT_EVENT_FIELDS: dict[str, frozenset[str]] = {
             "project",
             "branch",
             "session",
+            "session_id",
+            "launch_nonce",
+            "execution_backend",
             "dry_run",
             "error",
             "error_type",

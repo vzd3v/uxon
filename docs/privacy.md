@@ -89,8 +89,8 @@ running central forwarding and where it lives.
 For team setups, the audit channel exists for three reasons:
 
 1. **Incident response.** When an agent goes rogue or someone
-   makes a mistake, `journalctl SYSLOG_IDENTIFIER=uxon` gives
-   the operator a complete sweep of what happened, including
+   makes a mistake, `journalctl SYSLOG_IDENTIFIER=uxon` shows
+   the operator recorded Uxon operations, including
    denied/errored gestures (`outcome != "ok"`).
 2. **Cross-host correlation.** Without `correlation_id`,
    chasing an issue that crossed multiple hosts means SSH'ing
@@ -106,8 +106,7 @@ For team setups, the audit channel exists for three reasons:
 Operators can disable the channel host-wide via
 `audit.enabled = false` in `/etc/uxon/config.toml`. There's no per-user
 opt-out; if your team's policy requires audit, the operator
-sets it on. If you want a personal `uxon` (solo·1) without the
-trail, set `audit.enabled = false` in your own config.
+sets it on. On a solo host, change the same operator-owned host config.
 
 ## Retention
 

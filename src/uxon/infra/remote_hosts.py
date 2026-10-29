@@ -12,9 +12,8 @@ single :class:`RemoteHostError` so the caller (cli.load_config) can
 ``fail()`` with a clean message.
 
 This module is pure data: no subprocess, no filesystem, no network.
-The actual SSH transport, snapshot caching, and TUI wiring live in
-later commits in this sequence (RemoteCollector → TUI HOST column
-→ CLI ``--host`` flag).
+SSH transport and live peer collection live in ``infra.remote``; application
+use cases and the TUI consume those snapshots through their own adapters.
 """
 
 from __future__ import annotations

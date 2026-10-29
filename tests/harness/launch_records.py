@@ -43,6 +43,7 @@ def session_from_record(pending, metadata):
         "profile",
         "launch_user",
         "launch_nonce",
+        "socket_path",
         "execution_backend",
         "execution_fingerprint",
         "runtime",

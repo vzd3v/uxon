@@ -123,6 +123,8 @@ class SessionCommands(TargetCommands):
             assert kwargs["timeout"] == 1.25
             if command[4:] == ["-F", "#{session_id}"]:
                 return result("\n".join(row.session_id for row in visible))
+            if command[4:] == ["-F", "#{session_id}\t#{session_created}\t#{E:UXON_LAUNCH_NONCE}"]:
+                return result("\n".join(f"{row.session_id}\t100\t{row.nonce}" for row in visible))
             assert command[4] == "-F" and command[5].startswith("#{session_name}\t#{session_id}")
             return result(
                 "\n".join(
@@ -146,12 +148,16 @@ class SessionCommands(TargetCommands):
             assert kwargs["timeout"] == 1.25
             assert command[4:6] == ["-s", "-t"] and any(r.session_id == command[6] for r in visible)
             return result("1\t111\tengine\t/mutable-pane-dir\t1\t%1\t0\t\t")
-        assert action == "kill-session" and command[4:6] == ["-t", command[5]] and len(command) == 6
-        row = next(r for r in visible if r.name == command[5])
+        assert action == "if-shell" and command[4:6] == ["-F", "-t"]
+        row = next((r for r in visible if r.session_id == command[6]), None)
+        if row is None:
+            return result(rc=1, stderr="session absent")
+        if row.nonce not in command[7]:
+            return result("uxon-kill-stale\n")
         self.mutations.append((user, row.name))
         if row.failure == "tmux":
             return result(rc=9, stderr="tmux refused")
         row.visible = False
         if row.failure == "record":
             row.path.chmod(0o666)
-        return result()
+        return result("uxon-kill-matched\n")

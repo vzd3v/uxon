@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from uxon.domain.session import TuiSession
 from uxon.domain.wire_schema import RemoteSnapshot
 from uxon.tui.dashboard.model import select_dashboard_model
 from uxon.tui.dashboard.ui_state import DashboardUiState
@@ -16,8 +17,8 @@ def _epoch_to_iso(epoch: float) -> str:
 
 
 def _local_session(name, last_attached, user="me", cpu=0.0):
-    """Local TuiSession-shaped namespace; ``last_attached`` is epoch seconds."""
-    return SimpleNamespace(
+    """Local rendering DTO; ``last_attached`` is epoch seconds."""
+    return TuiSession(
         name=name,
         short=name,
         attached=False,

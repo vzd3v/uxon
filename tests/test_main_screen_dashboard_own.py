@@ -19,6 +19,7 @@ from helpers import make_dashboard_snapshot as _snapshot
 from helpers import visible_dashboard_text as _visible
 from textual.widgets import Footer, Static
 
+from uxon.domain.session import KillResult, SessionIdentity
 from uxon.domain.sudo import SudoCapability
 from uxon.domain.wire_schema import RemoteSnapshot
 from uxon.infra.remote_hosts import RemoteHost
@@ -30,6 +31,35 @@ from uxon.tui.widgets.session_list_view import SessionListView
 
 
 class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_display_only_local_rows_survive_later_peer_named_local(self):
+        from helpers import make_session
+
+        from uxon.domain.session import to_tui_session
+
+        local = [
+            to_tui_session(make_session(f"uxon-{name}@claude"), "uxon-")
+            for name in ("first", "second")
+        ]
+        ctx = _mk_ctx(
+            sessions=local,
+            remote_hosts=[RemoteHost("local", "local", "", "uxon")],
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        async with app.run_test(size=(120, 30)) as pilot:
+            _land(app, ctx)
+            table = app.screen.query_one(SessionListView)
+            await wait_until(pilot, lambda: table.row_count == 2, "two display-only local rows")
+            app.on__refresh_source_landed(
+                _RefreshSourceLanded("remote:local", replace(_snapshot(), host_name="local"))
+            )
+            await wait_until(pilot, lambda: table.row_count == 3, "peer arrives after local rows")
+            rows = app.screen._dashboard_rows
+            self.assertEqual(len({row.key for row in rows}), 3)
+            self.assertEqual(
+                {row.name for row in rows},
+                {session.name for session in local} | {"uxon-remote@claude"},
+            )
+
     async def test_loading_lands_rows_and_visible_destructive_footer(self):
         from uxon.infra import events
 
@@ -98,10 +128,20 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
         calls = []
         requests = []
         refreshes = []
+        identities = []
 
         def attach(*target):
+            if isinstance(target[-1], SessionIdentity):
+                identities.append(target[-1])
+                target = target[:-1]
             calls.append(("attach", *target))
             return LaunchRequest(("true",), label="/".join(target))
+
+        def kill(*target):
+            expected = target[-1]
+            identities.append(expected)
+            calls.append(("kill", *target[:-1], expected.user, expected.name))
+            return KillResult(expected, "killed", "ok")
 
         ctx = _mk_ctx(
             sessions=[_session()],
@@ -110,8 +150,8 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
             remote_hosts=[RemoteHost("peer", "peer", "", "uxon")],
             on_attach=attach,
             on_remote_attach=attach,
-            on_kill=lambda *target: calls.append(("kill", *target)),
-            on_remote_kill=lambda *target: calls.append(("kill", *target)),
+            on_kill=kill,
+            on_remote_kill=kill,
         )
         app = UxonApp(ctx, probe_agents=False)
         app.request_launch = requests.append

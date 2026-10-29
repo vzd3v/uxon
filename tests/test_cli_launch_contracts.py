@@ -16,6 +16,7 @@ from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
 from uxon.domain.launch_profiles import RuntimeContext
 from uxon.domain.runtime import WorkloadRuntimeSpec
 from uxon.infra import execution, launch_records, probes, tmux
+from uxon.infra.tmux_diagnostics import ACKNOWLEDGED_FORMAT
 
 _REAL_REQUIRE_PROBE = execution.require_probe
 _REAL_PROBE_HOST = probes.probe_host
@@ -242,7 +243,7 @@ def test_rich_launch_preserves_execution_socket_workload_nonce_and_controller_se
         ";",
         "set-window-option",
         "-t",
-        "uxon-project@claude",
+        "=uxon-project@claude:",
         "remain-on-exit",
         "failed",
     )
@@ -666,7 +667,10 @@ def session_boundary(launch_boundary, monkeypatch):
         )
         base = ["tmux", "-S", socket]
         session_format = "#{session_name}\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_created}\t#{session_activity}\t#{E:UXON_LAUNCH_NONCE}\t#{E:UXON_RUNTIME_RESOURCE}\t#{E:UXON_RUNTIME_CGROUP}"
-        pane_format = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@uxon-dismissed}"
+        pane_format = (
+            "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t"
+            + ACKNOWLEDGED_FORMAT
+        )
         if argv == base + ["list-sessions", "-F", session_format]:
             output = "\n".join(rows)
         else:
@@ -710,8 +714,12 @@ def test_actual_probe_and_planner_share_verified_compatibility_and_path_conflict
         ("uxon-project@claude", "claude", True, "1")
     ]
     assert ctx.on_probe_existing_sessions(str(path), "claude", "normal") == (
-        (user, "uxon-project@claude", True),
+        (user, "uxon-project@claude", True, found[0].identity),
     )
+    captured = found[0].identity
+    assert (captured.session_id, captured.created, captured.launch_nonce) == ("$1", "123", "1" * 32)
+    assert captured.socket_path == tmux.tmux_socket_path(cfg, user)
+    assert captured.execution_fingerprint == cfg.execution.backend_for_user(user).fingerprint
     planned = ctx.on_launch_cwd("claude", "normal", str(path))
     assert planned.managed.record_session == "uxon-project@claude-3"
     assert planned.managed.project == str(path) and planned.managed.launch_user == user
@@ -720,9 +728,11 @@ def test_actual_probe_and_planner_share_verified_compatibility_and_path_conflict
     wt.mkdir(parents=True)
     add("uxon-myapp-feature-auth@claude", "claude", wt)
     add("uxon-second-feature-auth@claude", "claude", path)
-    assert ctx.on_probe_existing_worktree_sessions(
+    choices = ctx.on_probe_existing_worktree_sessions(
         str(wt), str(root / "myapp"), "feature/auth", "claude", "normal"
-    ) == ((user, "uxon-myapp-feature-auth@claude", False),)
+    )
+    assert [choice[:3] for choice in choices] == [(user, "uxon-myapp-feature-auth@claude", False)]
+    assert (choices[0][3].session_id, choices[0][3].launch_nonce) == ("$5", "5" * 32)
     planned = ctx.on_launch_existing_worktree(
         str(root / "myapp"), "feature/auth", str(wt), "claude", "normal"
     )
@@ -854,7 +864,8 @@ def test_public_new_refuses_compatible_unverified_legacy_default_socket(
                 "-t",
                 "$1",
                 "-F",
-                "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@uxon-dismissed}",
+                "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t"
+                + ACKNOWLEDGED_FORMAT,
             ]
             output = f"1\t999999\tclaude\t{path}\t1\t%1\t0\t\t"
         calls.append(argv)
@@ -911,18 +922,35 @@ def test_public_list_and_destructive_json_dry_empty_and_refusal(
     )
     assert json.loads(capsys.readouterr().out)["data"] == {
         "target": "uxon-project@codex",
+        "name": "uxon-project@codex",
         "user": user,
+        "target_user": user,
+        "reachable": True,
+        "session_id": "$2",
+        "launch_nonce": "2" * 32,
         "socket": tmux.tmux_socket_path(cfg, user),
         "action": "would-kill",
         "dry_run": True,
+        "cleanup_outcome": "not_run",
+        "error": "",
     }
     assert kill.do_kill_all(parse_args(["kill-all", "--json", "--dry-run"]), cfg, user) == 0
     assert json.loads(capsys.readouterr().out)["data"] == {
         "user": user,
         "socket": tmux.tmux_socket_path(cfg, user),
         "dry_run": True,
+        "killed_count": 0,
+        "failed_count": 0,
         "sessions": [
-            {"name": r.split("\t")[0], "action": "would-kill", "cleanup_outcome": "not_run"}
+            {
+                "name": r.split("\t")[0],
+                "user": user,
+                "session_id": r.split("\t")[1],
+                "launch_nonce": r.split("\t")[6],
+                "action": "would-kill",
+                "cleanup_outcome": "not_run",
+                "error": "",
+            }
             for r in rows
         ],
     }
@@ -1126,7 +1154,8 @@ def test_one_git_tree_covers_include_intersection_planners_and_refusals(
                 "-t",
                 "$10",
                 "-F",
-                "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@uxon-dismissed}",
+                "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t"
+                + ACKNOWLEDGED_FORMAT,
             ]
             output = f"1\t999999\tclaude\t{wt}\t1\t%10\t0\t\t"
         return subprocess.CompletedProcess(argv, 0, output, "")
@@ -1156,7 +1185,10 @@ def test_one_git_tree_covers_include_intersection_planners_and_refusals(
             )
             == 0
         )
-        assert "attach-session -t uxon-myapp-feature-auth@claude" in sys.stdout.getvalue()
+        output = sys.stdout.getvalue()
+        assert "attach-session -t" in output and "$10" in output and "if-shell" in output
+        assert "#{session_created},123" in output and pending.launch_nonce in output
+        assert "attach-session -t uxon-myapp-feature-auth@claude" not in output
         scoped.setattr(sys, "stdin", io.StringIO())
         cfg.repeat_noninteractive_mode = "new"
         with pytest.raises(SystemExit) as caught:
@@ -1171,6 +1203,7 @@ def test_one_git_tree_covers_include_intersection_planners_and_refusals(
     assert snapshot() == before_repeat
     packet = git_audit_sink.recv(65536)
     assert b"EVENT=session.attach.dispatch\n" in packet
+    assert b"EXECUTION_BACKEND=local\n" in packet
     assert b"SESSION=uxon-myapp-feature-auth@claude\n" in packet
     assert b"PROFILE=claude\n" in packet and b"AGENT=claude\n" in packet
     git_command("branch", "existing", "HEAD")

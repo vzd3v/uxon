@@ -25,8 +25,8 @@ flagged in each section.
   [`scenarios/team-1.md`](../scenarios/team-1.md). Every target-user command
   crosses the selected execution backend; the built-in `local` backend uses
   argv-preserving `sudo -H -u USER --` only when caller and target differ.
-- Every state-changing subcommand emits one terminal event; exec-based attach
-  emits a dispatch event immediately before process replacement —
+- Every state-changing subcommand emits a terminal event; attach
+  emits dispatch and completion events around the interactive client —
   see [`audit-events.md`](audit-events.md) for which event each
   command fires and the fields it carries.
 
@@ -157,6 +157,10 @@ delegates the per-target execution gate to the peer's own
 connection — `ControlMaster`/`ControlPath` are stripped from the
 default template regardless of `ssh_multiplex`, so a wedged poller
 master can never hang the TUI handoff.
+The default template forces a remote PTY after `extra_ssh_options`; custom
+templates retain their own terminal policy. Only default-template SSH transport
+diagnostics are retained on failure; [audit behavior](audit-events.md#event-alphabet)
+excludes interactive workload output.
 
 **`--dry-run`** prints the would-be tmux argv (local) or the SSH
 command line (remote) instead of executing it.
@@ -166,8 +170,11 @@ command line (remote) instead of executing it.
 Short form: `uxon -k <id>`. Kills a single session. Same identifier
 resolution as `attach`.
 
-Without `--user` / `--host`, behaves exactly as before: kills a
-session owned by the current launch user on the local box.
+Without `--user` / `--host`, removes a session owned by the current launch user.
+The selector resolves once to a captured tmux ID, creation value and launch
+nonce. Confirmation, refresh or rename cannot redirect removal to a same-name
+replacement. Missing nonce or protected launch record refuses removal, including
+for direct workloads; see [launch records](configuration.md#launch-records).
 
 **`--user <name>`** kills a session belonging to a different launch
 user on the same host. `<name>` is a **launch user** — the OS
@@ -194,8 +201,8 @@ prompt (typing the literal phrase `kill`) when running on a TTY.
 to run without `--force` or `--dry-run`.
 
 `--dry-run` prints the would-be tmux argv (local) or the SSH command
-line (remote) instead of executing it. The probe still runs in the
-local cross-user case so the dry-run output reflects reachability.
+line (remote) instead of executing it. Local and remote resolution still run
+under bounded probes, so dry-run reflects identity and reachability.
 
 **Bulk** kill (`kill-all`) is **strictly local** — there is no
 `uxon kill-all --host`. Per-session kill is the only destructive
@@ -205,13 +212,14 @@ operation that crosses hosts.
 
 Alias: `uxon --killall`.
 
-Kills every `uxon-*` (and configured legacy-prefix) session for
-the current launch user. Requires interactive confirmation (typing
+Removes the captured set of recognized sessions for the current launch user.
+The set is frozen before confirmation; sessions created afterwards survive.
+Every target needs its nonce and protected launch record. Requires confirmation (typing
 `kill-all`) or `--force`.
 
 **`--json`** emits a wire-schema envelope (`kind: "kill-all"`) with
 the launch user, socket path, and a per-session result list
-(`killed` / `failed` / `would-kill` under `--dry-run`) plus the typed
+(`killed` / `already_absent` / `failed` / `would-kill` under `--dry-run`) plus the typed
 post-kill `cleanup_outcome` (`ok` / `error` / `not_run`). Like
 `kill`, `--json` is non-interactive and refuses to run without
 `--force` or `--dry-run`.
@@ -221,9 +229,27 @@ This **only** kills sessions for the current launch user. The
 operation is TUI-only, requires every target backend to be reachable, and prompts
 for `kill-all-reachable` to confirm.
 
+Single and bulk removal return exit code `1` on mutation or required cleanup
+failure. Bulk removal attempts the remaining independent targets and reports
+actual counts and individual errors. Unreachable servers never authorize workload
+cleanup; failed cleanup retains its protected record.
+
+### Conditional peer requests
+
+`attach` and `kill` accept `--expect-session <json>` for conditional requests.
+The object is the captured [`identity`](wire-schema.md#kind--list) emitted by
+`list --json`. It carries the target scope and immutable launch fields; its
+name is a label. The receiver checks the expectation instead of resolving the
+name again. An incompatible peer or unavailable identity fails without a
+name-only retry. Interactive dashboard actions send this expectation
+automatically. Legacy sessions without a nonce remain attachable through a fresh
+selector; they cannot be removed through Uxon.
+
 ## `uxon doctor [--remote] [--json]` <a id="doctor"></a>
 
-Read-only diagnostics. Always safe to run.
+Diagnostics do not launch or kill workloads. They execute the configured
+execution and runtime probe helpers; operators must ensure those helpers are
+appropriate for inspection.
 
 The TUI surfaces `tmux` and per-agent issues in line, so most users
 won't need this. Use `uxon doctor` when an in-line hint is not
@@ -243,7 +269,7 @@ Prints:
 - dedicated `tmux` socket details;
 - current sessions on the dedicated socket;
 - any sessions on the default `tmux` socket that match
-  `legacy_session_prefixes` (managed but worth noting);
+  `legacy_session_prefixes` (diagnostic only);
 - audit-channel state on its own line:
   `audit:    {enabled|disabled}, sink={journald-native|syslog|no-sink}`.
   When `audit.enabled = false` the line reads
@@ -258,9 +284,8 @@ that exists but cannot be queried is an explicit diagnostic error; it is never
 reported as zero sessions.
 
 **`--remote`** probes every configured `[[remote_hosts]]` peer
-once and reports reachability, latency, and session count. Default
-`uxon doctor` does **zero** SSH I/O — `--remote` is the explicit
-operator gesture for fleet health checks. The wire-schema envelope
+once and reports reachability, latency, and session count. Without `--remote`, doctor does not poll configured peers. A configured
+execution helper may itself use a remote transport. The wire-schema envelope
 includes a `remote_hosts` array under `data`.
 
 **`--json`** emits the full report as a wire-schema envelope (see
@@ -334,7 +359,8 @@ uxon-<stem>@<profile>-N           parallels (N appended after the profile)
 The `uxon-` prefix is the default and is configurable via
 `session_prefix`. Operators upgrading from a previous prefix list
 the old value in `legacy_session_prefixes` so existing sessions
-remain reachable via `list` / `attach` / `kill`. `uxon` never
+remain reachable via `list` / `attach`; removal additionally requires the
+protected launch identity described above. `uxon` never
 *creates* sessions under a legacy prefix.
 
 ## `--mode <id>`
@@ -367,7 +393,7 @@ every launch.
 |------|---------|
 | `0` | Success. |
 | `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), any live remote listing failed, SSH timeout, peer rc non-zero, agent binary not installed on the launch user's host (`run`/`new` / TUI launch, with install hint). |
-| `2` | Usage error (bad flags, no TTY for the bare TUI invocation, unknown subcommand, unknown `--host` alias). |
+| `2` | Usage error (bad flags, unknown subcommand, unknown `--host` alias). |
 | `130` | User cancelled the confirmation prompt. |
 | `non-zero from forked tmux` | Surfaced to the caller as-is. The TUI pauses and states that command output, if any, was written directly to the terminal. |
 
@@ -380,8 +406,9 @@ every launch.
   A successful exit removes the session normally.
 - **Foreign `tmux` server** — when `$TMUX` names a socket `uxon`
   doesn't manage, `uxon` prints `Ctrl-b d first` and exits cleanly.
-- **`textual` missing** — non-TUI subcommands all keep working;
-  the bare-TUI invocation prints an install hint and exits.
+- **TUI dependency cannot load** — non-TUI subcommands keep working;
+  the bare-TUI invocation prints a hint to repair the existing Uxon installation
+  with its original package manager and exits.
 - **Git remote creation failure** — local `.git` is left in place
   for inspection. The error names which stage failed:
   `preflight` / `local_init` / `remote_create` / `push`.

@@ -12,7 +12,7 @@ servers. Team visibility via OS accounts, cross-host visibility
 via SSH, supervision via sudoers.
 Terminal tab titles follow the active session and return to `uxon` in the dashboard; see [title settings](docs/reference/configuration.md#tmux-managed-options-350).
 
-![uxon dashboard — a lead sees the whole team's agent sessions across hosts](https://raw.githubusercontent.com/vzd3v/uxon/main/docs/images/uxon-full-team-n.png)
+![uxon dashboard — a lead sees the whole team's agent sessions across hosts](docs/images/uxon-full-team-n.svg)
 
 ## When to use uxon
 
@@ -21,8 +21,8 @@ else may need to see, attach to, or stop. Four shapes of
 deployment, one tool:
 
 - **One developer, one host.** Persistent TUI over `tmux`;
-  agents optionally sandboxed in a low-priv `<user>-agent`
-  account so a yolo run can't trash your `$HOME`.
+  agents optionally run in a separate low-privilege `<user>-agent`
+  account, with access bounded by that account's permissions.
 - **One developer, several hosts.** Aggregate everything into
   one TUI with a `HOST` column; locals first, then peers
   grouped by host.
@@ -40,15 +40,17 @@ Aggregation is client-side, with [configurable peer polling](docs/reference/conf
 The lead's TUI fans out over SSH; each host stays independently authorised.
 No daemon, database or central server is required.
 
-Two composable boundaries cover advanced deployments. `[execution]` owns all
-target-user commands, including tmux, and can enter a host namespace. Profiles
-select `[runtimes.<id>]` workload adapters, including containers. Incomplete
-cleanup retains the launch record and reports failure. See the
-[configuration reference](docs/reference/configuration.md).
+`[execution]` owns target-user commands, including tmux, and can enter a host namespace.
+Profiles select `[runtimes.<id>]` workload adapters, including containers. Incomplete
+cleanup retains the launch record and reports failure; concurrent clients can acknowledge the same direct-session error. Session actions preserve launch
+identity across renames, including launch handoff and recovery; shared supervision requires protected shared records.
+Failures include their concrete cause in the interface and audit trail; malformed peer snapshots are rejected without hiding healthy peers, and SSH recovery leaves process and socket cleanup to SSH.
+See the [configuration reference](docs/reference/configuration.md).
 
 ## Install
 
-Requires **Python 3.11+**, `tmux` 3.2+, and Linux.
+Requires **Python 3.11+**, Linux, and a maintained `tmux` build (3.8 recommended;
+see [requirements](docs/start/install.md#requirements)).
 Native tmux socket permissions work without modification inside a private user directory; see [socket configuration](docs/reference/configuration.md#top-level-keys).
 
 ```bash
@@ -64,8 +66,8 @@ uv tool install uxon              # or:  pipx install uxon
 uxon                              # launch the TUI; it self-diagnoses
 ```
 
-For the bundled installer, PEP 668 caveat, and unreleased-from-
-`main` builds, see [`docs/start/install.md`](docs/start/install.md).
+For the bundled installer and unreleased builds, see
+[`docs/start/install.md`](docs/start/install.md).
 
 ## Documentation
 
