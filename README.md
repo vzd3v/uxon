@@ -91,6 +91,8 @@ See [client setup](docs/clients.md), [privacy](docs/privacy.md),
 - **Create new project** — prompt for a name, create
   `<new_project_root>/<name>`, optionally create a GitHub repo,
   launch the agent.
+  Optional GitHub creation supports organization-scoped fine-grained tokens;
+  see [setup](docs/guides/customise/configure-github-on-new-project.md).
 - **Open existing project** — browse and pick a directory at any depth under
   `new_project_root` and launch.
 

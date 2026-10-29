@@ -216,7 +216,7 @@ class RemoteCreationTests(unittest.TestCase):
         for owner, host, visibility, creds_user in [
             ("alice", "github.com", "private", "erin"),
             ("acme", "ghe.example.com", "public", ""),
-            ("alice", "github.com", "public", current_user),
+            ("Alice", "github.com", "public", current_user),
         ]:
             with self.subTest(
                 owner=owner, host=host, same_process_credentials=creds_user == current_user
@@ -236,12 +236,8 @@ class RemoteCreationTests(unittest.TestCase):
                 )
                 url = f"git@{host}:{owner}/demo.git"
                 preflight = [(("GET", base + "/user", None), response(200, {"login": "alice"}))]
-                if owner == "acme":
-                    preflight.append(
-                        (("GET", base + "/user/orgs", None), response(200, [{"login": "acme"}]))
-                    )
                 preflight.append((("GET", f"{base}/repos/{owner}/demo", None), response(404)))
-                endpoint = "/user/repos" if owner == "alice" else "/orgs/acme/repos"
+                endpoint = "/user/repos" if owner.casefold() == "alice" else "/orgs/acme/repos"
                 payload = {"name": "demo", "private": visibility == "private", "auto_init": False}
                 http = HttpProtocol(
                     preflight
@@ -327,19 +323,16 @@ class RemoteCreationTests(unittest.TestCase):
                 [
                     (
                         ("GET", base + "/user", None),
-                        response(401, {"message": "bad-credential-sentinel"}),
+                        response(401, {"message": "bad-credential-sentinel " + SECRET}),
                     )
                 ],
                 "bad-credential-sentinel",
             ),
             (
-                "org",
-                "acme",
-                [
-                    (("GET", base + "/user", None), response(200, {"login": "alice"})),
-                    (("GET", base + "/user/orgs", None), response(200, [{"login": "other"}])),
-                ],
-                "cannot create repos under owner",
+                "bad-login",
+                "alice",
+                [(("GET", base + "/user", None), response(200, []))],
+                "unexpected response",
             ),
             (
                 "exists",
@@ -372,26 +365,34 @@ class RemoteCreationTests(unittest.TestCase):
 
     def test_token_remote_failure_preserves_detail_and_stops_before_origin(self):
         base = "https://api.github.com"
+        for owner, endpoint, status in [
+            ("alice", "/user/repos", 422),
+            ("engineering", "/orgs/engineering/repos", 403),
+        ]:
+            with self.subTest(owner=owner):
+                self._assert_token_create_failure(base, owner, endpoint, status)
+
+    def _assert_token_create_failure(self, base, owner, endpoint, status):
         runner = CommandProtocol([self.existence(), self.cat()] + self.init_steps() + [self.cat()])
         http = HttpProtocol(
             [
                 (("GET", base + "/user", None), response(200, {"login": "alice"})),
-                (("GET", base + "/repos/alice/demo", None), response(404)),
+                (("GET", base + f"/repos/{owner}/demo", None), response(404)),
                 (("GET", base + "/user", None), response(200, {"login": "alice"})),
                 (
                     (
                         "POST",
-                        base + "/user/repos",
+                        base + endpoint,
                         {"name": "demo", "private": True, "auto_init": False},
                     ),
-                    response(422, {"message": "unique-create-sentinel"}),
+                    response(status, {"message": "unique-create-sentinel " + SECRET}),
                 ),
             ]
         )
         with self.assertRaises(create.CreationError) as caught:
-            self.invoke(self.profile("token"), runner, http=http)
+            self.invoke(self.profile("token", owner=owner), runner, http=http)
         self.assertEqual(caught.exception.stage, "remote_create")
-        self.assertIn("422: unique-create-sentinel", str(caught.exception))
+        self.assertIn(f"{status}: unique-create-sentinel ***", str(caught.exception))
         self.assertNotIn(SECRET, repr(caught.exception))
         runner.exhausted()
         http.exhausted()

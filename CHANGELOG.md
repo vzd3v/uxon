@@ -9,6 +9,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- GitHub organization repository creation accepts fine-grained tokens without requiring organization-listing access; denied creation reports the provider's status and reason.
 - Modal list navigation wraps from the first item to the last with ↑ and from the last to the first with ↓, including session, workspace, profile, permission-mode and settings choices.
 - Unavailable SSH control-socket directories report a failed peer poll instead of interrupting the dashboard or CLI listing.
 - Worktree path collisions are rejected before creating a branch or changing the repository.

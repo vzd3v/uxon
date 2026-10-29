@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+from dataclasses import asdict
 from pathlib import Path
 from unittest import mock
 
@@ -53,7 +54,7 @@ class NetworkErrorTests(unittest.TestCase):
 
         with unittest.mock.patch(
             "urllib.request.urlopen",
-            side_effect=urllib.error.URLError("Network is unreachable"),
+            side_effect=urllib.error.URLError("Network is unreachable " + SECRET),
         ):
             try:
                 tok.default_http("GET", "https://api.github.com/user", SECRET)
@@ -66,6 +67,29 @@ class NetworkErrorTests(unittest.TestCase):
 
 
 class CommandBackendWorkerTests(unittest.TestCase):
+    def test_worker_reports_empty_token_as_structured_preflight_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text("\n")
+            request = {
+                "operation": "preflight",
+                "profile": asdict(_profile(token_file=str(token_file))),
+                "repo_name": "demo",
+            }
+            result = subprocess.run(
+                [sys.executable, "-m", "uxon.gitremote.token_worker"],
+                input=json.dumps(request),
+                text=True,
+                capture_output=True,
+                timeout=5,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"ok": False, "stage": "preflight", "error": "token file is empty"},
+        )
+
     def test_controller_sends_no_token_to_worker_argv_env_or_stdin(self) -> None:
         cfg = _command_cfg()
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,5 +176,5 @@ class CommandBackendWorkerTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertNotIn(SECRET, json.dumps(response))
         self.assertIn("***", response["error"])
-        self.assertEqual(response["stage"], "")
+        self.assertEqual(response["stage"], "preflight")
         self.assertIn("upstream echoed", response["error"])

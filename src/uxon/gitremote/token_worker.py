@@ -10,7 +10,12 @@ from typing import Any
 
 from uxon.domain.git_profiles import GitRemoteProfile
 from uxon.gitremote.backend_gh import BackendError
-from uxon.gitremote.backend_token import _create_with_token, _preflight_with_token, default_http
+from uxon.gitremote.backend_token import (
+    _create_with_token,
+    _preflight_with_token,
+    _token_errors,
+    default_http,
+)
 
 
 def _profile(raw: Any) -> GitRemoteProfile:
@@ -37,15 +42,16 @@ def execute(request: Any) -> dict[str, Any]:
     profile = _profile(request["profile"])
     token = Path(profile.token_file).read_text(encoding="utf-8").strip()
     if not token:
-        raise BackendError("token file is empty", stage="preflight")
+        return {"ok": False, "stage": "preflight", "error": "token file is empty"}
     try:
-        if operation == "preflight":
-            _preflight_with_token(profile, repo_name, token, http=default_http)
-            return {"ok": True, "ssh_url": ""}
-        return {
-            "ok": True,
-            "ssh_url": _create_with_token(profile, repo_name, token, http=default_http),
-        }
+        with _token_errors(token, "preflight" if operation == "preflight" else "remote_create"):
+            if operation == "preflight":
+                _preflight_with_token(profile, repo_name, token, http=default_http)
+                return {"ok": True, "ssh_url": ""}
+            return {
+                "ok": True,
+                "ssh_url": _create_with_token(profile, repo_name, token, http=default_http),
+            }
     except Exception as exc:
         message = str(exc).replace(token, "***")
         stage = exc.stage if isinstance(exc, BackendError) else operation
