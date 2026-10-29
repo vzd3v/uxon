@@ -46,7 +46,7 @@ jobs:
         run: pytest tests/ -m slow -rs
       - name: Verify Docker availability
         run: docker info
-      - name: Run real container tests
+      - name: Run real Docker tests
         env:
           UXON_TEST_REQUIRE_DOCKER: "1"
-        run: pytest tests/ -m container -rs
+        run: pytest tests/ -m container -k docker -rs

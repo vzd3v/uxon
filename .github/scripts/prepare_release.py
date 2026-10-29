@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import subprocess
 import tarfile
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
+from urllib.parse import urljoin
 
 
 def git(*args: str) -> str:
@@ -65,6 +67,13 @@ def prepare(tag: str, repository: str, dist: Path, notes: Path) -> None:
     ).returncode:
         raise ValueError("the tagged commit must be an ancestor of origin/main")
     entry = changelog_entry(Path("CHANGELOG.md").read_text(), version)
+    # Relative links work in CHANGELOG.md but need a source location in a release body.
+    changelog_url = f"https://github.com/{repository}/blob/{tag}/CHANGELOG.md"
+    entry = re.sub(
+        r"(?<=\]\()[^)\s]+(?=\))",
+        lambda match: urljoin(changelog_url, match[0]),
+        entry,
+    )
 
     wheels = list(dist.glob("*.whl"))
     sdists = list(dist.glob("*.tar.gz"))
@@ -93,10 +102,10 @@ def prepare(tag: str, repository: str, dist: Path, notes: Path) -> None:
         text=True,
     )
     body = (
+        f"## What changed\n\n{entry}\n\n"
         "## Install / upgrade\n\n```bash\n"
         f"uv tool install --upgrade 'uxon=={version}'\n"
         f"pipx install --force 'uxon=={version}'\n```\n\n"
-        f"## What changed\n\n{entry}\n\n"
         f"**Full changelog:** [CHANGELOG.md](https://github.com/{repository}/blob/{tag}/CHANGELOG.md)\n"
     )
     if previous.returncode == 0:

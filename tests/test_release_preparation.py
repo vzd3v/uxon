@@ -38,6 +38,8 @@ def _tree(root: Path, version: str = "4.0.0") -> None:
     (root / "src/uxon/__init__.py").write_text(f'__version__ = "{version}"\n')
     (root / "CHANGELOG.md").write_text(
         f"## [{version}] — 2026-10-29\n\n### Fixed\n- Fixed launch.\n"
+        "- Read [migration notes](docs/migrations.md#session-authority), "
+        "[CLI](./docs/reference/cli.md) and [upstream](https://example.test/guide#go).\n"
     )
     _git(root, "add", "src", "CHANGELOG.md")
     _git(root, "commit", "-qm", "Prepare release")
@@ -65,8 +67,15 @@ def test_release_preparation_reuses_exact_curated_section(tmp_path: Path, versio
     assert result.returncode == 0, result.stderr
     notes = (tmp_path / "release/release-notes.md").read_text()
     assert "- Fixed launch." in notes
+    assert notes.index("## What changed") < notes.index("## Install / upgrade")
     assert f"uxon=={version}" in notes
     assert f"v3.6.0...v{version}" in notes
+    assert (
+        f"[migration notes](https://github.com/example/uxon/blob/v{version}/"
+        "docs/migrations.md#session-authority)"
+    ) in notes
+    assert f"[CLI](https://github.com/example/uxon/blob/v{version}/docs/reference/cli.md)" in notes
+    assert "[upstream](https://example.test/guide#go)" in notes
     assert set(path.suffix for path in (tmp_path / "dist").iterdir()) == {".whl", ".gz"}
 
 

@@ -52,20 +52,28 @@ RUNTIMES = ["docker", "podman"]
 def _runtime_usable(binary: str) -> bool:
     """True iff the engine and its Compose provider are available.
 
-    Both conditions matter: a host can ship the client without a running
-    daemon (or with a daemon it cannot reach). The fixture decides whether
-    absence is optional or a required-gate failure. ``info`` is the cheapest call that
-    actually round-trips to the daemon.
+    Engine information and a provider version do not prove Compose can reach
+    its API endpoint. Query a unique empty project without creating resources;
+    the fixture decides whether absence is optional or a required-gate failure.
     """
     if shutil.which(binary) is None:
         return False
     try:
-        for argv in ([binary, "info"], [binary, "compose", "version"]):
+        project = f"uxon-probe-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        for argv, config in (
+            ([binary, "info"], None),
+            (
+                [binary, "compose", "-p", project, "-f", "-", "ps", "--all", "--quiet"],
+                f"services:\n  probe:\n    image: {BASE_IMAGE}\n",
+            ),
+        ):
             cp = subprocess.run(
                 argv,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
+                input=config,
+                text=True,
+                stdin=subprocess.DEVNULL if config is None else None,
                 timeout=PROBE_TIMEOUT_SEC,
             )
             if cp.returncode != 0:
@@ -77,8 +85,8 @@ def _runtime_usable(binary: str) -> bool:
 
 @pytest.fixture(scope="session")
 def runtime_availability() -> dict[str, bool]:
-    """Cache only engine/provider checks; every test owns fresh resources."""
-    return {binary: _runtime_usable(binary) for binary in RUNTIMES}
+    """Cache checks on demand; deselected runtimes must not be probed."""
+    return {}
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -111,6 +119,8 @@ def runtime(request: pytest.FixtureRequest, runtime_availability: dict[str, bool
     even on failure. A user's own container is never in scope here.
     """
     binary = request.param
+    if binary not in runtime_availability:
+        runtime_availability[binary] = _runtime_usable(binary)
     if not runtime_availability[binary]:
         if binary == "docker" and os.environ.get("UXON_TEST_REQUIRE_DOCKER") == "1":
             pytest.fail("Docker and Compose are required but unavailable")
