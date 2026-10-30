@@ -112,7 +112,7 @@ class SearchBarSmokeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             strip = pilot.app.screen.query_one("#host-tabs")
             self.assertTrue(strip.display, "by_host should expose the strip")
-            # Default focus lands on action-cwd; the search bar is
+            # The search bar is
             # hidden until summoned with ``s``.
             bar = pilot.app.screen.query_one("#search-bar")
             self.assertFalse(bar.has_class("-shown"))

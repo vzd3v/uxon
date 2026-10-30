@@ -50,6 +50,7 @@ class ActionRowTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(captured, ["action-cwd", "action-cwd"])
             row.set_enabled(True)
+            row.focus()
             await pilot.press("enter")
             await pilot.pause()
             self.assertEqual(captured, ["action-cwd"] * 3)

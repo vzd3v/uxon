@@ -85,13 +85,13 @@ See [client setup](docs/clients.md), [privacy](docs/privacy.md),
 
 `uxon` (no args, on a TTY) opens a full-screen picker:
 
-- **New session in current folder** — choose a launch profile and permission
-  mode, then a workspace when the selected user can inspect the git repository.
+- **Open project** — browse and pick a directory at any depth under
+  `new_project_root` and launch.
 - **Create new project** — prompt for a name, create
   `<new_project_root>/<name>`, optionally create a GitHub repo,
   launch the agent.
-- **Open existing project** — browse and pick a directory at any depth under
-  `new_project_root` and launch.
+- **Open in this folder** — choose a launch profile, permission mode and
+  workspace. Available after the background access check succeeds.
 
 The dashboard combines your sessions, authorized other-user sessions and live
 data from configured SSH peers. Failed polls show errors. Search configured

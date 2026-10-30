@@ -36,6 +36,7 @@ and exports its native SVG. It supplies fictional context and decoded scenario
 snapshots, disables host probes and refresh sources, and performs no launch,
 attach or removal operations. No local usernames, paths or host diagnostics are
 used. The displayed Uxon version comes from the current source.
+The export uses the normal color palette even when the shell sets `NO_COLOR`.
 
 ## Author a scenario
 

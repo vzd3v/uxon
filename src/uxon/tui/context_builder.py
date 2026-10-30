@@ -191,22 +191,9 @@ def build_tui_context(
     on_setting_save_mapping = _wrap_tui_callback(bridge.on_setting_save_mapping, _CbErr)
     get_git_remote_profile_rows = _wrap_tui_callback(bridge.get_git_remote_profile_rows, _CbErr)
 
-    # Reflects whether the "new session in current folder" row should be
-    # enabled — same predicate the click handler will apply, so the row
-    # state never lies. Same-user fast path runs synchronously (os.access
-    # under the hood); cross-user case leaves the value None so the TUI
-    # ships the first frame fast and an app worker probes via sudo
-    # without blocking the event loop.
-    import uxon.app.launch as launch_app
-    from uxon.infra.execution import resolve_target
-
-    if (
-        identity.process_user() == launch_user
-        and resolve_target(cfg, launch_user).backend.kind == "local"
-    ):
-        cwd_writable: bool | None = launch_app.is_launch_target_allowed(cfg, launch_user, cwd)
-    else:
-        cwd_writable = None
+    # Filesystem checks can block even for the same user (for example on NFS).
+    # Start disabled; the App probes through a background worker for every backend.
+    cwd_writable: bool | None = None
 
     default_launch_user = identity.resolve_launch_user(cfg, caller_user)
     enabled_profiles = cfg.launch.effective_enabled_profiles

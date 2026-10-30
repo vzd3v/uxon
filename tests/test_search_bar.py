@@ -15,7 +15,7 @@ class _Harness(App):
         self.bar = SearchBar(id="search")
 
     def compose(self):
-        yield Button("Default caller", id="action-cwd")
+        yield Button("Default caller", id="action-open")
         yield Button("Other caller", id="other")
         yield self.bar
 
@@ -39,13 +39,13 @@ class SearchBarTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test() as pilot:
             await pilot.pause()
             self.assertFalse(app.bar.display)
-            app.query_one("#action-cwd", Button).focus()
+            app.query_one("#action-open", Button).focus()
             await pilot.press("tab")
             await pilot.pause()
             self.assertEqual(app.focused.id, "other")
             await pilot.press("tab")
             await pilot.pause()
-            self.assertEqual(app.focused.id, "action-cwd")
+            self.assertEqual(app.focused.id, "action-open")
             app.bar.show(return_focus_id="other")
             await pilot.pause()
             self.assertTrue(app.bar.display)
@@ -72,4 +72,4 @@ class SearchBarTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
             await pilot.pause()
             self.assertFalse(app.bar.display)
-            self.assertEqual(app.focused.id, "action-cwd")
+            self.assertEqual(app.focused.id, "action-open")

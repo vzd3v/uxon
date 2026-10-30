@@ -9,8 +9,8 @@ worktree flag. For *why*, see
 ## From the TUI
 
 1. Start uxon in (or open) a git repository.
-2. Trigger a launch — either **New session in current folder** (when uxon
-   runs inside the repo) or **Open existing project** (for a git project
+2. Trigger a launch — either **Open in this folder** (when uxon
+   runs inside the repo) or **Open project** (for a git project
    under `new_project_root`). Both show the workspace picker for a git
    target; a non-git target skips it.
 3. Choose the launch profile and permission mode. Uxon probes the repository

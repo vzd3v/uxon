@@ -83,29 +83,33 @@ class TopActionStackNavigationTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.widgets.session_list_view import SessionListView
 
         app = UxonApp(
-            _mk_ctx(sessions=[_session("a"), _session("b"), _session("c")]), probe_agents=False
+            _mk_ctx(
+                sessions=[_session("a"), _session("b"), _session("c")],
+                existing_projects=[("project", "")],
+            ),
+            probe_agents=False,
         )
         async with app.run_test(size=(120, 30)) as pilot:
             table = app.screen.query_one("#sessions-dashboard", SessionListView)
             app.kick_refresh()
             await wait_until(pilot, lambda: table.row_count == 3, "three dashboard rows")
             self.assertEqual(table.row_count, 3, "main data did not land")
-            app.screen.query_one("#action-cwd", ActionRow).focus()
+            app.screen.query_one("#action-open", ActionRow).focus()
             await painted(pilot)
-            self.assertEqual(app.focused.id, "action-cwd")
+            self.assertEqual(app.focused.id, "action-open")
             for key, focused_id, cursor in (
                 ("down", "action-new", None),
-                ("down", "action-open", None),
+                ("down", "action-cwd", None),
                 ("down", "sessions-dashboard", 0),
                 ("down", "sessions-dashboard", 1),
                 ("down", "sessions-dashboard", 2),
-                ("down", "action-cwd", None),
+                ("down", "action-open", None),
                 ("up", "sessions-dashboard", 2),
                 ("up", "sessions-dashboard", 1),
                 ("up", "sessions-dashboard", 0),
-                ("up", "action-open", None),
-                ("up", "action-new", None),
                 ("up", "action-cwd", None),
+                ("up", "action-new", None),
+                ("up", "action-open", None),
                 ("up", "sessions-dashboard", 2),
             ):
                 with self.subTest(key=key, focused_id=focused_id, cursor=cursor):
@@ -115,7 +119,7 @@ class TopActionStackNavigationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(table.cursor_row, cursor)
                         self.assertEqual(table.selected_row_key, f"local/me/{'abc'[cursor]}")
             # Entering down must reset an independently parked last-row cursor.
-            app.screen.query_one("#action-open", ActionRow).focus()
+            app.screen.query_one("#action-cwd", ActionRow).focus()
             await send_key(pilot, "down")
             self.assertEqual(app.focused.id, "sessions-dashboard")
             self.assertEqual(table.cursor_row, 0)
@@ -447,10 +451,10 @@ class FocusRestoreSkipsHiddenRowTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(app.focused.id, "action-settings")
             # A visible action remains keyboard-operable after the saved target vanishes.
             app.screen.query_one("#action-cwd", ActionRow).focus()
-            await pilot.press("down")
+            await pilot.press("up")
             await pilot.pause()
             self.assertEqual(app.focused.id, "action-new")
-            await pilot.press("up", "enter")
+            await pilot.press("down", "enter")
             for _ in range(20):
                 await pilot.pause()
                 if isinstance(app.screen, LaunchOptionsScreen):

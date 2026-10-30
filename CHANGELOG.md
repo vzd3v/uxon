@@ -23,7 +23,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Custom coding tools and permission modes through configuration; launch profiles select the tool, account, runtime and path-specific defaults.
 - Command execution backends and workload runtimes, including containers, with path mapping, readiness checks, optional start/create commands, telemetry and cleanup.
 - `uxon config render` validates JSON configuration and produces TOML without loading the installed configuration.
-- Nested-folder browsing, cyclic modal navigation, and terminal titles following the attached session or dashboard.
+- Nested-folder browsing, cyclic modal navigation, and terminal titles following the attached session or dashboard. Launch actions start with Open project; Open in this folder stays unavailable until its background access check succeeds.
 - Python 3.14 and 3.15 support.
 
 ### Fixed

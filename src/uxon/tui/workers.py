@@ -34,7 +34,6 @@ from uxon.domain.wire_schema import COMPATIBILITY_ERROR_CODES, RemoteSnapshot
 from uxon.infra.events import debug as _debug
 from uxon.infra.events import metrics_record
 
-from .context import CallbackError
 from .messages import (
     _CwdWritableUpdated,
     _HostReportUpdated,
@@ -110,6 +109,7 @@ class WorkerCoordinator:
         self._next_attempt_id = 0
         self._host_probe_handle: Worker | None = None
         self._link_health_handle: Worker | None = None
+        self.cwd_probe_generation = 0
 
     # ── Injected Textual primitives (read live off the App) ──────────
 
@@ -377,32 +377,40 @@ class WorkerCoordinator:
     # ── cwd-writable probe ──────────────────────────────────────────
 
     def kick_cwd_writable(self, cwd_at_start: str) -> None:
-        """Spawn the cwd-write probe for ``cwd_at_start`` (cross-user path).
+        """Spawn the cwd-write probe for ``cwd_at_start`` on any backend.
 
         Spawned without a stored handle; :meth:`drain` reaches into the
         ``cwd_writable`` worker group to cancel it on teardown.
         """
+        self.cwd_probe_generation += 1
+        generation = self.cwd_probe_generation
+        probe = self._app.ctx.on_probe_cwd_writable
         self._run_worker(
-            lambda cwd=cwd_at_start: self._probe_cwd_writable_worker(cwd),
+            lambda: self._probe_cwd_writable_worker(cwd_at_start, probe, generation),
             thread=True,
             exclusive=False,
             group="cwd_writable",
         )
 
-    def _probe_cwd_writable_worker(self, cwd_at_start: str = "") -> None:
+    def _probe_cwd_writable_worker(self, cwd_at_start: str, probe, generation: int) -> None:
         """Background thread: probe write access and post the result.
 
         ``cwd_at_start`` threads through the message envelope so the
         on-loop handler can gate against an in-flight probe whose
         result no longer applies to the current cwd.
         """
+        error = None
         try:
-            writable = bool(self._cfg.on_probe_cwd_writable())
-        except CallbackError:
+            writable = bool(probe())
+        except Exception as exc:
             writable = False
-        except Exception:  # pragma: no cover — defensive
-            writable = False
-        self._post_message(_CwdWritableUpdated(writable, cwd_at_start=cwd_at_start))
+            error = str(exc) or type(exc).__name__
+            _debug("refresh", at="cwd_writable_probe", cwd=cwd_at_start, error=error)
+        self._post_message(
+            _CwdWritableUpdated(
+                writable, cwd_at_start=cwd_at_start, generation=generation, error=error
+            )
+        )
 
     # ── SSH link-health probe ───────────────────────────────────────
 

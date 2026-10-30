@@ -113,7 +113,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
 
     def compose(self) -> ComposeResult:
         with self.card():
-            yield Static("Open existing project", classes="title")
+            yield Static("Open project", classes="title")
             yield Static(f"  {self.project_root}/", id="project-path", markup=False)
             yield FilterInput(placeholder="filter…", id="project-filter")
             items = [

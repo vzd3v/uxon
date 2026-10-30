@@ -338,8 +338,7 @@ class UxonApp(App):
         # ``launch_user``.
         if self.probe_agents:
             self._worker_coord.kick_host_probe()
-        # Cross-user case: the synchronous path leaves ``cwd_writable``
-        # as None because the check would shell out via sudo.
+        # Every production context starts pending; filesystem probes stay off-loop.
         if self.ctx.cwd_writable is None:
             self._worker_coord.kick_cwd_writable(self.ctx.cwd)
         timers_enabled = not self.is_headless and "PYTEST_CURRENT_TEST" not in os.environ
@@ -381,6 +380,19 @@ class UxonApp(App):
 
     def kick_refresh(self, *, manual: bool = False) -> None:
         self._worker_coord.kick_refresh(manual=manual)
+        if manual:
+            self.kick_cwd_writable()
+
+    def kick_cwd_writable(self) -> None:
+        """Invalidate permission readiness and check the current launch context."""
+        from .slot_state import SlotState
+
+        self.ctx.cwd_writable = None
+        self.state.cwd_writable = SlotState[bool | None]()
+        self._worker_coord.kick_cwd_writable(self.ctx.cwd)
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                screen._refresh_cwd_row()
 
     def run_off_loop(self, fn, *, on_success=None, on_error=None, label="action") -> None:
         """Run a blocking interactive callback off the loop (see coordinator).
@@ -525,6 +537,11 @@ class UxonApp(App):
         from .slot_state import apply as apply_slot
 
         live_cwd = self.ctx.cwd
+        if (
+            event.generation is not None
+            and event.generation != self._worker_coord.cwd_probe_generation
+        ):
+            return
         if event.cwd_at_start and event.cwd_at_start != live_cwd:
             _debug(
                 "refresh",
@@ -536,14 +553,14 @@ class UxonApp(App):
             return
         result: SlotResult[bool | None] = SlotResult(
             value=bool(event.writable),
-            error=None,
+            error=event.error,
             elapsed_ms=0,
             attempted_at=time.time(),
         )
         self.state.cwd_writable = apply_slot(self.state.cwd_writable, result)
-        top = self.screen_stack[-1] if self.screen_stack else None
-        if isinstance(top, MainScreen):
-            self.call_later(top._refresh_cwd_row)
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                self.call_later(screen._refresh_cwd_row)
 
     def on__off_loop_callback_done(self, event: _OffLoopCallbackDone) -> None:
         """Run the on-loop continuation for a blocking callback finished off-loop.

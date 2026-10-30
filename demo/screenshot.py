@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import tempfile
 import time
@@ -32,6 +33,8 @@ from uxon.tui.widgets.session_list_view import SessionListView  # noqa: E402
 
 
 async def export(scenario: Path, output: Path) -> None:
+    # Documentation images use the normal palette regardless of the export shell.
+    os.environ.pop("NO_COLOR", None)
     with tempfile.TemporaryDirectory(prefix="uxon-screenshot-") as directory:
         data = Path(directory)
         render_scenario([str(scenario), str(data)])
@@ -51,7 +54,7 @@ async def export(scenario: Path, output: Path) -> None:
             cwd="/srv/projects/alice/billing-api",
             cwd_short="billing-api",
             new_project_root="/srv/projects/shared",
-            existing_projects=[],
+            existing_projects=[("shared-library", "")],
             server_status=ServerStatus(cpu="28%", ram="8 / 32 GiB", uptime="2d"),
             current_user="alice",
             launch_user="alice-agent",

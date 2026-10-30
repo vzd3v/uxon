@@ -11,7 +11,7 @@ Esc behaviour:
 
 * non-empty input → clear text, keep bar open and focused.
 * empty input + focused → hide the bar and return focus to the
-  caller-supplied widget (defaults to ``#action-cwd``).
+  caller-supplied widget (defaults to ``#action-open``).
 
 While hidden, the inner :class:`textual.widgets.Input` has its
 ``can_focus`` flag flipped off so the surrounding focus chain
@@ -55,7 +55,7 @@ class SearchBar(Widget):
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)
         self._filter = FilterInput(placeholder="search…")
-        self._fallback_focus_id = "action-cwd"
+        self._fallback_focus_id = "action-open"
 
     def compose(self) -> ComposeResult:
         yield self._filter
@@ -89,7 +89,7 @@ class SearchBar(Widget):
         if return_focus_id:
             self._fallback_focus_id = return_focus_id
         else:
-            self._fallback_focus_id = "action-cwd"
+            self._fallback_focus_id = "action-open"
         self.add_class("-shown")
         self._filter.input.can_focus = True
         self._filter.focus_input()
@@ -100,9 +100,13 @@ class SearchBar(Widget):
         self.remove_class("-shown")
         self._filter.input.can_focus = False
         try:
-            self.screen.query_one(f"#{self._fallback_focus_id}").focus()
+            target = self.screen.query_one(f"#{self._fallback_focus_id}")
+            if target.focusable:
+                target.focus()
+                return
         except Exception:  # pragma: no cover — caller widget gone
             pass
+        self.app.action_focus_next()
 
     def action_scope_cancel(self) -> None:
         if self._filter.value:

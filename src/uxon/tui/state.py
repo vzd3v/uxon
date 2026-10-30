@@ -513,11 +513,11 @@ def activate_main_index(ctx: TuiContext, idx: int) -> MainIntent | None:
         return None
     if idx < own_start:
         if idx == 0:
-            return MainIntent("launch-cwd", index=idx)
+            return MainIntent("launch-existing", index=idx)
         if idx == 1:
             return MainIntent("launch-new", index=idx)
         if idx == 2:
-            return MainIntent("launch-existing", index=idx)
+            return MainIntent("launch-cwd", index=idx)
         return None
     if idx < other_start:
         session = ctx.sessions[idx - own_start]

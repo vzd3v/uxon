@@ -61,7 +61,7 @@ class Ready(app_module.UxonApp):
         self.set_interval(.02,lambda:self.call_after_refresh(self.ack))
     def ack(self):
         if self.acknowledged or not isinstance(self.screen,MainScreen) or self.focused is None: return
-        row=self.screen.query_one('#action-cwd')
+        row=self.screen.query_one('#action-open')
         if self.focused is not row or row.region.height<=0 or not row.display or not (root/'blocked').exists(): return
         assert not (root/'release').exists()
         fd=os.open('/dev/tty',os.O_RDWR)
@@ -88,4 +88,4 @@ print('EXIT:',main([]),flush=True)
     )
     assert trace.exit_code == 0
     assert "BODY_FOCUSED_PROBE_BLOCKED" in trace.frames[0]
-    assert "New session in current folder" in trace.frames[0]
+    assert "Open project" in trace.frames[0]

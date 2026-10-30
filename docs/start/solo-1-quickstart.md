@@ -30,11 +30,12 @@ uxon                          # launch the TUI
 
 That's it. The TUI shows three actions:
 
-1. **New session in current folder** — runs the agent in `$PWD`.
+1. **Open project** — picks a directory under
+   `new_project_root` and launches there.
 2. **Create new project** — prompts for a name, creates
    `<new_project_root>/<name>`, launches the agent there.
-3. **Open existing project** — picks a directory under
-   `new_project_root` and launches there.
+3. **Open in this folder** — runs the agent in `$PWD` after its background
+   access check succeeds.
 
 Choose the launch profile and a permission mode from its coding tool's catalog.
 Start with the default mode. See the [mode reference](../reference/cli.md#--mode-id).
@@ -48,7 +49,7 @@ allowed_roots    = ["~/projects"]
 new_project_root = "~/projects"
 ```
 
-`uxon run` and the TUI's "New session in current folder" need
+`uxon run` and the TUI's "Open in this folder" need
 nothing else — they gate on write access alone when
 `allowed_roots` is empty.
 

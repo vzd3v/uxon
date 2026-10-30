@@ -495,4 +495,20 @@ class TuiBridge:
         return launch_app.decide_runtime_gate(self.cfg, resolved.canonical_target, resolved)
 
     def on_probe_cwd_writable(self) -> bool:
-        return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, self.cwd)
+        # The picker may select a different account from the dashboard's default.
+        # One unreachable backend must not hide another profile's writable folder.
+        default_user = identity.resolve_launch_user(self.cfg, self.caller_user)
+        users = dict.fromkeys(
+            self.cfg.launch.profiles[profile_id].launch_user or default_user
+            for profile_id in self.cfg.launch.effective_enabled_profiles
+        )
+        last_error: SystemExit | None = None
+        for user in users:
+            try:
+                if launch_app.is_launch_target_allowed(self.cfg, user, self.cwd):
+                    return True
+            except SystemExit as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        return False

@@ -104,13 +104,10 @@ class TuiContext:
     # failure — the widget renders "pending…" in that case.
     host_stats: HostStatsResult | None = None
 
-    # Whether ``cwd`` is a valid launch target for ``launch_user`` under
-    # the current policy: write access, plus membership in
-    # ``allowed_roots`` when that whitelist is non-empty. Field name is
-    # historical — the predicate is broader than write-access alone.
-    # Advisory only: None means pending; False adds a startup-user hint.
-    # The action stays enabled so profile-pinned users can be selected;
-    # authoritative authorization runs after profile selection, off-loop.
+    # True when an enabled profile's effective user can write to cwd through
+    # its execution backend and allowed_roots permits it. None starts pending;
+    # only True enables the current-folder action. The selected profile's
+    # authorization is checked again before launch, off-loop.
     cwd_writable: bool | None = None
 
     current_user: str = ""
@@ -294,7 +291,7 @@ class TuiContext:
 #
 # Derived from the canonical action-row description and used for segment
 # arithmetic. Activation dispatches by item kind rather than raw indices.
-_ACTION_KINDS: tuple[str, ...] = ("action-cwd", "action-new", "action-open")
+_ACTION_KINDS: tuple[str, ...] = ("action-open", "action-new", "action-cwd")
 ACTION_COUNT = len(_ACTION_KINDS)
 
 
@@ -328,15 +325,15 @@ def build_items(ctx: TuiContext) -> list[Item]:
     count changes for the action rows and for Settings / Kill-ALL;
     session rows have identity "own-session:<name>" / "other-session:
     <user>/<name>" so their position shifts but the item that used to
-    be "Open existing project" remains the same Item.
+    be "Open project" remains the same Item.
     """
     items: list[Item] = []
     # Actions (indices 0..ACTION_COUNT-1).
     items.append(
         Item(
-            kind="action-cwd",
-            label="New session in current folder",
-            enabled=True,
+            kind="action-open",
+            label="Open project",
+            enabled=ctx.loading or bool(ctx.existing_projects),
         )
     )
     items.append(
@@ -348,9 +345,9 @@ def build_items(ctx: TuiContext) -> list[Item]:
     )
     items.append(
         Item(
-            kind="action-open",
-            label="Open existing project",
-            enabled=bool(ctx.existing_projects),
+            kind="action-cwd",
+            label="Open in this folder",
+            enabled=ctx.cwd_writable is True,
         )
     )
     # Own sessions

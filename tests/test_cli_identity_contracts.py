@@ -193,3 +193,38 @@ def test_remote_attach_identity_failure_reaches_bound_callback(tmp_path, capsys)
     with pytest.raises(CallbackError, match="invalid captured identity.*session_id"):
         ctx.on_remote_attach("peer", "alice", "job", expected)
     assert capsys.readouterr().err == ""
+
+
+def test_cwd_readiness_defers_io_and_checks_all_profile_accounts(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from uxon.domain.launch_profiles import LaunchConfig
+    from uxon.infra import execution
+
+    base = make_config()
+    profiles = {
+        name: replace(profile, launch_user=user)
+        for (name, profile), user in zip(
+            base.launch.profiles.items(), ("alice", "alice", "bob"), strict=True
+        )
+    }
+    cfg = make_config(
+        allowed_roots=[str(tmp_path)],
+        launch=LaunchConfig(profiles=profiles),
+    )
+    checked = []
+
+    def facts(config, user, path):
+        assert config is cfg and path == str(tmp_path)
+        checked.append(user)
+        if user == "alice":
+            fail("Execution backend unreachable for alice")
+        return SimpleNamespace(directory=True, writable=True)
+
+    monkeypatch.setattr(execution, "path_facts", facts)
+    ctx = build_tui_context(cfg, "alice", "alice", str(tmp_path), skeleton=True)
+    assert checked == [], "building the first frame must not probe the filesystem"
+    assert ctx.cwd_writable is None
+    assert ctx.on_probe_cwd_writable() is True
+    assert checked == ["alice", "bob"], "deduplicate users and keep trying after backend failure"

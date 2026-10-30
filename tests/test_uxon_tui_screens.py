@@ -193,6 +193,7 @@ class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             app.request_launch = lambda req: launched.append(req.label)  # type: ignore[assignment, method-assign]
+            app.screen.query_one("#action-cwd").focus()
             await pilot.press("enter")
             await self._wait_for(
                 pilot, lambda: isinstance(app.screen, LaunchOptionsScreen), "launch options"
@@ -581,7 +582,7 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             return LaunchRequest(cmd=("/bin/true",), label="worktree")
 
         ctx = self._ctx(
-            cwd_writable=False,
+            cwd_writable=True,
             launch_profiles={
                 "claude": LaunchProfileOption("claude", "Claude", "claude", "alice_agent")
             },
@@ -591,6 +592,7 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            app.screen.query_one("#action-cwd").focus()
             await pilot.press("enter")
             await pilot.pause()
             self.assertIsInstance(app.screen, LaunchOptionsScreen)
@@ -625,6 +627,7 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
         app = UxonApp(self._ctx(on_create_worktree=create), probe_agents=False)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            app.screen.query_one("#action-cwd").focus()
             await pilot.press("enter", "enter")
             await pilot.pause()
             await pilot.pause()
@@ -650,6 +653,7 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.notify = lambda message, **kwargs: notices.append((message, kwargs))
+            app.screen.query_one("#action-cwd").focus()
             await pilot.press("enter", "enter")
             await pilot.pause()
             await pilot.pause()

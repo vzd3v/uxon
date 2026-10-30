@@ -198,6 +198,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             (request, threading.get_ident(), _on_loop())
         )
         async with app.run_test(size=(120, 30)) as pilot:
+            app.screen.query_one("#action-cwd").focus()
             await pilot.press("enter")
             for _ in range(20):
                 if isinstance(app.screen, LaunchOptionsScreen):

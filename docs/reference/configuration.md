@@ -28,7 +28,7 @@ are operator-owned.
 | `launch_user_by_caller` | table | `{}` | Per-caller override (`<caller> = <launch user>`). |
 | `session_users` | array | `[]` | Users scanned by `list --all-users` and the TUI superuser block. |
 | `enable_all_users_list` | bool | `false` | Enables `list --all-users`. |
-| `allowed_roots` | array | `[]` | When empty: `uxon run` and the TUI's "New session in current folder" gate on **write access** alone. When non-empty: strict whitelist — `uxon run` / `uxon new -w` / the TUI's current-folder action all refuse anything outside the listed paths (no `$HOME`-implicit, no other implicit allowance). `uxon new` (creating a project) always requires a non-empty whitelist that covers `new_project_root`. |
+| `allowed_roots` | array | `[]` | When empty: `uxon run` and the TUI's "Open in this folder" gate on **write access** alone. When non-empty: strict whitelist — `uxon run` / `uxon new -w` / the TUI's current-folder action all refuse anything outside the listed paths (no `$HOME`-implicit, no other implicit allowance). `uxon new` (creating a project) always requires a non-empty whitelist that covers `new_project_root`. |
 | `new_project_root` | string | `~/projects` | Base directory for `uxon new <name>`. Must be inside `allowed_roots`. |
 | `session_prefix` | string | `"uxon-"` | TMUX session-name prefix for new sessions. |
 | `legacy_session_prefixes` | array | `[]` | Extra prefixes recognised by `list`/`attach`/`kill`. Never used to create new sessions. |

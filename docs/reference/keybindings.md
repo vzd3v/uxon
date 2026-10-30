@@ -9,6 +9,12 @@ choices, as well as the git remote details table. Disabled items are skipped.
 
 ## Main screen
 
+Launch actions appear in order: **Open project**, **Create new project**,
+**Open in this folder**. The last action starts disabled and cannot receive
+focus or activate until a background check finds write access for an enabled
+launch profile. The selected profile is checked again before launch; `r`
+rechecks access. Filesystem and execution-backend probes never block input.
+
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Navigate items |
@@ -37,8 +43,8 @@ keymap survives a Cyrillic layout without `xkb` tweaks.
 
 ## Launch options screen
 
-Shown after picking a launch action (New session / Create new
-project / Open existing project). Two side-by-side panels — PROFILE and
+Shown after picking a launch action (Open project / Create new project /
+Open in this folder). Two side-by-side panels — PROFILE and
 PERMISSION. Permission choices belong to the selected profile's underlying
 agent. Filesystem/worktree discovery runs off-loop as that profile's effective
 launch user after this selection.
@@ -66,7 +72,7 @@ result. The final launch planner revalidates the chosen workspace.
 The branch-name prompt (reached via `+ New worktree…`) takes
 `Enter` to create and `Esc` to cancel.
 
-## "Open existing project" screen
+## "Open project" screen
 
 The filter input owns focus on mount — start typing to narrow the
 list. Navigation and selection work without leaving the input. The current
@@ -100,8 +106,8 @@ access validation follow folder selection.
 
 ## "Existing session" modal
 
-Pushed by every launch action (`New session in current folder`,
-`Create new project`, `Open existing project`) when a compatible
+Pushed by every launch action (`Open project`, `Create new project`,
+`Open in this folder`) when a compatible
 session for the target directory already exists. A pure list: each
 compatible session is a row, followed by a `+ Start new session
 alongside` row. Pick a row to attach to that session, or the trailing

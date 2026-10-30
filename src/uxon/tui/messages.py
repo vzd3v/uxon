@@ -62,15 +62,26 @@ class _CwdWritableUpdated(Message):
     launch time. The on-loop handler drops results whose
     ``cwd_at_start`` does not match the current ``state.main.cwd``,
     so an in-flight probe started against ``cwd_old`` is not
-    attributed to ``cwd_new`` after a directory change.
+    attributed to ``cwd_new`` after a directory change. ``generation`` also
+    rejects superseded retries for the same directory; ``error`` preserves
+    the concrete backend failure for the disabled row.
     """
 
     bubble = False
 
-    def __init__(self, writable: bool, *, cwd_at_start: str = "") -> None:
+    def __init__(
+        self,
+        writable: bool,
+        *,
+        cwd_at_start: str = "",
+        generation: int | None = None,
+        error: str | None = None,
+    ) -> None:
         super().__init__()
         self.writable = writable
         self.cwd_at_start = cwd_at_start
+        self.generation = generation
+        self.error = error
 
 
 class _OffLoopCallbackDone(Message):

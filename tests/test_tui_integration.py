@@ -58,7 +58,7 @@ ctx = uxon_tui.TuiContext(
     cwd="/tmp",
     cwd_short="tmp",
     new_project_root="/tmp/projects",
-    existing_projects=[],
+    existing_projects=[("project", "")],
     cwd_writable=True,
     current_user="alice",
     agents=DEFAULT_AGENT_CATALOG,
@@ -253,7 +253,7 @@ with TemporaryDirectory() as tmp:
 
             def keys():
                 # Reverse traversal reaches Settings through the actual focus chain.
-                yield (10.0, b"\x1b[A\x1b[A\r", "READY_SETTINGS_1")
+                yield (10.0, b"\x1b[A\r", "READY_SETTINGS_1")
                 yield (10.0, b"q", "READY_MAIN_2")
                 x, y = json.loads(coordinates.read_text())
                 press, release = sgr_click(x, y)
@@ -363,7 +363,7 @@ ctx.on_refresh = lambda: ctx
             )
 
             def keys():
-                yield (10.0, b"\r", "READY_OPTIONS_1")
+                yield (10.0, b"\x1b[B\x1b[B\r", "READY_OPTIONS_1")
                 yield (10.0, b"\r", "WORKLOAD_STARTED")
                 self.assertFalse(release.exists())
                 # Enter would open a new launch modal if delivered after reentry.

@@ -341,7 +341,11 @@ class DashboardLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("uxon-remote", _visible(table))
 
     async def test_remote_and_local_user_latch_filter_order_and_focus_survive_refresh(self):
-        ctx = _mk_ctx(sessions=[_session()], remote_hosts=[RemoteHost("peer", "peer", "", "uxon")])
+        ctx = _mk_ctx(
+            sessions=[_session()],
+            existing_projects=[("project", "")],
+            remote_hosts=[RemoteHost("peer", "peer", "", "uxon")],
+        )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             _land(app, ctx)

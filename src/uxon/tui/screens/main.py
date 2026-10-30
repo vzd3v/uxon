@@ -4,9 +4,9 @@ Layout (one flat visual language — every action is a single-line
 ActionRow; the session table is the dominant element):
     ┌ Header ──────────────────────────────────────────┐
     │ server-status line                               │
-    │ ActionRow action-cwd   (detail: cwd)             │
-    │ ActionRow action-new   (detail: project root)    │
     │ ActionRow action-open  (detail: project root)    │
+    │ ActionRow action-new   (detail: project root)    │
+    │ ActionRow action-cwd   (detail: cwd)             │
     │ SessionListView (own + other-user + remote rows; │
     │   USER column iff cross_user, HOST column iff    │
     │   multi_host; height hugs content)               │
@@ -258,7 +258,7 @@ class MainScreen(Screen):
         ``cfg`` (``None`` when the probe is still in flight / never ran).
         """
         if self.state.cwd_writable.last_attempt_at is not None:
-            return self.state.cwd_writable.value
+            return self.state.cwd_writable.value is True
         return self.cfg.cwd_writable
 
     # ── Recompose-safe UI state proxies ──────────────────────────────
@@ -308,11 +308,14 @@ class MainScreen(Screen):
             # detail (cwd / project root) renders inline as a dim
             # suffix after the label.
             yield ActionRow(
-                kind="action-cwd",
-                label="New session in current folder",
-                detail=self._cwd_detail(),
-                enabled=True,
-                id="action-cwd",
+                kind="action-open",
+                label="Open project",
+                detail=self._open_detail(),
+                # While loading we don't yet know whether projects exist.
+                # Keep the row enabled so it isn't dimmed; activation falls
+                # through to the existing "no projects" notify path.
+                enabled=self.cfg.loading or bool(self.cfg.existing_projects),
+                id="action-open",
             )
             yield ActionRow(
                 kind="action-new",
@@ -322,14 +325,11 @@ class MainScreen(Screen):
                 id="action-new",
             )
             yield ActionRow(
-                kind="action-open",
-                label="Open existing project",
-                detail=self._open_detail(),
-                # While loading we don't yet know whether projects exist.
-                # Keep the row enabled so it isn't dimmed; activation falls
-                # through to the existing "no projects" notify path.
-                enabled=self.cfg.loading or bool(self.cfg.existing_projects),
-                id="action-open",
+                kind="action-cwd",
+                label="Open in this folder",
+                detail=self._cwd_detail(),
+                enabled=self._cwd_writable_now() is True,
+                id="action-cwd",
             )
             # Unified dashboard. The table's own column header labels
             # the block — no section header. The dashboard is mounted
@@ -422,8 +422,7 @@ class MainScreen(Screen):
         return main_render.cwd_detail(
             cwd_writable=self._cwd_writable_now(),
             cwd_short=self.cfg.cwd_short,
-            launch_user=self.cfg.launch_user,
-            current_user=self.cfg.current_user,
+            error=self.state.cwd_writable.last_error,
         )
 
     def _open_detail(self) -> str:
@@ -469,6 +468,8 @@ class MainScreen(Screen):
 
         ``CallbackError`` from any callback renders as a red toast.
         """
+        if event.row.kind == "action-cwd" and self._cwd_writable_now() is not True:
+            return
         self._run_intent(main_action_intent(event.row.kind))
 
     # ── DataTable row activation (Enter on a session row) ───────────
@@ -618,7 +619,7 @@ class MainScreen(Screen):
 
     def action_focus_search(self) -> None:
         # Remember which widget summoned the bar so Esc can return
-        # focus to it instead of always falling back to action-cwd.
+        # focus to it instead of always falling back to the first action.
         focused = self.focused
         return_id = focused.id if focused is not None else None
         try:
@@ -707,7 +708,7 @@ class MainScreen(Screen):
         except Exception:  # pragma: no cover — DOM not mounted yet
             return
         row.detail = self._cwd_detail()
-        row.set_enabled(True)
+        row.set_enabled(self._cwd_writable_now() is True)
         row._render_text()
 
     def _apply_ctx_refresh(self) -> bool:
@@ -736,18 +737,15 @@ class MainScreen(Screen):
         )
         if focus_key is None:
             focus_key = self._current_focus_key()
-        # cwd-change invalidation: reset ``state.cwd_writable`` to its
-        # zero state so the row paints "checking…" until the next
-        # probe lands. Worker-side gating
-        # (``_CwdWritableUpdated.cwd_at_start``) drops in-flight
-        # probes that started against the old cwd. Operates on the
-        # App-owned state container so the reset is observed by the
-        # probe handlers; some unit-test FakeApps lack ``state``.
+        # Directory/profile changes invalidate readiness. The replacement probe
+        # carries a generation so older results cannot re-enable this action.
         app_state = getattr(self.app, "state", None)
-        if app_state is not None and new_cfg.cwd != self.cfg.cwd:
-            from uxon.tui.slot_state import SlotState as _SlotState
-
-            app_state.cwd_writable = _SlotState[bool | None]()
+        probe_context_changed = (
+            new_cfg.cwd != self.cfg.cwd
+            or new_cfg.launch_profiles != self.cfg.launch_profiles
+            or new_cfg.enabled_profiles != self.cfg.enabled_profiles
+            or new_cfg.execution != self.cfg.execution
+        )
         self.cfg = new_cfg
         # The reactive descriptor needs Textual node setup (``_id``);
         # test stubs that bypass ``__init__`` (``MainScreen.__new__``)
@@ -759,6 +757,8 @@ class MainScreen(Screen):
         # same static snapshot that screens read from (``app._probe_cwd_*``
         # gates against ``self.app.ctx.cwd``).
         self.app.ctx = new_cfg  # type: ignore[attr-defined]
+        if probe_context_changed:
+            self.app.kick_cwd_writable()  # type: ignore[attr-defined]
         # Defensive feed: walk the current state (with ``state.main``
         # synced from ``new_ctx``) and fold any new users into the
         # cross-user latch accumulator. Production already feeds via
@@ -841,6 +841,8 @@ class MainScreen(Screen):
 
     def _activate_index(self, idx: int) -> None:
         """Resolve index into a concrete item and fire its activation."""
+        if idx == 2 and self._cwd_writable_now() is not True:
+            return
         self._run_intent(activate_main_index(self.cfg, idx))
 
     def _focus_index(self, idx: int) -> None:
@@ -853,7 +855,7 @@ class MainScreen(Screen):
         local_end = settings_idx if has_super else own_start + len(self.cfg.sessions)
         try:
             if idx < own_start:
-                action_ids = ("action-cwd", "action-new", "action-open")
+                action_ids = ("action-open", "action-new", "action-cwd")
                 self.query_one(f"#{action_ids[idx]}", ActionRow).focus()
                 return
             if idx < local_end:
@@ -914,7 +916,7 @@ class MainScreen(Screen):
             # (Before these rows were always-mounted, this was a query_one
             # miss → False; preserve that contract rather than leaning on
             # Textual's hide-reflow to bounce focus back off.)
-            if not row.display:
+            if not row.focusable:
                 return False
             row.focus()
             return True
@@ -1023,7 +1025,11 @@ class MainScreen(Screen):
 
     def _focus_default_action(self) -> None:
         try:
-            self.query_one("#action-cwd", ActionRow).focus()
+            for action_id in ("action-open", "action-new", "action-cwd"):
+                row = self.query_one(f"#{action_id}", ActionRow)
+                if row.can_focus:
+                    row.focus()
+                    break
         except Exception:  # pragma: no cover
             pass
 

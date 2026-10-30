@@ -141,9 +141,7 @@ def run(ctx: TuiContext) -> int:
             sys.stdout, enabled=ctx.tmux_set_terminal_title, term=os.environ.get("TERM", "")
         )
         if sys.stdout.isatty():
-            sys.stdout.write(
-                "\ruxon | New session in current folder | Create new project | Open existing project\r"
-            )
+            sys.stdout.write("\ruxon | Open project | Create new project | Open in this folder\r")
             sys.stdout.flush()
         app = UxonApp(ctx, pending_status=pending_status)
         _run_app_with_terminal_lifetime(
