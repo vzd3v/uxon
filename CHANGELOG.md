@@ -6,6 +6,8 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
 ## [4.0.0] — 2026-10-30
 
 ### Changed (breaking)
@@ -299,6 +301,8 @@ First release on PyPI as
 `uv tool install uxon`, `pipx install uxon`, or
 `pip install --user uxon`.
 
+[Unreleased]: https://github.com/vzd3v/uxon/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/vzd3v/uxon/compare/v3.6.0...v4.0.0
 [3.6.0]: https://github.com/vzd3v/uxon/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/vzd3v/uxon/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/vzd3v/uxon/compare/v3.3.0...v3.4.0
