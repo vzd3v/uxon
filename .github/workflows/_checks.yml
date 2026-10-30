@@ -12,7 +12,7 @@ on:
         description: JSON array of Python versions for the test matrix.
         required: false
         type: string
-        default: '["3.11", "3.12", "3.13"]'
+        default: '["3.11", "3.12", "3.13", "3.14", "3.15"]'
 
 permissions:
   contents: read
@@ -26,25 +26,25 @@ jobs:
       matrix:
         python-version: ${{ fromJSON(inputs.python-versions) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
+          check-latest: true
 
       - name: Install runtime + test deps
         run: python3 -m pip install -e ".[dev]"
 
       - name: Compile Python files
-        run: python3 -m py_compile $(git ls-files '*.py')
+        run: git ls-files -z '*.py' | xargs -0 python3 -m py_compile
 
       - name: Run unit tests
         run: pytest tests/ -n auto
 
       - name: Build sdist + wheel
         run: |
-          python3 -m pip install build twine
           python3 -m build
           python3 -m twine check dist/*
 
@@ -56,11 +56,12 @@ jobs:
     name: ruff
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-      - run: python3 -m pip install ruff
+          check-latest: true
+      - run: python3 -m pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
 
@@ -68,21 +69,23 @@ jobs:
     name: pyright
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-      - run: python3 -m pip install pyright "textual>=0.80,<9" tomlkit
+          check-latest: true
+      - run: python3 -m pip install -e ".[dev]"
       - run: pyright
 
   importlinter:
     name: lint-imports
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
+          check-latest: true
       # Layering is enforced from the import graph of the installed package,
       # so install the project (+ its deps) before running the contracts.
       - run: python3 -m pip install -e ".[dev]"
@@ -92,10 +95,10 @@ jobs:
     name: gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ""

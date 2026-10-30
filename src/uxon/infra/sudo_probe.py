@@ -1,9 +1,7 @@
 """Per-target sudo capability probe.
 
 Returns a *capability set*: which subset of ``session_users`` the caller
-can actually reach via ``sudo -niu <U> -- true``, plus a separate flag
-for whether the caller has root NOPASSWD (used for settings-write
-gating, where there's no per-user target).
+can actually reach through its configured execution backend.
 
 Design constraints:
 
@@ -37,7 +35,9 @@ import subprocess
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
+from uxon.domain.config import Config
 from uxon.domain.sudo import SudoCapability
+from uxon.infra.execution import probe as probe_execution
 
 __all__ = ["SudoCapability", "probe_sudo_capability"]
 
@@ -54,76 +54,38 @@ batches; widening this is cheap if a deployment has many session
 users, but the per-probe ceiling already bounds the total wall time."""
 
 
-def _probe_one_user(target: str) -> tuple[str, bool]:
-    """Run ``sudo -niu <target> -- true`` once. Returns (target, ok).
-
-    ``-n`` makes sudo non-interactive (no prompt). ``-i`` runs the
-    target's login shell environment, matching how the launch path
-    actually invokes commands as that user — keeping probe semantics
-    aligned with launch semantics. ``--`` terminates sudo's option
-    parsing so a target user named ``-foo`` (improbable, but cheap to
-    defend against) cannot be mistaken for a flag.
-    """
+def _probe_one_user(cfg: Config, target: str) -> tuple[str, bool]:
+    """Run the fixed target UID/GID probe once. Returns ``(target, ok)``."""
     try:
-        cp = subprocess.run(
-            ["sudo", "-niu", target, "--", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=PROBE_TIMEOUT_SEC,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+        result = probe_execution(cfg, target)
+    except (subprocess.TimeoutExpired, OSError, SystemExit):
         return target, False
-    return target, cp.returncode == 0
-
-
-def _probe_root() -> bool:
-    """Run ``sudo -n true``. Returns True iff exit 0.
-
-    Distinct from the per-target probe: this asks "can I run *anything*
-    as root without a password?", which is the property the Settings
-    screen needs to ``sudo tee`` a root-owned config file.
-    """
-    if os.geteuid() == 0:
-        return True
-    try:
-        cp = subprocess.run(
-            ["sudo", "-n", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=PROBE_TIMEOUT_SEC,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return cp.returncode == 0
+    return target, result.ok
 
 
 def _self_user() -> str:
     """Return the OS user this process is running as.
 
-    Imported lazily / locally rather than via ``cli.process_user`` to
-    keep this module free of any ``cli`` dependency (the spec mandates
-    the inverse import direction).
+    Imported locally to keep this module free of a ``cli`` dependency.
     """
     import pwd
 
     return pwd.getpwuid(os.getuid()).pw_name
 
 
-def probe_sudo_capability(candidates: Iterable[str]) -> SudoCapability:
-    """Probe per-target sudo reachability + root NOPASSWD, in parallel.
+def probe_sudo_capability(cfg: Config, candidates: Iterable[str]) -> SudoCapability:
+    """Probe per-target execution reachability in parallel.
 
     ``candidates`` is the list of OS users to probe — typically
     ``cfg.session_users`` minus the caller. The caller's own username
-    is filtered out defensively here too: ``sudo -niu <self>`` succeeds
+    is filtered out defensively here too: ``sudo -n -H -u <self>`` succeeds
     trivially for everyone, and including self would inflate
     ``reachable_users`` with a meaningless entry the TUI then has to
     strip.
 
     Per-probe budget is :data:`PROBE_TIMEOUT_SEC` (0.5s); there is no
     override knob. The probe is invoked at most once per process at
-    startup — the spec forbids per-refresh re-probing, so a tunable
+    startup. Per-refresh re-probing is intentionally absent, so a tunable
     timeout has no caller today and offering one in the API would be
     misleading.
 
@@ -140,20 +102,14 @@ def probe_sudo_capability(candidates: Iterable[str]) -> SudoCapability:
         unique_targets.append(u)
 
     reachable: set[str] = set()
-    # Fan out: per-user probes + the root probe, all in one pool.
-    # Pool size is bounded; if there are zero candidates we still
-    # need the root probe — keep min workers at 1.
-    workers = max(1, min(MAX_WORKERS, len(unique_targets) + 1))
+    workers = min(MAX_WORKERS, len(unique_targets))
+    if workers == 0:
+        return SudoCapability()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        user_futures = [pool.submit(_probe_one_user, u) for u in unique_targets]
-        root_future = pool.submit(_probe_root)
+        user_futures = [pool.submit(_probe_one_user, cfg, u) for u in unique_targets]
         for fut in user_futures:
             user, ok = fut.result()
             if ok:
                 reachable.add(user)
-        can_root = root_future.result()
 
-    return SudoCapability(
-        reachable_users=frozenset(reachable),
-        can_root=can_root,
-    )
+    return SudoCapability(reachable_users=frozenset(reachable))

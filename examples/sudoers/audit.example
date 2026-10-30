@@ -7,14 +7,14 @@
 #
 # Layout assumed:
 #
-#   alice          shell user
-#   alice_agent    paired low-priv launch user (agent runs here)
-#   bob, bob_agent ditto
+#   nadia          shell user
+#   nadia-agent    paired low-priv launch user (agent runs here)
+#   liam, liam-agent ditto
 #   lead           operator account (team lead / instructor)
 #
 # What this captures:
 #
-#   Every interactive sudo into a *_agent account by the lead is
+#   Every interactive sudo into a *-agent account by the lead is
 #   recorded — keystrokes (log_input) and screen output
 #   (log_output). Files land under
 #       /var/log/sudo-io/<lead>/<YYYYMMDD-HHMMSS>/{ttyin,ttyout,...}
@@ -24,7 +24,7 @@
 # What this does NOT do:
 #
 #   - It does not capture sessions where the developer themselves
-#     sudoes into their own *_agent account (that would log every
+#     sudoes into their own *-agent account (that would log every
 #     own-session as well; usually too noisy).
 #   - It does not log uxon's own non-interactive `sudo -niu ... -- true`
 #     reachability probe (BatchMode short-circuits before a session
@@ -40,8 +40,8 @@
 Cmnd_Alias UXON_AGENT_OPS = /usr/bin/tmux, /bin/bash, /bin/sh, /usr/bin/env
 
 # Per-target grants — supervision without impersonation.
-# Lead can become *_agent accounts but NOT alice / bob themselves.
-lead    ALL=(alice_agent,bob_agent) NOPASSWD: ALL
+# Lead can become *-agent accounts but NOT nadia / liam themselves.
+lead    ALL=(nadia-agent,liam-agent) NOPASSWD: ALL
 
 # Audit only the lead's invocations against agent accounts.
 # Restrict the I/O log to the listed Cmnd_Alias to keep volume

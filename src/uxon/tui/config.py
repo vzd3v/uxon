@@ -3,7 +3,7 @@
 The TUI's state is split across three containers:
 
 * **Configuration** — values fixed for the lifetime of the App
-  (``enabled_agents``, refresh cadences, callbacks, the
+  (``enabled_profiles``, refresh cadences, callbacks, the
   ``remote_hosts`` registry, …). Lives in :class:`TuiConfig`.
 * **Async slots** — per-source state mutated by message-loop
   handlers. Lives in :class:`uxon.tui.state.TuiState`.
@@ -21,11 +21,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from uxon.app.launch import RuntimeGate
+    from uxon.domain.agents import AgentSpec
+    from uxon.domain.execution import ExecutionConfig
     from uxon.domain.launch_request import LaunchRequest
+    from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity
     from uxon.infra.remote_hosts import RemoteHost
     from uxon.tui.refresh import SourceSpec
 
-    from .context import TuiContext
+    from .context import ExistingSessionChoice, LaunchProfileOption, TuiContext
 
 
 @dataclass(frozen=True)
@@ -42,26 +46,23 @@ class TuiConfig:
     Callable fields (``on_attach``, ``on_kill``, …) are stored by
     reference. They make the dataclass non-equality-friendly (function
     identities differ even when wrapping the same closure), which is
-    why we deliberately avoid asserting structural equality between
-    two :class:`TuiConfig` instances. The known cleanliness debt
-    (callbacks are injected behaviour, not configuration) is filed
-    in the migration plan; this commit keeps them on
-    :class:`TuiConfig` to land the structural split first.
+    why structural equality between two :class:`TuiConfig` instances is
+    deliberately not part of the contract.
 
-    Tuple-of-pairs is used for ``git_remote_profile_options`` because
-    a frozen container with ``list`` would fail at construction time
-    in any code path that re-uses the same options across instances —
-    and because tuples make identity-stability assertions across
-    :meth:`from_context` calls meaningful.
     """
 
     # ── Core identity ────────────────────────────────────────────────
     current_user: str
     launch_user: str
 
-    # ── Multi-agent ──────────────────────────────────────────────────
-    enabled_agents: tuple[str, ...]
-    default_agent: str
+    # ── Launch profiles / agent catalog ──────────────────────────────
+    enabled_profiles: tuple[str, ...]
+    default_profile: str
+    launch_profiles: dict[str, LaunchProfileOption]
+    launch_auto_mode: bool
+
+    agents: dict[str, AgentSpec]
+    execution: ExecutionConfig
 
     # ── Cadence knobs ────────────────────────────────────────────────
     tui_refresh_interval_seconds: float
@@ -75,31 +76,31 @@ class TuiConfig:
     remote_hosts: tuple[RemoteHost, ...]
     refresh_sources: tuple[SourceSpec, ...]
 
-    # ── Git-remote display options ───────────────────────────────────
+    # ── Git-remote policy ────────────────────────────────────────────
     git_create_enabled: bool
-    default_git_remote_profile: str
-    git_remote_profile_options: tuple[tuple[str, str], ...]
 
     # ── Callbacks (injected by ``tui.context_builder.build_tui_context``) ──
-    on_attach: Callable[[str, str], LaunchRequest]
-    on_kill: Callable[[str, str], None]
-    on_kill_all: Callable[[], None]
-    on_kill_all_global: Callable[[], None]
-    on_remote_kill: Callable[[str, str, str], None]
-    on_remote_attach: Callable[[str, str, str], LaunchRequest]
+    on_attach: Callable[..., LaunchRequest]
+    on_kill: Callable[[SessionIdentity], KillResult]
+    on_kill_all: Callable[[tuple[SessionIdentity, ...]], BulkKillResult]
+    on_kill_all_reachable: Callable[[tuple[SessionIdentity, ...]], BulkKillResult]
+    on_remote_kill: Callable[[str, SessionIdentity], KillResult]
+    on_remote_attach: Callable[..., LaunchRequest]
     on_refresh: Callable[[], TuiContext]
     on_probe_link_health: Callable[[], Any]
     on_probe_cwd_writable: Callable[[], bool]
-    on_probe_dir_launchable: Callable[[str], bool]
     on_launch_cwd: Callable[..., LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing: Callable[[str, str, str], LaunchRequest]
-    on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]]
-    on_probe_worktrees: Callable[[str], list]
+    on_list_project_directories: Callable[[str], list[tuple[str, str]]]
+    on_runtime_gate: Callable[[str, str, str], RuntimeGate | None]
+    on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]]
+    on_git_remote_options: Callable[[str, str, str], tuple[list[tuple[str, str]], str]]
+    on_probe_worktrees: Callable[[str, str, str], list]
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest]
     on_probe_existing_worktree_sessions: Callable[
-        [str, str, str, str], tuple[tuple[str, bool], ...]
+        [str, str, str, str, str], tuple[ExistingSessionChoice, ...]
     ]
     get_settings_entries: Callable[[], list]
     on_setting_save: Callable[[str, Any], None]
@@ -124,8 +125,12 @@ class TuiConfig:
         return cls(
             current_user=ctx.current_user,
             launch_user=ctx.launch_user,
-            enabled_agents=tuple(ctx.enabled_agents),
-            default_agent=ctx.default_agent,
+            enabled_profiles=tuple(ctx.enabled_profiles),
+            default_profile=ctx.default_profile,
+            launch_profiles=dict(ctx.launch_profiles),
+            launch_auto_mode=ctx.launch_auto_mode,
+            agents=dict(ctx.agents),
+            execution=ctx.execution,
             tui_refresh_interval_seconds=float(ctx.tui_refresh_interval_seconds),
             tui_ssh_refresh_interval_seconds=float(ctx.tui_ssh_refresh_interval_seconds),
             tui_render_debounce_ms=int(ctx.tui_render_debounce_ms),
@@ -135,24 +140,22 @@ class TuiConfig:
             remote_hosts=tuple(ctx.remote_hosts),
             refresh_sources=tuple(ctx.refresh_sources or ()),
             git_create_enabled=ctx.git_create_enabled,
-            default_git_remote_profile=ctx.default_git_remote_profile,
-            git_remote_profile_options=tuple(
-                (name, desc) for (name, desc) in ctx.git_remote_profile_options
-            ),
             on_attach=ctx.on_attach,
             on_kill=ctx.on_kill,
             on_kill_all=ctx.on_kill_all,
-            on_kill_all_global=ctx.on_kill_all_global,
+            on_kill_all_reachable=ctx.on_kill_all_reachable,
             on_remote_kill=ctx.on_remote_kill,
             on_remote_attach=ctx.on_remote_attach,
             on_refresh=ctx.on_refresh,
             on_probe_link_health=ctx.on_probe_link_health,
             on_probe_cwd_writable=ctx.on_probe_cwd_writable,
-            on_probe_dir_launchable=ctx.on_probe_dir_launchable,
             on_launch_cwd=ctx.on_launch_cwd,
             on_launch_new=ctx.on_launch_new,
             on_launch_existing=ctx.on_launch_existing,
+            on_list_project_directories=ctx.on_list_project_directories,
+            on_runtime_gate=ctx.on_runtime_gate,
             on_probe_existing_sessions=ctx.on_probe_existing_sessions,
+            on_git_remote_options=ctx.on_git_remote_options,
             on_probe_worktrees=ctx.on_probe_worktrees,
             on_create_worktree=ctx.on_create_worktree,
             on_launch_existing_worktree=ctx.on_launch_existing_worktree,

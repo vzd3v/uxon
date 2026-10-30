@@ -25,8 +25,7 @@ Public API re-exports only. Implementation lives in sibling modules:
 Pure-data re-exports load eagerly. Textual-dependent names (``UxonApp``,
 ``run``) are deferred via ``__getattr__`` so that
 ``from uxon.tui import TuiContext`` and other pure-data imports do not
-pull ``textual`` at import time — required by the AGENTS.md hard rule
-that non-TUI subcommands stay textual-free.
+pull ``textual`` at import time, keeping non-TUI commands lightweight.
 """
 
 from __future__ import annotations

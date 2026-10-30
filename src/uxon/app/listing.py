@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Sequence
 from typing import Any
 
@@ -12,18 +11,19 @@ from uxon.domain.args import ParsedArgs
 from uxon.domain.config import Config
 from uxon.domain.format import compact_time, format_cpu_pct, format_rss_kib
 from uxon.domain.session import SessionInfo
+from uxon.domain.wire_schema import RemoteError, RemoteSnapshot
 from uxon.errors import eprint, fail
 from uxon.infra import config_loader, identity, sessions_probe, version_probe
 
 
 def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], list[str]]:
-    """Probe per-target sudo and split ``session_users`` into reachable / skipped.
+    """Probe target execution backends and split users into reachable/skipped.
 
     Returns ``(scope_users, scope_skipped)``:
 
     - ``scope_users`` = ``launch_user`` plus every user from
       ``identity.resolve_all_session_users(cfg, launch_user)`` that the caller
-      can reach via ``sudo -niu <U>``. The list is deterministically
+      can reach via ``sudo -n -H -u <U>``. The list is deterministically
       ordered (stable, sorted by user where it matters).
     - ``scope_skipped`` = the rest of ``session_users`` (excluding
       self) — users in config that the caller cannot reach. Surfaced
@@ -31,14 +31,14 @@ def _resolve_all_users_scope(cfg: Config, launch_user: str) -> tuple[list[str], 
       was filtered.
 
     The launch user itself is always in ``scope_users`` and never in
-    ``scope_skipped``: there's no sudo step for "see my own
+    ``scope_skipped``: there's no cross-user backend step for "see my own
     sessions".
     """
     from uxon.infra.sudo_probe import probe_sudo_capability
 
     all_users = identity.resolve_all_session_users(cfg, launch_user)
     candidates = [u for u in all_users if u != launch_user]
-    caps = probe_sudo_capability(candidates)
+    caps = probe_sudo_capability(cfg, candidates)
     reachable = [u for u in candidates if u in caps.reachable_users]
     skipped = [u for u in candidates if u not in caps.reachable_users]
     scope_users = config_loader.normalize_user_list([launch_user, *reachable])
@@ -49,13 +49,13 @@ def _emit_scope_skipped_hint(scope_skipped: list[str] | None) -> None:
     """Print a single-line stderr hint when ``--all-users`` filtered users.
 
     Format mirrors the spec:
-    ``# 2 users skipped (no sudo): carol_agent, dave_agent``.
+    ``# 2 users skipped (unreachable): carol_agent, dave_agent``.
     No-op when the skipped list is empty / None — stdout stays
     parseable and human output stays uncluttered.
     """
     if not scope_skipped:
         return
-    eprint(f"# {len(scope_skipped)} users skipped (no sudo): {', '.join(scope_skipped)}")
+    eprint(f"# {len(scope_skipped)} users skipped (unreachable): {', '.join(scope_skipped)}")
 
 
 def _list_data(
@@ -73,7 +73,7 @@ def _list_data(
     scoped, whether ``--all-users`` was on, and the session prefix
     that ``short_id`` was stripped against.
 
-    ``scope_skipped`` (optional) is the per-target-sudo "users in
+    ``scope_skipped`` (optional) is the per-target-backend "users in
     ``session_users`` we probed but couldn't reach" list. It is
     omitted from the envelope when ``None`` so single-user listings
     stay byte-identical to their previous shape; callers that
@@ -139,7 +139,7 @@ def _list_data_from_records(
     only delta is the envelope-level ``host`` field set by the
     caller.
 
-    ``scope_skipped`` (optional) propagates the per-target-sudo
+    ``scope_skipped`` (optional) propagates the per-target-backend
     skipped-users list through; omitted when ``None`` to keep the
     envelope shape stable for callers that don't pass it.
     """
@@ -158,8 +158,6 @@ def _print_remote_table(
     cfg: Config,
     host_name: str,
     sessions: Sequence[dict[str, Any]] | Sequence[Any],
-    *,
-    cached: bool,
 ) -> None:
     """Render a remote host's ``list --json`` payload as a human
     table.
@@ -188,15 +186,37 @@ def _print_remote_table(
                 active_path=str(r.get("active_path", "")),
                 cpu_pct=float(r.get("cpu_pct", 0.0) or 0.0),
                 rss_kib=int(r.get("rss_kib", 0) or 0),
-                agent=str(r.get("agent", "claude")),
+                agent=str(r.get("agent", "")),
+                profile=str(r.get("profile", "")),
+                runtime=str(r.get("runtime", "")),
+                runtime_resource=str(r.get("runtime_resource", "")),
+                runtime_down=bool(r.get("runtime_down", False)),
                 legacy=bool(r.get("legacy", False)),
             )
         )
-    cache_marker = "  (CACHED — peer unreachable)" if cached else ""
-    print(f"── remote: {host_name}{cache_marker} ──")
+    print(f"── remote: {host_name} ──")
     users_in_payload = sorted({s.user for s in synth}) or ["?"]
     show_user = len(users_in_payload) > 1
     print_list(cfg, synth, users_in_payload, show_user=show_user)
+
+
+def _remote_list_data(cfg: Config, snap: RemoteSnapshot) -> dict[str, Any]:
+    sessions = snap.sessions if snap.is_live else []
+    body = _list_data_from_records(
+        sessions,
+        sorted({s.get("user", "") for s in sessions if s.get("user")}),
+        session_prefix=cfg.session_prefix,
+        all_users=False,
+    )
+    if snap.peer:
+        body["peer"] = dict(snap.peer)
+    if not snap.is_live:
+        error: RemoteError = {
+            "code": snap.error_code or "fetch_error",
+            "message": snap.error or "unconfirmed remote snapshot",
+        }
+        body["error"] = error
+    return body
 
 
 def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
@@ -204,10 +224,8 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
 
     Looks up the configured peer, runs the SSH-driven collector,
     and prints either the JSON envelope (with the ``host`` field
-    set) or a human table. When the live fetch fails but the disk
-    cache is populated, the result is rendered with a "(CACHED)"
-    marker; no fallback exits with a non-zero code so the caller
-    knows to investigate.
+    set) or a human table. Failed fetches contribute no rows and exit
+    nonzero.
     """
     from uxon.infra.remote.collector import fetch_remote_snapshot
     from uxon.infra.remote_hosts import find_host
@@ -226,26 +244,17 @@ def _do_list_host(args: ParsedArgs, cfg: Config) -> int:
     if args.json_output:
         _emit_json_with_host(
             "list",
-            _list_data_from_records(
-                snap.sessions,
-                # The peer's payload carried scope_users on its own
-                # envelope; we lost that during collector parsing
-                # because the wire schema there only kept ``sessions``.
-                # Surface what we can derive.
-                scope_users=sorted({s.get("user", "") for s in snap.sessions if s.get("user")}),
-                session_prefix=cfg.session_prefix,
-                all_users=False,
-            ),
+            _remote_list_data(cfg, snap),
             host=target.name,
         )
-        if snap.error and not snap.from_cache:
+        if not snap.is_live:
             eprint(f"uxon: --host {target.name}: {snap.error}")
             return 1
         return 0
-    _print_remote_table(cfg, target.name, snap.sessions, cached=snap.from_cache)
-    if snap.error and not snap.from_cache:
+    if not snap.is_live:
         eprint(f"uxon: --host {target.name}: {snap.error}")
         return 1
+    _print_remote_table(cfg, target.name, snap.sessions)
     return 0
 
 
@@ -256,8 +265,7 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
     peer. With ``--json`` emits a JSON Lines stream — one envelope
     per source (local + each peer) — so a consumer can split by
     newline and parse each independently. Exits non-zero iff any
-    peer failed AND its cache was empty; partial results are still
-    rendered.
+    peer failed; healthy partial results are still rendered.
     """
     from uxon.infra.remote.collector import fetch_remote_snapshot
 
@@ -294,16 +302,11 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             )
             _emit_json_with_host(
                 "list",
-                _list_data_from_records(
-                    snap.sessions,
-                    scope_users=sorted({s.get("user", "") for s in snap.sessions if s.get("user")}),
-                    session_prefix=cfg.session_prefix,
-                    all_users=False,
-                ),
+                _remote_list_data(cfg, snap),
                 host=host.name,
                 compact=True,
             )
-            if snap.error and not snap.from_cache:
+            if not snap.is_live:
                 eprint(f"uxon: --host {host.name}: {snap.error}")
                 rc = 1
         return rc
@@ -319,10 +322,11 @@ def _do_list_all_hosts(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
             ssh_control_persist_seconds=cfg.ssh_control_persist_seconds,
         )
         print()
-        _print_remote_table(cfg, host.name, snap.sessions, cached=snap.from_cache)
-        if snap.error and not snap.from_cache:
+        if not snap.is_live:
             eprint(f"uxon: --host {host.name}: {snap.error}")
             rc = 1
+        else:
+            _print_remote_table(cfg, host.name, snap.sessions)
     return rc
 
 
@@ -331,10 +335,8 @@ def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
 
     Dispatches the ``--host`` / ``--all-hosts`` variants to their
     dedicated handlers, then runs the local-listing audit/scope logic
-    (peer-inbound ``list.remote.in`` vs caller-side ``list.peek``, the
-    ``--all-users`` enable gate, and the JSON-vs-human emit). Lifted
-    verbatim from the old ``cli.main`` inline branch so behavior is
-    identical; ``dispatch`` calls this as a thin router target.
+    This owns the ``--all-users`` gate, ``list.peek`` audit, and the
+    JSON-vs-human output contract.
     """
     from uxon.infra import audit as _audit
 
@@ -342,56 +344,25 @@ def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         return _do_list_host(args, cfg)
     if args.all_hosts:
         return _do_list_all_hosts(args, cfg, launch_user)
-    # Peer-inbound branch: a peer-collector invocation arrives with
-    # ``SSH_CONNECTION`` set and neither ``--host`` nor ``--all-hosts``.
-    # Fires *after* those early-returns so a caller-side
-    # ``uxon list --host`` does not double-emit on its own host.
-    # Spec line 306: when peer-inbound, ``list.remote.in`` replaces
-    # ``list.peek`` ("instead of"), so we suppress the latter on
-    # this code path.
-    #
-    # Spec line 207-209: state-changing events emit on **both**
-    # success and failure paths.  ``list.remote.in`` is no
-    # exception: the previous shape (single ``outcome=ok`` emit at
-    # the top, before the all-users-disabled gate) lost the denied
-    # outcome — a peer that refused ``--all-users`` recorded a
-    # stale ``ok``.  Emit at outcome boundaries instead: once on
-    # the all-users-disabled denial, once on success after the
-    # gate passes (or for the own-only branch).
-    peer_inbound = bool(os.environ.get("SSH_CONNECTION"))
-    # ``correlation_id`` for ``list.remote.in`` is auto-injected by
-    # ``audit()`` from module state when the parser popped
-    # ``--audit-correlation-id`` off argv.  See spec §"Correlation
-    # across hosts" ("omitted rather than synthesized").
-    list_scope = "all-users" if args.all_users else "own"
     if args.all_users:
         if not cfg.enable_all_users_list:
             # Stable error tag. The remote-host aggregator's
             # fallback detector greps for this exact substring to
-            # decide whether to retry with the legacy ``list
+            # decide whether to retry with the own-only ``list
             # --json`` (own-only) command.
-            if peer_inbound:
-                _audit.audit(
-                    "list.remote.in",
-                    outcome="denied",
-                    scope=list_scope,
-                )
-            fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
-        scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
-        # ``list.peek`` / ``list.remote.in`` fires only after the
-        # gate passes — placement ensures we never log a successful
-        # peek for a denied invocation.
-        if peer_inbound:
-            _audit.audit(
-                "list.remote.in",
-                scope=list_scope,
-            )
-        else:
             _audit.audit(
                 "list.peek",
-                scope_users=scope_users,
-                scope_skipped=list(scope_skipped),
+                outcome="denied",
+                scope_users=[],
+                scope_skipped=[],
             )
+            fail("uxon-error: all-users-disabled (enable_all_users_list = false in config)")
+        scope_users, scope_skipped = _resolve_all_users_scope(cfg, launch_user)
+        _audit.audit(
+            "list.peek",
+            scope_users=scope_users,
+            scope_skipped=list(scope_skipped),
+        )
         sessions = sessions_probe.collect_sessions(scope_users, cfg)
         if args.json_output:
             _emit_json(
@@ -408,16 +379,8 @@ def do_list(args: ParsedArgs, cfg: Config, launch_user: str) -> int:
         rc = print_list(cfg, sessions, scope_users, show_user=True)
         _emit_scope_skipped_hint(scope_skipped)
         return rc
-    # Own-only branch: no gate, single success emit on the peer
-    # side (the local-side ``list`` does not produce a ``list.peek``
-    # for its own user — that's by spec, only ``--all-users``
-    # local enumeration triggers ``list.peek``).
-    if peer_inbound:
-        _audit.audit(
-            "list.remote.in",
-            scope=list_scope,
-        )
     scope_users = [launch_user]
+    _audit.audit("list.peek", scope_users=scope_users, scope_skipped=[])
     sessions = sessions_probe.collect_sessions(scope_users, cfg)
     if args.json_output:
         _emit_json("list", _list_data(cfg, sessions, scope_users, all_users=False))
@@ -492,11 +455,21 @@ def print_list(
         )
         marker = "*" if s.attached == "1" else " "
         pid_s = str(s.active_pid) if s.active_pid is not None else "-"
-        cpu_s = format_cpu_pct(s.cpu_pct)
-        ram_s = format_rss_kib(s.rss_kib)
+        # A session whose workload resource is down shows a distinct
+        # "down" marker in cpu/ram rather than a silent idle 0/—.
+        if s.runtime_down:
+            cpu_s = "down"
+            ram_s = "down"
+        else:
+            cpu_s = format_cpu_pct(s.cpu_pct)
+            ram_s = format_rss_kib(s.rss_kib)
         start_s = compact_time(s.created)
         last_s = compact_time(s.last_attached)
-        cmd_s = s.active_cmd or "-"
+        # For a command-runtime session the active pane command is the runtime
+        # client (``docker``/``sh``), not the agent — show the resolved agent
+        # id. Gated on the runtime-resource marker; direct-runtime
+        # sessions unchanged.
+        cmd_s = (s.agent if s.runtime_resource else s.active_cmd) or "-"
         path_s = s.active_path or "-"
         rows.append(
             {

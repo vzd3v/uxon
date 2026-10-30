@@ -1,46 +1,19 @@
-"""pty-driven integration tests for uxon.tui.
-
-These tests fork a child that imports ``uxon.tui`` with a minimal fake
-``TuiContext``, then drive it via keystrokes written to a controlling
-pseudo-terminal. They're intentionally coarse — a handful of end-to-end
-regression tests for bugs we've been bitten by. Fine-grained unit
-tests stay in test_uxon_tui.py.
-
-Each test is guarded by ``@unittest.skipUnless(hasattr(pty, 'fork'),
-...)`` so it skips cleanly on platforms without a working pty
-(pure-Windows builds).
-"""
+"""Real terminal bytes exercise screen entry, folder navigation and fresh-app handoff."""
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "tests"))
-
-
-def locate_row(trace_plain: str, label_regex: str) -> int | None:
-    """Scan pty output for a label and return its 1-based y coordinate.
-
-    Layout-agnostic helper for click tests. ``trace_plain`` is the
-    rendered frame string from the pty harness; we split on "\r\n" and
-    return the index of the first line matching ``label_regex``.
-    Returns None if no match.
-
-    Used by tests that would otherwise hardcode a row number — letting
-    the MainScreen layout drift without breaking click-based tests.
-    """
-    import re
-
-    pattern = re.compile(label_regex)
-    for i, line in enumerate(trace_plain.splitlines(), start=1):
-        if pattern.search(line):
-            return i
-    return None
 
 
 def sgr_click(x: int, y: int) -> tuple[bytes, bytes]:
@@ -58,28 +31,42 @@ except ImportError:  # pragma: no cover
     _PTY_OK = False
 
 
-# Shared child-side script. Imports uxon.tui, builds a no-op TuiContext
-# shaped like what u-den would see on first launch (sudo, no sessions),
-# and enters run(). The test driver pipes keystrokes in, then reads the
-# rendered frames.
+# Shared empty-session operator context. A validated profile and installed
+# host report keep the initial screen independent of local installations;
+# the real runner still owns rendering, probing and key dispatch.
 _CHILD_SCRIPT = r"""
 import sys, os
 from uxon import tui as uxon_tui
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG
+from uxon.domain.host_report import BinaryStatus, HostReport
 from uxon.domain.sudo import SudoCapability
+from uxon.infra import probes
+from uxon.tui.context import LaunchProfileOption
+
+probes.probe_host = lambda cfg, user, catalog: HostReport(
+    tmux=BinaryStatus('tmux', '/usr/bin/tmux', ''),
+    agents={aid: BinaryStatus(spec.binary, f'/usr/bin/{spec.binary}', '')
+            for aid, spec in catalog.items()},
+    launch_user=user,
+)
 
 ctx = uxon_tui.TuiContext(
     sessions=[],
     total_cpu="0",
     total_ram="0",
-    version="ccw-test",
+    version="uxon-test",
     cwd="/tmp",
     cwd_short="tmp",
     new_project_root="/tmp/projects",
-    existing_projects=[],
+    existing_projects=[("project", "")],
     cwd_writable=True,
-    current_user="u-den",
+    current_user="alice",
+    agents=DEFAULT_AGENT_CATALOG,
+    enabled_profiles=("claude",),
+    default_profile="claude",
+    launch_profiles={"claude": LaunchProfileOption("claude", "Claude", "claude", "alice")},
     sudo_caps=SudoCapability(
-        reachable_users=frozenset({"_synthetic_"}), can_root=True
+        reachable_users=frozenset({"bob"})
     ),
     other_sessions=[],
 )
@@ -90,243 +77,306 @@ sys.exit(rc)
 
 @unittest.skipUnless(_PTY_OK, "pty.fork unavailable on this platform")
 class PtyTuiIntegrationTests(unittest.TestCase):
-    """End-to-end driver tests via a pseudo-terminal.
+    """Real-byte input, controlling-terminal safety and explicit screen readiness."""
 
-    These are the regression tests for the 2026-04-18 bug class:
-    empty-state superuser + stray keypresses must not land on Git
-    remote profiles. Also smoke-tests basic quit and nav paths.
-    """
+    def test_pty_harness_controls_terminal_and_bounds_failures(self) -> None:
+        from harness.pty_tui import run_pty, run_python_snippet
 
-    def _run(self, keys: list[bytes], **kwargs):
-        from harness.pty_tui import run_python_snippet
+        from uxon.infra.loop_guard import handoff_spawn
 
-        code = _CHILD_SCRIPT
-        return run_python_snippet(
-            code,
-            keys,
-            **kwargs,
-        )
-
-    def test_pty_harness_provides_controlling_terminal(self) -> None:
-        from harness.pty_tui import run_python_snippet
-
-        trace = run_python_snippet(
-            "import os; fd = os.open('/dev/tty', os.O_RDWR); "
-            "print(f'controlling-tty:{os.isatty(0)}:{os.isatty(1)}'); os.close(fd)",
-            [b""],
-            initial_drain=1.0,
-            final_drain=0.1,
-            timeout=3.0,
-        )
+        with (
+            mock.patch.dict(
+                os.environ, {"UXON_DISABLE_LOOP_GUARD": "1", "UXON_SPAWN_GUARD_STRICT": "1"}
+            ),
+            handoff_spawn(),
+        ):
+            trace = run_python_snippet(
+                "import os; fd = os.open('/dev/tty', os.O_RDWR); "
+                "print(f'controlling-tty:{os.isatty(0)}:{os.isatty(1)}'); os.close(fd); "
+                "print('guards:', os.getenv('UXON_DISABLE_LOOP_GUARD'), "
+                "os.getenv('UXON_SPAWN_GUARD_STRICT'))",
+                [],
+                initial_drain=1.0,
+                final_drain=0.1,
+                timeout=3.0,
+            )
         self.assertIn("controlling-tty:True:True", trace.plain)
+        self.assertIn("guards: None None", trace.plain)
+        self.assertEqual(trace.exit_code, 0, trace.plain)
 
-    def test_stray_digit_and_letter_do_not_open_git_remotes(self) -> None:
-        """Pressing an unbound digit and then ``g`` must never reach
-        the Git remote profiles screen. Historically digit-jump made
-        '4' a way into Settings on empty-superuser state (PR 1 + PR 2
-        regression); digit-jump has since been retired, so this test
-        also covers the wider class of "no random keypress walks the
-        operator into a screen they did not ask for"."""
-        trace = self._run([b"4", b"g", b"q"])
-        self.assertNotIn(
-            "Git remote profiles",
-            trace.plain,
-            msg=f"git remotes reachable via '4g': last frame:\n{trace.last_frame()[-1500:]}",
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            finalized = Path(directory) / "finalized"
+            # Closing the terminal streams need not finish the interpreter.
+            # Honor the scenario deadline while bounded finalization completes.
+            trace = run_python_snippet(
+                "import os, time; from pathlib import Path; "
+                "print('FINALIZING', flush=True); "
+                "os.close(0); os.close(1); os.close(2); time.sleep(0.3); "
+                f"Path({str(finalized)!r}).write_text('complete')",
+                [],
+                initial_wait_for="FINALIZING",
+                initial_drain=1.0,
+                final_drain=0.1,
+                timeout=3.0,
+            )
+            self.assertEqual(trace.exit_code, 0, trace.plain)
+            self.assertEqual(finalized.read_text(), "complete")
 
-    def test_direct_g_on_main_is_cursor_home(self) -> None:
-        """Pressing 'g' on the main screen moves cursor to top (KEY_HOME).
-        It must not open git remotes (which is only reachable through
-        Settings — and since PR 1, not even from there)."""
-        trace = self._run([b"g", b"q"])
-        self.assertNotIn("Git remote profiles", trace.plain)
+            consumed = Path(directory) / "consumed"
+            pid_file = Path(directory) / "pid"
+            script = f"""
+import os, signal, tty
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+tty.setraw(0)
+Path({str(pid_file)!r}).write_text(str(os.getpid()))
+print('READY', flush=True)
+Path({str(consumed)!r}).write_bytes(os.read(0, 1))
+print('CONSUMED', flush=True)
+os.read(0, 1)
+"""
+            # READY from the initial stage cannot satisfy the next stage.
+            # A later key must never be sent after that stage fails; the
+            # SIGTERM-resistant child must still be killed and reaped.
+            with self.assertRaisesRegex(AssertionError, "key 1: missing marker 'READY'") as error:
+                run_python_snippet(
+                    script,
+                    [(0.5, b"x", "READY"), (0.5, b"y", "CONSUMED")],
+                    initial_wait_for="READY",
+                    initial_drain=1.0,
+                    timeout=3.0,
+                )
+            self.assertIn("CONSUMED", str(error.exception))
+            self.assertEqual(consumed.read_bytes(), b"x")
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
 
-    def test_quit_exits_cleanly(self) -> None:
-        """Smoke test: pressing 'q' on the main screen returns rc=0."""
-        trace = self._run([b"q"])
-        # rc may be None if the child was SIGKILL'd by harness cleanup,
-        # which happens when the TUI hasn't reached the terminal normal
-        # state. Accept 0 or None; what we really care about is that no
-        # error banner was rendered.
-        self.assertNotIn("crashed", trace.plain)
-        self.assertNotIn("Traceback", trace.plain)
+            for fault in ("missing initial marker", "process start failure"):
+                with self.subTest(fault=fault):
+                    descriptors = set(os.listdir("/proc/self/fd"))
+                    if fault == "missing initial marker":
+                        with self.assertRaisesRegex(
+                            AssertionError, "initial render: missing marker"
+                        ):
+                            run_python_snippet(
+                                "print('EARLY_EXIT', flush=True); raise SystemExit(7)",
+                                [(0.5, b"x", "UNREACHABLE")],
+                                initial_wait_for="MISSING",
+                                initial_drain=1.0,
+                                timeout=3.0,
+                            )
+                    else:
+                        with self.assertRaises(FileNotFoundError):
+                            run_pty([str(Path(directory) / "missing-command")], [])
+                    self.assertEqual(set(os.listdir("/proc/self/fd")), descriptors)
 
-    def test_enter_on_settings_row_opens_settings_then_q_returns(self) -> None:
-        """Deliberate activation: arrow-down to Settings (the single
-        item in the superuser block when no sessions), Enter to open,
-        'q' to back out, 'q' to quit. No Git remote profiles anywhere."""
-        trace = self._run([b"\x1b[B", b"\r", b"q", b"q"])
-        self.assertNotIn("Git remote profiles", trace.plain)
+    @pytest.mark.slow
+    def test_project_picker_decodes_plain_folder_arrows_with_search(self) -> None:
+        from harness.pty_tui import run_python_snippet
 
-    def test_left_click_on_second_action_row_selects_it(self) -> None:
-        """Click press + release on a visible action row should move the
-        cursor to that item without crashing. Exact row index isn't
-        asserted — we just need the TUI to parse the SGR-1006 sequence
-        and keep running."""
-        press = b"\x1b[<0;5;4M"
-        release = b"\x1b[<0;5;4m"
-        # Synchronize on the first rendered frame before clicking: under
-        # -n auto CPU contention textual's import+first-render can outlast
-        # a fixed initial_drain, and the click+q then land on a blank
-        # screen (the captured trace holds only the echoed input bytes).
-        # `initial_wait_for` drains until the main screen *body* is actually
-        # on screen — "No active sessions." paints in the body burst after
-        # the action rows, ~770 ms behind the title bar — so the click lands
-        # on a rendered, parseable frame.
-        trace = self._run(
-            [press, release, b"q"],
+        script = r"""
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from helpers import make_config
+from textual.widgets import Input
+from uxon.app.project_browsing import browse_project_directories, list_project_directories
+from uxon.infra.identity import process_user
+import uxon.tui.app as app_module
+from uxon.tui.app import UxonApp
+from uxon.tui.callback_wrap import _wrap_tui_callback
+from uxon.tui.context import CallbackError, TuiContext
+from uxon.tui.screens.existing import ExistingProjectScreen
+
+with TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    (root / "folder-key-sentinel" / "inner-key-sentinel" / "leaf-key-sentinel").mkdir(parents=True)
+    cfg = make_config(new_project_root=tmp, allowed_roots=[tmp])
+    user = process_user()
+    ctx = TuiContext(
+        sessions=[], total_cpu="0", total_ram="0", version="test",
+        cwd=tmp, cwd_short="projects", new_project_root=tmp,
+        existing_projects=list_project_directories(cfg, user, tmp),
+        current_user=user, launch_user=user, cwd_writable=True, refresh_sources=[],
+    )
+    class ProjectApp(UxonApp):
+        CSS_PATH = Path(app_module.__file__).with_name("styles.tcss")
+        selected = None
+        def on_mount(self):
+            super().on_mount()
+            self.call_later(self.open_picker)
+        async def open_picker(self):
+            callback = _wrap_tui_callback(
+                lambda path: browse_project_directories(cfg, user, path), CallbackError
+            )
+            await self.push_screen(
+                ExistingProjectScreen(ctx.existing_projects, tmp, list_directories=callback),
+                self.picked,
+            )
+            # Output settling must follow navigation, not caret animation.
+            self.screen.query_one(Input).cursor_blink = False
+        def picked(self, value):
+            self.selected = value
+            self.exit()
+    app = ProjectApp(ctx, probe_agents=False)
+    app.run()
+    print(f"picked:{app.selected}")
+"""
+        trace = run_python_snippet(
+            script,
+            [
+                (10.0, b"sentinel", "1 match"),
+                (10.0, b"\x1b[C", "inner-key-sentinel"),
+                (10.0, b"inner", "1 match"),
+                (10.0, b"\x1b[C", "leaf-key-sentinel"),
+                (10.0, b"\x1b[D", "inner-key-sentinel"),
+                (10.0, b"\r", "picked:"),
+            ],
+            extra_path=[str(_REPO / "tests")],
+            initial_wait_for="folder-key-sentinel",
             initial_drain=20.0,
-            initial_wait_for="No active sessions",
+            timeout=60.0,
         )
+        self.assertEqual(trace.exit_code, 0, trace.plain[-3000:])
+        self.assertIn("picked:folder-key-sentinel/inner-key-sentinel", trace.plain)
         self.assertNotIn("Traceback", trace.plain)
-        self.assertNotIn("crashed", trace.plain)
-        # All three action rows should still be visible in the last frame.
-        self.assertIn("Create new project", trace.plain)
 
-    def test_wheel_down_then_q_exits_cleanly(self) -> None:
-        """Wheel-down event (button 65) must not crash and must be
-        consumed as a cursor move."""
-        trace = self._run([b"\x1b[<65;1;1M", b"q"])
-        self.assertNotIn("Traceback", trace.plain)
-        self.assertNotIn("crashed", trace.plain)
+    def test_keyboard_and_mouse_open_settings_return_and_exit_cleanly(self):
+        from harness.pty_tui import run_python_snippet
 
-    def test_click_on_settings_row_opens_settings(self) -> None:
-        """With no own sessions, Settings is the first superuser row.
-        A click (press + release) on a main-screen action area must not
-        crash the TUI. Exact row coordinates vary with layout — this is
-        a smoke test, not a position-assert."""
-        trace = self._run([b"\x1b[<0;5;6M", b"\x1b[<0;5;6m", b"q", b"q"])
-        self.assertNotIn("Traceback", trace.plain)
-        self.assertNotIn("crashed", trace.plain)
+        with tempfile.TemporaryDirectory() as directory:
+            coordinates = Path(directory) / "settings-position.json"
+            script = _CHILD_SCRIPT.replace(
+                "rc = uxon_tui.run(ctx)",
+                _READY_CHILD.format(coordinates=str(coordinates))
+                + '\nrc = uxon_tui.run(ctx)\nprint(f"PTY_EXIT:{rc}", flush=True)',
+            )
+
+            def keys():
+                # Reverse traversal reaches Settings through the actual focus chain.
+                yield (10.0, b"\x1b[A\r", "READY_SETTINGS_1")
+                yield (10.0, b"q", "READY_MAIN_2")
+                x, y = json.loads(coordinates.read_text())
+                press, release = sgr_click(x, y)
+                yield (10.0, press + release, "READY_SETTINGS_2")
+                yield (10.0, b"q", "READY_MAIN_3")
+                yield (10.0, b"q", "PTY_EXIT:0")
+
+            # These ACKs run after paint and explicitly verify live focus. Other
+            # terminal scenarios retain the harness's longer empirical settle.
+            with mock.patch("harness.pty_tui._SETTLE_MS", 100):
+                trace = run_python_snippet(
+                    script, keys(), initial_wait_for="READY_MAIN_1", initial_drain=20, timeout=60
+                )
+            self.assertEqual(trace.exit_code, 0, trace.plain[-3000:])
+            self.assertIn("Settings", trace.plain)
+            self.assertIn("READY_SETTINGS_1", trace.plain)
+            self.assertIn("READY_SETTINGS_2", trace.plain)
+            self.assertIn("READY_MAIN_3", trace.plain)
 
 
-_DRAIN_CHILD_SCRIPT = r"""
-import sys, os
-from uxon import tui as uxon_tui
-from uxon.infra import agents as uxon_agents
-from uxon.infra import probes as uxon_probes
-from uxon.tui.context import LaunchRequest
-
-MARKER = {marker_path!r}
-uxon_agents.probe_agents = lambda *args, **kwargs: {{}}
-# The new TUI worker calls ``probes.probe_host`` instead of the
-# legacy per-agent driver. Without this stub the pty child runs a
-# real ``sudo -nHu USER -- sh -lc 'command -v …'`` on the CI host,
-# finds nothing, and pushes ``AgentsUnavailableScreen`` over the
-# main screen — the keypresses the test sends then land on the
-# modal instead of the action row, and the marker file stays empty.
-class _StubReport:
-    def __init__(self):
-        self.tmux = type("S", (), {{"name": "tmux", "path": "/usr/bin/tmux", "install_hint": ""}})()
-        # Pretend only claude is installed so auto-mode lands a single
-        # agent in the LaunchOptions modal (the keypress sequence in
-        # this test relies on the single-agent fast-path that skips
-        # the agent picker and lands directly on the mode list).
-        bs = lambda n, p: type("S", (), {{"name": n, "path": p, "install_hint": ""}})()
-        self.agents = {{
-            "claude": bs("claude", "/usr/bin/claude"),
-            "codex": bs("codex", None),
-            "cursor": bs("cursor-agent", None),
-        }}
-        self.launch_user = "u-den"
-uxon_probes.probe_host = lambda *args, **kwargs: _StubReport()
-
-def fake_launch_cwd(agent_id, mode_id, target_dir=None):
-    with open(MARKER, "a", encoding="utf-8") as f:
-        f.write(f"cwd:{{agent_id}}:{{mode_id}}\n")
-    return LaunchRequest(cmd=("/bin/sh", "-c", "sleep 2.0"), label="mock-attach")
-
-def fake_launch_new(name, agent_id, mode_id, git_profile):
-    with open(MARKER, "a", encoding="utf-8") as f:
-        f.write(f"new:{{name}}:{{agent_id}}:{{mode_id}}:{{git_profile}}\n")
-    return LaunchRequest(cmd=("/bin/true",), label="mock-new")
-
-ctx = uxon_tui.TuiContext(
-    sessions=[],
-    total_cpu="0",
-    total_ram="0",
-    version="ccw-test",
-    cwd="/tmp",
-    cwd_short="tmp",
-    new_project_root="/tmp/projects",
-    existing_projects=[],
-    cwd_writable=True,
-    current_user="u-den",
-    on_launch_cwd=fake_launch_cwd,
-    on_launch_new=fake_launch_new,
-    on_refresh=lambda: ctx,
-)
-rc = uxon_tui.run(ctx)
-sys.exit(rc)
+_READY_CHILD = r"""
+import json
+from pathlib import Path
+import uxon.tui.app as app_module
+from uxon.tui.screens.main import MainScreen
+from uxon.tui.screens.settings import SettingsScreen
+from uxon.tui.screens.launch_options import LaunchOptionsScreen
+readiness_counts = {{"MAIN":0,"SETTINGS":0,"OPTIONS":0}}
+app_generations = [0]
+class ReadyApp(app_module.UxonApp):
+    CSS_PATH = Path(app_module.__file__).with_name("styles.tcss")
+    def on_mount(self):
+        super().on_mount()
+        app_generations[0] += 1
+        self.generation = app_generations[0]
+        self.acknowledged_app = False
+        self.previous_role = None
+        self.guard_verified = False
+        self.set_interval(0.02, lambda: self.call_after_refresh(self.ack))
+    def ack(self):
+        screen = self.screen
+        role = "MAIN" if isinstance(screen, MainScreen) else "SETTINGS" if isinstance(screen, SettingsScreen) else "OPTIONS" if isinstance(screen, LaunchOptionsScreen) else None
+        if role is None or role == self.previous_role or self.focused is None or screen.size.height <= 0:
+            return
+        if role == "MAIN":
+            if not self.guard_verified:
+                from uxon.infra.loop_guard import EventLoopBlockedError
+                from uxon.infra.run import run_query
+                try:
+                    run_query([sys.executable, "-c", "pass"],timeout=1)
+                except EventLoopBlockedError:
+                    self.guard_verified = True
+                else:
+                    raise AssertionError("real runner failed to install event-loop spawn guard")
+            row = screen.query_one("#action-settings")
+            if row.region.height <= 0 or not row.display:
+                return
+            Path({coordinates!r}).write_text(json.dumps([row.region.x+3,row.region.y+1]))
+        elif role == "SETTINGS" and getattr(self.focused, "id", None) != "settings-table":
+            return
+        elif role == "OPTIONS" and (getattr(self.focused, "id", None) != "mode-list" or screen.query_one("#mode-list").index is None):
+            return
+        # A dismissed launch picker can briefly reveal Main while the old
+        # App prepares its handoff. Only a fresh App can acknowledge reentry.
+        if role == "MAIN" and not self.acknowledged_app:
+            self.acknowledged_app = True
+            os.write(1, f"READY_APP_{{self.generation}}\n".encode())
+        self.previous_role = role
+        readiness_counts[role] += 1
+        os.write(1, f"READY_{{role}}_{{readiness_counts[role]}}\n".encode())
+app_module.UxonApp = ReadyApp
 """
 
 
-@unittest.skipUnless(_PTY_OK, "pty.fork unavailable on this platform")
+@unittest.skipUnless(_PTY_OK, "pty unavailable on this platform")
 class DrainAfterLaunchTests(unittest.TestCase):
-    """Regression: keys typed during a mocked launch round-trip must
-    NOT auto-activate an item when the main screen re-renders.
-
-    Historically the blessed loop needed ``_drain_stdin`` to flush the
-    buffer between ``exit()`` and the next ``inkey()``. Under textual
-    each ``UxonApp()`` gets its own fresh input queue, so the drain is
-    no longer needed — this test verifies that claim empirically.
-    """
-
-    def test_key_typed_during_launch_does_not_stale_activate(self) -> None:
+    def test_key_typed_during_launch_does_not_stale_activate(self):
         from harness.pty_tui import run_python_snippet
 
-        fd, marker_path = tempfile.mkstemp(prefix="ccw-drain-", text=True)
-        os.close(fd)
-        self.addCleanup(lambda: os.path.exists(marker_path) and os.unlink(marker_path))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release, marker = root / "release", root / "launches"
+            workload = f"""
+import time
+from pathlib import Path
+print("WORKLOAD_STARTED", flush=True)
+deadline = time.monotonic()+15
+while not Path({str(release)!r}).exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError("workload release missing")
+    time.sleep(0.01)
+print("WORKLOAD_FINISHED", flush=True)
+"""
+            setup = f"""
+from uxon.tui.context import LaunchRequest
+def launch(profile, mode, target_dir=None):
+    with open({str(marker)!r}, 'a') as stream:
+        stream.write(f"cwd:{{profile}}:{{mode}}\\n")
+    return LaunchRequest((sys.executable,'-c',{workload!r}), label="workload")
+ctx.on_launch_cwd = launch
+ctx.on_refresh = lambda: ctx
+"""
+            ready = _READY_CHILD.format(coordinates=str(root / "position"))
+            script = _CHILD_SCRIPT.replace(
+                "rc = uxon_tui.run(ctx)",
+                setup + ready + '\nrc = uxon_tui.run(ctx)\nprint(f"PTY_EXIT:{rc}", flush=True)',
+            )
 
-        code = _DRAIN_CHILD_SCRIPT.format(
-            marker_path=marker_path,
-        )
-        # Sequence: Enter on action-cwd (the default-focused row on
-        # MainScreen) → permissions modal → Enter to pick the default
-        # mode → on_launch_cwd triggers request_launch → app exits →
-        # _run_launch_request runs /bin/true → re-enter. While the
-        # mocked launch is still sleeping we send a stray Enter — it
-        # must not auto-activate any row on the re-entered MainScreen.
-        # Synchronize on rendered text instead of guessing delays —
-        # under -n auto CPU contention, a fixed sleep is racy. The
-        # 3-tuple `(budget, payload, wait_for_text)` form sends the
-        # payload, then drains until the marker appears or the budget
-        # expires. We wait for "1 normal" (the first mode list item)
-        # — it renders only after the modal's async on_mount populates
-        # the mode ListView, so the follow-up Enter is guaranteed to
-        # land on a mounted, ready ListView.
-        trace = run_python_snippet(
-            code,
-            [
-                (12.0, b"\r", "1 normal"),
-                (6.0, b"\r"),
-                # Stray digit during launch — must not stale-activate
-                # any row on re-entry. ``2`` is unbound on MainScreen
-                # (digit-jump was retired) so this is a no-op; the
-                # test asserts the no-op stays a no-op.
-                (2.0, b"2"),
-                b"q",
-            ],
-            # Gate the first Enter on the main screen *body* actually
-            # rendering: under -n auto CPU contention textual's
-            # import+first-render can outlast a fixed initial_drain, and the
-            # Enter then lands on a not-yet-interactive screen so the launch
-            # never fires (empty marker). "No active sessions." renders in the
-            # body burst that follows the action rows (the title bar paints
-            # ~770 ms earlier), so waiting for it guarantees the action
-            # ListView is mounted and input-ready.
-            initial_drain=20.0,
-            initial_wait_for="No active sessions",
-            timeout=90.0,
-        )
-        self.assertNotIn("Traceback", trace.plain)
-        marker = Path(marker_path).read_text(encoding="utf-8")
-        self.assertIn("cwd:claude:normal", marker)
-        self.assertNotIn("new:", marker)
-        self.assertNotIn("project name", trace.plain)
-        self.assertIn("uxon | New session", trace.plain)
+            def keys():
+                yield (10.0, b"\x1b[B\x1b[B\r", "READY_OPTIONS_1")
+                yield (10.0, b"\r", "WORKLOAD_STARTED")
+                self.assertFalse(release.exists())
+                # Enter would open a new launch modal if delivered after reentry.
+                yield (0.2, b"\r")
+                release.touch()
+                yield (10.0, b"", "READY_APP_2")
+                yield (10.0, b"q", "PTY_EXIT:0")
 
-
-if __name__ == "__main__":
-    unittest.main()
+            with mock.patch("harness.pty_tui._SETTLE_MS", 100):
+                trace = run_python_snippet(
+                    script, keys(), initial_wait_for="READY_APP_1", initial_drain=20, timeout=60
+                )
+            self.assertEqual(trace.exit_code, 0, trace.plain[-3000:])
+            self.assertEqual(marker.read_text(), "cwd:claude:normal\n")
+            self.assertIn("WORKLOAD_FINISHED", trace.plain)
+            self.assertNotIn("READY_OPTIONS_2", trace.plain)

@@ -1,20 +1,12 @@
-"""KillFlow — the kill-chain controller for :class:`MainScreen`.
-
-Holds the bodies of the confirm-modal kill chains (``action_kill``,
-``action_kill_all_own``, ``_kill_all_global``). The Screen keeps the
-``action_kill*`` methods as thin delegators with their ``show=True``
-destructive bindings intact (AGENTS.md hard rule) — this controller
-carries the body only.
-
-Mechanical lift: every ``self.cfg``/``self.app``/``self.action_refresh``
-reference is re-routed through ``self.host``; the confirm-modal flow and
-``action_refresh`` ordering are preserved exactly.
-"""
+"""Confirmation and outcome rendering for destructive session actions."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity
+
+from ..dashboard.model import remote_session_available
 from ..widgets.session_list_view import SessionListView
 from .confirm import ConfirmPhrase, ConfirmYesNo
 
@@ -23,163 +15,125 @@ if TYPE_CHECKING:
 
 
 class KillFlow:
-    """Kill-chain controller bound to one :class:`MainScreen`."""
+    """Capture identities before displaying any confirmation."""
 
     def __init__(self, host: MainScreen) -> None:
         self.host = host
 
+    def _result(self, result: KillResult | BulkKillResult) -> None:
+        host = self.host
+        if isinstance(result, BulkKillResult):
+            host.app.notify(
+                result.summary, severity="information" if result.ok else "error", timeout=6
+            )
+            for row in result.results:
+                if row.error:
+                    host.app.notify(
+                        f"{row.identity.name} ({row.identity.session_id}): {row.error}",
+                        severity="error",
+                        timeout=8,
+                    )
+        else:
+            label = f"{result.identity.name} ({result.identity.session_id})"
+            host.app.notify(
+                f"{result.action}: {label}" + (f": {result.error}" if result.error else ""),
+                severity="information" if result.ok else "error",
+                timeout=6,
+            )
+        host.app.kick_refresh()  # type: ignore[attr-defined]
+
+    def _error(self, exc: Exception) -> None:
+        self.host.app.notify(f"Kill failed: {exc}", severity="error", timeout=8)
+        self.host.app.kick_refresh()  # type: ignore[attr-defined]
+
     def kill(self) -> None:
-        """Confirm then kill the session under focus.
-
-        Resolves via the cursor index into ``host._dashboard_rows``:
-
-        * Local rows (``row.host is None``) dispatch to ``ctx.on_kill``;
-          ``row.user`` carries the target user so other-user rows take
-          the existing sudo path inside the kill callback.
-        * Remote rows (``row.host`` set) dispatch to
-          ``ctx.on_remote_kill(host, user, name)`` — the local CLI runs
-          ``uxon kill --force --host <h> --user <u> <name>`` over SSH.
-
-        Any other focus target falls through to the "select a session"
-        notify.
-        """
         host = self.host
         focused = host.focused
         if not isinstance(focused, SessionListView):
             host.app.notify("Select a session first.", severity="warning")
             return
         idx = focused.cursor_row
-        if idx is None or idx < 0 or idx >= len(host._dashboard_rows):
+        if idx is None or not 0 <= idx < len(host._dashboard_rows):
             return
         row = host._dashboard_rows[idx]
-        session_user = row.user or host.cfg.current_user
-        session_name = row.name
-        session_short = row.short or row.name
-
-        if row.host is not None:
-            # Remote: dispatch via SSH through ctx.on_remote_kill.
-            host_name = row.host
-
-            def after_confirm_remote(ok: bool | None) -> None:
-                if not ok:
-                    return
-
-                def on_ok(_result) -> None:
-                    host.app.notify(
-                        f"Killed {session_short} on {host_name}; "
-                        "remote table will update on next poll"
-                    )
-                    host.action_refresh()
-
-                # SSH round-trip — off the event loop (§ blocking invariant).
-                fn = host.cfg.on_remote_kill
-                host.app.run_off_loop(  # type: ignore[attr-defined]
-                    lambda: fn(host_name, session_user, session_name),
-                    on_success=on_ok,
-                    on_error=lambda exc: host.app.notify(
-                        f"Remote kill failed: {exc}", severity="error", timeout=6
-                    ),
-                    label="remote_kill",
-                )
-
-            host.app.push_screen(
-                ConfirmYesNo(f"Kill {session_name} on {host_name} (user={session_user})?"),
-                after_confirm_remote,
+        expected = row.identity
+        if expected is None or not expected.launch_nonce:
+            host.app.notify(
+                "Cannot safely remove this session: launch identity unavailable. Drain older sessions or remove them explicitly with tmux.",
+                severity="error",
+                timeout=8,
             )
             return
+        remote_host = row.host
+        label = f"{expected.name} ({expected.session_id}, user={expected.user})"
+        if remote_host:
+            label += f" on {remote_host}"
 
-        def after_confirm(ok: bool | None) -> None:
+        def confirmed(ok: bool | None) -> None:
             if not ok:
                 return
+            if remote_host is not None:
+                if not remote_session_available(
+                    host.state, remote_host, expected.user, expected.name, expected
+                ):
+                    host.app.notify("Remote session is no longer available.", severity="warning")
+                    return
+                remote_name = remote_host
 
-            def on_ok(_result) -> None:
-                host.app.notify(f"Killed {session_short}")
-                host.action_refresh()
+                def callback():
+                    return host.cfg.on_remote_kill(remote_name, expected)
+            else:
 
-            # ``on_kill`` shells out to tmux — off the event loop (§ invariant).
-            fn = host.cfg.on_kill
+                def callback():
+                    return host.cfg.on_kill(expected)
+
             host.app.run_off_loop(  # type: ignore[attr-defined]
-                lambda: fn(session_user, session_name),
-                on_success=on_ok,
-                on_error=lambda exc: host.app.notify(
-                    f"Kill {session_short} failed: {exc}",
-                    severity="error",
-                    timeout=6,
-                ),
+                callback,
+                on_success=self._result,
+                on_error=self._error,
                 label="kill",
             )
 
-        host.app.push_screen(
-            ConfirmYesNo(f"Kill {session_name} (user={session_user})?"),
-            after_confirm,
-        )
+        host.app.push_screen(ConfirmYesNo(f"Kill {label}?"), confirmed)
 
-    def kill_all_own(self) -> None:
+    def _bulk(self, *, reachable: bool) -> None:
         host = self.host
-        if not host.cfg.sessions:
+        rows = tuple(host.cfg.sessions) + (tuple(host.cfg.other_sessions) if reachable else ())
+        if not rows:
             return
-        n = len(host.cfg.sessions)
+        if any(row.identity is None for row in rows):
+            host.app.notify(
+                "Cannot safely remove all sessions: some launch identities are unavailable. Drain older sessions or remove them explicitly with tmux.",
+                severity="error",
+                timeout=8,
+            )
+            return
+        targets: tuple[SessionIdentity, ...] = tuple(
+            row.identity for row in rows if row.identity is not None
+        )
+        users = ", ".join(sorted({target.user for target in targets}))
 
-        def after_confirm(ok: bool | None) -> None:
+        def confirmed(ok: bool | None) -> None:
             if not ok:
                 return
-
-            def on_ok(_result) -> None:
-                host.app.notify(f"Killed all {n} sessions")
-                host.action_refresh()
-
-            # Loops tmux kill-session over every own session — off-loop.
+            fn = host.cfg.on_kill_all_reachable if reachable else host.cfg.on_kill_all
             host.app.run_off_loop(  # type: ignore[attr-defined]
-                host.cfg.on_kill_all,
-                on_success=on_ok,
-                on_error=lambda exc: host.app.notify(
-                    f"Kill all failed: {exc}", severity="error", timeout=6
-                ),
+                lambda: fn(targets),
+                on_success=self._result,
+                on_error=self._error,
                 label="kill_all",
             )
 
         host.app.push_screen(
-            ConfirmPhrase(f"Kill ALL {n} sessions?", "kill-all"),
-            after_confirm,
+            ConfirmPhrase(
+                f"Kill ALL {len(targets)} selected sessions? [users: {users}]",
+                "kill-all-reachable" if reachable else "kill-all",
+            ),
+            confirmed,
         )
+
+    def kill_all_own(self) -> None:
+        self._bulk(reachable=False)
 
     def kill_all_global(self) -> None:
-        host = self.host
-        total = len(host.cfg.sessions) + len(host.cfg.other_sessions)
-        if total == 0:
-            return
-        reachable = sorted(host.cfg.sudo_caps.reachable_users)
-        # User-visible scope summary: name the reachable users
-        # explicitly so the operator can't confuse "all reachable"
-        # with "all users on the host" — those diverge under the
-        # per-target sudo model.
-        scope_summary = f"{', '.join(reachable)} (+ self)" if reachable else "self only"
-        n_users = len(reachable) + 1  # + launch_user
-
-        def after_confirm(confirmed: bool | None) -> None:
-            if not confirmed:
-                return
-
-            def on_ok(_result) -> None:
-                host.app.notify(f"Killed all {total} sessions across {n_users} reachable users")
-                host.action_refresh()
-
-            # Fans out tmux/ssh kills across reachable users — off-loop.
-            host.app.run_off_loop(  # type: ignore[attr-defined]
-                host.cfg.on_kill_all_global,
-                on_success=on_ok,
-                on_error=lambda exc: host.app.notify(
-                    f"Kill all (reachable) failed: {exc}",
-                    severity="error",
-                    timeout=6,
-                ),
-                label="kill_all_global",
-            )
-
-        host.app.push_screen(
-            ConfirmPhrase(
-                (f"Kill ALL {total} sessions for {n_users} reachable users? [{scope_summary}]"),
-                "kill-all-reachable",
-            ),
-            after_confirm,
-        )
+        self._bulk(reachable=True)

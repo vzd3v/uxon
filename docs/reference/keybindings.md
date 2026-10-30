@@ -1,10 +1,19 @@
 # TUI keybindings
 
-`uxon` with no arguments on a TTY opens the interactive picker. All
-keys go through Textual `BINDINGS` declarations — the footer shows
-the visible subset.
+`uxon` with no arguments on a TTY opens the interactive picker. The footer shows the available menu actions.
+
+All modal lists wrap: `↑` on the first item selects the last, and `↓` on
+the last selects the first. This includes sessions, workspaces, launch
+profiles, permission modes, git remote profiles, filtered folders and settings
+choices, as well as the git remote details table. Disabled items are skipped.
 
 ## Main screen
+
+Launch actions appear in order: **Open project**, **Create new project**,
+**Open in this folder**. The last action starts disabled and cannot receive
+focus or activate until a background check finds write access for an enabled
+launch profile. The selected profile is checked again before launch; `r`
+rechecks access. Filesystem and execution-backend probes never block input.
 
 | Key | Action |
 |---|---|
@@ -16,7 +25,7 @@ the visible subset.
 | `v` | Toggle dashboard view (`flat` ↔ `by_host`) |
 | `h` | Toggle the fleet status bar (collapsed counts+alerts ↔ per-host detail) |
 | `s` (or `/`) | Focus the search bar from anywhere |
-| `r` | Refresh |
+| `r` | Refresh; bypass remote retry cooldown once, without overlapping an in-flight fetch |
 | `q` | Quit |
 | `Esc` | Scoped cancel: clear search / close modal / leave field. Never quits. |
 | `F1` | Help (hidden) |
@@ -24,52 +33,81 @@ the visible subset.
 Sort is a fixed contract (locals → cfg-order remotes →
 within-block by recency); there are no sort bindings.
 
+Each failed host keeps one compact status line below the table in both fleet
+bar states, independent of search and selected tab. Its sessions and metrics
+remain hidden until a successful live response.
+
 JCUKEN twins: every dashboard key has a Russian-layout twin
 (`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `s`/`ы`, `v`/`м`, `h`/`р`) so the
 keymap survives a Cyrillic layout without `xkb` tweaks.
 
 ## Launch options screen
 
-Shown after picking a launch action (New session / Create new
-project / Open existing project). Three side-by-side panels —
-AGENT, PERMISSION, and WORKSPACE (the WORKSPACE panel appears
-for any git target: the primary tree, existing worktrees, and a
-`+ New worktree…` row).
+Shown after picking a launch action (Open project / Create new project /
+Open in this folder). Two side-by-side panels — PROFILE and
+PERMISSION. Permission choices belong to the selected profile's underlying
+agent. Filesystem/worktree discovery runs off-loop as that profile's effective
+launch user after this selection.
 
 | Key | Action |
 |---|---|
-| `←` / `→` | Move between the AGENT / PERMISSION / WORKSPACE panels |
+| `←` / `→` | Move between the PROFILE / PERMISSION panels |
 | `↑` / `↓` | Move within the focused panel |
-| `Enter` | Confirm and launch (on `+ New worktree…`, opens the branch-name prompt) |
+| `Enter` | Confirm the profile and mode, then continue |
+| `Esc` | Cancel |
+
+## Workspace screen
+
+For an existing git target, the next screen offers the primary tree, existing
+worktrees and `+ New worktree…`. Non-git targets skip this screen. A failed
+target-user probe reports its error rather than presenting a false non-git
+result. The final launch planner revalidates the chosen workspace.
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move within the workspace list |
+| `Enter` | Select; `+ New worktree…` opens the branch-name prompt |
 | `Esc` | Cancel |
 
 The branch-name prompt (reached via `+ New worktree…`) takes
 `Enter` to create and `Esc` to cancel.
 
-## "Open existing project" screen
+## "Open project" screen
 
 The filter input owns focus on mount — start typing to narrow the
-list. Cursor and selection bindings work without leaving the input.
+list. Navigation and selection work without leaving the input. The current
+path appears above the filter; browsing stays under `new_project_root`.
 
 | Key | Action |
 |---|---|
 | typing | Filter the list (case-insensitive substring on name) |
 | `↑` / `↓` | Navigate the (filtered) list |
+| `→` | Browse inside the highlighted folder; clear the filter for that level |
+| `←` | Return to the parent folder, restoring its filter and selection; no effect at the project root |
 | `Enter` | Confirm the row under the cursor |
 | `Esc` | Clear filter when non-empty, otherwise cancel |
+
+`←` / `→` navigate folders rather than moving the text cursor; `Backspace`
+still deletes filter text. `Enter` selects a folder for launch, including one
+that contains subfolders. Empty folders can be selected from their parent.
+Directory reads run in the background using the configured launch user and
+execution backend. A failed read keeps the current directory and displays the
+error; `←` also cancels a pending read. Launch-profile selection and final
+access validation follow folder selection.
 
 ## "Pick git remote profile" screen
 
 | Key | Action |
 |---|---|
+| `↑` / `↓` | Navigate the profile list |
 | `0`–`9` | Pick profile by number |
 | `Enter` | Confirm |
 | `Esc` | Cancel |
 
 ## "Existing session" modal
 
-Pushed by every launch action (`New session in current folder`,
-`Create new project`, `Open existing project`) when a compatible
+Pushed by every launch action (`Open project`, `Create new project`,
+`Open in this folder`) when a compatible
 session for the target directory already exists. A pure list: each
 compatible session is a row, followed by a `+ Start new session
 alongside` row. Pick a row to attach to that session, or the trailing
@@ -90,6 +128,10 @@ row to knowingly start a parallel one.
 | `x` | Reset selected key to default |
 | `q` | Back to main screen (`Esc` cancels in-flight edits) |
 
+`Enter` and `x` modify values only when the TUI process itself runs as root.
+For a non-root TUI the table is read-only; use `uxon config render` and an
+explicit `sudo install` for host-wide changes.
+
 The edit modal accepts `Esc` to cancel and `↑` / `↓` to focus
 between input and OK button.
 
@@ -104,10 +146,21 @@ Destructive actions (`d`, `D`, `kill-all-reachable`) require typing
 the literal phrase — `kill`, `kill-all`, or `kill-all-reachable`
 respectively — before `Enter` confirms.
 
-## Drift guard
+## Failed-process terminal
 
-`tests/test_uxon_tui_bindings.py` enforces that all key handling
-goes through `BINDINGS` (no `on_key` overrides) and that every
-destructive binding has `show=True` plus a non-empty description.
-The footer of the running TUI is the source of truth — if a
-binding isn't shown, it's intentionally hidden, not missing.
+These controls run inside tmux, not the Textual menu. A managed process that
+exits with an error keeps its output visible and shows its exit status plus
+`Enter / Esc / q: close and return to Uxon` at the terminal border.
+
+`Enter`, `Esc` or `q` closes that finished terminal and returns to the menu.
+It does not restart the process or stop another running terminal. After the
+last terminal closes, its session disappears. In tmux copy mode, keys retain
+their normal meaning; leave copy mode before closing the error.
+
+The dashboard marks fully finished sessions `[exited (status)]` and mixed
+sessions with unread errors `[error]`. Launch choices offer running sessions
+only. Attaching to a mixed session selects a live terminal; existing tmux
+navigation still lets you inspect the finished ones.
+
+Live terminals keep their existing keys and tmux prefix. Uxon does not edit
+user tmux configuration files.

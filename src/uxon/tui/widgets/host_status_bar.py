@@ -39,8 +39,7 @@ def _format_uptime(seconds: int | None) -> str:
 def _format_mem(used_kib: int, total_kib: int) -> str:
     """Render ``used / total`` in GiB with one decimal — '6.3/16G'.
 
-    Returns ``—`` when total is missing (e.g., cache from an older
-    peer that didn't ship host_stats).
+    Returns ``—`` when the peer omits host metrics.
     """
     if total_kib <= 0:
         return "—"
@@ -61,6 +60,8 @@ def _render(line: HostStatusLine) -> str:
     rendered (FleetStatusBar redesign, 2026-05-30); it carries little
     value at a glance and is gone from both bar states.
     """
+    if line.failure:
+        return line.failure
     parts = [
         line.label,
         f"{line.session_count}/{line.attached_count} sess",
@@ -97,7 +98,7 @@ class HostStatusBar(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("", id=f"{self.id or 'hsb'}-line-0")
+            yield Static("", id=f"{self.id or 'hsb'}-line-0", markup=False)
 
     def update_lines(self, lines: tuple[HostStatusLine, ...]) -> None:
         self._lines = lines
@@ -117,8 +118,8 @@ class HostStatusBar(Widget):
             text = _render(line)
             if i < len(existing):
                 # ``layout=False``: stable single-line status row; content
-                # swap repaints without a global relayout (AC8). On the
+                # swap repaints without a global relayout. On the
                 # by_host steady-tick path the compact bar updates every tick.
                 existing[i].update(text, layout=False)  # type: ignore[attr-defined]
             else:
-                container.mount(Static(text, id=f"{self.id or 'hsb'}-line-{i}"))
+                container.mount(Static(text, id=f"{self.id or 'hsb'}-line-{i}", markup=False))

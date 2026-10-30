@@ -1,20 +1,45 @@
 {
-  "runtime_user": "agent",
+  "default_launch_user": "wes-agent",
   "default_launch_mode": "fixed",
   "enable_all_users_list": false,
   "session_prefix": "uxon-",
   "legacy_session_prefixes": [],
   "allowed_roots": ["/srv/projects"],
-  "session_users": ["agent"],
+  "session_users": ["wes-agent"],
   "new_project_root": "/srv/projects",
   "repeat_noninteractive_mode": "fail",
-  "tmux_socket_template": "/tmp/uxon-{user}.sock",
+  "tmux_socket_template": "/tmp/uxon-{user}-{execution_backend}.sock",
   "agents": {
-    "enabled": ["claude"],
-    "default": "claude",
     "claude": { "default_args": [] },
     "codex":  { "default_args": [] },
     "cursor": { "default_args": [] }
   },
-  "launch_user_by_caller": {}
+  "launch": {
+    "enabled_profiles": ["claude_workbox"],
+    "default_profile": "claude_workbox",
+    "profiles": {
+      "claude_workbox": {
+        "agent": "claude",
+        "runtime": "workbox"
+      }
+    }
+  },
+  "execution": {
+    "default_backend": "local"
+  },
+  "launch_user_by_caller": {},
+  "runtimes": {
+    "workbox": {
+      "kind": "command",
+      "resource_scope": "per_user",
+      "resource_name_template": "uxon-{user}-{launch_profile}-{project_slug}",
+      "exec_prefix": ["docker", "exec", "-w", "{runtime_dir}", "-i", "{resource}"],
+      "readiness": {
+        "ready_command": ["docker", "top", "{resource}"],
+        "exists_command": ["docker", "container", "inspect", "{resource}"],
+        "on_missing": "fail"
+      },
+      "path_map": { "/srv/projects": "/work" }
+    }
+  }
 }

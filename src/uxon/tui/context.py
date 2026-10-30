@@ -12,13 +12,31 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from uxon.domain.agents import AgentSpec
+from uxon.domain.execution import ExecutionConfig
 from uxon.domain.launch_request import LaunchRequest
-from uxon.domain.session import TuiSession
+from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity, TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
 from uxon.domain.sudo import SudoCapability
 
 if TYPE_CHECKING:
+    from uxon.app.launch import RuntimeGate
     from uxon.infra.probes import HostStatsResult
+
+ExistingSessionChoice = (
+    tuple[str, bool] | tuple[str, str, bool] | tuple[str, str, bool, SessionIdentity]
+)
+
+
+@dataclass(frozen=True)
+class LaunchProfileOption:
+    """TUI-facing launch-profile row data."""
+
+    id: str
+    label: str
+    agent: str
+    launch_user: str
+    runtime: str = "direct"
 
 
 # ── Errors ───────────────────────────────────────────────────────────
@@ -65,6 +83,7 @@ class TuiContext:
     refresh_tick: int = field(default=0, init=False)
     tui_refresh_interval_seconds: float = 2.0
     tui_ssh_refresh_interval_seconds: float = 10.0
+    tmux_set_terminal_title: bool = True
     tui_render_debounce_ms: int = 300
     tui_render_max_latency_ms: int = 1000
     # Multi-host transport knobs. Forwarded into per-host fetch
@@ -75,7 +94,6 @@ class TuiContext:
     ssh_multiplex: str = "auto"
     ssh_control_persist_seconds: int = 300
     fetch_concurrency: int = 16
-
     # True until the first real refresh lands. The TUI distinguishes this
     # from a loaded-but-empty state — skeleton ctx renders "Loading…" in
     # session areas, server status and existing-projects detail; a fully
@@ -86,21 +104,15 @@ class TuiContext:
     # failure — the widget renders "pending…" in that case.
     host_stats: HostStatsResult | None = None
 
-    # Whether ``cwd`` is a valid launch target for ``launch_user`` under
-    # the current policy: write access, plus membership in
-    # ``allowed_roots`` when that whitelist is non-empty. Field name is
-    # historical — the predicate is broader than write-access alone.
-    # Three-valued:
-    #   None  — probe still in flight; row stays enabled, activation
-    #           runs a synchronous fallback check before launching.
-    #   True  — launchable; row enabled, no detail hint.
-    #   False — not launchable; row dimmed, detail says so.
+    # True when an enabled profile's effective user can write to cwd through
+    # its execution backend and allowed_roots permits it. None starts pending;
+    # only True enables the current-folder action. The selected profile's
+    # authorization is checked again before launch, off-loop.
     cwd_writable: bool | None = None
 
     current_user: str = ""
-    # Per-target sudo capability. ``reachable_users`` gates the "Other
-    # users' sessions" block + ``kill-all-reachable`` action;
-    # ``can_root`` gates the Settings-screen write fallback.
+    # Per-target execution capability. ``reachable_users`` gates the "Other
+    # users' sessions" block and ``kill-all-reachable`` action.
     sudo_caps: SudoCapability = field(default_factory=SudoCapability)
     # Users in ``session_users`` the per-target probe could not reach.
     # Surfaced in the TUI's "(N/M users reachable)" hint and on
@@ -108,16 +120,21 @@ class TuiContext:
     scope_skipped_users: tuple[str, ...] = ()
     other_sessions: list[TuiSession] = field(default_factory=list)  # sessions of other users
 
-    # Multi-agent fields (Task 7+).
-    # ``enabled_agents`` is a strict whitelist when non-empty; an empty
-    # tuple (matching an absent or ``[]`` ``[agents].enabled`` in repo
-    # config) flips uxon into auto-mode where every installed CATALOG
-    # agent is launchable. ``default_agent`` may be ``""`` — consumers
-    # fall back to the first available agent.
-    enabled_agents: tuple[str, ...] = ()
-    default_agent: str = ""
+    # Launch-profile fields. These are the operator-facing runnable choices;
+    # agents remain the underlying binary/mode catalog.
+    enabled_profiles: tuple[str, ...] = ()
+    default_profile: str = ""
+    launch_profiles: dict[str, LaunchProfileOption] = field(default_factory=dict)
+    launch_auto_mode: bool = False
+
+    # Merged agent catalog (``cfg.agents``), threaded so the TUI's mode
+    # helpers and screens read it as data instead of the old module-level
+    # literal. ``default_factory=dict`` keeps bare-``TuiContext`` test
+    # fixtures constructing (the field sits in the defaulted block).
+    agents: dict[str, AgentSpec] = field(default_factory=dict)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     launch_user: str = ""
-    # Static seed for agent availability (agent_id → AgentAvailability,
+    # Static seed for agent availability (profile_id → AgentAvailability,
     # status: "pending"|"ok"|"missing"|"timeout"). The live value lives
     # on ``TuiState.agent_availability`` (a :class:`SlotState`); the App
     # seeds the slot from this dict at construction and screens read the
@@ -127,104 +144,104 @@ class TuiContext:
     # Callbacks — TUI calls these, uxon provides them.
     # Launch/attach callbacks return a LaunchRequest; the outer run() loop
     # runs the command and re-enters the TUI main screen on exit.
-    on_attach: Callable[[str, str], LaunchRequest] = lambda user, name: LaunchRequest(
+    on_attach: Callable[..., LaunchRequest] = lambda user, name, expected=None: LaunchRequest(
         cmd=("true",), label="noop-attach"
     )
-    on_kill: Callable[[str, str], None] = lambda user, name: None  # (user, session) -> kill
-    on_kill_all: Callable[[], None] = lambda: None  # kill all own sessions
-    on_kill_all_global: Callable[[], None] = lambda: None  # kill all sessions across users
+    on_kill: Callable[[SessionIdentity], KillResult] = lambda target: KillResult(
+        target, "failed", error="kill callback unavailable"
+    )
+    on_kill_all: Callable[[tuple[SessionIdentity, ...]], BulkKillResult] = lambda targets: (
+        BulkKillResult()
+    )
+    on_kill_all_reachable: Callable[[tuple[SessionIdentity, ...]], BulkKillResult] = (
+        lambda targets: BulkKillResult()
+    )
     # Multi-host per-session kill (3.4.0). Args: (host_name, user, session).
     # Implementation runs ``uxon kill --force --host <h> --user <u> <s>``
     # over SSH on the local CLI side; the peer's own ``uxon kill`` does the
     # per-target sudo gating. Bulk kill remains strictly local — no
     # ``on_remote_kill_all`` exists by design.
-    on_remote_kill: Callable[[str, str, str], None] = (
-        lambda host, user, name: None  # (host, user, session) -> kill on peer
+    on_remote_kill: Callable[[str, SessionIdentity], KillResult] = lambda host, target: KillResult(
+        target, "failed", error="remote kill callback unavailable"
     )
     # Multi-host per-session attach (parallel to on_remote_kill).
     # Args: (host_name, user, session). Implementation builds an
     # interactive ssh LaunchRequest via build_peer_ssh_argv; the TUI
     # hands it to request_launch (fork-and-wait, returns to TUI on
     # tmux detach).
-    on_remote_attach: Callable[[str, str, str], LaunchRequest] = lambda host, user, name: (
+    on_remote_attach: Callable[..., LaunchRequest] = lambda host, user, name, expected=None: (
         LaunchRequest(cmd=("true",), label="noop-remote-attach")
     )
     on_refresh: Callable[[], TuiContext] = lambda: None  # type: ignore[return-value]
     on_probe_link_health: Callable[[], Any] = lambda: None
-    # Returns True if launch_user has write access to ``cwd``. Wired by
-    # ``uxon.cli`` — uses ``os.access`` when launch_user == caller, otherwise
-    # ``sudo -iu launch_user test -w <cwd>``. App runs it in a worker
-    # thread on mount when ``cwd_writable`` is None; activation also
-    # calls it synchronously as a fallback if the probe hasn't landed.
+    # Bounded startup-user launchability probe, run in a worker on mount.
+    # Its result is advisory, not authorization for a selected profile.
     on_probe_cwd_writable: Callable[[], bool] = lambda: True
-    # Same predicate as ``on_probe_cwd_writable`` but for an arbitrary target
-    # directory (``is_launch_target_allowed``): launch_user can write it and
-    # it sits under ``allowed_roots``. Used to gate the "Open existing
-    # project" launch synchronously at activation — that flow has no
-    # pre-probed reactive slot like ``cwd`` does.
-    on_probe_dir_launchable: Callable[[str], bool] = lambda target_dir: True
-    on_launch_cwd: Callable[..., LaunchRequest] = lambda agent_id, mode_id, target_dir=None: (
+    on_launch_cwd: Callable[..., LaunchRequest] = lambda profile_id, mode_id, target_dir=None: (
         LaunchRequest(cmd=("true",), label="noop-launch-cwd")
     )
     on_launch_new: Callable[[str, str, str, str], LaunchRequest] = (
-        lambda name, agent_id, mode_id, git_profile: LaunchRequest(
+        lambda name, profile_id, mode_id, git_profile: LaunchRequest(
             cmd=("true",), label="noop-launch-new"
         )
     )
-    on_launch_existing: Callable[[str, str, str], LaunchRequest] = lambda name, agent_id, mode_id: (
-        LaunchRequest(cmd=("true",), label="noop-launch-existing")
+    on_launch_existing: Callable[[str, str, str], LaunchRequest] = (
+        lambda name, profile_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-existing")
     )
-    # Probe callback: returns (session_name, attached) pairs for the
-    # launch_user's sessions compatible with (target_dir, agent_id). The
-    # TUI calls this after the operator picks agent+mode in
+    # Relative paths under new_project_root; directory I/O runs off-loop.
+    on_list_project_directories: Callable[[str], list[tuple[str, str]]] = lambda path: []
+    # Workload-runtime readiness gate resolves the selected profile for ``target_dir``
+    # and probes that profile's launch user's workload. The TUI runs this off
+    # the loop BEFORE a commit so it can show a confirm affordance when a
+    # stopped/absent resource needs a start/create and ``approval ==
+    # "prompt"``. Disabled by default.
+    on_runtime_gate: Callable[[str, str, str], RuntimeGate | None] = (
+        lambda target_dir, profile_id, mode_id: None
+    )
+    # Probe callback: returns compatible session choices for the
+    # selected profile's sessions compatible with (target_dir, profile_id).
+    # The TUI calls this after the operator picks profile+mode in
     # ``LaunchOptionsScreen`` and before committing to ``on_launch_*``;
     # a non-empty result triggers ``SessionChoiceScreen`` so the operator
     # can attach to an existing session or knowingly start a parallel one.
     # ``target_dir`` is an absolute, canonicalised path (either ``ctx.cwd``
     # or ``<new_project_root>/<name>``).
-    on_probe_existing_sessions: Callable[[str, str], tuple[tuple[str, bool], ...]] = (
-        lambda target_dir, agent_id: ()
+    on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]] = (
+        lambda target_dir, profile_id, mode_id: ()
+    )
+    on_git_remote_options: Callable[[str, str, str], tuple[list[tuple[str, str]], str]] = (
+        lambda name, profile_id, mode_id: ([], "")
     )
 
     # ── Worktree callbacks (3.5.0) ───────────────────────────────────
-    # Worktree probe: returns the workspaces (folders only — no session
-    # data) for ``cwd``'s repo, parsed from ``git worktree list``. An empty
-    # list = a non-git target → the WORKSPACE column shows a benign "git not
-    # initialized" hint; RAISING (a real repo whose ``git worktree list``
-    # failed) → the column shows an error row carrying the message. Hiding
-    # the column entirely is the screen-side ``workspaces=None`` (never
-    # probed) case, not anything this callback returns. Runs ONCE in a worker
-    # when the launch screen opens, under the non-interactive sudo prefix so a
-    # missing NOPASSWD grant fails fast (§4.2).
-    on_probe_worktrees: Callable[[str], list] = lambda cwd: []
+    # Resolve profile+mode, validate target-user access, then enumerate git
+    # worktrees off-loop. Empty means non-git; errors abort the launch.
+    on_probe_worktrees: Callable[[str, str, str], list] = lambda cwd, profile_id, mode_id: []
     # Worktree create → plan_worktree_launch. Builds + launches a
     # uxon-managed worktree for ``branch`` under the repo at ``repo_root``.
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest] = (
-        lambda repo_root, branch, agent_id, mode_id: LaunchRequest(
+        lambda repo_root, branch, profile_id, mode_id: LaunchRequest(
             cmd=("true",), label="noop-create-worktree"
         )
     )
     # Launch into an EXISTING worktree (or the primary tree treated as a
-    # worktree target) with the repo-qualified stem (§2.5) — never
+    # worktree target) with the repo-qualified stem — never
     # re-creates the worktree.
     on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest] = (
-        lambda repo_root, branch, worktree_path, agent_id, mode_id: LaunchRequest(
+        lambda repo_root, branch, worktree_path, profile_id, mode_id: LaunchRequest(
             cmd=("true",), label="noop-launch-existing-worktree"
         )
     )
-    # Worktree-aware attach-vs-new probe (§2.5, §3): derives the
+    # Worktree-aware attach-vs-new probe: derives the
     # repo-qualified stem and uses the worktree path as compatibility root.
     on_probe_existing_worktree_sessions: Callable[
-        [str, str, str, str], tuple[tuple[str, bool], ...]
-    ] = lambda worktree_path, repo_root, branch, agent_id: ()
+        [str, str, str, str, str], tuple[ExistingSessionChoice, ...]
+    ] = lambda worktree_path, repo_root, branch, profile_id, mode_id: ()
 
-    # Git remote on new project — display only. The TUI never edits these.
+    # Git remote on new project.
     git_create_enabled: bool = False
-    default_git_remote_profile: str = ""
-    # Each entry: (profile_name, description string like "github.com/<owner> via <creds_user> [gh]")
-    git_remote_profile_options: list[tuple[str, str]] = field(default_factory=list)
 
-    # Settings (superuser-only). The TUI delegates all file I/O through these.
+    # Settings (superuser-visible). The TUI delegates all file I/O through these.
     get_settings_entries: Callable[[], list] = lambda: []
     on_setting_save: Callable[[str, Any], None] = lambda key, value: None
     on_setting_remove: Callable[[str], None] = lambda key: None
@@ -272,13 +289,9 @@ class TuiContext:
 
 # Number of action items at the top of the main list.
 #
-# Historically a loose module-level constant; as of PR 9 (2026-04-18)
-# this is derived from :data:`_ACTION_KINDS` which is itself the
-# canonical description of "what are the action rows". Keep
-# ``ACTION_COUNT`` for backward compatibility with tests and for
-# readability in segment arithmetic; new code should use
-# :func:`build_items` / item.kind dispatch instead of raw indices.
-_ACTION_KINDS: tuple[str, ...] = ("action-cwd", "action-new", "action-open")
+# Derived from the canonical action-row description and used for segment
+# arithmetic. Activation dispatches by item kind rather than raw indices.
+_ACTION_KINDS: tuple[str, ...] = ("action-open", "action-new", "action-cwd")
 ACTION_COUNT = len(_ACTION_KINDS)
 
 
@@ -312,15 +325,15 @@ def build_items(ctx: TuiContext) -> list[Item]:
     count changes for the action rows and for Settings / Kill-ALL;
     session rows have identity "own-session:<name>" / "other-session:
     <user>/<name>" so their position shifts but the item that used to
-    be "Open existing project" remains the same Item.
+    be "Open project" remains the same Item.
     """
     items: list[Item] = []
     # Actions (indices 0..ACTION_COUNT-1).
     items.append(
         Item(
-            kind="action-cwd",
-            label="New session in current folder",
-            enabled=ctx.cwd_writable is not False,
+            kind="action-open",
+            label="Open project",
+            enabled=ctx.loading or bool(ctx.existing_projects),
         )
     )
     items.append(
@@ -332,9 +345,9 @@ def build_items(ctx: TuiContext) -> list[Item]:
     )
     items.append(
         Item(
-            kind="action-open",
-            label="Open existing project",
-            enabled=bool(ctx.existing_projects),
+            kind="action-cwd",
+            label="Open in this folder",
+            enabled=ctx.cwd_writable is True,
         )
     )
     # Own sessions

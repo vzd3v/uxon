@@ -1,1184 +1,602 @@
-"""Tests for the ``uxon.infra.remote`` collector package.
-
-Pin the fail-soft contract that the TUI integration depends on:
-every documented failure mode produces a :class:`RemoteSnapshot`
-(no exceptions escape), the cache is written only on a real
-success, the cache is consulted only on a failed fetch, and the
-ssh argv is constructed with the documented hardening options.
-
-Pure tests — no real SSH, no real subprocess. The ``_runner`` seam
-on :func:`fetch_remote_snapshot` lets us simulate any subprocess
-outcome without spawning a child.
-"""
+"""Peer commands, live-only collection and bounded master recovery."""
 
 from __future__ import annotations
 
 import json
-import os
-import signal
+import shlex
+import socket
 import subprocess
-import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import Any
-from unittest import mock
+from unittest.mock import patch
 
-from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION, RemoteSnapshot
-from uxon.infra.remote.cache import (
-    read_cached_snapshot,
-    snapshot_cache_path,
-    state_dir,
-    write_cached_snapshot,
-)
-from uxon.infra.remote.collector import (
-    DEFAULT_CONNECT_TIMEOUT_SEC,
-    DEFAULT_TOTAL_TIMEOUT_SEC,
-    _build_fetch_argv,
-    fetch_remote_snapshot,
-)
-from uxon.infra.remote.envelope import parse_envelope
-from uxon.infra.remote.master_recovery import (
-    _resolved_control_path,
-    recover_wedged_master,
-)
+import pytest
+
+from uxon.cli.parsing import parse_args
+from uxon.infra.config_loader import parse_config
+from uxon.infra.remote.collector import fetch_remote_snapshot
+from uxon.infra.remote.envelope import ALL_USERS_DISABLED_MARKER, decode_envelope
+from uxon.infra.remote.master_recovery import recover_wedged_master
+from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
 from uxon.infra.remote_hosts import RemoteHost
 
-
-def _host(**overrides: object) -> RemoteHost:
-    base: dict[str, object] = {
-        "name": "vz-prod1",
-        "ssh_alias": "vz-prod1",
-        "description": "",
-        "remote_uxon": "uxon",
-    }
-    base.update(overrides)
-    return RemoteHost(**base)  # type: ignore[arg-type]
+CID = "12345678-1234-1234-1234-123456789abc"
+ROW = {"user": "alice", "name": "uxon-job@codex", "cpu_pct": 0}
+STATS = {"cpu_pct": 0, "mem_total_kib": 100, "mem_used_kib": 0}
 
 
-def _argv_for(host: RemoteHost, **kwargs: Any) -> list[str]:
-    """Call ``build_peer_ssh_argv`` with the four primitive fields of
-    ``host`` — mirrors how production call sites (attach/kill/fetch)
-    invoke it now that the builder is a leaf taking primitives.
-    """
-    from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
-
-    return build_peer_ssh_argv(
-        command_template=host.command_template,
-        extra_ssh_options=host.extra_ssh_options,
-        ssh_alias=host.ssh_alias,
-        remote_uxon=host.remote_uxon,
-        **kwargs,
-    )
-
-
-def _good_envelope(sessions: list[dict[str, Any]]) -> str:
+def envelope(**data):
+    stats = data.pop("host_stats", STATS)
     return json.dumps(
         {
-            "schema_version": WIRE_SCHEMA_VERSION,
-            "uxon_version": "9.9.9",
+            "schema_version": "3",
+            "uxon_version": "4.0.0",
             "kind": "list",
-            "data": {
-                "all_users": False,
-                "scope_users": ["alice"],
-                "session_prefix": "uxon-",
-                "sessions": sessions,
-            },
+            "host_stats": stats,
+            "data": {"sessions": [ROW], "scope_skipped": ["bob"], **data},
         }
     )
 
 
-class StateDirTests(unittest.TestCase):
-    def test_xdg_state_home_honoured(self) -> None:
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": "/tmp/xdg-test"}, clear=False):
-            self.assertEqual(state_dir(), Path("/tmp/xdg-test/uxon/remote"))
-
-    def test_default_under_home_local_state(self) -> None:
-        # When ``$XDG_STATE_HOME`` is unset, platformdirs derives the
-        # path from ``$HOME`` per the XDG Base Directory spec.
-        env = dict(os.environ)
-        env.pop("XDG_STATE_HOME", None)
-        env["HOME"] = "/home/alice"
-        with mock.patch.dict(os.environ, env, clear=True):
-            self.assertEqual(state_dir(), Path("/home/alice/.local/state/uxon/remote"))
-
-    def test_override_short_circuits_env(self) -> None:
-        # Tests use this seam to keep their fixtures inside tmpdir.
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": "/tmp/x"}, clear=False):
-            self.assertEqual(state_dir(override=Path("/foo")), Path("/foo"))
-
-
-class SnapshotCachePathTests(unittest.TestCase):
-    def test_filename_uses_host_name(self) -> None:
-        with TemporaryDirectory() as tmp:
-            p = snapshot_cache_path("vz-prod1", override_dir=Path(tmp))
-            self.assertEqual(p.name, "vz-prod1.json")
-            self.assertEqual(p.parent, Path(tmp))
-
-
-class BuildFetchArgvTests(unittest.TestCase):
-    def test_passes_alias_and_constructs_remote_command(self) -> None:
-        argv = _build_fetch_argv(
-            _host(ssh_alias="edge-eu"),
-            connect_timeout=7,
-            all_users=True,
-            ssh_multiplex="auto",
-        )
-        self.assertEqual(argv[0], "ssh")
-        # Hardening options that disable interactive prompts and bound
-        # the connect phase to ConnectTimeout.
-        self.assertIn("BatchMode=yes", argv)
-        self.assertIn("ConnectTimeout=7", argv)
-        # The alias is the host token; remote command is one shell-string
-        # argument (so the remote side gets a single shell command line).
-        self.assertEqual(argv[-2], "edge-eu")
-        # Default invocation now requests the per-target ``--all-users``
-        # view; the collector falls back to plain ``list --json`` only
-        # when the peer rejects the flag (see
-        # ``ALL_USERS_DISABLED_MARKER``).
-        self.assertEqual(argv[-1], "uxon list --all-users --json")
-        # ControlMaster=auto is the default in stage 5+
-        self.assertIn("ControlMaster=auto", argv)
-
-    def test_remote_uxon_is_shell_quoted(self) -> None:
-        argv = _build_fetch_argv(
-            _host(remote_uxon="/opt/u xon/uxon"),
-            connect_timeout=5,
-            all_users=True,
-            ssh_multiplex="auto",
-        )
-        # shlex.quote should produce a single-quoted form so the space
-        # in the path doesn't split into two tokens on the remote shell.
-        self.assertIn("'/opt/u xon/uxon'", argv[-1])
-
-    def test_ssh_multiplex_off_strips_control_options(self) -> None:
-        argv = _build_fetch_argv(
-            _host(),
-            connect_timeout=5,
-            all_users=True,
-            ssh_multiplex="off",
-        )
-        joined = " ".join(argv)
-        self.assertNotIn("ControlMaster", joined)
-        self.assertNotIn("ControlPath", joined)
-        self.assertNotIn("ControlPersist", joined)
-
-    def test_extra_ssh_options_inserted_before_alias(self) -> None:
-        argv = _build_fetch_argv(
-            _host(extra_ssh_options=("-o", "ProxyJump=bastion")),
-            connect_timeout=5,
-            all_users=True,
-            ssh_multiplex="auto",
-        )
-        # extra_ssh_options come immediately before the alias; alias
-        # is followed only by the remote command string.
-        alias_idx = argv.index("vz-prod1")
-        self.assertEqual(argv[alias_idx - 2 : alias_idx], ["-o", "ProxyJump=bastion"])
-
-    def test_command_template_overrides_default(self) -> None:
-        argv = _build_fetch_argv(
-            _host(
-                command_template=(
-                    "kubectl",
-                    "exec",
-                    "uxon-pod",
-                    "--",
-                    "/bin/sh",
-                    "-c",
-                    "{remote_command}",
-                )
-            ),
-            connect_timeout=5,
-            all_users=True,
-            ssh_multiplex="auto",
-        )
-        self.assertEqual(argv[0], "kubectl")
-        self.assertNotIn("ssh", argv)
-        self.assertEqual(argv[-1], "uxon list --all-users --json")
-
-    def test_command_template_ignores_extra_ssh_options(self) -> None:
-        argv = _build_fetch_argv(
-            _host(
-                command_template=("ssh", "{ssh_alias}", "{remote_command}"),
-                extra_ssh_options=("-o", "ShouldBeIgnored=1"),
-            ),
-            connect_timeout=5,
-            all_users=True,
-            ssh_multiplex="auto",
-        )
-        self.assertNotIn("-o", argv)
-        self.assertNotIn("ShouldBeIgnored=1", argv)
-
-    def test_all_users_false_uses_legacy_command(self) -> None:
-        argv = _build_fetch_argv(
-            _host(),
-            connect_timeout=5,
-            all_users=False,
-            ssh_multiplex="auto",
-        )
-        self.assertEqual(argv[-1], "uxon list --json")
-
-
-class BuildPeerSshArgvTests(unittest.TestCase):
-    def test_default_template_no_tty(self) -> None:
-        argv = _argv_for(
-            _host(ssh_alias="edge-eu"),
-            remote_command="uxon list --json",
-            allocate_tty=False,
-            connect_timeout=7,
-            ssh_multiplex="auto",
-        )
-        self.assertEqual(argv[0], "ssh")
-        self.assertNotIn("-tt", argv)
-        self.assertIn("ControlMaster=auto", argv)
-        self.assertEqual(argv[-2], "edge-eu")
-        self.assertEqual(argv[-1], "uxon list --json")
-
-    def test_allocate_tty_inserts_dash_tt_after_ssh(self) -> None:
-        argv = _argv_for(
-            _host(),
-            remote_command="uxon attach --user alice abc",
-            allocate_tty=True,
-            connect_timeout=5,
-            ssh_multiplex="auto",
-        )
-        self.assertEqual(argv[0], "ssh")
-        self.assertEqual(argv[1], "-tt")
-
-    def test_allocate_tty_skipped_for_non_ssh_first_token(self) -> None:
-        # Custom templates that don't start with "ssh" do NOT receive
-        # -tt — operator owns interactive-tty plumbing in their argv.
-        argv = _argv_for(
-            _host(
-                command_template=(
-                    "kubectl",
-                    "exec",
-                    "uxon-pod",
-                    "--",
-                    "/bin/sh",
-                    "-c",
-                    "{remote_command}",
-                )
-            ),
-            remote_command="uxon attach foo",
-            allocate_tty=True,
-            connect_timeout=5,
-            ssh_multiplex="auto",
-        )
-        self.assertEqual(argv[0], "kubectl")
-        self.assertNotIn("-tt", argv)
-
-    def test_ssh_multiplex_off_strips_control_options(self) -> None:
-        argv = _argv_for(
-            _host(),
-            remote_command="uxon attach abc",
-            allocate_tty=True,
-            connect_timeout=5,
-            ssh_multiplex="off",
-        )
-        joined = " ".join(argv)
-        self.assertNotIn("ControlMaster", joined)
-        self.assertNotIn("ControlPath", joined)
-        self.assertIn("-tt", argv)  # tty insertion still happens
-
-    def test_custom_command_template_honoured(self) -> None:
-        argv = _argv_for(
-            _host(command_template=("ssh", "-J", "bastion", "{ssh_alias}", "{remote_command}")),
-            remote_command="uxon attach --user alice abc",
-            allocate_tty=True,
-            connect_timeout=5,
-            ssh_multiplex="auto",
-        )
-        # Operator's jumphost preserved; -tt inserted right after ssh
-        # (before -J), so it applies to the outermost ssh.
-        self.assertEqual(argv[0], "ssh")
-        self.assertEqual(argv[1], "-tt")
-        self.assertIn("-J", argv)
-        self.assertIn("bastion", argv)
-        self.assertEqual(argv[-1], "uxon attach --user alice abc")
-
-    def test_extra_ssh_options_inserted_before_alias(self) -> None:
-        argv = _argv_for(
-            _host(extra_ssh_options=("-o", "ProxyJump=bastion")),
-            remote_command="uxon kill --force abc",
-            allocate_tty=False,
-            connect_timeout=5,
-            ssh_multiplex="auto",
-        )
-        alias_idx = argv.index("vz-prod1")
-        self.assertEqual(argv[alias_idx - 2 : alias_idx], ["-o", "ProxyJump=bastion"])
-
-
-class ParseEnvelopeTests(unittest.TestCase):
-    def test_happy_path(self) -> None:
-        sessions, scope_skipped, host_stats, err = parse_envelope(
-            _good_envelope([{"name": "uxon-foo@claude"}])
-        )
-        self.assertIsNone(err)
-        self.assertEqual(sessions, [{"name": "uxon-foo@claude"}])
-        # Older envelopes that omit ``scope_skipped`` parse as an
-        # empty list (forward-compatible per-target-sudo addition).
-        self.assertEqual(scope_skipped, [])
-        # Older envelopes also omit ``host_stats``; absence → ``None``.
-        self.assertIsNone(host_stats)
-
-    def test_invalid_json(self) -> None:
-        sessions, _scope_skipped, _host_stats, err = parse_envelope("{not json")
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("invalid JSON", err)
-
-    def test_schema_version_mismatch_rejected(self) -> None:
-        bad = json.dumps({"schema_version": "2", "kind": "list", "data": {"sessions": []}})
-        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("schema_version mismatch", err)
-
-    def test_kind_must_be_list(self) -> None:
-        bad = json.dumps(
-            {"schema_version": WIRE_SCHEMA_VERSION, "kind": "version", "data": {"sessions": []}}
-        )
-        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("unexpected envelope kind", err)
-
-    def test_missing_sessions_list(self) -> None:
-        bad = json.dumps({"schema_version": WIRE_SCHEMA_VERSION, "kind": "list", "data": {}})
-        sessions, _scope_skipped, _host_stats, err = parse_envelope(bad)
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("sessions", err)
-
-    def test_top_level_must_be_object(self) -> None:
-        sessions, _scope_skipped, _host_stats, err = parse_envelope("[]")
-        self.assertIsNone(sessions)
-        assert err is not None
-        self.assertIn("not a JSON object", err)
-
-    def test_scope_skipped_extracted_when_present(self) -> None:
-        env = json.dumps(
-            {
-                "schema_version": WIRE_SCHEMA_VERSION,
-                "kind": "list",
-                "data": {
-                    "sessions": [],
-                    "scope_skipped": ["carol_agent", "dave_agent"],
-                },
-            }
-        )
-        sessions, scope_skipped, _host_stats, err = parse_envelope(env)
-        self.assertIsNone(err)
-        self.assertEqual(sessions, [])
-        self.assertEqual(scope_skipped, ["carol_agent", "dave_agent"])
-
-    def test_host_stats_extracted_when_present(self) -> None:
-        env = json.dumps(
-            {
-                "schema_version": WIRE_SCHEMA_VERSION,
-                "kind": "list",
-                "data": {"sessions": []},
-                "host_stats": {
-                    "cpu_pct": 12.5,
-                    "mem_used_kib": 1024,
-                    "mem_total_kib": 2048,
-                    "loadavg_1m": 0.42,
-                    "uptime_s": 3600,
-                    "kernel": "6.8.0",
-                },
-            }
-        )
-        sessions, _scope_skipped, host_stats, err = parse_envelope(env)
-        self.assertIsNone(err)
-        self.assertEqual(sessions, [])
-        assert host_stats is not None
-        self.assertEqual(host_stats["kernel"], "6.8.0")
-        self.assertEqual(host_stats["mem_total_kib"], 2048)
-
-
-class CacheRoundTripTests(unittest.TestCase):
-    def test_write_then_read_round_trip(self) -> None:
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=1700000000.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "uxon-foo@claude", "user": "alice"}],
-                cached_at_epoch=1700000000.0,
-            )
-            write_cached_snapshot(snap, override_dir=Path(tmp))
-            loaded = read_cached_snapshot("vz-prod1", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertEqual(loaded.host_name, "vz-prod1")
-            self.assertTrue(loaded.from_cache)
-            self.assertEqual(loaded.sessions, snap.sessions)
-            self.assertEqual(loaded.cached_at_epoch, 1700000000.0)
-
-    def test_write_skipped_when_error_set(self) -> None:
-        # Failed fetches must NOT overwrite the last good cache.
-        with TemporaryDirectory() as tmp:
-            good = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "good"}],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(good, override_dir=Path(tmp))
-            bad = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=2.0,
-                from_cache=False,
-                error="ssh exited 255",
-                sessions=[],
-                cached_at_epoch=None,
-            )
-            write_cached_snapshot(bad, override_dir=Path(tmp))
-            loaded = read_cached_snapshot("x", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertEqual(loaded.sessions, [{"name": "good"}])
-
-    def test_write_skipped_when_from_cache(self) -> None:
-        # Re-writing a from_cache snapshot would mark cached_at_epoch
-        # as 'now', falsifying staleness reports.
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=99.0,
-                from_cache=True,
-                error="ssh exited 255",
-                sessions=[{"name": "stale"}],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(snap, override_dir=Path(tmp))
-            self.assertFalse(snapshot_cache_path("x", override_dir=Path(tmp)).exists())
-
-    def test_read_missing_file_returns_none(self) -> None:
-        with TemporaryDirectory() as tmp:
-            self.assertIsNone(read_cached_snapshot("absent", override_dir=Path(tmp)))
-
-    def test_read_corrupt_file_returns_none(self) -> None:
-        with TemporaryDirectory() as tmp:
-            p = snapshot_cache_path("corrupt", override_dir=Path(tmp))
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("{not json", encoding="utf-8")
-            self.assertIsNone(read_cached_snapshot("corrupt", override_dir=Path(tmp)))
-
-    def test_write_failure_unlinks_temp_file(self) -> None:
-        # If the atomic-write step crashes (disk full, EINTR), the
-        # ``.tmp`` file must not survive. Otherwise a future ``ls`` of
-        # the state dir would surface a stale partial.
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[],
-                cached_at_epoch=1.0,
-            )
-            # Create the parent so chmod path doesn't fault first.
-            (Path(tmp)).mkdir(parents=True, exist_ok=True)
-            with mock.patch.object(
-                Path,
-                "replace",
-                side_effect=OSError("simulated disk full"),
-            ):
-                with self.assertRaises(OSError):
-                    write_cached_snapshot(snap, override_dir=Path(tmp))
-            leftovers = sorted(p.name for p in Path(tmp).iterdir())
-            self.assertNotIn("x.json.tmp", leftovers)
-
-    def test_existing_dir_is_chmodded_to_0700(self) -> None:
-        # mkdir(mode=0o700, exist_ok=True) does not chmod an existing
-        # directory. We force-apply 0o700 after mkdir to honour the
-        # documented per-user privacy invariant.
-        with TemporaryDirectory() as tmp:
-            override = Path(tmp) / "remote"
-            override.mkdir(mode=0o755)
-            self.assertEqual(override.stat().st_mode & 0o777, 0o755)
-            snap = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(snap, override_dir=override)
-            self.assertEqual(override.stat().st_mode & 0o777, 0o700)
-
-    def test_atomic_write_uses_temp_file(self) -> None:
-        # The sequence is mkdir → write tmp → rename. After the call,
-        # only the final file should exist (no leftover .tmp).
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="x",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(snap, override_dir=Path(tmp))
-            files = sorted(p.name for p in Path(tmp).iterdir())
-            self.assertEqual(files, ["x.json"])
-
-
-class FetchRemoteSnapshotTests(unittest.TestCase):
-    def _runner_returning(self, *, returncode: int, stdout: str = "", stderr: str = ""):
-        def _runner(*_args: Any, **_kwargs: Any) -> Any:
-            return mock.Mock(returncode=returncode, stdout=stdout, stderr=stderr)
-
-        return _runner
-
-    def test_success_writes_cache_and_returns_fresh(self) -> None:
-        with TemporaryDirectory() as tmp:
-            sessions = [{"name": "uxon-x@claude"}]
-            runner = self._runner_returning(returncode=0, stdout=_good_envelope(sessions))
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
-            self.assertIsNone(snap.error)
-            self.assertFalse(snap.from_cache)
-            self.assertEqual(snap.sessions, sessions)
-            # Cache should now exist.
-            self.assertTrue(snapshot_cache_path("vz-prod1", override_dir=Path(tmp)).exists())
-
-    def test_ssh_nonzero_exit_falls_back_to_cache(self) -> None:
-        with TemporaryDirectory() as tmp:
-            # Seed the cache with a known-good payload.
-            seed = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "cached@claude"}],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(seed, override_dir=Path(tmp))
-
-            runner = self._runner_returning(returncode=255, stderr="ssh: connect: timed out")
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
-            self.assertTrue(snap.from_cache)
-            self.assertEqual(snap.sessions, [{"name": "cached@claude"}])
-            assert snap.error is not None
-            self.assertIn("ssh exited 255", snap.error)
-            # Cache must not have been overwritten.
-            self.assertEqual(snap.cached_at_epoch, 1.0)
-
-    def test_ssh_nonzero_exit_no_cache_returns_empty(self) -> None:
-        with TemporaryDirectory() as tmp:
-            runner = self._runner_returning(returncode=255, stderr="boom")
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
-            self.assertFalse(snap.from_cache)
-            self.assertEqual(snap.sessions, [])
-            assert snap.error is not None
-
-    def test_timeout_captured_as_error(self) -> None:
-        def _raise_timeout(*_args: Any, **_kwargs: Any) -> Any:
-            raise subprocess.TimeoutExpired(cmd="ssh", timeout=10)
-
-        with TemporaryDirectory() as tmp:
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=_raise_timeout,
-            )
-            assert snap.error is not None
-            self.assertIn("timeout", snap.error)
-            self.assertEqual(snap.sessions, [])
-
-    def test_ssh_not_installed_captured(self) -> None:
-        def _raise_fnf(*_args: Any, **_kwargs: Any) -> Any:
-            raise FileNotFoundError(2, "No such file or directory: 'ssh'")
-
-        with TemporaryDirectory() as tmp:
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=_raise_fnf,
-            )
-            assert snap.error is not None
-            self.assertIn("ssh not installed", snap.error)
-
-    def test_malformed_payload_falls_back_to_cache(self) -> None:
-        with TemporaryDirectory() as tmp:
-            # Seed cache.
-            seed = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=1.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "cached"}],
-                cached_at_epoch=1.0,
-            )
-            write_cached_snapshot(seed, override_dir=Path(tmp))
-            runner = self._runner_returning(returncode=0, stdout="not json")
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
-            self.assertTrue(snap.from_cache)
-            self.assertEqual(snap.sessions, [{"name": "cached"}])
-            assert snap.error is not None
-            self.assertIn("invalid JSON", snap.error)
-
-    def test_keyboard_interrupt_propagates(self) -> None:
-        # Ctrl-C must escape the fail-soft net so the operator can
-        # actually cancel a stuck collector.
-        def _raise_kbd(*_args: Any, **_kwargs: Any) -> Any:
-            raise KeyboardInterrupt
-
-        with TemporaryDirectory() as tmp:
-            with self.assertRaises(KeyboardInterrupt):
-                fetch_remote_snapshot(
-                    _host(),
-                    override_state_dir=Path(tmp),
-                    _runner=_raise_kbd,
-                )
-
-    def test_cache_write_failure_does_not_taint_fresh_snapshot(self) -> None:
-        # A successful live fetch must return a valid snapshot even
-        # when the cache write step crashes — the operator may be on
-        # a read-only home or out of disk; that should not blank the
-        # TUI when fresh data is in hand.
-        with TemporaryDirectory() as tmp:
-            sessions = [{"name": "uxon-x@claude"}]
-            runner = self._runner_returning(returncode=0, stdout=_good_envelope(sessions))
-            with mock.patch(
-                "uxon.infra.remote.collector.write_cached_snapshot",
-                side_effect=OSError("simulated"),
-            ):
-                snap = fetch_remote_snapshot(
-                    _host(),
-                    override_state_dir=Path(tmp),
-                    _runner=runner,
-                )
-            self.assertIsNone(snap.error)
-            self.assertFalse(snap.from_cache)
-            self.assertEqual(snap.sessions, sessions)
-
-    def test_default_timeouts_are_sane(self) -> None:
-        # Sanity-check the documented defaults haven't drifted.
-        self.assertGreaterEqual(DEFAULT_CONNECT_TIMEOUT_SEC, 1)
-        self.assertGreaterEqual(DEFAULT_TOTAL_TIMEOUT_SEC, DEFAULT_CONNECT_TIMEOUT_SEC)
-
-    def test_per_host_connect_timeout_overrides_default(self) -> None:
-        """``host.connect_timeout`` (if set) overrides the keyword default."""
-        with TemporaryDirectory() as tmp:
-            captured: list[list[str]] = []
-
-            def runner(argv, **kwargs):
-                captured.append(argv)
-                cp = mock.Mock()
-                cp.returncode = 0
-                cp.stdout = _good_envelope([])
-                cp.stderr = ""
-                return cp
-
-            fetch_remote_snapshot(
-                _host(connect_timeout=2.0),
-                connect_timeout=10,
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
-            argv = captured[0]
-            self.assertIn("ConnectTimeout=2", argv)
-
-    def test_sub_second_connect_timeout_ceil_rounds_to_one(self) -> None:
-        """``connect_timeout = "500ms"`` must NOT produce ssh ``ConnectTimeout=0``.
-
-        ssh treats 0 as "system default" (minutes). The collector
-        ceil-rounds sub-second durations to 1 so the operator's intent
-        ("tight cap") is preserved.
-        """
-        with TemporaryDirectory() as tmp:
-            captured: list[list[str]] = []
-
-            def runner(argv, **kwargs):
-                captured.append(argv)
-                cp = mock.Mock()
-                cp.returncode = 0
-                cp.stdout = _good_envelope([])
-                cp.stderr = ""
-                return cp
-
-            fetch_remote_snapshot(
-                _host(connect_timeout=0.5),
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
-            self.assertIn("ConnectTimeout=1", captured[0])
-            self.assertNotIn("ConnectTimeout=0", captured[0])
-
-    def test_per_host_total_timeout_overrides_default(self) -> None:
-        """``host.total_timeout`` overrides the subprocess timeout=."""
-        captured: dict = {}
-
-        def runner(argv, **kwargs):
-            captured["timeout"] = kwargs.get("timeout")
-            cp = mock.Mock()
-            cp.returncode = 0
-            cp.stdout = _good_envelope([])
-            cp.stderr = ""
-            return cp
-
-        with TemporaryDirectory() as tmp:
-            fetch_remote_snapshot(
-                _host(total_timeout=8.0),
-                total_timeout=30,
-                override_state_dir=Path(tmp),
-                _runner=runner,
-            )
-        self.assertEqual(captured["timeout"], 8)
-
-
-class CacheScopeRoundtripTests(unittest.TestCase):
-    """Stage 5 step 8: cache persists/restores scope_limited/scope_skipped."""
-
-    def _runner_returning(self, returncode: int, stdout: str = "", stderr: str = "") -> Any:
-        def runner(argv, **kwargs):
-            cp = mock.Mock()
-            cp.returncode = returncode
-            cp.stdout = stdout
-            cp.stderr = stderr
-            return cp
-
-        return runner
-
-    def test_write_then_read_preserves_scope_flags(self) -> None:
-        with TemporaryDirectory() as tmp:
-            snap = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=100.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "uxon-x@claude"}],
-                cached_at_epoch=100.0,
-                scope_limited=True,
-                scope_skipped=["alice", "bob"],
-            )
-            write_cached_snapshot(snap, override_dir=Path(tmp))
-            loaded = read_cached_snapshot("vz-prod1", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertTrue(loaded.scope_limited)
-            self.assertEqual(loaded.scope_skipped, ["alice", "bob"])
-
-    def test_old_cache_without_scope_keys_treated_as_defaults(self) -> None:
-        with TemporaryDirectory() as tmp:
-            # Synthesise a pre-stage-5 cache file (no scope_* fields).
-            old_blob = {
-                "host_name": "legacy",
-                "cached_at_epoch": 50.0,
-                "sessions": [{"name": "uxon-y@codex"}],
-            }
-            cache_path = snapshot_cache_path("legacy", override_dir=Path(tmp))
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(json.dumps(old_blob), encoding="utf-8")
-
-            loaded = read_cached_snapshot("legacy", override_dir=Path(tmp))
-            assert loaded is not None
-            self.assertFalse(loaded.scope_limited)
-            self.assertEqual(loaded.scope_skipped, [])
-
-    def test_failure_path_with_cache_returns_cached_scope_flags(self) -> None:
-        """Live fetch fails; cache fallback must carry the cached flags
-        — NOT the failed live-fetch's intermediate values."""
-        with TemporaryDirectory() as tmp:
-            cached = RemoteSnapshot(
-                host_name="vz-prod1",
-                fetched_at_epoch=99.0,
-                from_cache=False,
-                error=None,
-                sessions=[{"name": "uxon-cached@claude"}],
-                cached_at_epoch=99.0,
-                scope_limited=True,
-                scope_skipped=["carol"],
-            )
-            write_cached_snapshot(cached, override_dir=Path(tmp))
-
-            # Simulate live failure — non-zero exit, no payload.
-            failing = self._runner_returning(returncode=255, stderr="connect: timed out")
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                _runner=failing,
-            )
-            self.assertTrue(snap.from_cache)
-            self.assertIsNotNone(snap.error)
-            # Critical: cached flags survive the failure-with-cache path.
-            self.assertTrue(snap.scope_limited)
-            self.assertEqual(snap.scope_skipped, ["carol"])
-
-    def test_failure_path_without_cache_returns_empty_scope_skipped(self) -> None:
-        """No cache file; returned snapshot has scope_skipped=[] (no info)."""
-        with TemporaryDirectory() as tmp:
-            failing = self._runner_returning(returncode=255, stderr="connect: timed out")
-            snap = fetch_remote_snapshot(
-                _host(name="never-cached"),
-                override_state_dir=Path(tmp),
-                _runner=failing,
-            )
-            self.assertFalse(snap.from_cache)
-            self.assertIsNotNone(snap.error)
-            self.assertEqual(snap.scope_skipped, [])
-
-
-class DefaultTemplateTests(unittest.TestCase):
-    """Stage 5 step 3: default ssh argv template includes ControlMaster
-    and the closed placeholder set."""
-
-    def test_default_template_has_controlmaster(self) -> None:
-        from uxon.infra.remote.ssh_argv import _default_template
-
-        tmpl = _default_template()
-        flat = " ".join(tmpl)
-        self.assertIn("ControlMaster=auto", flat)
-        self.assertIn("ControlPath={ssh_control_dir}/ssh-%C", flat)
-        # Task 10: ControlPersist is parameterised by
-        # ``ssh_control_persist_seconds`` (default 300, see
-        # ``DEFAULT_CONFIG``).
-        self.assertIn("ControlPersist={ssh_control_persist_seconds}s", flat)
-        self.assertIn("ServerAliveInterval=15", flat)
-
-    def test_default_template_uses_persist_placeholder(self) -> None:
-        from uxon.infra.remote.ssh_argv import _default_template
-
-        template = _default_template()
-        assert "ControlPersist={ssh_control_persist_seconds}s" in template
-
-    def test_default_template_uses_only_closed_placeholders(self) -> None:
-        from uxon.infra.remote.ssh_argv import PLACEHOLDER_CLOSED_SET, _default_template
-
-        for token in _default_template():
-            i = 0
-            while i < len(token):
-                start = token.find("{", i)
-                if start == -1:
-                    break
-                end = token.find("}", start)
-                if end == -1:
-                    break
-                placeholder = token[start : end + 1]
-                self.assertIn(
-                    placeholder,
-                    PLACEHOLDER_CLOSED_SET,
-                    msg=f"unexpected placeholder {placeholder!r} in default template",
-                )
-                i = end + 1
-
-
-class RenderArgvTests(unittest.TestCase):
-    """Stage 5 step 3: _render_argv substitutes placeholders cleanly."""
-
-    def test_renders_full_default_template(self) -> None:
-        from uxon.infra.remote.ssh_argv import _default_template, _render_argv
-
-        argv = _render_argv(
-            _default_template(),
-            ssh_alias="peer1",
-            remote_uxon="uxon",
-            connect_timeout=5,
-            ssh_control_dir="/home/me/.cache/uxon",
-            remote_command="uxon list --all-users --json",
-        )
-        self.assertEqual(argv[0], "ssh")
-        self.assertIn("peer1", argv)
-        self.assertIn("uxon list --all-users --json", argv)
-        self.assertIn("ControlPath=/home/me/.cache/uxon/ssh-%C", argv)
-        # No unresolved placeholders.
-        for token in argv:
-            self.assertNotRegex(token, r"\{[a-z_]+\}")
-
-    def test_kubectl_recipe(self) -> None:
-        from uxon.infra.remote.ssh_argv import _render_argv
-
-        template = [
-            "kubectl",
-            "exec",
-            "uxon-pod",
-            "--",
-            "/bin/sh",
-            "-c",
-            "{remote_command}",
+def host(**changes):
+    return RemoteHost(
+        **{
+            "name": "build-box",
+            "ssh_alias": "edge",
+            "description": "",
+            "remote_uxon": "/opt/u 'xon/uxon",
+            **changes,
+        }
+    )
+
+
+def hardening(connect=5):
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        f"ConnectTimeout={connect}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "interactive,multiplex,template",
+    [
+        (False, "auto", None),
+        (True, "auto", None),
+        (True, "off", None),
+        (False, "off", None),
+        (
+            True,
+            "off",
+            ("ssh", "-J", "gate", "-o", "ControlMaster=yes", "{ssh_alias}", "{remote_command}"),
+        ),
+        (False, "auto", ("ssh", "{ssh_alias}", "{remote_command}")),
+        (True, "auto", ("kubectl", "exec", "pod", "--", "sh", "-c", "{remote_command}")),
+    ],
+)
+def test_peer_builder_command_ownership(tmp_path, monkeypatch, interactive, multiplex, template):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    h = host(command_template=template, extra_ssh_options=("-o", "ProxyJump=bastion"))
+    command = "uxon attach 'job name@codex' --user alice"
+    argv = build_peer_ssh_argv(
+        command_template=h.command_template,
+        extra_ssh_options=h.extra_ssh_options,
+        ssh_alias=h.ssh_alias,
+        remote_uxon=h.remote_uxon,
+        remote_command=command,
+        allocate_tty=interactive,
+        connect_timeout=7,
+        ssh_multiplex=multiplex,
+        ssh_control_persist_seconds=91,
+    )
+    if template:
+        expected = [
+            t.replace("{ssh_alias}", "edge").replace("{remote_command}", command) for t in template
         ]
-        argv = _render_argv(
-            template,
-            ssh_alias="ignored",
-            remote_uxon="uxon",
-            connect_timeout=5,
-            ssh_control_dir="/tmp/uxon",
-            remote_command="uxon list --json",
+    else:
+        expected = hardening(7)
+        if multiplex == "auto":
+            expected += [
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                f"ControlPath={tmp_path}/uxon/ssh-%C",
+                "-o",
+                "ControlPersist=91s",
+            ]
+        expected += ["-o", "ProxyJump=bastion", "edge", command]
+    if interactive and expected[0] == "ssh":
+        expected.insert(1 if template else expected.index("edge"), "-tt")
+    assert argv == expected
+    assert all("{" not in t for t in argv)
+    assert (tmp_path / "uxon").exists() == (template is None and multiplex == "auto")
+    if (tmp_path / "uxon").exists():
+        assert (tmp_path / "uxon").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("options", [("-T",), ("-qT",), ("-o", "RequestTTY=no")])
+def test_default_attach_forces_native_pty_after_extra_option_overrides(options):
+    from uxon.infra.run import run_query
+
+    argv = build_peer_ssh_argv(
+        command_template=None,
+        extra_ssh_options=("-F", "/dev/null", *options),
+        ssh_alias="peer.invalid",
+        remote_uxon="uxon",
+        remote_command="uxon attach job --user alice",
+        allocate_tty=True,
+        connect_timeout=2,
+        ssh_multiplex="off",
+    )
+    assert argv[-3] == "-tt"
+    # Native option expansion reads no user config and opens no connection.
+    result = run_query([argv[0], "-G", *argv[1:]], timeout=2)
+    assert result.returncode == 0 and "requesttty force" in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize(
+    "template,connect,total,kwargs,expected_connect,expected_total",
+    [
+        (None, None, None, {}, 5, 10),
+        (None, 2, 8, {"connect_timeout": 9, "total_timeout": 30}, 2, 8),
+        (None, 0.5, 0.5, {}, 1, 1),
+        (("ssh", "-J", "gate", "{ssh_alias}", "{remote_command}"), None, None, {}, 5, 10),
+        (("kubectl", "exec", "pod", "--", "sh", "-c", "{remote_command}"), None, None, {}, 5, 10),
+    ],
+)
+def test_live_poll_consumes_command_deadlines_and_never_persists_rows(
+    tmp_path, monkeypatch, template, connect, total, kwargs, expected_connect, expected_total
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    attempts = []
+    raw = {
+        "name": "build-box",
+        "ssh_alias": "edge",
+        "remote_uxon": "/opt/u 'xon/uxon",
+        "extra_ssh_options": ["-o", "ProxyJump=bastion"],
+    }
+    if template is not None:
+        raw["command_template"] = list(template)
+    if connect is not None:
+        raw["connect_timeout"] = connect
+    if total is not None:
+        raw["total_timeout"] = total
+    [h] = parse_config({"remote_hosts": [raw]}).remote_hosts
+
+    def query(argv, *, timeout):
+        command = shlex.split(argv[-1])
+        assert command[0] == h.remote_uxon
+        args = parse_args(command[1:])
+        assert (args.action, args.all_users, args.json_output, args.audit_correlation_id) == (
+            "list",
+            True,
+            True,
+            CID,
         )
-        self.assertEqual(argv[-1], "uxon list --json")
-        self.assertEqual(argv[0], "kubectl")
+        expected = hardening(expected_connect) + [
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            f"ControlPath={tmp_path}/uxon/ssh-%C",
+            "-o",
+            "ControlPersist=91s",
+            "-o",
+            "ProxyJump=bastion",
+            "edge",
+            argv[-1],
+        ]
+        if template:
+            expected = [
+                t.replace("{ssh_alias}", "edge").replace("{remote_command}", argv[-1])
+                for t in template
+            ]
+        assert argv == expected and timeout == expected_total
+        attempts.append((argv, timeout))
+        return subprocess.CompletedProcess(argv, 0, envelope(), "")
+
+    with (
+        patch("uxon.infra.remote.collector.run_query", side_effect=query),
+        patch("uuid.uuid4", return_value=CID),
+        patch("uxon.infra.audit.audit") as audit,
+    ):
+        snap = fetch_remote_snapshot(h, ssh_control_persist_seconds=91, **kwargs)
+    assert len(attempts) == 1
+    assert snap.host_name == "build-box" and snap.fetched_at_epoch > 0
+    assert (snap.sessions, snap.host_stats, snap.scope_skipped, snap.error, snap.peer) == (
+        [ROW],
+        STATS,
+        ["bob"],
+        None,
+        {"uxon_version": "4.0.0", "schema_version": "3"},
+    )
+    audit.assert_called_once_with(
+        "list.remote.out",
+        outcome="ok",
+        peer_name="build-box",
+        ssh_alias="edge",
+        scope="all-users",
+        from_cache=False,
+        correlation_id=CID,
+        rc=0,
+    )
+    assert list(tmp_path.rglob("*")) == ([tmp_path / "uxon"] if template is None else [])
 
 
-class ValidateCommandTemplateTests(unittest.TestCase):
-    """Stage 5 step 3: validate_command_template enforces the closed
-    placeholder set and {remote_command}/{remote_uxon} mutual exclusion."""
-
-    def test_default_template_validates(self) -> None:
-        from uxon.infra.remote.ssh_argv import _default_template, validate_command_template
-
-        validate_command_template(_default_template())  # must not raise
-
-    def test_kubectl_template_validates(self) -> None:
-        from uxon.infra.remote.ssh_argv import validate_command_template
-
-        validate_command_template(
-            ["kubectl", "exec", "uxon-pod", "--", "/bin/sh", "-c", "{remote_command}"]
-        )
-
-    def test_docker_template_validates(self) -> None:
-        from uxon.infra.remote.ssh_argv import validate_command_template
-
-        validate_command_template(
-            ["docker", "exec", "uxon-container", "/bin/sh", "-c", "{remote_command}"]
-        )
-
-    def test_unknown_placeholder_rejected(self) -> None:
-        from uxon.infra.remote.ssh_argv import validate_command_template
-
-        with self.assertRaises(ValueError) as cm:
-            validate_command_template(["ssh", "{ssh_alias}", "{bad}"])
-        self.assertIn("{bad}", str(cm.exception))
-
-    def test_remote_command_and_remote_uxon_mutually_exclusive(self) -> None:
-        from uxon.infra.remote.ssh_argv import validate_command_template
-
-        with self.assertRaises(ValueError) as cm:
-            validate_command_template(
-                ["ssh", "{ssh_alias}", "{remote_uxon}", "list", "{remote_command}"]
-            )
-        self.assertIn("mutually exclusive", str(cm.exception))
-
-    def test_empty_template_rejected(self) -> None:
-        from uxon.infra.remote.ssh_argv import validate_command_template
-
-        with self.assertRaises(ValueError):
-            validate_command_template([])
-
-
-class ResolvedControlPathTests(unittest.TestCase):
-    """``_resolved_control_path`` translates ``%C`` via ``ssh -G`` without
-    opening a connection — the recovery path needs the real socket
-    file path to know what to ``unlink``."""
-
-    def test_extracts_path_from_ssh_g_output(self) -> None:
-        def _runner(*_args: Any, **_kwargs: Any) -> Any:
-            return mock.Mock(
-                returncode=0,
-                stdout="user erin\ncontrolpath /home/u/.cache/uxon/ssh-abc123\nport 22\n",
-            )
-
-        path = _resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner)
-        self.assertEqual(path, "/home/u/.cache/uxon/ssh-abc123")
-
-    def test_returns_none_on_nonzero_rc(self) -> None:
-        def _runner(*_args: Any, **_kwargs: Any) -> Any:
-            return mock.Mock(returncode=255, stdout="")
-
-        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
-
-    def test_returns_none_on_timeout(self) -> None:
-        def _runner(*_args: Any, **_kwargs: Any) -> Any:
-            raise subprocess.TimeoutExpired(cmd="ssh", timeout=2)
-
-        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
-
-    def test_returns_none_when_output_missing_controlpath(self) -> None:
-        def _runner(*_args: Any, **_kwargs: Any) -> Any:
-            return mock.Mock(returncode=0, stdout="user erin\nport 22\n")
-
-        self.assertIsNone(_resolved_control_path("box-b", "/home/u/.cache/uxon", _runner=_runner))
-
-
-class RecoverWedgedMasterTests(unittest.TestCase):
-    """Self-heal path invoked when a slave hangs on a wedged
-    ``ControlMaster``. Each step (graceful exit, hard kill, socket
-    unlink) must run independently and tolerate partial failure."""
-
-    def _capture_runner(self) -> tuple[list[list[str]], Any]:
-        calls: list[list[str]] = []
-
-        def _runner(argv: list[str], *_a: Any, **_kw: Any) -> Any:
-            calls.append(list(argv))
-            # Default: ssh -G returns the resolved path.
-            return mock.Mock(
-                returncode=0,
-                stdout="controlpath /tmp/uxon-test/ssh-resolved\n",
-                stderr="",
-            )
-
-        return calls, _runner
-
-    def test_skips_when_host_uses_command_template(self) -> None:
-        calls, runner = self._capture_runner()
-        host = _host(command_template=["docker", "exec", "uxon-c", "{remote_command}"])
-        recover_wedged_master(host, _runner=runner)
-        self.assertEqual(calls, [])
-
-    def test_runs_graceful_then_kills_then_unlinks(self) -> None:
-        with TemporaryDirectory() as tmp:
-            socket = Path(tmp) / "ssh-resolved"
-            socket.touch()
-            calls: list[list[str]] = []
-
-            def _runner(argv: list[str], *_a: Any, **_kw: Any) -> Any:
-                calls.append(list(argv))
-                return mock.Mock(
-                    returncode=0,
-                    stdout=f"controlpath {socket}\n",
-                    stderr="",
-                )
-
-            killed: list[tuple[int, int]] = []
-
-            def _kill(pid: int, sig: int) -> None:
-                killed.append((pid, sig))
-
-            recover_wedged_master(
-                _host(),
-                _runner=_runner,
-                _resolve=lambda alias, ctl_dir, _runner: str(socket),
-                _find_pid=lambda path: 4242,
-                _kill=_kill,
-            )
-            # Graceful ``ssh -O exit`` ran first.
-            self.assertEqual(calls[0][:3], ["ssh", "-O", "exit"])
-            # Master was hard-killed.
-            self.assertEqual(killed, [(4242, signal.SIGKILL)])
-            # Socket file is gone.
-            self.assertFalse(socket.exists())
-
-    def test_skips_kill_when_path_unresolved(self) -> None:
-        _, runner = self._capture_runner()
-        killed: list[tuple[int, int]] = []
-        recover_wedged_master(
-            _host(),
-            _runner=runner,
-            _resolve=lambda *a, **kw: None,
-            _find_pid=lambda _path: 999,
-            _kill=lambda pid, sig: killed.append((pid, sig)),
-        )
-        self.assertEqual(killed, [])
-
-    def test_skips_kill_when_socket_already_gone(self) -> None:
-        with TemporaryDirectory() as tmp:
-            ghost = Path(tmp) / "ssh-already-cleaned"
-            # File deliberately not created — graceful ssh -O exit removed it.
-            _, runner = self._capture_runner()
-            killed: list[tuple[int, int]] = []
-            recover_wedged_master(
-                _host(),
-                _runner=runner,
-                _resolve=lambda *a, **kw: str(ghost),
-                _find_pid=lambda _path: 999,
-                _kill=lambda pid, sig: killed.append((pid, sig)),
-            )
-            self.assertEqual(killed, [])
-
-    def test_skips_kill_when_pid_not_found(self) -> None:
-        with TemporaryDirectory() as tmp:
-            socket = Path(tmp) / "ssh-resolved"
-            socket.touch()
-            _, runner = self._capture_runner()
-            killed: list[tuple[int, int]] = []
-            recover_wedged_master(
-                _host(),
-                _runner=runner,
-                _resolve=lambda *a, **kw: str(socket),
-                _find_pid=lambda _path: None,
-                _kill=lambda pid, sig: killed.append((pid, sig)),
-            )
-            self.assertEqual(killed, [])
-            # Socket still gets unlinked even when no pid found —
-            # otherwise next ssh would slave-loop on the stale socket.
-            self.assertFalse(socket.exists())
-
-    def test_swallows_runner_failures(self) -> None:
-        def _boom(*_a: Any, **_kw: Any) -> Any:
-            raise subprocess.TimeoutExpired(cmd="ssh", timeout=2)
-
-        # Must not propagate even when every shell-out times out.
-        recover_wedged_master(
-            _host(),
-            _runner=_boom,
-            _resolve=lambda *a, **kw: None,
-            _find_pid=lambda _p: None,
-            _kill=lambda *a: None,
-        )
-
-
-class FetchTimeoutRecoveryTests(unittest.TestCase):
-    """Fetch path invokes recovery exactly when its preconditions
-    hold: a real ``TimeoutExpired`` AND multiplexing is enabled."""
-
-    def _timeout_runner(self) -> Any:
-        def _runner(*_a: Any, **_kw: Any) -> Any:
-            raise subprocess.TimeoutExpired(cmd="ssh", timeout=10)
-
-        return _runner
-
-    def test_timeout_triggers_recovery_when_multiplex_on(self) -> None:
-        recovered: list[RemoteHost] = []
-
-        def _fake_recover(host: RemoteHost, *, _runner: Any) -> None:
-            recovered.append(host)
-
-        with (
-            TemporaryDirectory() as tmp,
-            mock.patch(
-                "uxon.infra.remote.collector.recover_wedged_master",
-                side_effect=_fake_recover,
+@pytest.mark.parametrize(
+    "case,rc,stdout,stderr,code,detail",
+    [
+        ("nonzero", 255, envelope(), "first\nsecond", "ssh_error", "ssh exited 255: first"),
+        ("invalid-json", 0, "not json", "", "invalid_response", "invalid JSON"),
+        (
+            "structured-peer",
+            1,
+            envelope(
+                error={"code": "timeout", "message": "upstream timeout"},
+                peer={"uxon_version": "0.8.0", "schema_version": "3"},
             ),
-        ):
-            snap = fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                ssh_multiplex="auto",
-                _runner=self._timeout_runner(),
+            "failed",
+            "timeout",
+            "upstream timeout",
+        ),
+        ("timeout", 124, None, "", "timeout", "ssh timeout after 10s"),
+        ("missing", 127, None, "", "ssh_error", "ssh not installed"),
+        ("external-os", None, None, "", "fetch_error", "PermissionError"),
+    ],
+)
+def test_failed_live_outcomes_keep_only_diagnostics(
+    tmp_path, monkeypatch, case, rc, stdout, stderr, code, detail
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    attempts = []
+
+    def query(argv, *, timeout):
+        assert argv[: len(hardening())] == hardening() and argv[-2] == "edge" and timeout == 10
+        attempts.append(argv)
+        if case == "timeout":
+            raise subprocess.TimeoutExpired(argv, timeout)
+        if case == "missing":
+            raise FileNotFoundError("ssh")
+        if case == "external-os":
+            raise PermissionError("denied")
+        return subprocess.CompletedProcess(argv, rc, stdout, stderr)
+
+    with (
+        patch("uxon.infra.remote.collector.run_query", side_effect=query),
+        patch("uxon.infra.audit.audit") as audit,
+    ):
+        snap = fetch_remote_snapshot(host(), ssh_multiplex="off")
+    assert len(attempts) == 1
+    assert snap.sessions == snap.scope_skipped == [] and snap.host_stats is None
+    assert snap.error_code == code and detail in snap.error
+    assert snap.peer == (
+        {"uxon_version": "0.8.0", "schema_version": "3"}
+        if case == "structured-peer"
+        else {"uxon_version": "4.0.0", "schema_version": "3"}
+        if case == "nonzero"
+        else {}
+    )
+    assert audit.call_count == 1
+    event = audit.call_args.kwargs
+    assert (
+        event["outcome"] == "error"
+        and event["scope"] == "all-users"
+        and event["from_cache"] is False
+    )
+    assert event.get("rc") == rc and event["error"] == snap.error[:256]
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("final_rc", [0, 9])
+def test_only_all_users_marker_retries_once_with_final_scope_and_event(
+    tmp_path, monkeypatch, final_rc
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    attempts = []
+
+    def query(argv, *, timeout):
+        attempts.append(argv)
+        assert len(attempts) <= 2 and timeout == 10
+        parsed = parse_args(shlex.split(argv[-1])[1:])
+        assert parsed.audit_correlation_id == CID and parsed.json_output
+        assert parsed.all_users == (len(attempts) == 1)
+        return subprocess.CompletedProcess(
+            argv,
+            1 if len(attempts) == 1 else final_rc,
+            envelope(),
+            ALL_USERS_DISABLED_MARKER if len(attempts) == 1 else "second failed",
+        )
+
+    with (
+        patch("uxon.infra.remote.collector.run_query", side_effect=query),
+        patch("uuid.uuid4", return_value=CID),
+        patch("uxon.infra.audit.audit") as audit,
+    ):
+        snap = fetch_remote_snapshot(host(), ssh_multiplex="off")
+    assert len(attempts) == 2 and snap.scope_limited
+    assert snap.sessions == ([ROW] if final_rc == 0 else [])
+    assert snap.host_stats == (STATS if final_rc == 0 else None)
+    assert audit.call_count == 1
+    assert audit.call_args.kwargs["scope"] == "own" and audit.call_args.kwargs["rc"] == final_rc
+    assert audit.call_args.kwargs["correlation_id"] == CID
+    assert audit.call_args.kwargs["outcome"] == ("ok" if final_rc == 0 else "error")
+
+
+def test_regular_file_cache_parent_fails_closed_without_process_or_mutation(tmp_path, monkeypatch):
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_bytes(b"unchanged")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(sentinel / "cache"))
+    with (
+        patch("uxon.infra.remote.collector.run_query") as poll,
+        patch("uxon.infra.remote.master_recovery.run_query") as recovery,
+        patch("os.kill") as kill,
+        patch("uxon.infra.audit.audit") as audit,
+    ):
+        snap = fetch_remote_snapshot(host())
+        recover_wedged_master(host())
+    poll.assert_not_called()
+    recovery.assert_not_called()
+    kill.assert_not_called()
+    assert sentinel.read_bytes() == b"unchanged" and list(tmp_path.iterdir()) == [sentinel]
+    assert snap.sessions == snap.scope_skipped == [] and snap.host_stats is None
+    assert snap.error_code == "fetch_error" and "NotADirectoryError" in snap.error
+    assert audit.call_count == 1 and audit.call_args.kwargs["outcome"] == "error"
+    assert "rc" not in audit.call_args.kwargs
+    with patch(
+        "uxon.infra.remote.collector.run_query",
+        return_value=subprocess.CompletedProcess([], 0, envelope(), ""),
+    ) as query:
+        assert fetch_remote_snapshot(host(), ssh_multiplex="off").sessions == [ROW]
+        assert fetch_remote_snapshot(
+            host(command_template=("kubectl", "{remote_command}"))
+        ).sessions == [ROW]
+    assert query.call_count == 2 and sentinel.read_bytes() == b"unchanged"
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit])
+def test_control_exceptions_propagate_from_poll_and_recovery(tmp_path, monkeypatch, exception):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    with (
+        patch("uxon.infra.remote.collector.run_query", side_effect=exception),
+        patch("uxon.infra.audit.audit") as audit,
+    ):
+        with pytest.raises(exception):
+            fetch_remote_snapshot(host())
+    audit.assert_not_called()
+    with patch("uxon.infra.remote.master_recovery.run_query", side_effect=exception):
+        with pytest.raises(exception):
+            recover_wedged_master(host())
+    with (
+        patch.object(Path, "mkdir", side_effect=exception),
+        patch("uxon.infra.remote.collector.run_query") as poll,
+        patch("uxon.infra.remote.master_recovery.run_query") as recovery,
+    ):
+        with pytest.raises(exception):
+            fetch_remote_snapshot(host())
+        with pytest.raises(exception):
+            recover_wedged_master(host())
+    poll.assert_not_called()
+    recovery.assert_not_called()
+
+
+def test_decoder_normalizes_optional_fields_and_retains_compatibility_diagnostics():
+    for skipped, stats, expected_skipped, expected_stats in [
+        (["alice", "bob"], STATS, ["alice", "bob"], STATS),
+        ([], {}, [], {}),
+        ([], None, [], None),
+    ]:
+        result = decode_envelope(
+            json.dumps(
+                {
+                    "schema_version": "3",
+                    "uxon_version": "0.9.0",
+                    "kind": "list",
+                    "data": {"sessions": [ROW], "scope_skipped": skipped},
+                    "host_stats": stats,
+                }
             )
-            assert snap.error is not None
-            self.assertIn("timeout", snap.error)
-            self.assertEqual([h.name for h in recovered], ["vz-prod1"])
+        )
+        assert (result.sessions, result.scope_skipped, result.host_stats, result.error) == (
+            [ROW],
+            expected_skipped,
+            expected_stats,
+            None,
+        )
+    for schema, code in [
+        ("1", "update_remote"),
+        ("9", "update_local"),
+        (None, "incompatible"),
+        ("future", "incompatible"),
+        ("03", "incompatible"),
+        ("9" * 5000, "incompatible"),
+    ]:
+        result = decode_envelope(
+            json.dumps(
+                {
+                    "schema_version": schema,
+                    "uxon_version": "0.9.0",
+                    "kind": "list",
+                    "data": {"sessions": [ROW]},
+                }
+            )
+        )
+        assert result.sessions is None and result.error_code == code
+        assert result.peer == (
+            {"uxon_version": "0.9.0", "schema_version": schema}
+            if isinstance(schema, str)
+            else {"uxon_version": "0.9.0"}
+        )
+    vectors = [
+        ("not-json", "invalid JSON"),
+        ("[]", "not a JSON object"),
+        (json.dumps({"schema_version": "3", "kind": "version"}), "unexpected envelope kind"),
+        (json.dumps({"schema_version": "3", "kind": "list"}), "data is not an object"),
+        (envelope(sessions={}), "sessions is not a list"),
+        (envelope(sessions=[None]), "non-object record"),
+        (envelope(error="failure"), "not a remote error"),
+    ]
+    for payload, message in vectors:
+        result = decode_envelope(payload)
+        assert result.sessions is None and result.host_stats is None and result.scope_skipped == []
+        assert result.error_code == "invalid_response" and message in result.error
+    for code, expected in [("update_remote", "update_remote"), ([], "remote_error")]:
+        result = decode_envelope(
+            envelope(
+                error={"code": code, "message": "failed"},
+                peer={"uxon_version": "0.8.0", "schema_version": "1"},
+            )
+        )
+        assert (
+            result.sessions is None and result.error == "failed" and result.error_code == expected
+        )
+        assert result.peer == {"uxon_version": "0.8.0", "schema_version": "1"}
+    assert decode_envelope(envelope(sessions=[])).sessions == []
 
-    def test_timeout_skips_recovery_when_multiplex_off(self) -> None:
-        recovered: list[RemoteHost] = []
 
-        def _fake_recover(host: RemoteHost, *, _runner: Any) -> None:
-            recovered.append(host)
-
-        with (
-            TemporaryDirectory() as tmp,
-            mock.patch(
-                "uxon.infra.remote.collector.recover_wedged_master",
-                side_effect=_fake_recover,
+def test_decoder_rejects_malformed_known_fields_and_duplicate_rows_without_coercion():
+    identity = {
+        "user": "alice",
+        "name": "uxon-job@claude",
+        "session_id": "$1",
+        "created": "123456",
+        "launch_nonce": "abcdefghijklmnopqrstuvwx",
+        "socket_path": "/run/user/1001/uxon/local.sock",
+        "execution_backend": "local",
+        "execution_fingerprint": "a" * 64,
+    }
+    valid = {"user": "alice", "name": "uxon-job@claude", "identity": identity}
+    for field, value in [
+        ("cpu_pct", {}),
+        ("cpu_pct", "1.0"),
+        ("cpu_pct", -1),
+        ("rss_kib", True),
+        ("rss_kib", -1),
+        ("attached", "false"),
+        ("active_pid", 0),
+        ("pane_pids", [1, False]),
+        ("pane_pids", [-1]),
+        ("identity", None),
+        ("identity", {**identity, "created": 123456}),
+        ("identity", {**identity, "name": "another"}),
+        ("identity", {**identity, "launch_nonce": "invalid"}),
+    ]:
+        result = decode_envelope(envelope(sessions=[{**valid, field: value}]))
+        assert result.sessions is None and result.error_code == "invalid_response"
+        assert f"sessions[0].{field}" in result.error
+    for payload, field in [
+        (envelope(sessions=[valid, valid]), "duplicate identity"),
+        (envelope(sessions=[ROW, ROW]), "duplicate identity"),
+        (envelope(scope_skipped=["alice", 7]), "scope_skipped"),
+        (envelope(scope_users=False), "scope_users"),
+        (envelope(host_stats=[]), "host_stats"),
+        (envelope(host_stats={"mem_total_kib": -1}), "mem_total_kib"),
+        (envelope(host_stats={"cpu_pct": "high"}), "cpu_pct"),
+        (
+            envelope(sessions=[{**valid, "cpu_pct": 1}]).replace(
+                '"cpu_pct": 1', '"cpu_pct": 1e999'
             ),
-        ):
-            fetch_remote_snapshot(
-                _host(),
-                override_state_dir=Path(tmp),
-                ssh_multiplex="off",
-                _runner=self._timeout_runner(),
-            )
-            self.assertEqual(recovered, [])
+            "Number out of range",
+        ),
+    ]:
+        result = decode_envelope(payload)
+        assert result.sessions is None and result.host_stats is None
+        assert result.error_code == "invalid_response" and field in result.error
+    additive = {**valid, "future": {"arbitrary": True}, "identity": {**identity, "future": 1}}
+    result = decode_envelope(envelope(sessions=[additive, {"name": "sparse"}]))
+    assert result.error is None and result.sessions == [additive, {"name": "sparse"}]
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.parametrize(
+    "template,diagnostic",
+    [
+        (["ssh", "{bad}"], "unknown placeholder"),
+        (["ssh", "{remote_uxon}", "{remote_command}"], "mutually exclusive"),
+        ([], "non-empty"),
+    ],
+)
+def test_config_rejects_invalid_transport_templates(template, diagnostic):
+    with pytest.raises((ValueError, SystemExit), match=diagnostic):
+        parse_config(
+            {"remote_hosts": [{"name": "peer", "ssh_alias": "edge", "command_template": template}]}
+        )
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["ok", "options", "nonzero", "timeout", "oserror", "custom"],
+)
+def test_recovery_only_uses_bounded_native_ssh_control(tmp_path, monkeypatch, case):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    socket_path = tmp_path / "socket"
+    control = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        control.bind(str(socket_path))
+    finally:
+        control.close()
+    original_inode = socket_path.stat().st_ino
+    attempts = []
+    options = ("-p", "2222", "-l", "bob") if case == "options" else ()
+
+    def query(argv, *, timeout):
+        attempts.append(argv)
+        option = f"ControlPath={tmp_path}/cache/uxon/ssh-%C"
+        assert len(attempts) == 1 and timeout == 2
+        assert argv == ["ssh", "-O", "exit", "-o", option, *options, "edge"]
+        if case == "timeout":
+            raise subprocess.TimeoutExpired(argv, timeout)
+        if case == "oserror":
+            raise OSError("control request failed")
+        return subprocess.CompletedProcess(argv, 255 if case == "nonzero" else 0, "", "")
+
+    with (
+        patch("uxon.infra.remote.master_recovery.run_query", side_effect=query),
+        patch("os.kill") as kill,
+        patch("os.unlink") as unlink,
+    ):
+        recover_wedged_master(
+            host(
+                command_template=("kubectl", "{remote_command}") if case == "custom" else None,
+                extra_ssh_options=options,
+            ),
+        )
+    assert len(attempts) == (0 if case == "custom" else 1)
+    kill.assert_not_called()
+    unlink.assert_not_called()
+    assert socket_path.stat().st_ino == original_inode
+
+
+@pytest.mark.parametrize(
+    "multiplex,template,recovery_count",
+    [("auto", None, 1), ("off", None, 0), ("auto", ("kubectl", "{remote_command}"), 0)],
+)
+def test_poll_timeout_recovery_obeys_transport_ownership(
+    tmp_path, monkeypatch, multiplex, template, recovery_count
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    attempts = []
+
+    def query(argv, *, timeout):
+        attempts.append(argv)
+        if len(attempts) == 1:
+            assert timeout == 10
+            raise subprocess.TimeoutExpired(argv, timeout)
+        assert len(attempts) == 2 and timeout == 2
+        assert argv == ["ssh", "-O", "exit", "-o", f"ControlPath={tmp_path}/uxon/ssh-%C", "edge"]
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    with (
+        patch("uxon.infra.remote.collector.run_query", side_effect=query),
+        patch("uxon.infra.remote.master_recovery.run_query", side_effect=query),
+        patch("os.kill") as kill,
+        patch("os.unlink") as unlink,
+    ):
+        snap = fetch_remote_snapshot(host(command_template=template), ssh_multiplex=multiplex)
+    assert snap.error_code == "timeout" and snap.sessions == []
+    assert snap.error == "ssh timeout after 10s"
+    assert len(attempts) == 1 + recovery_count
+    kill.assert_not_called()
+    unlink.assert_not_called()

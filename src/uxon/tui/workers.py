@@ -3,7 +3,7 @@
 :class:`WorkerCoordinator` owns the App's background fan-out: the per-source
 refresh workers, the host / link-health / cwd-writable probes, the one-shot
 worktree probe, the per-source/per-probe in-flight gating, and the teardown
-drain. Extracted from ``app.py`` in Phase P7.
+drain.
 
 The Textual primitives the coordinator needs are **injected** at construction
 (captured from the App), not reached through a hidden back-reference:
@@ -24,21 +24,22 @@ is stable for the App's lifetime and captured directly.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 from textual.worker import Worker, WorkerState
 
+from uxon.domain.host_breaker import BreakerSpec, HostBreaker
+from uxon.domain.wire_schema import COMPATIBILITY_ERROR_CODES, RemoteSnapshot
 from uxon.infra.events import debug as _debug
 from uxon.infra.events import metrics_record
 
-from .context import CallbackError
 from .messages import (
     _CwdWritableUpdated,
     _HostReportUpdated,
     _LinkHealthUpdated,
     _OffLoopCallbackDone,
     _RefreshSourceLanded,
-    _WorktreesProbed,
 )
 
 if TYPE_CHECKING:
@@ -57,16 +58,41 @@ def _worker_active(w: Worker | None) -> bool:
     return w is not None and w.state in _ACTIVE_STATES
 
 
+class _RemoteAttempt:
+    """Coordinate cancellation before thread entry without releasing a live fetch."""
+
+    def __init__(self, attempt_id: int) -> None:
+        self.attempt_id = attempt_id
+        self._lock = threading.Lock()
+        self._started = False
+        self._invalidated = False
+        self._finished_without_landing = False
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._invalidated:
+                return False
+            self._started = True
+            return True
+
+    def cancel_pending(self) -> bool:
+        with self._lock:
+            if self._started and not self._finished_without_landing:
+                return False
+            self._invalidated = True
+            return True
+
+    def finish(self, *, posted: bool) -> None:
+        with self._lock:
+            self._finished_without_landing = not posted
+
+
 class WorkerCoordinator:
     """Owns the App's background workers + their in-flight gates + drain."""
 
     def __init__(self, app: UxonApp) -> None:
         # The App is the single injection point. ``run_worker`` /
-        # ``post_message`` are read LIVE off it (see the properties
-        # below) rather than captured here, so a test that patches
-        # ``app.run_worker`` / ``app.post_message`` after construction
-        # is honoured — exactly the pre-P7 ``self.run_worker`` /
-        # ``self.post_message`` semantics. ``_instance_epoch`` is read
+        # ``post_message`` are read live off it. ``_instance_epoch`` is read
         # live at post time (the cross-instance drop gate). ``cfg`` is
         # stable for the App's lifetime so it is captured directly;
         # ``ctx`` / ``workers`` / ``probe_agents`` are read live off the
@@ -78,8 +104,12 @@ class WorkerCoordinator:
         # the in-flight worker for that source so a slow source never
         # blocks a faster sibling's next tick.
         self._source_handles: dict[str, Worker | None] = {}
+        self._remote_breakers: dict[str, HostBreaker] = {}
+        self._remote_attempts: dict[str, _RemoteAttempt] = {}
+        self._next_attempt_id = 0
         self._host_probe_handle: Worker | None = None
         self._link_health_handle: Worker | None = None
+        self.cwd_probe_generation = 0
 
     # ── Injected Textual primitives (read live off the App) ──────────
 
@@ -118,7 +148,7 @@ class WorkerCoordinator:
             if spec.kick_on_mount:
                 self.kick_source(spec)
 
-    def kick_refresh(self) -> None:
+    def kick_refresh(self, *, manual: bool = False) -> None:
         """Fan out: kick every registered refresh source.
 
         Each source is gated independently — a source whose worker is
@@ -130,9 +160,9 @@ class WorkerCoordinator:
             return
         _debug("refresh", at="kick_refresh", action="fanout", count=len(sources))
         for spec in sources:
-            self.kick_source(spec)
+            self.kick_source(spec, manual=manual)
 
-    def kick_source(self, spec: Any) -> None:
+    def kick_source(self, spec: Any, *, manual: bool = False) -> None:
         """Schedule one source's fetcher in a worker if not already running.
 
         Worker group is namespaced ``refresh:<name>`` so an ``exclusive``
@@ -143,20 +173,72 @@ class WorkerCoordinator:
         if _worker_active(handle):
             _debug("refresh", at="kick_source", source=spec.name, action="skip", reason="in_flight")
             return
+        breaker = None
+        attempt = None
+        if spec.name.startswith("remote:"):
+            breaker = self._remote_breakers.get(spec.name)
+            if breaker is None:
+                breaker = HostBreaker(BreakerSpec())
+                self._remote_breakers[spec.name] = breaker
+            if handle is not None and handle.state in (WorkerState.CANCELLED, WorkerState.ERROR):
+                previous = self._remote_attempts.get(spec.name)
+                if previous is not None and previous.cancel_pending():
+                    breaker.clear_inflight()
+            # Reserve through result landing, not just worker completion.
+            if breaker.in_flight or (not manual and not breaker.should_attempt()):
+                return
+            breaker.mark_inflight()
+            self._next_attempt_id += 1
+            attempt = _RemoteAttempt(self._next_attempt_id)
+            self._remote_attempts[spec.name] = attempt
         _debug("refresh", at="kick_source", source=spec.name, action="spawn")
-        self._source_handles[spec.name] = self._run_worker(
-            lambda spec=spec: self._source_worker(spec),
-            thread=True,
-            exclusive=False,
-            group=f"refresh:{spec.name}",
-        )
+        try:
+            self._source_handles[spec.name] = self._run_worker(
+                lambda spec=spec, attempt=attempt: self._source_worker(spec, attempt),
+                thread=True,
+                exclusive=False,
+                group=f"refresh:{spec.name}",
+            )
+        except BaseException:
+            if breaker is not None:
+                breaker.clear_inflight()
+            raise
 
-    def _source_worker(self, spec: Any) -> None:
+    def source_landed(self, event: _RefreshSourceLanded) -> bool:
+        """Report remote outcomes on the event loop and release admission."""
+        attempt = self._remote_attempts.get(event.name)
+        if event.attempt_id and (attempt is None or attempt.attempt_id != event.attempt_id):
+            return False
+        breaker = self._remote_breakers.get(event.name)
+        if breaker is None:
+            return True
+        snap = event.value if isinstance(event.value, RemoteSnapshot) else None
+        if not event.error and snap is not None and snap.is_live:
+            breaker.on_success()
+        else:
+            breaker.on_failure(
+                incompatible=bool(snap and snap.error_code in COMPATIBILITY_ERROR_CODES)
+            )
+        breaker.clear_inflight()
+        return True
+
+    def _source_worker(self, spec: Any, attempt: _RemoteAttempt | None = None) -> None:
         """Background thread: run a source's fetcher with fail-soft semantics.
 
         ``run_source`` never raises — exceptions are captured into the
         result.
         """
+
+        if attempt is not None and not attempt.start():
+            return
+        posted = False
+        try:
+            posted = self._run_source_worker(spec, attempt)
+        finally:
+            if attempt is not None:
+                attempt.finish(posted=posted)
+
+    def _run_source_worker(self, spec: Any, attempt: _RemoteAttempt | None) -> bool:
         from .refresh import run_source
 
         result = run_source(spec)
@@ -168,23 +250,19 @@ class WorkerCoordinator:
             error=result.error or "",
             elapsed_ms=result.elapsed_ms,
         )
-        # ``from_cache`` is available on ``RemoteSnapshot`` (the
-        # remote-host path) but not on ``TuiContext`` (the local
-        # rebuild path), so we read it defensively.
-        from_cache = bool(getattr(result.value, "from_cache", False))
         metrics_record(
             result.name,
             elapsed_ms=result.elapsed_ms,
             error=result.error or None,
-            from_cache=from_cache,
         )
-        self._post_message(
+        return self._post_message(
             _RefreshSourceLanded(
                 name=result.name,
                 value=result.value,
                 error=result.error or "",
                 elapsed_ms=result.elapsed_ms,
                 instance_epoch=self._instance_epoch(),
+                attempt_id=attempt.attempt_id if attempt is not None else 0,
             )
         )
 
@@ -219,18 +297,31 @@ class WorkerCoordinator:
         from the thread.
 
         Uses ``probes.probe_host`` so one ``sh -lc`` round-trip covers
-        every CATALOG agent.
+        every catalogued agent (``self._cfg.agents``).
         """
         import time as _time
 
         from uxon.infra import agents as uxon_agents
         from uxon.infra import probes as uxon_probes
 
-        target_user = self._cfg.launch_user or uxon_probes._current_user()
-
         t0 = _time.monotonic()
         try:
-            report = uxon_probes.probe_host(target_user)
+            reports = {}
+            profiles = self._cfg.launch_profiles
+            if not profiles:
+                raise ValueError("TUI requires at least one validated launch profile")
+            by_user: dict[str, set[str]] = {}
+            for profile in profiles.values():
+                agents = by_user.setdefault(profile.launch_user, set())
+                if profile.runtime == "direct":
+                    agents.add(profile.agent)
+            for user, agent_ids in by_user.items():
+                catalog = {
+                    aid: self._cfg.agents[aid]
+                    for aid in sorted(agent_ids)
+                    if aid in self._cfg.agents
+                }
+                reports[user] = uxon_probes.probe_host(self._cfg, user, catalog)
         except Exception as exc:  # pragma: no cover — defensive
             self._post_message(
                 _HostReportUpdated(
@@ -240,34 +331,42 @@ class WorkerCoordinator:
             )
             return
 
-        # Strict-whitelist mode (``enabled_agents`` non-empty): surface
-        # exactly the enabled ids, marking absent binaries as "missing"
-        # so the unavailable-modal can fire. Auto-mode (empty config):
-        # surface only what is actually installed; un-installed
-        # CATALOG ids stay out of the availability map entirely.
-        configured = self._cfg.enabled_agents
+        # Strict profile mode: surface exactly the enabled profile ids,
+        # marking absent host binaries as missing. Auto-mode: surface only
+        # profiles that are actually launchable.
+        configured = self._cfg.enabled_profiles
         availability: dict = {}
-        if configured:
-            for aid in configured:
-                status = report.agents.get(aid)
-                if status is not None and status.path is not None:
-                    availability[aid] = uxon_agents.AgentAvailability(
-                        status="ok",
-                        path=status.path,
+        for pid in configured:
+            profile = self._cfg.launch_profiles.get(pid)
+            if profile is None:
+                if not self._cfg.launch_auto_mode:
+                    availability[pid] = uxon_agents.AgentAvailability(
+                        status="missing", error="unknown launch profile"
                     )
-                else:
-                    binary = uxon_agents.CATALOG[aid].binary if aid in uxon_agents.CATALOG else aid
-                    availability[aid] = uxon_agents.AgentAvailability(
+                continue
+            report = reports.get(profile.launch_user)
+            if report is None or report.tmux.path is None:
+                if not self._cfg.launch_auto_mode:
+                    availability[pid] = uxon_agents.AgentAvailability(
                         status="missing",
-                        error=f"{binary} not found on PATH",
+                        error="tmux not found on PATH",
                     )
-        else:
-            for aid, status in report.agents.items():
-                if status.path is not None:
-                    availability[aid] = uxon_agents.AgentAvailability(
-                        status="ok",
-                        path=status.path,
-                    )
+                continue
+            if profile.runtime != "direct":
+                availability[pid] = uxon_agents.AgentAvailability(
+                    status="ok",
+                    path=f"runtime:{profile.runtime}",
+                )
+                continue
+            status = report.agents.get(profile.agent)
+            if status is not None and status.path is not None:
+                availability[pid] = uxon_agents.AgentAvailability(status="ok", path=status.path)
+            elif not self._cfg.launch_auto_mode:
+                spec = self._cfg.agents.get(profile.agent)
+                binary = spec.binary if spec is not None else profile.agent
+                availability[pid] = uxon_agents.AgentAvailability(
+                    status="missing", error=f"{binary} not found on PATH"
+                )
         self._post_message(
             _HostReportUpdated(
                 availability=availability,
@@ -278,32 +377,40 @@ class WorkerCoordinator:
     # ── cwd-writable probe ──────────────────────────────────────────
 
     def kick_cwd_writable(self, cwd_at_start: str) -> None:
-        """Spawn the cwd-write probe for ``cwd_at_start`` (cross-user path).
+        """Spawn the cwd-write probe for ``cwd_at_start`` on any backend.
 
         Spawned without a stored handle; :meth:`drain` reaches into the
         ``cwd_writable`` worker group to cancel it on teardown.
         """
+        self.cwd_probe_generation += 1
+        generation = self.cwd_probe_generation
+        probe = self._app.ctx.on_probe_cwd_writable
         self._run_worker(
-            lambda cwd=cwd_at_start: self._probe_cwd_writable_worker(cwd),
+            lambda: self._probe_cwd_writable_worker(cwd_at_start, probe, generation),
             thread=True,
             exclusive=False,
             group="cwd_writable",
         )
 
-    def _probe_cwd_writable_worker(self, cwd_at_start: str = "") -> None:
+    def _probe_cwd_writable_worker(self, cwd_at_start: str, probe, generation: int) -> None:
         """Background thread: probe write access and post the result.
 
         ``cwd_at_start`` threads through the message envelope so the
         on-loop handler can gate against an in-flight probe whose
         result no longer applies to the current cwd.
         """
+        error = None
         try:
-            writable = bool(self._cfg.on_probe_cwd_writable())
-        except CallbackError:
+            writable = bool(probe())
+        except Exception as exc:
             writable = False
-        except Exception:  # pragma: no cover — defensive
-            writable = False
-        self._post_message(_CwdWritableUpdated(writable, cwd_at_start=cwd_at_start))
+            error = str(exc) or type(exc).__name__
+            _debug("refresh", at="cwd_writable_probe", cwd=cwd_at_start, error=error)
+        self._post_message(
+            _CwdWritableUpdated(
+                writable, cwd_at_start=cwd_at_start, generation=generation, error=error
+            )
+        )
 
     # ── SSH link-health probe ───────────────────────────────────────
 
@@ -335,56 +442,6 @@ class WorkerCoordinator:
         if status is None:
             status = LinkHealthStatus()
         self._post_message(_LinkHealthUpdated(status))
-
-    # ── One-shot worktree probe (launch-screen open) ────────────────
-
-    def probe_workspaces_then(
-        self, cwd: str, on_done: Any, *, probe_launchable: Any = None
-    ) -> None:
-        """Probe ``cwd`` off the event loop; call ``on_done(launchable, list, error)``.
-
-        Off-event-loop git probe (under the non-interactive sudo prefix on
-        the CLI side, §4.2). Runs ONCE per launch-flow open, before the
-        launch screen is pushed. The worker reads ``on_probe_worktrees``
-        off the frozen :class:`TuiConfig` (no mutable-ctx access from the
-        thread, same rule as :meth:`_probe_link_health_worker`), then posts
-        a :class:`_WorktreesProbed`; ``on_done`` runs on the message loop so
-        it can gate / push :class:`LaunchOptionsScreen` safely.
-
-        ``probe_launchable`` (optional) is a launchability predicate run in
-        the SAME worker so its cross-user ``sudo`` call never blocks the
-        event loop — passed when the caller has no pre-resolved value (cwd
-        pre-resolves via its reactive slot and omits it → ``launchable`` is
-        ``None``). Any *launchability* probe error degrades to "not
-        launchable" (False), mirroring :func:`probe_cwd_writable`'s yes/no
-        contract. A False result skips the worktree probe — the gate aborts
-        anyway. A *worktree* probe that raises (e.g. ``git worktree list``
-        failed on a real repo) is NOT swallowed: its message rides ``error``
-        so the WORKSPACE column can show an error row.
-        """
-
-        def _worker() -> None:
-            launchable: bool | None = None
-            if probe_launchable is not None:
-                try:
-                    launchable = bool(probe_launchable())
-                except Exception:  # pragma: no cover — defensive; any error = no
-                    launchable = False
-            workspaces: list = []
-            error: str | None = None
-            if launchable is not False:
-                try:
-                    probe = self._cfg.on_probe_worktrees
-                    workspaces = list(probe(cwd)) if callable(probe) else []
-                except Exception as exc:
-                    # A git probe that raised is a real failure (e.g. the repo
-                    # exists but ``git worktree list`` errored) — surface it as
-                    # an error row rather than silently hiding the column or
-                    # mislabelling it as "not a git repo".
-                    error = str(exc).strip() or exc.__class__.__name__
-            self._post_message(_WorktreesProbed(launchable, workspaces, on_done, error))
-
-        self._run_worker(_worker, thread=True, exclusive=False, group="worktree_probe")
 
     # ── Interactive blocking callbacks (run off the event loop) ──────
 
@@ -450,10 +507,9 @@ class WorkerCoordinator:
     def drain(self, *, grace_seconds: float = 0.1) -> None:
         """Cancel every tracked worker and wait briefly for completion.
 
-        Spec § Worker lifetime: "Before App.run() returns, every
-        in-flight worker is awaited (or hard-cancelled with a 100 ms
-        grace). No worker thread survives the App instance that
-        spawned it."
+        Before ``App.run()`` returns, every in-flight worker is cancelled and
+        given a bounded grace period. Cancellation cannot interrupt a running
+        Python thread; result handlers discard updates from an earlier App.
 
         Cancel-then-poll-until-grace is the simplest portable
         implementation: textual's :meth:`Worker.cancel` flips the

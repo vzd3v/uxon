@@ -9,7 +9,17 @@ are a smell that should surface as a typo, not a silent acceptance.
 
 from __future__ import annotations
 
+import math
+
 __all__ = ["parse_duration_seconds"]
+
+
+def _checked_seconds(seconds: float, value: str | int | float) -> float:
+    if not math.isfinite(seconds):
+        raise ValueError(f"duration must be finite, got {value!r}")
+    if seconds < 0:
+        raise ValueError(f"duration must be non-negative, got {value!r}")
+    return seconds
 
 
 def parse_duration_seconds(value: str | int | float) -> float:
@@ -25,15 +35,16 @@ def parse_duration_seconds(value: str | int | float) -> float:
     1.5
 
     Raises ValueError for unrecognised suffixes, empty strings, or
-    non-numeric inputs. Negative durations are also rejected.
+    non-numeric inputs. Durations must be finite and non-negative.
     """
     if isinstance(value, bool):
         raise ValueError(f"duration must be number or string, got bool: {value!r}")
     if isinstance(value, int | float):
-        seconds = float(value)
-        if seconds < 0:
-            raise ValueError(f"duration must be non-negative, got {value!r}")
-        return seconds
+        try:
+            seconds = float(value)
+        except OverflowError as exc:
+            raise ValueError(f"duration must be finite, got {value!r}") from exc
+        return _checked_seconds(seconds, value)
     if not isinstance(value, str):
         raise ValueError(f"duration must be number or string, got {type(value).__name__}")
     text = value.strip().lower()
@@ -54,15 +65,11 @@ def parse_duration_seconds(value: str | int | float) -> float:
                 number = float(head)
             except ValueError as exc:
                 raise ValueError(f"duration {value!r} is not a valid number") from exc
-            if number < 0:
-                raise ValueError(f"duration must be non-negative, got {value!r}")
-            return number * multiplier
+            return _checked_seconds(number * multiplier, value)
 
     # No recognised suffix — accept bare numeric strings as seconds.
     try:
         seconds = float(text)
     except ValueError as exc:
         raise ValueError(f"duration {value!r} is not a recognised form") from exc
-    if seconds < 0:
-        raise ValueError(f"duration must be non-negative, got {value!r}")
-    return seconds
+    return _checked_seconds(seconds, value)

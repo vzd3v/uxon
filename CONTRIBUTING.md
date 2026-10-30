@@ -27,9 +27,11 @@ uxon --version
 ```
 
 Both pull `ruff`, `pyright`, `pytest`, `textual`, `tomlkit`
-automatically.
+automatically. The test suite requires pytest 9+ for built-in subtests;
+the dev extra installs the required version.
 
-`uxon` requires Python 3.11+. The TUI uses `textual >=0.80,<9`; config
+`uxon` requires Python 3.11+. The TUI uses the Textual version pinned in
+`pyproject.toml`; config
 writes use `tomlkit`. Both are hard runtime dependencies (pulled in by
 `pip install` / `pipx install` / `uv tool install`).
 
@@ -38,17 +40,20 @@ writes use `tomlkit`. Both are hard runtime dependencies (pulled in by
 Before opening a PR, run:
 
 ```bash
-python3 -m py_compile $(git ls-files '*.py')
-python3 -m pytest tests/ -n auto
+git ls-files -z '*.py' | xargs -0 python3 -m py_compile
 ruff check .
 ruff format --check .
 pyright
+lint-imports
+python3 -m pytest tests/ -n auto
 python -m build               # smoke-test the wheel/sdist
 twine check dist/*            # README rendering on PyPI
+python -c "import sys, uxon.cli; assert 'textual' not in sys.modules"
 ```
 
-CI runs the same. If something passes locally but breaks CI, please
-add a test that catches it.
+The reusable fast CI gate runs these checks across its Python matrix, plus a
+secrets scan. Heavy checks run separately; both gates are required for releases.
+If something passes locally but breaks CI, add a regression for the cause.
 
 ## Branching and commits
 
@@ -64,18 +69,27 @@ add a test that catches it.
 
 ## When to bump `__version__`
 
-Bump `__version__` in [`src/uxon/__init__.py`](src/uxon/__init__.py)
-in the same commit as any user-visible behaviour change. Hatch reads
-the same string at build time, so wheels and the in-tree CLI always
-agree. Semver:
+Keep `__version__` unchanged while preparing unreleased changes; add
+user-visible changes to [`CHANGELOG.md`](CHANGELOG.md) under `## [Unreleased]`.
+Set the release version in [`src/uxon/__init__.py`](src/uxon/__init__.py)
+when preparing a release. Hatch reads the same string at build time.
+Follow SemVer:
 - **Major** for breaking changes to the CLI surface, the config
   schema, or the on-disk session-naming scheme.
 - **Minor** for new features that don't break existing config or
   session names.
 - **Patch** for bug fixes and doc-only changes that affect users.
 
-Then add a matching entry to [`CHANGELOG.md`](CHANGELOG.md) under
-`## [Unreleased]`.
+At release, rename the changelog's unreleased section to that version.
+
+Prepare the version and dated changelog in a release PR from `dev` to `main`.
+Use the changelog section for the PR description. After all CI checks pass,
+including every Python version and the tmux/Docker integration gate, squash-merge
+the PR and wait for CI on the resulting `main` commit. Tag that exact commit
+`vX.Y.Z` and push the tag. The release workflow repeats validation, publishes
+the wheel and source distribution to PyPI, then creates the GitHub Release with
+notes from the matching changelog section. After publication, synchronize `dev`
+with `main` and start a new `Unreleased` section.
 
 ## Architectural rules a contributor will hit
 
@@ -84,24 +98,22 @@ These are non-negotiable — see
 full picture. Quick list:
 
 - **`textual` is imported lazily inside `do_interactive`.** Non-TUI
-  subcommands (`uxon list`, `uxon doctor`, `uxon version`) must run
-  without `textual` installed.
+  subcommands (`uxon list`, `uxon doctor`, `uxon version`) must not import it.
 - **All key handling goes through `BINDINGS`.** No `on_key` overrides
   on screen classes; a drift guard test refuses the PR otherwise.
 - **Config writes use `tomlkit`** — round-trip preserves comments and
-  formatting. CLI read paths stay on stdlib `tomllib`.
+  formatting. CLI read paths stay on stdlib `tomllib`; non-root TUI settings
+  are read-only.
 - **One launch builder.** `uxon` is the single place that builds agent
-  command lines (`_build_tmux_launch_request` in `src/uxon/cli.py`).
+  command lines (`_build_tmux_launch_request` in `src/uxon/infra/tmux.py`).
   Don't add direct agent exec calls anywhere else.
-- **Module boundaries.** `src/uxon/cli.py` may import from sibling
-  modules in `src/uxon/*`; those modules never import from `cli`. UI
-  files under `src/uxon/tui/` must not import `subprocess`/`pwd` or
-  touch the filesystem directly — push that through callbacks on
-  `TuiContext`.
+- **Module boundaries.** `domain` stays pure, `infra` does not import the TUI,
+  and target-user commands cross `infra.execution`. TUI blocking work goes
+  through off-loop callbacks rather than direct subprocess or filesystem I/O.
 
 ## Tests
 
-- Prefer pure tests in `src/uxon/tui/state.py` for branchy UI logic.
+- Prefer tests exercising pure `uxon.tui.state` behavior for branchy UI logic.
   Pilot/pty tests are reserved for Textual wiring (mounting, key
   routing, `ListView`/`DataTable` events, async workers,
   `call_later`).
@@ -114,19 +126,55 @@ full picture. Quick list:
   (`pytest tests/test_specific.py -k name`); always run the full
   suite (`-n auto`) before pushing.
 
+Keep verification levels separate:
+
+```bash
+pytest tests/ -n auto                  # default: excludes slow and container
+pytest tests/ -m slow -rs              # real-process/pty and timing checks
+pytest tests/ -m container -rs         # real Docker/Podman lifecycle checks
+UXON_PERF=1 pytest tests/perf/ -s       # optional benchmark measurements
+```
+
+The default set includes limited Textual wiring tests, not just unit tests.
+Place expensive process/terminal checks under `slow`; container tests live in
+`tests/integration/runtime/` and require a reachable daemon. Local container
+runs skip unavailable engines. CI/release uses a separate required integration
+job: it runs `slow`, requires Docker, and sets `UXON_TEST_REQUIRE_DOCKER=1` so
+Docker unavailability fails rather than silently skips. Podman remains optional.
+Performance measurements stay opt-in and outside the gates.
+
+The audit benchmark measures channel machinery after CLI module startup, with
+only OS, NSS, and socket boundaries controlled. Sink detection, identity parsing,
+serialization, and send dispatch run normally; the numerical budgets apply to
+that controlled measurement. It separately reports first-call latency using real
+identity lookup and a temporary Unix datagram sink. That host-dependent result
+is not a portable latency guarantee or a pass/fail timing threshold.
+Run the budget assertions on an idle benchmark host: competing workloads can
+inflate wall-clock tails even when the channel performs no blocking I/O.
+Keep failed measurements when comparing results; a successful retry does not
+establish a stable latency baseline.
+
+Some tmux builds have an upstream libutempter child-status defect; integration
+CI uses tmux 3.8 with libutempter explicitly enabled and verifies the linkage,
+so that the affected branch is exercised. Uxon itself does not require
+libutempter. See the [installation caveat](docs/start/install.md#tmux-child-status-caveat)
+when reproducing retained-pane failures locally.
+
 ## Adding a config key
 
-1. Extend `DEFAULT_CONFIG`, `Config`, and `load_config` in
-   `src/uxon/cli.py`.
+1. Extend `DEFAULT_CONFIG` / `Config` in `src/uxon/domain/config.py`, the public
+   key/type schema in `src/uxon/domain/config_schema.py`, and parsing in
+   `src/uxon/infra/config_loader.py`.
 2. Add validation if the value space is constrained.
-3. Add a matching `SettingSpec` in
-   `src/uxon/settings.py::SETTINGS_SPECS` so the TUI Settings screen
-   exposes it.
+3. For scalar keys, add a matching `SettingSpec` in
+   `src/uxon/infra/settings.py::SETTINGS_SPECS` so the TUI Settings screen
+   exposes it. Nested agent/profile/runtime tables and path-rule arrays are
+   file-only; do not force them into scalar settings.
 4. Document it in [`docs/reference/configuration.md`](docs/reference/configuration.md)
    (use case + the reference table).
-5. Add a `load_config` test in `tests/test_uxon.py` and a
-   round-trip test in `tests/test_uxon_settings.py` if the value
-   has non-trivial encoding.
+5. Extend the public renderer/loader contracts in
+   `tests/test_install_config_renderer.py` and the persisted settings
+   round-trip in `tests/test_uxon_settings.py` when encoding is non-trivial.
 
 ## Reporting bugs and proposing features
 

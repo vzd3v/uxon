@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from uxon.domain.session import SessionIdentity
+
 from ..context import TuiSession
 
 
@@ -46,20 +48,32 @@ class SessionRow:
     last_attached_epoch: float | None
     cmd: str
     path: str
+    profile: str = ""
+    runtime: str = ""
+    runtime_resource: str = ""
+    # True iff this row's workload resource is stopped/absent.
+    # Drives the distinct "runtime down" CPU/RAM rendering instead
+    # of a silent idle 0/—. Defaults False so a peer running an older wire
+    # schema (no such field) renders as a normal row.
+    runtime_down: bool = False
+    exited: bool = False
+    active_exit_status: int | None = None
+    has_diagnostics: bool = False
+    identity: SessionIdentity | None = None
 
     @property
     def key(self) -> str:
         """Stable identity for this row across ticks.
 
-        ``host`` defaults to ``"local"`` when ``None`` so local rows
-        share a deterministic prefix and never collide with peer-named
-        rows. This is the canonical row-identity key — the placement
+        Local and remote scopes have distinct prefixes, including for a peer
+        literally named ``local``. This is the canonical row-identity key — the placement
         function (:mod:`uxon.tui.dashboard.order`), the dashboard widget
         selection, and the block-meta map all key off it. A ``property``
         is a class-level descriptor, so it is ``slots=True``-compatible
         (``key`` is not a declared field).
         """
-        return f"{self.host or 'local'}/{self.user}/{self.name}"
+        scope = "local" if self.host is None else f"remote:{self.host}"
+        return f"{scope}/{self.identity.key if self.identity else self.user + '/' + self.name}"
 
 
 def _parse_pid(raw: str) -> int | None:
@@ -150,7 +164,10 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         user=s.user,
         name=s.name,
         short=s.short,
+        profile=getattr(s, "profile", ""),
         agent=s.agent,
+        runtime="",
+        runtime_resource="",
         attached=s.attached,
         legacy=s.legacy,
         pid=_parse_pid(s.pid),
@@ -162,6 +179,14 @@ def from_tui_session(s: TuiSession) -> SessionRow:
         ),
         cmd=s.cmd,
         path=s.path,
+        # Additive field with a default — read defensively so an older /
+        # partial source object (no such attribute) renders as a normal row,
+        # the same forward-compat stance ``from_wire_record`` takes.
+        runtime_down=bool(getattr(s, "runtime_down", False)),
+        exited=s.exited,
+        active_exit_status=s.active_exit_status,
+        has_diagnostics=s.has_diagnostics,
+        identity=s.identity,
     )
 
 
@@ -177,10 +202,14 @@ def from_wire_record(host: str, rec: dict[str, Any]) -> SessionRow:
     short = str(rec.get("short_id", "") or "") or name
     return SessionRow(
         host=host,
+        identity=SessionIdentity.from_wire(rec.get("identity")),
         user=str(rec.get("user", "") or ""),
         name=name,
         short=short,
+        profile=str(rec.get("profile", "") or ""),
         agent=str(rec.get("agent", "") or ""),
+        runtime=str(rec.get("runtime", "") or ""),
+        runtime_resource=str(rec.get("runtime_resource", "") or ""),
         attached=bool(rec.get("attached", False)),
         legacy=bool(rec.get("legacy", False)),
         pid=rec.get("active_pid") if isinstance(rec.get("active_pid"), int) else None,
@@ -190,4 +219,14 @@ def from_wire_record(host: str, rec: dict[str, Any]) -> SessionRow:
         last_attached_epoch=_parse_iso_to_epoch(str(rec.get("last_attached", "") or "")),
         cmd=str(rec.get("active_cmd", "") or ""),
         path=str(rec.get("active_path", "") or ""),
+        # Read defensively: the current wire schema does not carry this field,
+        # so a peer's runtime-down state shows as a normal idle row remotely
+        # (an acceptable cross-host limitation — the field is forward-compat
+        # only). ``False`` when absent.
+        runtime_down=bool(rec.get("runtime_down", False)),
+        exited=bool(rec.get("exited", False)),
+        active_exit_status=(
+            rec["active_exit_status"] if isinstance(rec.get("active_exit_status"), int) else None
+        ),
+        has_diagnostics=rec.get("has_diagnostics") is True,
     )

@@ -15,7 +15,7 @@ def _textual_available() -> bool:
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ActionRowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_enter_activates_and_posts_message(self) -> None:
+    async def test_enabled_and_disabled_keyboard_and_mouse_activation(self) -> None:
         from textual.app import App, ComposeResult
 
         from uxon.tui.widgets import ActionRow
@@ -36,16 +36,24 @@ class ActionRowTests(unittest.IsolatedAsyncioTestCase):
 
         app = Host()
         async with app.run_test() as pilot:
-            app.query_one("#row", ActionRow).focus()
+            row = app.query_one("#row", ActionRow)
+            row.focus()
             await pilot.press("enter")
             await pilot.pause()
-        self.assertEqual(captured, ["action-cwd"])
-
-    def test_disabled_row_tracks_enabled_state(self) -> None:
-        from uxon.tui.widgets.action_row import action_row_can_activate
-
-        self.assertFalse(action_row_can_activate(False))
-        self.assertTrue(action_row_can_activate(True))
+            self.assertEqual(captured, ["action-cwd"])
+            self.assertTrue(await pilot.click("#row"))
+            await pilot.pause()
+            self.assertEqual(captured, ["action-cwd", "action-cwd"])
+            row.set_enabled(False)
+            await pilot.press("enter")
+            self.assertTrue(await pilot.click("#row"))
+            await pilot.pause()
+            self.assertEqual(captured, ["action-cwd", "action-cwd"])
+            row.set_enabled(True)
+            row.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertEqual(captured, ["action-cwd"] * 3)
 
 
 if __name__ == "__main__":

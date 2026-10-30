@@ -20,7 +20,6 @@ import uxon.app.listing as listing_app
 import uxon.app.new as new_app
 import uxon.app.run as run_app
 from uxon.domain.args import ParsedArgs
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.errors import fail
 
@@ -32,12 +31,12 @@ def dispatch(args: ParsedArgs, cfg: Config, caller_user: str, launch_user: str) 
             cfg,
             caller_user,
             launch_user,
-            canonical(os.getcwd()),
+            os.path.normpath(os.path.abspath(os.getcwd())),
             json_output=args.json_output,
             probe_remote=args.all_hosts,
         )
     if args.action == "run":
-        return run_app.do_run(args, cfg, launch_user)
+        return run_app.do_run(args, cfg, caller_user)
     if args.action == "list":
         return listing_app.do_list(args, cfg, launch_user)
     if args.action == "attach":
@@ -47,6 +46,6 @@ def dispatch(args: ParsedArgs, cfg: Config, caller_user: str, launch_user: str) 
     if args.action == "kill-all":
         return kill_app.do_kill_all(args, cfg, launch_user)
     if args.action == "new":
-        return new_app.do_new(args, cfg, launch_user)
+        return new_app.do_new(args, cfg, caller_user)
     fail(f"unsupported action: {args.action}")
     return 2

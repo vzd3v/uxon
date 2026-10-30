@@ -1,0 +1,52 @@
+name: Integration
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: slow and container tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - run: python3 -m pip install -e ".[dev]"
+      # tmux 3.4 with libutempter can lose pane exit status (tmux #4559).
+      # Use an upstream fixed version without replacing the host installation.
+      - name: Install tmux with reliable retained-pane status
+        env:
+          TMUX_TEST_VERSION: "3.8"
+          TMUX_TEST_SHA256: e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential bison pkg-config libevent-dev libncurses-dev libutempter-dev
+          tmux_test_dir=$(mktemp -d "$RUNNER_TEMP/uxon-tmux.XXXXXX")
+          cd "$tmux_test_dir"
+          curl --fail --location --retry 3 --output tmux.tar.gz \
+            "https://github.com/tmux/tmux/releases/download/${TMUX_TEST_VERSION}/tmux-${TMUX_TEST_VERSION}.tar.gz"
+          echo "$TMUX_TEST_SHA256  tmux.tar.gz" | sha256sum --check
+          tar -xzf tmux.tar.gz
+          cd "tmux-${TMUX_TEST_VERSION}"
+          ./configure --prefix="$tmux_test_dir/install" --enable-utempter
+          grep -q -- '-DHAVE_UTEMPTER=1' Makefile
+          make -j2
+          make install
+          "$tmux_test_dir/install/bin/tmux" -V
+          ldd "$tmux_test_dir/install/bin/tmux" | grep libutempter
+          echo "$tmux_test_dir/install/bin" >> "$GITHUB_PATH"
+      - name: Run slow process and terminal tests
+        run: pytest tests/ -m slow -rs
+      - name: Verify Docker availability
+        run: docker info
+      - name: Run real Docker tests
+        env:
+          UXON_TEST_REQUIRE_DOCKER: "1"
+        run: pytest tests/ -m container -k docker -rs

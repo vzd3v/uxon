@@ -11,7 +11,7 @@ uxon doctor --remote
 ```
 
 Per-peer status with reachability, latency, and session count.
-If everything is `ok`, the issue is local (cache stale, TUI
+If everything is `ok`, the issue is local (TUI
 needs `r` to refresh). If a peer reports an error, the next
 layers narrow it down.
 
@@ -21,7 +21,8 @@ layers narrow it down.
 ssh <ssh_alias> uxon list --all-users --json | head
 ```
 
-Replicates exactly what `uxon`'s collector does. Check:
+This checks the default SSH route. Custom transports and SSH options may
+differ; inspect the configured peer settings. Check:
 
 - Does SSH connect at all? (Network / firewall / known_hosts.)
 - Does it land on the right peer? (`hostname` after the
@@ -51,11 +52,11 @@ Stable error tags on stderr disambiguate the failure mode:
 
 | Tag | Meaning | Fix |
 |---|---|---|
-| `uxon-error: not-reachable` | Caller cannot `sudo -niu <user>` | Add per-target NOPASSWD on the peer. |
+| `uxon-error: not-reachable` | Caller cannot `sudo -n -H -u <user> --` | Add per-target NOPASSWD on the peer. |
 | `uxon-error: all-users-disabled` | Peer's `enable_all_users_list = false` | Set `true` on peer (and confirm sudoers for `session_users`). |
 
-Other stderr → generic SSH/peer failure → falls to cache
-fallback (`(stale)` in TUI, `from_cache=True` in JSON).
+Other stderr means a failed live fetch: the peer's rows are hidden.
+See [remote error metadata](../../reference/wire-schema.md#json-lines---all-hosts---json).
 
 ## Layer 5 — wire-schema mismatch
 
@@ -64,49 +65,33 @@ uxon --version          # aggregator
 ssh <ssh_alias> uxon --version   # peer
 ```
 
-Major-version mismatch (e.g. aggregator on 3.x, peer on 2.x or
-4.x) breaks the wire. The aggregator emits a parse error,
-peer-side `uxon` keeps working locally. Roll the upgrade:
+Wire-schema mismatch rejects the remote response; package versions alone do
+not determine compatibility. The status names which side needs updating.
+Peer-side `uxon` keeps working locally. Roll the upgrade:
 [`../operate/roll-fleet-upgrade.md`](../operate/roll-fleet-upgrade.md).
 
 ## Layer 6 — circuit breaker open
 
-After three consecutive failures the breaker opens for one
-interval. The peer shows as errored even after the underlying
-issue is resolved, until the next half-open attempt. Wait
-~30–60 s and re-check, or restart the TUI to reset the
-breaker.
+After repairing the cause, press `r` to retry immediately or wait for the
+next automatic probe. Retry intervals depend on the failure category;
+see [the retry policy](../../reference/configuration.md#remote_hosts-table-array).
 
 ## Layer 7 — SSH multiplex socket stale
 
-A wedged `ControlMaster` (still alive but unresponsive — typically
-after a network blip) makes new ssh slaves block at
-`unix_wait_for_peer` against the multiplex socket under
-`~/.cache/uxon/ssh-*`. The polling path self-heals on the next
-tick after a fetch timeout: graceful `ssh -O exit`, then `SIGKILL`
-the master via `/proc`, then unlink the stale socket. The CLI
-`uxon kill --host` and the TUI's remote-row kill do the same on
-their own timeout. Interactive `uxon attach --host` is immune by
-construction (it never multiplexes — see `docs/reference/cli.md`).
+A wedged `ControlMaster` can leave new SSH clients waiting at
+`unix_wait_for_peer`. Uxon asks SSH to close the master after a fetch or remote
+kill timeout, but an unresponsive master may remain. The failed operation keeps
+its timeout status; see [transport recovery](../../reference/configuration.md#remote_hosts-table-array).
+Interactive attach uses a fresh connection with the default template; custom
+templates own their transport behavior. See [remote attach](../../reference/cli.md).
 
-If you want to clear a wedge by hand without waiting for the next
-poll tick:
+Use the reported peer and configured control-socket path when diagnosing a
+persistent failure. Avoid deleting unrelated sockets or killing SSH processes
+by a broad name pattern.
 
-```bash
-ssh -O exit <ssh_alias>           # graceful
-# If that hangs, pkill the master and remove its socket:
-pkill -f 'ssh: .*uxon/ssh-.* \[mux\]'
-rm -f ~/.cache/uxon/ssh-*
-```
-
-If multiplexing is more trouble than it's worth in your
-environment:
-
-```toml
-ssh_multiplex = "off"
-```
-
-You'll pay 200–500 ms per tick instead of 5–20 ms.
+To bypass the shared master, disable multiplexing through
+[`ssh_multiplex`](../../reference/configuration.md#top-level-keys), then retry.
+Each operation establishes a fresh connection, increasing connection overhead.
 
 ## Layer 8 — peer-side audit channel
 
@@ -123,18 +108,7 @@ If `sink=no-sink` on the peer, the peer has no journald and no
 dropped on that peer. Fix: add a syslog daemon or run on a
 systemd-equipped host.
 
-## Layer 9 — cache file inspection
-
-```bash
-ls -la ~/.local/state/uxon/remote/
-cat ~/.local/state/uxon/remote/<peer>.json | jq .
-```
-
-The cache file's `mtime` is the snapshot age. Fresh successful
-fetches overwrite atomically; failed polls don't. Manually
-deleting the file is fine — next successful fetch recreates.
-
-## Layer 10 — metrics
+## Layer 9 — metrics
 
 ```bash
 UXON_METRICS=1 uxon list --all-hosts --json > /dev/null

@@ -1,0 +1,90 @@
+# Choose launch profiles
+
+You want `uxon` to offer a specific set of runnable choices, pick a
+default, or route one project tree to a different runtime.
+
+Launch profiles are the runnable choices. Each profile selects an
+agent from the catalog and can optionally pin a launch user, a
+workload runtime, and the GitHub repo-creation profiles it may use.
+
+## Pick a default profile
+
+```toml
+[launch]
+enabled_profiles = ["claude_work", "codex_safe"]
+default_profile = "claude_work"
+
+[launch.profiles.claude_work]
+agent = "claude"
+display_name = "Claude work"
+
+[launch.profiles.codex_safe]
+agent = "codex"
+display_name = "Codex safe"
+```
+
+`enabled_profiles` is an ordered whitelist. `default_profile` must be
+listed there. The TUI shows enabled launch profiles; non-interactive
+launches use the default unless `--profile <id>` is passed.
+
+## Override one launch
+
+```bash
+uxon run --profile codex_safe
+uxon new myproj --profile claude_work
+```
+
+`--profile` selects the launch profile for that invocation. Other flags are
+forwarded to the selected agent, so `--agent` has no special meaning to Uxon.
+
+## Route a path to a profile
+
+```toml
+[[launch.path_rules]]
+path_prefix = "/srv/projects/billing-api"
+allowed_profiles = ["codex_safe"]
+default_profile = "codex_safe"
+```
+
+Path rules match by path component and the longest matching
+`path_prefix` wins. They can narrow which launch profiles and
+git-remote profiles are allowed for a project tree.
+
+## Agent defaults and modes
+
+Configure per-agent `default_args` only for flags supported by the installed
+coding tool. Uxon prepends these arguments and appends explicitly forwarded
+arguments; the coding tool decides how duplicates behave. See the
+[agent catalog](../../reference/configuration.md#agentsid-catalog) and the
+selected tool's own flag documentation.
+
+`--mode <id>` selects a permission mode from the selected profile's
+underlying agent catalog (for example `--mode auto` or `--mode yolo`).
+Omitting it picks the agent's first mode.
+
+## Add a coding tool
+
+Install the tool for the selected launch account, following the tool's own
+instructions. Add its executable and at least one permission mode to the
+[agent catalog](../../reference/configuration.md#agentsid-catalog), then enable
+a launch profile pointing to that entry. The reference includes a complete
+custom-tool configuration; replace its example executable with your tool's.
+
+Run `uxon doctor` to check availability, refresh the TUI, and select the new
+profile. No Uxon plugin or source change is required. Adding a catalog entry
+alone does not enable it in the launch picker.
+
+## Auto-mode
+
+With `launch.enabled_profiles` empty or absent, `uxon` uses the
+shipped built-in profiles `claude`, `codex`, and `cursor`, each mapped
+to the same-named agent. On host-only launches it probes the launch
+user's PATH and picks the first built-in profile whose agent is
+installed. Command-runtime profiles are explicit config entries and must
+be enabled by the operator.
+
+## Reference
+
+- [`../../reference/configuration.md`](../../reference/configuration.md) — `[launch]`, `[launch.profiles.<id>]`, path rules, and `[agents.<id>]`.
+- [`../../reference/cli.md`](../../reference/cli.md) — `--profile`, `--mode`, and session naming.
+- README's [Coding tools](../../../README.md#coding-tools) — extensible catalog and built-in presets.

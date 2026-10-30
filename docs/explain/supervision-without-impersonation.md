@@ -7,27 +7,31 @@ because the team and team-N scenarios depend on it.
 ## The shape
 
 In the paired-account team setup, every developer's agent runs
-as a separate low-privilege OS account: `alice` (shell user) +
-`alice_agent` (agent runtime), `bob` + `bob_agent`, and so on.
+as a separate low-privilege OS account: `nadia` (shell user) +
+`nadia-agent` (agent runtime), `liam` + `liam-agent`, and so on.
 
 A team-lead grant of the form
 
 ```
-lead ALL=(alice_agent,bob_agent) NOPASSWD: ALL
+lead ALL=(nadia-agent,liam-agent) NOPASSWD: ALL
 ```
 
 lets the lead:
 
-- attach to Alice's and Bob's running agent sessions
+- attach to Nadia's and Liam's running agent sessions
   (`uxon attach`, `Enter` in the TUI on a row in their `USER`
   block);
 - reap a stuck or runaway session (`uxon kill`, `d` in the TUI);
-- run the TUI's `kill-all-reachable` action across `alice_agent`,
-  `bob_agent`, and any other agent accounts the lead can reach.
+- run the TUI's `kill-all-reachable` action across `nadia-agent`,
+  `liam-agent`, and any other agent accounts the lead can reach.
 
-It does **not** let the lead `sudo -iu alice` or `sudo -iu bob` —
+It does **not** let the lead `sudo -H -u nadia --` or `sudo -H -u liam --` —
 the grant targets the agent accounts only. The lead never becomes
 the developer.
+
+Uxon removal also requires a [protected shared record store](../reference/configuration.md#launch-records)
+accessible to each controller, including for direct workloads. Target-account
+access alone permits listing and attaching, not another controller's cleanup.
 
 ## Why this matters
 
@@ -45,8 +49,8 @@ everything tied to the developer's identity:
 - any long-lived secret an operator might pull out of `$HOME` if
   they could become the developer for a moment.
 
-The grant `ALL=(alice_agent)` is enough to supervise a runaway
-agent. `ALL=(alice)` would also let the lead read the developer's
+The grant `ALL=(nadia-agent)` is enough to supervise a runaway
+agent. `ALL=(nadia)` would also let the lead read the developer's
 SSH agent socket and act as them. The team setup picks the first
 deliberately.
 
@@ -59,13 +63,13 @@ in a refactor:
 1. **`tmux attach` is read-write by default.** Once an operator
    attaches to a developer's running pane, keypresses go to
    whatever process is in that pane. `uxon` does not enforce
-   read-only attach. For a true read-only audit posture, attach
-   with `tmux attach -r` — see
+   read-only attach. For a true read-only audit posture, keep attach access
+   disabled until uxon exposes a backend-safe read-only mode — see
    [`guides/harden/configure-readonly-attach.md`](../guides/harden/configure-readonly-attach.md).
 
 2. **`ForwardAgent yes` widens the boundary.** If the developer
    ran the agent with SSH-agent forwarding into the
-   `<user>_agent` account, the agent's process holds a live
+   `<user>-agent` account, the agent's process holds a live
    handle to the developer's SSH agent socket. An operator
    attached to that pane can use that socket to sign as the
    developer (without the private key ever being copied). The
@@ -74,8 +78,8 @@ in a refactor:
    already holds. Forward only for the duration of operations
    that need it.
 
-3. **Secrets stored inside the `<user>_agent` account are
-   reachable by anyone who can `sudo -iu <user>_agent`.**
+3. **Secrets stored inside the `<user>-agent` account are
+   reachable by anyone who can `sudo -H -u <user>-agent --`.**
    Long-lived `OPENAI_API_KEY`, `~/.aws/credentials` copied
    in for convenience, session tokens cached under
    `~/.claude/`, `.env` files in the project tree — all of
@@ -88,15 +92,15 @@ in a refactor:
 
 The same property holds per host, independently. Cross-host
 operation does not delegate trust between peers. Each peer
-evaluates its own `sudoers` against the SSH user landing on
-that peer; there is no shared-secret handshake, no central
-authority, no certificate chain `uxon` installs across the
-fleet.
+evaluates its own execution policy against the SSH user landing on that peer
+(`sudoers` for the built-in local backend); there is no shared-secret
+handshake, no central authority, no certificate chain `uxon` installs across
+the fleet.
 
-A grant on host A does **not** propagate to host B. To revoke a
-lead's reach on host B you edit `/etc/sudoers.d/` on host B —
-touching the central config or the lead's machine doesn't
-change what host B accepts.
+A grant on host A does **not** propagate to host B. The same SSH credential
+can nevertheless reach every peer that accepts it. Revoke a compromised
+credential on each accepting peer or at its issuer, and remove the
+corresponding local grants.
 
 This is the source of the team·N model: each host stays the
 authority on its own users.

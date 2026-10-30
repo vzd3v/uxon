@@ -3,71 +3,318 @@
 Every config key, type, default, and semantics. For *when and why*
 to set a key — see the [scenario hubs](../scenarios/solo-1.md), the
 [tutorials in `start/`](../start/install.md), or the
-[how-to guides in `guides/customise/`](../guides/customise/switch-default-agent.md).
+[how-to guides in `guides/customise/`](../guides/customise/choose-launch-profile.md).
 
-## Layers
+## Config file
 
-`uxon` reads two layers, later wins:
+`uxon` reads one optional, host-wide operator file:
+`/etc/uxon/config.toml`. There is no environment, XDG, checkout, or project
+fallback. `config/config.example.toml` is the source template to install there.
 
-1. **Repo config** — `<repo>/config/config.toml`, host-wide.
-   `config/config.example.toml` is the tracked starting point.
-2. **Project config** — the nearest `.uxon.toml` in `cwd` or a
-   parent inside an `allowed_roots` entry. Per-project overrides.
-   The TUI never writes `.uxon.toml`.
+The TUI's ⚙ Settings screen is read-only for non-root processes. A root-run TUI
+may atomically update the root-owned `0644` file with a comment-preserving
+`tomlkit` round-trip.
 
-The TUI's ⚙ Settings screen rewrites repo config in place via a
-`tomlkit` round-trip, preserving comments and formatting.
+Project-owned `.uxon.toml` files are not read. Runtime policy,
+launch profiles, path rules, agents, execution backends, runtimes, and git credentials
+are operator-owned.
 
 ## Top-level keys
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
-| `runtime_user` | string | `""` | Launch user when `default_launch_mode = "fixed"`. |
+| `default_launch_user` | string | `""` | Launch user when `default_launch_mode = "fixed"`. |
 | `default_launch_mode` | `"caller"` / `"fixed"` | `"caller"` | Launch-user resolution for callers without a mapping. |
 | `launch_user_by_caller` | table | `{}` | Per-caller override (`<caller> = <launch user>`). |
 | `session_users` | array | `[]` | Users scanned by `list --all-users` and the TUI superuser block. |
 | `enable_all_users_list` | bool | `false` | Enables `list --all-users`. |
-| `allowed_roots` | array | `[]` | When empty: `uxon run` and the TUI's "New session in current folder" gate on **write access** alone. When non-empty: strict whitelist — `uxon run` / `uxon new -w` / the TUI's current-folder action all refuse anything outside the listed paths (no `$HOME`-implicit, no other implicit allowance). `uxon new` (creating a project) always requires a non-empty whitelist that covers `new_project_root`. |
+| `allowed_roots` | array | `[]` | When empty: `uxon run` and the TUI's "Open in this folder" gate on **write access** alone. When non-empty: strict whitelist — `uxon run` / `uxon new -w` / the TUI's current-folder action all refuse anything outside the listed paths (no `$HOME`-implicit, no other implicit allowance). `uxon new` (creating a project) always requires a non-empty whitelist that covers `new_project_root`. |
 | `new_project_root` | string | `~/projects` | Base directory for `uxon new <name>`. Must be inside `allowed_roots`. |
 | `session_prefix` | string | `"uxon-"` | TMUX session-name prefix for new sessions. |
 | `legacy_session_prefixes` | array | `[]` | Extra prefixes recognised by `list`/`attach`/`kill`. Never used to create new sessions. |
-| `tmux_socket_template` | string | `/tmp/uxon-{user}.sock` | Per-user socket path. Placeholders: `{user}`, `{uid}`. |
+| `tmux_socket_template` | string | `/tmp/tmux-{uid}/uxon-{execution_backend}.sock` | Dedicated socket path. Its parent must be a real directory owned by the launch user with mode `0700`; the socket must be owned by that user with mode `0600`, `0700`, `0660` or `0770`. Native default sockets use group bits, and attached servers add execute bits; the private parent prevents other-user access. These checks also apply to legacy default-socket discovery. Placeholders: `{user}`, `{uid}`, `{execution_backend}`, `{execution_fingerprint}`. |
+| `launch_record_dir` | string | `""` | Authoritative launch-record directory. Empty uses the controller's private XDG state directory. Set an absolute, pre-provisioned shared directory only for multi-controller supervision; see [Launch records](#launch-records). |
 | `tui_refresh_interval_seconds` | number | `2.0` | Local-tmux refresh cadence. |
 | `tui_ssh_refresh_interval_seconds` | number | `10.0` | Cadence for SSH-driven streams: the `ssh-link` probe (visible inside SSH) and the per-peer remote-sessions poller (when `[[remote_hosts]]` is configured). |
 | `repeat_noninteractive_mode` | `"fail"` / `"attach"` / `"new"` | `"fail"` | Non-TTY fallback when `uxon new` finds an existing matching session. |
 | `worktree_root` | string | `""` | Base directory for uxon-managed worktrees. Empty = default `<repo>/.uxon/worktrees/<branch-slug>/` (excluded from git via `.git/info/exclude`). When set: `<worktree_root>/<repo-slug>/<branch-slug>/` — the admin must ensure it is writable by the launch user and inside `allowed_roots`. |
 | `worktree_base` | `"local"` / `"remote"` | `"local"` | Base ref for a *new* worktree branch. `local` (default): branch off the local `origin/HEAD` if present, else local `HEAD` — no `git fetch`, no network. `remote`: `git fetch origin` first, then branch off the fetched `origin/HEAD` (claude-like; needs network + credentials). |
 | `git_create_enabled` | bool | `false` | Master switch for GitHub repo creation on new project. |
-| `default_git_remote_profile` | string | `""` | Profile picked by `--git-remote default` and the TUI default. |
-| `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=<ssh_control_persist_seconds>s` to the default fetch template (warm tick: 5–20 ms vs cold 200–500 ms). `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
+| `ssh_multiplex` | `"auto"` / `"off"` | `"auto"` | Adds `ControlMaster=auto`/`ControlPath`/`ControlPersist=<ssh_control_persist_seconds>s` to the default fetch template. `"off"` strips the three options for environments that prohibit `ControlPersist` sockets. No effect on a host's `command_template` (operator owns that argv). |
 | `ssh_control_persist_seconds` | int | `300` | `ControlPersist` lifetime (seconds) for the multiplex master. Must be `> 0`; to disable multiplexing entirely set `ssh_multiplex = "off"` rather than zeroing this out. Ignored when `ssh_multiplex = "off"` and per-host when `command_template` is set. |
-| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide. Without a cap, a 50-host fleet recovering from an outage launches 50 concurrent `subprocess.Popen` calls (each holds ≥3 pipe FDs), saturating the default 1024-FD `ulimit` before scheduling becomes the bottleneck. Not exposed on the TUI's ⚙ Settings screen — edit `config.toml` directly. |
+| `fetch_concurrency` | int | `16` | Caps concurrent SSH fetch workers fleet-wide to bound simultaneous SSH processes and file descriptors. Not exposed on the TUI's ⚙ Settings screen — edit `config.toml` directly. |
 
-## `[agents]` table
+## `[launch]` table
+
+Launch profiles are the runnable choices. Agents remain the
+binary/mode catalog; a launch profile selects an agent and may pin a
+launch user, a workload runtime, and git-remote credentials.
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
-| `agents.enabled` | array | `[]` | Strict whitelist of agent ids when non-empty (`claude`, `codex`, `cursor`); empty or absent flips uxon into **auto-mode** where every installed CATALOG agent is launchable for the launch user. |
-| `agents.default` | string | `""` | Default agent when `--agent` is not passed. Optional; if unset uxon picks the first entry of `agents.enabled` (strict mode) or the first installed agent (auto-mode). Must be in `agents.enabled` when both are set. |
-| `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of that agent. |
+| `launch.enabled_profiles` | array | `[]` | Ordered whitelist of launch profile ids. Empty or absent means auto-mode with the shipped built-in profiles `claude`, `codex`, and `cursor`. Operator-defined profiles are enabled only when listed. |
+| `launch.default_profile` | string | `""` | Default launch profile. When set, it must be enabled. |
 
-Auto-mode vs strict whitelist:
+### Launch profiles (`[launch.profiles.<id>]`)
 
-- **`enabled = []` or absent** — auto-mode. uxon probes the host at
-  startup and treats every installed CATALOG agent as launchable.
-  `r` on the main screen re-probes (e.g. after `npm i -g …`).
-- **`enabled = ["claude", "codex"]`** — strict whitelist. Only the
-  listed agents are launchable, even if more are installed. Use this
-  to pin a fleet to an approved subset (operator/CI scenarios).
+Profile ids must match `[a-z][a-z0-9_]*` and contain no `:` or `.`.
 
-`agents.enabled = []` and an absent `[agents].enabled` are
-semantically identical — both mean auto. There is no explicit
-"disable" mode; if you want uxon to refuse to launch anything,
-uninstall the agent binaries.
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `agent` | string | — | Required agent catalog id. |
+| `display_name` | string | `""` | Optional human label. |
+| `launch_user` | string | `""` | Optional OS-user override. Empty uses `launch_user_by_caller` / `default_launch_mode` / `default_launch_user`. |
+| `runtime` | string | `"direct"` | Workload runtime id from `[runtimes.<id>]`; `direct` is built in. |
+| `allowed_git_remote_profiles` | array | `[]` | Git remote profiles this launch profile may use. Empty means this launch profile cannot create remote repos. |
+| `default_git_remote_profile` | string | `""` | Default for `--git-remote default`; must be listed in `allowed_git_remote_profiles`. |
 
-Per-agent permission-mode flags are fixed by the agent binary and
-not configurable here — see [`reference/cli.md`](cli.md) under
-`uxon run`.
+```toml
+[launch]
+enabled_profiles = ["claude_work", "codex_safe"]
+default_profile = "claude_work"
+
+[launch.profiles.claude_work]
+agent = "claude"
+display_name = "Claude work"
+launch_user = "wes-claude-agent"
+runtime = "claude_work"
+allowed_git_remote_profiles = ["work"]
+default_git_remote_profile = "work"
+```
+
+### Path rules (`[[launch.path_rules]]`)
+
+Path rules narrow launch and git-remote policy under an operator-owned
+host path. Longest matching `path_prefix` wins. Paths are matched by
+path component, not string prefix.
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `path_prefix` | string | — | Required absolute host path. |
+| `allowed_profiles` | array | — | Non-empty subset of effective enabled launch profiles. |
+| `default_profile` | string | `""` | Default for this path; must be in `allowed_profiles` when set. |
+| `allowed_git_remote_profiles` | array | unset | Optional narrowing list. It never grants credentials not already allowed by the selected launch profile. |
+| `default_git_remote_profile` | string | `""` | Path default after narrowing; must remain allowed for every profile named by the rule. |
+
+```toml
+[[launch.path_rules]]
+path_prefix = "/srv/projects/billing-api"
+allowed_profiles = ["claude_work", "codex_safe"]
+default_profile = "codex_safe"
+allowed_git_remote_profiles = ["work"]
+default_git_remote_profile = "work"
+```
+
+## `[agents.<id>]` catalog
+
+Each `[agents.<id>]` table customises a shipped preset or adds any terminal
+coding tool by executable and arguments; no source change is required.
+The shipped presets are `claude`, `codex`, and `cursor`. Supplying a table for a
+new id adds it to the catalog (the id must match
+`[a-z][a-z0-9_]*` and contain no `:` / `.`).
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `agents.<id>.binary` | string | the agent `<id>` | Executable name resolved on the execution backend's inherited `PATH`, or an absolute executable path. uxon does not source a login shell. |
+| `agents.<id>.version_args` | array | `["--version"]` | Argv passed by `uxon doctor` to read the version. `[]` ⇒ doctor shows no version line for this agent. |
+| `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of this agent. |
+| `agents.<id>.install_hint` | string | `""` | Message shown by `doctor` / the agent picker when the binary is missing. |
+
+Permission modes are an array-of-tables — **order is significant,
+the first entry is the default mode** (used when `--mode` is
+omitted). IDs must be unique within each agent and are interpreted literally,
+including `default`. `--mode <id>` selects one by `id`; the mode ids and the
+flags they map to per shipped agent are in
+[`reference/cli.md`](cli.md#--mode-id).
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `[[agents.<id>.mode]]` | array-of-tables | — | One entry per permission mode; first = default. |
+| `agents.<id>.mode.id` | string | — | Required. Mode id selected by `--mode`. |
+| `agents.<id>.mode.label` | string | the mode `id` | User-facing label (TUI / audit). |
+| `agents.<id>.mode.flags` | array | `[]` | Argv appended for this mode (empty for a plain/normal mode). |
+| `agents.<id>.mode.dangerous` | bool | `false` | Semantic signal (audit + TUI emphasis); does not change the flags. |
+
+**Merge rules.** Scalar/list fields (`binary`, `version_args`,
+`default_args`, `install_hint`) merge **field-by-field** over the
+shipped default for that id — omit a field to keep the default. The
+mode list is **replace-not-merge**: supplying any `[[agents.<id>.mode]]`
+table wholly replaces that id's default modes (you cannot append a
+single mode); supplying none inherits the defaults. A brand-new id
+(no shipped default) gets `binary = <id>`, `version_args =
+["--version"]`, `default_args = []`, `install_hint = ""`, and **must**
+declare at least one `[[agents.<id>.mode]]` or load fails.
+
+Adding a tool to the catalog does not enable a launch profile automatically.
+This complete example enables a custom tool. `my-agent` is a placeholder for
+an executable installed by the operator; use only flags that executable accepts.
+
+```toml
+# A custom agent: declares a binary and at least one mode.
+[agents.myagent]
+binary       = "my-agent"
+install_hint = "Install the team's coding tool for the launch account."
+
+[[agents.myagent.mode]]
+id    = "normal"          # first entry → the default mode
+
+[launch]
+enabled_profiles = ["mytool"]
+default_profile = "mytool"
+
+[launch.profiles.mytool]
+agent = "myagent"
+```
+
+**File-only.** The agent catalog, execution backends, and runtime
+tables are edited in `config.toml` directly. They are not exposed on
+the TUI ⚙ Settings screen, which covers scalar keys only.
+
+## `[execution]` table
+
+The execution backend is the complete target-user boundary. It wraps tmux
+server creation, list/attach/kill, git and worktrees, filesystem and agent
+probes, runtime lifecycle, and workload launch. `local` is built in.
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `execution.default_backend` | string | `"local"` | Backend for users without an override. |
+| `execution.backend_by_launch_user` | table | `{}` | `<launch user> = <backend id>` overrides. |
+| `execution.backends.<id>.kind` | `"command"` | — | Required for configured backends. |
+| `execution.backends.<id>.command_prefix` | array | — | Prefix for every target-user command. Exactly one `{user}` placeholder is required. |
+| `execution.backends.<id>.probe_timeout_seconds` | number | `5.0` | Positive probe timeout. |
+
+`command_prefix` is an argv template, not a shell command. It must be nonempty;
+its first element must be an absolute executable path; and `{user}` must appear
+exactly once as the only placeholder. Format conversions and format specs are
+rejected. uxon appends the target command unchanged and runs a fixed internal
+UID/GID probe through the resulting argv before relying on the backend.
+
+A typical deployment uses an operator-owned helper:
+
+```toml
+[execution.backends.host_netns]
+kind = "command"
+command_prefix = ["/usr/bin/sudo", "-n", "--", "/usr/local/libexec/uxon-exec", "{user}", "--"]
+probe_timeout_seconds = 5.0
+```
+
+The helper should validate the target user, enter the boundary, establish the
+target UID/GID and supplementary groups, and `execve` the appended argv without
+a shell. It must preserve the TTY and child exit status/signals. Keep the helper
+and its parent directories non-writable by launch users. Configure the helper's
+PATH explicitly or use absolute agent binaries; uxon never sources a login shell.
+
+uxon does not create, migrate, or drain an operator-managed execution boundary.
+Keep the boundary reachable while its tmux server has sessions, and drain those
+sessions before changing the helper or backend mapping. An unreachable socket
+or backend is reported as an error, never as an empty session list. The static
+backend fingerprint in diagnostics and launch records describes config; it is
+not a lifecycle or continuity guarantee.
+
+## Launch records
+
+Every managed tmux session has a controller-side record. The record binds the
+tmux session id, creation time and Uxon's own random `launch_nonce` to its launch profile, execution
+backend and workload runtime. It is finalized and fsynced before the pane is
+released. The record path is never passed into the execution backend or workload.
+
+Schema 4 keys records by socket and launch nonce, so a session rename preserves
+its authority. It also saves the original mapped runtime directory and project slug.
+Identity checks and teardown reuse this context rather than a pane's current
+directory or environment. The launch nonce keys workload PID records and process
+attribution across independent tmux servers. Older record schemas are refused;
+drain all their sessions, including direct-runtime launches, before upgrading.
+
+With `launch_record_dir = ""`, records are private to one controller under its
+XDG state directory (`0700` directory, `0600` files). Use this default when one
+controller account owns supervision. An existing private record directory with
+a different mode is rejected without changing its permissions. Reading records
+never creates a missing directory.
+
+Multiple trusted controller accounts, including supervisors of direct-runtime
+sessions, must use one explicitly provisioned
+directory, for example `/var/lib/uxon/launch-records`. It must be root-owned,
+mode `2770`, have no POSIX access ACL, and use a control group containing every
+controller but no launch user. Shared records are `0640`; the launch user must
+not be able to create, replace, or delete them. Without this shared store,
+another controller can list and attach but cannot remove the session through Uxon.
+
+Removal checks the captured tmux ID, creation value and nonce on tmux's command
+queue and proves that exact terminal absent before stopping its workload or
+deleting its record. Unreachable backends and changed launch markers are not
+proof of absence. Finalized records are removed only after successful cleanup.
+A fresh request after record deletion reports unavailable authority rather than guessing
+whether workload cleanup previously completed. Each complete
+per-user enumeration garbage-collects only records for that authoritatively
+enumerated `launch_user`, at most 1,024 per pass. A protected per-user rotating
+cursor guarantees eventual examination even in a shared store. Pending records
+expire after 10 minutes and finalized records after 7 days when no matching live
+session exists. Records and cursors contain operational identifiers/timestamps,
+so protect them with the same retention and access controls as audit data.
+Changing `tmux_socket_template` declares the old socket drained for record-GC
+purposes; drain its sessions before the change. Uxon does not rediscover live
+servers at retired socket paths.
+
+## `[runtimes.<id>]` table
+
+`direct` is built in. A command runtime is an operator-owned workload adapter;
+a container engine is one possible implementation. Runtime ids must match
+`[a-z][a-z0-9_]*`.
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `kind` | `"command"` | — | Required. |
+| `resource_scope` | `"global"` / `"per_user"` | `"global"` | Whether resources are shared across launch users. |
+| `resource_name_template` | string | — | Required workload resource template. |
+| `exec_prefix` | array | — | Required argv prefix prepended to the agent. |
+| `telemetry` | `"none"` / `"cgroup"` | `"none"` | Optional cgroup attribution. |
+| `readiness.ready_command` | array | `[]` | Exit 0 only when ready. |
+| `readiness.exists_command` | array | `[]` | Exit 0 when the resource exists. |
+| `readiness.on_missing` | `"fail"` / `"start"` / `"create"` | `"fail"` | Missing-resource capability. |
+| `readiness.approval` | `"prompt"` / `"auto"` | `"prompt"` | TUI confirmation policy. |
+| `readiness.start_command` | array | `[]` | Required for `start` and `create`. |
+| `readiness.create_command` | array | `[]` | Required for `create`. |
+| `identity.resolve_command` | array | `[]` | Prints JSON with `id`, positive `host_pid`, and `epoch`; required with `session.stop_command`. |
+| `session.stop_command` | array | `[]` | Best-effort per-session workload teardown. |
+| `timeouts.probe_seconds` | number | `10.0` | Probe timeout. |
+| `timeouts.prepare_seconds` | number | `120.0` | Start/create timeout. |
+| `timeouts.stop_seconds` | number | `10.0` | Teardown timeout. |
+| `path_map` | table | `{}` | Host prefix to runtime prefix; longest match wins. |
+
+Allowed placeholders depend on the field:
+
+| Field | Placeholders |
+|---|---|
+| `resource_name_template` | `{user}`, `{launch_profile}`, `{runtime}`, `{agent}`, `{project_slug}` |
+| `exec_prefix`, all `readiness.*_command`, `identity.resolve_command` | The base placeholders above, plus `{resource}` and `{runtime_dir}` |
+| `session.stop_command` | The base placeholders above, plus `{resource}` and `{pidfile}`; not `{runtime_dir}` |
+
+`project_slug` is the slugified project basename, not a full-path identifier.
+`runtime_dir` is the mapped launch directory. Resource names and mapped paths are
+validated after expansion. Literal braces use `{{` / `}}`; embedded Docker Go
+templates need another escaping layer. See the [complete container example](../guides/customise/run-agents-in-a-container.md#configure-the-launch-profile).
+
+Every lifecycle command traverses the selected execution backend. The tmux
+server also runs inside that execution boundary; only the agent workload gets
+the additional runtime prefix. Runtime auth is operator-provisioned: uxon has
+no environment or credential passthrough. Teardown is best effort and an
+identity/fingerprint mismatch fails safe rather than killing an unrelated PID.
+
+With `session.stop_command`, the workload wrapper requires Linux procfs and `sh`
+and writes `PID start_ticks` into a private, nonce-keyed `{pidfile}`. The stop
+adapter must validate process identity, signal only that workload and report
+success only after termination; Uxon does not interpret the adapter's command.
+Missing or unverifiable launch records refuse a managed kill before tmux mutation.
+If workload teardown cannot be prepared or completed, the operation reports
+failure and retains the launch record even if tmux has already removed the
+session. Omitting `session.stop_command` intentionally requests no workload teardown.
+
+`telemetry = "cgroup"` uses the resource identity to measure workload usage.
+Per-launch attribution requires readable process environments and matches the
+launch nonce, including when only one tmux session is visible. If attribution
+is unavailable, rows fall back to the shared container total rather than a false
+zero. A stopped or unresolved resource has a distinct down state.
 
 ## `[tui.table]` table
 
@@ -84,8 +331,8 @@ formatting) lives in
 
 ## Dashboard view + sort
 
-Sort is a fixed contract owned by the selector — locals first
-(own then other-user), then remotes in `[[remote_hosts]]`
+Sort is a fixed contract owned by the selector — one local block first
+(own and other-user rows together), then remotes in `[[remote_hosts]]`
 declaration order, with within-block ranking by last-attach
 descending then name ascending. There is no sort setting and no
 sort cycle bindings.
@@ -94,18 +341,20 @@ The attach indicator is a glyph in the NAME column: `●` filled
 when the session is attached, `○` hollow otherwise. No bold
 green override.
 
-The NAME column renders the project stem only. The `@<agent>`
+The NAME column renders the project stem only. The `@<profile>`
 suffix carried by the underlying tmux session name (visible in
 `tmux ls` and the CLI `uxon list` table) is omitted here because
-the AGENT column carries it. The `-N` disambiguator that
-distinguishes siblings on the same stem is preserved
-(`proj@claude-2` → `proj-2`).
+the AGENT column carries the underlying agent. The `-N`
+disambiguator that distinguishes siblings on the same stem is
+preserved (`proj@claude_work-2` → `proj-2`).
 
 ## `[tui.search]` table
 
 | Key | Type | Default | Purpose |
 |-----|------|---------|---------|
 | `tui.search.fields` | array | `["name", "user"]` | Fields the dashboard search bar matches against. Allowed values: `name`, `user`, `host`, `path`, `cmd`. Unknown entries fail loud at load. |
+
+Configured fields apply to both local sessions and sessions from SSH peers.
 
 The search bar is summoned on demand — hidden by default, press
 `s` (or `/`) from anywhere to reveal it and focus the input.
@@ -142,13 +391,13 @@ One entry per peer host the local `uxon` aggregates over SSH.
 
 | Field | Type | Required | Default | Purpose |
 |-------|------|----------|---------|---------|
-| `name` | string | yes | — | Cache filename + UI label. ASCII, must match `[A-Za-z0-9_.-]+`, unique across the array. |
+| `name` | string | yes | — | Stable peer identity and UI label. ASCII, must match `[A-Za-z0-9_.-]+`, unique across the array. |
 | `ssh_alias` | string | yes | — | Passed verbatim to `ssh`. Auth/port/identity/ProxyJump live in `~/.ssh/config`. |
 | `description` | string | no | `""` | Free-form, shown in TUI tooltips. |
 | `remote_uxon` | string | no | `"uxon"` | Path to `uxon` on the peer (override when peer uses a non-PATH location). |
 | `interval` | duration | no | `tui_ssh_refresh_interval_seconds` | Per-peer poll cadence (`"5s"`, `"500ms"`, `"2m"`, or bare seconds). |
 | `connect_timeout` | duration | no | `5s` | SSH `ConnectTimeout`. |
-| `total_timeout` | duration | no | `15s` | Hard wall on the whole fetch (connect + remote run + parse). |
+| `total_timeout` | duration | no | `10s` | Hard wall on the whole fetch (connect + remote run + parse). |
 | `extra_ssh_options` | array | no | `[]` | Extra `ssh` tokens inserted immediately before `{ssh_alias}` in the default template. Use for `ProxyJump` / `-i identity` pinning per peer. |
 | `command_template` | array | no | `[]` | Full-argv override for the fetch. Replaces the entire SSH command. Substitutes `{ssh_alias}` / `{remote_uxon}` / `{connect_timeout}` / `{ssh_control_dir}` / `{ssh_control_persist_seconds}` / `{remote_command}`. When set, `extra_ssh_options` and `ssh_multiplex` are ignored — the operator owns the transport (kubectl-exec / docker-exec recipes). |
 | `color` | string | no | unset | Operator pin for the host's block colour. When unset, the TUI auto-assigns from `tui.color_palette`. Operator pins win unconditionally over the auto-cycle. |
@@ -157,6 +406,32 @@ Unknown keys in a peer block are rejected at load time with a
 clear error so typos like `ssh_alaias` fail loud rather than
 silently disabling the host.
 
+Durations must be finite and positive. Numeric values are seconds; strings
+accept bare seconds or the case-insensitive suffixes `ms`, `s` and `m`.
+SSH connect and fetch timeouts round upward to whole seconds, with a minimum
+of one second.
+
+Peer session snapshots are live-only. Failed polls return no sessions or host
+metrics; old successful rows are hidden. With default SSH multiplexing, control
+sockets use `${XDG_CACHE_HOME:-~/.cache}/uxon/`. Failure to create this directory
+reports a failed poll before SSH starts. Multiplexing `off`, or a custom command
+template without `{ssh_control_dir}`, does not create it.
+
+After a default multiplexed fetch or remote kill times out, Uxon makes one
+best-effort `ssh -O exit` request with that peer's `extra_ssh_options`, bounded
+to two seconds. It does not kill processes by PID or unlink control sockets.
+A failed control request leaves the
+original timeout visible; recovery is not guaranteed. Set `ssh_multiplex = "off"`
+to bypass an unresponsive master with a fresh connection on each operation.
+Custom command templates own their transport recovery.
+
+Remote retry policy is fixed per host: three transient failures open a bounded
+exponential breaker (factor 2, cap 60 seconds, ±25% jitter). A valid incompatible
+response opens immediately for 300 seconds with ±10% jitter, renewed without
+doubling. Successful live responses restore the configured cadence. Skipped
+ticks leave the last error unchanged; [manual refresh](keybindings.md) bypasses
+cooldown while preserving single-flight and the shared fleet concurrency cap.
+
 ## `[[git_remote_profiles]]` table-array
 
 One entry per allowed GitHub repo-creation target.
@@ -164,11 +439,11 @@ One entry per allowed GitHub repo-creation target.
 | Field | Type | Required | Purpose |
 |-------|------|----------|---------|
 | `name` | string | yes | Profile id; selected via `--git-remote <name>`. |
-| `host` | string | yes | Currently `"github.com"`. |
+| `host` | string | yes | GitHub hostname, such as `"github.com"` or a GitHub Enterprise Server hostname. Repository checks, creation and clone URLs use this host regardless of `gh`'s default host. |
 | `owner` | string | yes | Repo owner (user or org). |
 | `auth` | `"gh"` / `"token"` | yes | Backend. `gh` shells out to `gh repo create` under `creds_user`; `token` calls the REST API directly with a fine-grained PAT. |
 | `creds_user` | string | no | OS user whose credentials are used for the create step. Defaults to launch user. Local `git init`/`commit`/`push` always run under launch user. |
-| `token_file` | string | when `auth = "token"` | Absolute path to the PAT, readable by `creds_user`. Token is held in memory only for the API call, never logged, never echoed in `--dry-run`. `repo` scope is the minimum. |
+| `token_file` | string | when `auth = "token"` | Absolute path to the PAT, readable by `creds_user`. Token is held in memory for the preflight or creation operation, never logged, never echoed in `--dry-run`. For organization creation, fine-grained tokens need repository Administration (write) or Repository creation (write), subject to the owner's policy. Classic tokens need `public_repo` or `repo` for public repositories and `repo` for private ones. See [GitHub's create-repository permissions](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository). Creation failures preserve the provider's status and reason. |
 | `visibility` | `"private"` / `"public"` | no | Default when `--git-visibility` is not passed. |
 
 `uxon` only ever creates repos for profiles in this whitelist —
@@ -200,34 +475,67 @@ touching `xkb`.
 | Variable | Effect |
 |----------|--------|
 | `UXON_REPEAT_NONINTERACTIVE_POLICY` | Overrides `repeat_noninteractive_mode` per invocation (`fail` / `attach` / `new`). |
-| `UXON_LOG_DIR` | Overrides the directory used for the developer-facing `debug` and `metrics` channels (off by default; gated on `UXON_DEBUG` / `UXON_METRICS=1`). Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. The audit channel goes to journald/syslog regardless of this variable. |
-| `UXON_DEBUG` | Comma-separated topic list enabling the `debug` JSONL channel (e.g. `tui,startup,tui-table`). Off by default. |
+| `UXON_LOG_DIR` | Overrides the directory used for off-by-default `debug` and `metrics` channels. Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. New diagnostic directories are `0700`, files `0600`. An existing directory must be owned by the controller with no group/other access; otherwise logging refuses it without changing permissions. Symlink/nonregular files are refused. The audit channel goes to journald/syslog independently. |
+| `UXON_DEBUG` | Comma-separated topic list enabling the `debug` JSONL channel (e.g. `keys,startup`). Off by default. |
 | `UXON_METRICS` | When set to `1`, writes per-fetch latency rows to `${state_dir}/metrics.jsonl` (rotated at 1 MiB, cap 3 files). |
-| `SUDO_USER` | Honoured when `uxon` is invoked via `sudo` to identify the real caller. |
-| `SSH_CONNECTION` | Inspected by `audit.py` to detect peer-inbound invocations and switch local events to `*.remote.in`. |
-| `UXON_AGENT_RELEASE_OK` | Internal — gates the agent-only release-class hook bypass. Not for human use. |
 
 ## Rendering config from JSON (multi-host fleets)
 
 ```bash
-python3 install/render_uxon_config.py \
-  --config-json examples/uxon-config.json \
-  --output config/config.toml
+uxon config render --config-json examples/uxon-config.json --output /tmp/uxon-config.toml
+sudo install -o root -g root -m 0644 /tmp/uxon-config.toml /etc/uxon/config.toml
+rm /tmp/uxon-config.toml
 ```
 
-`git_create_enabled`, `default_git_remote_profile`, and
-`[[git_remote_profiles]]` are intentionally **not** part of the
-JSON-to-TOML flow — they reference `creds_user` and `token_file`
-that infra shouldn't hard-code across hosts. Hand-edit them in
-`config.toml`.
+The renderer imports uxon's installed schema and accepts the complete public
+config surface with the same strict keys and types as TOML. It rejects unknown
+fields and never coerces booleans or scalars. The TUI settings view is
+read-only for non-root processes; rendering plus explicit `sudo install` is
+the only supported privilege boundary. A payload containing
+`git_remote_profiles.token_file` paths is operationally sensitive even though it
+contains no token value; protect and remove that input file accordingly.
 
 For the multi-host operating model see
 [`explain/multi-host-philosophy.md`](../explain/multi-host-philosophy.md).
 
 ## `[tmux]` managed options (3.5.0)
 
-**Off by default.** When enabled, uxon layers a recommended set of `set`
-options (see below) on top of whatever the launch user's own tmux config
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `tmux.set_terminal_title` | bool | `true` | Show the full session name during CLI/TUI attach and `uxon` when the interactive dashboard opens or resumes after detach. Independent of `manage_options`. Set `false` to disable updates on the next session or dashboard entry. |
+
+Title updates use tmux's native `set-titles` and `set-titles-string` options,
+scoped to the entered session. The title follows session switches and renames;
+workload pane titles do not replace it. This setting takes precedence over
+global title options in `[tmux.options]` or the user's tmux configuration.
+
+The dashboard sets `uxon` once on each entry using the same standard OSC 0
+title scope. It writes only to a TTY with a nonempty `TERM` other than `dumb`
+or `linux`. Reentry uses refreshed configuration; if refresh fails, the last
+valid setting remains in effect. An already displayed title is not cleared
+when the setting is disabled.
+
+For remote attach, the peer's configuration controls the session title and
+the local configuration controls the returning dashboard title. After CLI
+detach or quitting the TUI, the shell or terminal controls the title; uxon
+does not query or restore an arbitrary earlier title.
+
+The terminal must support and permit application title changes. This works
+with commonly used modern emulators, including Windows Terminal; its
+[`suppressApplicationTitle`](https://learn.microsoft.com/en-us/windows/terminal/tutorials/tab-title)
+setting and manual tab titles can override application titles. SSH carries
+title sequences to the client terminal. An enclosing tmux/screen or a custom
+tab-title format can apply its own policy; uxon does not bypass it.
+
+To disable:
+
+```toml
+[tmux]
+set_terminal_title = false
+```
+
+**Managed option tables are off by default.** When enabled, uxon layers a
+recommended set of `set` options on top of whatever the launch user's own tmux config
 (`/etc/tmux.conf`, `~/.tmux.conf`, XDG) provides, at session launch, without
 editing anyone's files and without guessing config paths. The recommended
 tables ship built-in, so enabling is a one-line toggle — set
@@ -236,7 +544,7 @@ tables if you want to customise the set.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `tmux.manage_options` | bool | `false` | Master switch. Default (or absent) emits none — launch argv is byte-identical to pre-3.5.0. Set `true` to emit the configured `set` commands. |
+| `tmux.manage_options` | bool | `false` | Enable the three option tables below. Set `true` to emit the configured `set` commands. Independent of `set_terminal_title`. |
 | `[tmux.options]` | table | recommended (`mouse`, `allow-passthrough`) | Rendered as `set -g <key> <value>` (global session options). Applied only when `manage_options = true`. |
 | `[tmux.server_options]` | table | recommended (`extended-keys`) | Rendered as `set -s <key> <value>` (server options). Applied only when `manage_options = true`. |
 | `[tmux.append_server_options]` | table | recommended (`terminal-features`) | Rendered as `set -as <key> <value>` (append to a server option's list). Applied only when `manage_options = true`. |
@@ -261,8 +569,8 @@ the session-creating tmux invocation, before `new-session` (or before
 
 **When it runs (server birth vs. live server).** The tmux server is **per
 launch-user** and born once; these options are server-scoped, so they only
-need applying when the server is born. uxon already knows whether a user's
-server is live (a non-empty session list ⇒ alive), so:
+need applying when the server is born. uxon carries server reachability
+separately from the session list, so a live server with zero sessions stays live:
 
 - **Server birth** (the launch creates the user's first session): the **full**
   chain — `-g` + `-s` + `-as` — rides the `new-session` invocation.

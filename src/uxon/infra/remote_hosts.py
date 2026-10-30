@@ -5,16 +5,15 @@ that the local TUI can poll over SSH for its session list. Each
 entry names one such peer: a label, the SSH alias to connect with,
 and the command to invoke on the far side.
 
-Profiles come from ``config/config.toml`` under ``[[remote_hosts]]``
+Profiles come from ``/etc/uxon/config.toml`` under ``[[remote_hosts]]``
 and are parsed into immutable :class:`RemoteHost` instances by
 :func:`load_remote_hosts`. Validation errors surface through a
 single :class:`RemoteHostError` so the caller (cli.load_config) can
 ``fail()`` with a clean message.
 
 This module is pure data: no subprocess, no filesystem, no network.
-The actual SSH transport, snapshot caching, and TUI wiring live in
-later commits in this sequence (RemoteCollector → TUI HOST column
-→ CLI ``--host`` flag).
+SSH transport and live peer collection live in ``infra.remote``; application
+use cases and the TUI consume those snapshots through their own adapters.
 """
 
 from __future__ import annotations
@@ -34,11 +33,9 @@ class RemoteHost:
     """One ``[[remote_hosts]]`` entry after validation.
 
     Attributes:
-        name: Stable label. Used as the snapshot-cache key
-            (``~/.local/state/uxon/remote/<name>.json``), the TUI
-            ``HOST`` column value, and the ``--host`` CLI selector.
-            Must be unique across the array, ASCII, no whitespace —
-            it ends up in a filename.
+        name: Stable peer identity, TUI ``HOST`` column value, and
+            ``--host`` CLI selector. Must be unique across the array,
+            with characters restricted to the documented ASCII whitelist.
         ssh_alias: Host token passed verbatim to ``ssh``. Resolved
             through the user's ``~/.ssh/config`` (per the multi-host
             design: SSH config is the single source of connection
@@ -99,9 +96,7 @@ def _validate_host(raw: dict, index: int, seen_names: set[str]) -> RemoteHost:
         return value.strip()
 
     name = _req_str("name")
-    # ``name`` becomes a filename in the snapshot cache; reject characters
-    # that would force quoting or path-escape tricks. Conservative ASCII
-    # whitelist keeps us out of unicode-edge-case territory.
+    # Stable source ids and UI keys require the documented ASCII whitelist.
     bad = [c for c in name if c not in _VALID_NAME_CHARS]
     if bad:
         raise RemoteHostError(

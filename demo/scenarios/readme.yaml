@@ -1,0 +1,58 @@
+schema_version: 1
+defaults:
+  windows: 1
+  rss_mib: 220
+local:
+  - user: alice-agent
+    slot: billing-api
+    agent: claude
+    attached: true
+    cpu_pct: 28.4
+    rss_mib: 880
+    path: /srv/projects/alice/billing-api
+  - user: alice-agent
+    slot: ledger-cli
+    agent: codex
+    cpu_pct: 4.2
+    path: /srv/projects/alice/ledger-cli
+    attached_min_ago: 12
+hosts:
+  - name: build-host
+    color: cyan
+    host_stats:
+      cpu_pct: 32.0
+      mem_used_kib: 8000000
+      mem_total_kib: 32000000
+      loadavg_1m: 1.4
+      uptime_s: 124000
+      kernel: "6.8.0"
+    sessions:
+      - user: bob-agent
+        slot: checkout
+        agent: codex
+        attached: true
+        cpu_pct: 19.8
+        rss_mib: 720
+        path: /srv/projects/bob/checkout
+      - user: dana-agent
+        slot: api-tests
+        agent: claude
+        cpu_pct: 42.1
+        rss_mib: 950
+        path: /srv/projects/dana/api-tests
+        attached_min_ago: 3
+  - name: research-host
+    color: magenta
+    sessions:
+      - user: dana-agent
+        slot: evaluation
+        agent: cursor
+        cpu_pct: 8.5
+        rss_mib: 430
+        path: /srv/projects/dana/evaluation
+        attached_min_ago: 40
+      - user: bob-agent
+        slot: docs
+        agent: claude
+        path: /srv/projects/bob/docs
+        attached_min_ago: 120

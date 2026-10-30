@@ -38,9 +38,8 @@ def _ssh_control_dir() -> str:
 
     Resolves to ``$XDG_CACHE_HOME/uxon`` (falling back to ``~/.cache/uxon``).
     OpenSSH refuses to bind a ControlMaster socket whose parent directory
-    does not exist, so this helper *owns* the directory: callers receive a
-    path that is guaranteed to be usable. Symmetrical to
-    ``write_cached_snapshot``, which owns the on-disk snapshot dir.
+    does not exist, so this helper creates the directory. Creation errors
+    propagate to callers; permission adjustment is best effort.
 
     Idempotent — safe to call on every fetch / kill / attach. Mode 0o700
     keeps socket names invisible to other users on a shared host.
@@ -205,15 +204,15 @@ def build_peer_ssh_argv(
     stays a leaf — that decoupling is what lets ``remote_hosts`` import
     :func:`validate_command_template` from here without a cycle.
 
-    Used by fetch (poller), kill, and attach paths so all three honour
-    the host's ``command_template`` / ``extra_ssh_options`` and share
-    the multiplexed ControlMaster started by the poller.
+    Fetch, kill and attach share argv construction and per-peer options.
+    Default fetch/kill can reuse a multiplexed master; interactive attach
+    requests a fresh connection with ``ssh_multiplex="off"``.
 
-    ``allocate_tty=True`` inserts ``-tt`` immediately after the first
-    token when the first token is ``"ssh"`` — interactive sessions
-    (attach) need a forced PTY. Custom non-ssh templates (kubectl
-    exec etc.) are left alone; the operator owns tty plumbing in
-    their argv.
+    ``allocate_tty=True`` places ``-tt`` after extra options in the default
+    template, so interactive attach always forces a remote PTY. For a custom
+    template starting with ``ssh``, it is inserted immediately after that
+    token; later custom flags retain the operator's tty policy. Non-SSH
+    templates (kubectl exec etc.) own all tty plumbing.
 
     Selection of template:
       - ``command_template`` set → render that directly. Operator
@@ -236,7 +235,8 @@ def build_peer_ssh_argv(
                 idx = len(template)
             template = template[:idx] + list(extra_ssh_options) + template[idx:]
     if allocate_tty and template and template[0] == "ssh":
-        template = [template[0], "-tt", *template[1:]]
+        index = 1 if command_template else template.index("{ssh_alias}")
+        template = [*template[:index], "-tt", *template[index:]]
     # Resolve the ssh control-socket directory lazily: only call
     # :func:`_ssh_control_dir` (which has the side effect of mkdir'ing
     # the directory) when at least one rendered token actually needs

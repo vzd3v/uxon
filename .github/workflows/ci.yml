@@ -6,6 +6,12 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   checks:
     uses: ./.github/workflows/_checks.yml
+
+  integration:
+    uses: ./.github/workflows/_integration.yml

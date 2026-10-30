@@ -3,7 +3,7 @@
 Get `uxon` managing your agent sessions on one Linux box, in
 about 10 minutes. Two flavours below: the simplest setup (agent
 runs as you), and the recommended paired-account setup (agent
-runs as a sandboxed `<user>_agent`).
+runs as a separate `<user>-agent`).
 
 ## What you'll learn
 
@@ -14,9 +14,10 @@ runs as a sandboxed `<user>_agent`).
 
 ## What you'll need
 
-- A Linux host with `tmux` and Python ≥ 3.11.
-- One of `claude`, `codex`, or `cursor-agent` installed for your
-  user.
+- A Linux host meeting the [Python and tmux requirements](install.md#requirements).
+- A terminal coding tool installed for your user. Built-in presets cover
+  Claude Code, Codex and Cursor CLI; [configure another tool](../guides/customise/choose-launch-profile.md#add-a-coding-tool)
+  before starting if you use one.
 - Optional but useful: `et` (Eternal Terminal) on the laptop —
   see [`docs/clients.md`](../clients.md).
 
@@ -29,83 +30,86 @@ uxon                          # launch the TUI
 
 That's it. The TUI shows three actions:
 
-1. **New session in current folder** — runs the agent in `$PWD`.
+1. **Open project** — picks a directory under
+   `new_project_root` and launches there.
 2. **Create new project** — prompts for a name, creates
    `<new_project_root>/<name>`, launches the agent there.
-3. **Open existing project** — picks a directory under
-   `new_project_root` and launches there.
+3. **Open in this folder** — runs the agent in `$PWD` after its background
+   access check succeeds.
 
-Before every launch the TUI asks whether to start in normal mode
-or with `--dangerously-skip-permissions` ("yolo"). Say no the
-first time around.
+Choose the launch profile and a permission mode from its coding tool's catalog.
+Start with the default mode. See the [mode reference](../reference/cli.md#--mode-id).
 
 If you want `uxon new <name>` (project scaffolding), set up the
 project root once:
 
 ```toml
-# config/config.toml
+# /etc/uxon/config.toml
 allowed_roots    = ["~/projects"]
 new_project_root = "~/projects"
 ```
 
-`uxon run` and the TUI's "New session in current folder" need
+`uxon run` and the TUI's "Open in this folder" need
 nothing else — they gate on write access alone when
 `allowed_roots` is empty.
 
-To switch the default agent, add:
+To choose the default launch profile, add:
 
 ```toml
-[agents]
-enabled = ["claude", "codex"]
-default = "claude"
+[launch]
+enabled_profiles = ["claude", "codex"]
+default_profile = "claude"
 ```
 
 ## Recommended: paired account <a id="recommended-paired-account"></a>
 
-Pair your shell user (say `vz`) with a low-privilege agent
-account (`vz_agent`). The agent runs as `vz_agent` via
-`sudo -iu`; your shell user stays the trust boundary that holds
-your dotfiles, SSH keys, and credentials. A yolo-mode (`--dsp`)
-run blasts `vz_agent`'s files, not yours.
+Pair your shell user (say `wes`) with a low-privilege agent
+account (`wes-agent`). The agent runs as `wes-agent` via
+`sudo -H -u USER --`; your shell user stays the trust boundary that holds
+your dotfiles, SSH keys, and credentials. A yolo-mode (`--mode yolo`)
+run can access anything allowed by `wes-agent`'s Unix permissions, including
+your files or shared files when those permissions grant access.
 
 One-time host setup:
 
 ```bash
-sudo useradd -m -s /bin/bash vz_agent
+sudo useradd -m -s /bin/bash wes-agent
 
 # Allow your shell user to sudo into the agent account without a password:
-echo 'vz ALL=(vz_agent) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/uxon-vz-agent
-sudo chmod 440 /etc/sudoers.d/uxon-vz-agent
+echo 'wes ALL=(wes-agent) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/uxon-wes-agent
+sudo chmod 440 /etc/sudoers.d/uxon-wes-agent
+sudo visudo -c -f /etc/sudoers.d/uxon-wes-agent
 
-# Give vz_agent a workspace it owns:
-sudo install -d -o vz_agent -g vz_agent /srv/projects
+# Give wes-agent a workspace it owns:
+sudo install -d -o wes-agent -g wes-agent /srv/projects
 ```
 
-`config/config.toml`:
+`/etc/uxon/config.toml`:
 
 ```toml
 default_launch_mode = "fixed"
-runtime_user        = "vz_agent"
-session_users       = ["vz_agent"]
+default_launch_user        = "wes-agent"
+session_users       = ["wes-agent"]
 allowed_roots       = ["/srv/projects"]
 new_project_root    = "/srv/projects"
 ```
 
-Install the agent binary for `vz_agent` (claude / codex / cursor)
-— `sudo -iu vz_agent` and run the agent's installer there. Then:
+Install your chosen coding tool for `wes-agent`
+— run `sudo -H -u wes-agent -- /bin/bash` and use the agent's installer there.
+The shell is deliberately non-login; configure an explicit PATH or an absolute
+agent binary in `config.toml`. Then:
 
 ```bash
 uxon                          # the TUI launches into the new setup
 ```
 
-You'll see your sessions running as `vz_agent`. The TUI's
+You'll see your sessions running as `wes-agent`. The TUI's
 superuser block doesn't appear in solo because there's only one
 launch user.
 
-If the agent needs your SSH keys (e.g. to push to private repos),
-forward them explicitly: `ssh -A` from your laptop, and ensure
-`vz_agent` can read your `SSH_AUTH_SOCK` (group ACL, or set up
-the agent forwarding inside the `sudo -iu` step).
+Provision any required coding-tool or Git credentials for the launch account.
+Delegated credentials remain accessible to the workload; see the
+[isolation model](../explain/isolation-model.md).
 
 ## Daily flow
 
@@ -129,7 +133,6 @@ Non-interactive equivalents:
 uxon list                     # show your sessions
 uxon attach myproj            # reattach by stem
 uxon kill myproj              # kill one
-uxon run -- --model haiku     # forward agent flags
 uxon new mynew                # create + launch
 ```
 
@@ -138,8 +141,12 @@ Full CLI reference: [`reference/cli.md`](../reference/cli.md).
 ## Where next
 
 - Add a second host: [`scenarios/solo-n.md`](../scenarios/solo-n.md).
-- Switch default agent or auto-create GitHub repos:
+- Choose launch profiles or auto-create GitHub repos:
   [`scenarios/solo-1.md`](../scenarios/solo-1.md) "Likely
   customisations".
+- Optionally run the agent in a container:
+  [`guides/customise/run-agents-in-a-container.md`](../guides/customise/run-agents-in-a-container.md)
+  (and [`guides/harden/harden-a-container.md`](../guides/harden/harden-a-container.md)
+  to lock it down).
 - Understand the model:
   [`explain/isolation-model.md`](../explain/isolation-model.md).

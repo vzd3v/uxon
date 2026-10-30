@@ -12,42 +12,54 @@ flagged in each section.
 ## Conventions
 
 - `<id>` — session identifier. Resolution order: full name
-  (`uxon-myproj@claude`), short name (`myproj@claude`), bare stem
+  (`uxon-myproj@claude_work`), short name (`myproj@claude_work`), bare stem
   (`myproj`) when exactly one session matches, legacy-prefix name
   (e.g. `old-myproj` when `old-` is in `legacy_session_prefixes`),
   or active-pane PID.
-- `--dry-run` — print the `tmux` command that would be executed
-  instead of executing it. Available on `run`, `new`, `kill`,
-  `kill-all`.
+- `--dry-run` — print the `tmux` or SSH command that would be executed
+  instead of executing it. Available on `run`, `new`, `attach`, `kill`,
+  and `kill-all`.
 - Unknown flags after `run` / `new` are forwarded to the selected
   agent binary verbatim.
 - All subcommands honour the launch-user resolution described in
-  [`scenarios/team-1.md`](../scenarios/team-1.md) and run `tmux` /
-  `git` / `mkdir` under the launch user via `sudo -iu` when
-  caller ≠ launch user.
-- Every state-changing subcommand emits one audit event per
-  invocation (success or failure) to the platform log channel —
+  [`scenarios/team-1.md`](../scenarios/team-1.md). Every target-user command
+  crosses the selected execution backend; the built-in `local` backend uses
+  argv-preserving `sudo -H -u USER --` only when caller and target differ.
+- Every state-changing subcommand emits a terminal event; attach
+  emits dispatch and completion events around the interactive client —
   see [`audit-events.md`](audit-events.md) for which event each
   command fires and the fields it carries.
 
 ## `uxon` (no arguments)
 
 - With a TTY: opens the interactive TUI.
-- Without a TTY: prints usage and exits with code `2`.
+- Without a TTY: prints usage and exits with code `0`.
 
-## `uxon run [-w <branch>] [--dry-run] [--agent <id>] [--auto] [--dsp] [agent-flags...]`
+## `uxon config render --config-json <path|-> [--output <path|->]`
+
+Validate the complete public JSON config schema and render canonical TOML.
+`-` selects stdin or stdout; output defaults to stdout. The command does not
+load `/etc/uxon/config.toml`, so it remains usable to repair an invalid
+installation. It never records payload values or paths in audit events.
+
+For a host-wide install, render unprivileged, inspect the result, then install
+it explicitly:
+
+```bash
+uxon config render --config-json config.json --output /tmp/uxon-config.toml
+sudo install -o root -g root -m 0644 /tmp/uxon-config.toml /etc/uxon/config.toml
+```
+
+## `uxon run [-w <branch>] [--dry-run] [--profile <id>] [--mode <id>] [agent-flags...]`
 
 Start an agent in the **current working directory**.
 
 | Flag | Effect |
 |------|--------|
-| `--agent claude\|codex\|cursor` | Pick the agent. Default: `agents.default` from config. |
-| `--auto` | Agent's "auto" permission mode. `claude` → `--permission-mode auto`. `codex` → `--full-auto`. **Not supported by `cursor`** (error). |
-| `--dsp` | Agent's "yolo" permission mode. Short for `--dangerously-skip-permissions` (both forms accepted). `claude` → `--dangerously-skip-permissions`. `codex` → `--dangerously-bypass-approvals-and-sandbox`. `cursor` → `--yolo`. Legacy aliases: `--dap`, `-dap`, `-dsp`. |
+| `--profile <id>` | Pick the launch profile. `<id>` is any enabled profile from `[launch]` / `[launch.profiles.<id>]`; fresh auto-mode installs ship built-in `claude`, `codex`, and `cursor` profiles. |
+| `--mode <id>` | Select a permission mode from the selected profile's underlying agent catalog. Omitting it picks the agent's first mode. An unknown id fails listing the agent's valid modes. See [`--mode`](#--mode-id). |
 | `-w <branch>` | Create a git worktree for `<branch>` in `cwd`'s repo and launch any agent there. Fails if the worktree already exists. See [Worktrees](#worktrees--w-branch). |
 | `--dry-run` | Print the `tmux` command instead of executing. |
-
-`--auto` and `--dsp` are mutually exclusive.
 
 When `allowed_roots` is non-empty (strict-whitelist mode), the
 current directory must sit under one of the listed paths. When
@@ -71,11 +83,11 @@ be a git repo) and launches in a worktree for `<branch>`. See
 | Flag | Effect |
 |------|--------|
 | `--attach-existing` / `--new-session` | Bypass the repeat prompt (see [Repeat behaviour](#repeat-behaviour)). |
-| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses `default_git_remote_profile`. Cannot be combined with `-w` (rejected). Without this flag, no git is touched (CLI is non-interactive). |
+| `--git-remote <profile>` | Before launching, create a remote repo via the named [git remote profile](../guides/customise/configure-github-on-new-project.md). `default` uses the selected launch profile's effective `default_git_remote_profile`. Cannot be combined with `-w` (rejected). Without this flag, no git is touched (CLI is non-interactive). |
 | `--git-visibility private\|public` | Override the profile's visibility default for this one call. |
 | `--no-git` | Explicit "don't touch git" (same as omitting `--git-remote`). |
 
-All flags from `run` (`--agent`, `--auto`, `--dsp`, `--dry-run`,
+All flags from `run` (`--profile`, `--mode`, `--dry-run`,
 forwarded agent flags) also apply.
 
 ## `uxon list [--all-users] [--host <name> | --all-hosts] [--json]`
@@ -88,13 +100,12 @@ attach, current command, and path.
 
 - Default scope: the current launch user only.
 - `--all-users`: scope `session_users` from config — but only the
-  **reachable** subset (users the caller can `sudo -niu` to without
-  a password). Unreachable users are listed once on stderr as
-  `# N user(s) skipped (no sudo): <names>`; stdout stays parseable.
-  In `--json`, the same names are surfaced in the new field
-  `data.scope_skipped: list[str]` (forward-compatible — older peers
-  omit it). Requires `enable_all_users_list = true` to be enabled at
-  all; if disabled, exits with code 1 and the stable error tag
+  **reachable** subset (users whose selected execution backend passes the
+  fixed target probe). Unreachable users are listed once on stderr as
+  `# N user(s) skipped (unreachable): <names>`; stdout stays parseable.
+  In `--json`, the same names are surfaced in
+  `data.scope_skipped: list[str]`. Requires `enable_all_users_list = true` to
+  be enabled at all; if disabled, exits with code 1 and the stable error tag
   `uxon-error: all-users-disabled`, which the multi-host aggregator
   uses to fall back to per-peer "own only" mode.
 - `--host <name>`: route to a configured peer over SSH (see
@@ -105,13 +116,17 @@ attach, current command, and path.
 - `--json`: emit a wire-schema envelope (or JSON Lines stream for
   `--all-hosts`) instead of the human table.
 
+Failed remote hosts contribute no rows and make the command exit with code 1.
+Healthy partial results remain available.
+JSON preserves failure and peer metadata in [the wire envelope](wire-schema.md#json-lines---all-hosts---json).
+
 ## `uxon attach <id> [--user <name>] [--host <alias>] [--dry-run]`
 
 Short form: `uxon -a <id>`. Re-attaches to an existing session.
 
 Identifier resolution (first match wins):
-1. Full session name — `uxon-myproj@claude`.
-2. Short name without prefix — `myproj@claude`.
+1. Full session name — `uxon-myproj@claude_work`.
+2. Short name without prefix — `myproj@claude_work`.
 3. Bare stem — `myproj` (only when exactly one session matches).
 4. Legacy-prefix name — e.g. `old-myproj` when `old-` is in
    `legacy_session_prefixes`.
@@ -122,10 +137,10 @@ If `$TMUX` names the **same** socket as `uxon` for the launch user,
 
 **`--user <name>`** attaches to a session belonging to a different
 launch user on the same host. `<name>` is the OS account that owns
-the tmux socket (typically `<dev>_agent` in the recommended
-paired-account setup). Requires per-target NOPASSWD
-(`sudo -niu <name>`) — the same gating the TUI applies to its
-superuser block. Probed once for the single target; an unreachable
+the tmux socket (typically `<dev>-agent` in the recommended
+paired-account setup). The selected execution backend must attest that target;
+for the built-in `local` backend this requires per-target NOPASSWD. The TUI
+applies the same gate to its supervision block. Probed once; an unreachable
 target fails fast with the stable error tag `uxon-error:
 not-reachable` on stderr and exit code `1`. Passing `--user <self>`
 is a no-op.
@@ -133,15 +148,19 @@ is a no-op.
 **`--host <alias>`** routes the attach to a configured
 `[[remote_hosts]]` peer over SSH. **Requires `--user`** (the peer
 is the sole authority on who can attach to what — the local side
-delegates the per-target sudo gate to the peer's own
+delegates the per-target execution gate to the peer's own
 `uxon attach --user`). Wire command:
 `ssh <alias> uxon attach <id> --user <name>` with an
-`--audit-correlation-id <uuid>` internal flag so caller-side
-(`attach.remote.out`) and peer-side (`attach.remote.in`) audit
-events join. The interactive attach always opens a fresh ssh
+`--audit-correlation-id <uuid>` internal flag so the initiating host's
+`attach.remote.out.dispatch` and the target host's
+`session.attach.dispatch` events join. The interactive attach always opens a fresh ssh
 connection — `ControlMaster`/`ControlPath` are stripped from the
 default template regardless of `ssh_multiplex`, so a wedged poller
 master can never hang the TUI handoff.
+The default template forces a remote PTY after `extra_ssh_options`; custom
+templates retain their own terminal policy. Only default-template SSH transport
+diagnostics are retained on failure; [audit behavior](audit-events.md#event-alphabet)
+excludes interactive workload output.
 
 **`--dry-run`** prints the would-be tmux argv (local) or the SSH
 command line (remote) instead of executing it.
@@ -151,24 +170,26 @@ command line (remote) instead of executing it.
 Short form: `uxon -k <id>`. Kills a single session. Same identifier
 resolution as `attach`.
 
-Without `--user` / `--host`, behaves exactly as before: kills a
-session owned by the current launch user on the local box.
+Without `--user` / `--host`, removes a session owned by the current launch user.
+The selector resolves once to a captured tmux ID, creation value and launch
+nonce. Confirmation, refresh or rename cannot redirect removal to a same-name
+replacement. Missing nonce or protected launch record refuses removal, including
+for direct workloads; see [launch records](configuration.md#launch-records).
 
 **`--user <name>`** kills a session belonging to a different launch
 user on the same host. `<name>` is a **launch user** — the OS
-account that owns the tmux socket (typically `<dev>_agent` in the
+account that owns the tmux socket (typically `<dev>-agent` in the
 recommended paired-account setup), not the developer's shell user.
-The grant `<caller> ALL=(<name>) NOPASSWD: ALL` lets the caller
-sudo into `<name>`, but does not give them any access to the
-developer's personal account. Requires per-target NOPASSWD
-(`sudo -niu <name>`) — exactly the same gating the TUI applies to
-the "superuser" block. Probed once for the single target; an
+With the built-in `local` backend, the grant
+`<caller> ALL=(<name>) NOPASSWD: ALL` reaches `<name>` without granting access
+to the developer's personal account. Command backends define the equivalent
+operator-owned boundary. The TUI applies the same fixed target probe. An
 unreachable target fails fast with the stable error tag
 `uxon-error: not-reachable` on stderr and exit code `1`. Passing
 `--user <self>` is a no-op (no probe, same as omitting the flag).
 
 **`--host <alias>`** routes the kill to a configured `[[remote_hosts]]`
-peer over SSH. The peer's own `uxon kill` does the per-target sudo
+peer over SSH. The peer's own `uxon kill` does the target execution
 gating, so the local side does not need to know the peer's user
 table. May be combined with `--user <name>` to target a specific
 launch user on the peer. The wire always sends `--force` — local
@@ -180,8 +201,8 @@ prompt (typing the literal phrase `kill`) when running on a TTY.
 to run without `--force` or `--dry-run`.
 
 `--dry-run` prints the would-be tmux argv (local) or the SSH command
-line (remote) instead of executing it. The probe still runs in the
-local cross-user case so the dry-run output reflects reachability.
+line (remote) instead of executing it. Local and remote resolution still run
+under bounded probes, so dry-run reflects identity and reachability.
 
 **Bulk** kill (`kill-all`) is **strictly local** — there is no
 `uxon kill-all --host`. Per-session kill is the only destructive
@@ -191,24 +212,44 @@ operation that crosses hosts.
 
 Alias: `uxon --killall`.
 
-Kills every `uxon-*` (and configured legacy-prefix) session for
-the current launch user. Requires interactive confirmation (typing
+Removes the captured set of recognized sessions for the current launch user.
+The set is frozen before confirmation; sessions created afterwards survive.
+Every target needs its nonce and protected launch record. Requires confirmation (typing
 `kill-all`) or `--force`.
 
 **`--json`** emits a wire-schema envelope (`kind: "kill-all"`) with
 the launch user, socket path, and a per-session result list
-(`killed` / `failed` / `would-kill` under `--dry-run`). Like
+(`killed` / `already_absent` / `failed` / `would-kill` under `--dry-run`) plus the typed
+post-kill `cleanup_outcome` (`ok` / `error` / `not_run`). Like
 `kill`, `--json` is non-interactive and refuses to run without
 `--force` or `--dry-run`.
 
 This **only** kills sessions for the current launch user. The
 "kill all sessions for every reachable user on this host"
-operation is TUI-only, requires passwordless `sudo`, and prompts
+operation is TUI-only, requires every target backend to be reachable, and prompts
 for `kill-all-reachable` to confirm.
+
+Single and bulk removal return exit code `1` on mutation or required cleanup
+failure. Bulk removal attempts the remaining independent targets and reports
+actual counts and individual errors. Unreachable servers never authorize workload
+cleanup; failed cleanup retains its protected record.
+
+### Conditional peer requests
+
+`attach` and `kill` accept `--expect-session <json>` for conditional requests.
+The object is the captured [`identity`](wire-schema.md#kind--list) emitted by
+`list --json`. It carries the target scope and immutable launch fields; its
+name is a label. The receiver checks the expectation instead of resolving the
+name again. An incompatible peer or unavailable identity fails without a
+name-only retry. Interactive dashboard actions send this expectation
+automatically. Legacy sessions without a nonce remain attachable through a fresh
+selector; they cannot be removed through Uxon.
 
 ## `uxon doctor [--remote] [--json]` <a id="doctor"></a>
 
-Read-only diagnostics. Always safe to run.
+Diagnostics do not launch or kill workloads. They execute the configured
+execution and runtime probe helpers; operators must ensure those helpers are
+appropriate for inspection.
 
 The TUI surfaces `tmux` and per-agent issues in line, so most users
 won't need this. Use `uxon doctor` when an in-line hint is not
@@ -217,27 +258,34 @@ report, or audit several launch users at once.
 
 Prints:
 - caller user vs launch user;
-- active config paths (repo + project);
+- active operator config path;
 - `allowed_roots`, `new_project_root`;
 - `repeat_noninteractive_mode` and any env override;
 - `tmux` and agent binary paths for the launch user;
+- enabled launch profiles, their underlying agents, launch users,
+  workload runtimes, and host-agent status;
+- execution backend id, kind, static config fingerprint, and fixed UID/GID
+  probe status for each effective launch user;
 - dedicated `tmux` socket details;
 - current sessions on the dedicated socket;
 - any sessions on the default `tmux` socket that match
-  `legacy_session_prefixes` (managed but worth noting);
+  `legacy_session_prefixes` (diagnostic only);
 - audit-channel state on its own line:
   `audit:    {enabled|disabled}, sink={journald-native|syslog|no-sink}`.
   When `audit.enabled = false` the line reads
   `audit:    disabled, sink=no-sink`;
 - per-profile status for `[[git_remote_profiles]]` (`ok` /
-  `warn:<reason>` — passwordless sudo to `creds_user`, presence of
+  `warn:<reason>` — execution reachability for `creds_user`, presence of
   `gh`, login status or token-file readability);
 - a list of detected configuration issues.
 
+An absent tmux server is a healthy empty state. A socket or execution backend
+that exists but cannot be queried is an explicit diagnostic error; it is never
+reported as zero sessions.
+
 **`--remote`** probes every configured `[[remote_hosts]]` peer
-once and reports reachability, latency, and session count. Default
-`uxon doctor` does **zero** SSH I/O — `--remote` is the explicit
-operator gesture for fleet health checks. The wire-schema envelope
+once and reports reachability, latency, and session count. Without `--remote`, doctor does not poll configured peers. A configured
+execution helper may itself use a remote transport. The wire-schema envelope
 includes a `remote_hosts` array under `data`.
 
 **`--json`** emits the full report as a wire-schema envelope (see
@@ -264,7 +312,7 @@ a no-op probe either way: it emits no audit event.
 ## Repeat behaviour
 
 When `uxon new` finds a session that already matches the requested
-target (same project, same agent, same worktree branch):
+target (same project, same launch profile, same worktree branch):
 
 - **Interactive TTY** — prompts to attach, start a parallel
   session, or cancel.
@@ -288,13 +336,14 @@ socket.
   `<repo>/.uxon/worktrees/<branch-slug>/` (excluded via `.git/info/exclude`),
   or under [`worktree_root`](configuration.md#top-level-keys) when set.
 - `run -w` always creates the worktree and fails if it already exists
-  (path taken, or the branch is checked out elsewhere). `new -w`
+  (path taken, or the branch is checked out elsewhere). An occupied path is
+  rejected before creating a branch or changing the repository. `new -w`
   additionally applies the repeat guard (attach vs new) when a matching
   **session** already exists. New branches are based per
   [`worktree_base`](configuration.md#top-level-keys).
 - The session name includes both repo and branch slugs, so multiple
   branches of the same repo coexist cleanly.
-- Forwarded agent flags apply (e.g. `uxon run -w feat --agent codex --dsp`).
+- Forwarded agent flags apply (e.g. `uxon run -w feat --profile codex --mode yolo`).
 
 See the how-to: [Work in a git worktree](../guides/customise/worktrees.md)
 and [why uxon manages worktrees](../explain/worktrees.md).
@@ -302,51 +351,64 @@ and [why uxon manages worktrees](../explain/worktrees.md).
 ## Session naming
 
 ```
-uxon-<stem>@<agent>             plain
-uxon-<repo>-<branch>@<agent>    worktree
-uxon-<stem>@<agent>-N           parallels (N appended after the agent)
+uxon-<stem>@<profile>             plain
+uxon-<repo>-<branch>@<profile>    worktree
+uxon-<stem>@<profile>-N           parallels (N appended after the profile)
 ```
 
 The `uxon-` prefix is the default and is configurable via
 `session_prefix`. Operators upgrading from a previous prefix list
 the old value in `legacy_session_prefixes` so existing sessions
-remain reachable via `list` / `attach` / `kill`. `uxon` never
+remain reachable via `list` / `attach`; removal additionally requires the
+protected launch identity described above. `uxon` never
 *creates* sessions under a legacy prefix.
 
-## `--dsp` (dangerously-skip-permissions)
+## `--mode <id>`
 
-`--dsp` is the canonical short form for the agent's "skip
-permission prompts" mode. The TUI asks explicitly before every
-launch; the CLI requires the flag.
+`--mode <id>` selects a permission mode from the selected launch
+profile's underlying agent catalog. Mode ids are free-form and
+defined per agent in config; the shipped agents carry:
 
-Legacy aliases accepted for back-compat: `--dap`, `-dap`, `-dsp`.
+| Agent | Modes (first = default) | Effect of each |
+|-------|-------------------------|----------------|
+| `claude` | `normal`, `auto`, `yolo` | `auto` → `--permission-mode auto`; `yolo` → `--dangerously-skip-permissions`. |
+| `codex` | `normal`, `auto`, `yolo` | `auto` → `--approve-for-me`; `yolo` → `--dangerously-bypass-approvals-and-sandbox`. |
+| `cursor` | `normal`, `yolo` | `yolo` → `--yolo`. |
+
+Omitting `--mode` picks the agent's **first** catalogued mode (the
+default). An unknown id fails listing the agent's valid modes. The
+TUI offers the same modes as a list and asks explicitly before
+every launch.
 
 ## Environment variables
 
 | Variable | Effect |
 |----------|--------|
 | `UXON_REPEAT_NONINTERACTIVE_POLICY` | Overrides `repeat_noninteractive_mode` per invocation (`fail` / `attach` / `new`). |
-| `UXON_LOG_DIR` | Overrides the TUI event-log directory. Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. |
-| `SUDO_USER` | Honoured when `uxon` is invoked via `sudo` to identify the real caller. |
+| `UXON_LOG_DIR` | Overrides the opt-in TUI debug/metrics directory. Default: `${XDG_STATE_HOME:-~/.local/state}/uxon`. |
 
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success. |
-| `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), live `--host` fetch failed without a usable cache, SSH timeout, peer rc non-zero, agent binary not installed on the launch user's host (`run`/`new` / TUI launch, with install hint). |
-| `2` | Usage error (bad flags, no TTY for the bare TUI invocation, unknown subcommand, unknown `--host` alias). |
+| `1` | Runtime failure: target unreachable (`uxon-error: not-reachable`), any live remote listing failed, SSH timeout, peer rc non-zero, agent binary not installed on the launch user's host (`run`/`new` / TUI launch, with install hint). |
+| `2` | Usage error (bad flags, unknown subcommand, unknown `--host` alias). |
 | `130` | User cancelled the confirmation prompt. |
-| `non-zero from forked tmux/agent` | Surfaced to the caller as-is. The TUI pauses with a banner so you can read stderr. `0` (success) and `130` (Ctrl-C inside the agent) do not pause. |
+| `non-zero from forked tmux` | Surfaced to the caller as-is. The TUI pauses and states that command output, if any, was written directly to the terminal. |
 
 ## Failure-mode notes
 
 - **Allowed-roots mismatch** — `run` / `new` exit before touching
   `tmux`. Add the directory to `allowed_roots` or move the project.
+- **Agent exits before attach** — a non-zero exit leaves the failed pane and
+  its scrollback available for inspection; close the pane after reviewing it.
+  A successful exit removes the session normally.
 - **Foreign `tmux` server** — when `$TMUX` names a socket `uxon`
   doesn't manage, `uxon` prints `Ctrl-b d first` and exits cleanly.
-- **`textual` missing** — non-TUI subcommands all keep working;
-  the bare-TUI invocation prints an install hint and exits.
+- **TUI dependency cannot load** — non-TUI subcommands keep working;
+  the bare-TUI invocation prints a hint to repair the existing Uxon installation
+  with its original package manager and exits.
 - **Git remote creation failure** — local `.git` is left in place
   for inspection. The error names which stage failed:
   `preflight` / `local_init` / `remote_create` / `push`.

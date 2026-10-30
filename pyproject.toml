@@ -18,6 +18,8 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Operating System :: POSIX :: Linux",
     "Environment :: Console",
     "Environment :: Console :: Curses",
@@ -28,7 +30,7 @@ classifiers = [
     "Intended Audience :: System Administrators",
 ]
 dependencies = [
-    "textual>=0.80,<9",
+    "textual==8.2.8",
     "tomlkit",
     "platformdirs>=4",
     "structlog>=24",
@@ -46,11 +48,13 @@ uxon = "uxon.cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
+    "pytest>=9.0",
     "pytest-xdist",
     "ruff",
     "pyright",
     "import-linter>=2.11",
+    "build",
+    "twine",
 ]
 
 # ---------------------------------------------------------------------------
@@ -69,6 +73,7 @@ packages = ["src/uxon"]
 include = [
     "src/uxon",
     "tests",
+    ".github/scripts",
     "install",
     "config/config.example.toml",
     "examples",
@@ -125,7 +130,14 @@ reportMissingImports = "warning"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Deselect the opt-in real-runtime container suite by default: it needs a
+# working docker/podman daemon and must never run in the fast merge gate or
+# a plain ``pytest tests/``. Run it explicitly with ``pytest -m container``.
+addopts = "-q -m 'not container and not slow'"
+markers = [
+    "container: opt-in tests that need a working docker/podman runtime (deselected by default)",
+    "slow: heavy / timing-sensitive tests (real pty, sleeps) deselected from the fast per-change suite; run with 'pytest -m slow'",
+]
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:textual.*",
@@ -143,7 +155,7 @@ filterwarnings = [
 # enforced separately by tests/test_uxon_imports.py.
 #
 # Zero `ignore_imports` by design — a layering violation is fixed structurally,
-# never excepted (Part 2 plan, criterion #6).
+# never excepted.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_package = "uxon"

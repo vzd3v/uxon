@@ -5,13 +5,12 @@ Sits above the pure :mod:`uxon.domain.args` data model: these
 functions read TTY state and pop the audit correlation-id out of argv
 (side-effecting), then build a :class:`~uxon.domain.args.ParsedArgs`.
 Kept free of ``uxon.tui`` / ``textual`` imports so module-load of
-``uxon.cli`` stays fast (latency invariant #7).
+``uxon.cli`` stays fast.
 """
 
 from __future__ import annotations
 
 from uxon.domain.args import SUBCOMMANDS, USAGE, ParsedArgs
-from uxon.domain.constants import VALID_AGENT_IDS
 from uxon.errors import fail
 from uxon.infra import identity
 
@@ -84,23 +83,20 @@ def parse_run_like(argv: list[str], action: str, target_id: str | None = None) -
             if parsed.repeat_mode == "attach":
                 fail("cannot combine --new-session with --attach-existing")
             parsed.repeat_mode = "new"
-        elif token in ("--dsp", "--dangerously-skip-permissions", "--dap", "-dap", "-dsp"):
-            # --dsp is the canonical short form; --dap, -dap, -dsp are legacy synonyms
-            if parsed.permission_mode == "auto":
-                fail("--dsp and --auto are mutually exclusive")
-            parsed.permission_mode = "yolo"
-        elif token == "--auto":
-            if parsed.permission_mode == "yolo":
-                fail("--dsp and --auto are mutually exclusive")
-            parsed.permission_mode = "auto"
-        elif token == "--agent":
+        elif token == "--mode":
             i += 1
             if i >= len(argv):
-                fail("--agent requires an id (claude|codex|cursor)")
-            value = argv[i]
-            if value not in VALID_AGENT_IDS:
-                fail(f"--agent must be one of {VALID_AGENT_IDS}, got {value!r}")
-            parsed.agent = value
+                fail("--mode requires an id")
+            # No catalog in scope at parse time — the id is validated against
+            # the chosen agent's modes in ``_build_tmux_launch_request`` (which
+            # has ``cfg``/``spec``), where an unknown id fails listing the
+            # agent's valid modes.
+            parsed.permission_mode = argv[i]
+        elif token == "--profile":
+            i += 1
+            if i >= len(argv):
+                fail("--profile requires an id")
+            parsed.profile = argv[i]
         elif token == "--git-remote":
             if action != "new":
                 fail(f"{token} is only supported with 'new' / '-n'")
@@ -143,6 +139,7 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
     ``--host <alias>`` (route over SSH). Unknown flags fail loudly.
     Returns a populated :class:`ParsedArgs` with ``action="kill"``.
     """
+    from uxon.domain.session import SessionIdentity
     from uxon.infra.audit import extract_correlation_id, set_correlation_id
 
     corr_id, rest = extract_correlation_id(rest)
@@ -153,6 +150,7 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
     json_out = False
     user: str | None = None
     host: str | None = None
+    expected = None
     extras: list[str] = []
     i = 0
     while i < len(rest):
@@ -173,6 +171,11 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
             if i >= len(rest):
                 fail("--host requires a host name")
             host = rest[i]
+        elif token == "--expect-session":
+            i += 1
+            if i >= len(rest) or expected is not None:
+                fail("--expect-session requires exactly one identity JSON object")
+            expected = SessionIdentity.from_json(rest[i])
         else:
             extras.append(token)
         i += 1
@@ -187,6 +190,7 @@ def _parse_kill_extras(rest: list[str], target_id: str) -> ParsedArgs:
         user=user,
         host=host,
         audit_correlation_id=corr_id,
+        expected_session=expected,
     )
 
 
@@ -198,6 +202,7 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
     ``--user`` — implicit peer-login-user defaults invite
     "where did this attach actually go?" surprises.
     """
+    from uxon.domain.session import SessionIdentity
     from uxon.infra.audit import extract_correlation_id, set_correlation_id
 
     corr_id, rest = extract_correlation_id(rest)
@@ -206,6 +211,7 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
     dry = False
     user: str | None = None
     host: str | None = None
+    expected = None
     extras: list[str] = []
     i = 0
     while i < len(rest):
@@ -222,6 +228,11 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
             if i >= len(rest):
                 fail("--host requires a host name")
             host = rest[i]
+        elif token == "--expect-session":
+            i += 1
+            if i >= len(rest) or expected is not None:
+                fail("--expect-session requires exactly one identity JSON object")
+            expected = SessionIdentity.from_json(rest[i], require_nonce=False)
         else:
             extras.append(token)
         i += 1
@@ -239,11 +250,37 @@ def _parse_attach_extras(rest: list[str], target_id: str) -> ParsedArgs:
         user=user,
         host=host,
         audit_correlation_id=corr_id,
+        expected_session=expected,
     )
 
 
 def parse_subcommand(argv: list[str]) -> ParsedArgs:
     cmd = argv[0]
+    if cmd == "config":
+        if len(argv) < 2 or argv[1] != "render":
+            fail("config requires the 'render' action")
+        config_json: str | None = None
+        output: str | None = None
+        i = 2
+        while i < len(argv):
+            token = argv[i]
+            if token not in {"--config-json", "--output"}:
+                fail(f"unknown args for config render: {token}")
+            i += 1
+            if i >= len(argv):
+                fail(f"{token} requires a path or '-'")
+            if not argv[i]:
+                fail(f"{token} requires a non-empty path or '-'")
+            if token == "--config-json":
+                if config_json is not None:
+                    fail("--config-json may be specified only once")
+                config_json = argv[i]
+            else:
+                output = argv[i]
+            i += 1
+        if config_json is None:
+            fail("config render requires --config-json <path|->")
+        return ParsedArgs(action="config-render", config_json=config_json, output=output)
     if cmd == "version":
         json_out = "--json" in argv[1:]
         extras = [a for a in argv[1:] if a != "--json"]
@@ -252,10 +289,7 @@ def parse_subcommand(argv: list[str]) -> ParsedArgs:
         return ParsedArgs(action="version", json_output=json_out)
     if cmd == "doctor":
         json_out = "--json" in argv[1:]
-        # Stage 10c — opt-in ``--remote`` flag walks back the
-        # AGENTS.md "doctor doesn't probe remote_hosts" rule under
-        # explicit operator gesture. See ``do_doctor`` for the
-        # rationale + the AGENTS.md addendum.
+        # Remote probing is an explicit operator gesture.
         all_remote = "--remote" in argv[1:]
         extras = [a for a in argv[1:] if a not in {"--json", "--remote"}]
         if extras:

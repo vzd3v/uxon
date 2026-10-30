@@ -31,12 +31,11 @@ to parse rather than guess.
 List-data optional fields (forward-compatible additions, no version bump):
 
 - ``data.scope_skipped`` (``list[str]``): users in ``session_users``
-  that the producer probed for sudo reachability and could *not* reach
-  via ``sudo -niu <U>``. ``data.scope_users`` is the *reachable*
-  subset; the union ``scope_users ∪ scope_skipped`` is the set of
-  candidates actually probed. Users in ``session_users`` that were
-  never asked (e.g. the caller themselves, filtered before probing)
-  appear in neither field. Older peers that don't emit the key are
+  whose selected execution backend did *not* pass the target probe
+  for cross-user listing. ``data.scope_users`` includes the launch user
+  and reachable configured users; the launch user does not require that
+  cross-user probe and never appears in ``scope_skipped``.
+  Older peers that don't emit the key are
   treated as ``[]`` by the aggregator — no schema bump.
 
 Top-level optional fields (also forward-compatible, no version bump):
@@ -53,9 +52,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, get_args
 
-WIRE_SCHEMA_VERSION = "1"
+from uxon.domain.session import SessionIdentity
+
+WIRE_SCHEMA_VERSION = "3"
 """Current wire-schema version. Bump on incompatible changes only."""
 
 
@@ -69,15 +70,19 @@ class SessionRecord(TypedDict):
 
     - ``user``: OS user that owns the tmux socket the session lives
       on.
-    - ``name``: full tmux session name, including the configured
-      ``session_prefix`` (or a legacy prefix for ``legacy=True``
-      records).
+    - ``name``: current full tmux session name. Managed sessions remain
+      discoverable after a rename outside the configured prefixes.
     - ``short_id``: ``name`` with the *current* ``session_prefix``
       stripped, mirroring the human table. For ``legacy=True``
       records the current prefix does not match, so ``short_id``
       equals ``name``.
-    - ``agent``: ``"claude"|"codex"|"cursor"|"unknown"`` — what the
-      session-name parser recognised the agent slot as.
+    - ``profile``: launch profile id from the verified launch record, or the
+      session-name suffix display fallback for unmanaged sessions.
+    - ``agent``: underlying agent id from the verified launch record, or ``""``
+      when the session is unmanaged.
+    - ``runtime`` / ``runtime_resource``: verified launch-record runtime id
+      and resolved workload resource. Direct sessions use runtime ``"direct"``
+      with an empty resource; unmanaged sessions have no verified runtime.
     - ``attached``: ``True`` iff a tmux client is currently attached.
     - ``windows``: tmux window count, as reported by
       ``#{session_windows}``. Kept as a string because tmux emits it
@@ -101,7 +106,12 @@ class SessionRecord(TypedDict):
     user: str
     name: str
     short_id: str
+    profile: str
     agent: str
+    execution_backend: str
+    runtime: str
+    runtime_kind: str
+    runtime_resource: str
     attached: bool
     windows: str
     created: str
@@ -112,15 +122,20 @@ class SessionRecord(TypedDict):
     active_path: str
     cpu_pct: float
     rss_kib: int
+    runtime_down: bool
+    exited: bool
+    active_exit_status: int | None
+    has_diagnostics: bool
     legacy: bool
+    identity: NotRequired[dict[str, str]]
 
 
 class HostStats(TypedDict, total=False):
     """Snapshot of host-level metrics returned alongside session list.
 
-    Forward-compatible: peers running schema 1 omit this field; the
-    parser treats absence as ``None``. Adding a new key here is also
-    additive — peers running an older binary omit unknown keys; the
+    Same-major peers may omit this optional field; the parser treats absence
+    as ``None``. Adding a new key here is also additive; older same-major
+    binaries omit unknown keys and the
     consumer should ``.get(...)`` defensively.
     """
 
@@ -137,14 +152,46 @@ RemoteSessionPayload = dict[str, Any]
 
 Shape mirrors :class:`SessionRecord` (the producer-side total TypedDict
 written by :func:`build_session_records`), but
-:func:`uxon.infra.remote.envelope.parse_envelope` validates the envelope
-only and treats individual records as opaque. Forward-compatibility
-with peers running a newer or older uxon is the explicit goal: a peer
-that adds, renames, or omits a per-session field must not blank a
-whole snapshot. Consumers therefore read fields defensively
-(``rec.get(...)``) and cannot assume any field is present even after a
-successful fetch — hence the deliberately permissive type.
+:func:`uxon.infra.remote.envelope.decode_envelope` validates present known
+fields and rejects malformed values or duplicate identities. Missing fields
+and unknown additions remain usable within the same schema version. Consumers
+read fields defensively (``rec.get(...)``), since a successful fetch does not
+guarantee every producer field is present.
 """
+
+
+RemoteErrorCode = Literal[
+    "update_remote",
+    "update_local",
+    "incompatible",
+    "timeout",
+    "ssh_error",
+    "invalid_response",
+    "remote_error",
+    "fetch_error",
+]
+REMOTE_ERROR_CODES: frozenset[RemoteErrorCode] = frozenset(get_args(RemoteErrorCode))
+COMPATIBILITY_ERROR_CODES: frozenset[RemoteErrorCode] = frozenset(
+    {
+        "update_remote",
+        "update_local",
+        "incompatible",
+    }
+)
+
+
+class PeerInfo(TypedDict, total=False):
+    """Diagnostic identity of the peer, independent of envelope compatibility."""
+
+    uxon_version: str
+    schema_version: str
+
+
+class RemoteError(TypedDict):
+    """Structured failed remote response; sessions must not be consumed."""
+
+    code: RemoteErrorCode
+    message: str
 
 
 @dataclass(frozen=True)
@@ -162,29 +209,15 @@ class RemoteSnapshot:
         host_name: Mirrors ``RemoteHost.name`` — preserved here so
             consumers that store snapshots without the matching host
             object can still attribute them.
-        fetched_at_epoch: ``time.time()`` at the moment the fetch
-            attempt finished (success or failure). Used by the TUI to
-            display "stale 12s ago" indicators.
-        from_cache: ``True`` when the sessions list came from the
-            on-disk cache rather than a fresh fetch. In a snapshot
-            returned by ``fetch_remote_snapshot`` this implies
-            :attr:`error` is non-None (the live fetch failed and we
-            fell back). A snapshot returned by ``read_cached_snapshot``
-            in isolation also sets ``from_cache=True`` but leaves
-            ``error=None`` — the cache file alone has no opinion on
-            whether the peer is currently reachable.
+        fetched_at_epoch: Wall-clock time of the fetch attempt.
         error: Short, human-readable error string, or ``None`` on a
             successful fetch. The collector never raises — every
             failure surfaces here.
         sessions: List of peer-emitted session records
             (:data:`RemoteSessionPayload`). Each record's shape mirrors
-            :class:`SessionRecord` but is unvalidated at decode time —
-            consumers must read fields defensively. Empty when the
-            fetch failed AND no cache was available.
-        cached_at_epoch: Wall-clock time at which the underlying
-            payload was originally collected. For a fresh fetch this
-            equals :attr:`fetched_at_epoch`; for a cache fallback it
-            is older.
+            :class:`SessionRecord`. Present known fields are validated;
+            missing fields still require defensive reads. Empty when the
+            live fetch failed.
         scope_limited: ``True`` when the peer rejected
             ``list --all-users`` (because its
             ``enable_all_users_list = false``) and the collector fell
@@ -192,27 +225,32 @@ class RemoteSnapshot:
             badges the section header with ``(own only)`` so the
             operator knows the per-peer view is partial. Default
             ``False`` — fresh peers serve the all-users view.
-        scope_skipped: Users the peer probed for sudo reachability
-            and could not reach. Forward-compatible: missing on older
-            peers that don't emit the field — the collector treats
-            that as ``[]``.
+        scope_skipped: Users whose target execution probe failed
+            and could not reach. Absence on a same-major peer is treated
+            as ``[]``.
         host_stats: Optional snapshot of host-level metrics
             (CPU/RAM/loadavg/uptime/kernel) emitted by the peer
-            alongside the session list. Forward-compatible: missing
-            on peers that don't emit the field — the collector treats
-            that as ``None`` and the host status bar renders without
+            alongside the session list. Absence on a same-major peer is
+            treated as ``None`` and the host status bar renders without
             metrics.
+        error_code: Structured cause used for display and retry admission.
+        peer: Observed package/schema identity, retained on parse failure.
     """
 
     host_name: str
     fetched_at_epoch: float
-    from_cache: bool
     error: str | None
     sessions: list[RemoteSessionPayload] = field(default_factory=list)
-    cached_at_epoch: float | None = None
     scope_limited: bool = False
     scope_skipped: list[str] = field(default_factory=list)
     host_stats: dict[str, Any] | None = None
+    error_code: RemoteErrorCode | None = None
+    peer: PeerInfo = field(default_factory=PeerInfo)
+
+    @property
+    def is_live(self) -> bool:
+        """Whether this result is confirmed data from a successful live fetch."""
+        return self.error is None
 
 
 class _SessionLike(Protocol):
@@ -236,7 +274,19 @@ class _SessionLike(Protocol):
     cpu_pct: float
     rss_kib: int
     agent: str
+    execution_backend: str
+    profile: str
+    runtime: str
+    runtime_kind: str
+    runtime_resource: str
+    runtime_down: bool
+    exited: bool
+    active_exit_status: int | None
+    has_diagnostics: bool
     legacy: bool
+
+    @property
+    def identity(self) -> SessionIdentity: ...
 
 
 def build_session_records(
@@ -257,12 +307,14 @@ def build_session_records(
       keep the full name; that mirrors how the human ``print_list``
       table identifies them.
     - ``pane_pids``: tuple → list, so the result is JSON-serialisable.
+    - ``identity``: omitted for display-only rows without native witnesses.
 
     Order is preserved (input list order = output list order). No
     deduping; if the input contains duplicates, the output does too.
     """
     records: list[SessionRecord] = []
     for s in sessions:
+        captured = s.identity
         if s.name.startswith(session_prefix):
             short_id = s.name[len(session_prefix) :]
         else:
@@ -272,7 +324,12 @@ def build_session_records(
                 user=s.user,
                 name=s.name,
                 short_id=short_id,
+                profile=s.profile,
                 agent=s.agent,
+                execution_backend=s.execution_backend,
+                runtime=s.runtime,
+                runtime_kind=s.runtime_kind,
+                runtime_resource=s.runtime_resource,
                 attached=(s.attached == "1"),
                 windows=s.windows,
                 created=s.created,
@@ -283,9 +340,17 @@ def build_session_records(
                 active_path=s.active_path,
                 cpu_pct=s.cpu_pct,
                 rss_kib=s.rss_kib,
+                runtime_down=s.runtime_down,
+                exited=s.exited,
+                active_exit_status=s.active_exit_status,
+                has_diagnostics=s.has_diagnostics,
                 legacy=s.legacy,
             )
         )
+        if not captured.invalid_fields(require_nonce=False):
+            records[-1]["identity"] = {
+                key: getattr(captured, key) for key in captured.__dataclass_fields__
+            }
     return records
 
 

@@ -7,12 +7,12 @@ without running a Textual event loop.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from uxon.domain.session import TuiSession
+from uxon.domain.authz import project_directory
+from uxon.domain.session import SessionIdentity, TuiSession
 from uxon.domain.status import LinkHealthStatus, ServerStatus
 
 from .context import (
@@ -23,80 +23,65 @@ from .context import (
 )
 
 if TYPE_CHECKING:
+    from .context import LaunchProfileOption
     from .dashboard.ui_state import MainScreenUiState
-
-
-def effective_agents(
-    *,
-    configured: tuple[str, ...],
-    available_ids: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Return the agent ids the user can actually launch.
-
-    - ``configured`` non-empty → strict whitelist; return as-is.
-    - ``configured`` empty → auto-mode; return every CATALOG id that
-      ``available_ids`` reports as installed for ``launch_user``.
-
-    Empty/absent ``[agents].enabled`` in repo config and ``[]`` are
-    treated identically — both mean "auto-detect from what is
-    installed". Explicit "disable everything" is not supported (YAGNI:
-    nobody installs uxon to forbid launching).
-    """
-    if configured:
-        return configured
-    from uxon.infra import agents as uxon_agents
-
-    return tuple(aid for aid in uxon_agents.CATALOG if aid in available_ids)
 
 
 def should_show_agents_unavailable(
     *,
-    enabled_agents: tuple[str, ...],
+    enabled_profiles: tuple[str, ...],
     availability: Mapping[str, Any],
     already_shown: bool,
 ) -> bool:
-    """Return True when the app should show the all-agents-unavailable modal."""
+    """Return True when the app should show the all-agents-unavailable modal.
+
+    Not the live launch gate — the app drives the modal via the transition
+    gate (:func:`should_push_agents_unavailable` over :func:`compute_all_missing`).
+    The live launch gate (``resolve_launch_profile``) suppresses host-presence
+    on a per-profile ``runtime`` basis; that selection is not known at
+    modal-eval time, so this predicate does not branch on it.
+    """
     if already_shown:
         return False
-    if not enabled_agents:
+    if not enabled_profiles:
         return False
 
     resolved = all(
         aid in availability and getattr(availability[aid], "status", "pending") != "pending"
-        for aid in enabled_agents
+        for aid in enabled_profiles
     )
     if not resolved:
         return False
 
     return all(
         getattr(availability[aid], "status", None) in ("missing", "timeout")
-        for aid in enabled_agents
+        for aid in enabled_profiles
     )
 
 
 def compute_all_missing(
     *,
-    enabled_agents: tuple[str, ...],
+    enabled_profiles: tuple[str, ...],
     availability: Mapping[str, Any],
 ) -> bool:
-    """Return True when every enabled agent has a resolved missing/timeout status.
+    """Return True when every enabled profile has a resolved missing/timeout status.
 
     Distinct from :func:`should_show_agents_unavailable` because the
     transition-based push gate (``should_push_agents_unavailable``)
     needs the raw "is this state all-missing now" predicate,
     decoupled from the previously-shown latch.
     """
-    if not enabled_agents:
+    if not enabled_profiles:
         return False
     resolved = all(
         aid in availability and getattr(availability[aid], "status", "pending") != "pending"
-        for aid in enabled_agents
+        for aid in enabled_profiles
     )
     if not resolved:
         return False
     return all(
         getattr(availability[aid], "status", None) in ("missing", "timeout")
-        for aid in enabled_agents
+        for aid in enabled_profiles
     )
 
 
@@ -166,62 +151,65 @@ class LaunchCommitDecision:
 
 def visible_agent_ids(
     *,
-    enabled_agents: tuple[str, ...],
+    enabled_profiles: tuple[str, ...],
     availability: Mapping[str, Any],
+    catalog_ids: tuple[str, ...],
+    auto_mode: bool = False,
 ) -> tuple[str, ...]:
-    """Agent ids the LaunchOptions screen should expose.
+    """Profile ids the LaunchOptions screen should expose.
 
-    Strict mode (``enabled_agents`` non-empty): the configured list,
+    Strict mode (``enabled_profiles`` non-empty): the configured profile list,
     minus any with a resolved ``missing``/``timeout`` status. Pending
     entries stay visible so the row renders as "(checking…)" rather
     than vanishing mid-probe.
 
-    Auto-mode (``enabled_agents`` empty): every ``CATALOG`` id that
-    has resolved to ``ok`` in ``availability``. No "missing" rows —
-    the auto-mode probe never inserts un-installed entries, so a
-    missing/timeout entry would have to be a stale strict-mode hangover.
+    Auto-mode: every ``catalog_ids`` entry
+    (merged-catalog order) that has resolved to ``ok`` in ``availability``.
+    No "missing" rows.
     """
-    if enabled_agents:
+    if enabled_profiles and not auto_mode:
         return tuple(
             aid
-            for aid in enabled_agents
+            for aid in enabled_profiles
             if availability.get(aid) is None
             or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
         )
-    from uxon.infra import agents as uxon_agents
-
     return tuple(
         aid
-        for aid in uxon_agents.CATALOG
+        for aid in catalog_ids
         if aid in availability and getattr(availability[aid], "status", None) == "ok"
     )
 
 
 def update_launch_options_after_availability(
     *,
-    enabled_agents: tuple[str, ...],
-    default_agent: str,
+    enabled_profiles: tuple[str, ...],
+    default_profile: str,
     availability: Mapping[str, Any],
     current_agent: str,
     active_panel: str,
+    catalog_ids: tuple[str, ...] = (),
+    auto_mode: bool = False,
 ) -> LaunchOptionsUpdate:
     visible = visible_agent_ids(
-        enabled_agents=enabled_agents,
+        enabled_profiles=enabled_profiles,
         availability=availability,
+        catalog_ids=catalog_ids,
+        auto_mode=auto_mode,
     )
     if not visible:
         return LaunchOptionsUpdate(
             visible_agents=(),
             single_agent=True,
             active_panel="mode",
-            current_agent=current_agent or default_agent,
+            current_agent=current_agent or default_profile,
             dismiss=True,
         )
     single = len(visible) <= 1
     if current_agent in visible:
         next_agent = current_agent
-    elif default_agent in visible:
-        next_agent = default_agent
+    elif default_profile in visible:
+        next_agent = default_profile
     else:
         next_agent = visible[0]
     return LaunchOptionsUpdate(
@@ -235,17 +223,23 @@ def update_launch_options_after_availability(
 
 def launch_options_state(
     *,
-    enabled_agents: tuple[str, ...],
-    default_agent: str,
+    enabled_profiles: tuple[str, ...],
+    default_profile: str,
     availability: Mapping[str, Any],
+    catalog_ids: tuple[str, ...] = (),
+    auto_mode: bool = False,
 ) -> LaunchOptionsState:
     visible = visible_agent_ids(
-        enabled_agents=enabled_agents,
+        enabled_profiles=enabled_profiles,
         availability=availability,
+        catalog_ids=catalog_ids,
+        auto_mode=auto_mode,
     )
     single = len(visible) <= 1
     current = (
-        default_agent if default_agent in visible else (visible[0] if visible else default_agent)
+        default_profile
+        if default_profile in visible
+        else (visible[0] if visible else default_profile)
     )
     return LaunchOptionsState(
         visible_agents=visible,
@@ -277,23 +271,64 @@ def agent_list_label(index: int, agent_id: str, availability_obj: Any | None) ->
     return label
 
 
-def mode_item_ids(agent_id: str) -> tuple[str, ...]:
-    from uxon.infra import agents as uxon_agents
+def launch_profile_list_label(
+    index: int,
+    profile_id: str,
+    profile: LaunchProfileOption | None,
+    availability_obj: Any | None,
+    *,
+    show_launch_user: bool = True,
+) -> str:
+    if profile is None:
+        label = f"{index} {profile_id}"
+    else:
+        primary = profile.label or profile.id
+        label = f"{index} {primary}"
+        details = []
+        if profile.id != primary:
+            details.append(profile.id)
+        if profile.agent != profile.id:
+            details.append(profile.agent)
+        if show_launch_user and profile.launch_user:
+            details.append(profile.launch_user)
+        if profile.runtime != "direct":
+            details.append(f"runtime:{profile.runtime}")
+        if details:
+            label += "  " + " · ".join(details)
+    if availability_obj is not None and getattr(availability_obj, "status", None) == "pending":
+        label += "  (checking…)"
+    return label
 
-    if agent_id not in uxon_agents.CATALOG:
-        return ()
-    return tuple(f"mode-{mode.id}" for mode in uxon_agents.CATALOG[agent_id].permission_modes)
+
+def launch_profile_users_differ(
+    profile_ids: tuple[str, ...],
+    launch_profiles: Mapping[str, LaunchProfileOption],
+) -> bool:
+    users = {
+        profile.launch_user
+        for profile_id in profile_ids
+        if (profile := launch_profiles.get(profile_id)) is not None and profile.launch_user
+    }
+    return len(users) > 1
 
 
-def launch_mode_id(agent_id: str, mode_index: int) -> str | None:
-    from uxon.infra import agents as uxon_agents
+def _agent_id_for_launch_choice(
+    launch_choice_id: str,
+    launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
+) -> str:
+    if launch_profiles is not None:
+        profile = launch_profiles.get(launch_choice_id)
+        return profile.agent if profile is not None else ""
+    return launch_choice_id
 
-    if agent_id not in uxon_agents.CATALOG:
-        return None
-    modes = uxon_agents.CATALOG[agent_id].permission_modes
-    if 0 <= mode_index < len(modes):
-        return modes[mode_index].id
-    return "normal"
+
+def launch_permission_modes(
+    agents: Mapping[str, Any],
+    profile_id: str,
+    launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
+) -> tuple:
+    spec = agents.get(_agent_id_for_launch_choice(profile_id, launch_profiles))
+    return spec.permission_modes if spec is not None else ()
 
 
 def launch_commit_decision(
@@ -301,16 +336,18 @@ def launch_commit_decision(
     active_panel: str,
     current_agent: str,
     availability: Mapping[str, Any],
-    mode_index: int,
+    selected_mode_id: str | None,
+    agents: Mapping[str, Any],
+    launch_profiles: Mapping[str, LaunchProfileOption] | None = None,
 ) -> LaunchCommitDecision:
     if active_panel == "agent":
         if agent_is_pending(current_agent, availability):
             return LaunchCommitDecision("ignore")
         return LaunchCommitDecision("switch-to-mode")
-    mode_id = launch_mode_id(current_agent, mode_index)
-    if mode_id is None:
+    modes = launch_permission_modes(agents, current_agent, launch_profiles)
+    if selected_mode_id is None or not any(mode.id == selected_mode_id for mode in modes):
         return LaunchCommitDecision("dismiss")
-    return LaunchCommitDecision("commit", mode_id)
+    return LaunchCommitDecision("commit", selected_mode_id)
 
 
 def next_launch_panel(current: str, direction: int, order: tuple[str, ...]) -> str:
@@ -343,14 +380,36 @@ def filter_existing_projects(
 ) -> list[tuple[str, str]]:
     """Substring-filter a project list by name (case-insensitive).
 
-    Original order is preserved — the screen sorts by mtime desc when
-    it builds the list, and the filter must not reshuffle that. An
+    Original order is preserved; the filter must not reshuffle it. An
     empty (or whitespace-only) needle returns every project.
     """
     n = needle.strip().lower()
     if not n:
         return list(projects)
     return [p for p in projects if n in p[0].lower()]
+
+
+@dataclass(frozen=True)
+class ProjectBrowserLevel:
+    """One directory's filter and cursor, retained while browsing its children."""
+
+    directory: str
+    projects: tuple[tuple[str, str], ...]
+    needle: str
+    index: int | None
+
+    @property
+    def filtered(self) -> list[tuple[str, str]]:
+        return filter_existing_projects(self.projects, self.needle)
+
+    @property
+    def selected_path(self) -> str | None:
+        rows = self.filtered
+        index = self.index if self.index is not None else 0
+        if not 0 <= index < len(rows):
+            return None
+        name = rows[index][0]
+        return project_directory(self.directory, name)
 
 
 def selected_setting_index(*, row: int, has_git_view: bool, entry_count: int) -> int | None:
@@ -424,6 +483,7 @@ class MainIntent:
     user: str = ""
     session_name: str = ""
     host: str = ""
+    identity: SessionIdentity | None = None
 
 
 def main_action_intent(kind: str) -> MainIntent | None:
@@ -443,6 +503,7 @@ def session_intent(session: TuiSession, current_user: str) -> MainIntent:
         "attach",
         user=session.user or current_user,
         session_name=session.name,
+        identity=session.identity,
     )
 
 
@@ -452,19 +513,29 @@ def activate_main_index(ctx: TuiContext, idx: int) -> MainIntent | None:
         return None
     if idx < own_start:
         if idx == 0:
-            return MainIntent("launch-cwd", index=idx)
+            return MainIntent("launch-existing", index=idx)
         if idx == 1:
             return MainIntent("launch-new", index=idx)
         if idx == 2:
-            return MainIntent("launch-existing", index=idx)
+            return MainIntent("launch-cwd", index=idx)
         return None
     if idx < other_start:
         session = ctx.sessions[idx - own_start]
-        return MainIntent("attach", index=idx, user=ctx.current_user, session_name=session.name)
+        return MainIntent(
+            "attach",
+            index=idx,
+            user=ctx.current_user,
+            session_name=session.name,
+            identity=session.identity,
+        )
     if has_super and idx < settings_idx:
         intent = session_intent(ctx.other_sessions[idx - other_start], ctx.current_user)
         return MainIntent(
-            intent.kind, index=idx, user=intent.user, session_name=intent.session_name
+            intent.kind,
+            index=idx,
+            user=intent.user,
+            session_name=intent.session_name,
+            identity=intent.identity,
         )
     if has_super and idx == settings_idx:
         return MainIntent("open-settings", index=idx)
@@ -548,42 +619,6 @@ def project_name_valid(value: str) -> bool:
     return True
 
 
-@dataclass(frozen=True)
-class HostHealthBadge:
-    """Per-host health summary derived from a ``RemoteSnapshot``.
-
-    Status values:
-      - ``loading`` — no snapshot yet (the worker has not produced a result).
-      - ``ok`` — last fetch succeeded (``error is None`` and not from cache).
-      - ``stale`` — table is rendering cached data (``from_cache=True``);
-        the live fetch may have failed (badge then carries ``+ err``).
-      - ``down`` — last fetch failed AND no cache exists (no data shown).
-    """
-
-    status: str
-    text: str
-
-
-def _format_age_seconds(seconds: int) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds}s"
-    if seconds < 3600:
-        return f"{seconds // 60}m"
-    if seconds < 86400:
-        return f"{seconds // 3600}h"
-    return f"{seconds // 86400}d"
-
-
-def _short_error(msg: str | None, *, limit: int = 48) -> str:
-    if not msg:
-        return "error"
-    first = msg.splitlines()[0].strip()
-    if len(first) > limit:
-        return first[: limit - 1] + "…"
-    return first or "error"
-
-
 # ── Selectors ─────────────────────────────────────────────────────────
 #
 # Pure, identity-stable selectors over :class:`TuiContext` and the
@@ -621,35 +656,6 @@ def select_layout_signature(
         cross_user_latched(ui),
         has_super and (len(ctx.sessions) + len(ctx.other_sessions) > 0),
     )
-
-
-def host_health_badge(snapshot: Any, *, now: float | None = None) -> HostHealthBadge:
-    """Compute a per-host health badge from a (possibly ``None``) snapshot.
-
-    Pure helper: no Textual, no time-source side effects (``now`` is the
-    seam). Returned ``text`` is short enough to drop into a section
-    header or a HOST-column cell without wrapping.
-    """
-    if snapshot is None:
-        return HostHealthBadge(status="loading", text="loading")
-    error = getattr(snapshot, "error", None)
-    from_cache = bool(getattr(snapshot, "from_cache", False))
-    if error is None and not from_cache:
-        return HostHealthBadge(status="ok", text="ok")
-    if from_cache:
-        cached_at = getattr(snapshot, "cached_at_epoch", None)
-        if cached_at is None:
-            # from_cache=True but no cached_at — should not happen in practice,
-            # treat as "stale" without an age stamp rather than guess.
-            text = "cache" if error is None else "cache + err"
-            return HostHealthBadge(status="stale", text=text)
-        if now is None:
-            now = time.time()
-        age = _format_age_seconds(int(now - float(cached_at)))
-        text = f"cache {age}" if error is None else f"cache {age} + err"
-        return HostHealthBadge(status="stale", text=text)
-    # error path with no cache — no data shown.
-    return HostHealthBadge(status="down", text=f"err: {_short_error(error)}")
 
 
 def project_name_error(value: str) -> str:

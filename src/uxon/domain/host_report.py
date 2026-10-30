@@ -15,7 +15,7 @@ from dataclasses import dataclass
 class BinaryStatus:
     """Status of a single binary on the host."""
 
-    name: str  # "tmux" | "claude" | "codex" | "cursor-agent"
+    name: str  # "tmux" or an open-ended agent id from the merged catalog
     path: str | None  # resolved absolute path or None
     install_hint: str  # ready-to-paste shell command(s)
 
@@ -26,7 +26,7 @@ class HostReport:
 
     ``agents`` carries one entry per ``CATALOG`` id; consumers decide
     which subset is "in scope" (the strict whitelist from
-    ``[agents].enabled`` if non-empty, or the auto-mode set of all
+    ``[launch].enabled_profiles`` if non-empty, or the auto-mode set of all
     installed agents otherwise). The previous ``enabled``/``detected``
     split was tied to the now-removed detected-agents banner.
     """

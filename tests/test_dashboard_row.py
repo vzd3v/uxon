@@ -1,304 +1,234 @@
-"""Pure-data tests for :mod:`uxon.tui.dashboard.row`.
+"""Local and wire adapters preserve routing identity and normalize sparse metadata."""
 
-The two adapters bridge two different source shapes (``TuiSession``
-with pre-formatted strings, wire-schema dicts with raw numeric and
-ISO fields) into the unified :class:`SessionRow`. The invariants that
-later action routing relies on:
+from dataclasses import replace
 
-* ``from_tui_session(...).host is None`` (always).
-* ``from_wire_record(host, ...).host == host`` (never ``None``).
-* Missing wire fields default to safe zeros, never raise.
-* ISO timestamps parse to epoch once at adapter time.
-"""
-
-from __future__ import annotations
-
-import unittest
-from datetime import UTC, datetime
-
+from uxon.domain.session import SessionIdentity
 from uxon.tui.context import TuiSession
-from uxon.tui.dashboard.row import SessionRow, from_tui_session, from_wire_record
+from uxon.tui.dashboard.row import from_tui_session, from_wire_record
 
 
-def _make_tui_session(**overrides: object) -> TuiSession:
-    base = dict(
-        name="cc-myproj",
-        short="myproj",
-        attached=False,
-        pid="1234",
-        cpu="12.3",
-        ram="456M",
-        created="10:00",
-        last_activity="11:00",
-        cmd="claude",
-        path="/home/user/proj",
+def _local() -> TuiSession:
+    return TuiSession(
+        name="uxon-proj@fast",
+        short="proj@fast",
+        attached=True,
+        pid="4321",
+        cpu="5.0",
+        ram="1.2G",
+        created="now",
+        last_activity="now",
+        cmd="claude run",
+        path="/srv/proj",
         user="alice",
-        stem="myproj",
+        stem="proj",
+        profile="fast",
         agent="claude",
-        legacy=False,
+        legacy=True,
+        created_iso="2026-05-01T12:00:00+00:00",
+        last_attached_iso="2026-05-01T13:00:00+00:00",
     )
-    base.update(overrides)
-    return TuiSession(**base)  # type: ignore[arg-type]
 
 
-class FromTuiSessionTests(unittest.TestCase):
-    def test_host_is_always_none(self) -> None:
-        row = from_tui_session(_make_tui_session())
-        self.assertIsNone(row.host)
-
-    def test_all_fields_map(self) -> None:
-        s = _make_tui_session(
-            name="cc-foo",
-            short="foo",
-            attached=True,
-            pid="4321",
-            cpu="5.0",
-            ram="1.2G",
-            cmd="claude run",
-            path="/tmp",
+def test_adapters_project_values_and_distinct_routing_keys() -> None:
+    local = from_tui_session(_local())
+    remote = from_wire_record(
+        "peer-a",
+        dict(
+            name="uxon-proj@fast",
+            short_id="proj@fast",
             user="bob",
-            agent="codex",
+            agent="claude",
+            profile="fast",
+            runtime="box",
+            runtime_resource="uxon-box",
+            attached=True,
+            active_pid=1234,
+            cpu_pct=12.3,
+            rss_kib=4096,
+            active_cmd="claude",
+            active_path="/srv/remote",
             legacy=True,
+            created="2026-05-01T12:00:00+00:00",
+            last_attached="2026-05-01T13:00:00+00:00",
+        ),
+    )
+
+    def projection(r):
+        return (
+            r.host,
+            r.user,
+            r.name,
+            r.short,
+            r.profile,
+            r.agent,
+            r.runtime,
+            r.runtime_resource,
+            r.attached,
+            r.legacy,
+            r.pid,
+            r.cpu_pct,
+            r.rss_kib,
+            r.cmd,
+            r.path,
+            r.created_epoch,
+            r.last_attached_epoch,
         )
-        row = from_tui_session(s)
-        self.assertEqual(row.user, "bob")
-        self.assertEqual(row.name, "cc-foo")
-        self.assertEqual(row.short, "foo")
-        self.assertEqual(row.agent, "codex")
-        self.assertTrue(row.attached)
-        self.assertTrue(row.legacy)
-        self.assertEqual(row.pid, 4321)
-        self.assertAlmostEqual(row.cpu_pct, 5.0)
-        # 1.2 GiB → 1.2 * 1024 * 1024 KiB.
-        self.assertEqual(row.rss_kib, int(1.2 * 1024 * 1024))
-        self.assertEqual(row.cmd, "claude run")
-        self.assertEqual(row.path, "/tmp")
 
-    def test_pid_dash_or_empty_becomes_none(self) -> None:
-        self.assertIsNone(from_tui_session(_make_tui_session(pid="-")).pid)
-        self.assertIsNone(from_tui_session(_make_tui_session(pid="")).pid)
-        self.assertIsNone(from_tui_session(_make_tui_session(pid="abc")).pid)
+    assert projection(local) == (
+        None,
+        "alice",
+        "uxon-proj@fast",
+        "proj@fast",
+        "fast",
+        "claude",
+        "",
+        "",
+        True,
+        True,
+        4321,
+        5.0,
+        1258291,
+        "claude run",
+        "/srv/proj",
+        1777636800.0,
+        1777640400.0,
+    )
+    assert projection(remote) == (
+        "peer-a",
+        "bob",
+        "uxon-proj@fast",
+        "proj@fast",
+        "fast",
+        "claude",
+        "box",
+        "uxon-box",
+        True,
+        True,
+        1234,
+        12.3,
+        4096,
+        "claude",
+        "/srv/remote",
+        1777636800.0,
+        1777640400.0,
+    )
+    assert (local.key, remote.key) == (
+        "local/alice/uxon-proj@fast",
+        "remote:peer-a/bob/uxon-proj@fast",
+    )
 
-    def test_cpu_dash_or_empty_becomes_zero(self) -> None:
-        self.assertEqual(from_tui_session(_make_tui_session(cpu="-")).cpu_pct, 0.0)
-        self.assertEqual(from_tui_session(_make_tui_session(cpu="")).cpu_pct, 0.0)
-        self.assertEqual(from_tui_session(_make_tui_session(cpu="bogus")).cpu_pct, 0.0)
 
-    def test_ram_parses_short_and_long_units(self) -> None:
-        self.assertEqual(from_tui_session(_make_tui_session(ram="456M")).rss_kib, 456 * 1024)
-        self.assertEqual(
-            from_tui_session(_make_tui_session(ram="456 MiB")).rss_kib,
-            456 * 1024,
-        )
-        self.assertEqual(from_tui_session(_make_tui_session(ram="42K")).rss_kib, 42)
-        self.assertEqual(from_tui_session(_make_tui_session(ram="-")).rss_kib, 0)
-        self.assertEqual(from_tui_session(_make_tui_session(ram="")).rss_kib, 0)
-        self.assertEqual(from_tui_session(_make_tui_session(ram="garbage")).rss_kib, 0)
+def test_row_identity_distinguishes_peer_local_and_preserves_launch_continuity():
+    identity = SessionIdentity(
+        "alice",
+        "uxon-proj@fast",
+        "$1",
+        "100",
+        "a" * 32,
+        "/tmp/tmux-1001/uxon-local.sock",
+        "local",
+        "fingerprint",
+    )
+    local = replace(from_tui_session(_local()), identity=identity)
+    assert local.key != replace(local, host="local").key
+    assert (
+        local.key == replace(local, name="renamed", identity=replace(identity, name="renamed")).key
+    )
+    legacy = replace(identity, launch_nonce="")
+    assert legacy.key == replace(legacy, name="renamed").key
+    assert legacy.key != replace(legacy, created="101").key
+    assert identity.key != replace(identity, launch_nonce="b" * 32).key
 
-    def test_local_epochs_default_none_when_iso_missing(self) -> None:
-        # Default fixture omits the ISO fields → empty string default →
-        # epoch falls back to None. Defensive case: production paths
-        # always supply ISO, but old fixtures and out-of-tree callers
-        # may not.
-        row = from_tui_session(_make_tui_session())
-        self.assertIsNone(row.created_epoch)
-        self.assertIsNone(row.last_attached_epoch)
 
-    def test_local_epochs_parsed_from_iso(self) -> None:
-        # ISO 8601 UTC string → epoch seconds. Pinned values let later
-        # tweaks to the parser surface as test diffs rather than silent
-        # ranking changes.
-        s = _make_tui_session(
-            created_iso="2026-05-01T12:00:00+00:00",
-            last_attached_iso="2026-05-01T13:00:00+00:00",
-        )
-        row = from_tui_session(s)
-        # 2026-05-01T12:00:00+00:00 = 1777636800.0 epoch seconds.
-        self.assertEqual(row.created_epoch, 1777636800.0)
-        self.assertEqual(row.last_attached_epoch, 1777636800.0 + 3600.0)
-
-    def test_local_empty_iso_string_collapses_to_none(self) -> None:
-        s = _make_tui_session(created_iso="", last_attached_iso="")
-        row = from_tui_session(s)
-        self.assertIsNone(row.created_epoch)
-        self.assertIsNone(row.last_attached_epoch)
-
-    def test_local_row_outranks_older_remote_when_sorting_by_last(self) -> None:
-        # Goal 4 regression test: a local session with a more-recent
-        # ``last_attached_iso`` must rank ABOVE an older remote when
-        # sorting by ``last`` desc. Before this fix local rows carried
-        # ``last_attached_epoch=None`` and were pushed to the bottom
-        # under the ``float("-inf")`` sort fallback.
-        from uxon.tui.dashboard.columns import REGISTRY  # noqa: PLC0415
-
-        local = from_tui_session(
-            _make_tui_session(
-                name="local-fresh",
-                last_attached_iso="2026-05-02T10:00:00+00:00",
+def test_local_numeric_units_and_invalid_metadata() -> None:
+    base = _local()
+    for pid, cpu, ram, created, last, expected in (
+        ("-", "-", "-", "", "", (None, 0.0, 0, None, None)),
+        ("", "", "", "", "", (None, 0.0, 0, None, None)),
+        ("abc", "bogus", "garbage", "invalid", "invalid", (None, 0.0, 0, None, None)),
+        ("42", "12.3", "456M", "", "", (42, 12.3, 466944, None, None)),
+        ("42", "12.3", "456 MiB", "", "", (42, 12.3, 466944, None, None)),
+        ("42", "12.3", "42K", "", "", (42, 12.3, 42, None, None)),
+        ("42", "12.3", "1.5 GiB", "", "", (42, 12.3, 1572864, None, None)),
+    ):
+        row = from_tui_session(
+            replace(
+                base,
+                pid=pid,
+                cpu=cpu,
+                ram=ram,
+                created_iso=created,
+                last_attached_iso=last,
+                legacy=False,
             )
         )
-        remote_dict = {
-            "user": "alice",
-            "name": "remote-stale",
-            "short_id": "stale",
-            "agent": "claude",
-            "attached": False,
-            "created": "2026-05-01T08:00:00+00:00",
-            "last_attached": "2026-05-01T08:00:00+00:00",
-            "active_pid": 9999,
-            "cpu_pct": 0.0,
-            "rss_kib": 0,
-            "active_cmd": "claude",
-            "active_path": "/tmp",
-        }
-        remote = from_wire_record("peer-a", remote_dict)
-        last_spec = next(c for c in REGISTRY if c.id == "last")
-        ordered = sorted([remote, local], key=last_spec.sort_key, reverse=True)
-        self.assertEqual([r.name for r in ordered], ["local-fresh", "remote-stale"])
-
-    def test_legacy_flag_preserved(self) -> None:
-        self.assertFalse(from_tui_session(_make_tui_session(legacy=False)).legacy)
-        self.assertTrue(from_tui_session(_make_tui_session(legacy=True)).legacy)
+        assert (
+            row.pid,
+            row.cpu_pct,
+            row.rss_kib,
+            row.created_epoch,
+            row.last_attached_epoch,
+        ) == expected, (pid, cpu, ram)
+        assert not row.legacy
 
 
-def _wire(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = {
-        "user": "alice",
-        "name": "cc-myproj",
-        "short_id": "myproj",
-        "agent": "claude",
-        "attached": False,
-        "windows": "1",
-        "created": "2026-05-03T12:34:56+00:00",
-        "last_attached": "2026-05-03T13:00:00+00:00",
-        "pane_pids": [1234],
-        "active_pid": 1234,
-        "active_cmd": "claude",
-        "active_path": "/home/alice/proj",
-        "cpu_pct": 12.3,
-        "rss_kib": 4096,
-        "legacy": False,
-    }
-    base.update(overrides)
-    return base
-
-
-class FromWireRecordTests(unittest.TestCase):
-    def test_host_always_set_to_peer(self) -> None:
-        row = from_wire_record("peer-1", _wire())
-        self.assertEqual(row.host, "peer-1")
-        self.assertIsNotNone(row.host)
-
-    def test_all_fields_map(self) -> None:
-        row = from_wire_record("peer-1", _wire(attached=True, legacy=True))
-        self.assertEqual(row.user, "alice")
-        self.assertEqual(row.name, "cc-myproj")
-        self.assertEqual(row.short, "myproj")
-        self.assertEqual(row.agent, "claude")
-        self.assertTrue(row.attached)
-        self.assertTrue(row.legacy)
-        self.assertEqual(row.pid, 1234)
-        self.assertAlmostEqual(row.cpu_pct, 12.3)
-        self.assertEqual(row.rss_kib, 4096)
-        self.assertEqual(row.cmd, "claude")
-        self.assertEqual(row.path, "/home/alice/proj")
-
-    def test_iso_timestamps_parse_to_epoch(self) -> None:
-        row = from_wire_record("peer-1", _wire())
-        expected_created = datetime(2026, 5, 3, 12, 34, 56, tzinfo=UTC).timestamp()
-        expected_last = datetime(2026, 5, 3, 13, 0, 0, tzinfo=UTC).timestamp()
-        self.assertIsNotNone(row.created_epoch)
-        self.assertIsNotNone(row.last_attached_epoch)
-        assert row.created_epoch is not None  # for type-narrowing
-        assert row.last_attached_epoch is not None
-        self.assertAlmostEqual(row.created_epoch, expected_created, places=3)
-        self.assertAlmostEqual(row.last_attached_epoch, expected_last, places=3)
-
-    def test_empty_iso_strings_yield_none_epoch(self) -> None:
-        row = from_wire_record("peer-1", _wire(created="", last_attached=""))
-        self.assertIsNone(row.created_epoch)
-        self.assertIsNone(row.last_attached_epoch)
-
-    def test_unparseable_iso_yields_none_epoch(self) -> None:
-        row = from_wire_record("peer-1", _wire(created="not-a-date"))
-        self.assertIsNone(row.created_epoch)
-
-    def test_short_id_falls_back_to_name(self) -> None:
-        row = from_wire_record("peer-1", _wire(short_id=""))
-        self.assertEqual(row.short, "cc-myproj")
-
-    def test_missing_active_pid_is_none(self) -> None:
-        row = from_wire_record("peer-1", _wire(active_pid=None))
-        self.assertIsNone(row.pid)
-
-    def test_missing_fields_default_to_zero(self) -> None:
-        # Older peer schema: half the fields absent.
-        sparse: dict[str, object] = {"user": "u", "name": "n"}
-        row = from_wire_record("peer-old", sparse)
-        self.assertEqual(row.host, "peer-old")
-        self.assertEqual(row.user, "u")
-        self.assertEqual(row.name, "n")
-        self.assertEqual(row.short, "n")  # falls back to name
-        self.assertEqual(row.agent, "")
-        self.assertFalse(row.attached)
-        self.assertFalse(row.legacy)
-        self.assertIsNone(row.pid)
-        self.assertEqual(row.cpu_pct, 0.0)
-        self.assertEqual(row.rss_kib, 0)
-        self.assertIsNone(row.created_epoch)
-        self.assertIsNone(row.last_attached_epoch)
-        self.assertEqual(row.cmd, "")
-        self.assertEqual(row.path, "")
-
-    def test_legacy_flag_preserved(self) -> None:
-        self.assertTrue(from_wire_record("p", _wire(legacy=True)).legacy)
-        self.assertFalse(from_wire_record("p", _wire(legacy=False)).legacy)
-
-
-class FrozenRowTests(unittest.TestCase):
-    def test_session_row_is_frozen(self) -> None:
-        from dataclasses import FrozenInstanceError
-
-        row = from_tui_session(_make_tui_session())
-        with self.assertRaises(FrozenInstanceError):
-            row.host = "peer"  # type: ignore[misc]
-
-    def test_session_row_equality_is_structural(self) -> None:
-        a = SessionRow(
-            host=None,
-            user="u",
-            name="n",
-            short="n",
-            agent="claude",
-            attached=False,
-            legacy=False,
-            pid=None,
-            cpu_pct=0.0,
-            rss_kib=0,
-            created_epoch=None,
-            last_attached_epoch=None,
-            cmd="",
-            path="",
-        )
-        b = SessionRow(
-            host=None,
-            user="u",
-            name="n",
-            short="n",
-            agent="claude",
-            attached=False,
-            legacy=False,
-            pid=None,
-            cpu_pct=0.0,
-            rss_kib=0,
-            created_epoch=None,
-            last_attached_epoch=None,
-            cmd="",
-            path="",
-        )
-        self.assertEqual(a, b)
-        self.assertIsNot(a, b)
-
-
-if __name__ == "__main__":
-    unittest.main()
+def test_sparse_wire_and_invalid_timestamp_pid_fallbacks() -> None:
+    sparse = from_wire_record("old-peer", {"user": "bob", "name": "n"})
+    assert (
+        sparse.host,
+        sparse.user,
+        sparse.name,
+        sparse.short,
+        sparse.agent,
+        sparse.attached,
+        sparse.legacy,
+        sparse.pid,
+        sparse.cpu_pct,
+        sparse.rss_kib,
+        sparse.created_epoch,
+        sparse.last_attached_epoch,
+        sparse.cmd,
+        sparse.path,
+        sparse.profile,
+        sparse.runtime,
+        sparse.runtime_resource,
+        sparse.runtime_down,
+        sparse.exited,
+        sparse.active_exit_status,
+        sparse.has_diagnostics,
+    ) == (
+        "old-peer",
+        "bob",
+        "n",
+        "n",
+        "",
+        False,
+        False,
+        None,
+        0.0,
+        0,
+        None,
+        None,
+        "",
+        "",
+        "",
+        "",
+        "",
+        False,
+        False,
+        None,
+        False,
+    )
+    invalid = from_wire_record(
+        "old-peer",
+        {
+            "user": "bob",
+            "name": "n",
+            "short_id": "",
+            "active_pid": "42",
+            "created": "bad",
+            "last_attached": "",
+            "legacy": False,
+        },
+    )
+    assert invalid == sparse

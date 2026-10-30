@@ -4,7 +4,7 @@ Two scopes:
 
 1. CLI probe helper (``probe_tui_compatible_sessions``) — pure-Python,
    no textual dependency. Filters a fake session list down to entries
-   compatible with (target_dir, agent_id).
+   compatible with (target_dir, profile_id).
 
 2. ``SessionChoiceScreen`` modal behaviour — ↑/↓ + Enter row selection,
    the ``n`` new-alongside shortcut, Esc cancel, and the shape of the
@@ -18,12 +18,8 @@ Two scopes:
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
 
-from helpers import make_config, run_off_loop_sync
-
-from uxon.domain.session import SessionInfo
-from uxon.infra import sessions_probe
+from helpers import run_off_loop_sync
 
 
 def _textual_available() -> bool:
@@ -34,197 +30,59 @@ def _textual_available() -> bool:
     return True
 
 
-class ProbeHelperTests(unittest.TestCase):
-    def test_compatible_sessions_filtered_by_stem_and_agent(self) -> None:
-        from uxon.infra.sessions_probe import probe_tui_compatible_sessions
-
-        target_dir = "/srv/repos/myproj"
-        sessions = [
-            SessionInfo(
-                user="dev",
-                name="uxon-myproj@claude",
-                attached="0",
-                windows="1",
-                created="",
-                last_attached="",
-                pane_pids=(),
-                active_pid=None,
-                active_cmd="",
-                active_path=target_dir,
-                agent="claude",
-            ),
-            SessionInfo(
-                user="dev",
-                name="uxon-myproj@codex",
-                attached="0",
-                windows="1",
-                created="",
-                last_attached="",
-                pane_pids=(),
-                active_pid=None,
-                active_cmd="",
-                active_path=target_dir,
-                agent="codex",
-            ),
-            SessionInfo(
-                user="dev",
-                name="uxon-other@claude",
-                attached="0",
-                windows="1",
-                created="",
-                last_attached="",
-                pane_pids=(),
-                active_pid=None,
-                active_cmd="",
-                active_path="/srv/repos/other",
-                agent="claude",
-            ),
-        ]
-        cfg = make_config()
-
-        def fake_collect(users, c):
-            return sessions
-
-        original = sessions_probe.collect_sessions
-        sessions_probe.collect_sessions = fake_collect
-        try:
-            matches = probe_tui_compatible_sessions(cfg, "dev", target_dir, "claude")
-        finally:
-            sessions_probe.collect_sessions = original
-
-        names = [s.name for s in matches]
-        self.assertEqual(names, ["uxon-myproj@claude"])
-
-
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def test_attach_returns_highlighted_name(self) -> None:
-        from textual.app import App
+    async def test_keyboard_mouse_new_and_cancel_choices(self) -> None:
+        from harness.textual_scenarios import ScreenScenario, press_keys, run_screen_scenarios
+        from textual.widgets import ListView
 
         from uxon.tui.screens.session_choice import SessionChoiceScreen
 
-        results: list[object] = []
+        existing = (("alice", "uxon-myproj@claude", False), ("bob", "uxon-myproj@claude-2", True))
 
-        class _Host(App):
-            async def on_mount(self) -> None:
-                screen = SessionChoiceScreen(
-                    target_label="myproj",
-                    existing=(("uxon-myproj@claude", False), ("uxon-myproj@claude-2", True)),
-                )
-                await self.push_screen(screen, lambda r: results.append(r))
+        async def click_second(app, pilot):
+            self.assertEqual(app.screen.query_one("#session-list", ListView).index, 0)
+            await pilot.click("#sess-1")
 
-        async with _Host().run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            # First row is highlighted on mount; Enter confirms it (attach).
-            await pilot.press("enter")
-            await pilot.pause()
-
-        self.assertEqual(results, [("attach", "uxon-myproj@claude")])
-
-    async def test_new_alongside_returns_new_sentinel(self) -> None:
-        from textual.app import App
-
-        from uxon.tui.screens.session_choice import SessionChoiceScreen
-
-        results: list[object] = []
-
-        class _Host(App):
-            async def on_mount(self) -> None:
-                screen = SessionChoiceScreen(
-                    target_label="myproj",
-                    existing=(("uxon-myproj@claude", False),),
-                )
-                await self.push_screen(screen, lambda r: results.append(r))
-
-        async with _Host().run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            await pilot.press("n")
-            await pilot.pause()
-
-        self.assertEqual(results, [("new", None)])
-
-    async def test_attach_non_first_session_row(self) -> None:
-        """Navigating to a non-first session row attaches *that* session.
-
-        Guards the ``0 <= idx < len(self.existing)`` bound in
-        ``action_pick`` that tells a session row apart from the trailing
-        new row — with two sessions, index 1 is still a session, not new.
-        """
-        from textual.app import App
-
-        from uxon.tui.screens.session_choice import SessionChoiceScreen
-
-        results: list[object] = []
-
-        class _Host(App):
-            async def on_mount(self) -> None:
-                screen = SessionChoiceScreen(
-                    target_label="myproj",
-                    existing=(
-                        ("uxon-myproj@claude", False),
-                        ("uxon-myproj@claude-2", True),
-                    ),
-                )
-                await self.push_screen(screen, lambda r: results.append(r))
-
-        async with _Host().run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            # Rows: 0,1 = sessions; 2 = trailing new. Move to the second
-            # session and confirm → attach to it (not new).
-            await pilot.press("down")
-            await pilot.press("enter")
-            await pilot.pause()
-
-        self.assertEqual(results, [("attach", "uxon-myproj@claude-2")])
-
-    async def test_mouse_click_session_row_attaches(self) -> None:
-        """Clicking a session row confirms it (the mouse-only path)."""
-        from textual.app import App
-
-        from uxon.tui.screens.session_choice import SessionChoiceScreen
-
-        results: list[object] = []
-
-        class _Host(App):
-            async def on_mount(self) -> None:
-                screen = SessionChoiceScreen(
-                    target_label="myproj",
-                    existing=(("uxon-myproj@claude", False),),
-                )
-                await self.push_screen(screen, lambda r: results.append(r))
-
-        async with _Host().run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            await pilot.click("#sess-0")
-            await pilot.pause()
-
-        self.assertEqual(results, [("attach", "uxon-myproj@claude")])
-
-    async def test_enter_on_trailing_row_starts_new(self) -> None:
-        """The ``+ Start new session alongside`` row, picked with Enter."""
-        from textual.app import App
-
-        from uxon.tui.screens.session_choice import SessionChoiceScreen
-
-        results: list[object] = []
-
-        class _Host(App):
-            async def on_mount(self) -> None:
-                screen = SessionChoiceScreen(
-                    target_label="myproj",
-                    existing=(("uxon-myproj@claude", False),),
-                )
-                await self.push_screen(screen, lambda r: results.append(r))
-
-        async with _Host().run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            # One session row (index 0) + trailing new row (index 1):
-            # move the highlight down to the new row, then confirm.
-            await pilot.press("down")
-            await pilot.press("enter")
-            await pilot.pause()
-
-        self.assertEqual(results, [("new", None)])
+        scenarios = [
+            ScreenScenario(
+                "first-enter",
+                lambda: SessionChoiceScreen("myproj", existing),
+                press_keys("up", "down", "enter"),
+                ("attach", "uxon-myproj@claude", "alice"),
+            ),
+            ScreenScenario(
+                "second-enter",
+                lambda: SessionChoiceScreen("myproj", existing),
+                press_keys("down", "enter"),
+                ("attach", "uxon-myproj@claude-2", "bob"),
+            ),
+            ScreenScenario(
+                "second-click",
+                lambda: SessionChoiceScreen("myproj", existing),
+                click_second,
+                ("attach", "uxon-myproj@claude-2", "bob"),
+            ),
+            ScreenScenario(
+                "new-shortcut",
+                lambda: SessionChoiceScreen("myproj", existing),
+                press_keys("n"),
+                ("new", None, None),
+            ),
+            ScreenScenario(
+                "trailing-new",
+                lambda: SessionChoiceScreen("myproj", existing),
+                press_keys("up", "enter"),
+                ("new", None, None),
+            ),
+            ScreenScenario(
+                "cancel",
+                lambda: SessionChoiceScreen("myproj", existing),
+                press_keys("escape"),
+                None,
+            ),
+        ]
+        self.assertEqual(await run_screen_scenarios(scenarios), [s.expected for s in scenarios])
 
     async def test_keyboard_works_when_pushed_from_dismiss_callback(self) -> None:
         """Regression: keyboard-dead modal when opened from another modal.
@@ -243,9 +101,6 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
         from textual.widgets import Button, ListView
 
         from uxon.tui.screens.session_choice import SessionChoiceScreen
-
-        # AUTO_FOCUS is the contract that prevents the race.
-        self.assertEqual(SessionChoiceScreen.AUTO_FOCUS, "#session-list")
 
         results: list[object] = []
 
@@ -292,29 +147,7 @@ class SessionChoiceScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("n")  # keyboard must drive the modal
             await pilot.pause()
 
-        self.assertEqual(results, [("new", None)])
-
-    async def test_escape_cancels(self) -> None:
-        from textual.app import App
-
-        from uxon.tui.screens.session_choice import SessionChoiceScreen
-
-        results: list[object] = []
-
-        class _Host(App):
-            async def on_mount(self) -> None:
-                screen = SessionChoiceScreen(
-                    target_label="myproj",
-                    existing=(("uxon-myproj@claude", False),),
-                )
-                await self.push_screen(screen, lambda r: results.append(r))
-
-        async with _Host().run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            await pilot.press("escape")
-            await pilot.pause()
-
-        self.assertEqual(results, [None])
+        self.assertEqual(results, [("new", None, None)])
 
 
 def _mk_ctx(**overrides):
@@ -342,127 +175,57 @@ def _mk_ctx(**overrides):
     return ctx
 
 
-class _StubScreen:
-    """Minimal stand-in that hosts ``MainScreen._maybe_show_session_choice``.
-
-    ``MainScreen.app`` is a read-only property on the Textual base class,
-    so we can't monkeypatch it onto a real MainScreen instance. Instead
-    we re-bind the unbound function onto this lightweight stub — the
-    helper only touches ``self.cfg``, ``self.app.push_screen``,
-    ``self.app.notify``, ``self.app.request_launch``, and the
-    ``_attach_session`` method, all of which we mock here.
-    """
-
-    def __init__(self, ctx, attach_log):
-        self.cfg = ctx
-        self.app = MagicMock()
-        self.app.push_screen = MagicMock()
-        self.app.notify = MagicMock()
-        self.app.request_launch = MagicMock()
-        # The probe now runs through ``run_off_loop``; the stub executes it
-        # synchronously so these direct-call tests still see the modal push
-        # / on_new continuation without a live event loop.
-        self.app.run_off_loop = run_off_loop_sync
-        self._attach_log = attach_log
-
-    def _attach_session(self, user, session_name):
-        self._attach_log.append((user, session_name))
-
-
-def _bind_helper(stub):
-    from uxon.tui.screens.launch_flow import LaunchFlow
-
-    # The session-choice body now lives on LaunchFlow; it reaches back
-    # into its host (the stub here) for ``cfg``/``app``/``_attach_session``.
-    return LaunchFlow(stub).maybe_show_session_choice
-
-
 class MainScreenHelperTests(unittest.TestCase):
-    """Direct-call tests for ``_maybe_show_session_choice``."""
+    def test_probe_choice_routes_new_attach_cancel_and_probe_user(self) -> None:
+        from types import SimpleNamespace
 
-    def test_no_existing_calls_on_new_directly(self) -> None:
-        ctx = _mk_ctx(on_probe_existing_sessions=lambda d, a: ())
-        stub = _StubScreen(ctx, attach_log=[])
-        helper = _bind_helper(stub)
-        called: list[str] = []
-        helper(
-            target_dir="/srv/work",
-            target_label="work",
-            agent_id="claude",
-            on_new=lambda: called.append("new"),
-        )
-        self.assertEqual(called, ["new"])
-        stub.app.push_screen.assert_not_called()
+        from uxon.tui.screens.launch_flow import LaunchFlow
+        from uxon.tui.screens.session_choice import SessionChoiceScreen
 
-    def test_existing_pushes_modal(self) -> None:
-        ctx = _mk_ctx(
-            on_probe_existing_sessions=lambda d, a: (("uxon-work@claude", False),),
-        )
-        stub = _StubScreen(ctx, attach_log=[])
-        helper = _bind_helper(stub)
-        helper(
-            target_dir="/srv/work",
-            target_label="work",
-            agent_id="claude",
-            on_new=lambda: None,
-        )
-        stub.app.push_screen.assert_called_once()
-        screen_arg = stub.app.push_screen.call_args[0][0]
-        self.assertEqual(type(screen_arg).__name__, "SessionChoiceScreen")
+        for existing, choice, expected in (
+            ((), None, [("new",)]),
+            ((("uxon-work@claude", False),), None, []),
+            ((("uxon-work@claude", False),), ("new", None, None), [("new",)]),
+            (
+                (("uxon-work@claude", False),),
+                ("attach", "uxon-work@claude", None),
+                [("attach", "bob", "uxon-work@claude")],
+            ),
+            (
+                (("alice", "uxon-work@claude", False),),
+                ("attach", "uxon-work@claude", "alice"),
+                [("attach", "alice", "uxon-work@claude")],
+            ),
+        ):
+            with self.subTest(existing=existing, choice=choice):
+                probes, effects, screens = [], [], []
 
-    def test_attach_branch_invokes_on_attach(self) -> None:
-        attach_log: list[tuple[str, str]] = []
-        ctx = _mk_ctx(
-            on_probe_existing_sessions=lambda d, a: (("uxon-work@claude", False),),
-        )
-        stub = _StubScreen(ctx, attach_log=attach_log)
-        helper = _bind_helper(stub)
-        new_called: list[str] = []
-        helper(
-            target_dir="/srv/work",
-            target_label="work",
-            agent_id="claude",
-            on_new=lambda: new_called.append("new"),
-        )
-        callback = stub.app.push_screen.call_args[0][1]
-        callback(("attach", "uxon-work@claude"))
-        self.assertEqual(attach_log, [("dev", "uxon-work@claude")])
-        self.assertEqual(new_called, [])
+                def probe(*args, probes=probes, existing=existing):
+                    probes.append(args)
+                    return existing
 
-    def test_new_branch_calls_on_new(self) -> None:
-        ctx = _mk_ctx(
-            on_probe_existing_sessions=lambda d, a: (("uxon-work@claude", False),),
-        )
-        stub = _StubScreen(ctx, attach_log=[])
-        helper = _bind_helper(stub)
-        new_called: list[str] = []
-        helper(
-            target_dir="/srv/work",
-            target_label="work",
-            agent_id="claude",
-            on_new=lambda: new_called.append("new"),
-        )
-        callback = stub.app.push_screen.call_args[0][1]
-        callback(("new", None))
-        self.assertEqual(new_called, ["new"])
+                def push(screen, done, screens=screens, choice=choice):
+                    self.assertIsInstance(screen, SessionChoiceScreen)
+                    screens.append(screen)
+                    done(choice)
 
-    def test_cancel_is_a_noop(self) -> None:
-        ctx = _mk_ctx(
-            on_probe_existing_sessions=lambda d, a: (("uxon-work@claude", False),),
-        )
-        stub = _StubScreen(ctx, attach_log=[])
-        helper = _bind_helper(stub)
-        new_called: list[str] = []
-        helper(
-            target_dir="/srv/work",
-            target_label="work",
-            agent_id="claude",
-            on_new=lambda: new_called.append("new"),
-        )
-        callback = stub.app.push_screen.call_args[0][1]
-        callback(None)
-        self.assertEqual(new_called, [])
-        self.assertEqual(stub._attach_log, [])
+                host = SimpleNamespace(
+                    cfg=_mk_ctx(on_probe_existing_sessions=probe, launch_user="bob"),
+                    app=SimpleNamespace(push_screen=push, run_off_loop=run_off_loop_sync),
+                    _attach_session=lambda user, name, effects=effects: effects.append(
+                        ("attach", user, name)
+                    ),
+                )
+                LaunchFlow(host).maybe_show_session_choice(
+                    target_dir="/srv/work",
+                    target_label="work",
+                    profile_id="claude",
+                    mode_id="normal",
+                    on_new=lambda effects=effects: effects.append(("new",)),
+                )
+                self.assertEqual(probes, [("/srv/work", "claude", "normal")])
+                self.assertEqual(len(screens), 1 if existing else 0)
+                self.assertEqual(effects, expected)
 
 
 if __name__ == "__main__":

@@ -66,8 +66,7 @@ class _TabButton(Static):
     is in the focus chain so Tab / ↑ / ↓ enter and leave the strip
     in one step instead of stopping on every tab.
 
-    Navigation goes through ``BINDINGS`` (no ``on_key`` — AGENTS.md hard
-    rule, enforced by ``tests/test_uxon_tui_bindings.py``).
+    Navigation uses ``BINDINGS`` so the declarative registry owns key handling.
     """
 
     # Class default: not focusable. The owning strip flips this to
@@ -168,7 +167,7 @@ class HostTabStrip(Widget):
         # ``(label, color, active)`` per tab as last written — the change
         # gate for :meth:`set_buckets`. A per-tick rebuild whose tabs match
         # the last applied state issues zero ``update`` / ``set_class`` /
-        # ``can_focus`` writes (RC3). Kept in sync by ``watch_active_index``
+        # ``can_focus`` writes. Kept in sync by ``watch_active_index``
         # for the tabs it rewrites on a tab switch.
         self._last_tabs: list[tuple[str, str, bool]] = []
 
@@ -181,7 +180,7 @@ class HostTabStrip(Widget):
         btn = _TabButton(index=i, id=f"tab-{i}")
         color = self._colors.get(bucket.host_name, "white")
         # ``layout=False``: tab content is a fixed-size cell; a label/colour
-        # swap never resizes it, so skip the screen-global relayout (AC8).
+        # swap never resizes it, so skip the screen-global relayout.
         btn.update(_render_label(bucket.label, color), layout=False)
         active = i == self.active_index
         if active:
@@ -246,7 +245,7 @@ class HostTabStrip(Widget):
                 w = existing[i]
                 if isinstance(w, _TabButton):
                     # Skip the writes when this tab is unchanged vs the last
-                    # applied state (RC3) — but only for tabs that actually
+                    # applied state — but only for tabs that actually
                     # existed last pass (``i < len(self._last_tabs)``).
                     if i < len(self._last_tabs) and self._last_tabs[i] == triple:
                         continue

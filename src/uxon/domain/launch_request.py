@@ -8,6 +8,63 @@ these and the outer loop runs the command. Pure, stdlib-only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from uxon.domain.config import Config
+    from uxon.domain.session import SessionIdentity
+
+
+@dataclass(frozen=True)
+class TmuxHandoff:
+    """Controller context for acknowledging retained diagnostics."""
+
+    config: Config
+    user: str
+    session: str = ""
+    diagnostics: bool = False
+
+
+@dataclass(frozen=True)
+class HandoffResult:
+    rc: int
+    stage: str
+    wall_seconds: float
+    warning: str = ""
+    session_id: str = ""
+    launch_nonce: str = ""
+
+
+@dataclass(frozen=True)
+class ManagedTmuxLaunch:
+    """Metadata needed to create and finalize a managed tmux launch."""
+
+    create_cmd: tuple[str, ...]
+    query_cmd: tuple[str, ...]
+    release_cmd: tuple[str, ...]
+    rollback_kill_prefix: tuple[str, ...]
+    record_socket: str
+    record_session: str
+    record_nonce: str
+    record_dir: str
+    launch_profile: str
+    agent: str
+    launch_user: str
+    project: str = ""
+    branch: str = ""
+    record_shared: bool = False
+    execution_backend: str = "local"
+    execution_fingerprint: str = ""
+    runtime: str = "direct"
+    runtime_kind: str = "direct"
+    runtime_fingerprint: str = ""
+    runtime_resource: str = ""
+    runtime_dir: str = ""
+    project_slug: str = ""
+    runtime_id: str = ""
+    runtime_cgroup: str = ""
+    runtime_epoch: str = ""
+    diagnostics_prefix: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -23,6 +80,14 @@ class LaunchRequest:
     cmd: tuple[str, ...]
     prelaunch: tuple[tuple[str, ...], ...] = ()
     label: str = ""
+    managed: ManagedTmuxLaunch | None = None
+    handoff: TmuxHandoff | None = None
+    identity: SessionIdentity | None = None
+    correlation_id: str | None = None
+    peer_name: str | None = None
+    # Only the default forced-PTY SSH transport separates local diagnostics
+    # from remote workload output. Custom transports retain their own streams.
+    capture_ssh_diagnostics: bool = False
 
 
 def session_name_from_launch_label(label: str) -> str:

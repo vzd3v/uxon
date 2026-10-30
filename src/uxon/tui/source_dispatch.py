@@ -2,7 +2,7 @@
 
 These are the free-function bodies of what used to be
 ``UxonApp._handle_main_ctx_rebuild`` / ``UxonApp._handle_remote_snapshot`` /
-``UxonApp._build_source_dispatch``. Extracted in Phase P7 so the
+``UxonApp._build_source_dispatch`` so the
 landed-result → state reduction is testable and reviewable on its own.
 
 The App keeps the thin ``on__refresh_source_landed`` / ``_render_dirty``
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from uxon.infra.events import debug as _debug
@@ -93,16 +94,31 @@ def handle_remote_snapshot(app: UxonApp, event: _RefreshSourceLanded) -> None:
         # RemoteSnapshot nor an error — drop without mutating.
         return
 
-    from_cache = bool(getattr(snap, "from_cache", False)) if snap is not None else False
+    error = event.error or (snap.error if snap is not None else None)
+    if snap is not None and not snap.is_live:
+        error = error or "unconfirmed remote snapshot"
+    if error:
+        snap = (
+            replace(snap, sessions=[], host_stats=None, scope_skipped=[], error=error)
+            if snap
+            else RemoteSnapshot(
+                host_name=host_name,
+                fetched_at_epoch=attempted_at,
+                error=error,
+                error_code="fetch_error",
+            )
+        )
     result: SlotResult[RemoteSnapshot] = SlotResult(
         value=snap,
-        error=event.error or None,
+        error=error,
         elapsed_ms=event.elapsed_ms,
         attempted_at=attempted_at,
-        from_cache=from_cache,
     )
     prev = app.state.remote.get(host_name) or SlotState[RemoteSnapshot]()
-    app.state.remote[host_name] = apply_slot(prev, result)
+    updated = apply_slot(prev, result)
+    # Generic slots preserve successful values; remote failures instead keep
+    # their diagnostic DTO while excluding all unconfirmed session data.
+    app.state.remote[host_name] = replace(updated, value=snap) if error else updated
 
     # Fold peer-emitted users into the cross-user latch accumulator.
     # If this snapshot brings the very first foreign user, the latch
@@ -112,7 +128,7 @@ def handle_remote_snapshot(app: UxonApp, event: _RefreshSourceLanded) -> None:
     # ``remote`` fast path is enough — row-level diff against the
     # updated slot, no recompose.
     prev_latched = len(app.main_ui.seen_users) > 1
-    if snap is not None:
+    if snap is not None and snap.is_live and not error:
         for rec in snap.sessions:
             user = rec.get("user") if isinstance(rec, dict) else None
             if user:
@@ -136,9 +152,7 @@ def build_source_dispatch(
     tests (no Pilot required). Adding a new source means adding an entry
     here in the same change as the source-spec registration.
 
-    Handlers are partially-applied free reducers (``lambda event``
-    closing over ``app``) so the routing surface stays identical to the
-    pre-P7 bound-method registry while the reducer bodies live here.
+    Handlers bind the free reducers to ``app`` through ``lambda event`` closures.
     """
     exact: dict[str, Callable[[_RefreshSourceLanded], None]] = {
         "main_ctx_rebuild": lambda event: handle_main_ctx_rebuild(app, event),

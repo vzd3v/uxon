@@ -11,7 +11,7 @@ custom surface is small and focused:
   cursor with edge-release navigation, block hue, zebra, and
   selection-by-key.
 - :class:`GatedFooter` — stock ``Footer`` with the recompose gate
-  (spec D3); mounted in place of stock ``Footer`` on MainScreen.
+; mounted in place of stock ``Footer`` on MainScreen.
 """
 
 from .action_row import ActionRow

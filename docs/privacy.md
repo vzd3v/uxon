@@ -6,8 +6,8 @@ link as part of new-developer setup.
 
 ## The short version
 
-`uxon` records one structured audit event per substantive
-gesture you make — opening the TUI, launching a session,
+`uxon` records structured audit events for substantive
+gestures you make — opening the TUI, launching a session,
 attaching, killing. The trail goes to the host's system log
 channel (journald or syslog). Your operator queries it with
 `journalctl`, possibly forwarded to a central log collector.
@@ -19,28 +19,40 @@ local to your host.
 
 Every event carries:
 
-- Your shell username (`caller_user`) and UID (`caller_uid`).
-- The agent account that ran the gesture (`launch_user`,
-  e.g. `alice_agent` if you're `alice`).
+- The kernel audit login identity (`process_user`, `process_uid`). Uxon ignores
+  `USER` and `SUDO_*` when constructing this audit identity.
+- The concrete target account on events that act on one or more users
+  (`target_user` / `target_users`).
 - A timestamp, the host's hostname, and the `uxon` version.
 - The subcommand (`run`, `attach`, `kill`, …) and a
-  **sanitised** flag list — secret-shaped flags
-  (`--token`, `--password`, `--secret`) have their values
-  redacted; other flags are recorded verbatim.
+  list of parsed Uxon option names. Option values, forwarded agent flags,
+  prompts, and credentials are never included in `cli.start`.
 
 Per-event extras:
 
-- **Launching a session** → the agent (`claude` / `codex` /
-  `cursor`), the absolute project path, the worktree branch
-  if any, the session name.
-- **Attaching** → the session name, the target user.
-- **Killing** → the session name, the target user, whether
-  it was forced or a dry-run.
-- **Cross-host** → the peer's name and SSH alias, plus a
-  UUID `correlation_id` joining the two halves of the
-  gesture.
+- **Launching a session** → the launch profile, the underlying
+  coding-tool id from the configured catalog, the absolute project path,
+  the worktree branch if any, the session name.
+- **Attaching** → the session name, target user, `profile` and `agent` for a
+  resolved local session, and `dry_run`.
+- **Killing** → the session name, target user, `profile` and `agent` for a
+  resolved local session, `force`, `dry_run`, the tmux/SSH `rc` when recorded,
+  and a bounded `error` summary on failure.
+- **Cross-host** → the peer's name and SSH alias, final SSH return code when a
+  process ran, cache/scope status for remote listing, a bounded error summary
+  on failure, and a UUID `correlation_id` joining related operation and runtime
+  events across the boundary.
 
 Full per-event reference: [`reference/audit-events.md`](reference/audit-events.md).
+
+Managed sessions also have an authoritative controller-side launch record. It
+contains the session name/id/creation time, launch nonce, launch user, profile,
+agent, execution backend, workload runtime/resource identifiers, the mapped
+runtime directory, project slug, and record timestamps. Paths can reveal project
+names. It does not contain prompts, transcript content or credentials.
+One-controller installs keep records private to that
+controller; multi-controller installs may use a group-readable control
+directory that launch users cannot access.
 
 ## What's not recorded
 
@@ -53,6 +65,12 @@ Full per-event reference: [`reference/audit-events.md`](reference/audit-events.m
 
 `uxon` is a session manager — it sees the **shape** of what you
 do, not the **contents**.
+
+Optional debug/metrics logs are separate from audit and off by default. Current
+key diagnostics record navigation, input categories, counts and timing, not
+printable key values or paste contents. They can still contain operational
+paths and errors. Historical key logs may contain input text; review them before
+sharing. Storage requirements are in the [configuration reference](reference/configuration.md#environment-variables).
 
 ## Where it goes
 
@@ -71,25 +89,24 @@ running central forwarding and where it lives.
 For team setups, the audit channel exists for three reasons:
 
 1. **Incident response.** When an agent goes rogue or someone
-   makes a mistake, `journalctl SYSLOG_IDENTIFIER=uxon` gives
-   the operator a complete sweep of what happened, including
+   makes a mistake, `journalctl SYSLOG_IDENTIFIER=uxon` shows
+   the operator recorded Uxon operations, including
    denied/errored gestures (`outcome != "ok"`).
 2. **Cross-host correlation.** Without `correlation_id`,
    chasing an issue that crossed multiple hosts means SSH'ing
    to each and grepping by hand.
 3. **Attribution under supervision.** When the team lead can
    attach to your agent's session, the audit trail records
-   that attach as the lead's gesture (`caller_user=lead`,
-   `target_user=alice_agent`) — not yours. You're never
+   that attach as the lead's gesture (`process_user=lead`,
+   `target_user=nadia-agent`) — not yours. You're never
    credited (or blamed) for the lead's actions.
 
 ## Disabling
 
 Operators can disable the channel host-wide via
-`audit.enabled = false` in `config.toml`. There's no per-user
+`audit.enabled = false` in `/etc/uxon/config.toml`. There's no per-user
 opt-out; if your team's policy requires audit, the operator
-sets it on. If you want a personal `uxon` (solo·1) without the
-trail, set `audit.enabled = false` in your own config.
+sets it on. On a solo host, change the same operator-owned host config.
 
 ## Retention
 
@@ -98,6 +115,12 @@ says (typically a few weeks of `/var/log/journal/` until the
 filesystem hits its cap). For teams that ship to a central
 collector, retention is whatever the collector's policy is. Ask
 your operator.
+
+Launch records are deleted after a verified successful kill. Bounded garbage
+collection removes abandoned pending records after 10 minutes and finalized
+records after 7 days once their tmux session is no longer live. A protected
+per-launch-user cursor stores only the last examined record filename so bounded
+collection eventually covers a large shared store without crossing user scope.
 
 ## Related
 

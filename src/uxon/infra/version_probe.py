@@ -9,21 +9,39 @@ these readers with it.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from uxon.domain.version import format_version as _format_version_str
+from uxon.infra.run import run_query
 
 
 def repo_root() -> Path:
     """Best-effort path to the repo root for in-tree dev runs.
 
-    For pipx / `uv tool` / wheel installs this points into site-packages
-    and the resulting paths (``config/config.toml`` etc.) won't exist —
-    callers must tolerate missing files.
+    For pipx / `uv tool` / wheel installs this points into site-packages,
+    which is normally not a git checkout. Callers must tolerate unavailable
+    commit and dirty-state metadata.
     """
     return Path(__file__).resolve().parents[3]
+
+
+def source_checkout_root() -> Path | None:
+    """Return the Uxon checkout containing this imported module, if any.
+
+    A wheel may be installed below an unrelated Git worktree. Merely asking
+    Git for the nearest repository would then report the consumer project's
+    commit. The checkout is trusted only when its source-tree module is the
+    exact file Python imported.
+    """
+    root = repo_root()
+    expected_module = root / "src" / "uxon" / "infra" / "version_probe.py"
+    try:
+        if not expected_module.samefile(Path(__file__)):
+            return None
+    except OSError:
+        return None
+    return root
 
 
 def read_repo_version() -> str:
@@ -38,11 +56,12 @@ def read_repo_version() -> str:
 
 
 def read_git_commit_short() -> str | None:
-    root = str(repo_root())
-    cp = subprocess.run(
+    checkout = source_checkout_root()
+    if checkout is None:
+        return None
+    root = str(checkout)
+    cp = run_query(
         ["git", "-c", f"safe.directory={root}", "-C", root, "rev-parse", "--short", "HEAD"],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode != 0:
         return None
@@ -51,15 +70,16 @@ def read_git_commit_short() -> str | None:
 
 
 def repo_is_dirty() -> bool:
-    root = str(repo_root())
-    refresh = subprocess.run(
+    checkout = source_checkout_root()
+    if checkout is None:
+        return False
+    root = str(checkout)
+    refresh = run_query(
         ["git", "-c", f"safe.directory={root}", "-C", root, "update-index", "-q", "--refresh"],
-        text=True,
-        capture_output=True,
     )
     if refresh.returncode != 0:
         return False
-    cp = subprocess.run(
+    cp = run_query(
         [
             "git",
             "-c",
@@ -70,8 +90,6 @@ def repo_is_dirty() -> bool:
             "--porcelain",
             "--untracked-files=no",
         ],
-        text=True,
-        capture_output=True,
     )
     if cp.returncode != 0:
         return False

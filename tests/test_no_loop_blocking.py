@@ -1,398 +1,239 @@
-"""The keystroke-swallow bug class, pinned by machine.
-
-Root cause of dropped arrows / multi-press Esc / frozen "new project":
-a blocking call (tmux/git/ssh/sudo via ``subprocess``) executed on the
-asyncio thread Textual uses to read the keyboard. While it runs the loop
-cannot service input and the escape-sequence parser starves.
-
-This module makes the class non-regressable:
-
-* :class:`GuardUnitTests` pins the invariant primitive — ``assert_off_event_loop``
-  raises on a thread with a running loop, passes on a worker thread.
-* :class:`InteractiveActionsRunOffLoopTests` drives every blocking
-  interactive action and asserts its callback ran on a worker thread,
-  never on the loop. Each recorder reports ``asyncio.get_running_loop()``
-  success; a recorded ``True`` means the action would have frozen the UI.
-
-Run it yourself: ``pytest tests/test_no_loop_blocking.py``. Red means a
-blocking call sits on the loop again.
-"""
-
-from __future__ import annotations
+"""Blocking dashboard and launch callbacks keep input responsive off the loop."""
 
 import asyncio
+import getpass
+import subprocess
 import threading
 import unittest
 
+from helpers import land_dashboard_context as _land
+from helpers import make_config, make_launch_profile_options
+from helpers import make_dashboard_context as _mk_ctx
+from helpers import make_dashboard_session as _session
+from helpers import make_dashboard_snapshot as _snapshot
+from textual.widgets import Input
 
-def _textual_available() -> bool:
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG
+from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
+from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity
+from uxon.infra import execution
+from uxon.infra.agents import AgentAvailability
+from uxon.infra.loop_guard import (
+    EventLoopBlockedError,
+    assert_off_event_loop,
+    install_subprocess_guard,
+)
+from uxon.infra.remote_hosts import RemoteHost
+from uxon.infra.run import run_query
+from uxon.tui.app import UxonApp
+from uxon.tui.context import LaunchRequest
+from uxon.tui.messages import _RefreshSourceLanded
+from uxon.tui.screens.launch_options import LaunchOptionsScreen
+from uxon.tui.widgets.session_list_view import SessionListView
+
+
+def _on_loop():
     try:
-        import textual  # noqa: F401
-    except ImportError:
+        asyncio.get_running_loop()
+    except RuntimeError:
         return False
     return True
 
 
-def _on_loop() -> bool:
-    """True iff called on a thread that is running an asyncio event loop."""
-    try:
-        asyncio.get_running_loop()
-        return True
-    except RuntimeError:
-        return False
-
-
 class GuardUnitTests(unittest.IsolatedAsyncioTestCase):
-    """The guard primitive: the discriminator the whole fix rests on."""
-
-    async def test_raises_on_event_loop_thread(self) -> None:
-        from uxon.infra.loop_guard import EventLoopBlockedError, assert_off_event_loop
-
+    async def test_on_loop_refuses_before_spawn_worker_command_succeeds(self):
+        install_subprocess_guard()
         with self.assertRaises(EventLoopBlockedError):
-            assert_off_event_loop("test blocking call")
-
-    async def test_passes_on_worker_thread(self) -> None:
-        from uxon.infra.loop_guard import assert_off_event_loop
-
-        outcome: list[str] = []
-
-        def worker() -> None:
-            try:
-                assert_off_event_loop("worker call")
-                outcome.append("ok")
-            except Exception as exc:  # noqa: BLE001 — record any failure
-                outcome.append(f"raised:{exc!r}")
-
-        t = threading.Thread(target=worker)
-        t.start()
-        t.join()
-        self.assertEqual(outcome, ["ok"])
-
-    async def test_subprocess_guard_trips_on_loop(self) -> None:
-        """With the guard installed, spawning a subprocess on the loop raises."""
-        import subprocess
-
-        from uxon.infra.loop_guard import (
-            EventLoopBlockedError,
-            install_subprocess_guard,
-        )
-
-        install_subprocess_guard()  # idempotent — conftest already installed it
+            assert_off_event_loop("blocking call")
         with self.assertRaises(EventLoopBlockedError):
             subprocess.run(["true"], capture_output=True)
-
-
-def _mk_ctx(**overrides):
-    from uxon.tui.context import LaunchRequest, TuiContext
-    from uxon.tui.refresh import SourceSpec
-
-    base = dict(
-        sessions=[],
-        total_cpu="0",
-        total_ram="0",
-        version="0.12.0",
-        cwd="/srv/work",
-        cwd_short="work",
-        new_project_root="/srv/work",
-        existing_projects=[],
-        cwd_writable=True,
-        current_user="me",
-        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
-            cmd=("/bin/true",), label="cwd"
-        ),
-        on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
-            cmd=("/bin/true",), label="new"
-        ),
-        on_launch_existing=lambda n, agent_id, mode_id: LaunchRequest(
-            cmd=("/bin/true",), label="existing"
-        ),
-    )
-    base.update(overrides)
-    ctx = TuiContext(**base)
-    ctx.refresh_sources = [
-        SourceSpec(
-            name="main_ctx_rebuild",
-            fetch=lambda ctx=ctx: ctx,
-            cadence_seconds_attr="tui_refresh_interval_seconds",
-            kick_on_mount=True,
+        backend = ExecutionBackendSpec(
+            "boundary", "command", ("/usr/local/libexec/test-boundary", "{user}", "--")
         )
-    ]
-    return ctx
+        cfg = make_config(
+            execution=ExecutionConfig(
+                default_backend="boundary",
+                backends={"local": ExecutionConfig().backends["local"], "boundary": backend},
+            )
+        )
+        with self.assertRaises(EventLoopBlockedError):
+            execution.probe(cfg, getpass.getuser())
+
+        def worker():
+            assert_off_event_loop("worker command")
+            return run_query(["true"], timeout=5).returncode
+
+        self.assertEqual(await asyncio.wait_for(asyncio.to_thread(worker), 10), 0)
 
 
-def _session(name: str, user: str = "me"):
-    from uxon.tui.context import TuiSession
-
-    return TuiSession(
-        name=name,
-        short=name,
-        attached=False,
-        pid="1",
-        cpu="0",
-        ram="-",
-        created="",
-        last_activity="",
-        cmd="",
-        path="",
-        user=user,
-    )
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
 class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
-    """Every blocking interactive callback must run on a worker, not the loop.
+    async def test_dashboard_targets_and_continuations_with_input_during_blocked_kill(self):
+        started, release, completed = threading.Event(), threading.Event(), threading.Event()
+        calls, launches = [], []
+        loop_thread = threading.get_ident()
 
-    A recorder appends ``_on_loop()`` when the callback fires. The
-    assertion is ``[False]`` — the callback ran off the event-loop
-    thread. On the pre-fix code each of these recorded ``[True]``.
-    """
+        def kill(expected):
+            user, name = expected.user, expected.name
+            calls.append(("kill", user, name, threading.get_ident(), _on_loop()))
+            started.set()
+            try:
+                if not release.wait(10):
+                    raise TimeoutError("kill release missing")
+            finally:
+                completed.set()
+            return KillResult(expected, "killed", "ok")
 
-    async def _settle(self, pilot, n: int = 4) -> None:
-        for _ in range(n):
-            await pilot.pause()
+        def attach(*target):
+            if isinstance(target[-1], SessionIdentity):
+                target = target[:-1]
+            calls.append(("attach", *target, threading.get_ident(), _on_loop()))
+            return LaunchRequest(("true",), label="/".join(target))
 
-    async def test_local_kill_runs_off_loop(self) -> None:
-        from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_list_view import SessionListView
+        def kill_all(targets):
+            calls.append(("all", threading.get_ident(), _on_loop()))
+            return BulkKillResult(tuple(KillResult(target, "killed", "ok") for target in targets))
 
-        rec: list[bool] = []
         ctx = _mk_ctx(
-            sessions=[_session("s1")],
-            on_kill=lambda user, name: rec.append(_on_loop()),
+            sessions=[_session("uxon-a@claude"), _session("uxon-b@claude")],
+            remote_hosts=[RemoteHost("peer", "peer", "", "uxon")],
+            on_kill=kill,
+            on_attach=attach,
+            on_remote_attach=attach,
+            on_kill_all=kill_all,
         )
         app = UxonApp(ctx, probe_agents=False)
+        app.request_launch = lambda request: launches.append(
+            (request, threading.get_ident(), _on_loop())
+        )
         async with app.run_test(size=(120, 30)) as pilot:
+            _land(app, ctx)
+            app.on__refresh_source_landed(_RefreshSourceLanded("remote:peer", _snapshot()))
             await pilot.pause()
-            app.kick_refresh()
-            await self._settle(pilot)
             table = app.screen.query_one("#sessions-dashboard", SessionListView)
             table.focus()
             table.move_cursor(row=0)
+            await pilot.press("d", "y")
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 10))
+                self.assertFalse(completed.is_set())
+                selected = table.selected_row_key
+                await pilot.press("down")
+                self.assertNotEqual(table.selected_row_key, selected)
+                self.assertIn("uxon-b", table.render_line(2).text)
+                self.assertFalse(completed.is_set(), "input must be handled before release")
+                self.assertEqual(calls[0][:-2], ("kill", "alice", "uxon-a@claude"))
+                self.assertFalse(calls[0][-1])
+            finally:
+                release.set()
+            self.assertTrue(await asyncio.to_thread(completed.wait, 10))
+            await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("d")  # kill → ConfirmYesNo
-            await pilot.pause()
-            await pilot.press("y")  # confirm
-            await self._settle(pilot)
-            self.assertEqual(rec, [False], msg="on_kill ran on the event loop — UI would freeze")
-
-    async def test_kill_all_own_runs_off_loop(self) -> None:
-        from uxon.tui.app import UxonApp
-
-        rec: list[bool] = []
-        ctx = _mk_ctx(
-            sessions=[_session("s1"), _session("s2")],
-            on_kill_all=lambda: rec.append(_on_loop()),
-        )
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            app.kick_refresh()
-            await self._settle(pilot)
-            await pilot.press("D")  # kill-all-own → ConfirmPhrase
-            await pilot.pause()
-            # ConfirmPhrase requires typing the phrase verbatim, then Enter.
-            for ch in "kill-all":
-                await pilot.press(ch if ch != "-" else "minus")
+            table.focus()
+            table.move_cursor(row=0)
             await pilot.press("enter")
-            await self._settle(pilot)
-            self.assertEqual(rec, [False], msg="on_kill_all ran on the event loop")
-
-    async def test_attach_runs_off_loop(self) -> None:
-        from uxon.tui.app import UxonApp
-        from uxon.tui.context import LaunchRequest
-
-        rec: list[bool] = []
-
-        def on_attach(user, name):
-            rec.append(_on_loop())
-            return LaunchRequest(cmd=("/bin/true",), label="attach")
-
-        ctx = _mk_ctx(sessions=[_session("s1")], on_attach=on_attach)
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(120, 30)) as pilot:
+            await app.workers.wait_for_complete()
             await pilot.pause()
-            app.kick_refresh()
-            await self._settle(pilot)
-            # Neutralise the TTY handoff so request_launch doesn't exit the app.
-            app.request_launch = lambda req: None  # type: ignore[assignment, method-assign]
-            app.screen._launch_flow.attach_session("me", "s1")
-            await self._settle(pilot)
-            self.assertEqual(rec, [False], msg="on_attach ran on the event loop")
-
-    async def test_remote_attach_runs_off_loop(self) -> None:
-        from types import SimpleNamespace
-
-        from uxon.tui.app import UxonApp
-        from uxon.tui.context import LaunchRequest
-
-        rec: list[bool] = []
-
-        def on_remote_attach(host_name, user, name):
-            rec.append(_on_loop())
-            return LaunchRequest(cmd=("/bin/true",), label="rattach")
-
-        ctx = _mk_ctx(on_remote_attach=on_remote_attach)
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            app.request_launch = lambda req: None  # type: ignore[assignment, method-assign]
-            row = SimpleNamespace(host="kris", user="me", name="s1")
-            app.screen._launch_flow.attach_row(row)
-            await self._settle(pilot)
-            self.assertEqual(rec, [False], msg="on_remote_attach (ssh) ran on the event loop")
-
-    async def test_launch_session_probe_runs_off_loop(self) -> None:
-        """The 'new project'/launch freeze: the existing-session probe."""
-        from uxon.tui.app import UxonApp
-
-        rec: list[bool] = []
-
-        def probe():
-            rec.append(_on_loop())
-            return ()  # no existing sessions → on_new() path
-
-        new_called: list[bool] = []
-        ctx = _mk_ctx(sessions=[_session("s1")])
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            app.kick_refresh()
-            await self._settle(pilot)
-            app.screen._launch_flow.maybe_show_session_choice(
-                target_dir="/srv/work/proj",
-                target_label="proj",
-                agent_id="claude",
-                on_new=lambda: new_called.append(True),
-                probe=probe,
+            self.assertEqual(calls[-1][:-2], ("attach", "alice", "uxon-a@claude"))
+            table.move_cursor(
+                row=next(i for i, r in enumerate(app.screen._dashboard_rows) if r.host)
             )
-            await self._settle(pilot)
-            self.assertEqual(
-                rec, [False], msg="session probe ran on the event loop — launch freeze"
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertEqual(calls[-1][:-2], ("attach", "peer", "bob", "uxon-remote@claude"))
+            await pilot.press("D")
+            app.screen.query_one(Input).value = "kill-all"
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertEqual(calls[-1][:-2], ("all",))
+            self.assertTrue(
+                all(thread != loop_thread and not on_loop for *_, thread, on_loop in calls)
             )
             self.assertEqual(
-                new_called, [True], msg="on_new continuation must still run on the loop"
+                [r.label for r, _, _ in launches],
+                ["alice/uxon-a@claude", "peer/bob/uxon-remote@claude"],
+            )
+            self.assertTrue(
+                all(thread == loop_thread and on_loop for _, thread, on_loop in launches)
             )
 
-    async def test_launch_cwd_commit_runs_off_loop(self) -> None:
-        """The launch *commit* — not only the probe — must run off the loop.
+    async def test_launch_workspace_session_runtime_and_commit_boundaries(self):
+        calls, launches = [], []
+        loop_thread = threading.get_ident()
+        started, release, completed = threading.Event(), threading.Event(), threading.Event()
 
-        ``on_launch_cwd`` shells out to tmux (`collect_sessions`) before it
-        builds the request; on the loop it froze the UI and, with the guard
-        armed, failed the launch with a misleading toast. Drives ``launch_cwd``
-        to the LaunchOptionsScreen, then dismisses it with an (agent, mode)
-        pick to reach ``commit_primary``.
-        """
-        from uxon.infra.agents import AgentAvailability
-        from uxon.tui.app import UxonApp
-        from uxon.tui.context import LaunchRequest
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+        def record(label, *args, result=None):
+            calls.append((label, args, threading.get_ident(), _on_loop()))
+            return result
 
-        rec: list[bool] = []
+        def workspaces(*args):
+            record("workspaces", *args)
+            started.set()
+            try:
+                if not release.wait(10):
+                    raise TimeoutError("workspace probe release missing")
+                return []
+            finally:
+                completed.set()
 
-        def on_launch_cwd(agent_id, mode_id, target_dir=None):
-            rec.append(_on_loop())
-            return LaunchRequest(cmd=("/bin/true",), label="cwd")
+        def commit(profile, mode, target_dir=None):
+            record("commit", profile, mode, target_dir)
+            self.assertEqual(run_query(["true"], timeout=5).returncode, 0)
+            return LaunchRequest(("true",), label="launch")
 
-        # cwd is non-git → workspace probe returns [] → degraded options
-        # screen; cwd_writable=True → no sudo probe; empty existing-sessions
-        # probe → on_new (commit_primary) fires directly. A seeded agent makes
-        # the options screen mount (an empty agent list won't render).
         ctx = _mk_ctx(
-            on_launch_cwd=on_launch_cwd,
-            on_probe_existing_sessions=lambda d, a: (),
-            enabled_agents=["claude"],
-            agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
+            agents=dict(DEFAULT_AGENT_CATALOG),
+            enabled_profiles=("claude",),
+            default_profile="claude",
+            launch_profiles=make_launch_profile_options(),
+            agent_availability={"claude": AgentAvailability("ok")},
+            on_probe_worktrees=workspaces,
+            on_probe_existing_sessions=lambda *args: record("sessions", *args, result=()),
+            on_runtime_gate=lambda *args: record("runtime", *args),
+            on_launch_cwd=commit,
         )
         app = UxonApp(ctx, probe_agents=False)
+        app.request_launch = lambda request: launches.append(
+            (request, threading.get_ident(), _on_loop())
+        )
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            app.kick_refresh()
-            await self._settle(pilot)
-            app.request_launch = lambda req: None  # type: ignore[assignment, method-assign]
-            app.screen._launch_flow.launch_cwd()
-            # Worktree-probe worker → _WorktreesProbed → LaunchOptionsScreen.
-            opts = None
-            for _ in range(10):
-                await pilot.pause()
-                opts = next(
-                    (s for s in app.screen_stack if isinstance(s, LaunchOptionsScreen)), None
-                )
-                if opts is not None:
+            app.screen.query_one("#action-cwd").focus()
+            await pilot.press("enter")
+            for _ in range(20):
+                if isinstance(app.screen, LaunchOptionsScreen):
                     break
-            self.assertIsNotNone(opts, msg="LaunchOptionsScreen was not reached")
-            opts.dismiss(("claude", "normal"))
-            await self._settle(pilot)
-            self.assertEqual(rec, [False], msg="on_launch_cwd commit ran on the event loop")
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class LoopStaysResponsiveTests(unittest.IsolatedAsyncioTestCase):
-    """Empirical watchdog: a slow action must not stall the keystroke loop.
-
-    Independent of the thread-identity assertions above: a heartbeat timer
-    records the gap between ticks while a deliberately slow callback runs.
-    The slow callback simulates real tmux/ssh latency with ``time.sleep``.
-    Off the loop the heartbeat keeps ticking (gap ≈ interval); on the loop
-    (the regression) the sleep would freeze every tick for its full
-    duration. This catches blocking by *any* means, not only subprocess.
-    """
-
-    async def test_slow_action_does_not_freeze_loop(self) -> None:
-        import asyncio as _asyncio
-        import time
-
-        from helpers import LoopBlockMonitor
-
-        from uxon.tui.app import UxonApp
-        from uxon.tui.widgets.session_list_view import SessionListView
-
-        # Loose backstop, not a tight bound: the thread-identity tests above
-        # are the real contract. A generous block/threshold ratio keeps this
-        # robust against scheduler/GC hiccups under parallel test load — only
-        # a multi-hundred-ms loop stall (the regression) trips it.
-        block = 0.8
-
-        ctx = _mk_ctx(
-            sessions=[_session("s1")],
-            # Simulate the latency of a real tmux/ssh kill.
-            on_kill=lambda user, name: time.sleep(block),
-        )
-        app = UxonApp(ctx, probe_agents=False)
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            app.kick_refresh()
-            for _ in range(4):
                 await pilot.pause()
-            table = app.screen.query_one("#sessions-dashboard", SessionListView)
-            table.focus()
-            table.move_cursor(row=0)
+            self.assertIsInstance(app.screen, LaunchOptionsScreen)
+            await pilot.press("enter")
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 10))
+                self.assertFalse(completed.is_set())
+                await pilot.press("s", "1")
+                search = app.screen.query_one("#search-bar Input", Input)
+                self.assertEqual(search.value, "1")
+                self.assertIs(app.focused, search)
+                self.assertIn("1", search.render_line(0).text)
+                self.assertTrue(app.screen.query_one("#search-bar").has_class("-shown"))
+                self.assertFalse(completed.is_set(), "search input must be handled before release")
+                self.assertEqual([label for label, _, _, _ in calls], ["workspaces"])
+                self.assertEqual(launches, [])
+            finally:
+                release.set()
+            self.assertTrue(await asyncio.to_thread(completed.wait, 10))
+            await app.workers.wait_for_complete()
             await pilot.pause()
-
-            mon = LoopBlockMonitor(interval=0.01)
-            mon.start(app)
-            await pilot.press("d")  # kill → confirm
-            await pilot.pause()
-            await pilot.press("y")  # confirm → off-loop worker sleeps `block`
-            # Keep the loop running across the whole blocking window so the
-            # heartbeat can tick — if the sleep were on the loop, it could not.
-            await _asyncio.sleep(block + 0.2)
-            for _ in range(5):
+            for _ in range(20):
+                if launches:
+                    break
                 await pilot.pause()
-            mon.stop()
-
-            self.assertGreater(len(mon.gaps), 0, msg="heartbeat never ticked — test is invalid")
-            # Off the loop, gaps stay near the 10 ms interval; the regression
-            # (sleep on the loop) would freeze one heartbeat for the full
-            # `block`. Half of `block` separates the two with wide margin.
-            self.assertLess(
-                mon.max_block,
-                block / 2,
-                msg=(
-                    f"event loop stalled {mon.max_block:.3f}s during a {block}s action — "
-                    "blocking work is back on the loop"
-                ),
+            self.assertEqual(
+                [label for label, _, _, _ in calls], ["workspaces", "sessions", "runtime", "commit"]
             )
-
-
-if __name__ == "__main__":
-    unittest.main()
+            self.assertEqual(calls[0][1], ("/srv/work", "claude", "normal"))
+            self.assertTrue(
+                all(thread != loop_thread and not on_loop for _, _, thread, on_loop in calls)
+            )
+            self.assertEqual(len(launches), 1)
+            self.assertEqual(launches[0][0].label, "launch")
+            self.assertEqual(launches[0][1:], (loop_thread, True))

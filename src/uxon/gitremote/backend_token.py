@@ -1,32 +1,39 @@
 """Token backend for git-remote-on-new-project.
 
 Reads a fine-grained Personal Access Token (PAT) from ``profile.token_file``
-under ``creds_user`` (via ``sudo -n -u <user> cat --``) and calls the
-provider's REST API directly. The token value is held only for the
-duration of each API call and is never written to stdout, stderr, logs,
+and calls the provider's REST API inside the selected execution backend. The
+token value is held for the operation and is never written to stdout, stderr, logs,
 or exception messages — if it appears, we redact to ``***``.
 
 This backend assumes GitHub-compatible REST semantics:
     - personal repos: ``POST /user/repos``
     - org repos:      ``POST /orgs/<owner>/repos``
     - existence check: ``GET /repos/<owner>/<repo>``
-    - identity check:  ``GET /user``, ``GET /user/orgs``
+    - identity check:  ``GET /user``
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
+from uxon.domain.config import Config
 from uxon.domain.git_profiles import GitRemoteProfile
-from uxon.gitremote.backend_gh import BackendError, default_run, sudo_prefix
+from uxon.gitremote.backend_gh import BackendError, default_run, execution_prefix
+from uxon.infra.execution import wrap_command
+from uxon.infra.run import run_query
 
 # ── Token file I/O (under creds_user) ────────────────────────────────
 
 
 def read_token(
+    cfg: Config,
     token_file: str,
     effective_creds_user: str,
     current_user: str,
@@ -40,7 +47,7 @@ def read_token(
     Raises :class:`BackendError` if reading fails. The returned string is
     stripped of trailing whitespace.
     """
-    prefix = sudo_prefix(effective_creds_user, current_user)
+    prefix = execution_prefix(cfg, effective_creds_user)
     res = run(prefix + ["cat", "--", token_file])
     if res.returncode != 0:
         stderr = res.stderr.strip() or "unknown error"
@@ -105,7 +112,8 @@ def default_http(
         # to a BackendError so the caller's "except BackendError" catches it
         # and the token never ends up in an uncaught traceback.
         host = url.split("://", 1)[-1].split("/", 1)[0]
-        raise BackendError(f"network error reaching {host}: {exc.reason}", stage="") from None
+        detail = str(exc.reason).replace(token, "***")
+        raise BackendError(f"network error reaching {host}: {detail}", stage="") from None
 
 
 def _api_error_message(resp: HttpResponse, fallback: str) -> str:
@@ -120,10 +128,38 @@ def _api_error_message(resp: HttpResponse, fallback: str) -> str:
     return f"{resp.status}: {fallback}"
 
 
+@contextmanager
+def _token_errors(token: str, stage: str) -> Iterator[None]:
+    """Keep provider diagnostics useful without exposing an echoed credential."""
+    try:
+        yield
+    except Exception as exc:
+        detail = str(exc).replace(token, "***")
+        raise BackendError(detail, stage=stage) from None
+
+
+def _authenticated_login(profile: GitRemoteProfile, token: str, *, stage: str, http) -> str:
+    me = http("GET", f"{profile.api_base()}/user", token)
+    if me.status != 200:
+        raise BackendError(
+            f"token rejected by {profile.host}: " + _api_error_message(me, "GET /user failed"),
+            stage=stage,
+        )
+    try:
+        data = me.json()
+    except (ValueError, UnicodeError):
+        data = None
+    login = data.get("login") if isinstance(data, dict) else None
+    if not isinstance(login, str) or not login:
+        raise BackendError(f"unexpected response from {profile.host} GET /user", stage=stage)
+    return login
+
+
 # ── Backend entry points ─────────────────────────────────────────────
 
 
 def preflight(
+    cfg: Config,
     profile: GitRemoteProfile,
     repo_name: str,
     effective_creds_user: str,
@@ -132,12 +168,18 @@ def preflight(
     run=default_run,
     http=default_http,
 ) -> None:
-    """Verify: token readable; token valid; owner is either the token
-    owner or an org visible to it; target repo doesn't exist yet.
+    """Verify the token's identity and that the target repository is absent.
+
+    Creation permission is determined by the create endpoint: organization
+    membership listings cannot establish a fine-grained token's permissions.
     """
-    token = read_token(profile.token_file, effective_creds_user, current_user, run=run)
+    if cfg.execution.backend_for_user(effective_creds_user).kind == "command":
+        _worker_request(cfg, profile, repo_name, effective_creds_user, operation="preflight")
+        return
+    token = read_token(cfg, profile.token_file, effective_creds_user, current_user, run=run)
     try:
-        _preflight_with_token(profile, repo_name, token, http=http)
+        with _token_errors(token, "preflight"):
+            _preflight_with_token(profile, repo_name, token, http=http)
     finally:
         # Drop the local reference ASAP.
         del token
@@ -152,35 +194,7 @@ def _preflight_with_token(
 ) -> None:
     base = profile.api_base()
 
-    me = http("GET", f"{base}/user", token)
-    if me.status != 200:
-        raise BackendError(
-            f"token rejected by {profile.host}: " + _api_error_message(me, "GET /user failed"),
-            stage="preflight",
-        )
-    login = (me.json() or {}).get("login", "") if me.body else ""
-    if not isinstance(login, str) or not login:
-        raise BackendError(
-            f"unexpected response from {profile.host} GET /user",
-            stage="preflight",
-        )
-
-    if login != profile.owner:
-        orgs = http("GET", f"{base}/user/orgs", token)
-        if orgs.status != 200:
-            raise BackendError(
-                f"token cannot list orgs on {profile.host}: "
-                + _api_error_message(orgs, "GET /user/orgs failed"),
-                stage="preflight",
-            )
-        org_logins = {o.get("login", "") for o in (orgs.json() or []) if isinstance(o, dict)}
-        if profile.owner not in org_logins:
-            raise BackendError(
-                f"token for {login!r} cannot create repos under owner "
-                f"{profile.owner!r}: not token user and {profile.owner!r} "
-                f"is not visible among the token's {len(org_logins)} org(s)",
-                stage="preflight",
-            )
+    _authenticated_login(profile, token, stage="preflight", http=http)
 
     # Existence check — we don't want to half-init locally then fail remotely.
     exists = http("GET", f"{base}/repos/{profile.owner}/{repo_name}", token)
@@ -198,6 +212,7 @@ def _preflight_with_token(
 
 
 def create_remote(
+    cfg: Config,
     profile: GitRemoteProfile,
     repo_name: str,
     project_dir: str,  # noqa: ARG001 — unused here; kept for interface symmetry with gh
@@ -214,31 +229,89 @@ def create_remote(
     if dry_run:
         return profile.ssh_remote_url(repo_name)
 
-    token = read_token(profile.token_file, effective_creds_user, current_user, run=run)
+    if cfg.execution.backend_for_user(effective_creds_user).kind == "command":
+        return _worker_request(cfg, profile, repo_name, effective_creds_user, operation="create")
+
+    token = read_token(cfg, profile.token_file, effective_creds_user, current_user, run=run)
     try:
-        return _create_with_token(profile, repo_name, token, http=http)
+        with _token_errors(token, "remote_create"):
+            return _create_with_token(profile, repo_name, token, http=http)
     finally:
         del token
+
+
+def _worker_request(
+    cfg: Config,
+    profile: GitRemoteProfile,
+    repo_name: str,
+    effective_creds_user: str,
+    *,
+    operation: str,
+) -> str:
+    request = {
+        "operation": operation,
+        "profile": {
+            "name": profile.name,
+            "host": profile.host,
+            "owner": profile.owner,
+            "auth": profile.auth,
+            "creds_user": profile.creds_user,
+            "token_file": profile.token_file,
+            "visibility": profile.visibility,
+        },
+        "repo_name": repo_name,
+    }
+    argv = wrap_command(
+        cfg,
+        effective_creds_user,
+        [sys.executable, "-m", "uxon.gitremote.token_worker"],
+        interactive=False,
+    )
+    try:
+        cp = run_query(
+            argv,
+            input=json.dumps(request, sort_keys=True, separators=(",", ":")),
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise BackendError("token worker timed out", stage=operation) from None
+    except OSError as exc:
+        raise BackendError(f"token worker failed: {exc}", stage=operation) from None
+    try:
+        response = json.loads(cp.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise BackendError(f"token worker returned invalid JSON: {exc}", stage=operation) from None
+    if cp.returncode == 0 and isinstance(response, dict) and response.get("ok") is not True:
+        raise BackendError("token worker returned failure with a zero exit status", stage=operation)
+    if cp.returncode != 0 and isinstance(response, dict) and response.get("ok") is True:
+        raise BackendError(
+            "token worker returned success with a non-zero exit status", stage=operation
+        )
+    if not isinstance(response, dict) or response.get("ok") is not True:
+        error = (
+            response.get("error", "token worker failed")
+            if isinstance(response, dict)
+            else "token worker failed"
+        )
+        stage = response.get("stage", operation) if isinstance(response, dict) else operation
+        raise BackendError(str(error), stage=str(stage))
+    if set(response) != {"ok", "ssh_url"} or not isinstance(response.get("ssh_url"), str):
+        raise BackendError("token worker returned an invalid result", stage=operation)
+    return str(response["ssh_url"])
 
 
 def _create_with_token(profile: GitRemoteProfile, repo_name: str, token: str, *, http) -> str:
     base = profile.api_base()
     # Determine endpoint: user's own repo vs org repo. Cheap re-query so
     # callers don't have to pass login alongside the profile.
-    me = http("GET", f"{base}/user", token)
-    if me.status != 200:
-        raise BackendError(
-            f"token rejected by {profile.host}: " + _api_error_message(me, "GET /user failed"),
-            stage="remote_create",
-        )
-    login = (me.json() or {}).get("login", "")
+    login = _authenticated_login(profile, token, stage="remote_create", http=http)
 
     payload = {
         "name": repo_name,
         "private": profile.visibility == "private",
         "auto_init": False,
     }
-    if login == profile.owner:
+    if isinstance(login, str) and login.casefold() == profile.owner.casefold():
         url = f"{base}/user/repos"
     else:
         url = f"{base}/orgs/{profile.owner}/repos"
@@ -251,7 +324,11 @@ def _create_with_token(profile: GitRemoteProfile, repo_name: str, token: str, *,
             stage="remote_create",
         )
 
-    data = resp.json() or {}
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise BackendError(
+            f"unexpected response from {profile.host} creating repository", stage="remote_create"
+        )
     ssh_url = data.get("ssh_url")
     if isinstance(ssh_url, str) and ssh_url:
         return ssh_url

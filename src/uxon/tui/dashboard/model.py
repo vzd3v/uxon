@@ -11,7 +11,7 @@ This selector emits the **current** row set in canonical model order
 dashboard does **not** render that order directly: it is the recency
 reference for new arrivals only. Final on-screen order is owned by the
 frozen-order placement function (:func:`uxon.tui.dashboard.order.place`),
-so existing rows never swap on a telemetry tick (spec D2 / AC3). This
+so existing rows never swap on a telemetry tick (/ ). This
 selector therefore re-sorts every tick cheaply; placement decides what
 actually moves.
 
@@ -39,6 +39,8 @@ Module-level state is deliberate. Tests reset it via
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from uxon.domain.session import SessionIdentity
 
 from .row import SessionRow, from_tui_session, from_wire_record
 
@@ -92,7 +94,7 @@ def _build(
         if slot is None:
             continue
         snap = slot.value
-        if snap is None:
+        if snap is None or slot.last_error or not snap.is_live:
             continue
         for rec in snap.sessions:
             rows.append(from_wire_record(host.name, rec))
@@ -112,6 +114,30 @@ def _build(
     tail = len(cfg.remote_hosts)
     rows.sort(key=lambda r: host_priority.get(r.host, tail))
     return tuple(rows)
+
+
+def remote_session_available(
+    state: TuiState, host: str, user: str, name: str, expected=None
+) -> bool:
+    """Recheck a captured row against current live data before an action."""
+    slot = state.remote.get(host)
+    snap = slot.value if slot is not None else None
+    return bool(
+        slot is not None
+        and not slot.last_error
+        and snap is not None
+        and snap.is_live
+        and any(
+            rec.get("user") == user
+            and (
+                expected.matches(identity)
+                if expected is not None
+                and (identity := SessionIdentity.from_wire(rec.get("identity"))) is not None
+                else expected is None and rec.get("name") == name
+            )
+            for rec in snap.sessions
+        )
+    )
 
 
 def select_dashboard_model(

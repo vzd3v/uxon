@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from textual.app import App
+from textual.widgets import Button
 
 from uxon.tui.widgets.search_bar import FilterChanged, SearchBar
 
@@ -14,6 +15,8 @@ class _Harness(App):
         self.bar = SearchBar(id="search")
 
     def compose(self):
+        yield Button("Default caller", id="action-open")
+        yield Button("Other caller", id="other")
         yield self.bar
 
     def on_filter_changed(self, event: FilterChanged) -> None:
@@ -31,54 +34,42 @@ class SearchBarTests(unittest.IsolatedAsyncioTestCase):
     All other TUI Pilot tests already use this base class.
     """
 
-    async def test_search_bar_emits_filter_changed_on_typing(self) -> None:
-        app = _Harness()
-        async with app.run_test() as pilot:
-            app.bar.show()
-            await pilot.pause()
-            await pilot.press("k", "r", "i", "s")
-            await pilot.pause()
-            self.assertEqual(app.events[-1], "kris")
-
-    async def test_search_bar_starts_hidden_and_outside_focus_chain(self) -> None:
-        """Default state: ``-shown`` class absent and the inner Input is
-        flagged ``can_focus=False`` so Tab/Shift+Tab skip the invisible
-        bar. Reaching into ``_filter.input`` is acceptable here — the
-        test is a unit test of SearchBar's own focus-chain contract."""
+    async def test_search_focus_typing_clear_hide_and_reopen(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
             await pilot.pause()
-            self.assertFalse(app.bar.has_class("-shown"))
-            self.assertFalse(app.bar._filter.input.can_focus)
-
-    async def test_search_bar_show_reveals_and_focuses_input(self) -> None:
-        app = _Harness()
-        async with app.run_test() as pilot:
+            self.assertFalse(app.bar.display)
+            app.query_one("#action-open", Button).focus()
+            await pilot.press("tab")
             await pilot.pause()
-            app.bar.show()
+            self.assertEqual(app.focused.id, "other")
+            await pilot.press("tab")
             await pilot.pause()
-            self.assertTrue(app.bar.has_class("-shown"))
-            self.assertIsNotNone(app.focused)
-            assert app.focused is not None
+            self.assertEqual(app.focused.id, "action-open")
+            app.bar.show(return_focus_id="other")
+            await pilot.pause()
+            self.assertTrue(app.bar.display)
             self.assertEqual(app.focused.id, "filter-input")
-
-    async def test_search_bar_esc_clears_then_hides(self) -> None:
-        app = _Harness()
-        async with app.run_test() as pilot:
-            app.bar.show()
+            await pilot.press("1", "2", "3")
             await pilot.pause()
-            await pilot.press("a", "b", "c")
-            await pilot.pause()
-            self.assertEqual(app.bar.value, "abc")
+            self.assertEqual(app.bar.value, "123")
+            self.assertEqual(app.events[-1], "123")
             await pilot.press("escape")  # clears text, bar stays open
             await pilot.pause()
             self.assertEqual(app.bar.value, "")
-            self.assertTrue(app.bar.has_class("-shown"))
-            self.assertIsNotNone(app.focused)
-            assert app.focused is not None
+            self.assertEqual(app.events[-1], "")
+            self.assertTrue(app.bar.display)
             self.assertEqual(app.focused.id, "filter-input")
             await pilot.press("escape")  # hides bar, blurs input
             await pilot.pause()
-            self.assertFalse(app.bar.has_class("-shown"))
-            self.assertFalse(app.bar._filter.input.can_focus)
-            self.assertTrue(app.focused is None or app.focused.id != "filter-input")
+            self.assertFalse(app.bar.display)
+            self.assertEqual(app.focused.id, "other")
+            app.bar.show()  # id-less reopening resets the previous caller
+            await pilot.pause()
+            self.assertTrue(app.bar.display)
+            self.assertEqual(app.focused.id, "filter-input")
+            self.assertEqual(app.bar.value, "")
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertFalse(app.bar.display)
+            self.assertEqual(app.focused.id, "action-open")

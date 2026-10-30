@@ -1,17 +1,43 @@
+import json
+import subprocess
+import sys
+import tempfile
 import unittest
+import urllib.error
+from dataclasses import asdict
+from pathlib import Path
+from unittest import mock
+
+from helpers import make_config
 
 from uxon.domain import git_profiles as gp
+from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
 from uxon.gitremote import backend_gh as gh
 from uxon.gitremote import backend_token as tok
+from uxon.gitremote import token_worker
 
 SECRET = "ghp_SENSITIVE_DO_NOT_LEAK"
+
+
+def _command_cfg():
+    backend = ExecutionBackendSpec(
+        id="boundary",
+        kind="command",
+        command_prefix=("/usr/local/libexec/boundary", "--target", "{user}"),
+    )
+    return make_config(
+        execution=ExecutionConfig(
+            default_backend="boundary",
+            backends={"local": ExecutionConfig().backends["local"], "boundary": backend},
+        )
+    )
 
 
 def _profile(**over):
     raw = {
         "name": "p",
         "host": "github.com",
-        "owner": "vzd3v",
+        "owner": "alice",
         "auth": "token",
         "creds_user": "erin",
         "token_file": "/tmp/tok",
@@ -21,235 +47,6 @@ def _profile(**over):
     return gp.load_profiles([raw])[0]
 
 
-class FakeRunner:
-    def __init__(self, results):
-        self._results = list(results)
-        self.calls = []
-
-    def __call__(self, cmd, *, timeout=20):
-        self.calls.append(cmd)
-        return self._results.pop(0)
-
-
-class FakeHttp:
-    """Tracks (method, url, body) and replays responses. Asserts every
-    call carries a non-empty token — raises AssertionError otherwise.
-    """
-
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self.calls = []
-        self.tokens_seen = []
-
-    def __call__(self, method, url, token, *, body=None, timeout=15):
-        if not token:
-            raise AssertionError("http called without token")
-        self.tokens_seen.append(token)
-        self.calls.append((method, url, body))
-        return self._responses.pop(0)
-
-
-def _resp(status=200, payload=None):
-    import json
-
-    body = b"" if payload is None else json.dumps(payload).encode("utf-8")
-    return tok.HttpResponse(status=status, body=body)
-
-
-def _ok_cat(content: str):
-    return gh.RunResult(returncode=0, stdout=content, stderr="")
-
-
-def _fail_cat(stderr="Permission denied"):
-    return gh.RunResult(returncode=1, stdout="", stderr=stderr)
-
-
-class ReadTokenTests(unittest.TestCase):
-    def test_reads_and_strips(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET + "\n")])
-        got = tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
-        self.assertEqual(got, SECRET)
-        self.assertEqual(
-            runner.calls[0],
-            ["sudo", "-n", "-u", "erin", "--", "cat", "--", "/tmp/t"],
-        )
-
-    def test_empty_file_fails(self) -> None:
-        runner = FakeRunner([_ok_cat("")])
-        with self.assertRaisesRegex(gh.BackendError, "is empty"):
-            tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
-
-    def test_unreadable_file_fails_without_leaking_path(self) -> None:
-        runner = FakeRunner([_fail_cat()])
-        try:
-            tok.read_token("/tmp/t", "erin", "dana_agent", run=runner)
-        except gh.BackendError as exc:
-            self.assertIn("cannot read", str(exc))
-            self.assertIn("/tmp/t", str(exc))  # path itself is fine
-
-    def test_no_sudo_when_same_user(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        tok.read_token("/tmp/t", "alice", "alice", run=runner)
-        self.assertEqual(runner.calls[0], ["cat", "--", "/tmp/t"])
-
-
-class PreflightTokenTests(unittest.TestCase):
-    def test_user_owned_happy_path(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        http = FakeHttp(
-            [
-                _resp(200, {"login": "vzd3v"}),  # GET /user
-                _resp(404),  # GET /repos/vzd3v/new-repo
-            ]
-        )
-        tok.preflight(_profile(), "new-repo", "erin", "dana_agent", run=runner, http=http)
-        self.assertEqual(len(http.calls), 2)
-        self.assertEqual(http.tokens_seen, [SECRET, SECRET])
-
-    def test_org_owned_requires_org_in_list(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        http = FakeHttp(
-            [
-                _resp(200, {"login": "vzd3v"}),  # not the owner
-                _resp(200, [{"login": "acme"}]),  # orgs includes acme
-                _resp(404),  # repo doesn't exist
-            ]
-        )
-        tok.preflight(_profile(owner="acme"), "r", "erin", "dana_agent", run=runner, http=http)
-
-    def test_owner_not_in_orgs_fails(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        http = FakeHttp(
-            [
-                _resp(200, {"login": "vzd3v"}),
-                _resp(200, [{"login": "other-org"}]),
-            ]
-        )
-        with self.assertRaisesRegex(gh.BackendError, "cannot create repos under owner"):
-            tok.preflight(_profile(owner="acme"), "r", "erin", "dana_agent", run=runner, http=http)
-
-    def test_existing_repo_fails(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        http = FakeHttp(
-            [
-                _resp(200, {"login": "vzd3v"}),
-                _resp(200, {"name": "r"}),
-            ]
-        )
-        with self.assertRaisesRegex(gh.BackendError, "already exists"):
-            tok.preflight(_profile(), "r", "erin", "dana_agent", run=runner, http=http)
-
-    def test_bad_token_rejected(self) -> None:
-        runner = FakeRunner([_ok_cat("deadbeef")])
-        http = FakeHttp(
-            [
-                _resp(401, {"message": "Bad credentials"}),
-            ]
-        )
-        try:
-            tok.preflight(_profile(), "r", "erin", "dana_agent", run=runner, http=http)
-        except gh.BackendError as exc:
-            self.assertIn("token rejected", str(exc))
-            self.assertIn("Bad credentials", str(exc))
-            self.assertNotIn("deadbeef", str(exc))
-            self.assertNotIn("deadbeef", repr(exc))
-
-
-class CreateRemoteTokenTests(unittest.TestCase):
-    def test_user_repo_endpoint(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        http = FakeHttp(
-            [
-                _resp(200, {"login": "vzd3v"}),
-                _resp(
-                    201,
-                    {"ssh_url": "git@github.com:vzd3v/r.git"},
-                ),
-            ]
-        )
-        url = tok.create_remote(
-            _profile(), "r", "/tmp/r", "erin", "dana_agent", run=runner, http=http
-        )
-        self.assertEqual(url, "git@github.com:vzd3v/r.git")
-        _, post_url, body = http.calls[1]
-        self.assertEqual(post_url, "https://api.github.com/user/repos")
-        self.assertEqual(body["private"], True)
-        self.assertEqual(body["name"], "r")
-
-    def test_org_repo_endpoint(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        http = FakeHttp(
-            [
-                _resp(200, {"login": "vzd3v"}),
-                _resp(
-                    201,
-                    {"ssh_url": "git@github.com:acme/r.git"},
-                ),
-            ]
-        )
-        tok.create_remote(
-            _profile(owner="acme"),
-            "r",
-            "/tmp/r",
-            "erin",
-            "dana_agent",
-            run=runner,
-            http=http,
-        )
-        _, post_url, _ = http.calls[1]
-        self.assertEqual(post_url, "https://api.github.com/orgs/acme/repos")
-
-    def test_public_visibility_goes_private_false(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        http = FakeHttp(
-            [
-                _resp(200, {"login": "vzd3v"}),
-                _resp(201, {"ssh_url": "git@github.com:vzd3v/r.git"}),
-            ]
-        )
-        tok.create_remote(
-            _profile(visibility="public"),
-            "r",
-            "/tmp/r",
-            "erin",
-            "dana_agent",
-            run=runner,
-            http=http,
-        )
-        _, _, body = http.calls[1]
-        self.assertFalse(body["private"])
-
-    def test_create_fail_includes_message(self) -> None:
-        runner = FakeRunner([_ok_cat(SECRET)])
-        http = FakeHttp(
-            [
-                _resp(200, {"login": "vzd3v"}),
-                _resp(422, {"message": "name already exists on this account"}),
-            ]
-        )
-        with self.assertRaisesRegex(gh.BackendError, "failed to create"):
-            tok.create_remote(
-                _profile(), "r", "/tmp/r", "erin", "dana_agent", run=runner, http=http
-            )
-
-    def test_dry_run_reads_no_token(self) -> None:
-        runner = FakeRunner([])  # would blow up if called
-        http = FakeHttp([])
-        url = tok.create_remote(
-            _profile(),
-            "r",
-            "/tmp/r",
-            "erin",
-            "dana_agent",
-            dry_run=True,
-            run=runner,
-            http=http,
-        )
-        self.assertEqual(url, "git@github.com:vzd3v/r.git")
-        self.assertEqual(runner.calls, [])
-        self.assertEqual(http.calls, [])
-
-
 class NetworkErrorTests(unittest.TestCase):
     def test_url_error_in_default_http_becomes_backend_error(self) -> None:
         import unittest.mock
@@ -257,7 +54,7 @@ class NetworkErrorTests(unittest.TestCase):
 
         with unittest.mock.patch(
             "urllib.request.urlopen",
-            side_effect=urllib.error.URLError("Network is unreachable"),
+            side_effect=urllib.error.URLError("Network is unreachable " + SECRET),
         ):
             try:
                 tok.default_http("GET", "https://api.github.com/user", SECRET)
@@ -269,14 +66,115 @@ class NetworkErrorTests(unittest.TestCase):
                 self.fail("expected BackendError")
 
 
-class DescribeCommandTests(unittest.TestCase):
-    def test_no_token_in_output(self) -> None:
-        s = tok.describe_command(_profile(), "r")
-        self.assertIn("***", s)
-        self.assertNotIn(SECRET, s)
-        self.assertIn("name=r", s)
-        self.assertIn("vzd3v", s)
+class CommandBackendWorkerTests(unittest.TestCase):
+    def test_worker_reports_empty_token_as_structured_preflight_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text("\n")
+            request = {
+                "operation": "preflight",
+                "profile": asdict(_profile(token_file=str(token_file))),
+                "repo_name": "demo",
+            }
+            result = subprocess.run(
+                [sys.executable, "-m", "uxon.gitremote.token_worker"],
+                input=json.dumps(request),
+                text=True,
+                capture_output=True,
+                timeout=5,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"ok": False, "stage": "preflight", "error": "token file is empty"},
+        )
 
+    def test_controller_sends_no_token_to_worker_argv_env_or_stdin(self) -> None:
+        cfg = _command_cfg()
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text(SECRET)
+            profile = _profile(token_file=str(token_file))
+            calls = []
 
-if __name__ == "__main__":
-    unittest.main()
+            def worker(argv, **kwargs):
+                self.assertEqual(
+                    argv,
+                    [
+                        "/usr/local/libexec/boundary",
+                        "--target",
+                        "erin",
+                        sys.executable,
+                        "-m",
+                        "uxon.gitremote.token_worker",
+                    ],
+                )
+                self.assertEqual(set(kwargs), {"input", "timeout"})
+                self.assertEqual(kwargs["timeout"], 30)
+                request = json.loads(kwargs["input"])
+                self.assertEqual(
+                    request,
+                    {
+                        "operation": "create",
+                        "profile": {
+                            "name": "p",
+                            "host": "github.com",
+                            "owner": "alice",
+                            "auth": "token",
+                            "creds_user": "erin",
+                            "token_file": str(token_file),
+                            "visibility": "private",
+                        },
+                        "repo_name": "r",
+                    },
+                )
+                self.assertNotIn(SECRET, repr((argv, kwargs)))
+                calls.append(request)
+                return subprocess.CompletedProcess(
+                    argv, 0, json.dumps({"ok": True, "ssh_url": "git@github.com:alice/r.git"}), ""
+                )
+
+            with (
+                mock.patch("uxon.gitremote.backend_token.run_query", side_effect=worker),
+                mock.patch.object(
+                    Path, "read_text", side_effect=AssertionError("controller credential read")
+                ),
+                mock.patch("urllib.request.urlopen", side_effect=AssertionError("controller HTTP")),
+            ):
+                url = tok.create_remote(cfg, profile, "r", "/tmp/r", "erin", "dana_agent")
+            self.assertEqual(url, "git@github.com:alice/r.git")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(token_file.read_text(), SECRET)
+
+    def test_worker_redacts_token_echoed_by_http_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text(SECRET)
+            request = {
+                "operation": "preflight",
+                "profile": {
+                    "name": "p",
+                    "host": "github.com",
+                    "owner": "alice",
+                    "auth": "token",
+                    "creds_user": "erin",
+                    "token_file": str(token_file),
+                    "visibility": "private",
+                },
+                "repo_name": "r",
+            }
+
+            def rejected_http(request, *, timeout):
+                self.assertEqual(timeout, 15)
+                self.assertEqual(request.full_url, "https://api.github.com/user")
+                self.assertEqual(request.get_header("Authorization"), "Bearer " + SECRET)
+                raise urllib.error.URLError(f"upstream echoed {SECRET}")
+
+            with mock.patch("urllib.request.urlopen", side_effect=rejected_http):
+                response = token_worker.execute(request)
+        self.assertFalse(response["ok"])
+        self.assertNotIn(SECRET, json.dumps(response))
+        self.assertIn("***", response["error"])
+        self.assertEqual(response["stage"], "preflight")
+        self.assertIn("upstream echoed", response["error"])

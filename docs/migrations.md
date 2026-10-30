@@ -1,214 +1,139 @@
-# Migration notes
+# Migrate to Uxon 4.0
 
-Per-version upgrade notes for changes that need operator
-attention beyond a routine `pipx upgrade`. For the full release
-log see [`CHANGELOG.md`](../CHANGELOG.md).
+Uxon 4.0 is intentionally breaking. Upgrade every controller and peer in one
+rollout; mixed wire majors are unsupported.
 
-## 3.5.0
+## Drain existing sessions before upgrading
 
-### uxon-managed tmux options (opt-in)
+Uxon 4.0 requires a verified protected launch record to remove a session.
+Drain every existing session before replacing Uxon. Pre-upgrade sessions can
+remain visible and attachable, but Uxon refuses destructive actions without the
+required authority. If draining was missed, use an explicit tmux operator action
+under the correct account and socket.
 
-- **uxon can set a few tmux options on the sessions it
-  launches** — but this is **off by default**, so an upgrade to
-  3.5.0 changes nothing until you opt in. A recommended set —
-  `mouse on` and `allow-passthrough on` (`set -g`),
-  `extended-keys on` (`set -s`), and
-  `terminal-features xterm*:extkeys` (`set -as`) — ships built-in;
-  when enabled it is applied when uxon brings up a launch user's
-  tmux server, layered on top of that user's own tmux config,
-  without editing any file. Note `mouse on` changes terminal
-  text-selection behaviour (use Shift-select for native
-  copy/paste in many terminals).
-- **Enable or override.** Set `tmux.manage_options = true` in
-  `config.toml` (also editable from the superuser settings
-  screen) to apply the recommended set — the scope tables ship
-  built-in, so the toggle alone is enough. To customise, write
-  your own `[tmux.options]` / `[tmux.server_options]` /
-  `[tmux.append_server_options]` tables — override is **per
-  scope**, so omitted scopes keep their recommended defaults.
-  Once enabled, edits to the `-g`/`-s` scopes (e.g. `mouse`) take
-  effect on the next launch or re-attach; edits to
-  `[tmux.append_server_options]` take effect after a
-  `tmux kill-server` (the server's options are set once at its
-  birth). See
-  [`reference/configuration.md`](reference/configuration.md)
-  (`[tmux]` managed options).
-- **Fail-fast.** When enabled, a rejected option aborts the
-  launch (no session is created) rather than starting a degraded
-  session — the shipped defaults are verified to apply cleanly,
-  so only an operator's own bad option trips this.
+Before resuming team launches, provision the protected shared
+[`launch_record_dir`](reference/configuration.md#launch-records) for every
+controller and supervisor that must remove those sessions. This applies to
+direct workloads as well as container runtimes. A private record store supports
+one controller; sudo reachability alone does not share launch authority.
 
-## 3.4.0
+## Install the host-wide config
 
-### Dashboard views, search, and a hard sort contract
+Uxon reads only `/etc/uxon/config.toml`. There is no checkout, XDG,
+environment-variable, or project fallback.
 
-- **Sort is no longer configurable.** Rows now appear in a
-  fixed order: locals first (own then other-user), then
-  remotes in `[[remote_hosts]]` declaration order, with
-  within-block ranking by last-attach descending then name
-  ascending. The `tui.table.default_sort_by` key is silently
-  ignored on load (one `UXON_DEBUG=tui` line per occurrence) —
-  no error, no fallback. The `s` / `S` cycle bindings are gone.
-- **`tui.table.default_view` (new)** — `"flat"` (default) is a
-  single ranked list across the fleet; `"by_host"` shows a
-  per-host tab strip and status bar. Toggle at runtime with
-  `v`. An active search forces `flat` until the query is
-  cleared. ←/→ on the dashboard cycles between hosts: tabs
-  in `by_host`, `(host, own/other)` transitions in `flat`.
-  The `[` / `]` shortcut is gone.
-- **Search bar.** Summoned on demand — hidden by default, press
-  `s` (or `/`) from anywhere to reveal it. `Esc` clears the query
-  and returns focus to the summoning widget. Configure searchable
-  fields via `tui.search.fields` (default `["name", "user"]`).
-- **`PATH` and `CMD` columns hidden by default.** For
-  uxon-launched sessions `CMD` only echoed the agent name (already
-  shown in the AGENT column). Operators who relied on either column
-  must now list `"path"` / `"cmd"` in `tui.table.columns` to opt
-  back in.
-
-### Block colour and attach indicator
-
-- **Per-host block colour.** Each remote host gets a hue
-  applied to its tab, status-bar name token, and rows. Pin a
-  hue with `[[remote_hosts]] color = "..."`; otherwise the
-  TUI auto-cycles through `tui.color_palette` (default
-  `["cyan", "blue"]`). Local rows take `local_host.color`
-  (default `"green"`).
-- **Attached state shown by glyph.** `●` filled when attached,
-  `○` hollow otherwise — replacing the previous bold-green
-  name colour.
-
-### Keymap
-
-- **`Esc` no longer quits.** Quit is `q` / `й` only. `Esc`
-  is a scoped cancel: clear search, close modal, leave field.
-  Operators who muscle-memoried `Esc → quit` should rebind in
-  their head.
-- **Layout-invariant twins.** Every dashboard key has a
-  JCUKEN twin (`q`/`й`, `r`/`к`, `d`/`в`, `D`/`В`, `v`/`м`)
-  so the keymap survives a Russian keyboard layout without
-  touching `xkb`.
-
-### SSH multiplex
-
-- **`ssh_control_persist_seconds` (new)** — `ControlPersist`
-  lifetime in seconds. Default `300` (was a hard-coded `60`).
-  Must be `> 0`; to disable multiplexing entirely set
-  `ssh_multiplex = "off"` rather than zeroing this out.
-
-### Peer protocol
-
-- **`host_stats` envelope field (additive).** The `list` JSON
-  envelope now carries an optional `host_stats` block (CPU /
-  RAM / loadavg / uptime / kernel) used by the aggregator's
-  per-host status bar. The wire schema version stays `"1"` —
-  3.3.0 peers continue to aggregate cleanly, the field is
-  silently absent in their output.
-
-## 3.3.0
-
-### Audit channel — new sink
-
-The 3.3.0 release introduces a dedicated audit channel and
-removes the per-day TUI event-log file.
-
-- **TUI event log removed.** The per-day JSONL file at
-  `${XDG_STATE_HOME:-~/.local/state}/uxon/tui-{user}-{date}.log`
-  is no longer written. Application-level audit now goes to the
-  platform log channel (journald native, `/dev/log` syslog
-  fallback). Query via `journalctl SYSLOG_IDENTIFIER=uxon` on
-  systemd hosts; on syslog-only hosts `grep '@cee:' /var/log/syslog`.
-  Old `tui-*.log` files left in place — no automatic cleanup.
-  Operators remove the old directory manually if desired.
-- **`uxon.tui.LOG_DIR` import removed.** Out-of-tree consumers
-  that imported `from uxon.tui import LOG_DIR` will fail at
-  import. The constant still lives in `uxon.tui.events.LOG_DIR`
-  as an internal detail of the developer-facing `debug` /
-  `metrics` channels.
-
-### Multi-host
-
-- `[[remote_hosts]]` config table-array. Configure peers; aggregate over SSH.
-- `uxon list --host`, `uxon list --all-hosts`.
-- `uxon attach --host <alias> --user <name>` / `uxon kill --host <alias> [--user <name>]`.
-- `uxon doctor --remote` probes every peer once.
-- TUI session dashboard mounts local + remote rows in one table
-  with a `HOST` column.
-- Per-host overrides: `interval`, `connect_timeout`, `total_timeout`,
-  `extra_ssh_options`, `command_template`.
-- `ssh_multiplex = "auto"` (default) / `"off"`.
-- `fetch_concurrency = 16` (default).
-- Per-host circuit breaker: 3 consecutive failures open the peer
-  for one interval; exponential backoff (factor 2.0, cap 60 s).
-
-### Peer protocol
-
-- `list`, `attach`, `kill` now accept an internal
-  `--audit-correlation-id <uuid>` flag (hidden from `--help`).
-- **All peers in a fleet must run the same major version.**
-  Silent fallback would lose the correlation property exactly
-  when an operator is debugging across hosts. Drain procedure
-  in
-  [`guides/operate/roll-fleet-upgrade.md`](guides/operate/roll-fleet-upgrade.md).
-
-### TUI dashboard
-
-- Single sortable table mounting local own, local other-user
-  (with sudo), and remote rows. The dedicated remote-sessions
-  section is gone.
-- `kill ALL uxon sessions` action renamed to
-  `kill all reachable users`; confirmation phrase is now
-  `kill-all-reachable` (was `kill-all-global`).
-- The `k` keybinding (remote-only kill) is removed. `d` covers
-  all kills now — local rows and remote rows alike.
-- `s` cycles dashboard sort (cpu → ram → last → name); `S`
-  toggles direction.
-- `[tui.table]` config block (columns, default_sort_by).
-
-## 1.x → 2.0
-
-- **Defaults moved.** `allowed_roots` defaults to `[]` and
-  `new_project_root` defaults to `~/projects`. Existing
-  deployments override both — no action required if your
-  `config.toml` already sets them.
-- **Log directory default.** The developer-facing `debug` and
-  `metrics` channels default to `${XDG_STATE_HOME:-~/.local/state}/uxon`.
-  Set `UXON_LOG_DIR=/old/path/here` in the launch user's
-  environment to preserve the previous location. (Audit events
-  go to journald / syslog regardless — `UXON_LOG_DIR` only ever
-  scoped the developer channels.)
-- **Internal agent material untracked.** Internal agent-only
-  working files are no longer tracked in git. Operators do not
-  need to do anything.
-
-## Multi-agent config schema (1.3)
-
-The flat `default_claude_args` key is removed. Config uses
-nested tables:
-
-```toml
-[agents]
-enabled = ["claude", "cursor"]
-default = "claude"
-
-[agents.claude]
-default_args = []
-
-[agents.codex]
-default_args = []
-
-[agents.cursor]
-default_args = []
+```bash
+sudo install -d -o root -g root -m 0755 /etc/uxon
+sudo install -o root -g root -m 0644 config/config.example.toml \
+  /etc/uxon/config.toml
 ```
 
-Manual migration per host: replace the flat
-`default_claude_args = [...]` line with the nested `[agents]`
-tables, include only agents installed on that host in
-`enabled`, then run `uxon doctor` to verify. If the flat
-`default_claude_args` key is still present on load, `uxon` fails
-with a clear error pointing here.
+Move any operator-owned settings from the previous checkout config into this
+file. Move project `.uxon.toml` policy into `[[launch.path_rules]]`, then remove
+those project files so they cannot be mistaken for active policy.
 
-## Related
+## Rename fixed-user settings and replace legacy sockets
 
-- [`CHANGELOG.md`](../CHANGELOG.md) — full per-version log.
-- [`guides/operate/roll-fleet-upgrade.md`](guides/operate/roll-fleet-upgrade.md) — rolling-upgrade procedure for team·N.
+| 3.6 setting | 4.0 setting |
+|---|---|
+| `runtime_user` | `default_launch_user` |
+| Explicit `/tmp/uxon-{user}.sock` template | Remove it to use the private-directory default, or provision a template meeting the [socket contract](reference/configuration.md#top-level-keys). |
+
+For a fixed launch account:
+
+```toml
+default_launch_mode = "fixed"
+default_launch_user = "team-agent"
+```
+
+The removed key is rejected. Drain the old socket before changing its template;
+copying the old public-parent path into the new file will not work.
+
+## Replace agent selection with launch profiles
+
+The user-facing selector is `--profile`; `--agent` is now an ordinary argument
+forwarded to the selected agent.
+
+Replace Uxon's former `--auto` and `--dsp` / `--dap` / `-dap` / `-dsp`
+shortcuts with `--mode auto` or `--mode yolo`, where the selected coding tool
+defines those modes. These old flags now pass through to the tool unchanged.
+See the [mode reference](reference/cli.md#--mode-id).
+
+```toml
+[launch]
+enabled_profiles = ["claude_work", "codex_safe"]
+default_profile = "claude_work"
+
+[launch.profiles.claude_work]
+agent = "claude"
+launch_user = "team-agent"
+runtime = "direct"
+
+[launch.profiles.codex_safe]
+agent = "codex"
+```
+
+Replace removed `agents.enabled`, `agents.default`, per-project agent defaults,
+and top-level git-remote defaults with launch-profile policy. Unknown fields are
+rejected at every config level.
+
+## Configure execution backends explicitly
+
+The built-in `local` backend preserves argv and uses
+`sudo -H -u USER --` for interactive cross-user work and
+`sudo -n -H -u USER --` for non-interactive probes.
+
+A command backend supplies one argv template containing exactly one `{user}`.
+Use a fixed, root-owned helper which enters the intended execution boundary,
+drops to the target user, preserves argv, and returns the fixed UID/GID/group
+probe unchanged.
+
+```toml
+[execution]
+default_backend = "boundary"
+
+[execution.backends.boundary]
+kind = "command"
+command_prefix = ["/usr/local/libexec/uxon-exec", "{user}", "--"]
+probe_timeout_seconds = 3.0
+```
+
+Drain sessions before changing a command helper, backend mapping, or socket
+template. Uxon records the static backend fingerprint for diagnosis but cannot
+prove lifecycle continuity across an operator-managed boundary.
+
+## Provision launch records for multi-controller hosts
+
+Every controller that must remove another controller's sessions needs the same
+protected record store. Follow the [team setup](start/team-1-bootstrap.md#share-protected-launch-records)
+and [storage contract](reference/configuration.md#launch-records). Complete the
+drain above before upgrading.
+
+## Update audit queries and diagnostic storage
+
+Audit schema 2 uses `process_user` / `process_uid`, replacing `caller_user` /
+`caller_uid`. Native journal fields are `PROCESS_USER` / `PROCESS_UID`; parsed
+syslog JSON uses lowercase. Query retained schema-1 events separately when
+reviewing history across the upgrade.
+
+The `cli.start` field `agents_enabled` becomes `profiles_enabled` and contains
+launch-profile ids rather than coding-tool ids. Update queries using that field.
+
+Debug and metrics output requires a private directory owned by the controller.
+An existing shared directory is refused without changing its permissions.
+Choose a new dedicated directory, or review and restrict an old dedicated
+diagnostic directory yourself. Current key diagnostics omit input contents;
+historical key logs may contain typed or pasted text. Review them before sharing.
+
+## Roll out
+
+1. Drain active sessions with the old installation.
+2. Install Uxon 4.x and `/etc/uxon/config.toml` on every host.
+3. Run `uxon doctor --json` locally on each host.
+4. Upgrade all peers before re-enabling multi-host operations; wire schema 3
+   rejects a different major.
+5. Start one session per execution backend/runtime combination, verify list,
+   attach, kill, launch-record cleanup, and audit events.
+
+For exact keys see [configuration](reference/configuration.md); for operational
+commands see the [CLI reference](reference/cli.md).

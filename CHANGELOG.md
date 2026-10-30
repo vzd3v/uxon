@@ -6,6 +6,40 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [4.0.0] — 2026-10-30
+
+### Changed (breaking)
+- Removal requires protected launch records, including direct workloads. Drain sessions and upgrade controllers and peers together; multiple controllers need a shared record store. See [migration notes](docs/migrations.md).
+- Configuration moves to `/etc/uxon/config.toml`; checkout and project `.uxon.toml` files are ignored. Unknown keys are rejected.
+- Launch profiles replace `agents.enabled`, `agents.default` and project policy. Select with `--profile`; `--agent` passes through to the coding tool. Session names end in `@<profile>[-N]`.
+- Permission modes use `--mode <id>`; Uxon no longer interprets `--auto`, `--dsp` or its legacy aliases.
+- `[execution]` controls target-user commands and tmux. Each backend gets a socket inside a private per-user directory.
+- Wire schema 3 and audit schema 2 change machine-readable contracts. See the [wire](docs/reference/wire-schema.md) and [audit](docs/reference/audit-events.md) references for runtime and actor fields.
+- Non-root TUI Settings are read-only. Render and review configuration unprivileged, then install it explicitly with `sudo install`.
+- `default_launch_user` replaces `runtime_user`; top-level git-remote defaults move into launch profiles. Removed settings, including `tui.table.default_sort_by`, are rejected.
+- tmux requires the retained-child-status fix from 3.6 or a distribution backport; 3.8 is recommended.
+
+### Added
+- Custom coding tools and permission modes through configuration; launch profiles select the tool, account, runtime and path-specific defaults.
+- Command execution backends and workload runtimes, including containers, with path mapping, readiness checks, optional start/create commands, telemetry and cleanup.
+- `uxon config render` validates JSON configuration and produces TOML without loading the installed configuration.
+- Nested-folder browsing, cyclic modal navigation, and terminal titles following the attached session or dashboard. Launch actions start with Open project; Open in this folder stays unavailable until its background access check succeeds.
+- Python 3.14 and 3.15 support.
+
+### Fixed
+- Session actions preserve the selected launch across renames, refreshes and SSH. Removal reports individual cleanup failures without targeting same-named replacements or reused process IDs.
+- Failed processes keep output until acknowledged without stopping live sibling terminals; attach selects a live terminal when available.
+- Failed peers hide outdated data without hiding healthy peers; CLI listings return nonzero with partial results. Incompatible peers identify the required upgrade. Remote snapshots are no longer cached on disk.
+- Key diagnostics omit input contents and reject unsafe storage. CLI audit flags omit argument values and forwarded coding-tool arguments.
+- Background commands no longer discard pending terminal input; disconnecting the terminal exits the TUI. Dashboard search honors configured fields.
+- Workspace checks follow the selected launch account and reject occupied worktree paths before repository changes. Launch choices preserve custom permission modes; binary checks use the configured execution environment.
+- Concurrent operations preserve their own diagnostics; SSH polling and timeout recovery report concrete failures.
+- GitHub creation honors configured hosts, including Enterprise Server, and organization-scoped fine-grained tokens. Provider errors redact echoed tokens.
+- Native tmux socket permissions are accepted inside a private user directory; unrelated default-server sessions no longer block Uxon.
+- JSON removal results distinguish terminal actions from cleanup; remote audit reports final outcomes.
+- Codex `auto` mode uses `--approve-for-me`.
+- `uxon --version` and `uxon version --json` no longer report an unrelated project's Git revision for installed packages.
+
 ## [3.6.0] — 2026-06-12
 
 ### Changed
@@ -48,7 +82,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - TUI surfaces probe failures (sudo missing, NOPASSWD misconfig, etc.) via the "agents unavailable" modal with the error and install hints, instead of leaving the agent list silently empty.
 - Adaptive render scheduler — bursty refresh-source landings now coalesce into a single repaint instead of triggering one dispatch each. Leading edge fires immediately (first paint / sparse arrivals stay snappy); subsequent requests within a 300 ms window batch into one trailing render, capped at 1 s after the first request in the batch. A render returning `False` (e.g. modal on top) preserves the dirty state so the next request re-fires immediately.
 - Per-host status line in `by_host` view compacted: `6 sess · 4 attached · cpu Σ25% · mem 6304 MiB / 15992 MiB` → `6/4 sess · cpu 25% · mem 6.3/16G`. Session/attached counts fold into one column, the Σ glyph is gone, memory renders in GiB with one decimal.
-- Sort is now a hard contract, not a setting: locals first (own then other-user), then `[[remote_hosts]]` declaration order, with within-block ranking by last-attach desc then name asc. The `tui.table.default_sort_by` key is silently ignored.
+- Sort is now a hard contract, not a setting: locals first (own then other-user), then `[[remote_hosts]]` declaration order, with within-block ranking by last-attach desc then name asc. The old `tui.table.default_sort_by` value is silently ignored in this tagged release.
 - Attached state is shown by a glyph in the NAME column — `●` filled when attached, `○` hollow otherwise — instead of a bold green name.
 - NAME column drops the `@<agent>` suffix (the agent has its own column already). The disambiguator index `-N` is preserved so siblings stay distinct, e.g. `proj@claude-2` renders as `proj-2`.
 - Quit is `q` / `й` only. `Esc` is a scoped cancel (clear search, close modal, leave field) and never quits the TUI.

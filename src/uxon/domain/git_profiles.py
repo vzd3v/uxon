@@ -4,7 +4,7 @@ A *profile* names one explicit target where uxon is allowed to create a
 new remote repository. uxon will never create a repo outside of the
 configured whitelist.
 
-Profiles come from ``config/config.toml`` under ``[[git_remote_profiles]]``
+Profiles come from ``/etc/uxon/config.toml`` under ``[[git_remote_profiles]]``
 and are parsed into immutable :class:`GitRemoteProfile` instances by
 :func:`load_profiles`. Validation errors are reported with a one-shot
 :class:`ProfileError` so the caller can decide how to surface them (CLI
@@ -56,12 +56,27 @@ class GitRemoteProfile:
         """REST API base URL used by the ``token`` backend."""
         if self.host == "github.com":
             return "https://api.github.com"
-        # Enterprise GitHub: api.<host>/api/v3 (not supported yet; flag
-        # at call time so the error is close to the attempt).
+        # GitHub Enterprise Server exposes its REST API on the same host.
         return f"https://{self.host}/api/v3"
 
 
 def _validate_profile(raw: dict, index: int, seen_names: set[str]) -> GitRemoteProfile:
+    known_keys = {
+        "name",
+        "host",
+        "owner",
+        "auth",
+        "creds_user",
+        "token_file",
+        "visibility",
+    }
+    unknown = sorted(set(raw) - known_keys)
+    if unknown:
+        raise ProfileError(
+            f"git_remote_profiles[{index}]: unknown key(s) {unknown!r}; "
+            f"expected one of {sorted(known_keys)!r}"
+        )
+
     def _req(field: str) -> str:
         value = raw.get(field)
         if not isinstance(value, str) or not value.strip():

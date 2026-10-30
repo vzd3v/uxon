@@ -3,10 +3,10 @@
 #
 # ── Recommended workflow ──────────────────────────────────────────
 # Pair each shell user with a low-privilege OS account that owns
-# the agent's runtime — e.g. `vz` (you) + `vz_agent`. The agent
-# runs as `<user>_agent` via `sudo -iu`. With `--dsp` ("yolo"), the
-# blast radius of a runaway tool is `<user>_agent`'s sandbox, not
-# your home directory or your team's filesystem. In team setups
+# the agent's runtime — e.g. `wes` (you) + `wes-agent`. The agent
+# runs as `<user>-agent` via `sudo -H -u USER --`. Its Unix permissions
+# bound access, including any readable or writable home and shared files.
+# `--mode yolo` does not change those permissions. In team setups
 # this also gives the operator supervision without impersonation —
 # see docs/explain/supervision-without-impersonation.md.
 #
@@ -28,6 +28,29 @@
 default_launch_mode = "caller"
 session_prefix      = "uxon-"
 
+# The execution backend owns the complete target-user command boundary:
+# tmux server/list/attach/kill, git/worktrees/filesystem, probes, runtime
+# lifecycle, and agent launch. ``local`` is built in. A command backend is
+# useful for a host namespace or another operator-owned isolation boundary.
+# Drain all sessions for a backend before changing its definition. Changing
+# a backend id selects a different default tmux socket.
+#
+# tmux_socket_template = "/tmp/tmux-{uid}/uxon-{execution_backend}.sock"
+# [execution]
+# default_backend = "host_netns"
+# [execution.backend_by_launch_user]
+# wes-agent = "host_netns"
+# [execution.backends.host_netns]
+# kind = "command"
+# command_prefix = ["/usr/bin/sudo", "-n", "--", "/usr/local/libexec/uxon-exec", "{user}", "--"]
+# probe_timeout_seconds = 5.0
+# The helper must set a deterministic PATH or agents should use absolute binaries;
+# uxon does not source a login shell.
+#
+# Multi-controller supervision only: pre-provision this root-owned directory as
+# mode 2770 with a control group containing controllers but no launch users.
+# launch_record_dir = "/var/lib/uxon/launch-records"
+
 # Required only for `uxon new <name>` (project scaffolding). Leave
 # both unset to use just `uxon run` and the TUI's "New session in
 # current folder" — those gate on write access and accept any
@@ -35,9 +58,9 @@ session_prefix      = "uxon-"
 # allowed_roots    = ["~/projects"]
 # new_project_root = "~/projects"
 
-[agents]
-enabled = ["claude"]
-default = "claude"
+[launch]
+enabled_profiles = ["claude"]
+default_profile = "claude"
 
 [agents.claude]
 default_args = []
@@ -53,18 +76,18 @@ default_args = []
 # docs/scenarios/solo-1.md
 #
 # One-time host setup:
-#   sudo useradd -m -s /bin/bash vz_agent
-#   echo 'vz ALL=(vz_agent) NOPASSWD: ALL' \
-#     | sudo tee /etc/sudoers.d/uxon-vz-agent
-#   sudo chmod 440 /etc/sudoers.d/uxon-vz-agent
-#   sudo install -d -o vz_agent -g vz_agent /srv/projects
+#   sudo useradd -m -s /bin/bash wes-agent
+#   echo 'wes ALL=(wes-agent) NOPASSWD: ALL' \
+#     | sudo tee /etc/sudoers.d/uxon-wes-agent
+#   sudo chmod 440 /etc/sudoers.d/uxon-wes-agent
+#   sudo install -d -o wes-agent -g wes-agent /srv/projects
 #
 # Then replace the active "default_launch_mode = caller" line above
 # with the block below:
 #
 # default_launch_mode = "fixed"
-# runtime_user        = "vz_agent"
-# session_users       = ["vz_agent"]
+# default_launch_user        = "wes-agent"
+# session_users       = ["wes-agent"]
 # allowed_roots       = ["/srv/projects"]
 # new_project_root    = "/srv/projects"
 
@@ -77,9 +100,9 @@ default_args = []
 # ProxyJump etc. live in ~/.ssh/config — uxon does not duplicate them.
 #
 # [[remote_hosts]]
-# name        = "vz-prod1"
-# ssh_alias   = "vz-prod1"
-# description = "primary EU"   # optional, shown in TUI tooltips
+# name        = "gpu-box"
+# ssh_alias   = "gpu-box"
+# description = "leased GPU box"   # optional, shown in TUI tooltips
 # remote_uxon = "uxon"         # optional, default "uxon"
 
 
@@ -89,26 +112,26 @@ default_args = []
 # Pick ONE of (a) / (b) / (c) below.
 #
 # (a) Recommended: per-caller paired sandbox.
-#     One <user>_agent per developer.
+#     One <user>-agent per developer.
 #
 # default_launch_mode   = "fixed"
-# runtime_user          = "team_agent"   # fallback for unmapped callers
-# session_users         = ["alice_agent", "bob_agent", "carol_agent"]
+# default_launch_user   = "lead"         # fallback for the supervisor
+# session_users         = ["nadia-agent", "liam-agent", "ethan-agent"]
 # enable_all_users_list = true
 # allowed_roots         = ["/srv/projects"]
-# new_project_root      = "/srv/projects"
+# new_project_root      = "/srv/projects/shared"  # intentionally collaborative
 #
 # [launch_user_by_caller]
-# alice = "alice_agent"
-# bob   = "bob_agent"
-# carol = "carol_agent"
+# nadia  = "nadia-agent"
+# liam   = "liam-agent"
+# ethan  = "ethan-agent"
 #
 # (b) Shared sandbox user (one OS account for all agents).
 #     Useful when the agent needs shared workspace/state across devs.
 #
 # default_launch_mode = "fixed"
-# runtime_user        = "team_agent"
-# session_users       = ["team_agent"]
+# default_launch_user        = "team-agent"
+# session_users       = ["team-agent"]
 # allowed_roots       = ["/srv/projects"]
 # new_project_root    = "/srv/projects"
 #
@@ -116,7 +139,7 @@ default_args = []
 #     Simplest; agent inherits the caller's trust boundary.
 #
 # default_launch_mode   = "caller"
-# session_users         = ["alice", "bob", "carol"]
+# session_users         = ["nadia", "liam", "ethan"]
 # enable_all_users_list = true
 
 
@@ -155,16 +178,20 @@ default_args = []
 # calls the REST API with a fine-grained PAT read from
 # ``token_file`` (required for token auth; never logged).
 #
-# git_create_enabled        = true
-# default_git_remote_profile = "work"
+# git_create_enabled = true
 #
 # [[git_remote_profiles]]
 # name       = "work"
 # host       = "github.com"
 # owner      = "my-org"
 # auth       = "gh"            # or "token" + token_file
-# creds_user = "vz"            # defaults to launch user
+# creds_user = "wes"           # defaults to launch user
 # visibility = "private"
+#
+# [launch.profiles.claude]
+# agent = "claude"
+# allowed_git_remote_profiles = ["work"]
+# default_git_remote_profile = "work"
 
 
 # ─── Dashboard columns + view (TUI) ───────────────────────────────
@@ -179,8 +206,8 @@ default_args = []
 # ``default_view`` picks the initial dashboard layout. ``flat``
 # (default) is a single ranked list across the fleet; ``by_host``
 # shows a per-host tab strip and status bar. Toggle at runtime
-# with ``v``. (The legacy ``default_sort_by`` key is silently
-# ignored — sort is a fixed contract, see configuration.md.)
+# with ``v``. Sort is a fixed contract; unknown keys such as the removed
+# ``default_sort_by`` are rejected (see configuration.md).
 #
 # [tui.table]
 # columns      = ["name", "user", "cpu", "ram", "last"]
@@ -249,8 +276,10 @@ default_args = []
 
 # ─── uxon-managed tmux options ────────────────────────────────────
 # docs/reference/configuration.md ([tmux] managed options)
+# Session names and the dashboard's "uxon" appear in terminal titles. To disable, set
+# set_terminal_title = false under [tmux], independently of manage_options.
 #
-# OFF BY DEFAULT. When enabled, uxon layers the recommended set below
+# Managed option tables are OFF BY DEFAULT. When enabled, uxon layers the set below
 # (mouse support, OSC-52 passthrough, extended keys, terminal-features
 # for agent TUIs) on top of whatever the launch user's own tmux config
 # (/etc/tmux.conf, ~/.tmux.conf, XDG) provides, at launch, without
@@ -271,6 +300,7 @@ default_args = []
 # recommended defaults.
 #
 # [tmux]
+# set_terminal_title = true
 # manage_options = true
 #
 # [tmux.options]            # set -g
@@ -296,3 +326,79 @@ default_args = []
 # [audit]
 # enabled         = true
 # syslog_facility = "user"
+
+
+# ─── Workload runtimes ───────────────────────────────────────────
+# docs/reference/configuration.md ([runtimes.<id>])
+#
+# A launch uses an isolated workload only when its launch profile names a
+# non-direct ``runtime``. uxon models no engine-specific semantics: every
+# command below is an argv LIST you supply verbatim — never a shell
+# string. ``{resource}`` is the resolved workload name; ``{runtime_dir}``
+# is the working directory after ``path_map``.
+#
+# The sample name is deterministic per (launch user, launch profile, project
+# basename). Require unique basenames in that scope or choose explicit names.
+# The same resource is reused across sessions, never one per session.
+#
+# ``on_missing`` gates what uxon may do when the resource is not
+# running: ``fail`` (default) execs only — a stopped/absent resource
+# fails with an actionable message; ``start`` also starts a stopped
+# one; ``create`` also creates an absent one. uxon NEVER stops or
+# removes the resource itself — only ``stop_command`` (below)
+# terminates the agent process. ``approval`` is ``prompt``
+# (the TUI shows a confirm before any start/create) or ``auto`` (act
+# without asking, when permitted). The CLI is non-interactive and
+# always acts auto-if-permitted.
+#
+# Probe semantics matter: ``ready_command`` must exit 0 only when the
+# workload is ready. ``exists_command`` exits 0 when it exists.
+#
+# Teardown is the mirror of the exec wrap. ``tmux kill-session`` may only
+# sever the client-side exec, so uxon records the workload PID and Linux start
+# ticks in nonce-keyed ``{pidfile}``. Stop adapters must verify that identity.
+# Omit ``stop_command`` when the runtime guarantees normal process cleanup;
+# otherwise the agent may orphan and uxon
+# prints a reminder at every kill.
+# Install the operator-owned Compose definition and pidfd stop helper from
+# docs/guides/customise/run-agents-in-a-container.md before using this adapter.
+# Explicitly enable claude_container in [launch].enabled_profiles as well.
+#
+# [launch.profiles.claude_container]
+# agent = "claude"
+# runtime = "workbox"
+#
+# [runtimes.workbox]
+# kind = "command"
+# resource_scope = "per_user"   # global | per_user
+# resource_name_template = "uxon-{user}-{launch_profile}-{project_slug}"
+# exec_prefix = ["docker", "exec", "-w", "{runtime_dir}", "-i", "{resource}"]
+# telemetry = "cgroup"          # none | cgroup
+#
+# [runtimes.workbox.readiness]
+# on_missing = "fail"           # fail | start | create
+# approval = "prompt"           # prompt | auto
+# ready_command = ["docker", "top", "{resource}"]
+# exists_command = ["docker", "container", "inspect", "{resource}"]
+# start_command = ["docker", "start", "{resource}"]
+# create_command = ["sh", "-c", 'project=uxon-$(printf %s "$1" | sha256sum | cut -c 1-20); export UXON_RESOURCE="$1" UXON_RUNTIME_DIR="$2" UXON_PROJECT="$PWD"; exec docker compose -p "$project" -f /operator/uxon/compose.yml up -d', "uxon-create", "{resource}", "{runtime_dir}"]
+#
+# [runtimes.workbox.identity]
+# resolve_command = ["docker", "inspect", "--format", '{{"id":"{{{{.Id}}}}","host_pid":{{{{.State.Pid}}}},"epoch":"{{{{.State.StartedAt}}}}"}}', "{resource}"]
+#
+# [runtimes.workbox.session]
+# # Reap this session's agent on kill ({pidfile} is uxon-supplied,
+# # unique per launch across users/servers); the resource is left running.
+# # The helper requires Python 3.11+ and Linux pidfd support inside the image:
+# stop_command = ["docker", "exec", "{resource}", "python3", "/usr/local/libexec/uxon-runtime-stop.py", "{pidfile}", "--timeout", "8"]
+#
+# [runtimes.workbox.timeouts]
+# probe_seconds = 10.0
+# prepare_seconds = 120.0
+# stop_seconds = 10.0
+#
+# Translate the host working directory to a container path (longest
+# matching host prefix wins; no match → host path verbatim):
+#
+# [runtimes.workbox.path_map]
+# "/srv/projects" = "/work"

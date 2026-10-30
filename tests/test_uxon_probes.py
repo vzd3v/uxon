@@ -1,221 +1,112 @@
-"""Tests for probes.py host binary detection."""
+"""Host availability through one bounded, argv-preserving command."""
 
 from __future__ import annotations
 
 import subprocess
-import unittest
 from unittest import mock
 
-from uxon.domain.host_report import BinaryStatus, HostReport
-from uxon.infra import probes
+import pytest
+from helpers import make_config
+
+from uxon.domain.agents import AgentSpec, PermissionMode
+from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
+from uxon.infra.probes import PROBE_TIMEOUT_SEC, probe_host
+
+pytestmark = pytest.mark.usefixtures("real_execution", "real_host_probes")
 
 
-class ResolvPathsLocalTests(unittest.TestCase):
-    """Tests for _resolve_paths_local (same-user probe)."""
-
-    def test_resolve_empty_list(self) -> None:
-        result = probes._resolve_paths_local([])
-        self.assertEqual(result, {})
-
-    def test_resolve_single_found(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="tmux\t/usr/bin/tmux\n", stderr=""
-            )
-            result = probes._resolve_paths_local(["tmux"])
-        self.assertEqual(result, {"tmux": "/usr/bin/tmux"})
-
-    def test_resolve_single_not_found(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="nosuchbin\t\n", stderr=""
-            )
-            result = probes._resolve_paths_local(["nosuchbin"])
-        self.assertEqual(result, {"nosuchbin": None})
-
-    def test_resolve_multiple_mixed(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout="tmux\t/usr/bin/tmux\nclaude\t\ncodex\t/home/user/.npm/codex\n",
-                stderr="",
-            )
-            result = probes._resolve_paths_local(["tmux", "claude", "codex"])
-        self.assertEqual(
-            result,
-            {
-                "tmux": "/usr/bin/tmux",
-                "claude": None,
-                "codex": "/home/user/.npm/codex",
-            },
+def test_public_host_probe_batches_catalog_and_normalizes_failures(subtests):
+    catalog = {
+        aid: AgentSpec(
+            id=aid,
+            binary=binary,
+            install_hint=f"install {aid}",
+            permission_modes=(PermissionMode("normal", "Normal", ()),),
         )
-
-    def test_resolve_timeout(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.side_effect = subprocess.TimeoutExpired(cmd=["sh"], timeout=2.0)
-            result = probes._resolve_paths_local(["tmux", "claude"])
-        self.assertEqual(result, {"tmux": None, "claude": None})
-
-    def test_resolve_sh_not_found(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.side_effect = FileNotFoundError("no sh")
-            result = probes._resolve_paths_local(["tmux"])
-        self.assertEqual(result, {"tmux": None})
-
-    def test_resolve_nonzero_exit_treated_as_missing(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="error"
-            )
-            result = probes._resolve_paths_local(["tmux", "claude"])
-        # When exit code != 0, we don't parse the output, so all are None.
-        self.assertEqual(result, {"tmux": None, "claude": None})
-
-
-class ResolvePathsRemoteTests(unittest.TestCase):
-    """Tests for _resolve_paths_remote (cross-user probe via sudo)."""
-
-    def test_resolve_empty_list(self) -> None:
-        result = probes._resolve_paths_remote([], "user")
-        self.assertEqual(result, {})
-
-    def test_resolve_sudo_success(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout="tmux\t/usr/bin/tmux\nclaude\t/home/user/.npm/claude\n",
-                stderr="",
-            )
-            result = probes._resolve_paths_remote(["tmux", "claude"], "otheruser")
-        self.assertEqual(
-            result,
-            {"tmux": "/usr/bin/tmux", "claude": "/home/user/.npm/claude"},
+        for aid, binary in (
+            ("custom", "custom tool;literal"),
+            ("alias", "custom tool;literal"),
+            ("missing", "missing"),
+            ("omitted", "omitted"),
         )
-        # Verify the sudo call. ``-H`` (no ``-i``) avoids the double
-        # shell-wrap that ate ``$c`` inside the for-loop script; the
-        # inner ``sh -lc`` still gives login-shell PATH semantics.
-        args = run.call_args[0][0]
-        self.assertIn("sudo", args)
-        self.assertIn("-n", args)
-        self.assertIn("-H", args)
-        self.assertIn("-u", args)
-        self.assertNotIn("-iu", args)
-        self.assertNotIn("-i", args)
-        self.assertIn("otheruser", args)
-
-    def test_resolve_sudo_nonzero_exit(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="sudo: no NOPASSWD"
+    }
+    output = "tmux\t/usr/bin/tmux\ncustom tool;literal\t/opt/custom\nmissing\t\nmalformed\n\n"
+    for backend in ("local", "command"):
+        cfg = make_config()
+        if backend == "command":
+            cfg.execution = ExecutionConfig(
+                default_backend="box",
+                backends={
+                    "box": ExecutionBackendSpec(
+                        id="box", kind="command", command_prefix=("boundary", "{user}", "--")
+                    ),
+                },
             )
-            result = probes._resolve_paths_remote(["tmux", "claude"], "otheruser")
-        # Non-zero exit (e.g., no NOPASSWD) → all are None.
-        self.assertEqual(result, {"tmux": None, "claude": None})
+        for user in ("alice", "bob"):
+            prefix = (
+                ["boundary", user, "--"]
+                if backend == "command"
+                else []
+                if user == "alice"
+                else ["/usr/bin/sudo", "-n", "-H", "-u", user, "--"]
+            )
+            for outcome in ("mixed", "nonzero", "timeout", "missing-shell"):
+                with subtests.test(backend=backend, user=user, outcome=outcome):
+                    calls = []
 
-    def test_resolve_sudo_timeout(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.side_effect = subprocess.TimeoutExpired(cmd=["sudo"], timeout=2.0)
-            result = probes._resolve_paths_remote(["tmux"], "otheruser")
-        self.assertEqual(result, {"tmux": None})
+                    def run(
+                        argv,
+                        *,
+                        timeout,
+                        backend=backend,
+                        calls=calls,
+                        outcome=outcome,
+                        prefix=prefix,
+                        user=user,
+                    ):
+                        calls.append(argv)
+                        assert timeout == PROBE_TIMEOUT_SEC
+                        assert argv[: len(prefix)] == prefix
+                        assert argv[len(prefix) : len(prefix) + 2] == ["sh", "-c"]
+                        assert "'custom tool;literal'" in argv[-1]
+                        assert "omitted" in argv[-1] and "tmux" in argv[-1]
+                        if outcome == "timeout":
+                            raise subprocess.TimeoutExpired(argv, timeout)
+                        if outcome == "missing-shell":
+                            raise FileNotFoundError("shell unavailable")
+                        return subprocess.CompletedProcess(
+                            argv, int(outcome == "nonzero"), output, ""
+                        )
 
-    def test_resolve_sudo_not_found(self) -> None:
-        with mock.patch("uxon.infra.probes.subprocess.run") as run:
-            run.side_effect = FileNotFoundError("no sudo")
-            result = probes._resolve_paths_remote(["tmux"], "otheruser")
-        self.assertEqual(result, {"tmux": None})
+                    with (
+                        mock.patch("uxon.infra.execution.process_user", return_value="alice"),
+                        mock.patch("uxon.infra.probes.run_query", side_effect=run),
+                    ):
+                        report = probe_host(cfg, user, catalog)
+                    assert len(calls) == 1
+                    assert report.launch_user == user
+                    assert report.tmux.path == ("/usr/bin/tmux" if outcome == "mixed" else None)
+                    assert {
+                        aid: (status.name, status.path, status.install_hint)
+                        for aid, status in report.agents.items()
+                    } == {
+                        aid: (
+                            aid,
+                            "/opt/custom"
+                            if outcome == "mixed" and aid in {"custom", "alias"}
+                            else None,
+                            spec.install_hint,
+                        )
+                        for aid, spec in catalog.items()
+                    }
 
-
-class BinaryStatusTests(unittest.TestCase):
-    """Tests for BinaryStatus dataclass."""
-
-    def test_binary_status_frozen(self) -> None:
-        bs = BinaryStatus(name="tmux", path="/usr/bin/tmux", install_hint="apt install")
-        with self.assertRaises(AttributeError):
-            bs.path = "/new/path"  # type: ignore
-
-    def test_binary_status_creation(self) -> None:
-        bs = BinaryStatus(
-            name="claude", path=None, install_hint="npm i -g @anthropic-ai/claude-code"
-        )
-        self.assertEqual(bs.name, "claude")
-        self.assertIsNone(bs.path)
-        self.assertIn("claude-code", bs.install_hint)
-
-
-class HostReportTests(unittest.TestCase):
-    """Tests for HostReport dataclass."""
-
-    def test_host_report_creation(self) -> None:
-        report = HostReport(
-            tmux=BinaryStatus("tmux", "/usr/bin/tmux", "apt install"),
-            agents={
-                "claude": BinaryStatus("claude", "/home/u/.npm/claude", "npm i"),
-                "codex": BinaryStatus("codex", "/home/u/.npm/codex", "npm i"),
-                "cursor": BinaryStatus("cursor-agent", None, ""),
-            },
-            launch_user="devuser",
-        )
-        self.assertEqual(report.launch_user, "devuser")
-        self.assertEqual(report.tmux.path, "/usr/bin/tmux")
-        self.assertEqual(report.agents["claude"].path, "/home/u/.npm/claude")
-        self.assertIsNone(report.agents["cursor"].path)
-
-
-class ProbeHostTests(unittest.TestCase):
-    """Integration tests for probe_host. ``probe_host`` is config-free
-    now: it returns one entry per CATALOG agent and the caller decides
-    which subset is in scope (strict whitelist or auto-mode).
-    """
-
-    def test_probe_host_same_user(self) -> None:
-        with mock.patch("uxon.infra.probes._resolve_paths_local") as resolve:
-            resolve.return_value = {
-                "tmux": "/usr/bin/tmux",
-                "claude": "/home/u/.npm/claude",
-                "codex": None,
-                "cursor-agent": None,
-            }
-            with mock.patch("uxon.infra.probes._current_user", return_value="devuser"):
-                report = probes.probe_host("devuser")
-
-        self.assertEqual(report.launch_user, "devuser")
-        self.assertEqual(report.tmux.path, "/usr/bin/tmux")
-        self.assertEqual(report.agents["claude"].path, "/home/u/.npm/claude")
-        self.assertIsNone(report.agents["codex"].path)
-        self.assertIsNone(report.agents["cursor"].path)
-
-    def test_probe_host_different_user(self) -> None:
-        with mock.patch("uxon.infra.probes._resolve_paths_remote") as resolve:
-            resolve.return_value = {
-                "tmux": "/usr/bin/tmux",
-                "claude": "/home/otheruser/.npm/claude",
-                "codex": None,
-                "cursor-agent": "/home/otheruser/.cursor/cursor-agent",
-            }
-            with mock.patch("uxon.infra.probes._current_user", return_value="devuser"):
-                report = probes.probe_host("otheruser")
-
-        self.assertEqual(report.launch_user, "otheruser")
-        self.assertEqual(report.tmux.path, "/usr/bin/tmux")
-        self.assertEqual(report.agents["claude"].path, "/home/otheruser/.npm/claude")
-        self.assertIsNone(report.agents["codex"].path)
-        self.assertEqual(report.agents["cursor"].path, "/home/otheruser/.cursor/cursor-agent")
-
-    def test_install_hints_present(self) -> None:
-        """Verify that install hints are set for all binaries."""
-        bs_tmux = BinaryStatus("tmux", None, probes._INSTALL_HINTS["tmux"])
-        self.assertIn("apt", bs_tmux.install_hint)
-        self.assertIn("dnf", bs_tmux.install_hint)
-
-        bs_claude = BinaryStatus("claude", None, probes._INSTALL_HINTS["claude"])
-        self.assertIn("npm", bs_claude.install_hint)
-        self.assertIn("claude-code", bs_claude.install_hint)
-
-        bs_codex = BinaryStatus("codex", None, probes._INSTALL_HINTS["codex"])
-        self.assertIn("npm", bs_codex.install_hint)
-        self.assertIn("codex", bs_codex.install_hint)
-
-        bs_cursor = BinaryStatus("cursor-agent", None, probes._INSTALL_HINTS["cursor-agent"])
-        self.assertIn("curl", bs_cursor.install_hint)
+    with (
+        mock.patch("uxon.infra.execution.process_user", return_value="alice"),
+        mock.patch(
+            "uxon.infra.probes.run_query",
+            return_value=subprocess.CompletedProcess([], 0, "tmux\t/usr/bin/tmux\n", ""),
+        ) as run,
+    ):
+        empty = probe_host(make_config(), "alice", {})
+    assert empty.agents == {} and empty.tmux.path == "/usr/bin/tmux"
+    assert run.call_count == 1

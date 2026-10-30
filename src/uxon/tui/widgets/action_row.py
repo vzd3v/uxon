@@ -12,8 +12,8 @@ bottom superuser block. (Earlier layouts drew the top three as tall
 bordered "buttons"; the flat unification keeps the session table the
 visually dominant element of the screen.)
 
-The ``disabled=True`` state (used when e.g. ``cwd_writable=False``)
-greys the row and suppresses activation — the row still renders a
+The ``enabled=False`` state (used while cwd access is pending or denied)
+greys the row and suppresses focus and activation — the row still renders a
 hint describing why it's disabled.
 """
 
@@ -96,6 +96,7 @@ class ActionRow(Static):
         self.label = label
         self.detail = detail
         self._enabled = enabled
+        self.can_focus = enabled
         # ``(label, detail, enabled)`` of the last painted state — the
         # widget-boundary change gate for :meth:`_render_text`. ``None``
         # until the first paint (from this ``__init__``).
@@ -106,7 +107,7 @@ class ActionRow(Static):
         # Widget-boundary change gate: every caller (apply_ctx_refresh's
         # cwd/open/new rows, launch_flow, the cwd-writable landing, the
         # superuser kill row) routes through here, so a tick that leaves
-        # label/detail/enabled untouched issues zero writes (AC2/RC3).
+        # label/detail/enabled untouched issues zero writes.
         key = (self.label, self.detail, self._enabled)
         if key == self._last_painted:
             return
@@ -117,7 +118,7 @@ class ActionRow(Static):
             t.append(f"  {self.detail}", style="dim")
         # ``layout=False``: the row's box is a fixed cell — a label/detail
         # text swap never changes its size, so skip the screen-global
-        # relayout the default ``update`` would request (AC8).
+        # relayout the default ``update`` would request.
         self.update(t, layout=False)
         if not self._enabled:
             self.add_class("-disabled")
@@ -126,6 +127,9 @@ class ActionRow(Static):
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
+        self.can_focus = enabled
+        if not enabled and self.has_focus:
+            self.app.action_focus_next()
         self._render_text()
 
     # ── Activation ───────────────────────────────────────────────────
@@ -137,8 +141,8 @@ class ActionRow(Static):
 
     async def _on_click(self, event: events.Click) -> None:  # type: ignore[override]
         event.stop()
-        self.focus()
         if action_row_can_activate(self._enabled):
+            self.focus()
             self.post_message(self.Activated(self))
 
     # ── ↑/↓ navigation ───────────────────────────────────────────────

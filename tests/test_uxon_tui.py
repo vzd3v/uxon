@@ -11,34 +11,29 @@ Screen / widget / integration tests live in:
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from uxon import tui as uxon_tui
+from uxon.domain.agents import DEFAULT_AGENT_CATALOG as _CATALOG
 from uxon.tui.context import (
-    _ACTION_KINDS,
-    ACTION_COUNT,
+    LaunchProfileOption,
     ServerStatus,
-    _segments,
-    _total_items,
-    build_items,
 )
 from uxon.tui.state import (
-    CallbackFailure,
     LaunchCommitDecision,
     LaunchOptionsState,
     LaunchOptionsUpdate,
     MainIntent,
-    activate_main_index,
-    agent_is_pending,
-    agent_list_label,
-    callback_failure_to_toast,
+    ProjectBrowserLevel,
     compute_all_missing,
     confirm_phrase_matches,
     filter_existing_projects,
     launch_commit_decision,
-    launch_mode_id,
     launch_options_state,
+    launch_permission_modes,
+    launch_profile_users_differ,
     main_action_intent,
-    mode_item_ids,
     pick_index,
     pick_visible_agent,
     project_name_error,
@@ -46,27 +41,68 @@ from uxon.tui.state import (
     resettable_setting_key,
     selected_setting_index,
     server_status_line,
-    session_intent,
     should_push_agents_unavailable,
-    should_show_agents_unavailable,
     update_launch_options_after_availability,
     visible_agent_ids,
 )
 
+_CATALOG_IDS = tuple(_CATALOG)
+
+
+class WorkspaceContinuationTests(unittest.TestCase):
+    def test_out_of_order_probes_keep_current_modal_and_its_repository(self) -> None:
+        from helpers import make_launch_profile_options
+
+        from uxon.infra.worktrees import Workspace
+        from uxon.tui.screens.launch_flow import LaunchFlow
+        from uxon.tui.screens.workspace import WorkspaceScreen
+
+        pushed, workers, created = [], [], []
+        app = SimpleNamespace(
+            state=None,
+            push_screen=lambda screen, callback: pushed.append((screen, callback)),
+            run_off_loop=lambda fn, **kw: workers.append((fn, kw)),
+            request_launch=mock.Mock(),
+            notify=mock.Mock(),
+        )
+        cfg = _ctx(
+            launch_profiles=make_launch_profile_options(),
+            on_create_worktree=lambda *args: created.append(args),
+        )
+        host = SimpleNamespace(
+            app=app,
+            cfg=cfg,
+            state=SimpleNamespace(agent_availability=SimpleNamespace(value=cfg.agent_availability)),
+        )
+        app.screen = host
+        flow = LaunchFlow(host)
+        for target in ("/srv/a/subdir", "/srv/b/subdir"):
+            flow.begin_launch_in_folder(
+                target_dir=target, target_label=target, commit_primary=mock.Mock()
+            )
+            pushed[-1][1](("claude", "normal"))
+        for index, root in ((1, "/srv/b"), (0, "/srv/a")):
+            workers[index][1]["on_success"]([Workspace(root, "main", root, True)])
+            if index == 1:
+                app.screen = pushed[-1][0]
+        self.assertIsInstance(app.screen, WorkspaceScreen)
+        self.assertEqual(len(pushed), 3)  # two profile choices, only the current workspace
+        pushed[-1][1](("new", None))
+        pushed[-1][1]("feature/b")
+        workers[-1][0]()
+        self.assertEqual(created, [("/srv/b", "feature/b", "claude", "normal")])
+        app.screen = host
+        flow.begin_launch_in_folder(
+            target_dir="/srv/c", target_label="c", commit_primary=mock.Mock()
+        )
+        pushed[-1][1](("claude", "normal"))
+        app.screen = SimpleNamespace()  # an unrelated modal opened during the current probe
+        count = len(pushed)
+        workers[-1][1]["on_success"]([Workspace("c", "main", "/srv/c", True)])
+        self.assertEqual(len(pushed), count)
+
 
 def _ctx(**overrides) -> uxon_tui.TuiContext:
-    """Build a TuiContext for tests.
-
-    Translates the legacy ``has_sudo=True/False`` kwarg into the new
-    per-target ``sudo_caps`` shape: ``has_sudo=True`` is modelled as
-    "one synthetic reachable user" so the visibility predicate
-    (``bool(sudo_caps.reachable_users)``) flips on. Tests that need
-    fine-grained control pass ``sudo_caps=...`` directly and skip
-    ``has_sudo``.
-    """
-    from uxon.domain.sudo import SudoCapability
-
-    has_sudo = overrides.pop("has_sudo", None)
     base = dict(
         sessions=[],
         total_cpu="0",
@@ -79,474 +115,299 @@ def _ctx(**overrides) -> uxon_tui.TuiContext:
         cwd_writable=True,
     )
     base.update(overrides)
-    if has_sudo is not None and "sudo_caps" not in base:
-        base["sudo_caps"] = SudoCapability(
-            reachable_users=frozenset({"_synthetic_reachable_"} if has_sudo else set()),
-            can_root=bool(has_sudo),
-        )
     return uxon_tui.TuiContext(**base)
 
 
-def _session(name: str = "a", user: str = "u") -> uxon_tui.TuiSession:
-    return uxon_tui.TuiSession(
-        name=name,
-        short=name,
-        attached=False,
-        pid="1",
-        cpu="0",
-        ram="0",
-        created="1s",
-        last_activity="1s",
-        cmd="claude",
-        path="/",
-        user=user,
+def _availability(**statuses):
+    return {key: SimpleNamespace(status=status) for key, status in statuses.items()}
+
+
+def test_server_status_full_and_partial_snapshots() -> None:
+    for status, expected in (
+        (ServerStatus(), "server: unavailable"),
+        (ServerStatus(cpu="11%"), "server: cpu 11% load -"),
+        (ServerStatus(load="0.42"), "server: cpu - load 0.42"),
+        (
+            ServerStatus(cpu="11%", load="0.42", ram="2G/8G", disk="20G/100G", uptime="3d"),
+            "server: cpu 11% load 0.42 · ram 2G/8G · disk 20G/100G · up 3d",
+        ),
+    ):
+        assert server_status_line(status) == expected
+
+
+def test_all_missing_requires_resolved_enabled_profiles() -> None:
+    for enabled, availability, expected in (
+        ((), {}, False),
+        (("claude", "codex"), _availability(claude="missing"), False),
+        (("claude", "codex"), _availability(claude="missing", codex="pending"), False),
+        (("claude", "codex"), _availability(claude="ok", codex="missing"), False),
+        (("claude", "codex"), _availability(claude="missing", codex="timeout"), True),
+        (("claude",), _availability(claude="unknown"), False),
+    ):
+        assert compute_all_missing(enabled_profiles=enabled, availability=availability) is expected
+
+
+def test_unavailable_modal_transitions_and_suppressions() -> None:
+    for previous, current, modal, launch, expected in (
+        (None, True, False, False, True),
+        (False, True, False, False, True),
+        (True, True, False, False, False),
+        (True, False, False, False, False),
+        (None, False, False, False, False),
+        (False, True, True, False, False),
+        (False, True, False, True, False),
+    ):
+        assert (
+            should_push_agents_unavailable(
+                last_all_missing=previous,
+                current_all_missing=current,
+                modal_already_on_stack=modal,
+                pending_launch=launch,
+            )
+            is expected
+        )
+
+
+def test_launch_options_visibility_preference_and_availability_transitions() -> None:
+    enabled = ("claude", "codex", "cursor")
+    availability = _availability(claude="pending", codex="ok")
+    assert (
+        visible_agent_ids(
+            enabled_profiles=enabled, availability=availability, catalog_ids=_CATALOG_IDS
+        )
+        == enabled
     )
-
-
-class TuiContextShapeTests(unittest.TestCase):
-    def test_tui_context_has_launch_fields(self) -> None:
-        ctx = _ctx()
-        self.assertTrue(callable(ctx.on_attach))
-        self.assertTrue(callable(ctx.on_kill))
-        self.assertTrue(callable(ctx.on_launch_cwd))
-        self.assertTrue(callable(ctx.on_launch_new))
-        self.assertTrue(callable(ctx.on_launch_existing))
-        self.assertTrue(callable(ctx.on_refresh))
-
-    def test_tui_context_defaults_return_noop_launch_request(self) -> None:
-        ctx = _ctx()
-        req = ctx.on_launch_cwd("claude", "normal")
-        self.assertIsInstance(req, uxon_tui.LaunchRequest)
-        self.assertEqual(req.cmd, ("true",))
-
-    def test_server_status_defaults_to_unavailable(self) -> None:
-        ctx = _ctx()
-        self.assertEqual(server_status_line(ctx.server_status), "server: unavailable")
-
-    def test_server_status_line_formats_compact_snapshot(self) -> None:
-        status = ServerStatus(
-            load="0.42",
-            cpu="11%",
-            ram="2.0G/8.0G 25%",
-            disk="20G/100G 20%",
-            uptime="3d 2h",
-        )
-        self.assertEqual(
-            server_status_line(status),
-            "server: cpu 11% load 0.42 · ram 2.0G/8.0G 25% · disk 20G/100G 20% · up 3d 2h",
-        )
-
-
-class AgentsUnavailableGateStateTests(unittest.TestCase):
-    def test_gate_false_when_already_shown(self) -> None:
-        result = should_show_agents_unavailable(
-            enabled_agents=("claude",),
-            availability={"claude": type("Avail", (), {"status": "missing"})()},
-            already_shown=True,
-        )
-        self.assertFalse(result)
-
-    def test_gate_false_without_enabled_agents(self) -> None:
-        self.assertFalse(
-            should_show_agents_unavailable(
-                enabled_agents=(),
-                availability={},
-                already_shown=False,
+    assert launch_options_state(
+        enabled_profiles=enabled, default_profile="codex", availability=availability
+    ) == LaunchOptionsState(enabled, False, "agent", "codex")
+    assert launch_options_state(
+        enabled_profiles=enabled, default_profile="unknown", availability=availability
+    ) == LaunchOptionsState(enabled, False, "agent", "claude")
+    for availability, current, default, panel, expected in (
+        (
+            _availability(claude="pending", cursor="ok"),
+            "claude",
+            "codex",
+            "agent",
+            LaunchOptionsUpdate(enabled, False, "agent", "claude", False),
+        ),
+        (
+            _availability(claude="missing", codex="ok", cursor="ok"),
+            "claude",
+            "codex",
+            "agent",
+            LaunchOptionsUpdate(("codex", "cursor"), False, "agent", "codex", False),
+        ),
+        (
+            _availability(claude="missing", codex="ok", cursor="ok"),
+            "unknown",
+            "unknown",
+            "workspace",
+            LaunchOptionsUpdate(("codex", "cursor"), False, "workspace", "codex", False),
+        ),
+        (
+            _availability(claude="missing", codex="timeout", cursor="ok"),
+            "claude",
+            "claude",
+            "agent",
+            LaunchOptionsUpdate(("cursor",), True, "mode", "cursor", False),
+        ),
+        (
+            _availability(claude="missing", codex="timeout", cursor="missing"),
+            "claude",
+            "claude",
+            "agent",
+            LaunchOptionsUpdate((), True, "mode", "claude", True),
+        ),
+        (
+            _availability(claude="missing", codex="timeout", cursor="missing"),
+            "",
+            "codex",
+            "agent",
+            LaunchOptionsUpdate((), True, "mode", "codex", True),
+        ),
+    ):
+        assert (
+            update_launch_options_after_availability(
+                enabled_profiles=enabled,
+                default_profile=default,
+                availability=availability,
+                current_agent=current,
+                active_panel=panel,
             )
+            == expected
         )
-
-    def test_gate_false_until_every_agent_resolved(self) -> None:
-        result = should_show_agents_unavailable(
-            enabled_agents=("claude", "codex"),
-            availability={"claude": type("Avail", (), {"status": "missing"})()},
-            already_shown=False,
-        )
-        self.assertFalse(result)
-
-    def test_gate_false_when_any_agent_is_ok(self) -> None:
-        result = should_show_agents_unavailable(
-            enabled_agents=("claude", "codex"),
-            availability={
-                "claude": type("Avail", (), {"status": "ok"})(),
-                "codex": type("Avail", (), {"status": "missing"})(),
-            },
-            already_shown=False,
-        )
-        self.assertFalse(result)
-
-    def test_gate_true_when_all_agents_missing_or_timeout(self) -> None:
-        result = should_show_agents_unavailable(
-            enabled_agents=("claude", "codex"),
-            availability={
-                "claude": type("Avail", (), {"status": "missing"})(),
-                "codex": type("Avail", (), {"status": "timeout"})(),
-            },
-            already_shown=False,
-        )
-        self.assertTrue(result)
+    assert launch_options_state(
+        enabled_profiles=enabled,
+        default_profile="claude",
+        availability=_availability(claude="missing", codex="timeout", cursor="ok"),
+    ) == LaunchOptionsState(("cursor",), True, "mode", "cursor")
+    for visible, index, expected in (
+        (("claude", "codex"), -1, "cursor"),
+        (("claude", "codex"), 0, "claude"),
+        (("claude", "codex"), 1, "codex"),
+        (("claude", "codex"), 2, "cursor"),
+        ((), 0, "cursor"),
+    ):
+        assert pick_visible_agent(visible, index, "cursor") == expected
 
 
-class ComputeAllMissingTests(unittest.TestCase):
-    def test_false_without_enabled(self) -> None:
-        self.assertFalse(compute_all_missing(enabled_agents=(), availability={}))
-
-    def test_false_when_pending(self) -> None:
-        self.assertFalse(
-            compute_all_missing(
-                enabled_agents=("claude",),
-                availability={"claude": type("A", (), {"status": "pending"})()},
-            )
-        )
-
-    def test_false_when_any_ok(self) -> None:
-        self.assertFalse(
-            compute_all_missing(
-                enabled_agents=("claude", "codex"),
-                availability={
-                    "claude": type("A", (), {"status": "ok"})(),
-                    "codex": type("A", (), {"status": "missing"})(),
-                },
-            )
-        )
-
-    def test_true_when_all_missing(self) -> None:
-        self.assertTrue(
-            compute_all_missing(
-                enabled_agents=("claude", "codex"),
-                availability={
-                    "claude": type("A", (), {"status": "missing"})(),
-                    "codex": type("A", (), {"status": "timeout"})(),
-                },
-            )
-        )
-
-
-class ShouldPushAgentsUnavailableTests(unittest.TestCase):
-    """Transition-based push gate."""
-
-    def test_no_push_when_state_is_ok(self) -> None:
-        self.assertFalse(
-            should_push_agents_unavailable(
-                last_all_missing=True,
-                current_all_missing=False,
-                modal_already_on_stack=False,
-                pending_launch=False,
-            )
-        )
-
-    def test_no_push_when_modal_already_up(self) -> None:
-        self.assertFalse(
-            should_push_agents_unavailable(
-                last_all_missing=False,
-                current_all_missing=True,
-                modal_already_on_stack=True,
-                pending_launch=False,
-            )
-        )
-
-    def test_no_push_when_pending_launch(self) -> None:
-        self.assertFalse(
-            should_push_agents_unavailable(
-                last_all_missing=False,
-                current_all_missing=True,
-                modal_already_on_stack=False,
-                pending_launch=True,
-            )
-        )
-
-    def test_push_on_first_observation_all_missing(self) -> None:
-        self.assertTrue(
-            should_push_agents_unavailable(
-                last_all_missing=None,
-                current_all_missing=True,
-                modal_already_on_stack=False,
-                pending_launch=False,
-            )
-        )
-
-    def test_push_on_transition_false_to_true(self) -> None:
-        self.assertTrue(
-            should_push_agents_unavailable(
-                last_all_missing=False,
-                current_all_missing=True,
-                modal_already_on_stack=False,
-                pending_launch=False,
-            )
-        )
-
-    def test_no_push_when_state_steady_true(self) -> None:
-        # Don't spam: same all-missing state on consecutive ticks should
-        # not re-push the modal once the user dismissed it.
-        self.assertFalse(
-            should_push_agents_unavailable(
-                last_all_missing=True,
-                current_all_missing=True,
-                modal_already_on_stack=False,
-                pending_launch=False,
-            )
-        )
-
-
-class LaunchOptionsStateTests(unittest.TestCase):
-    def _avail(self, status: str):
-        return type("Avail", (), {"status": status})()
-
-    def test_visible_agents_include_pending_ok_and_unknown(self) -> None:
-        visible = visible_agent_ids(
-            enabled_agents=("claude", "codex", "cursor"),
-            availability={
-                "claude": self._avail("ok"),
-                "codex": self._avail("pending"),
-            },
-        )
-        self.assertEqual(visible, ("claude", "codex", "cursor"))
-
-    def test_visible_agents_exclude_missing_and_timeout(self) -> None:
-        visible = visible_agent_ids(
-            enabled_agents=("claude", "codex", "cursor"),
-            availability={
-                "claude": self._avail("missing"),
-                "codex": self._avail("timeout"),
-                "cursor": self._avail("ok"),
-            },
-        )
-        self.assertEqual(visible, ("cursor",))
-
-    def test_initial_agent_prefers_default_when_visible(self) -> None:
-        state = launch_options_state(
-            enabled_agents=("claude", "codex"),
-            default_agent="codex",
-            availability={},
-        )
-        self.assertEqual(
-            state,
-            LaunchOptionsState(
-                visible_agents=("claude", "codex"),
-                single_agent=False,
-                active_panel="agent",
-                current_agent="codex",
-            ),
-        )
-
-    def test_initial_agent_falls_back_to_first_visible(self) -> None:
-        state = launch_options_state(
-            enabled_agents=("claude", "codex"),
-            default_agent="claude",
-            availability={"claude": self._avail("missing")},
-        )
-        self.assertEqual(state.current_agent, "codex")
-        self.assertTrue(state.single_agent)
-        self.assertEqual(state.active_panel, "mode")
-
-    def test_pick_visible_agent_ignores_out_of_range_index(self) -> None:
-        self.assertEqual(pick_visible_agent(("claude",), 4, "claude"), "claude")
-
-    def test_agent_is_pending_only_for_pending_status(self) -> None:
-        self.assertTrue(agent_is_pending("claude", {"claude": self._avail("pending")}))
-        self.assertFalse(agent_is_pending("claude", {"claude": self._avail("ok")}))
-        self.assertFalse(agent_is_pending("claude", {}))
-
-    def test_agent_list_label_marks_pending_agents(self) -> None:
-        self.assertEqual(
-            agent_list_label(2, "codex", self._avail("pending")), "2 codex  (checking…)"
-        )
-        self.assertEqual(agent_list_label(1, "claude", self._avail("ok")), "1 claude")
-        self.assertEqual(agent_list_label(1, "claude", None), "1 claude")
-
-    def test_mode_item_ids_match_catalog_order(self) -> None:
-        self.assertEqual(
-            mode_item_ids("cursor"),
-            ("mode-normal", "mode-yolo"),
-        )
-
-    def test_launch_mode_id_uses_selected_mode_or_normal_fallback(self) -> None:
-        self.assertEqual(launch_mode_id("cursor", 1), "yolo")
-        self.assertEqual(launch_mode_id("cursor", 99), "normal")
-        self.assertEqual(launch_mode_id("nosuch", 0), None)
-
-    def test_launch_update_all_missing_dismisses(self) -> None:
-        update = update_launch_options_after_availability(
-            enabled_agents=("claude", "codex"),
-            default_agent="claude",
-            availability={
-                "claude": self._avail("missing"),
-                "codex": self._avail("timeout"),
-            },
-            current_agent="claude",
-            active_panel="agent",
-        )
-        self.assertEqual(
-            update,
-            LaunchOptionsUpdate(
-                visible_agents=(),
-                single_agent=True,
-                active_panel="mode",
-                current_agent="claude",
-                dismiss=True,
-            ),
-        )
-
-    def test_launch_update_two_to_one_switches_to_mode_panel(self) -> None:
-        update = update_launch_options_after_availability(
-            enabled_agents=("claude", "cursor"),
-            default_agent="claude",
-            availability={
-                "claude": self._avail("missing"),
-                "cursor": self._avail("ok"),
-            },
-            current_agent="claude",
-            active_panel="agent",
-        )
-        self.assertEqual(update.visible_agents, ("cursor",))
-        self.assertTrue(update.single_agent)
-        self.assertEqual(update.active_panel, "mode")
-        self.assertEqual(update.current_agent, "cursor")
-        self.assertFalse(update.dismiss)
-
-    def test_launch_update_pending_agent_stays_visible(self) -> None:
-        update = update_launch_options_after_availability(
-            enabled_agents=("claude", "cursor"),
-            default_agent="claude",
-            availability={
-                "claude": self._avail("pending"),
-                "cursor": self._avail("ok"),
-            },
-            current_agent="claude",
-            active_panel="agent",
-        )
-        self.assertEqual(update.visible_agents, ("claude", "cursor"))
-        self.assertEqual(update.current_agent, "claude")
-        self.assertEqual(update.active_panel, "agent")
-
-    def test_launch_commit_ignores_pending_agent_panel(self) -> None:
-        decision = launch_commit_decision(
-            active_panel="agent",
-            current_agent="claude",
-            availability={"claude": self._avail("pending")},
-            mode_index=0,
-        )
-        self.assertEqual(decision, LaunchCommitDecision("ignore"))
-
-    def test_launch_commit_switches_panel_or_commits_mode(self) -> None:
-        self.assertEqual(
-            launch_commit_decision(
-                active_panel="agent",
-                current_agent="claude",
-                availability={"claude": self._avail("ok")},
-                mode_index=0,
-            ),
+def test_profile_collision_keeps_underlying_modes_and_selected_id() -> None:
+    profiles = {"cursor": LaunchProfileOption("cursor", "Claude", "claude", "alice")}
+    assert tuple(m.id for m in launch_permission_modes(_CATALOG, "cursor", profiles)) == (
+        "normal",
+        "auto",
+        "yolo",
+    )
+    for panel, profile, availability, mode, expected in (
+        (
+            "agent",
+            "cursor",
+            _availability(cursor="pending"),
+            "normal",
+            LaunchCommitDecision("ignore"),
+        ),
+        (
+            "agent",
+            "cursor",
+            _availability(cursor="ok"),
+            "normal",
             LaunchCommitDecision("switch-to-mode"),
-        )
-        self.assertEqual(
+        ),
+        ("agent", "cursor", {}, "normal", LaunchCommitDecision("switch-to-mode")),
+        ("mode", "cursor", {}, "auto", LaunchCommitDecision("commit", "auto")),
+        ("mode", "cursor", {}, "normal", LaunchCommitDecision("commit", "normal")),
+        ("mode", "cursor", {}, "yolo", LaunchCommitDecision("commit", "yolo")),
+        ("mode", "cursor", {}, "missing", LaunchCommitDecision("dismiss")),
+        ("mode", "cursor", {}, None, LaunchCommitDecision("dismiss")),
+        ("mode", "claude", {}, "normal", LaunchCommitDecision("dismiss")),
+    ):
+        assert (
             launch_commit_decision(
-                active_panel="mode",
-                current_agent="cursor",
-                availability={},
-                mode_index=1,
-            ),
-            LaunchCommitDecision("commit", "yolo"),
+                active_panel=panel,
+                current_agent=profile,
+                availability=availability,
+                selected_mode_id=mode,
+                agents=_CATALOG,
+                launch_profiles=profiles,
+            )
+            == expected
         )
 
 
-class LaunchPanelCycleTests(unittest.TestCase):
-    def test_cycle_right_skips_hidden_agent(self) -> None:
-        from uxon.tui.state import next_launch_panel
+def test_profile_labels_use_visible_users_and_distinct_profile_details() -> None:
+    from uxon.tui.state import launch_profile_list_label
 
-        # AGENT hidden (single agent), WORKSPACE present.
-        order = ("mode", "workspace")
-        self.assertEqual(next_launch_panel("mode", +1, order), "workspace")
-        self.assertEqual(next_launch_panel("workspace", +1, order), "mode")
-
-    def test_cycle_left_wraps(self) -> None:
-        from uxon.tui.state import next_launch_panel
-
-        order = ("agent", "mode", "workspace")
-        self.assertEqual(next_launch_panel("agent", -1, order), "workspace")
-        self.assertEqual(next_launch_panel("mode", -1, order), "agent")
-
-    def test_no_workspace_column(self) -> None:
-        from uxon.tui.state import next_launch_panel
-
-        order = ("agent", "mode")
-        self.assertEqual(next_launch_panel("agent", +1, order), "mode")
-        self.assertEqual(next_launch_panel("mode", +1, order), "agent")
-
-    def test_unknown_current_returns_first(self) -> None:
-        from uxon.tui.state import next_launch_panel
-
-        self.assertEqual(next_launch_panel("agent", +1, ("mode", "workspace")), "mode")
-
-
-class WorktreeBranchValidTests(unittest.TestCase):
-    def test_accepts_slashes_and_simple_names(self) -> None:
-        from uxon.tui.screens.worktree_branch import worktree_branch_valid
-
-        self.assertTrue(worktree_branch_valid("feature/auth"))
-        self.assertTrue(worktree_branch_valid("bugfix-1"))
-        self.assertTrue(worktree_branch_valid("a/b/c"))
-
-    def test_rejects_empty_dash_space_and_dots(self) -> None:
-        from uxon.tui.screens.worktree_branch import worktree_branch_valid
-
-        self.assertFalse(worktree_branch_valid(""))
-        self.assertFalse(worktree_branch_valid("   "))
-        self.assertFalse(worktree_branch_valid("-x"))
-        self.assertFalse(worktree_branch_valid("a b"))
-        self.assertFalse(worktree_branch_valid(".."))
-        self.assertFalse(worktree_branch_valid("."))
-
-
-class PickIndexStateTests(unittest.TestCase):
-    def test_pick_index_returns_name_for_valid_index(self) -> None:
-        self.assertEqual(pick_index([("alpha", "1s"), ("beta", "2s")], 1), "beta")
-
-    def test_pick_index_returns_none_for_negative_or_too_large_index(self) -> None:
-        rows = [("alpha", "1s")]
-        self.assertIsNone(pick_index(rows, -1))
-        self.assertIsNone(pick_index(rows, 9))
-
-    def test_pick_index_preserves_empty_string_sentinel(self) -> None:
-        self.assertEqual(pick_index([("", "skip"), ("main", "desc")], 0), "")
-
-
-class FilterExistingProjectsTests(unittest.TestCase):
-    def test_empty_needle_returns_full_list_in_order(self) -> None:
-        rows = [("zebra", "1s"), ("alpha", "2s"), ("Mango", "3s")]
-        self.assertEqual(filter_existing_projects(rows, ""), rows)
-
-    def test_whitespace_only_needle_returns_full_list(self) -> None:
-        rows = [("alpha", "1s"), ("beta", "2s")]
-        self.assertEqual(filter_existing_projects(rows, "   "), rows)
-
-    def test_substring_match_is_case_insensitive(self) -> None:
-        rows = [("Alpha", "1s"), ("beta", "2s"), ("AlphaBeta", "3s")]
-        self.assertEqual(
-            filter_existing_projects(rows, "ALP"),
-            [("Alpha", "1s"), ("AlphaBeta", "3s")],
+    profiles = {
+        "claude": LaunchProfileOption("claude", "claude", "claude", "alice"),
+        "codex": LaunchProfileOption("codex", "codex", "codex", "alice"),
+        "work": LaunchProfileOption("work", "Claude work", "claude", "bob", runtime="box"),
+    }
+    for visible, expected_cross in (
+        (("claude", "codex"), False),
+        (("claude", "work"), True),
+        (("missing",), False),
+    ):
+        assert launch_profile_users_differ(visible, profiles) is expected_cross
+    for index, id_, pending, show_user, expected in (
+        (2, "codex", False, True, "2 codex  alice"),
+        (2, "codex", False, False, "2 codex"),
+        (1, "work", True, True, "1 Claude work  work · claude · bob · runtime:box  (checking…)"),
+        (1, "missing", True, True, "1 missing  (checking…)"),
+    ):
+        availability = SimpleNamespace(status="pending" if pending else "ok")
+        assert (
+            launch_profile_list_label(
+                index, id_, profiles.get(id_), availability, show_launch_user=show_user
+            )
+            == expected
         )
 
-    def test_no_match_returns_empty_list(self) -> None:
-        rows = [("alpha", "1s"), ("beta", "2s")]
-        self.assertEqual(filter_existing_projects(rows, "zzz"), [])
 
-    def test_filter_preserves_input_order(self) -> None:
-        # mtime-desc order from the loader must survive the filter —
-        # we never re-rank by match position.
-        rows = [("zeta-foo", "1s"), ("foo-bar", "2s"), ("alpha-foo", "3s")]
-        self.assertEqual(
-            filter_existing_projects(rows, "foo"),
-            rows,
+def test_panel_cycles_only_visible_panels() -> None:
+    from uxon.tui.state import next_launch_panel
+
+    for order, current, direction, expected in (
+        (("agent", "mode", "workspace"), "agent", 1, "mode"),
+        (("agent", "mode", "workspace"), "mode", 1, "workspace"),
+        (("agent", "mode", "workspace"), "workspace", 1, "agent"),
+        (("agent", "mode", "workspace"), "agent", -1, "workspace"),
+        (("agent", "mode", "workspace"), "mode", -1, "agent"),
+        (("agent", "mode", "workspace"), "workspace", -1, "mode"),
+        (("mode", "workspace"), "mode", 1, "workspace"),
+        (("mode", "workspace"), "workspace", 1, "mode"),
+        (("mode", "workspace"), "mode", -1, "workspace"),
+        (("mode", "workspace"), "workspace", -1, "mode"),
+        (("agent", "mode"), "agent", 1, "mode"),
+        (("agent", "mode"), "mode", 1, "agent"),
+        (("agent", "mode"), "agent", -1, "mode"),
+        (("agent", "mode"), "mode", -1, "agent"),
+        (("mode", "workspace"), "agent", 1, "mode"),
+        ((), "agent", 1, "agent"),
+    ):
+        assert next_launch_panel(current, direction, order) == expected
+
+
+def test_branch_validation_accepts_nested_names_and_rejects_whitespace() -> None:
+    from uxon.tui.screens.worktree_branch import worktree_branch_valid
+
+    for name, expected in (
+        ("feature/auth", True),
+        ("bugfix-1", True),
+        ("a/b/c", True),
+        (" feature/auth ", True),
+        ("", False),
+        ("   ", False),
+        ("-x", False),
+        ("a b", False),
+        ("a\tb", False),
+        ("..", False),
+        (".", False),
+    ):
+        assert worktree_branch_valid(name) is expected, name
+
+
+def test_picker_bounds_preserve_empty_sentinel() -> None:
+    rows = [("", "skip"), ("main", "branch")]
+    for index, expected in ((-1, None), (0, ""), (1, "main"), (2, None)):
+        assert pick_index(rows, index) == expected, index
+
+
+def test_browser_selection_preserves_relative_path_and_filtered_rows() -> None:
+    rows = (("alpha", "1s"), ("beta", "2s"))
+    for directory, needle, index, selected, filtered in (
+        ("", "", None, "alpha", list(rows)),
+        ("group", "ALP", 0, "group/alpha", [rows[0]]),
+        ("group/project", "", 1, "group/project/beta", list(rows)),
+        ("group", "missing", 0, None, []),
+        ("group", "", -1, None, list(rows)),
+        ("group", "", 2, None, list(rows)),
+    ):
+        level = ProjectBrowserLevel(directory, rows, needle, index)
+        assert (level.selected_path, level.filtered) == (selected, filtered), (
+            directory,
+            needle,
+            index,
         )
 
-    def test_match_inside_name_not_only_prefix(self) -> None:
-        rows = [("my-secret-tool", "1s")]
-        self.assertEqual(filter_existing_projects(rows, "secret"), rows)
 
-    def test_does_not_match_against_mtime_column(self) -> None:
-        # Filter is name-only — the mtime suffix shouldn't sneak into
-        # the haystack and surface false matches like "1s".
-        rows = [("alpha", "1s"), ("beta", "2s")]
-        self.assertEqual(filter_existing_projects(rows, "1s"), [])
+def test_project_filter_matches_only_names_and_keeps_input_order() -> None:
+    rows = [("zeta-Alpha", "1s"), ("beta", "2s"), ("AlphaBeta", "3s"), ("my-secret-tool", "4s")]
+    for needle, expected in (
+        ("", rows),
+        ("   ", rows),
+        ("ALP", [rows[0], rows[2]]),
+        ("secret", [rows[3]]),
+        ("absent", []),
+        ("1s", []),
+    ):
+        assert filter_existing_projects(rows, needle) == expected, needle
+    assert rows == [
+        ("zeta-Alpha", "1s"),
+        ("beta", "2s"),
+        ("AlphaBeta", "3s"),
+        ("my-secret-tool", "4s"),
+    ]
 
 
 class MainScreenIntentStateTests(unittest.TestCase):
@@ -558,38 +419,6 @@ class MainScreenIntentStateTests(unittest.TestCase):
         self.assertEqual(main_action_intent("kill-all-global"), MainIntent("kill-all-global"))
         self.assertIsNone(main_action_intent("unknown"))
 
-    def test_refresh_is_screen_wiring_only(self) -> None:
-        self.assertEqual(main_action_intent("action-cwd"), MainIntent("launch-cwd"))
-
-    def test_callback_failure_to_toast(self) -> None:
-        failure = callback_failure_to_toast("Refresh failed", uxon_tui.CallbackError("nope"))
-        self.assertEqual(failure, CallbackFailure("Refresh failed: nope", "error"))
-
-    def test_activate_main_index_attaches_own_session(self) -> None:
-        ctx = _ctx(sessions=[_session("dev.foo", "stored-owner")], current_user="dev")
-        self.assertEqual(
-            activate_main_index(ctx, ACTION_COUNT),
-            MainIntent("attach", index=ACTION_COUNT, user="dev", session_name="dev.foo"),
-        )
-
-    def test_activate_main_index_attaches_other_session(self) -> None:
-        ctx = _ctx(
-            has_sudo=True,
-            sessions=[],
-            other_sessions=[_session("alice.foo", "alice")],
-            current_user="dev",
-        )
-        self.assertEqual(
-            activate_main_index(ctx, ACTION_COUNT),
-            MainIntent("attach", index=ACTION_COUNT, user="alice", session_name="alice.foo"),
-        )
-
-    def test_session_intent_defaults_blank_user_to_current_user(self) -> None:
-        s = _session("dev.foo", "")
-        self.assertEqual(
-            session_intent(s, "dev"), MainIntent("attach", user="dev", session_name="dev.foo")
-        )
-
 
 class ModalStateTests(unittest.TestCase):
     def test_confirm_phrase_matches_after_strip_only(self) -> None:
@@ -597,198 +426,38 @@ class ModalStateTests(unittest.TestCase):
         self.assertFalse(confirm_phrase_matches("KILL-ALL", "kill-all"))
 
     def test_project_name_validation_and_errors(self) -> None:
-        self.assertTrue(project_name_valid("demo"))
-        self.assertFalse(project_name_valid(""))
-        self.assertFalse(project_name_valid("a/b"))
-        self.assertFalse(project_name_valid("."))
-        self.assertEqual(project_name_error(""), "Name cannot be empty")
-        self.assertEqual(project_name_error("a/b"), "Name cannot contain '/'")
-        self.assertEqual(project_name_error(".."), "Invalid name")
+        for name, valid, error in (
+            ("", False, "Name cannot be empty"),
+            ("   ", False, "Name cannot be empty"),
+            (".", False, "Invalid name"),
+            ("..", False, "Invalid name"),
+            ("a/b", False, "Name cannot contain '/'"),
+            ("demo", True, None),
+            (" demo ", True, None),
+            ("two words", True, None),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(project_name_valid(name), valid)
+                if error is not None:
+                    self.assertEqual(project_name_error(name), error)
 
 
-class SettingsStateTests(unittest.TestCase):
-    def test_selected_setting_index_accounts_for_git_view(self) -> None:
-        self.assertIsNone(selected_setting_index(row=0, has_git_view=True, entry_count=2))
-        self.assertEqual(selected_setting_index(row=1, has_git_view=True, entry_count=2), 0)
-        self.assertEqual(selected_setting_index(row=0, has_git_view=False, entry_count=2), 0)
-        self.assertIsNone(selected_setting_index(row=3, has_git_view=True, entry_count=2))
-
-    def test_resettable_setting_key_requires_editable_entry(self) -> None:
-        spec = type("Spec", (), {"key": "session_prefix"})()
-        editable = type("Entry", (), {"spec": spec, "editable": True})()
-        readonly = type("Entry", (), {"spec": spec, "editable": False})()
-        self.assertEqual(resettable_setting_key(editable), "session_prefix")
-        self.assertIsNone(resettable_setting_key(readonly))
-        self.assertIsNone(resettable_setting_key(None))
-
-
-class SegmentsTests(unittest.TestCase):
-    def test_no_superuser_block_without_sudo(self) -> None:
-        ctx = _ctx(has_sudo=False)
-        own, other, settings_idx, kill_idx, has_super = _segments(ctx)
-        self.assertEqual(own, ACTION_COUNT)
-        self.assertEqual(other, ACTION_COUNT)
-        self.assertEqual(settings_idx, -1)
-        self.assertEqual(kill_idx, -1)
-        self.assertFalse(has_super)
-
-    def test_sudo_with_no_sessions_shows_only_settings(self) -> None:
-        ctx = _ctx(has_sudo=True)
-        own, other, settings_idx, kill_idx, has_super = _segments(ctx)
-        self.assertTrue(has_super)
-        self.assertEqual(settings_idx, ACTION_COUNT)
-        self.assertEqual(kill_idx, -1)
-
-    def test_sudo_with_only_own_sessions_has_settings_and_kill(self) -> None:
-        ctx = _ctx(has_sudo=True, sessions=[_session("a")])
-        own, other, settings_idx, kill_idx, has_super = _segments(ctx)
-        self.assertEqual(settings_idx, ACTION_COUNT + 1)
-        self.assertEqual(kill_idx, ACTION_COUNT + 2)
-
-    def test_superuser_block_adds_other_sessions_plus_settings_plus_kill(self) -> None:
-        ctx = _ctx(
-            has_sudo=True,
-            sessions=[_session("own1")],
-            other_sessions=[_session("other1", "alice")],
-        )
-        own, other, settings_idx, kill_idx, has_super = _segments(ctx)
-        self.assertEqual(other, ACTION_COUNT + 1)
-        self.assertEqual(settings_idx, ACTION_COUNT + 2)
-        self.assertEqual(kill_idx, ACTION_COUNT + 3)
-
-    def test_total_items_includes_actions(self) -> None:
-        ctx = _ctx(sessions=[_session("a"), _session("b")])
-        self.assertEqual(_total_items(ctx), ACTION_COUNT + 2)
-
-    def test_total_items_no_sessions(self) -> None:
-        self.assertEqual(_total_items(_ctx()), ACTION_COUNT)
-
-
-class BuildItemsTests(unittest.TestCase):
-    def test_actions_always_first_three_items(self) -> None:
-        items = build_items(_ctx())
-        self.assertEqual([i.kind for i in items[:3]], list(_ACTION_KINDS))
-
-    def test_action_open_identity_stable_under_session_change(self) -> None:
-        ctx0 = _ctx()
-        ctx1 = _ctx(sessions=[_session("a"), _session("b")])
-        a0 = next(i for i in build_items(ctx0) if i.kind == "action-open")
-        a1 = next(i for i in build_items(ctx1) if i.kind == "action-open")
-        self.assertEqual(a0.label, a1.label)
-
-    def test_build_items_length_matches_total_items(self) -> None:
-        ctx = _ctx(has_sudo=True, sessions=[_session("a")], other_sessions=[_session("o", "x")])
-        self.assertEqual(len(build_items(ctx)), _total_items(ctx))
-
-    def test_action_count_derived_from_action_kinds(self) -> None:
-        self.assertEqual(ACTION_COUNT, len(_ACTION_KINDS))
-
-
-class LaunchRequestShapeTests(unittest.TestCase):
-    def test_launch_request_is_hashable_and_immutable(self) -> None:
-        import dataclasses
-
-        r = uxon_tui.LaunchRequest(cmd=("tmux", "attach"), label="a")
-        self.assertEqual(hash(r), hash(r))
-        with self.assertRaises(dataclasses.FrozenInstanceError):
-            r.cmd = ("other",)  # type: ignore[misc]
-
-    def test_callback_error_is_exception(self) -> None:
-        self.assertTrue(issubclass(uxon_tui.CallbackError, Exception))
-
-
-class HostHealthBadgeTests(unittest.TestCase):
-    """``host_health_badge`` derives a per-host badge from a
-    ``RemoteSnapshot`` (or ``None``). Stage 6 reads the snapshot's
-    ``error`` / ``from_cache`` / ``cached_at_epoch`` directly — the
-    SlotState[T] surface lands at stage 8."""
-
-    def _snap(self, **overrides):
-        from uxon.domain.wire_schema import RemoteSnapshot
-
-        defaults: dict[str, object] = dict(
-            host_name="prod",
-            fetched_at_epoch=1000.0,
-            from_cache=False,
-            error=None,
-            sessions=[],
-            cached_at_epoch=1000.0,
-        )
-        defaults.update(overrides)
-        return RemoteSnapshot(**defaults)  # type: ignore[arg-type]
-
-    def test_none_snapshot_is_loading(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        b = host_health_badge(None)
-        self.assertEqual(b.status, "loading")
-        self.assertEqual(b.text, "loading")
-
-    def test_fresh_success_is_ok(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        b = host_health_badge(self._snap())
-        self.assertEqual(b.status, "ok")
-        self.assertEqual(b.text, "ok")
-
-    def test_from_cache_no_error_is_stale_with_age(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        b = host_health_badge(self._snap(from_cache=True), now=1027.0)
-        self.assertEqual(b.status, "stale")
-        self.assertEqual(b.text, "cache 27s")
-
-    def test_from_cache_minutes_age(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        b = host_health_badge(self._snap(from_cache=True), now=1000.0 + 90)
-        self.assertEqual(b.text, "cache 1m")
-
-    def test_from_cache_hours_age(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        b = host_health_badge(self._snap(from_cache=True), now=1000.0 + 7200)
-        self.assertEqual(b.text, "cache 2h")
-
-    def test_from_cache_with_live_error_appends_err(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        b = host_health_badge(
-            self._snap(from_cache=True, error="ssh timeout after 5s"),
-            now=1010.0,
-        )
-        self.assertEqual(b.status, "stale")
-        self.assertIn("cache 10s", b.text)
-        self.assertIn("err", b.text)
-
-    def test_error_no_cache_is_down_with_short_message(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        b = host_health_badge(
-            self._snap(from_cache=False, error="ssh timeout after 5s", cached_at_epoch=None)
-        )
-        self.assertEqual(b.status, "down")
-        self.assertTrue(b.text.startswith("err: "))
-        self.assertIn("ssh timeout", b.text)
-
-    def test_error_message_first_line_only(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        b = host_health_badge(
-            self._snap(from_cache=False, error="line one\nline two", cached_at_epoch=None)
-        )
-        self.assertNotIn("\n", b.text)
-        self.assertNotIn("line two", b.text)
-
-    def test_error_message_truncated_when_long(self) -> None:
-        from uxon.tui.state import host_health_badge
-
-        long_err = "x" * 200
-        b = host_health_badge(self._snap(from_cache=False, error=long_err, cached_at_epoch=None))
-        # Bounded badge length keeps the section header / table cell
-        # from wrapping under pathological peer error strings.
-        self.assertLessEqual(len(b.text), 60)
-
-
-if __name__ == "__main__":
-    unittest.main()
+def test_settings_selection_bounds_and_reset_permissions() -> None:
+    entries = [
+        SimpleNamespace(spec=SimpleNamespace(key="session_prefix"), editable=True),
+        SimpleNamespace(spec=SimpleNamespace(key="immutable"), editable=False),
+    ]
+    for git, row, selected, key in (
+        (True, -1, None, None),
+        (True, 0, None, None),
+        (True, 1, 0, "session_prefix"),
+        (True, 2, 1, None),
+        (True, 3, None, None),
+        (False, -1, None, None),
+        (False, 0, 0, "session_prefix"),
+        (False, 1, 1, None),
+        (False, 2, None, None),
+    ):
+        actual = selected_setting_index(row=row, has_git_view=git, entry_count=len(entries))
+        assert actual == selected, (git, row)
+        assert resettable_setting_key(entries[actual] if actual is not None else None) == key

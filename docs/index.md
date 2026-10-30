@@ -25,7 +25,10 @@ kinds of pages, four different purposes:
 - **[guides/](guides/) — how-to recipes.** "I have a working
   setup, now I want to *do* something." Operate (onboard,
   incident, upgrade), harden, customise, debug — including
-  [tuning dashboard render performance](guides/debug/render-performance.md).
+  [adding a coding tool](guides/customise/choose-launch-profile.md#add-a-coding-tool),
+  [running agents in a container](guides/customise/run-agents-in-a-container.md)
+  (and [hardening that container](guides/harden/harden-a-container.md))
+  and [diagnosing dashboard input](guides/debug/enable-debug-logs.md).
 - **[reference/](reference/) — reference.** Every command, every
   flag, every config key, every audit event. Look up, don't read.
 - **[explain/](explain/) — explanation.** Why uxon's model looks
@@ -45,7 +48,7 @@ kinds of pages, four different purposes:
 - [SECURITY.md](../SECURITY.md) — threat model + disclosure
   policy. Read once if you operate a team host; it lays out the
   three honest caveats around `tmux` read-write attach,
-  SSH-agent forwarding, and secrets persisted to `<user>_agent`
+  SSH-agent forwarding, and secrets persisted to `<user>-agent`
   homes.
 - [CHANGELOG.md](../CHANGELOG.md) — what changed between releases.
 - [privacy.md](privacy.md) — what `uxon`'s audit channel records

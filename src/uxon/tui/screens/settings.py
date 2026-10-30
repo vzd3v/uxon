@@ -124,7 +124,7 @@ class SettingsScreen(Screen):
             t.add_row(
                 entry.spec.key,
                 _format_value(entry),
-                _source_text(entry.source),
+                entry.source,
             )
         # Restore cursor within bounds.
         total = (1 if self._has_git_view else 0) + len(self._entries)
@@ -167,9 +167,13 @@ class SettingsScreen(Screen):
             self.app.push_screen(GitRemotesScreen(rows))
             return
         entry = self._selected_entry()
-        if entry is None or not entry.editable:
-            if entry is not None:
-                self.app.notify("Read-only (project-level).", severity="warning")
+        if entry is None:
+            return
+        if not entry.editable:
+            self.app.notify(
+                "Settings are read-only; use 'uxon config render' and explicit sudo install.",
+                severity="warning",
+            )
             return
         kind = entry.spec.kind
 
@@ -197,7 +201,13 @@ class SettingsScreen(Screen):
 
     def action_reset(self) -> None:
         entry = self._selected_entry()
-        if entry is None or not entry.editable:
+        if entry is None:
+            return
+        if not entry.editable:
+            self.app.notify(
+                "Settings are read-only; use 'uxon config render' and explicit sudo install.",
+                severity="warning",
+            )
             return
         try:
             self.cbs.remove_setting(entry.spec.key)
@@ -237,11 +247,3 @@ def _format_value(entry: Any) -> str:
     if v is None or v == "":
         return "(unset)"
     return str(v)
-
-
-def _source_text(source: str) -> str:
-    if source == "repo":
-        return "repo"
-    if source == "default":
-        return "default"
-    return source  # project:<path>

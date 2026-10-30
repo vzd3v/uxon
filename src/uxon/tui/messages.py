@@ -3,9 +3,7 @@
 Pure-data carriers: each class is a thin :class:`textual.message.Message`
 subclass holding the payload a worker thread hands back to the event loop.
 No behaviour lives here — the on-loop handlers (``UxonApp.on__*``) and the
-reducers in :mod:`uxon.tui.source_dispatch` interpret these. Extracted from
-``app.py`` in Phase P7 so the worker payload schema is a single, importable,
-behaviour-free surface that tests can synthesise without touching the App.
+reducers in :mod:`uxon.tui.source_dispatch` interpret these.
 
 ``Message`` is the only Textual symbol imported — unavoidable, and fine: this
 is a tui module, not a pure-domain one.
@@ -16,26 +14,6 @@ from __future__ import annotations
 from typing import Any
 
 from textual.message import Message
-
-from .context import TuiContext
-
-
-class _AgentAvailabilityUpdated(Message):
-    """Posted by the background probe worker when its dict update lands.
-
-    Handled only at the app level (:meth:`UxonApp.on__agent_availability_updated`).
-    Modals that need to refresh are invoked via ``call_later`` — no
-    re-posting of this message. Re-posting to screens caused the message
-    to bubble back up to the app and trigger a second dispatch, observed
-    as an infinitely-flashing agent list with the selection resetting
-    each tick.
-
-    Kept for backward compatibility with existing tests that synthesise
-    this message; the worker now posts :class:`_HostReportUpdated` and
-    derives the same dispatch from there.
-    """
-
-    bubble = False
 
 
 class _HostReportUpdated(Message):
@@ -84,48 +62,25 @@ class _CwdWritableUpdated(Message):
     launch time. The on-loop handler drops results whose
     ``cwd_at_start`` does not match the current ``state.main.cwd``,
     so an in-flight probe started against ``cwd_old`` is not
-    attributed to ``cwd_new`` after a directory change.
-    """
-
-    bubble = False
-
-    def __init__(self, writable: bool, *, cwd_at_start: str = "") -> None:
-        super().__init__()
-        self.writable = writable
-        self.cwd_at_start = cwd_at_start
-
-
-class _WorktreesProbed(Message):
-    """Posted by the one-shot worktree probe worker (launch-screen open).
-
-    Carries the resolved launchability flag + the probed ``workspaces``
-    list + an optional ``error`` message plus the ``on_done`` callback the
-    launch flow handed in. The on-loop handler invokes
-    ``on_done(launchable, workspaces, error)`` so it can gate / push
-    :class:`LaunchOptionsScreen` safely off the worker thread (§4.2 — both
-    the launchability ``sudo`` probe and the git worktree probe run in the
-    thread; the screen push runs on the loop). ``launchable`` is ``None``
-    when the caller pre-resolved it (cwd's reactive slot) and asked for no
-    probe. ``error`` is a non-empty string only when the git probe raised
-    (e.g. ``git worktree list`` failed on a real repo) — it drives the
-    WORKSPACE error row, distinct from the empty-list "not a git repo" hint.
-    The callable travels on the message because it is an in-process closure
-    on the screen, not serialised state.
+    attributed to ``cwd_new`` after a directory change. ``generation`` also
+    rejects superseded retries for the same directory; ``error`` preserves
+    the concrete backend failure for the disabled row.
     """
 
     bubble = False
 
     def __init__(
         self,
-        launchable: bool | None,
-        workspaces: list,
-        on_done: Any,
+        writable: bool,
+        *,
+        cwd_at_start: str = "",
+        generation: int | None = None,
         error: str | None = None,
     ) -> None:
         super().__init__()
-        self.launchable = launchable
-        self.workspaces = workspaces
-        self.on_done = on_done
+        self.writable = writable
+        self.cwd_at_start = cwd_at_start
+        self.generation = generation
         self.error = error
 
 
@@ -166,23 +121,6 @@ class _OffLoopCallbackDone(Message):
         self.instance_epoch = instance_epoch
 
 
-class _MainCtxLoaded(Message):
-    """Posted when the ``main_ctx_rebuild`` source returns a fresh ctx.
-
-    Applied via :meth:`MainScreen.apply_loaded_ctx`. The screen patches
-    itself in place or swaps for a fresh MainScreen when the layout
-    changed. Dispatched from :class:`_RefreshSourceLanded` for the
-    ``main_ctx_rebuild`` source.
-    """
-
-    bubble = False
-
-    def __init__(self, ctx: TuiContext | None, error: str = "") -> None:
-        super().__init__()
-        self.ctx = ctx
-        self.error = error
-
-
 class _RefreshSourceLanded(Message):
     """Posted by every registered refresh source when its worker finishes.
 
@@ -212,6 +150,7 @@ class _RefreshSourceLanded(Message):
         elapsed_ms: int = 0,
         *,
         instance_epoch: int = -1,
+        attempt_id: int = 0,
     ) -> None:
         super().__init__()
         self.name = name
@@ -219,3 +158,4 @@ class _RefreshSourceLanded(Message):
         self.error = error
         self.elapsed_ms = elapsed_ms
         self.instance_epoch = instance_epoch
+        self.attempt_id = attempt_id

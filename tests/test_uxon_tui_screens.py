@@ -1,4 +1,4 @@
-"""Pilot tests for textual screens (T8+).
+"""Pilot tests for Textual screens.
 
 Uses ``App.run_test()`` + ``Pilot`` to drive the TUI in-process.
 Covers MainScreen routing, kill flow, CallbackError → toast,
@@ -23,6 +23,7 @@ def _textual_available() -> bool:
 
 
 def _mk_ctx(**overrides):
+    from uxon.domain.agents import DEFAULT_AGENT_CATALOG
     from uxon.tui.context import LaunchRequest, TuiContext
     from uxon.tui.refresh import SourceSpec
 
@@ -37,17 +38,22 @@ def _mk_ctx(**overrides):
         existing_projects=[],
         cwd_writable=True,
         current_user="dana_agent",
-        on_launch_cwd=lambda agent_id, mode_id, target_dir=None: LaunchRequest(
+        agents=DEFAULT_AGENT_CATALOG,
+        on_launch_cwd=lambda profile_id, mode_id, target_dir=None: LaunchRequest(
             cmd=("/bin/true",), label="cwd"
         ),
-        on_launch_new=lambda n, agent_id, mode_id, g: LaunchRequest(
+        on_launch_new=lambda n, profile_id, mode_id, g: LaunchRequest(
             cmd=("/bin/true",), label="new"
         ),
-        on_launch_existing=lambda n, agent_id, mode_id: LaunchRequest(
+        on_launch_existing=lambda n, profile_id, mode_id: LaunchRequest(
             cmd=("/bin/true",), label="existing"
         ),
     )
     base.update(overrides)
+    if "launch_profiles" not in overrides:
+        from helpers import make_launch_profile_options
+
+        base["launch_profiles"] = make_launch_profile_options(base["agents"])
     ctx = TuiContext(**base)
     # Default source mirrors the production wiring: one
     # ``main_ctx_rebuild`` source whose fetcher delegates to
@@ -70,268 +76,145 @@ def _mk_ctx(**overrides):
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class MainScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def test_q_quits(self) -> None:
-        from uxon.tui.app import UxonApp
+class CyclicModalListTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_single_disabled_and_unselected_lists(self) -> None:
+        from harness.textual_ready import painted, send_key
+        from textual.app import App
+        from textual.widgets import ListItem, Static
 
-        app = UxonApp(_mk_ctx(), probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
+        from uxon.tui.widgets.cyclic_list_view import CyclicListView
+
+        cases = [
+            ((), None, None, None),
+            ((False,), 0, 0, 0),
+            ((True, False, True, False, True), 1, 3, 3),
+            ((True, False, True, False, True), 3, 1, 1),
+            ((True, True), None, None, None),
+            ((True, False, True, False, True), None, 3, 1),
+        ]
+
+        class Host(App):
+            def compose(self):
+                for disabled, *_ in cases:
+                    yield CyclicListView(
+                        *(ListItem(Static(str(i)), disabled=d) for i, d in enumerate(disabled))
+                    )
+
+        app = Host()
+        async with app.run_test() as pilot:
+            await painted(pilot)
+            for widget, (_, initial, previous, following) in zip(
+                app.query(CyclicListView), cases, strict=True
+            ):
+                with self.subTest(initial=initial, count=len(widget.children)):
+                    widget.focus()
+                    widget.index = initial
+                    await send_key(pilot, "up")
+                    self.assertEqual(widget.index, previous)
+                    widget.index = initial
+                    await send_key(pilot, "down")
+                    self.assertEqual(widget.index, following)
+
+    async def test_settings_choice_wraps_and_saves(self) -> None:
+        from types import SimpleNamespace
+
+        from uxon.tui.screens.settings_modals import EnumCycleModal
+
+        saved = []
+        entry = SimpleNamespace(
+            spec=SimpleNamespace(key="choice", description="Choice", choices=("first", "last")),
+            value="first",
+        )
+        scenario = ScreenScenario(
+            "enum-wrap",
+            lambda: EnumCycleModal(
+                entry, SimpleNamespace(save_setting=lambda *args: saved.append(args))
+            ),
+            press_keys("up", "down", "up", "enter"),
+            True,
+        )
+        self.assertEqual(await run_screen_scenarios([scenario]), [True])
+        self.assertEqual(saved, [("choice", "last")])
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class ContainerPromptSmokeTests(unittest.IsolatedAsyncioTestCase):
+    """The TUI confirm affordance for a stopped/absent container.
+
+    With ``approval = "prompt"`` a needed start/create must show a
+    ``ConfirmYesNo`` before the prepare runs; on confirm the prepare fires
+    and the launch proceeds.
+    """
+
+    async def _wait_for(self, pilot, predicate, description) -> None:
+        for _ in range(20):
             await pilot.pause()
-            # SearchBar has default focus; Esc blurs it so ``q``
-            # reaches the screen-level binding instead of being
-            # consumed as Input text.
-            await pilot.press("escape")
-            await pilot.pause()
-            await pilot.press("q")
-            await pilot.pause()
-        self.assertEqual(app.quit_rc, 0)
+            if predicate():
+                return
+        self.fail(f"Timed out waiting for {description}; screen={type(pilot.app.screen).__name__}")
 
-    async def test_enter_on_default_focus_activates_action_cwd(self) -> None:
-        from uxon.tui.app import UxonApp
-
-        app = UxonApp(_mk_ctx(), probe_agents=False)
-        calls: list[str] = []
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            screen._launch_cwd = lambda: calls.append("cwd")
-            # action-cwd holds default focus; Enter activates it.
-            await pilot.press("enter")
-            await pilot.pause()
-        self.assertEqual(calls, ["cwd"])
-
-    async def test_refresh_preserves_action_focus(self) -> None:
-        from uxon.tui.app import UxonApp
-        from uxon.tui.widgets import ActionRow
-
-        def fake_refresh():
-            return _mk_ctx(on_refresh=fake_refresh)
-
-        app = UxonApp(_mk_ctx(on_refresh=fake_refresh), probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("#action-open", ActionRow).focus()
-            await pilot.press("r")
-            await pilot.pause()
-            self.assertEqual(app.screen.focused.id, "action-open")
-
-    async def test_skeleton_swap_preserves_agent_availability(self) -> None:
-        """Probe results survive the skeleton→loaded ctx swap.
-
-        Regression for a bug where ``apply_loaded_ctx`` carried over
-        ``link_health_status`` but not ``agent_availability``: the probe
-        result used to be orphaned on a ctx swap, so every subsequent
-        ``LaunchOptionsScreen`` saw a fresh ``pending`` dict and rendered
-        ``(checking…)`` forever, blocking the agent commit path.
-
-        Post-shim-removal the availability lives on the App-owned
-        ``state.agent_availability`` slot (identity-stable across rebuild
-        ticks), so the swap can no longer orphan it. Pin both: the slot
-        keeps the probe result, and the static snapshot stays shared
-        (``app.ctx is app.screen.cfg``).
-        """
+    async def test_prompt_then_confirm_runs_prepare_and_launches(self) -> None:
+        from uxon.app.launch import RuntimeGate
         from uxon.infra.agents import AgentAvailability
         from uxon.tui.app import UxonApp
+        from uxon.tui.screens.confirm import ConfirmYesNo
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
-        loaded = _mk_ctx()  # loaded ctx with its own fresh availability dict
+        prepared: list[bool] = []
+        launched: list[str] = []
+        order: list[str] = []
 
-        def fake_refresh():
-            return _mk_ctx(on_refresh=fake_refresh)
+        def prepare():
+            order.append("prepare")
+            prepared.append(True)
 
-        skeleton = _mk_ctx(loading=True, on_refresh=fake_refresh)
-        # Pre-seed the skeleton's availability dict with a non-pending
-        # entry — emulates the probe completing before the swap. The App
-        # seeds ``state.agent_availability`` from this at construction.
-        skeleton.agent_availability["claude"] = AgentAvailability(status="ok")
+        def launch(profile, mode, target_dir=None):
+            from uxon.tui.context import LaunchRequest
 
-        app = UxonApp(skeleton, probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            # Force-trigger the swap (in real life kick_refresh fires in on_mount).
-            app.screen.apply_loaded_ctx(loaded)
-            await pilot.pause()
-            self.assertEqual(
-                app.state.agent_availability.value["claude"].status,
-                "ok",
-                msg="state slot lost the probe result across the ctx swap",
-            )
-            self.assertIs(
-                app.ctx,
-                app.screen.cfg,
-                msg="app.ctx and screen.cfg must point to the same TuiContext snapshot",
-            )
+            order.append(f"launch:{profile}:{mode}")
+            return LaunchRequest(cmd=("/bin/true",), label="cwd")
 
-    async def test_main_ui_survives_structural_refresh(self) -> None:
-        """Dashboard view, tab index, and focus-restore flag survive
-        a layout-signature change.
-
-        Regression for a bug class: ``apply_loaded_ctx`` used to build a
-        fresh ``MainScreen`` whenever ``select_layout_signature`` flipped
-        (e.g. another user starts a session). Three pieces of operator-set
-        UI state died with the old screen — view mode, active host tab,
-        pending tab-focus-restore — snapping the operator back to defaults
-        mid-session. Two layers now defend this: the state lives on
-        ``self.app.main_ui`` (App-owned), AND the structural refresh is
-        reconciled in place, so the screen is no longer swapped at all.
-        """
-        from uxon.tui.app import UxonApp
-        from uxon.tui.context import TuiSession
-        from uxon.tui.dashboard.ui_state import set_view_mode
-
-        # Skeleton has a single-user dashboard (dana_agent's own row);
-        # loaded ctx introduces a second user (alice), flipping the
-        # cross_user latch False→True and forcing the recompose path.
-        # Real :class:`TuiSession` instances are required because
-        # ``apply_loaded_ctx`` now syncs ``state.main`` from the ctx
-        # so the dashboard model walks the rows downstream.
-        own = TuiSession(
-            name="dana_agent.foo",
-            short="foo",
-            attached=False,
-            pid="1",
-            cpu="0",
-            ram="0",
-            created="0s",
-            last_activity="0s",
-            cmd="claude",
-            path="/srv",
-            user="dana_agent",
+        gate = RuntimeGate(
+            needs_prepare=True,
+            needs_prompt=True,
+            message="Container 'proj-work' is stopped — start and launch?",
+            fail_message="",
+            prepare=prepare,
         )
-        skeleton = _mk_ctx(sessions=[own])
-        loaded = _mk_ctx(
-            sessions=[own],
-            other_sessions=[
-                TuiSession(
-                    name="alice.proj",
-                    short="proj",
-                    attached=False,
-                    pid="1",
-                    cpu="0",
-                    ram="0",
-                    created="0s",
-                    last_activity="0s",
-                    cmd="codex",
-                    path="/srv",
-                    user="alice",
-                )
-            ],
-        )
-
-        app = UxonApp(skeleton, probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            old_screen = app.screen
-            old_main_ui = app.main_ui
-            # Mutate every field the contract claims to preserve.
-            app.main_ui.ui = set_view_mode(app.main_ui.ui, "flat")
-            app.main_ui.active_tab_index = 2
-            app.main_ui.pending_tab_focus_restore = True
-            # Apply a ctx with a different layout signature. This is now
-            # reconciled IN PLACE (no ``switch_screen`` swap), so the
-            # screen object itself is preserved — and the App-owned
-            # ``main_ui`` with it.
-            app.screen.apply_loaded_ctx(loaded)
-            await pilot.pause()
-            self.assertIs(
-                app.screen, old_screen, msg="structural refresh must patch in place, not swap"
-            )
-            self.assertIs(app.main_ui, old_main_ui, msg="main_ui must survive the refresh")
-            self.assertEqual(app.main_ui.ui.view_mode, "flat")
-            self.assertEqual(app.main_ui.active_tab_index, 2)
-            self.assertTrue(app.main_ui.pending_tab_focus_restore)
-
-    async def test_refresh_keypress_kicks_host_probe(self) -> None:
-        """Pressing ``r`` re-runs the host probe.
-
-        Regression: without this, the periodic timer only kicked
-        ``kick_refresh`` (which rebuilds the ctx) but the host probe
-        ran exactly once on mount, so the missing-agents modal never
-        recovered after the user installed an agent.
-        """
-        from uxon.tui.app import UxonApp
-
-        kicks: list[None] = []
-        app = UxonApp(_mk_ctx(), probe_agents=False)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            app._kick_host_probe = lambda: kicks.append(None)  # type: ignore[method-assign]
-            # Blur the SearchBar so ``r`` hits action_refresh rather
-            # than being consumed by the Input.
-            await pilot.press("escape")
-            await pilot.pause()
-            await pilot.press("r")
-            await pilot.pause()
-        self.assertEqual(len(kicks), 1, msg="action_refresh did not kick the host probe")
-
-    async def test_kill_calls_on_kill_callback(self) -> None:
-        from uxon.tui.app import UxonApp
-        from uxon.tui.context import TuiSession
-
-        kill_calls: list[tuple[str, str]] = []
-        refresh_calls = []
-
-        def fake_kill(user: str, name: str) -> None:
-            kill_calls.append((user, name))
-
-        session = TuiSession(
-            name="dana_agent.foo",
-            short="foo",
-            attached=False,
-            pid="1",
-            cpu="1.0",
-            ram="1M",
-            created="1s",
-            last_activity="1s",
-            cmd="claude",
-            path="/srv/work",
-            user="dana_agent",
-        )
-
-        def fake_refresh():
-            # Commit 10: the dashboard is data-driven from
-            # ``state.main``. The on-mount ``kick_refresh`` lands a
-            # rebuild before the test presses 'd'; return the same
-            # session so the dashboard has a row to focus on.
-            refresh_calls.append(1)
-            return _mk_ctx(
-                sessions=[session],
-                current_user="dana_agent",
-                on_kill=fake_kill,
-                on_refresh=fake_refresh,
-            )
 
         ctx = _mk_ctx(
-            sessions=[session],
-            current_user="dana_agent",
-            on_kill=fake_kill,
-            on_refresh=fake_refresh,
+            on_runtime_gate=lambda *a: gate,
+            on_probe_existing_sessions=lambda *a: (),
+            on_launch_cwd=launch,
+            enabled_profiles=["claude"],
+            agent_availability={"claude": AgentAvailability(status="ok", path="/usr/bin/claude")},
         )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            # Focus the dashboard and press 'd'. The dashboard widget is
-            # ``#sessions-dashboard`` (SessionListView), data-driven from
-            # ``state.main`` — inject a ``MainData`` snapshot so the model
-            # selector emits the row without waiting for the periodic
-            # rebuild source to run.
-            from uxon.tui.main_data import MainData
-            from uxon.tui.widgets.session_list_view import SessionListView
-
-            app.state.main = MainData.from_context(ctx)
-            app.screen._refresh_dashboard()
-            t = app.screen.query_one("#sessions-dashboard", SessionListView)
-            app.screen.action_refresh = lambda: None
-            t.focus()
-            t.move_cursor(row=0)
-            await pilot.pause()
-            await pilot.press("d")
-            await pilot.pause()
-            # ConfirmYesNo modal is active — answer y.
+            app.request_launch = lambda req: launched.append(req.label)  # type: ignore[assignment, method-assign]
+            app.screen.query_one("#action-cwd").focus()
+            await pilot.press("enter")
+            await self._wait_for(
+                pilot, lambda: isinstance(app.screen, LaunchOptionsScreen), "launch options"
+            )
+            await pilot.press("enter")
+            await self._wait_for(
+                pilot, lambda: isinstance(app.screen, ConfirmYesNo), "runtime confirmation"
+            )
+            # The container gate must have pushed the confirm BEFORE launching.
+            confirm = next((s for s in app.screen_stack if isinstance(s, ConfirmYesNo)), None)
+            self.assertIsNotNone(
+                confirm, msg="ConfirmYesNo was not shown for the stopped container"
+            )
+            self.assertEqual(prepared, [], msg="prepare ran before the operator confirmed")
+            self.assertEqual(launched, [], msg="launch committed before confirm")
+            self.assertEqual(order, [])
             await pilot.press("y")
-            await pilot.pause()
-            await pilot.press("q")
-            await pilot.pause()
-        self.assertEqual(kill_calls, [("dana_agent", "dana_agent.foo")])
+            await self._wait_for(pilot, lambda: bool(launched), "prepared launch")
+        self.assertEqual(prepared, [True], msg="prepare did not run after confirm")
+        self.assertEqual(launched, ["cwd"], msg="launch did not proceed after prepare")
+        self.assertEqual(order, ["prepare", "launch:claude:normal"])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -345,21 +228,6 @@ class WorkerGateTests(unittest.TestCase):
     worker leaves PENDING/RUNNING (cancelled, errored, or succeeded),
     the next kick spawns a fresh one.
     """
-
-    def test_worker_active_helper(self) -> None:
-        from textual.worker import WorkerState
-
-        from uxon.tui.workers import _worker_active
-
-        class _FakeWorker:
-            def __init__(self, state: WorkerState) -> None:
-                self.state = state
-
-        self.assertFalse(_worker_active(None))
-        self.assertTrue(_worker_active(_FakeWorker(WorkerState.PENDING)))
-        self.assertTrue(_worker_active(_FakeWorker(WorkerState.RUNNING)))
-        for done in (WorkerState.CANCELLED, WorkerState.ERROR, WorkerState.SUCCESS):
-            self.assertFalse(_worker_active(_FakeWorker(done)))
 
     def test_kick_refresh_heals_after_worker_cancellation(self) -> None:
         """Cancelled worker must not wedge the refresh stream."""
@@ -383,51 +251,19 @@ class WorkerGateTests(unittest.TestCase):
 
         app.kick_refresh()
         self.assertEqual(len(spawned), 1)
-        app.kick_refresh()  # still RUNNING — must skip
-        self.assertEqual(len(spawned), 1)
-
-        spawned[0].state = WorkerState.CANCELLED  # simulate exclusive-cancel
-        app.kick_refresh()  # must self-heal and spawn
-        self.assertEqual(len(spawned), 2)
-
-    def test_mount_skips_kick_for_sources_opting_out(self) -> None:
-        """``SourceSpec.kick_on_mount=False`` is honoured at mount time.
-
-        Regression guard for the ``kick_on_mount`` flag: it is a
-        load-bearing knob future one-shot or lazy interval-only
-        sources rely on (e.g. a remote-host probe that only fires on
-        the first periodic tick, not at startup). The mount-time
-        kick path must filter sources by this flag.
-        """
-        from textual.worker import WorkerState
-
-        from uxon.tui.app import UxonApp
-        from uxon.tui.refresh import SourceSpec
-
-        class _FakeWorker:
-            def __init__(self) -> None:
-                self.state = WorkerState.RUNNING
-
-        captured: list[str] = []
-
-        def fake_run_worker(*_args, **kwargs):
-            captured.append(kwargs.get("group", ""))
-            return _FakeWorker()
-
-        ctx = _mk_ctx(loading=True)
-        ctx.refresh_sources = [
-            SourceSpec(name="eager", fetch=lambda: None, kick_on_mount=True),
-            SourceSpec(name="lazy", fetch=lambda: None, kick_on_mount=False),
-        ]
-        app = UxonApp(ctx, probe_agents=False)
-        app.run_worker = fake_run_worker  # type: ignore[method-assign]
-
-        # Exercise the mount-time kick path directly — calling
-        # ``on_mount`` would also touch ``push_screen`` and other DOM
-        # state that requires a running Textual loop, which this pure
-        # gate test deliberately avoids.
-        app._kick_initial_sources()
-        self.assertEqual([g for g in captured if g.startswith("refresh:")], ["refresh:eager"])
+        for state in (WorkerState.PENDING, WorkerState.RUNNING):
+            spawned[-1].state = state
+            app.kick_refresh()
+            self.assertEqual(len(spawned), 1, f"{state} must keep the active source gate")
+        for state in (WorkerState.CANCELLED, WorkerState.ERROR, WorkerState.SUCCESS):
+            before = len(spawned)
+            spawned[-1].state = state
+            app.kick_refresh()
+            self.assertEqual(len(spawned), before + 1, f"{state} must allow a fresh worker")
+            app.kick_refresh()
+            self.assertEqual(
+                len(spawned), before + 1, "the replacement worker must itself hold the gate"
+            )
 
     def test_kick_helpers_use_distinct_groups(self) -> None:
         """Each periodic stream pins its worker to its own group.
@@ -480,9 +316,25 @@ class ConfirmModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press(*"kill-all")
             await pilot.press("enter")
 
+        async def wrong_phrase(app, pilot):
+            app.screen.query_one("#confirm-input", Input).value = "kill-al"
+            await pilot.press("enter")
+
         scenarios = [
             ScreenScenario("yesno-y", lambda: ConfirmYesNo("Kill foo?"), press_keys("y"), True),
             ScreenScenario("yesno-n", lambda: ConfirmYesNo("Kill foo?"), press_keys("n"), False),
+            ScreenScenario(
+                "yesno-cancel", lambda: ConfirmYesNo("Kill foo?"), press_keys("escape"), False
+            ),
+            ScreenScenario(
+                "phrase-mismatch", lambda: ConfirmPhrase("Danger!", "kill-all"), wrong_phrase, False
+            ),
+            ScreenScenario(
+                "phrase-empty",
+                lambda: ConfirmPhrase("Danger!", "kill-all"),
+                press_keys("enter"),
+                False,
+            ),
             ScreenScenario(
                 "phrase-match", lambda: ConfirmPhrase("Danger!", "kill-all"), phrase, True
             ),
@@ -505,11 +357,12 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         return AgentAvailability(status=status)
 
     async def test_launch_options_layout_smoke_batch(self) -> None:
+        from uxon.infra.config_loader import parse_config
+        from uxon.tui.context import LaunchProfileOption
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         async def assert_pending(app, pilot):
             screen = app.screen
-            self.assertIn("claude", screen._visible_agents)
             agent_list = screen.query_one("#agent-list")
             labels = [str(item.query_one("Static").content) for item in agent_list.children]
             self.assertTrue(
@@ -522,15 +375,66 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
                 "pending-label",
                 lambda: LaunchOptionsScreen(
                     _mk_ctx(
-                        enabled_agents=("claude",),
-                        default_agent="claude",
+                        enabled_profiles=("claude",),
+                        default_profile="claude",
                         agent_availability={"claude": self._make_avail("pending")},
                     )
                 ),
                 assert_pending,
                 ("claude", "normal"),
             ),
+            ScreenScenario(
+                "profile-agent-name-collision",
+                lambda: LaunchOptionsScreen(
+                    _mk_ctx(
+                        enabled_profiles=("cursor",),
+                        default_profile="cursor",
+                        launch_profiles={
+                            "cursor": LaunchProfileOption("cursor", "Claude", "claude", "alice")
+                        },
+                        agent_availability={"cursor": self._make_avail("ok")},
+                    )
+                ),
+                press_keys("down", "enter"),
+                ("cursor", "auto"),
+            ),
         ]
+
+        custom_catalog = parse_config(
+            {
+                "agents": {
+                    "custom": {
+                        "mode": [
+                            {"id": "inspect"},
+                            {"id": "review:read"},
+                            {"id": "default"},
+                        ]
+                    }
+                }
+            }
+        ).agents
+        for mode_id, keys in (("review:read", ("down", "enter")), ("default", ("up", "enter"))):
+            scenarios.append(
+                ScreenScenario(
+                    f"literal-custom-mode-{mode_id}",
+                    lambda: LaunchOptionsScreen(
+                        _mk_ctx(
+                            agents=custom_catalog,
+                            enabled_profiles=("custom_profile",),
+                            default_profile="custom_profile",
+                            launch_auto_mode=False,
+                            launch_profiles={
+                                "custom_profile": LaunchProfileOption(
+                                    "custom_profile", "Custom", "custom", "alice"
+                                )
+                            },
+                            agent_availability={"custom_profile": self._make_avail("ok")},
+                        )
+                    ),
+                    press_keys(*keys),
+                    ("custom_profile", mode_id),
+                )
+            )
 
         results = await run_screen_scenarios(scenarios)
         self.assertEqual(results, [s.expected for s in scenarios])
@@ -551,8 +455,8 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
 
         ctx = _mk_ctx(
-            enabled_agents=("claude", "cursor"),
-            default_agent="claude",
+            enabled_profiles=("claude", "cursor"),
+            default_profile="claude",
             agent_availability={
                 "claude": self._make_avail("ok"),
                 "cursor": self._make_avail("ok"),
@@ -573,490 +477,224 @@ class LaunchOptionsScreenTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             screen = app.screen
-            # Move highlight to cursor (2nd entry).
-            await pilot.press("down")
+            # Wrap from the first profile to cursor (last entry).
+            await pilot.press("up")
             await pilot.pause()
-            self.assertEqual(screen._current_agent, "cursor")
             mode_list = screen.query_one("#mode-list", ListView)
             # cursor has exactly two modes in the catalog: normal, yolo.
             self.assertEqual(len(mode_list.children), 2)
-            mode_ids = [item.id for item in mode_list.children]
-            self.assertEqual(mode_ids, ["mode-normal", "mode-yolo"])
+            labels = [str(item.query_one("Static").content) for item in mode_list.children]
+            self.assertEqual(labels, ["1 normal", "2 yolo (--yolo)"])
+            await pilot.press("right", "up", "down", "up", "enter")
+            await pilot.pause()
+            self.assertEqual(app.result, ("cursor", "yolo"))
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
-class LaunchOptionsWorkspaceColumnTests(unittest.IsolatedAsyncioTestCase):
-    """Pilot tests for the third WORKSPACE column (§3) + dismiss arity (B2)."""
-
-    def _make_avail(self, status: str):
-        from uxon.infra.agents import AgentAvailability
-
-        return AgentAvailability(status=status)
-
-    def _workspaces(self):
+class WorkspaceScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def test_workspace_choice_smoke_batch(self) -> None:
         from uxon.infra.worktrees import Workspace
+        from uxon.tui.screens.workspace import WorkspaceScreen
 
-        return [
-            Workspace(label="main", branch="main", path="/srv/work/myapp", is_primary=True),
-            Workspace(
-                label="feature/auth",
-                branch="feature/auth",
-                path="/srv/work/myapp/.uxon/worktrees/feature-auth",
-                is_primary=False,
-            ),
-        ]
-
-    async def test_workspace_column_and_dismiss_arity_batch(self) -> None:
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
-
-        # Single agent → AGENT column hidden; WORKSPACE present.
-        def with_ws():
-            return LaunchOptionsScreen(
-                _mk_ctx(
-                    enabled_agents=("claude",),
-                    default_agent="claude",
-                    agent_availability={"claude": self._make_avail("ok")},
-                ),
-                workspaces=self._workspaces(),
-                repo_root="/srv/work/myapp",
-            )
-
-        def without_ws():
-            return LaunchOptionsScreen(
-                _mk_ctx(
-                    enabled_agents=("claude",),
-                    default_agent="claude",
-                    agent_availability={"claude": self._make_avail("ok")},
-                )
-            )
-
-        async def assert_rows_then_commit_primary(app, pilot):
-            screen = app.screen
-            # AGENT column hidden under a single agent.
-            self.assertNotIn("agent", screen._panel_order)
-            self.assertEqual(screen._panel_order, ("mode", "workspace"))
-            labels = [
-                str(i.query_one("Static").content) for i in screen.query("#workspace-list ListItem")
-            ]
-            self.assertTrue(any("main" in s and "(primary)" in s for s in labels), labels)
-            self.assertTrue(any("feature/auth" in s for s in labels), labels)
-            self.assertTrue(any("New worktree" in s for s in labels), labels)
-            # Default highlight is the primary row; Enter commits it.
-            await pilot.press("enter")
-
-        async def commit_no_ws(app, pilot):
-            await pilot.press("enter")
-
-        scenarios = [
-            ScreenScenario(
-                "with-workspaces-3-tuple",
-                with_ws,
-                assert_rows_then_commit_primary,
-                ("claude", "normal", ("primary", "/srv/work/myapp")),
-            ),
-            ScreenScenario(
-                "without-workspaces-2-tuple",
-                without_ws,
-                commit_no_ws,
-                ("claude", "normal"),
-            ),
-        ]
-        results = await run_screen_scenarios(scenarios)
-        self.assertEqual(results, [s.expected for s in scenarios])
-
-    async def test_select_worktree_row_yields_worktree_choice(self) -> None:
-        from textual.app import App
-        from textual.widgets import ListView
-
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
-
-        ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
-            agent_availability={"claude": self._make_avail("ok")},
-        )
-
-        class Host(App):
-            result = "unset"
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-
-                self.push_screen(
-                    LaunchOptionsScreen(ctx, workspaces=self._ws, repo_root="/srv/work/myapp"),
-                    done,
-                )
-
-        Host._ws = self._workspaces()
-        app = Host()
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            # Move to the WORKSPACE panel (mode → workspace) and highlight
-            # the second row (the feature/auth worktree).
-            await pilot.press("right")
-            await pilot.pause()
-            self.assertEqual(screen._active_panel, "workspace")
-            wl = screen.query_one("#workspace-list", ListView)
-            wl.index = 1
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-        self.assertEqual(
-            app.result,
-            (
-                "claude",
-                "normal",
-                ("worktree", "/srv/work/myapp/.uxon/worktrees/feature-auth", "feature/auth"),
-            ),
-        )
-
-    async def test_non_git_shows_hint_row_and_commits_plain(self) -> None:
-        """An empty ``workspaces`` (probed, not a git repo) keeps the WORKSPACE
-        column visible with a single non-selectable "git not initialized" hint —
-        no "+ New worktree…" — and the column is skipped by ←/→. Enter falls
-        through to the plain 2-tuple launch (no workspace choice)."""
-        from textual.app import App
-        from textual.widgets import ListView
-
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
-
-        ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
-            agent_availability={"claude": self._make_avail("ok")},
-        )
-
-        class Host(App):
-            result = "unset"
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-
-                # Empty list, not None: probed git-less folder.
-                self.push_screen(
-                    LaunchOptionsScreen(ctx, workspaces=[], repo_root="/srv/work/plain"),
-                    done,
-                )
-
-        app = Host()
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            # Column is rendered (panel present) ...
-            self.assertEqual(len(screen.query("#workspace-panel")), 1)
-            labels = [
-                str(i.query_one("Static").content) for i in screen.query("#workspace-list ListItem")
-            ]
-            self.assertEqual(labels, ["git not initialized"])
-            self.assertFalse(any("New worktree" in s for s in labels), labels)
-            # ... but is NOT an interactive panel (←/→ skips it): both the
-            # mechanism (panel_order) and the behaviour (pressing → never lands
-            # on workspace) are asserted, so a future regression that re-adds
-            # workspace to _panel_order is caught.
-            self.assertNotIn("workspace", screen._panel_order)
-            await pilot.press("right")
-            await pilot.pause()
-            self.assertNotEqual(screen._active_panel, "workspace")
-            # Enter commits the plain 2-tuple (no third workspace element).
-            self.assertEqual(screen.query_one("#workspace-list", ListView).index, None)
-            await pilot.press("enter")
-            await pilot.pause()
-        self.assertEqual(app.result, ("claude", "normal"))
-
-    async def test_none_workspaces_hides_column(self) -> None:
-        """``workspaces=None`` (never probed — the project-create flow) renders
-        no WORKSPACE column at all, distinct from the empty-list hint."""
-        from textual.app import App
-
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
-
-        ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
-            agent_availability={"claude": self._make_avail("ok")},
-        )
-
-        class Host(App):
-            def on_mount(self):
-                self.push_screen(LaunchOptionsScreen(ctx))
-
-        app = Host()
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            self.assertEqual(len(screen.query("#workspace-panel")), 0)
-            self.assertNotIn("workspace", screen._panel_order)
-
-    async def test_probe_error_shows_error_row_not_hint(self) -> None:
-        """When the git probe RAISED (``probe_error`` set, ``workspaces=[]``)
-        the column shows a ``git error: …`` row — NOT the benign "git not
-        initialized" hint — so a real failure isn't mislabelled. The row is
-        still non-interactive and Enter commits the plain 2-tuple."""
-        from textual.app import App
-        from textual.widgets import ListView
-
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
-
-        ctx = _mk_ctx(
-            enabled_agents=("claude",),
-            default_agent="claude",
-            agent_availability={"claude": self._make_avail("ok")},
-        )
-
-        class Host(App):
-            result = "unset"
-
-            def on_mount(self):
-                def done(r):
-                    self.result = r
-                    self.exit()
-
-                self.push_screen(
-                    LaunchOptionsScreen(
-                        ctx,
-                        workspaces=[],
-                        repo_root="/srv/work/broken",
-                        probe_error="fatal: not a git repository (corrupt)",
-                    ),
-                    done,
-                )
-
-        app = Host()
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            labels = [
-                str(i.query_one("Static").content) for i in screen.query("#workspace-list ListItem")
-            ]
-            self.assertEqual(len(labels), 1)
-            self.assertTrue(labels[0].startswith("git error:"), labels)
-            self.assertIn("fatal:", labels[0])
-            self.assertNotIn("git not initialized", labels[0])
-            self.assertFalse(any("New worktree" in s for s in labels), labels)
-            # Non-interactive, same as the benign hint: ←/→ skips it, the
-            # disabled row stays unhighlighted, Enter commits the 2-tuple.
-            self.assertNotIn("workspace", screen._panel_order)
-            self.assertEqual(screen.query_one("#workspace-list", ListView).index, None)
-            await pilot.press("enter")
-            await pilot.pause()
-        self.assertEqual(app.result, ("claude", "normal"))
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
-    """Async wiring for the launch-cwd flow: the worker probes workspaces
-    once on open, threads them + repo_root into LaunchOptionsScreen, and the
-    workspace-choice dispatch routes to the right callback (§3, §4.2)."""
-
-    def _ctx(self, **overrides):
-        from uxon.infra.worktrees import Workspace
-        from uxon.tui.context import LaunchRequest
-
-        probed = [
+        rows = [
             Workspace(label="main", branch="main", path="/srv/work", is_primary=True),
             Workspace(
                 label="feature/auth",
                 branch="feature/auth",
-                path="/srv/work/.uxon/worktrees/feature-auth",
+                path="/srv/work/.uxon/worktrees/auth",
+                is_primary=False,
+            ),
+        ]
+        scenarios = [
+            ScreenScenario(
+                "primary",
+                lambda: WorkspaceScreen(rows, repo_root="/srv/work"),
+                press_keys("up", "down", "enter"),
+                ("primary", "/srv/work"),
+            ),
+            ScreenScenario(
+                "existing",
+                lambda: WorkspaceScreen(rows, repo_root="/srv/work"),
+                press_keys("down", "enter"),
+                ("worktree", "/srv/work/.uxon/worktrees/auth", "feature/auth"),
+            ),
+            ScreenScenario(
+                "new",
+                lambda: WorkspaceScreen(rows, repo_root="/srv/work"),
+                press_keys("up", "enter"),
+                ("new", None),
+            ),
+            ScreenScenario(
+                "cancel",
+                lambda: WorkspaceScreen(rows, repo_root="/srv/work"),
+                press_keys("escape"),
+                None,
+            ),
+        ]
+        self.assertEqual(await run_screen_scenarios(scenarios), [s.expected for s in scenarios])
+
+
+@unittest.skipUnless(_textual_available(), "textual not installed")
+class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
+    def _ctx(self, **overrides):
+        from uxon.infra.agents import AgentAvailability
+        from uxon.infra.worktrees import Workspace
+
+        self.workspaces = [
+            Workspace(label="main", branch="main", path="/srv/work", is_primary=True),
+            Workspace(
+                label="feature/auth",
+                branch="feature/auth",
+                path="/srv/work/.uxon/worktrees/auth",
                 is_primary=False,
             ),
         ]
         base = dict(
-            enabled_agents=("claude",),
-            default_agent="claude",
-            cwd="/srv/work",
-            cwd_short="work",
-            cwd_writable=True,
-            on_probe_worktrees=lambda cwd: probed,
-            on_launch_existing_worktree=lambda *a: LaunchRequest(cmd=("/bin/true",), label="wt"),
-            on_create_worktree=lambda *a: LaunchRequest(cmd=("/bin/true",), label="new-wt"),
-            # No compatible sessions by default → no SessionChoice guard.
+            enabled_profiles=("claude",),
+            default_profile="claude",
+            agent_availability={"claude": AgentAvailability(status="ok")},
+            on_probe_worktrees=lambda cwd, profile, mode: self.workspaces,
             on_probe_existing_worktree_sessions=lambda *a: (),
             on_probe_existing_sessions=lambda *a: (),
         )
         base.update(overrides)
         return _mk_ctx(**base)
 
-    async def test_probe_threads_workspaces_into_launch_screen(self) -> None:
+    async def test_pinned_profile_discovers_and_launches_worktree_off_loop(self) -> None:
+        # App-level worker/continuation behavior needs a separate lifecycle.
+        import asyncio
+
         from uxon.tui.app import UxonApp
+        from uxon.tui.context import LaunchProfileOption, LaunchRequest
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
+        from uxon.tui.screens.workspace import WorkspaceScreen
 
-        app = UxonApp(self._ctx(), probe_agents=False)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            await pilot.press("enter")  # activate action-cwd (default focus)
-            await pilot.pause()
-            await pilot.pause()  # let the probe worker land + push the screen
-            top = app.screen_stack[-1]
-            self.assertIsInstance(top, LaunchOptionsScreen)
-            self.assertTrue(top._workspaces)
-            self.assertTrue(top._workspaces[0].is_primary)
-            self.assertEqual(top._repo_root, "/srv/work")
+        probes, launches = [], []
 
-    async def test_probe_failure_threads_error_into_screen(self) -> None:
-        """A raising ``on_probe_worktrees`` (real git failure) is captured by
-        the worker and threaded to the screen as ``probe_error`` with empty
-        ``workspaces`` — the WORKSPACE column shows the error row end-to-end,
-        not a silently hidden column."""
-        from textual.widgets import ListView
+        def probe(target, profile, mode):
+            with self.assertRaises(RuntimeError):
+                asyncio.get_running_loop()
+            probes.append((target, profile, mode))
+            return self.workspaces
 
-        from uxon.tui.app import UxonApp
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+        def launch(*args):
+            launches.append(args)
+            return LaunchRequest(cmd=("/bin/true",), label="worktree")
 
-        def boom(_cwd):
-            from uxon.infra.worktrees import WorktreeProbeError
-
-            raise WorktreeProbeError("fatal: not a git repository (corrupt HEAD)")
-
-        app = UxonApp(self._ctx(on_probe_worktrees=boom), probe_agents=False)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            await pilot.press("enter")  # activate action-cwd
-            await pilot.pause()
-            await pilot.pause()  # let the probe worker land + push the screen
-            top = app.screen_stack[-1]
-            self.assertIsInstance(top, LaunchOptionsScreen)
-            self.assertEqual(top._workspaces, [])
-            self.assertIn("corrupt HEAD", top._probe_error or "")
-            labels = [
-                str(i.query_one("Static").content) for i in top.query("#workspace-list ListItem")
-            ]
-            self.assertEqual(len(labels), 1)
-            self.assertTrue(labels[0].startswith("git error:"), labels)
-            self.assertNotIn("workspace", top._panel_order)
-            self.assertEqual(top.query_one("#workspace-list", ListView).index, None)
-
-    async def test_new_worktree_row_opens_branch_input(self) -> None:
-        from textual.widgets import ListView
-
-        from uxon.tui.app import UxonApp
-        from uxon.tui.screens.worktree_branch import WorktreeBranchScreen
-
-        app = UxonApp(self._ctx(), probe_agents=False)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            await pilot.pause()
-            screen = app.screen_stack[-1]
-            # Move to WORKSPACE column, select the "+ New worktree…" row.
-            await pilot.press("right")
-            await pilot.pause()
-            wl = screen.query_one("#workspace-list", ListView)
-            wl.index = len(screen._workspaces)  # the trailing "+ New worktree…"
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            self.assertIsInstance(app.screen_stack[-1], WorktreeBranchScreen)
-
-    async def test_worktree_session_guard_appears(self) -> None:
-        from textual.widgets import ListView
-
-        from uxon.tui.app import UxonApp
-        from uxon.tui.screens.session_choice import SessionChoiceScreen
-
-        # A compatible session exists in the worktree → guard must appear.
         ctx = self._ctx(
-            on_probe_existing_worktree_sessions=lambda *a: (
-                ("uxon-work-feature-auth@claude", True),
-            )
+            cwd_writable=True,
+            launch_profiles={
+                "claude": LaunchProfileOption("claude", "Claude", "claude", "alice_agent")
+            },
+            on_probe_worktrees=probe,
+            on_launch_existing_worktree=launch,
         )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            app.screen.query_one("#action-cwd").focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, LaunchOptionsScreen)
+            self.assertEqual(probes, [])
+            await pilot.press("down", "enter")  # Claude auto
+            await pilot.pause()
+            await pilot.pause()
+            self.assertIsInstance(app.screen, WorkspaceScreen)
+            self.assertEqual(probes, [("/srv/work", "claude", "auto")])
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            await pilot.pause()
+        self.assertEqual(
+            launches,
+            [("/srv/work", "feature/auth", "/srv/work/.uxon/worktrees/auth", "claude", "auto")],
+        )
+
+    async def test_new_worktree_choice_reaches_branch_and_create(self) -> None:
+        # The branch modal follows an asynchronous profile-specific probe.
+        from textual.widgets import Input
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import LaunchRequest
+        from uxon.tui.screens.worktree_branch import WorktreeBranchScreen
+
+        created = []
+
+        def create(*args):
+            created.append(args)
+            return LaunchRequest(cmd=("/bin/true",), label="new-worktree")
+
+        app = UxonApp(self._ctx(on_create_worktree=create), probe_agents=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("#action-cwd").focus()
+            await pilot.press("enter", "enter")
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("down", "down", "enter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, WorktreeBranchScreen)
+            app.screen.query_one(Input).value = "feature/new"
             await pilot.press("enter")
             await pilot.pause()
             await pilot.pause()
-            screen = app.screen_stack[-1]
-            await pilot.press("right")  # to WORKSPACE
+        self.assertEqual(created, [("/srv/work", "feature/new", "claude", "normal")])
+
+    async def test_workspace_probe_error_aborts_launch_with_diagnostic(self) -> None:
+        # Failed worker completion must not continue to a launch.
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.main import MainScreen
+
+        def broken(*args):
+            raise RuntimeError("corrupt HEAD")
+
+        app = UxonApp(self._ctx(on_probe_worktrees=broken), probe_agents=False)
+        notices = []
+        async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            wl = screen.query_one("#workspace-list", ListView)
-            wl.index = 1  # the feature/auth worktree row
+            app.notify = lambda message, **kwargs: notices.append((message, kwargs))
+            app.screen.query_one("#action-cwd").focus()
+            await pilot.press("enter", "enter")
             await pilot.pause()
-            await pilot.press("enter")
             await pilot.pause()
-            self.assertIsInstance(app.screen_stack[-1], SessionChoiceScreen)
+            self.assertIsInstance(app.screen, MainScreen)
+            self.assertIsNone(app.pending_launch)
+        self.assertTrue(any("corrupt HEAD" in str(n[0]) for n in notices), notices)
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
-    """The "Open existing project" flow is worktree-aware too: a git project
-    threads the probed workspaces + repo_root into LaunchOptionsScreen via the
-    shared ``_begin_launch_in_folder`` helper (parity with launch-cwd)."""
-
-    def _ctx(self, **overrides):
+    async def test_existing_project_discovers_workspaces_after_profile_choice(self) -> None:
+        # Project selection and asynchronous workspace continuation share state.
+        from uxon.infra.agents import AgentAvailability
         from uxon.infra.worktrees import Workspace
-        from uxon.tui.context import LaunchRequest
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
+        from uxon.tui.screens.workspace import WorkspaceScreen
 
-        probed = [
-            Workspace(label="main", branch="main", path="/srv/work/proj", is_primary=True),
-            Workspace(
-                label="feature/auth",
-                branch="feature/auth",
-                path="/srv/work/proj/.uxon/worktrees/feature-auth",
-                is_primary=False,
-            ),
-        ]
-        base = dict(
-            enabled_agents=("claude",),
-            default_agent="claude",
-            new_project_root="/srv/work",
+        probes = []
+        rows = [Workspace(label="main", branch="main", path="/srv/work/proj", is_primary=True)]
+        ctx = _mk_ctx(
+            enabled_profiles=("claude",),
+            default_profile="claude",
+            agent_availability={"claude": AgentAvailability(status="ok")},
             existing_projects=[("proj", "2026-05-01")],
-            on_probe_worktrees=lambda cwd: probed,
-            on_launch_existing_worktree=lambda *a: LaunchRequest(cmd=("/bin/true",), label="wt"),
-            on_create_worktree=lambda *a: LaunchRequest(cmd=("/bin/true",), label="new-wt"),
-            on_probe_existing_worktree_sessions=lambda *a: (),
-            on_probe_existing_sessions=lambda *a: (),
+            on_probe_worktrees=lambda *a: probes.append(a) or rows,
         )
-        base.update(overrides)
-        return _mk_ctx(**base)
-
-    async def test_existing_project_threads_workspaces(self) -> None:
-        from uxon.tui.app import UxonApp
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
-        from uxon.tui.screens.main import MainScreen
-
-        app = UxonApp(self._ctx(), probe_agents=False)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            # Drive the launch-existing intent directly (avoids fragile
-            # dashboard row navigation); the project picker then opens.
-            self.assertIsInstance(app.screen, MainScreen)
-            app.screen._launch_existing()
-            await pilot.pause()
-            await pilot.press("enter")  # pick the single "proj" row
-            await pilot.pause()
-            await pilot.pause()  # let the probe worker land + push the screen
-            top = app.screen_stack[-1]
-            self.assertIsInstance(top, LaunchOptionsScreen)
-            self.assertTrue(top._workspaces)
-            self.assertTrue(top._workspaces[0].is_primary)
-            self.assertEqual(top._repo_root, "/srv/work/proj")
-
-    async def test_unlaunchable_project_aborts_before_options(self) -> None:
-        # The launchability gate (write access + allowed_roots) runs for the
-        # existing-project flow too — an unlaunchable target toasts and never
-        # opens the launch-options screen (parity with launch-cwd).
-        from uxon.tui.app import UxonApp
-        from uxon.tui.screens.launch_options import LaunchOptionsScreen
-        from uxon.tui.screens.main import MainScreen
-
-        app = UxonApp(self._ctx(on_probe_dir_launchable=lambda d: False), probe_agents=False)
+        app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen._launch_existing()
             await pilot.pause()
-            await pilot.press("enter")  # pick "proj"
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, LaunchOptionsScreen)
+            self.assertEqual(probes, [])
+            await pilot.press("enter")
             await pilot.pause()
             await pilot.pause()
-            top = app.screen_stack[-1]
-            self.assertNotIsInstance(top, LaunchOptionsScreen)
-            self.assertIsInstance(top, MainScreen)
+            self.assertIsInstance(app.screen, WorkspaceScreen)
+            self.assertEqual(probes, [("/srv/work/proj", "claude", "normal")])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -1101,63 +739,8 @@ class GitProfileScreenTests(unittest.IsolatedAsyncioTestCase):
             ScreenScenario(
                 "default-profile-enter",
                 lambda: GitProfileScreen([("profA", "A"), ("profB", "B")], default_profile="profB"),
-                press_keys("enter"),
+                press_keys("down", "up", "enter"),
                 "profB",
-            ),
-        ]
-        results = await run_screen_scenarios(scenarios)
-        self.assertEqual(results, [s.expected for s in scenarios])
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class ExistingProjectScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def test_existing_project_smoke_batch(self) -> None:
-        from uxon.tui.screens.existing import ExistingProjectScreen
-
-        scenarios = [
-            ScreenScenario(
-                "enter-picks-cursor",
-                lambda: ExistingProjectScreen([("alpha", "")], "/srv/work"),
-                press_keys("enter"),
-                "alpha",
-            ),
-            ScreenScenario(
-                "escape-cancel",
-                lambda: ExistingProjectScreen([("alpha", "")], "/srv/work"),
-                press_keys("escape"),
-                None,
-            ),
-            ScreenScenario(
-                "up-wraps-to-last",
-                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
-                press_keys("up", "enter"),
-                "beta",
-            ),
-            ScreenScenario(
-                # 'p' narrows [alpha,beta,gamma] → [alpha]; cursor lands on 0;
-                # Enter picks the only match.
-                "type-narrows-and-picks",
-                lambda: ExistingProjectScreen(
-                    [("alpha", ""), ("beta", ""), ("gamma", "")], "/srv/work"
-                ),
-                press_keys("p", "enter"),
-                "alpha",
-            ),
-            ScreenScenario(
-                # 'z' narrows to []; Enter is a no-op so no dismiss fires
-                # and the harness's "unset" sentinel survives.
-                "type-no-match-enter-noop",
-                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
-                press_keys("z", "enter"),
-                "unset",
-            ),
-            ScreenScenario(
-                # First Esc clears the (non-empty) filter; second Esc
-                # dismisses with None because the input is empty.
-                "esc-clears-then-cancels",
-                lambda: ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work"),
-                press_keys("a", "escape", "escape"),
-                None,
             ),
         ]
         results = await run_screen_scenarios(scenarios)
@@ -1170,60 +753,267 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
     the match counter — assertions that need direct widget queries
     rather than the dismiss-value harness."""
 
-    async def test_filter_input_focused_on_mount(self) -> None:
-        from textual.app import App
+    async def test_nested_navigation_search_and_launch_keep_key_scopes(self) -> None:
+        # Navigation and the launch continuation share worker and focus state.
+        import asyncio
+        import threading
 
+        from harness.textual_ready import painted, send_key, wait_until
+        from textual.widgets import ListView, Static
+
+        from uxon.infra.agents import AgentAvailability
+        from uxon.tui.app import UxonApp
+        from uxon.tui.context import LaunchRequest
         from uxon.tui.screens.existing import ExistingProjectScreen
+        from uxon.tui.screens.launch_options import LaunchOptionsScreen
         from uxon.tui.widgets.filter_input import FilterInput
 
-        class Host(App):
-            def __init__(self) -> None:
-                super().__init__()
-                self.scr = ExistingProjectScreen([("alpha", ""), ("beta", "")], "/srv/work")
+        calls, probes, launches = [], [], []
+        loop_thread = threading.get_ident()
+        tree = {
+            "beta_group": [("empty", ""), ("project space", "")],
+            "beta_group/project space": [("[leaf]", "")],
+        }
 
-            def on_mount(self) -> None:
-                self.push_screen(self.scr)
+        def list_directories(path):
+            calls.append((path, threading.get_ident()))
+            return tree[path]
 
-        app = Host()
+        def launch(path, profile, mode):
+            launches.append((path, profile, mode))
+            return LaunchRequest(cmd=("true",), label=path)
+
+        ctx = _mk_ctx(
+            existing_projects=[("alpha_group", ""), ("beta_group", "")],
+            enabled_profiles=("claude",),
+            default_profile="claude",
+            agent_availability={"claude": AgentAvailability(status="ok")},
+            on_list_project_directories=list_directories,
+            on_probe_worktrees=lambda *args: probes.append(args) or [],
+            on_launch_existing=launch,
+            refresh_sources=[],
+        )
+        app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            fi = app.scr.query_one(FilterInput)
+            await painted(pilot)
+            app.screen._launch_existing()
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ExistingProjectScreen), "project picker"
+            )
+            screen = app.screen
+            self.assertIsInstance(screen, ExistingProjectScreen)
+            fi = screen.query_one(FilterInput)
             self.assertIs(app.focused, fi.input)
-
-    async def test_match_counter_updates_with_typing(self) -> None:
-        from textual.app import App
-        from textual.widgets import Static
-
-        from uxon.tui.screens.existing import ExistingProjectScreen
-        from uxon.tui.widgets.filter_input import FilterInput
-
-        class Host(App):
-            def __init__(self) -> None:
-                super().__init__()
-                self.scr = ExistingProjectScreen(
-                    [("alpha", ""), ("beta", ""), ("gamma", "")], "/srv/work"
-                )
-
-            def on_mount(self) -> None:
-                self.push_screen(self.scr)
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            fi = app.scr.query_one(FilterInput)
             counter = fi.query_one("#match-count", Static)
-            # Empty filter → counter blank.
             self.assertEqual(str(counter.content), "")
-            await pilot.press("a")  # 'a' matches alpha + gamma + beta — wait, beta?
-            await pilot.pause()
-            # 'a' is in alpha, gamma, beta — three matches.
-            self.assertEqual(str(counter.content), "3 matches")
-            await pilot.press("l")  # filter is now "al" → only alpha
-            await pilot.pause()
-            self.assertEqual(str(counter.content), "1 match")
-            await pilot.press("z")  # "alz" → no matches
-            await pilot.pause()
+            await send_key(pilot, "up")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            await send_key(pilot, "down")
+            self.assertEqual(screen.query_one(ListView).index, 0)
+            fi.input.value = "no-match"
+            await wait_until(pilot, lambda: str(counter.content) == "0 matches", "empty search")
             self.assertEqual(str(counter.content), "0 matches")
+            await send_key(pilot, "enter")
+            self.assertIs(app.screen, screen)
+            self.assertEqual(launches, [])
+            self.assertEqual(probes, [])
+            await send_key(pilot, "escape")
+            self.assertEqual(fi.value, "")
+            await send_key(pilot, "escape")
+            self.assertIsNot(app.screen, screen)
+            app.screen._launch_existing()
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ExistingProjectScreen), "reopened picker"
+            )
+            screen = app.screen
+            self.assertIsInstance(screen, ExistingProjectScreen)
+            fi = screen.query_one(FilterInput)
+            fi.input.value = "grou"
+            await wait_until(pilot, lambda: fi.value == "grou", "parent filter")
+            await send_key(pilot, "p", "p")
+            self.assertEqual(fi.value, "group")
+            self.assertEqual(str(fi.query_one("#match-count", Static).content), "2 matches")
+            await send_key(pilot, "down")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            await send_key(pilot, "right")
+            await wait_until(
+                pilot,
+                lambda: (
+                    str(screen.query_one("#project-path", Static).content)
+                    == "  /srv/work/beta_group/"
+                ),
+                "first directory read",
+            )
+            self.assertEqual(fi.value, "")
+            self.assertEqual(
+                str(screen.query_one("#project-path", Static).content), "  /srv/work/beta_group/"
+            )
+            self.assertIs(app.focused, fi.input)
+            await send_key(pilot, "down")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            await send_key(pilot, "right")
+            await wait_until(
+                pilot,
+                lambda: (
+                    str(screen.query_one("#project-path", Static).content)
+                    == "  /srv/work/beta_group/project space/"
+                ),
+                "nested directory read",
+            )
+            self.assertEqual(
+                str(screen.query_one("#project-path", Static).content),
+                "  /srv/work/beta_group/project space/",
+            )
+            await send_key(pilot, "left")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            await send_key(pilot, "left")
+            self.assertEqual(fi.value, "group")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            cursor = fi.input.cursor_position
+            await send_key(pilot, "left")
+            self.assertEqual(fi.input.cursor_position, cursor)
+            self.assertEqual(fi.value, "group")
+            await send_key(pilot, "right")
+            await wait_until(pilot, lambda: fi.value == "", "child directory resets parent filter")
+            fi.input.value = "project"
+            await wait_until(
+                pilot,
+                lambda: str(fi.query_one("#match-count", Static).content) == "1 match",
+                "child search scope",
+            )
+            fi.input.cursor_position = len(fi.input.value)
+            await send_key(pilot, "space", " ")
+            self.assertEqual(fi.value, "project ")
+            await send_key(pilot, "x", "x")
+            self.assertEqual(fi.value, "project x")
+            await wait_until(
+                pilot,
+                lambda: str(fi.query_one("#match-count", Static).content) == "0 matches",
+                "typed nonmatching child search",
+            )
+            await send_key(pilot, "backspace")
+            await wait_until(
+                pilot,
+                lambda: str(fi.query_one("#match-count", Static).content) == "1 match",
+                "backspace restores child match",
+            )
+            self.assertEqual(fi.value, "project ")
+            self.assertEqual(str(fi.query_one("#match-count", Static).content), "1 match")
+            await send_key(pilot, "right")
+            await wait_until(
+                pilot,
+                lambda: "[leaf]" in str(screen.query_one("#existing-list Label").content),
+                "filtered child directory read",
+            )
+            label = screen.query_one("#existing-list Label")
+            self.assertIn("[leaf]", str(label.content))
+            await send_key(pilot, "enter")
+            self.assertIsInstance(app.screen, LaunchOptionsScreen)
+            self.assertEqual(probes, [])
+            # The launch exits this App; a live-screen paint ACK is inapplicable.
+            await pilot.press("enter")
+            await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+            self.assertEqual(
+                probes, [("/srv/work/beta_group/project space/[leaf]", "claude", "normal")]
+            )
+            self.assertEqual(launches, [("beta_group/project space/[leaf]", "claude", "normal")])
+            self.assertEqual(
+                [path for path, _ in calls], ["beta_group", "beta_group/project space"] * 2
+            )
+            self.assertTrue(all(thread != loop_thread for _, thread in calls))
+
+    async def test_failed_and_cancelled_reads_cannot_change_directory(self) -> None:
+        # Deferred worker delivery and dismissal require their own app lifecycle.
+        import asyncio
+        import threading
+
+        from harness.textual_ready import painted, send_key, wait_until
+        from textual.widgets import ListView, Static
+
+        from uxon.tui.app import UxonApp
+        from uxon.tui.screens.main import MainScreen
+
+        started, release = threading.Event(), threading.Event()
+        calls = []
+
+        def list_directories(path):
+            calls.append(path)
+            if path == "alpha":
+                raise PermissionError("directory access denied")
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("directory read timed out")
+            return []
+
+        app = UxonApp(
+            _mk_ctx(
+                existing_projects=[("alpha", ""), ("beta", "")],
+                on_list_project_directories=list_directories,
+                refresh_sources=[],
+            ),
+            probe_agents=False,
+        )
+        try:
+            async with app.run_test(size=(100, 30)) as pilot:
+                await painted(pilot)
+                app.screen._launch_existing()
+                await painted(pilot)
+                screen = app.screen
+                await send_key(pilot, "right")
+                await wait_until(
+                    pilot,
+                    lambda: (
+                        "access denied" in str(screen.query_one("#browser-status", Static).content)
+                    ),
+                    "directory read failure",
+                )
+                self.assertEqual(
+                    str(screen.query_one("#project-path", Static).content), "  /srv/work/"
+                )
+                self.assertIn(
+                    "access denied", str(screen.query_one("#browser-status", Static).content)
+                )
+                await send_key(pilot, "down")
+                await send_key(pilot, "right")
+                await wait_until(pilot, started.is_set, "blocked directory read started")
+                await send_key(pilot, "right")
+                await send_key(pilot, "enter")
+                self.assertIs(app.screen, screen)
+                await send_key(pilot, "left")
+                release.set()
+                await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+                await painted(pilot)
+                self.assertEqual(calls, ["alpha", "beta"])
+                self.assertEqual(
+                    str(screen.query_one("#project-path", Static).content), "  /srv/work/"
+                )
+                self.assertEqual(screen.query_one(ListView).index, 1)
+                await send_key(pilot, "right")
+                await wait_until(
+                    pilot,
+                    lambda: (
+                        str(screen.query_one("#browser-status", Static).content) == "No subfolders"
+                    ),
+                    "empty directory read",
+                )
+                self.assertEqual(
+                    str(screen.query_one("#browser-status", Static).content), "No subfolders"
+                )
+                await send_key(pilot, "enter")
+                self.assertIs(app.screen, screen)
+                await send_key(pilot, "left")
+                started.clear()
+                release.clear()
+                await send_key(pilot, "right")
+                await wait_until(pilot, started.is_set, "dismissed directory read started")
+                await send_key(pilot, "escape")
+                self.assertIsInstance(app.screen, MainScreen)
+                release.set()
+                await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+                await painted(pilot)
+                self.assertIsInstance(app.screen, MainScreen)
+        finally:
+            release.set()
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -1254,10 +1044,13 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def test_bool_toggle_saves_value(self):
+    async def test_bool_editor_save_return_and_git_remote_details(self):
         from textual.app import App
+        from textual.geometry import Region
+        from textual.widgets import DataTable
 
         from uxon.infra.settings import SettingEntry, SettingSpec
+        from uxon.tui.screens.git_remotes import GitRemotesScreen
         from uxon.tui.screens.settings import SettingsScreen
         from uxon.tui.screens.settings_modals import BoolToggleModal
 
@@ -1277,14 +1070,37 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
             # (the bool entry). Press Enter → BoolToggleModal pushed.
             await pilot.press("enter")
             await pilot.pause()
-            # Click True button.
-            from uxon.tui.screens.settings_modals import BoolToggleModal
-
             modal = app.screen_stack[-1]
             self.assertIsInstance(modal, BoolToggleModal)
-            btn = modal.query_one("#true")
-            btn.press()
+            self.assertTrue(await pilot.click("#true"))
             await pilot.pause()
+            self.assertIsInstance(app.screen, SettingsScreen)
+            self.assertEqual(saved, [("git_create_enabled", True)])
+            self.assertEqual(removed, [])
+            rows = [
+                ("foo", "github.com", "alice", "gh", "alice", "private", ""),
+                ("bar", "gitlab.com", "bob", "token", "bob", "public", "~/.tok"),
+            ]
+            dismissed = []
+            app.push_screen(GitRemotesScreen(rows), dismissed.append)
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            self.assertEqual(table.row_count, 2)
+            self.assertEqual([tuple(table.get_row_at(i)) for i in range(2)], rows)
+            rendered = "".join(
+                line.text
+                for line in table.render_lines(Region(0, 0, table.size.width, table.size.height))
+            )
+            for value in ("foo", "github.com", "alice", "bar", "gitlab.com", "bob", "~/.tok"):
+                self.assertIn(value, rendered)
+            await pilot.press("up")
+            self.assertEqual(table.cursor_row, 1)
+            await pilot.press("down")
+            self.assertEqual(table.cursor_row, 0)
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertEqual(dismissed, [None])
+            self.assertIsInstance(app.screen, SettingsScreen)
             await pilot.press("escape")
             await pilot.pause()
         self.assertEqual(saved, [("git_create_enabled", True)])
@@ -1292,169 +1108,94 @@ class SettingsScreenTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class ValueInputModalTests(unittest.IsolatedAsyncioTestCase):
-    """Behaviour of the single-Input edit modals (string/number/array/table).
+    async def test_fresh_editors_prefill_validate_and_save_exact_values(self):
+        from textual.widgets import Input
 
-    These pin the parse/initial-text/commit contract per kind so the
-    template-method base (``_ValueInputModal``) can be refactored without
-    silent regressions. Inputs are addressed via ``query_one(Input)``
-    (one Input per modal) rather than by id, so the assertions survive
-    the id being unified.
-    """
-
-    def _entry(self, key, kind, value, choices=None):
         from uxon.infra.settings import SettingEntry, SettingSpec
-
-        spec = SettingSpec(key, kind, "desc", choices=choices)
-        return SettingEntry(spec=spec, value=value, source="default", editable=True)
-
-    def _cbs(self):
         from uxon.tui.screens.settings import SettingsCallbacks
-
-        saved: list = []
-        return saved, SettingsCallbacks(
-            get_entries=lambda: [],
-            save_setting=lambda k, v: saved.append((k, v)),
-            remove_setting=lambda k: None,
-            save_mapping=lambda k, v: saved.append((k, v)),
+        from uxon.tui.screens.settings_modals import (
+            ArrayCsvModal,
+            NumberInputModal,
+            StringInputModal,
+            TableMappingModal,
         )
 
-    async def _drive(self, modal, text):
-        """Push ``modal``, type ``text`` into its Input, press Enter.
+        logs = []
 
-        Returns ``(result, still_open)`` where ``result`` is the dismiss
-        value (or ``_UNSET`` if never dismissed) and ``still_open`` says
-        whether the modal is still on the screen stack.
-        """
-        from textual.app import App
-        from textual.widgets import Input
+        def editor(modal_type, key, kind, initial):
+            saved, mappings = [], []
+            logs.append((saved, mappings))
+            cbs = SettingsCallbacks(
+                get_entries=lambda: [],
+                save_setting=lambda k, v: saved.append((k, v)),
+                remove_setting=lambda k: self.fail("editor removed a setting"),
+                save_mapping=lambda k, v: mappings.append((k, v)),
+            )
+            return modal_type(
+                SettingEntry(SettingSpec(key, kind, "desc"), initial, "default", True), cbs
+            )
 
-        _UNSET = object()
-        captured = {"r": _UNSET}
-
-        class Host(App):
-            def on_mount(self):
-                self.push_screen(modal, lambda r: captured.__setitem__("r", r))
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
+        async def number(app, pilot):
+            modal = app.screen
+            field = modal.query_one(Input)
+            self.assertEqual(field.value, "0")
+            field.value = ""
             await pilot.pause()
-            modal.query_one(Input).value = text
+            await pilot.press("a", "b", "c", "enter")
             await pilot.pause()
+            self.assertIs(app.screen, modal, "invalid number dismissed the editor")
+            self.assertEqual(logs[-1], ([], []))
+            self.assertEqual(field.value, "abc")
+            field.value = "42"
             await pilot.press("enter")
-            await pilot.pause()
-            still_open = app.screen is modal
-        return captured["r"], still_open
 
-    async def test_string_saves_raw(self):
-        from uxon.tui.screens.settings_modals import StringInputModal
+        async def array(app, pilot):
+            self.assertEqual(app.screen.query_one(Input).value, "p, q")
+            app.screen.query_one(Input).value = "a, b ,c,"
+            await pilot.press("enter")
 
-        saved, cbs = self._cbs()
-        modal = StringInputModal(self._entry("k", "string", ""), cbs)
-        result, _ = await self._drive(modal, "  hello world  ")
-        # String kind does not strip — the raw value is persisted verbatim.
-        self.assertEqual(saved, [("k", "  hello world  ")])
-        self.assertTrue(result)
+        async def string(app, pilot):
+            app.screen.query_one(Input).value = "  hello world  "
+            await pilot.press("enter")
 
-    async def test_number_saves_float(self):
-        from uxon.tui.screens.settings_modals import NumberInputModal
+        async def mapping(app, pilot):
+            app.screen.query_one(Input).value = "x=1, y=2 , bad, =skip"
+            await pilot.click("#save")
 
-        saved, cbs = self._cbs()
-        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
-        result, _ = await self._drive(modal, "42")
-        self.assertEqual(saved, [("k", 42.0)])
-        self.assertTrue(result)
-
-    async def test_number_rejects_non_number_and_stays_open(self):
-        from uxon.tui.screens.settings_modals import NumberInputModal
-
-        saved, cbs = self._cbs()
-        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
-        result, still_open = await self._drive(modal, "abc")
-        self.assertEqual(saved, [])
-        self.assertTrue(still_open)
-
-    async def test_array_parses_csv(self):
-        from uxon.tui.screens.settings_modals import ArrayCsvModal
-
-        saved, cbs = self._cbs()
-        modal = ArrayCsvModal(self._entry("k", "array", []), cbs)
-        await self._drive(modal, "a, b ,c,")
-        # Comma-split, each part stripped, empties dropped.
-        self.assertEqual(saved, [("k", ["a", "b", "c"])])
-
-    async def test_array_initial_text_renders_current(self):
-        from textual.app import App
-        from textual.widgets import Input
-
-        from uxon.tui.screens.settings_modals import ArrayCsvModal
-
-        saved, cbs = self._cbs()
-        modal = ArrayCsvModal(self._entry("k", "array", ["p", "q"]), cbs)
-
-        class Host(App):
-            def on_mount(self):
-                self.push_screen(modal)
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            self.assertEqual(modal.query_one(Input).value, "p, q")
-
-    async def test_number_prefills_falsy_zero(self):
-        # A current value of 0 must render as "0", not a blank field —
-        # ``str(value or "")`` would wrongly blank it.
-        from textual.app import App
-        from textual.widgets import Input
-
-        from uxon.tui.screens.settings_modals import NumberInputModal
-
-        _saved, cbs = self._cbs()
-        modal = NumberInputModal(self._entry("k", "number", 0), cbs)
-
-        class Host(App):
-            def on_mount(self):
-                self.push_screen(modal)
-
-        app = Host()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            self.assertEqual(modal.query_one(Input).value, "0")
-
-    async def test_table_parses_kv_via_save_mapping(self):
-        from uxon.tui.screens.settings_modals import TableMappingModal
-
-        saved, cbs = self._cbs()
-        modal = TableMappingModal(self._entry("k", "table", {}), cbs)
-        await self._drive(modal, "x=1, y=2 , bad, =skip")
-        # ``key=value`` pairs only; malformed/keyless parts dropped.
-        self.assertEqual(saved, [("k", {"x": "1", "y": "2"})])
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class GitRemotesScreenTests(unittest.IsolatedAsyncioTestCase):
-    async def test_populates_and_esc_dismisses(self):
-        from textual.app import App
-
-        from uxon.tui.screens.git_remotes import GitRemotesScreen
-
-        rows = [
-            ("foo", "github.com", "alice", "gh", "alice", "private", ""),
-            ("bar", "gitlab.com", "bob", "token", "bob", "public", "~/.tok"),
+        scenarios = [
+            ScreenScenario(
+                "number-invalid-valid",
+                lambda: editor(NumberInputModal, "n", "number", 0),
+                number,
+                True,
+            ),
+            ScreenScenario(
+                "array-prefill-save",
+                lambda: editor(ArrayCsvModal, "a", "array", ["p", "q"]),
+                array,
+                True,
+            ),
+            ScreenScenario(
+                "raw-string", lambda: editor(StringInputModal, "s", "string", ""), string, True
+            ),
+            ScreenScenario(
+                "mapping-sink", lambda: editor(TableMappingModal, "m", "table", {}), mapping, True
+            ),
+            ScreenScenario(
+                "cancel-unsaved",
+                lambda: editor(StringInputModal, "cancel", "string", ""),
+                press_keys("x", "escape"),
+                False,
+            ),
         ]
-
-        class Host(App):
-            dismissed = False
-
-            def on_mount(self):
-                def done(_r):
-                    self.dismissed = True
-                    self.exit()
-
-                self.push_screen(GitRemotesScreen(rows), done)
-
-        app = Host()
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            await pilot.press("escape")
-            await pilot.pause()
-        self.assertTrue(app.dismissed)
+        self.assertEqual(await run_screen_scenarios(scenarios), [True, True, True, True, False])
+        self.assertEqual(
+            logs,
+            [
+                ([("n", 42.0)], []),
+                ([("a", ["a", "b", "c"])], []),
+                ([("s", "  hello world  ")], []),
+                ([], [("m", {"x": "1", "y": "2"})]),
+                ([], []),
+            ],
+        )

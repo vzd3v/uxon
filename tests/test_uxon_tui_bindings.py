@@ -1,12 +1,11 @@
 """Drift-guard tests for uxon TUI screen BINDINGS.
 
-Two assertions (per plan T18):
+Two architectural contracts:
   (a) Every destructive binding (action_kill*) carries ``show=True``
       and a non-empty description.
   (b) No Screen subclass in ``src/uxon/tui/screens/`` — and no custom
       widget in ``src/uxon/tui/widgets/`` — overrides ``on_key``. All
-      keystroke handling must go through ``BINDINGS`` (AGENTS.md hard
-      rule). Catches the ``g`` footgun from PR 10 where a dev added
+      keystroke handling must go through ``BINDINGS``. Catches the ``g`` footgun from PR 10 where a dev added
       ``if event.key == "g": ...`` in ``on_key``, bypassing the
       declarative registry, and holds the render-on-demand widget
       (``SessionListView``) + the ``GatedFooter`` to the same rule.
@@ -129,94 +128,6 @@ class NoOnKeyOverrideTests(unittest.TestCase):
             offenders,
             f"Custom widgets must not override on_key — use BINDINGS instead; found: {offenders}",
         )
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class SettingsGKeyRetiredTests(unittest.TestCase):
-    """``g`` must not be bound on SettingsScreen (PR 10 footgun)."""
-
-    def test_g_key_not_bound(self) -> None:
-        from uxon.tui.screens.settings import SettingsScreen
-
-        keys = {_binding_key(b) for b in SettingsScreen.BINDINGS}
-        self.assertNotIn("g", keys, "g must not be a SettingsScreen binding")
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class MainScreenSortBindingsRetiredTests(unittest.TestCase):
-    """``s`` / ``S`` (sort cycle / sort dir) are gone in 3.4.
-
-    Sort is now a hard contract owned by the model selector — there's
-    no UI-state knob to flip. ``q`` and ``r`` / ``d`` / ``D`` remain.
-    """
-
-    def test_s_does_not_trigger_sort(self) -> None:
-        """``s`` is repurposed as the search-summon shortcut (3.4).
-        The old sort-cycle action is gone — this guards against it
-        sneaking back in under the same key.
-        """
-        from uxon.tui.screens.main import MainScreen
-
-        for b in MainScreen.BINDINGS:
-            key = _binding_key(b)
-            if key in ("s", "S"):
-                self.assertNotIn("sort", b.action, f"{key} must not trigger any sort action")
-
-    def test_core_keys_remain(self) -> None:
-        from uxon.tui.screens.main import MainScreen
-
-        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
-        for k in ("q", "r", "d", "D"):
-            self.assertIn(k, keys, f"{k} must still be bound on MainScreen")
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class MainScreenDigitJumpRetiredTests(unittest.TestCase):
-    """Digit ``1``–``9`` quick-jump is gone in 3.4.
-
-    Priority screen-level digit bindings stole keystrokes from the
-    SearchBar Input (typing ``1`` to filter sessions used to fire a
-    jump). The retirement removes both the bindings on MainScreen and
-    the delegating ``BINDINGS`` on UxonApp; this guard prevents either
-    side from sneaking back in.
-    """
-
-    def test_no_digit_keys_on_main_screen(self) -> None:
-        from uxon.tui.screens.main import MainScreen
-
-        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
-        for digit in "123456789":
-            self.assertNotIn(digit, keys, f"{digit} must not be bound on MainScreen")
-
-    def test_no_digit_keys_on_app(self) -> None:
-        from uxon.tui.app import UxonApp
-
-        keys = {_binding_key(b) for b in getattr(UxonApp, "BINDINGS", [])}
-        for digit in "123456789":
-            self.assertNotIn(digit, keys, f"{digit} must not be bound on UxonApp")
-
-
-@unittest.skipUnless(_textual_available(), "textual not installed")
-class MainScreenQuitBindingsTests(unittest.TestCase):
-    """``q`` (and the JCUKEN twin ``й``) quit; ``escape`` no longer does.
-
-    Removing ``escape → quit`` in 3.4 makes Esc scope-local on each
-    modal/screen — operators no longer accidentally dump out of the
-    app from a sub-screen.
-    """
-
-    def test_q_and_jcuken_twin_present(self) -> None:
-        from uxon.tui.screens.main import MainScreen
-
-        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
-        self.assertIn("q", keys)
-        self.assertIn("й", keys)
-
-    def test_escape_not_bound(self) -> None:
-        from uxon.tui.screens.main import MainScreen
-
-        keys = {_binding_key(b) for b in MainScreen.BINDINGS}
-        self.assertNotIn("escape", keys)
 
 
 def _action_name(binding) -> str:

@@ -6,7 +6,7 @@
 """Render a uxon demo scenario (YAML) into wire-envelope JSON files.
 
 One ``<host>.json`` per host in the scenario. Each file is a
-schema-1 :class:`uxon.wire_schema.Envelope` of ``kind="list"`` —
+current :class:`uxon.domain.wire_schema.Envelope` of ``kind="list"`` —
 the same shape the SSH collector parses in production.
 
 YAML schema (see demo/scenarios/*.yaml for working examples):
@@ -48,8 +48,7 @@ YAML schema (see demo/scenarios/*.yaml for working examples):
 
 Usage:  render.py <scenario.yaml> <output_dir>
 
-The output directory is overwritten — caller is expected to nuke it
-first (the demo entry-point does this).
+The caller clears the output directory first (the demo entry point does this).
 """
 
 from __future__ import annotations
@@ -62,16 +61,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import yaml
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-WIRE_SCHEMA_VERSION = "1"  # mirrors uxon.wire_schema; demo stays decoupled
+from uxon.domain.wire_schema import WIRE_SCHEMA_VERSION  # noqa: E402
+
 SESSION_PREFIX = "uxon-"
 
 VALID_AGENTS = {"claude", "codex", "cursor"}
 
 
 def _now() -> datetime:
-    # Frozen-clock-friendly seam: tests / reviewers can monkeypatch this.
+    # Keep time injectable for reproducible renders.
     return datetime.now(tz=UTC)
 
 
@@ -117,7 +117,7 @@ def _build_session_record(
         )
 
     # Real uxon session names follow `<prefix><stem>@<agent>[-N]` —
-    # see :func:`uxon.cli.parse_session_name`. The dashboard's NAME
+    # see :func:`uxon.domain.session.parse_session_name`. The dashboard's NAME
     # column strips the `@<agent>` suffix (the AGENT column carries
     # it). Anything else here makes the NAME column display garbage.
     short_id = f"{slot}@{agent}"
@@ -167,7 +167,7 @@ def _build_local_envelope(
     sessions_in: list[Any], defaults: dict[str, Any], now: datetime
 ) -> dict[str, Any]:
     # ``_local.json`` mirrors a remote envelope but is consumed by
-    # ``uxon._demo.load_demo_local_sessions`` instead of the SSH path —
+    # ``uxon.infra.demo.load_demo_local_sessions`` instead of the SSH path —
     # it backs the "local" rows in the TUI, the machine running uxon
     # itself.
     records: list[dict[str, Any]] = []
@@ -231,7 +231,7 @@ def _build_envelope(
 
     color = host.get("color")
     if isinstance(color, str) and color:
-        # Additive demo-only field consumed by uxon._demo.synthesize_remote_hosts.
+        # Additive demo-only field consumed by uxon.infra.demo.synthesize_remote_hosts.
         envelope["demo_color"] = color
 
     # Position in the YAML ``hosts:`` list — preserves authoring order in the
@@ -246,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("scenario", type=Path, help="Path to a scenario YAML file")
     parser.add_argument("output_dir", type=Path, help="Directory to write <host>.json files into")
     args = parser.parse_args(argv)
+
+    import yaml
 
     scenario_text = args.scenario.read_text(encoding="utf-8")
     scenario = yaml.safe_load(scenario_text)

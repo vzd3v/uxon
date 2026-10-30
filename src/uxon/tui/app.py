@@ -32,15 +32,13 @@ from uxon.infra.events import is_enabled as _debug_enabled
 
 from .config import TuiConfig
 from .context import TuiContext
+from .keylog import diagnostic_key
 from .messages import (
-    _AgentAvailabilityUpdated,
     _CwdWritableUpdated,
     _HostReportUpdated,
     _LinkHealthUpdated,
-    _MainCtxLoaded,
     _OffLoopCallbackDone,
     _RefreshSourceLanded,
-    _WorktreesProbed,
 )
 from .screens.agents_unavailable import AgentsUnavailableScreen
 from .screens.main import MainScreen
@@ -77,9 +75,8 @@ class UxonApp(App):
     # Each ``UxonApp.__init__`` snapshots-and-increments this so a
     # worker spawned by instance N can be distinguished from one
     # belonging to instance N+1 after the outer ``run()`` loop
-    # re-creates the app following a TTY handoff. Spec § Worker
-    # lifetime: "every result carries a monotonically increasing
-    # ``instance_epoch`` matched against the App's own epoch".
+    # re-creates the app following a TTY handoff. Every worker result carries
+    # an epoch matched against the current App instance.
     _next_epoch: ClassVar[int] = 0
 
     # UxonApp has no per-app bindings — quit/help etc. live on the
@@ -96,7 +93,7 @@ class UxonApp(App):
         probe_agents: bool = True,
     ) -> None:
         super().__init__()
-        # Terminal/window title — "uxon <version>" rather than Textual's
+        # Header title — "uxon <version>" rather than Textual's
         # default class-name ("UxonApp"). Version read live from the
         # single source of truth so it never drifts.
         self.title = f"uxon {__version__}"
@@ -107,7 +104,7 @@ class UxonApp(App):
         # the callbacks, cadence knobs, remote-hosts registry and
         # refresh-source list are stable for the App's lifetime.
         # Screens / modals migrate to reading from ``self.cfg`` over
-        # subsequent commits; for this commit ``cfg`` is duplicated
+        # ``cfg`` is duplicated
         # state populated alongside the live ctx.
         self.cfg: TuiConfig = TuiConfig.from_context(ctx)
         self.state: TuiState = TuiState()
@@ -250,7 +247,7 @@ class UxonApp(App):
             _debug(
                 "keys",
                 at="app_received",
-                key=getattr(event, "key", ""),
+                key=diagnostic_key(event.key),
                 screen=type(self.screen).__name__ if self.screen is not None else None,
                 focused_id=getattr(focused, "id", None) if focused is not None else None,
                 focused_kind=type(focused).__name__ if focused is not None else None,
@@ -307,7 +304,7 @@ class UxonApp(App):
         _debug(
             "keys",
             at="app_unhandled",
-            key=getattr(event, "key", ""),
+            key=diagnostic_key(event.key),
             screen=type(screen).__name__ if screen is not None else None,
             focused_id=focused_id,
             focused_kind=focused_kind,
@@ -336,13 +333,12 @@ class UxonApp(App):
         if self.ctx.loading:
             self._worker_coord.kick_initial_sources()
         # Kick off background host probe (tmux + all known agents).
-        # Probes every CATALOG agent regardless of cfg.enabled_agents
+        # Probes every CATALOG agent regardless of cfg.enabled_profiles
         # so auto-mode (empty enabled list) sees what is installed for
         # ``launch_user``.
         if self.probe_agents:
             self._worker_coord.kick_host_probe()
-        # Cross-user case: the synchronous path leaves ``cwd_writable``
-        # as None because the check would shell out via sudo.
+        # Every production context starts pending; filesystem probes stay off-loop.
         if self.ctx.cwd_writable is None:
             self._worker_coord.kick_cwd_writable(self.ctx.cwd)
         timers_enabled = not self.is_headless and "PYTEST_CURRENT_TEST" not in os.environ
@@ -369,7 +365,7 @@ class UxonApp(App):
                 )
             # ``set_interval`` already fires its first probe one interval out
             # — the same offset a one-shot ``set_timer(interval)`` would use,
-            # so a separate one-shot only double-fires the first probe (RC6).
+            # so a separate one-shot only double-fires the first probe.
             self.set_interval(
                 self.ctx.tui_ssh_refresh_interval_seconds,
                 self._worker_coord.kick_link_health_probe,
@@ -382,8 +378,21 @@ class UxonApp(App):
     # methods so the production + test call surface (``app.kick_refresh``
     # etc.) is unchanged.
 
-    def kick_refresh(self) -> None:
-        self._worker_coord.kick_refresh()
+    def kick_refresh(self, *, manual: bool = False) -> None:
+        self._worker_coord.kick_refresh(manual=manual)
+        if manual:
+            self.kick_cwd_writable()
+
+    def kick_cwd_writable(self) -> None:
+        """Invalidate permission readiness and check the current launch context."""
+        from .slot_state import SlotState
+
+        self.ctx.cwd_writable = None
+        self.state.cwd_writable = SlotState[bool | None]()
+        self._worker_coord.kick_cwd_writable(self.ctx.cwd)
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                screen._refresh_cwd_row()
 
     def run_off_loop(self, fn, *, on_success=None, on_error=None, label="action") -> None:
         """Run a blocking interactive callback off the loop (see coordinator).
@@ -402,11 +411,6 @@ class UxonApp(App):
 
     def _kick_link_health_probe(self) -> None:
         self._worker_coord.kick_link_health_probe()
-
-    def probe_workspaces_then(
-        self, cwd: str, on_done: object, *, probe_launchable: object = None
-    ) -> None:
-        self._worker_coord.probe_workspaces_then(cwd, on_done, probe_launchable=probe_launchable)
 
     # ── Source landing dispatch ─────────────────────────────────────
     #
@@ -454,8 +458,8 @@ class UxonApp(App):
         from ``state.remote`` directly and is enough.
 
         Both branches' widget mutations run inside one
-        :meth:`App.batch_update` so a landing yields at most one composite
-        (AC6). Nesting with the status writer's own ``batch_update`` is
+        :meth:`App.batch_update` so a landing yields at most one composite.
+        Nesting with the status writer's own ``batch_update`` is
         safe — ``_batch_count`` is counter-based — and the batch wraps
         synchronous widget writes only (no awaits).
         """
@@ -480,8 +484,7 @@ class UxonApp(App):
         Cross-instance gate: an event whose ``instance_epoch`` does not
         match ``self._instance_epoch`` is dropped — the worker that
         posted it belongs to a previous app instance whose result has
-        no business mutating the current instance's state. Spec §
-        Worker lifetime.
+        no business mutating the current instance's state.
 
         Looks up ``event.name`` in ``_source_dispatch_exact`` first; on
         miss, scans ``_source_dispatch_prefix`` for the first prefix
@@ -505,6 +508,8 @@ class UxonApp(App):
             )
             return
         handler = self._source_dispatch_exact.get(event.name)
+        if not self._worker_coord.source_landed(event):
+            return
         if handler is not None:
             handler(event)
             return
@@ -521,24 +526,6 @@ class UxonApp(App):
             reason="no_handler",
         )
 
-    def on__main_ctx_loaded(self, event: _MainCtxLoaded) -> None:
-        top = self.screen_stack[-1] if self.screen_stack else None
-        top_kind = type(top).__name__ if top else "None"
-        _debug(
-            "refresh",
-            at="on_ctx_loaded",
-            error=event.error or "",
-            ctx_is_none=event.ctx is None,
-            top=top_kind,
-        )
-        if event.error:
-            self.notify(f"Refresh failed: {event.error}", severity="error", timeout=6)
-            return
-        if event.ctx is None:
-            return
-        if isinstance(top, MainScreen):
-            top.apply_loaded_ctx(event.ctx)
-
     def on__cwd_writable_updated(self, event: _CwdWritableUpdated) -> None:
         """Apply a cwd-write probe result to ``state.cwd_writable``.
 
@@ -550,6 +537,11 @@ class UxonApp(App):
         from .slot_state import apply as apply_slot
 
         live_cwd = self.ctx.cwd
+        if (
+            event.generation is not None
+            and event.generation != self._worker_coord.cwd_probe_generation
+        ):
+            return
         if event.cwd_at_start and event.cwd_at_start != live_cwd:
             _debug(
                 "refresh",
@@ -561,18 +553,14 @@ class UxonApp(App):
             return
         result: SlotResult[bool | None] = SlotResult(
             value=bool(event.writable),
-            error=None,
+            error=event.error,
             elapsed_ms=0,
             attempted_at=time.time(),
         )
         self.state.cwd_writable = apply_slot(self.state.cwd_writable, result)
-        top = self.screen_stack[-1] if self.screen_stack else None
-        if isinstance(top, MainScreen):
-            self.call_later(top._refresh_cwd_row)
-
-    def on__worktrees_probed(self, event: _WorktreesProbed) -> None:
-        """Invoke the launch-flow callback with launchability + workspaces + error."""
-        event.on_done(event.launchable, event.workspaces, event.error)
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                self.call_later(screen._refresh_cwd_row)
 
     def on__off_loop_callback_done(self, event: _OffLoopCallbackDone) -> None:
         """Run the on-loop continuation for a blocking callback finished off-loop.
@@ -608,8 +596,9 @@ class UxonApp(App):
         self.exit()
 
     def _dispatch_availability_change(self) -> None:
-        """Common dispatch shared between ``_AgentAvailabilityUpdated`` and
-        ``_HostReportUpdated``: refresh the active modal if it consumes
+        """Refresh the active modal after a host report changes availability.
+
+        If the modal consumes
         availability, then run the transition-based gate for
         ``AgentsUnavailableScreen``.
         """
@@ -622,10 +611,10 @@ class UxonApp(App):
             self.call_later(top._rebuild_agent_list)
 
         availability = self.state.agent_availability.value or {}
-        configured = self.cfg.enabled_agents
+        configured = self.cfg.enabled_profiles
         if configured:
             current_all_missing = compute_all_missing(
-                enabled_agents=configured,
+                enabled_profiles=configured,
                 availability=availability,
             )
             modal_arg: tuple[str, ...] = tuple(configured)
@@ -648,7 +637,14 @@ class UxonApp(App):
             pending_launch=self.pending_launch is not None,
         )
         if push:
-            self.push_screen(AgentsUnavailableScreen(modal_arg, error=self._host_probe_error))
+            self.push_screen(
+                AgentsUnavailableScreen(
+                    modal_arg,
+                    agents=self.cfg.agents,
+                    launch_profiles=self.cfg.launch_profiles,
+                    error=self._host_probe_error,
+                )
+            )
         if self._availability_resolved():
             self._last_all_missing = current_all_missing
 
@@ -658,7 +654,7 @@ class UxonApp(App):
         Strict mode: every enabled agent has a non-pending entry.
         Auto-mode: the host probe has landed at least once.
         """
-        configured = self.cfg.enabled_agents
+        configured = self.cfg.enabled_profiles
         if not configured:
             return self._host_probe_landed
         availability = self.state.agent_availability.value or {}
@@ -666,10 +662,6 @@ class UxonApp(App):
             aid in availability and getattr(availability[aid], "status", "pending") != "pending"
             for aid in configured
         )
-
-    def on__agent_availability_updated(self, event: _AgentAvailabilityUpdated) -> None:
-        """Backward-compatible handler. Dispatches via the shared path."""
-        self._dispatch_availability_change()
 
     def on__host_report_updated(self, event: _HostReportUpdated) -> None:
         """Handler for the probe_host worker.
@@ -730,8 +722,7 @@ class UxonApp(App):
         Textual fires ``Unmount`` from :meth:`App._shutdown` after
         ``_close_all`` / ``_close_messages``, so by the time we get
         here the message pump is already winding down — cancelling
-        workers from this hook is exactly the "before App.run()
-        returns" point the spec calls for.
+        workers from this hook drains them before ``App.run()`` returns.
         """
         self._render.shutdown()
         self._worker_coord.drain()

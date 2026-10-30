@@ -2,13 +2,14 @@
 """TUI bridge: the live callback set wired into a TuiContext.
 
 :class:`TuiBridge` replaces the former ``cli._build_tui_context`` god-closure.
-The stable inputs (``cfg`` / ``launch_user`` / ``cwd``) are instance attributes;
-every former nested ``on_*`` closure is now a method that delegates to the
+The stable inputs (``cfg`` / ``caller_user`` / ``launch_user`` / ``cwd``) are
+instance attributes; every former nested ``on_*`` closure is now a method that delegates to the
 ``app.*`` use-cases and ``infra.*`` adapters. Per-build state (the probed
-``sudo_caps``, the fleet fetch semaphore, the per-host circuit breakers) is
+``sudo_caps``) is
 constructed in :func:`uxon.tui.context_builder.build_tui_context` and stashed on
 the bridge instance — a fresh bridge is built on every refresh, so this state
-never outlives one ``TuiContext``.
+never outlives one ``TuiContext``. The fleet semaphore is passed through
+refreshes; retry admission is owned by the App's worker coordinator.
 
 This module lives in ``tui/`` and may import ``domain`` / ``infra`` / ``app``;
 it must NOT import ``uxon.cli`` (the composition root imports *this*, lazily).
@@ -18,26 +19,30 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-import uxon.app.attach as attach_app
 import uxon.app.launch as launch_app
+import uxon.app.launch_profile as launch_profile_app
+import uxon.app.project_browsing as project_browsing
 import uxon.app.tui_planning as tui_planning
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
-from uxon.domain.session import session_stem_for_worktree
+from uxon.domain.session import (
+    BulkKillResult,
+    KillResult,
+    SessionIdentity,
+    session_stem_for_worktree,
+)
 from uxon.errors import fail
 from uxon.infra import (
     config_loader,
     git,
     host_status_probe,
     identity,
-    process,
     sessions_probe,
     tmux,
 )
+from uxon.infra.run import run_query
 
 if TYPE_CHECKING:
     from uxon.domain.launch_request import LaunchRequest
@@ -49,15 +54,16 @@ class TuiBridge:
     """Holds the stable TUI inputs and the command callbacks.
 
     Every ``on_*`` method delegates to the ``app.*`` use-cases and
-    ``infra.*`` adapters. Per-build state — the probed ``sudo_caps``, the
-    fleet ``fetch`` semaphore, and the per-host circuit breakers — is
+    ``infra.*`` adapters. Per-build state — the probed ``sudo_caps`` — is
     populated by :func:`uxon.tui.context_builder.build_tui_context` before
     the context is wired, and lives only for the lifetime of one
     ``TuiContext`` (a fresh bridge is built on every refresh).
+    The fleet fetch semaphore is shared across those refreshes.
     """
 
-    def __init__(self, cfg: Config, launch_user: str, cwd: str) -> None:
+    def __init__(self, cfg: Config, caller_user: str, launch_user: str, cwd: str) -> None:
         self.cfg = cfg
+        self.caller_user = caller_user
         self.launch_user = launch_user
         self.cwd = cwd
         # Per-build state, set by build_tui_context. Empty placeholders
@@ -67,105 +73,69 @@ class TuiBridge:
         # first real load probes; the probed caps thereafter (one-shot).
         self.captured_sudo_caps: SudoCapability | None = None
         self._fetch_sem: threading.Semaphore | None = None
-        self._host_breakers: dict[str, Any] = {}
 
     # ── attach / kill ──
 
-    def on_attach(self, user: str, name: str):
+    def on_attach(self, user: str, name: str, expected: SessionIdentity | None = None):
         # TUI Enter on a local row dispatches a direct
         # ``tmux attach-session`` (no ``uxon`` wrapper) — emit
-        # ``session.attach`` here so the operation is auditable.
-        # ``do_attach``'s emit only covers the CLI-side ``uxon attach``
+        # ``session.attach.dispatch`` here so the handoff is auditable.
+        # ``do_attach``'s dispatch emit only covers the CLI-side ``uxon attach``
         # invocation; the TUI request bypasses that path entirely.
+        from uxon.app.kill import _target_for_identity
         from uxon.infra import audit as _audit
 
-        fresh = sessions_probe.collect_sessions([user], self.cfg)
-        target = sessions_probe._resolve_or_audit_not_found(
-            name,
-            fresh,
-            self.cfg,
-            audit_event="session.attach",
-            target_user=user,
+        if expected is not None and expected.user != user:
+            fail("selected session user differs from attach user", 1)
+
+        fresh = sessions_probe.collect_sessions([user], self.cfg) if expected is None else []
+        target = (
+            _target_for_identity(self.cfg, expected, require_nonce=False)
+            if expected is not None
+            else sessions_probe._resolve_or_audit_not_found(
+                name,
+                fresh,
+                self.cfg,
+                audit_event="session.attach.dispatch",
+                target_user=user,
+                extra={"profile": "", "agent": ""},
+            )
         )
-        _audit.audit("session.attach", session=target.name, target_user=user)
+        _audit.audit(
+            "session.attach.dispatch",
+            session=target.name,
+            session_id=target.tmux_session_id,
+            launch_nonce=target.launch_nonce,
+            execution_backend=target.execution_backend,
+            target_user=user,
+            profile=target.profile,
+            agent=target.agent,
+            dry_run=False,
+        )
         return tmux._build_tmux_attach_request(target, self.cfg, user)
 
-    def on_kill(self, user: str, name: str) -> None:
-        # TUI 'k' on a local row runs ``tmux kill-session`` directly
-        # via ``process.run_cmd`` — emit ``session.kill`` after success so the
-        # operation is auditable (mirrors do_kill same-user pattern).
-        from uxon.infra import audit as _audit
+    def on_kill(self, expected: SessionIdentity) -> KillResult:
+        from uxon.app.kill import kill_expected
 
-        fresh = sessions_probe.collect_sessions([user], self.cfg)
-        target = sessions_probe._resolve_or_audit_not_found(
-            name,
-            fresh,
-            self.cfg,
-            audit_event="session.kill",
-            target_user=user,
-            extra={"force": True, "dry_run": False},
-        )
-        # TUI-driven kill: no TTY available, use non-interactive sudo.
-        full = tmux.configured_tmux_base(self.cfg, user, nonint=True) + [
-            "kill-session",
-            "-t",
-            target.name,
-        ]
-        try:
-            process.run_cmd(full, check=True)
-        except subprocess.CalledProcessError as exc:
-            _audit.audit(
-                "session.kill",
-                outcome="error",
-                session=target.name,
-                target_user=user,
-                force=True,
-                dry_run=False,
-                rc=exc.returncode,
-            )
-            raise
-        _audit.audit(
-            "session.kill",
-            session=target.name,
-            target_user=user,
-            force=True,
-            dry_run=False,
-        )
+        allowed = {self.launch_user, *(self.sudo_caps.reachable_users if self.sudo_caps else ())}
+        return kill_expected(self.cfg, expected, allowed_users=frozenset(allowed))
 
-    def on_kill_all(self) -> None:
-        # TUI 'D' / kill-all-mine. Mirrors ``on_kill_all_reachable``'s
-        # audit shape (``target_users``, ``killed_count``, ``dry_run``)
-        # for the single-user case.
-        from uxon.infra import audit as _audit
+    def on_kill_all(self, targets: tuple[SessionIdentity, ...]) -> BulkKillResult:
+        from uxon.app.kill import kill_snapshot
 
-        fresh = sessions_probe.collect_sessions([self.launch_user], self.cfg)
-        killed_count = 0
-        for s in fresh:
-            full = tmux.configured_tmux_base(self.cfg, self.launch_user, nonint=True) + [
-                "kill-session",
-                "-t",
-                s.name,
-            ]
-            cp = process.run_cmd(full, check=False)
-            if cp.returncode == 0:
-                killed_count += 1
-        _audit.audit(
-            "session.kill_all",
-            outcome="ok" if killed_count == len(fresh) else "error",
-            target_users=[self.launch_user],
-            killed_count=killed_count,
-            dry_run=False,
-        )
+        return kill_snapshot(self.cfg, targets, allowed_users=frozenset({self.launch_user}))
 
-    def on_remote_attach(self, host_name: str, user: str, name: str) -> LaunchRequest:
+    def on_remote_attach(
+        self, host_name: str, user: str, name: str, expected: SessionIdentity | None = None
+    ) -> LaunchRequest:
         """TUI dispatch: attach to ``name`` belonging to ``user`` on peer ``host_name``.
 
         Mirrors :meth:`on_remote_kill`'s SSH gesture but allocates a TTY
         and forces ``ssh_multiplex="off"`` — an interactive attach must
         not share the poller's ControlMaster (a wedged master would hang
         the TUI handoff at ``unix_wait_for_peer``). Raises
-        :class:`CallbackError` directly (no ``_wrap_tui_callback`` shim)
-        on an unknown host.
+        :class:`CallbackError` on an unknown host; the bound callback also
+        converts lower-layer failures into the same structured error.
         """
         import uuid as _uuid
 
@@ -176,26 +146,32 @@ class TuiBridge:
         from uxon.infra.remote_hosts import find_host
         from uxon.tui.context import CallbackError
 
+        corr_id = str(_uuid.uuid4())
         peer = find_host(self.cfg.remote_hosts, host_name)
         if peer is None:
+            _audit.audit(
+                "attach.remote.out.dispatch",
+                outcome="not_found",
+                peer_name=host_name,
+                ssh_alias="",
+                target_user=user,
+                target_session=name,
+                dry_run=False,
+                correlation_id=corr_id,
+            )
             raise CallbackError(f"unknown remote host: {host_name}")
-        # Pass correlation_id explicitly via kwargs rather than seeding
-        # ``_audit._correlation_id``: the TUI process is long-lived, and a
-        # left-behind global would leak into subsequent local audit events
-        # (next session.attach / session.kill picked up the stale UUID).
-        corr_id = str(_uuid.uuid4())
-        _audit.audit(
-            "attach.remote.out",
-            peer_name=peer.name,
-            ssh_alias=peer.ssh_alias,
-            target_user=user,
-            target_session=name,
-            correlation_id=corr_id,
-        )
+        from uxon.app.kill import resolve_remote_identity
+
+        expected = expected or resolve_remote_identity(self.cfg, peer, name, user)
+        expected.validate(require_nonce=False)
+        if expected.user != user:
+            fail("selected session user differs from attach user", 1)
+        name = expected.name
         # target first (see _do_attach_remote for rationale).
         remote_cmd = (
             f"{shlex.quote(peer.remote_uxon)} attach {shlex.quote(name)} "
             f"--user {shlex.quote(user)} "
+            f"--expect-session {shlex.quote(expected.to_json())} "
             f"--audit-correlation-id {shlex.quote(corr_id)}"
         )
         argv = build_peer_ssh_argv(
@@ -212,148 +188,40 @@ class TuiBridge:
             ssh_multiplex="off",
             ssh_control_persist_seconds=self.cfg.ssh_control_persist_seconds,
         )
-        return LaunchRequest(cmd=tuple(argv), label=f"attach {name}@{host_name}")
-
-    def on_remote_kill(self, host_name: str, user: str, name: str) -> None:
-        """TUI dispatch: kill ``name`` belonging to ``user`` on peer ``host_name``.
-
-        Reuses the same SSH gesture as the CLI's ``uxon kill --host
-        <alias> --user <user> --force <id>``: the peer's own ``uxon
-        kill`` runs the per-target sudo probe, so the local side does
-        not need to know the peer's user table. ``--force`` is passed
-        on the wire because confirmation is a local-UI concern (the TUI
-        already prompted before this callback fires).
-
-        Failures surface as :class:`CallbackError` via the
-        ``_wrap_tui_callback`` shim — :meth:`MainScreen.action_kill`
-        renders them as a red toast (the dashboard's ``d`` binding
-        dispatches here when the cursor sits on a remote row).
-        """
-        import uuid as _uuid
-
-        from uxon.infra import audit as _audit
-        from uxon.infra.remote.collector import (
-            DEFAULT_CONNECT_TIMEOUT_SEC,
-            DEFAULT_TOTAL_TIMEOUT_SEC,
-        )
-        from uxon.infra.remote.master_recovery import recover_wedged_master
-        from uxon.infra.remote.ssh_argv import build_peer_ssh_argv
-        from uxon.infra.remote_hosts import find_host
-
-        peer = find_host(self.cfg.remote_hosts, host_name)
-        if peer is None:
-            fail(f"unknown remote host: {host_name}", 1)
-        # See on_remote_attach: TUI process outlives the dispatch, so we
-        # avoid the module-level correlation_id global to keep state from
-        # bleeding into the next local emit.
-        corr_id = str(_uuid.uuid4())
+        # Pass correlation_id explicitly rather than seeding the process-global
+        # value: the TUI outlives this dispatch. Emit only after argv planning
+        # succeeds so outcome=ok means a concrete handoff request exists.
         _audit.audit(
-            "kill.remote.out",
+            "attach.remote.out.dispatch",
             peer_name=peer.name,
             ssh_alias=peer.ssh_alias,
             target_user=user,
             target_session=name,
-            force=True,
+            session_id=expected.session_id,
+            launch_nonce=expected.launch_nonce,
+            execution_backend=expected.execution_backend,
             dry_run=False,
             correlation_id=corr_id,
         )
-        # target first (see _do_attach_remote for rationale).
-        remote_cmd = (
-            f"{shlex.quote(peer.remote_uxon)} kill {shlex.quote(name)} --force "
-            f"--user {shlex.quote(user)} "
-            f"--audit-correlation-id {shlex.quote(corr_id)}"
-        )
-        ssh_argv = build_peer_ssh_argv(
-            command_template=peer.command_template,
-            extra_ssh_options=peer.extra_ssh_options,
-            ssh_alias=peer.ssh_alias,
-            remote_uxon=peer.remote_uxon,
-            remote_command=remote_cmd,
-            allocate_tty=False,
-            connect_timeout=DEFAULT_CONNECT_TIMEOUT_SEC,
-            ssh_multiplex=self.cfg.ssh_multiplex,
-            ssh_control_persist_seconds=self.cfg.ssh_control_persist_seconds,
+        return LaunchRequest(
+            cmd=tuple(argv),
+            label=f"attach {name}@{host_name}",
+            identity=expected,
+            correlation_id=corr_id,
+            peer_name=host_name,
+            capture_ssh_diagnostics=not peer.command_template,
         )
 
-        # Mirrors ``_do_kill_remote::_emit_kill_remote_error`` (CLI
-        # path) so the TUI and CLI failure trails are symmetric: an
-        # operator querying ``EVENT=kill.remote.out OUTCOME=error``
-        # finds TUI-originated ssh failures alongside CLI ones.
-        def _emit_kill_remote_error(error: str, rc: int) -> None:
-            _audit.audit(
-                "kill.remote.out",
-                outcome="error",
-                peer_name=peer.name,
-                ssh_alias=peer.ssh_alias,
-                target_user=user,
-                target_session=name,
-                force=True,
-                dry_run=False,
-                correlation_id=corr_id,
-                rc=rc,
-                error=error[:256],
-            )
+    def on_remote_kill(self, host_name: str, expected: SessionIdentity) -> KillResult:
+        from uxon.app.kill import remote_kill_expected
 
-        try:
-            cp = subprocess.run(
-                ssh_argv,
-                capture_output=True,
-                text=True,
-                timeout=DEFAULT_TOTAL_TIMEOUT_SEC,
-            )
-        except subprocess.TimeoutExpired:
-            if self.cfg.ssh_multiplex != "off":
-                recover_wedged_master(peer)
-            _emit_kill_remote_error("ssh timeout", 124)
-            fail(f"ssh timeout after {DEFAULT_TOTAL_TIMEOUT_SEC}s talking to {host_name}", 1)
-        except FileNotFoundError:
-            _emit_kill_remote_error("ssh binary missing", 127)
-            fail("ssh not installed on local host", 1)
-        if cp.returncode != 0:
-            stderr = (cp.stderr or "").strip().splitlines()
-            tail = stderr[-1] if stderr else f"ssh exited {cp.returncode}"
-            _emit_kill_remote_error(f"non-zero ssh rc: {tail}", cp.returncode)
-            fail(f"remote kill on {host_name} failed: {tail}", 1)
+        return remote_kill_expected(self.cfg, host_name, expected)
 
-    def on_kill_all_reachable(self) -> None:
-        # Iterate the launch user plus every reachable peer user. An
-        # empty ``reachable_users`` collapses to "kill all my own
-        # sessions", which is the same behaviour the legacy
-        # ``kill-all-global`` had when sudo was unavailable.
-        reachable = self.sudo_caps.reachable_users if self.sudo_caps else frozenset()
-        users = sorted({self.launch_user, *reachable})
-        killed_count = 0
-        attempted = 0
-        for u in users:
-            fresh = sessions_probe.collect_sessions([u], self.cfg)
-            for s in fresh:
-                full = tmux.configured_tmux_base(self.cfg, u, nonint=True) + [
-                    "kill-session",
-                    "-t",
-                    s.name,
-                ]
-                cp = process.run_cmd(full, check=False)
-                attempted += 1
-                if cp.returncode == 0:
-                    killed_count += 1
-        # Operationally the most-significant kill_all path: cross-user
-        # bulk kill from the TUI.  Audit emit covers the whole sweep,
-        # not per-session — matches the spec's `target_users` /
-        # `killed_count` shape.
-        from uxon.infra import audit as _audit
+    def on_kill_all_reachable(self, targets: tuple[SessionIdentity, ...]) -> BulkKillResult:
+        from uxon.app.kill import kill_snapshot
 
-        _audit.audit(
-            "session.kill_all",
-            outcome="ok" if killed_count == attempted else "error",
-            target_users=users,
-            killed_count=killed_count,
-            dry_run=False,
-        )
-
-    # Legacy alias kept for any out-of-tree caller. The TUI dispatches
-    # via ``on_kill_all_global`` (the field name on TuiContext); the
-    # implementation now scopes to the reachable set.
-    on_kill_all_global = on_kill_all_reachable
+        allowed = {self.launch_user, *(self.sudo_caps.reachable_users if self.sudo_caps else ())}
+        return kill_snapshot(self.cfg, targets, allowed_users=frozenset(allowed))
 
     # ── refresh / link health ──
 
@@ -365,12 +233,14 @@ class TuiBridge:
         # so the probe runs at most once per process.
         from uxon.tui.context_builder import build_tui_context
 
-        fresh_cfg = config_loader.load_config(self.cwd)
+        fresh_cfg = config_loader.load_config()
         return build_tui_context(
             fresh_cfg,
+            self.caller_user,
             self.launch_user,
             self.cwd,
             sudo_caps_override=self.captured_sudo_caps,
+            fetch_semaphore=self._fetch_sem,
         )
 
     def on_probe_link_health(self) -> object | None:
@@ -382,23 +252,27 @@ class TuiBridge:
         from uxon.domain.config import DEFAULT_CONFIG
         from uxon.infra import settings as uxon_settings
 
-        repo_data, proj_data, proj_cfg = uxon_settings.load_settings_sources(self.cwd)
-        return uxon_settings.resolve_setting_entries(repo_data, proj_data, proj_cfg, DEFAULT_CONFIG)
+        operator_data = uxon_settings.load_settings_source()
+        return uxon_settings.resolve_setting_entries(operator_data, DEFAULT_CONFIG)
 
     def on_setting_save(self, key: str, value: object) -> None:
         from uxon.infra import settings as uxon_settings
 
-        uxon_settings.persist_repo_config_updates(config_loader.repo_config_path(), {key: value})
+        uxon_settings.persist_operator_config_updates(
+            config_loader.operator_config_path(), {key: value}
+        )
 
     def on_setting_remove(self, key: str) -> None:
         from uxon.infra import settings as uxon_settings
 
-        uxon_settings.remove_repo_key(config_loader.repo_config_path(), key)
+        uxon_settings.remove_operator_key(config_loader.operator_config_path(), key)
 
     def on_setting_save_mapping(self, key: str, mapping: dict) -> None:
         from uxon.infra import settings as uxon_settings
 
-        uxon_settings.persist_repo_config_updates(config_loader.repo_config_path(), {key: mapping})
+        uxon_settings.persist_operator_config_updates(
+            config_loader.operator_config_path(), {key: mapping}
+        )
 
     def get_git_remote_profile_rows(self) -> list:
         return [
@@ -416,7 +290,7 @@ class TuiBridge:
 
     # ── launch ──
 
-    def on_launch_cwd(self, agent_id: str, mode_id: str, target_dir: str | None = None):
+    def on_launch_cwd(self, profile_id: str, mode_id: str, target_dir: str | None = None):
         # ``target_dir`` is the resolved primary ``repo_root`` for the
         # WORKSPACE primary row. It coincides with ``self.cwd`` when the TUI
         # was started at the primary repo root, and differs when it was
@@ -428,68 +302,34 @@ class TuiBridge:
         # (``session_stem_for_path``) is correct for the primary tree, so no
         # ``worktree=`` argument is threaded here.
         target = target_dir or self.cwd
-        req = tui_planning._plan_tui_run_agent(
-            self.cfg, self.launch_user, target, agent_id, mode_id
-        )
-        # ``_plan_tui_run_agent`` only ever yields a launch (never an
-        # attach), so this path is unconditional ``session.new``.
-        from uxon.infra import audit as _audit
-
-        _audit.audit(
-            "session.new",
-            agent=agent_id,
-            project=target,
-            branch="",
-            session=attach_app._session_name_from_launch_label(req.label),
-            dry_run=False,
+        req = tui_planning._plan_tui_run_profile(
+            self.cfg, self.caller_user, self.launch_user, target, profile_id, mode_id
         )
         return req
 
-    def on_launch_new(self, name: str, agent_id: str, mode_id: str, git_profile: str):
-        req = tui_planning._plan_tui_create_new_agent(
-            self.cfg, self.launch_user, name, agent_id, mode_id, git_profile
-        )
-        # The TUI planner no longer auto-attaches — every launch request
-        # routed here is a fresh ``session.new``. The attach path is
-        # owned by ``on_attach`` (which emits its own ``session.attach``
-        # event when the operator picks "attach" in SessionChoiceScreen).
-        project = canonical(os.path.join(self.cfg.new_project_root, name))
-        from uxon.infra import audit as _audit
-
-        _audit.audit(
-            "session.new",
-            agent=agent_id,
-            project=project,
-            branch="",
-            session=attach_app._session_name_from_launch_label(req.label),
-            dry_run=False,
+    def on_launch_new(self, name: str, profile_id: str, mode_id: str, git_profile: str):
+        req = tui_planning._plan_tui_create_new_profile(
+            self.cfg, self.caller_user, self.launch_user, name, profile_id, mode_id, git_profile
         )
         return req
 
-    def on_launch_existing(self, name: str, agent_id: str, mode_id: str):
-        req = tui_planning._plan_tui_open_existing_agent(
-            self.cfg, self.launch_user, name, agent_id, mode_id
-        )
-        # Same as ``on_launch_new``: TUI owns attach decisions; this path
-        # always emits ``session.new``.
-        project = canonical(os.path.join(self.cfg.new_project_root, name))
-        from uxon.infra import audit as _audit
-
-        _audit.audit(
-            "session.new",
-            agent=agent_id,
-            project=project,
-            branch="",
-            session=attach_app._session_name_from_launch_label(req.label),
-            dry_run=False,
+    def on_launch_existing(self, name: str, profile_id: str, mode_id: str):
+        req = tui_planning._plan_tui_open_existing_profile(
+            self.cfg, self.caller_user, self.launch_user, name, profile_id, mode_id
         )
         return req
+
+    def on_list_project_directories(self, relative_path: str) -> list[tuple[str, str]]:
+        """Browse under the project root using the context's launch user, off-loop."""
+        return project_browsing.browse_project_directories(
+            self.cfg, self.launch_user, relative_path
+        )
 
     def on_probe_existing_sessions(
-        self, target_dir: str, agent_id: str
-    ) -> tuple[tuple[str, bool], ...]:
-        """TUI probe: return (name, attached) pairs for launch_user's
-        compatible sessions under ``target_dir`` + ``agent_id``.
+        self, target_dir: str, profile_id: str, mode_id: str
+    ) -> tuple[tuple[str, str, bool, SessionIdentity], ...]:
+        """TUI probe: return (name, attached) pairs for the profile's
+        compatible sessions under ``target_dir``.
 
         Called by the TUI between LaunchOptionsScreen (agent + mode pick)
         and the actual ``on_launch_*`` commit. An empty tuple means the
@@ -497,94 +337,178 @@ class TuiBridge:
         SessionChoiceScreen modal to let the operator pick attach vs
         new-alongside.
         """
-        matches = sessions_probe.probe_tui_compatible_sessions(
-            self.cfg, self.launch_user, target_dir, agent_id
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            profile_id,
+            target_dir,
+            mode_id,
+            target_may_not_exist=False,
         )
-        return tuple((s.name, s.attached == "1") for s in matches)
+        matches = sessions_probe.probe_tui_compatible_sessions(
+            self.cfg, resolved.launch_user, resolved.canonical_target, resolved.profile.id
+        )
+        return tuple((s.user, s.name, s.attached == "1", s.identity) for s in matches)
 
-    def on_probe_worktrees(self, cwd_arg: str) -> list:
-        """Workspaces for ``cwd_arg``'s repo (folders only).
+    def on_git_remote_options(
+        self, name: str, profile_id: str, mode_id: str
+    ) -> tuple[list[tuple[str, str]], str]:
+        """Effective git-remote choices for a new project/profile pair.
 
-        Resolves ``cwd`` → primary repo root with the NON-interactive
-        resolvers (Task 5) so the fullscreen TUI never blocks on a hidden
-        ``sudo`` prompt, then lists worktrees under the same
-        ``identity.nonint_command_prefix_for_user`` and parses with Task 2.
+        Runs off the event loop from ``LaunchFlow`` after the operator picks a
+        launch profile. Resolution applies path rules before the GitProfile
+        screen is shown, so the modal never offers a remote that the later
+        planner would reject.
+        """
+        target = os.path.normpath(os.path.join(self.cfg.new_project_root, name))
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            profile_id,
+            target,
+            mode_id,
+            target_may_not_exist=True,
+        )
+        allowed = set(resolved.git_remote.allowed_profiles)
+        options = [
+            (
+                p.name,
+                f"{p.host}/{p.owner}  via {p.creds_user or resolved.launch_user} [{p.auth}]",
+            )
+            for p in self.cfg.git_remote_profiles
+            if p.name in allowed
+        ]
+        return options, resolved.git_remote.default_profile
 
-        Two empty-ish outcomes are kept distinct so the WORKSPACE column can
-        tell them apart: a folder that is **not a git repo** returns ``[]``
-        (the benign "git not initialized" hint), whereas a folder that **is**
-        a repo but whose ``git worktree list`` enumeration fails raises
-        :class:`WorktreeProbeError` (an error row) — a real git failure must
-        not masquerade as "no repo here".
+    def on_probe_worktrees(self, cwd_arg: str, profile_id: str, mode_id: str) -> list:
+        """Validate the chosen profile's access and list its target-user worktrees.
+
+        A non-git directory returns an empty list. Failed enumeration raises;
+        it must not be treated as a non-git directory. Runs off the event loop.
         """
         from uxon.infra.worktrees import WorktreeProbeError, parse_worktree_porcelain
 
-        repo_root = git.git_repo_root_nonint_as_user(cwd_arg, self.launch_user)
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            profile_id,
+            cwd_arg,
+            mode_id,
+            target_may_not_exist=False,
+        )
+        user = resolved.launch_user
+        cwd_arg = resolved.canonical_target
+        launch_app.ensure_launch_target_allowed(self.cfg, user, cwd_arg)
+        repo_root = git.git_repo_root_nonint_as_user(self.cfg, cwd_arg, user)
         if not repo_root:
             return []
-        primary = git.git_common_dir_root_as_user(cwd_arg, self.launch_user)
+        primary = git.git_common_dir_root_as_user(self.cfg, cwd_arg, user)
         if primary:
             repo_root = primary
-        cp = subprocess.run(
-            identity.nonint_command_prefix_for_user(self.launch_user)
+        cp = run_query(
+            identity.nonint_command_prefix_for_user(self.cfg, user)
             + ["git", "-C", repo_root, "worktree", "list", "--porcelain"],
-            text=True,
-            capture_output=True,
+            timeout=self.cfg.execution.backend_for_user(user).probe_timeout_seconds,
         )
         if cp.returncode != 0:
             raise WorktreeProbeError((cp.stderr or "").strip() or "git worktree list failed")
         return parse_worktree_porcelain(cp.stdout or "", repo_root=repo_root)
 
-    def on_create_worktree(self, repo_root: str, branch: str, agent_id: str, mode_id: str):
+    def on_create_worktree(self, repo_root: str, branch: str, profile_id: str, mode_id: str):
         # plan_worktree_launch emits its own worktree.create + session.new
         # audit events. The TUI has no agent passthrough args (agent_args
         # defaults to None).
+        from uxon.infra.worktrees import compute_worktree_path
+
+        worktree_path = compute_worktree_path(
+            repo_root=repo_root, branch=branch, worktree_root=self.cfg.worktree_root
+        )
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            profile_id,
+            worktree_path,
+            mode_id,
+            target_may_not_exist=True,
+        )
         return launch_app.plan_worktree_launch(
-            self.cfg, self.launch_user, repo_root, branch, agent_id, mode_id
+            self.cfg,
+            self.caller_user,
+            resolved,
+            repo_root,
+            branch,
+            requested_profile=profile_id,
         )
 
     def on_launch_existing_worktree(
-        self, repo_root: str, branch: str, worktree_path: str, agent_id: str, mode_id: str
+        self, repo_root: str, branch: str, worktree_path: str, profile_id: str, mode_id: str
     ):
         # Launch into an EXISTING worktree with the worktree-aware stem
-        # (§2.5) — never re-creates the worktree.
-        req = tui_planning._plan_tui_run_agent(
+        # — never re-creates the worktree.
+        req = tui_planning._plan_tui_run_profile(
             self.cfg,
+            self.caller_user,
             self.launch_user,
             worktree_path,
-            agent_id,
+            profile_id,
             mode_id,
             worktree=(repo_root, branch),
-        )
-        from uxon.infra import audit as _audit
-
-        _audit.audit(
-            "session.new",
-            agent=agent_id,
-            project=worktree_path,
-            branch=branch,
-            session=attach_app._session_name_from_launch_label(req.label),
-            dry_run=False,
         )
         return req
 
     def on_probe_existing_worktree_sessions(
-        self, worktree_path: str, repo_root: str, branch: str, agent_id: str
-    ) -> tuple[tuple[str, bool], ...]:
+        self, worktree_path: str, repo_root: str, branch: str, profile_id: str, mode_id: str
+    ) -> tuple[tuple[str, str, bool, SessionIdentity], ...]:
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            profile_id,
+            worktree_path,
+            mode_id,
+            target_may_not_exist=False,
+        )
         matches = sessions_probe.probe_tui_compatible_sessions(
             self.cfg,
-            self.launch_user,
-            worktree_path,
-            agent_id,
+            resolved.launch_user,
+            resolved.canonical_target,
+            resolved.profile.id,
             stem=session_stem_for_worktree(repo_root, branch),
-            compatibility_root=worktree_path,
+            compatibility_root=resolved.canonical_target,
         )
-        return tuple((s.name, s.attached == "1") for s in matches)
+        return tuple((s.user, s.name, s.attached == "1", s.identity) for s in matches)
+
+    def on_runtime_gate(self, target_dir: str, profile_id: str, mode_id: str):
+        """Probe the workload runtime for ``target_dir``; return the TUI gate or None.
+
+        Shells out as the launch user under a bounded timeout — MUST run off
+        the event loop (the caller dispatches it via ``run_off_loop``). None
+        means "launch straight through" (disabled, or already running).
+        """
+        resolved = launch_profile_app.resolve_launch_profile(
+            self.cfg,
+            self.caller_user,
+            profile_id,
+            target_dir,
+            mode_id,
+            target_may_not_exist=False,
+        )
+        return launch_app.decide_runtime_gate(self.cfg, resolved.canonical_target, resolved)
 
     def on_probe_cwd_writable(self) -> bool:
-        return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, self.cwd)
-
-    def on_probe_dir_launchable(self, target_dir: str) -> bool:
-        # Same predicate as on_probe_cwd_writable, parameterised by target —
-        # gates the "Open existing project" launch (no pre-probed slot).
-        return launch_app.is_launch_target_allowed(self.cfg, self.launch_user, target_dir)
+        # The picker may select a different account from the dashboard's default.
+        # One unreachable backend must not hide another profile's writable folder.
+        default_user = identity.resolve_launch_user(self.cfg, self.caller_user)
+        users = dict.fromkeys(
+            self.cfg.launch.profiles[profile_id].launch_user or default_user
+            for profile_id in self.cfg.launch.effective_enabled_profiles
+        )
+        last_error: SystemExit | None = None
+        for user in users:
+            try:
+                if launch_app.is_launch_target_allowed(self.cfg, user, self.cwd):
+                    return True
+            except SystemExit as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        return False

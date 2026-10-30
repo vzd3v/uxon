@@ -78,13 +78,24 @@ def assign_block_colors(
     return out
 
 
+# Distinct "runtime down" marker for the CPU/RAM cells: a session
+# whose workload resource is stopped/absent renders this instead of a silent
+# idle 0/—, so an operator can tell a down workload from a healthy
+# idle agent at a glance.
+RUNTIME_DOWN_CELL = "down"
+
+
 def format_cpu(row: SessionRow) -> Text:
     """Format CPU% with the >50/>10 colour thresholds.
 
-    The missing/zero distinction is collapsed at the adapter boundary
-    (``from_tui_session``), so this always renders the numeric value;
-    an idle row shows as ``"0.0"``.
+        The missing/zero distinction is collapsed at the adapter boundary
+        (``from_tui_session``), so this always renders the numeric value;
+        an idle row shows as ``"0.0"``. A session whose workload resource is
+        down renders a distinct dim marker rather than a misleading ``0.0``
+    .
     """
+    if row.runtime_down:
+        return Text(RUNTIME_DOWN_CELL, style="dim italic")
     raw = f"{row.cpu_pct:.1f}" if row.cpu_pct < 100 else f"{row.cpu_pct:.0f}"
     if row.cpu_pct > 50:
         return Text(raw, style="bold red")
@@ -94,7 +105,13 @@ def format_cpu(row: SessionRow) -> Text:
 
 
 def format_ram(row: SessionRow) -> str:
-    """Format ``rss_kib`` to the same compact unit shape ``cli`` uses."""
+    """Format ``rss_kib`` to the same compact unit shape ``cli`` uses.
+
+    A session whose workload resource is down renders the distinct
+    down-marker rather than ``-`` — same signal as the CPU cell.
+    """
+    if row.runtime_down:
+        return RUNTIME_DOWN_CELL
     rss_kib = row.rss_kib
     if rss_kib <= 0:
         return "-"
@@ -139,25 +156,22 @@ def _format_user(row: SessionRow) -> Text:
     return Text(row.user or "-")
 
 
-def _strip_agent_suffix(short: str, agent: str) -> str:
-    """Drop the ``@<agent>`` token from a prefix-stripped session name.
+def _strip_profile_suffix(short: str, profile: str) -> str:
+    """Drop the profile suffix token from a prefix-stripped session name.
 
-    Session names follow ``<prefix><stem>@<agent>[-N]`` (see
-    :func:`uxon.cli.parse_session_name`). ``row.short`` is the
-    name with the prefix removed — i.e. ``<stem>@<agent>[-N]``.
-    The dashboard renders the agent in its own AGENT column, so
-    showing ``@<agent>`` in NAME is redundant. We strip the last
-    occurrence of ``@<agent>`` and preserve the trailing ``-N``
+    Session names follow ``<prefix><stem>@<profile>[-N]``. ``row.short`` is the
+    name with the prefix removed — i.e. ``<stem>@<profile>[-N]``. We strip the
+    last profile occurrence and preserve the trailing ``-N``
     disambiguator (so ``proj@claude-2`` becomes ``proj-2``, not
     ``proj`` — otherwise two siblings would collide visually).
 
     ``rpartition`` over ``find``: a stem like ``foo@claude_helper``
-    happens to contain the agent name as a substring; partitioning
+    happens to contain the profile name as a substring; partitioning
     from the right matches the actual suffix.
     """
-    if not agent:
+    if not profile:
         return short
-    needle = f"@{agent}"
+    needle = f"@{profile}"
     if needle not in short:
         return short
     base, _, tail = short.rpartition(needle)
@@ -167,8 +181,8 @@ def _strip_agent_suffix(short: str, agent: str) -> str:
 def _format_name(row: SessionRow) -> Text:
     """Emit ``●``/``○`` attach glyph + display name.
 
-    Display name strips the ``@<agent>`` suffix from ``row.short``
-    (the AGENT column carries that already) but keeps the ``-N``
+    Display name strips the suffix from ``row.short`` (the AGENT column carries
+    that already) but keeps the ``-N``
     disambiguator so siblings remain distinguishable. Block hue and
     zebra dim are layered by the widget at render time; this
     formatter stays pure data (no positional metadata) so the widget
@@ -177,7 +191,12 @@ def _format_name(row: SessionRow) -> Text:
     glyph = "● " if row.attached else "○ "
     text = Text(glyph)
     base = row.short or row.name or "-"
-    text.append(_strip_agent_suffix(base, row.agent))
+    text.append(_strip_profile_suffix(base, row.profile or row.agent))
+    if row.exited:
+        status = f" ({row.active_exit_status})" if row.active_exit_status is not None else ""
+        text.append(f" [exited{status}]", style="bold red")
+    elif row.has_diagnostics:
+        text.append(" [error]", style="bold red")
     return text
 
 
@@ -243,10 +262,10 @@ def _sort_user(row: SessionRow) -> str:
 
 def _sort_name(row: SessionRow) -> str:
     # Sort by the same display label the operator sees in NAME, not
-    # by ``<stem>@<agent>``. Otherwise two same-stem siblings on
-    # different agents interleave with unrelated rows whose stem
+    # by ``<stem>@<profile>``. Otherwise two same-stem siblings on
+    # different profiles interleave with unrelated rows whose stem
     # happens to alphabetise between them.
-    return _strip_agent_suffix(row.short or row.name, row.agent)
+    return _strip_profile_suffix(row.short or row.name, row.profile or row.agent)
 
 
 def _sort_agent(row: SessionRow) -> str:

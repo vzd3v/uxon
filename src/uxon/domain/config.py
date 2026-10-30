@@ -5,8 +5,8 @@
 ``DEFAULT_CONFIG`` / ``RECOMMENDED_TMUX_OPTIONS`` are the seed data.
 ``merge_config`` and the ``validate_*`` helpers are pure (the validators
 call :func:`uxon.errors.fail`, the leaf exit primitive). The impure
-config *loader* (TOML reading, project-config discovery) lives in the
-infra layer and produces a :class:`Config`.
+config *loader* (TOML reading) lives in the infra layer and produces a
+:class:`Config`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from uxon.domain.agents import AgentSpec, default_agent_catalog
+from uxon.domain.execution import ExecutionConfig
 from uxon.domain.git_profiles import GitRemoteProfile
+from uxon.domain.launch_profiles import LaunchConfig
+from uxon.domain.runtime import WorkloadRuntimeSpec
 from uxon.errors import fail
 
 # Recommended uxon-managed tmux options (3.5.0). This is the SINGLE source of
@@ -36,7 +40,7 @@ RECOMMENDED_TMUX_OPTIONS: dict[str, dict[str, object]] = {
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "runtime_user": "",
+    "default_launch_user": "",
     "default_launch_mode": "caller",
     "enable_all_users_list": False,
     "launch_user_by_caller": {},
@@ -55,17 +59,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # different ``session_prefix`` add the previous value here to keep
     # already-running sessions reachable; new installs leave it empty.
     "legacy_session_prefixes": [],
-    # ``enabled`` is empty by default — auto-mode: uxon picks up
-    # whichever agents are actually installed for the launch user.
-    # Set it to a non-empty list (e.g. ``["claude", "codex"]``) to
-    # switch to strict-whitelist mode. ``default`` may also be empty;
-    # consumers fall back to the first available agent at launch time.
-    "agents": {
-        "enabled": [],
-        "default": "",
-        "claude": {"default_args": []},
-        "codex": {"default_args": []},
-        "cursor": {"default_args": []},
+    # Agent catalog only. Launch selection lives under [launch].
+    "agents": {},
+    "launch": {
+        "enabled_profiles": [],
+        "default_profile": "",
+        "profiles": {},
+        "path_rules": [],
     },
     "new_project_root": str(Path.home() / "projects"),
     "repeat_noninteractive_mode": "fail",
@@ -75,7 +75,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # else local HEAD; "remote" fetches origin first (claude-like).
     "worktree_root": "",
     "worktree_base": "local",
-    "tmux_socket_template": "/tmp/uxon-{user}.sock",
+    "tmux_socket_template": "/tmp/tmux-{uid}/uxon-{execution_backend}.sock",
+    # Empty uses the controller's private XDG state directory. Multi-controller
+    # supervision requires an explicitly provisioned shared control directory.
+    "launch_record_dir": "",
+    "execution": {
+        "default_backend": "local",
+        "backend_by_launch_user": {},
+        "backends": {},
+    },
     "tui_refresh_interval_seconds": 2.0,
     "tui_ssh_refresh_interval_seconds": 10.0,
     # Dashboard column layout. ``columns`` is a list of column ids (see
@@ -91,7 +99,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "color_palette": ["cyan", "blue"],
     },
     "local_host": {"color": "green"},
-    # Stage 5: ssh transport hardening.
+    # SSH transport hardening.
     # ``ssh_multiplex = "auto"`` adds ControlMaster/Path/Persist to the
     # default fetch template (warm tick: 5-20 ms vs cold 200-500 ms).
     # ``"off"`` strips them — for environments that prohibit the socket.
@@ -102,10 +110,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ssh_control_persist_seconds": 300,
     # ``fetch_concurrency`` caps concurrent SSH fetch workers fleet-wide
     # so a 50-host post-outage stampede doesn't exhaust the FD ulimit.
-    # Stage 5 step 7 wires the semaphore.
+    # Fleet fetch concurrency bound.
     "fetch_concurrency": 16,
     "git_create_enabled": False,
-    "default_git_remote_profile": "",
     "git_remote_profiles": [],
     "remote_hosts": [],
     # Application-level audit channel.  ``enabled`` is the only kill-switch
@@ -121,17 +128,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # ``dict(...)`` copies keep the shared constant immutable from per-load
     # mutation.
     "tmux": {
+        "set_terminal_title": True,
         "manage_options": False,
         "options": dict(RECOMMENDED_TMUX_OPTIONS["options"]),
         "server_options": dict(RECOMMENDED_TMUX_OPTIONS["server_options"]),
         "append_server_options": dict(RECOMMENDED_TMUX_OPTIONS["append_server_options"]),
     },
+    "runtimes": {},
 }
 
 
 @dataclass
 class Config:
-    runtime_user: str
+    default_launch_user: str
     default_launch_mode: str
     enable_all_users_list: bool
     launch_user_by_caller: dict[str, str]
@@ -139,16 +148,13 @@ class Config:
     allowed_roots: list[str]
     session_prefix: str
     legacy_session_prefixes: tuple[str, ...]
-    enabled_agents: tuple[str, ...]
-    default_agent: str
-    agent_default_args: dict[str, tuple[str, ...]]
     new_project_root: str
     repeat_noninteractive_mode: str
     tmux_socket_template: str
     tui_refresh_interval_seconds: float
     git_create_enabled: bool
-    default_git_remote_profile: str
     git_remote_profiles: list[GitRemoteProfile]  # parsed once in load_config
+    launch_record_dir: str = ""
     tui_ssh_refresh_interval_seconds: float = 10.0
     remote_hosts: list = field(
         default_factory=list
@@ -158,6 +164,16 @@ class Config:
     fetch_concurrency: int = 16
     audit_enabled: bool = True
     audit_syslog_facility: str = "user"
+    # Merged agent catalog (shipped ``DEFAULT_AGENT_CATALOG`` ⊕ operator
+    # ``[agents.<id>]`` tables), built once in ``load_config``. Replaces the
+    # old ``agent_default_args`` map — binaries, default_args, install hints,
+    # version probe args, and permission modes all live here as data.
+    agents: dict[str, AgentSpec] = field(default_factory=default_agent_catalog)
+    launch: LaunchConfig = field(default_factory=LaunchConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    runtimes: dict[str, WorkloadRuntimeSpec] = field(
+        default_factory=lambda: {"direct": WorkloadRuntimeSpec(id="direct", kind="direct")}
+    )
     # ``None`` is the load-time signal "use REGISTRY defaults". An empty
     # tuple would mean "operator explicitly cleared the column list" —
     # that's not a state we want to expose distinctly, so absent / ``[]``
@@ -170,11 +186,12 @@ class Config:
     local_host_color: str = "green"
     worktree_root: str = ""
     worktree_base: str = "local"
+    tmux_set_terminal_title: bool = True
     # uxon-managed tmux options (3.5.0). OFF BY DEFAULT, seeded from
     # ``RECOMMENDED_TMUX_OPTIONS`` to match ``DEFAULT_CONFIG`` — the three dicts
     # hold raw ``key -> value`` pairs per tmux scope (``-g`` / ``-s`` / ``-as``).
     # Values are bool/int/str and rendered verbatim by :func:`_tmux_set_chain`
-    # (no name/value validation — D4), but only once ``manage_options = true``.
+    # (no name/value validation), but only once ``manage_options = true``.
     tmux_manage_options: bool = False
     tmux_options: dict = field(default_factory=lambda: dict(RECOMMENDED_TMUX_OPTIONS["options"]))
     tmux_server_options: dict = field(

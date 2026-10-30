@@ -1,175 +1,60 @@
-# Onboard a developer
+# Add a developer to Uxon
 
-Add a new developer to a `team·1` or `team·N` host. Roughly 10
-minutes per host.
+This guide assumes the host follows [team bootstrap](../../start/team-1-bootstrap.md).
+Provision the developer's shell account and paired launch account through your
+normal account-management process. The examples use `maya` and `maya-agent`.
 
-For the initial host bootstrap (project root, lead's grant)
-see [`start/team-1-bootstrap.md`](../../start/team-1-bootstrap.md).
+## Grant access to the launch account
 
-## Prerequisites
+For the built-in local execution backend, give `maya` passwordless access to
+`maya-agent`, and add that launch account to the supervisor's existing grant.
+Use the [bootstrap grant pattern](../../start/team-1-bootstrap.md#step-4--leads-supervision-grant).
+A command execution backend needs equivalent authorization in its helper.
 
-- Root or sudo on the host(s).
-- The host already running `uxon` per
-  [`start/team-1-bootstrap.md`](../../start/team-1-bootstrap.md).
-- Decided which `<user>_agent` name to use (convention:
-  `<shellname>_agent`).
+Give the launch account and developer access to their project directory using
+the [shared-project layout](../harden/lay-out-shared-projects.md). Install and
+authenticate the selected coding tool for the effective launch user, following
+that tool's instructions. Uxon does not install coding tools.
 
-## Step 1 — Create the accounts
+## Update host configuration
 
-```bash
-NEW=alice
-sudo useradd -m -s /bin/bash "$NEW"
-sudo useradd -m -s /bin/bash "${NEW}_agent"
-```
-
-If your team uses an LDAP / IPA / SSO directory for shell
-accounts, replace `useradd` with the equivalent provisioning
-step. The `*_agent` account stays a local Linux user — it's not
-meant to log in interactively.
-
-## Step 2 — Sudoers grant
-
-```bash
-echo "$NEW ALL=(${NEW}_agent) NOPASSWD: ALL" | \
-  sudo tee "/etc/sudoers.d/uxon-${NEW}-agent"
-sudo chmod 440 "/etc/sudoers.d/uxon-${NEW}-agent"
-sudo visudo -c -f "/etc/sudoers.d/uxon-${NEW}-agent"   # syntax check
-```
-
-The grant lets `alice` become **`alice_agent`**, not the other
-way round. `NOPASSWD: ALL` is the recommended shape — the grant
-bounds the *agent*'s blast radius (yolo runs cannot touch
-`~alice`), not the developer; a command whitelist would not
-reduce alice's attack surface (she already has a shell) and
-would break every time an agent binary or wrapper changed. See
-[`SECURITY.md`](../../../SECURITY.md) threat model #1 for the
-full reasoning.
-
-## Step 3 — Project workspace
-
-```bash
-sudo install -d -o "${NEW}_agent" -g devs -m 2775 "/srv/projects/$NEW"
-```
-
-Setgid (`2775`) so files inside inherit the `devs` group, which
-the lead and other developers can read for review. For richer
-ACL schemes see
-[`guides/harden/lay-out-shared-projects.md`](../harden/lay-out-shared-projects.md).
-
-## Step 4 — Add to `session_users`
-
-Edit `config/config.toml` on the host:
+Add the launch account to the existing `session_users` list and the caller
+mapping to the existing table:
 
 ```toml
-session_users = ["alice_agent", "bob_agent", "carol_agent", "dave_agent"]
+session_users = ["nadia-agent", "maya-agent"]
 
 [launch_user_by_caller]
-alice = "alice_agent"
-bob   = "bob_agent"
-carol = "carol_agent"
-dave  = "dave_agent"      # add the new mapping
+nadia = "nadia-agent"
+maya = "maya-agent"
 ```
 
-The TUI's superuser block re-probes `session_users` once per
-launch — leads pick up the new user by quitting (`q`) and
-re-launching `uxon`. There is no daemon, no SIGHUP.
+Retain the other users and mappings already on the host. In strict launch mode,
+enable the intended profiles using the
+[launch reference](../../reference/configuration.md#launch-table).
 
-## Step 5 — Lead's sudoers grant
+Add the new **controller** account `maya` to the host's launch-record control
+group. The paired workload account `maya-agent` must not join that group.
+Supervisors need the same protected store to remove sessions created by other
+controllers, including direct workloads. Follow the
+[launch-record storage contract](../../reference/configuration.md#launch-records);
+a sudo grant alone is insufficient.
 
-Widen the lead's grant to include the new agent account:
+## Verify from each controller
+
+After group-membership changes, reconnect as the developer:
 
 ```bash
-sudo $EDITOR /etc/sudoers.d/uxon-lead-supervisor
-# was:  lead ALL=(alice_agent,bob_agent,carol_agent) NOPASSWD: ALL
-# now:  lead ALL=(alice_agent,bob_agent,carol_agent,dave_agent) NOPASSWD: ALL
-
-sudo visudo -c -f /etc/sudoers.d/uxon-lead-supervisor
+ssh maya@host
+uxon doctor
+uxon
 ```
 
-`Cmnd_Alias` / `Runas_Alias` patterns are fine if the list is
-getting long — see `man sudoers`. The same grant on every
-team-`N` host means the lead's reach is consistent across the
-fleet.
+Launch a disposable session from the developer's project directory. From the
+supervisor's own login, verify that it appears in `uxon list --all-users`,
+attach, then remove that disposable session through Uxon. Check the reported
+cleanup outcome. This verifies target-user access and shared-record access.
 
-## Step 6 — Install agents for `*_agent`
-
-```bash
-sudo -iu dave_agent
-# inside dave_agent's shell:
-curl -fsSL https://... | bash       # claude / codex / cursor installer
-exit
-```
-
-The TUI auto-detects newly-installed agents on the next launch
-and offers a one-keypress enable in the agent banner.
-
-## Step 7 — Tell the developer
-
-Give the new developer:
-
-- the host(s) they have access to (`ssh dave@host1`, etc.);
-- a pointer to [`scenarios/team-1.md`](../../scenarios/team-1.md)
-  and [`privacy.md`](../../privacy.md) so they know what `uxon`
-  records about them.
-
-Their first run is just `uxon` — the TUI walks the rest.
-
-## Step 8 — Verify
-
-As `dave`:
-
-```bash
-ssh dave@host
-uxon doctor             # caller=dave, launch=dave_agent, sockets+sessions ok
-uxon                    # TUI opens; "New session in current folder" works
-```
-
-As the lead:
-
-```bash
-uxon                    # superuser block now lists dave_agent
-                        # section header: (4/4 users reachable)
-```
-
-## On a `team·N` fleet
-
-Repeat steps 1–6 on every host the developer needs access to.
-Sudoers and `session_users` are per-host — there's no central
-authority that propagates changes (deliberate property; see
-[`explain/multi-host-philosophy.md`](../../explain/multi-host-philosophy.md)).
-
-If you use config management (Ansible / Salt / Puppet) for the
-fleet, add the developer to the inventory and run the role on
-every host.
-
-## Audit footprint
-
-Every step the new developer takes is recorded in the audit
-channel under `caller_user=dave`. To review their activity later:
-
-```bash
-journalctl SYSLOG_IDENTIFIER=uxon CALLER_USER=dave --since today
-```
-
-For fleet-wide queries see
-[`forward-audit-to-collector.md`](forward-audit-to-collector.md).
-
-## Common mistakes
-
-- **Forgetting `chmod 440` on the sudoers fragment.** Files in
-  `/etc/sudoers.d/` with wrong permissions are silently ignored.
-- **Putting the developer's shell user in `session_users`** when
-  using mode (a) (paired-account). `session_users` lists the
-  *launch users* (the `*_agent` accounts), not the shell users.
-- **Forgetting `[launch_user_by_caller]`** — the new developer
-  ends up running as `runtime_user` (the fallback) instead of
-  their own paired account.
-
-## Related
-
-- [`offboard-developer.md`](offboard-developer.md) — when they
-  leave.
-- [`back-up-and-restore.md`](back-up-and-restore.md) — what to
-  back up after onboarding (their project tree on the host).
-- [`rotate-credentials.md`](rotate-credentials.md) — when they're
-  given a `gh` token / API key.
+Restart an open dashboard after changing its user configuration. Repeat these
+changes on each relevant host; Uxon does not propagate accounts or policy.
+Share the [team guide](../../scenarios/team-1.md) and [privacy page](../../privacy.md).

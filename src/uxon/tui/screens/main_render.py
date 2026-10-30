@@ -41,23 +41,24 @@ def cwd_detail(
     *,
     cwd_writable: bool | None,
     cwd_short: str,
-    launch_user: str,
-    current_user: str,
+    error: str | None = None,
 ) -> str:
-    """Detail line for the "New session in current folder" action row.
+    """Detail line for the "Open in this folder" action row.
 
-    ``cwd_writable`` is the three-valued launchability flag (``False``
-    only when a probe has resolved the cwd as not launchable for the
-    launch user).
+    ``None`` means checking; ``True`` requires write access through at least
+    one enabled launch profile's execution backend.
     """
+    if error:
+        return f"({cwd_short} — access check failed: {error})"
+    if cwd_writable is None:
+        return f"({cwd_short} — checking access…)"
     if cwd_writable is False:
-        user = launch_user or current_user or "launch user"
-        return f"({cwd_short} — not launchable for {user})"
+        return f"({cwd_short} — no writable launch profile)"
     return f"({cwd_short})"
 
 
 def open_detail(*, loading: bool, new_project_root: str) -> str:
-    """Detail line for the "Open existing project" action row."""
+    """Detail line for the "Open project" action row."""
     if loading:
         return f"({new_project_root}/… — loading)"
     return f"({new_project_root}/…)"

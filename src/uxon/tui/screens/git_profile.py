@@ -16,6 +16,7 @@ from textual.widgets import Label, ListItem, ListView, Static
 
 from ..keymap import bindings_with_aliases
 from ..state import pick_index
+from ..widgets.cyclic_list_view import CyclicListView
 from .modal_base import CardModal
 
 
@@ -69,7 +70,7 @@ class GitProfileScreen(CardModal["str | None"]):
                     self._default_index = i
                 label = "skip" if not name else name
                 items.append(ListItem(Label(f"{i} {label}  {desc}")))
-            yield ListView(*items, id="git-profile-list")
+            yield CyclicListView(*items, id="git-profile-list")
 
     def on_mount(self) -> None:
         # Default-highlight; focus is handled by AUTO_FOCUS.

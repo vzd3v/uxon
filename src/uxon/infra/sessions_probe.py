@@ -10,13 +10,20 @@ reading stay single-responsibility.
 
 from __future__ import annotations
 
+import os
 import shlex
-import subprocess
-from typing import Any
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
 
-from uxon.domain.authz import canonical
 from uxon.domain.config import Config
 from uxon.domain.format import fmt_epoch
+from uxon.domain.runtime import (
+    RUNTIME_CGROUP_ENV,
+    RUNTIME_RESOURCE_ENV,
+    WorkloadRuntimeSpec,
+)
+from uxon.domain.runtime_usage import per_session_usage, sum_usage_for_pids
 from uxon.domain.session import (
     SessionInfo,
     compatible_indexed_sessions,
@@ -26,14 +33,71 @@ from uxon.domain.session import (
 from uxon.errors import fail
 from uxon.infra import demo, tmux
 from uxon.infra.config_loader import normalize_user_list
+from uxon.infra.launch_records import (
+    LAUNCH_NONCE_ENV,
+    TmuxSessionMetadata,
+    garbage_collect_records,
+    read_verified_record,
+)
 from uxon.infra.process import run_cmd
+from uxon.infra.run import run_query
+from uxon.infra.tmux_diagnostics import ACKNOWLEDGED_FORMAT
 
 
-def enrich_session_usage(sessions: list[SessionInfo]) -> None:
+@dataclass(frozen=True, slots=True)
+class UserSessionSnapshot:
+    """One target user's sessions plus the independently observed server state."""
+
+    user: str
+    server_state: Literal["absent", "running"]
+    sessions: tuple[SessionInfo, ...]
+
+
+def _gc_launch_records(
+    cfg: Config,
+    launch_user: str,
+    socket_path: str,
+    live: set[tuple[str, str, str]],
+) -> None:
+    garbage_collect_records(
+        live,
+        override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
+        shared=bool(cfg.launch_record_dir),
+        launch_user=launch_user,
+    )
+
+
+def enrich_session_usage(
+    cfg: Config,
+    sessions: list[SessionInfo],
+    *,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None = None,
+    launch_user: str = "",
+) -> None:
+    """Fill each session's ``cpu_pct`` / ``rss_kib`` from a single ``ps`` table.
+
+    A direct-runtime session takes the unchanged pane-PID child-walk, with
+    **zero** added subprocess or ``/proc`` read. Every new
+    branch below is gated on a non-empty ``session.runtime_resource`` marker, so a
+    deployment with no command-runtime sessions never reaches workload telemetry.
+
+    A command-runtime session is attributed from its resource's cgroup
+    membership (``runtime_cgroup`` → ``cgroup.procs``) rather than the pane
+    walk (the pane's child is the runtime client, not the workload agent).
+    Per-distinct-resource work is done once: the cgroup read, the
+    optional privileged ``environ`` split, and — only when the cgroup is empty —
+    the ``ready_command`` liveness probe. Any unresolvable piece degrades that
+    session to ``0``/``—``, never raising.
+    """
     if not sessions:
         return
 
-    cp = subprocess.run(["ps", "-eo", "pid=,ppid=,rss=,%cpu="], text=True, capture_output=True)
+    from uxon.infra.execution import wrap_command
+
+    ps_cmd = ["ps", "-eo", "pid=,ppid=,rss=,%cpu="]
+    cp = run_query(
+        wrap_command(cfg, launch_user, ps_cmd, interactive=False) if launch_user else ps_cmd
+    )
     if cp.returncode != 0:
         return
 
@@ -53,34 +117,266 @@ def enrich_session_usage(sessions: list[SessionInfo]) -> None:
         proc_rows[pid] = (ppid, rss_kib, cpu_pct)
         children.setdefault(ppid, []).append(pid)
 
+    # Partition: marker-carrying sessions take the runtime path, the rest the
+    # unchanged pane walk. The split itself reads only the already-populated
+    # ``runtime_resource`` field — no I/O — so the off-invariant holds.
+    runtime_sessions = [s for s in sessions if s.runtime_resource]
     for session in sessions:
-        total_rss_kib = 0
-        total_cpu_pct = 0.0
-        seen: set[int] = set()
-        stack = list(session.pane_pids)
-        while stack:
-            pid = stack.pop()
-            if pid in seen:
-                continue
-            seen.add(pid)
-            proc = proc_rows.get(pid)
-            if proc is None:
-                continue
-            _, rss_kib, cpu_pct = proc
-            total_rss_kib += max(rss_kib, 0)
-            total_cpu_pct += max(cpu_pct, 0.0)
-            stack.extend(children.get(pid, []))
-        session.rss_kib = total_rss_kib
-        session.cpu_pct = total_cpu_pct
+        if session.runtime_resource:
+            continue
+        _enrich_via_pane_walk(session, proc_rows, children)
+
+    if runtime_sessions:
+        _enrich_runtime_sessions(
+            cfg,
+            runtime_sessions,
+            proc_rows,
+            runtimes=runtimes,
+            launch_user=launch_user,
+        )
 
 
-def collect_sessions_for_user(
+def _enrich_via_pane_walk(
+    session: SessionInfo,
+    proc_rows: dict[int, tuple[int, int, float]],
+    children: dict[int, list[int]],
+) -> None:
+    """The unchanged OS-level path: sum the pane-PID process subtree."""
+    total_rss_kib = 0
+    total_cpu_pct = 0.0
+    seen: set[int] = set()
+    stack = list(session.pane_pids)
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        proc = proc_rows.get(pid)
+        if proc is None:
+            continue
+        _, rss_kib, cpu_pct = proc
+        total_rss_kib += max(rss_kib, 0)
+        total_cpu_pct += max(cpu_pct, 0.0)
+        stack.extend(children.get(pid, []))
+    session.rss_kib = total_rss_kib
+    session.cpu_pct = total_cpu_pct
+
+
+def _enrich_runtime_sessions(
+    cfg: Config,
+    runtime_sessions: list[SessionInfo],
+    proc_rows: dict[int, tuple[int, int, float]],
+    *,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None,
+    launch_user: str,
+) -> None:
+    """Attribute workload CPU/RAM for the marker-carrying sessions.
+
+    Work is bounded by the number of **distinct cgroups**: each
+    cgroup's ``cgroup.procs`` is read once; launch-nonce attribution uses one
+    ``environ`` batch per cgroup; the liveness probe runs only when a
+    cgroup is empty/unresolvable.
+    """
+    # Group the marker-carrying sessions by their stashed cgroup path. A
+    # session with an empty ``runtime_cgroup`` (identity unresolved at launch,
+    # the degrade) gets no cgroup attribution — it falls to the down/zero path.
+    by_cgroup: dict[str, list[SessionInfo]] = {}
+    down_probe_groups: dict[tuple[str, str], list[SessionInfo]] = {}
+    for session in runtime_sessions:
+        # Default to 0/— first; the cgroup path overwrites on success.
+        session.cpu_pct = 0.0
+        session.rss_kib = 0
+        identity_state = _runtime_identity_state(
+            cfg, session, runtimes=runtimes, launch_user=launch_user
+        )
+        if identity_state == "current" and session.runtime_cgroup:
+            by_cgroup.setdefault(session.runtime_cgroup, []).append(session)
+        elif identity_state == "unresolved":
+            _append_down_probe_group(down_probe_groups, session)
+
+    for cgroup_path, group in by_cgroup.items():
+        cgroup_pids = _read_cgroup_procs(cfg, launch_user, cgroup_path)
+        if not cgroup_pids:
+            # Empty/absent cgroup → the workload is stopped or its path went
+            # stale (restart). Confirm with the operator's liveness probe,
+            # bounded once per distinct resource, only here.
+            _mark_runtime_down(
+                cfg,
+                group,
+                runtimes=runtimes,
+                launch_user=launch_user,
+            )
+            continue
+        # A resource can contain workloads from other tmux servers, even when
+        # only one session is visible here. Always split by the launch nonce.
+        pid_to_session = _read_pid_sessions(cfg, launch_user, cgroup_pids)
+        if pid_to_session is None:
+            # No privilege / unreadable → degrade to the per-resource SHARED
+            # figure: every sharing session shows the summed total, never an
+            # error.
+            shared_rss, shared_cpu = sum_usage_for_pids(cgroup_pids, proc_rows)
+            for session in group:
+                session.rss_kib = shared_rss
+                session.cpu_pct = shared_cpu
+            continue
+        usage = per_session_usage(cgroup_pids, pid_to_session, proc_rows)
+        for session in group:
+            # A session with no marker-carrying PID (e.g. processes that
+            # predate nonce attribution) shows 0 here — the read
+            # succeeded, so this is an honest per-session split, not the
+            # wholesale-failure shared-total degrade above.
+            rss_kib, cpu_pct = usage.get(session.launch_nonce, (0, 0.0))
+            session.rss_kib = rss_kib
+            session.cpu_pct = cpu_pct
+
+    for group in down_probe_groups.values():
+        _mark_runtime_down(
+            cfg,
+            group,
+            runtimes=runtimes,
+            launch_user=launch_user,
+        )
+
+
+def _append_down_probe_group(
+    down_probe_groups: dict[tuple[str, str], list[SessionInfo]], session: SessionInfo
+) -> None:
+    if not session.runtime or not session.runtime_resource:
+        return
+    down_probe_groups.setdefault((session.runtime, session.runtime_resource), []).append(session)
+
+
+def _mark_runtime_down(
+    cfg: Config,
+    group: list[SessionInfo],
+    *,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None,
+    launch_user: str,
+) -> None:
+    """Flag a group's sessions runtime-down iff ``ready_command`` confirms it.
+
+    Called only when the cgroup is empty/unresolvable. The liveness probe runs
+    once per distinct resource. The session's runtime is
+    looked up via ``runtimes``; without an ``ready_command`` template
+    (or with no profile threaded in) uxon cannot confirm down-state, so the
+    sessions stay at the already-set ``0``/``—`` degrade rather than asserting a
+    "down" it cannot verify.
+    """
+    if runtimes is None:
+        return
+    from uxon.infra.runtime import probe_runtime_state_for_profile
+
+    results: dict[tuple[str, ...], bool] = {}
+    for session in group:
+        profile = runtimes.get(session.runtime)
+        if profile is None or not profile.ready_command:
+            continue
+        key = (
+            session.runtime,
+            session.runtime_resource,
+            session.launch_user,
+            session.runtime_dir,
+            session.profile,
+            session.agent,
+            session.project_slug,
+        )
+        if key not in results:
+            results[key] = (
+                probe_runtime_state_for_profile(
+                    cfg,
+                    profile,
+                    session.runtime_resource,
+                    session.launch_user,
+                    runtime_dir=session.runtime_dir,
+                    launch_profile=session.profile,
+                    agent=session.agent,
+                    project_slug=session.project_slug,
+                )[0]
+                == "no"
+            )
+        session.runtime_down = results[key]
+
+
+RuntimeIdentityState = Literal["current", "unresolved", "stale"]
+
+
+def _runtime_identity_state(
+    cfg: Config,
+    session: SessionInfo,
+    *,
+    runtimes: dict[str, WorkloadRuntimeSpec] | None,
+    launch_user: str,
+) -> RuntimeIdentityState:
+    if not session.launch_record_verified:
+        return "stale"
+    if not session.runtime or not session.runtime_resource:
+        return "stale"
+    if not session.runtime_id or not session.runtime_epoch:
+        return "stale"
+    if not all(
+        (
+            session.runtime_dir,
+            session.project_slug,
+            session.launch_user,
+            session.profile,
+            session.agent,
+            session.launch_nonce,
+        )
+    ):
+        return "stale"
+    if runtimes is None:
+        return "stale"
+    profile = runtimes.get(session.runtime)
+    if profile is None:
+        return "stale"
+    if profile.fingerprint != session.runtime_fingerprint:
+        return "stale"
+    from uxon.infra.runtime import current_runtime_identity_for_profile
+
+    live = current_runtime_identity_for_profile(
+        cfg,
+        profile,
+        session.runtime_resource,
+        session.launch_user,
+        runtime_dir=session.runtime_dir,
+        launch_profile=session.profile,
+        agent=session.agent,
+        project_slug=session.project_slug,
+    )
+    if live is None:
+        return "unresolved"
+    if live.id == session.runtime_id and live.epoch == session.runtime_epoch:
+        return "current"
+    return "stale"
+
+
+def _read_cgroup_procs(cfg: Config, launch_user: str, cgroup_path: str) -> list[int]:
+    """Read one runtime cgroup from inside the selected execution boundary."""
+    from uxon.infra.runtime_telemetry import read_cgroup_members
+
+    return read_cgroup_members(cfg, launch_user, cgroup_path)
+
+
+def _read_pid_sessions(cfg: Config, launch_user: str, pids: list[int]) -> dict[int, str] | None:
+    """Read workload markers inside the selected execution boundary."""
+    if not pids:
+        return {}
+    from uxon.infra.runtime_telemetry import read_session_markers
+
+    return read_session_markers(cfg, launch_user, pids)
+
+
+def collect_session_snapshot_for_user(
+    cfg: Config,
     user: str,
     session_prefix: str,
     socket_path: str | None,
     *,
     legacy_prefixes: tuple[str, ...] = (),
-) -> list[SessionInfo]:
+    runtimes: dict[str, WorkloadRuntimeSpec] | None = None,
+    session_id: str | None = None,
+    for_dismissal: bool = False,
+) -> UserSessionSnapshot:
     # Demo-mode short-circuit: when ``UXON_DEMO_HOSTS`` is set, bypass
     # tmux entirely and read the synthetic-local envelope. Returning
     # ``[]`` for an absent envelope mirrors production's "empty tmux
@@ -90,60 +386,145 @@ def collect_sessions_for_user(
     # session names.
     _demo_dir = demo.demo_hosts_dir()
     if _demo_dir is not None:
-        return demo.load_demo_local_sessions(_demo_dir, user)
+        demo_sessions = tuple(demo.load_demo_local_sessions(_demo_dir, user))
+        return UserSessionSnapshot(
+            user=user,
+            server_state="running" if demo_sessions else "absent",
+            sessions=demo_sessions,
+        )
 
     # Listing runs without a TTY (CLI ``list``, TUI background poll,
     # remote aggregator). Use the non-interactive sudo prefix so a
     # missing NOPASSWD grant returns non-zero immediately rather than
     # blocking on a hidden password prompt.
-    base = tmux.tmux_base(user, socket_path, nonint=True)
-    probe = subprocess.run(base + ["list-sessions"], text=True, capture_output=True)
-    if probe.returncode != 0:
-        return []
+    server = tmux.probe_tmux_server(cfg, user, socket_path)
+    if server.state == "absent":
+        if socket_path is not None and not for_dismissal:
+            _gc_launch_records(cfg, user, socket_path, set())
+        return UserSessionSnapshot(user=user, server_state="absent", sessions=())
+    if server.state == "unreachable":
+        location = socket_path or "the default socket"
+        fail(f"tmux server for {user!r} is unreachable at {location}: {server.error}")
+    base = tmux.tmux_base(cfg, user, socket_path, nonint=True)
 
-    fmt = "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_created}\t#{session_activity}"
-    rows = run_cmd(base + ["list-sessions", "-F", fmt]).stdout.splitlines()
+    # Environment markers are diagnostic only. The finalized launch record is
+    # the authority for profile, agent, and workload identity.
+    fmt = (
+        "#{session_name}\t#{session_id}\t#{session_attached}\t#{session_windows}"
+        "\t#{session_created}\t#{session_activity}"
+        "\t#{E:" + LAUNCH_NONCE_ENV + "}\t#{E:" + RUNTIME_RESOURCE_ENV + "}"
+        "\t#{E:" + RUNTIME_CGROUP_ENV + "}"
+    )
+    timeout = cfg.execution.backend_for_user(user).probe_timeout_seconds
+    listed = run_cmd(base + ["list-sessions", "-F", fmt], check=False, timeout=timeout)
+    if listed.returncode != 0:
+        if for_dismissal and tmux.probe_tmux_server(cfg, user, socket_path).state == "absent":
+            return UserSessionSnapshot(user=user, server_state="absent", sessions=())
+        detail = (listed.stderr or listed.stdout or "tmux list-sessions failed").strip()
+        fail(f"unable to inspect tmux sessions for {user!r}: {detail}")
+    rows = listed.stdout.splitlines()
     sessions: list[SessionInfo] = []
+    live_record_keys: set[tuple[str, str, str]] = set()
     known_prefixes = (session_prefix, *legacy_prefixes)
     for row in rows:
         parts = row.split("\t")
-        if len(parts) != 5:
+        if len(parts) != 9:
             continue
-        name, attached, windows, created_ts, activity_ts = parts
-        if not any(name.startswith(p) for p in known_prefixes):
+        (
+            name,
+            row_session_id,
+            attached,
+            windows,
+            created_ts,
+            activity_ts,
+            launch_nonce,
+            runtime_marker,
+            _runtime_cgroup_marker,
+        ) = parts
+        if socket_path is not None and launch_nonce:
+            live_record_keys.add((socket_path, name, launch_nonce))
+        record = None
+        if socket_path is not None and launch_nonce:
+            record = read_verified_record(
+                socket_path,
+                TmuxSessionMetadata(row_session_id, created_ts, name, launch_nonce),
+                override_dir=Path(cfg.launch_record_dir) if cfg.launch_record_dir else None,
+                require_owner=not bool(cfg.launch_record_dir),
+                shared=bool(cfg.launch_record_dir),
+                launch_user=user,
+            )
+            if record is not None and (
+                record.get("launch_user") != user
+                or record.get("execution_backend") != cfg.execution.backend_for_user(user).id
+                or record.get("execution_fingerprint")
+                != cfg.execution.backend_for_user(user).fingerprint
+            ):
+                record = None
+        if record is None and not any(name.startswith(p) for p in known_prefixes):
+            continue
+        if session_id is not None and row_session_id != session_id:
             continue
 
-        pane_fmt = "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
-        pane_rows = run_cmd(
-            base + ["list-panes", "-t", name, "-F", pane_fmt], check=False
-        ).stdout.splitlines()
+        pane_fmt = (
+            "#{pane_active}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
+            "\t#{window_active}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}"
+            "\t" + ACKNOWLEDGED_FORMAT
+        )
+        pane_result = run_cmd(
+            base + ["list-panes", "-s", "-t", row_session_id, "-F", pane_fmt],
+            check=False,
+            timeout=timeout,
+        )
+        if pane_result.returncode != 0:
+            if for_dismissal and not tmux.exact_session_exists(cfg, user, row_session_id):
+                continue
+            detail = (pane_result.stderr or pane_result.stdout or "tmux list-panes failed").strip()
+            fail(f"unable to inspect tmux session {name!r}: {detail}")
+        pane_rows = pane_result.stdout.splitlines()
         pane_pids: list[int] = []
         active_pid: int | None = None
         active_cmd = ""
         active_path = ""
+        active_pane_id = ""
+        active_pane_dead = False
+        active_exit_status: int | None = None
+        live_pane_id = ""
+        inspected_panes = 0
+        dismissed_panes: list[str] = []
+        has_diagnostics = False
         for prow in pane_rows:
             pparts = prow.split("\t")
-            if len(pparts) != 4:
+            if len(pparts) != 9:
                 continue
-            is_active, pid_s, cmd, path = pparts
+            is_active, pid_s, cmd, path, window_active, pane_id, dead, status, dismissed = pparts
+            inspected_panes += 1
+            has_diagnostics = has_diagnostics or dead == "1"
             try:
                 pane_pid = int(pid_s)
             except ValueError:
                 pane_pid = None
-            if pane_pid is not None:
+            if dead != "1" and pane_pid is not None:
                 pane_pids.append(pane_pid)
-            if is_active != "1":
+            if dead != "1" and not live_pane_id:
+                live_pane_id = pane_id
+            if dead == "1" and dismissed == "1":
+                dismissed_panes.append(pane_id)
+            if is_active != "1" or window_active != "1":
                 continue
-            active_pid = pane_pid
+            active_pid = pane_pid if dead != "1" else None
             active_cmd = cmd
             active_path = path
+            active_pane_id = pane_id
+            active_pane_dead = dead == "1"
+            try:
+                active_exit_status = int(status) if active_pane_dead else None
+            except ValueError:
+                active_exit_status = None
 
         _parsed = parse_session_name(name, prefix=session_prefix, legacy_prefixes=legacy_prefixes)
-        if _parsed is None:
+        if _parsed is None and record is None:
             continue  # dual-prefix filter matched but parser disagreed — skip
-        _, _agent, _, _legacy = _parsed
-        if _agent not in ("claude", "codex", "cursor"):
-            _agent = "unknown"
+        _, _profile, _, _legacy = _parsed or (name, "", 1, False)
         sessions.append(
             SessionInfo(
                 user=user,
@@ -156,25 +537,86 @@ def collect_sessions_for_user(
                 active_pid=active_pid,
                 active_cmd=active_cmd,
                 active_path=active_path,
-                agent=_agent,
+                agent=str(record.get("agent", "")) if record else "",
+                profile=str(record.get("profile") or _profile) if record else _profile,
                 legacy=_legacy,
+                tmux_session_id=row_session_id,
+                tmux_session_created=created_ts,
+                launch_nonce=launch_nonce,
+                socket_path=socket_path or "",
+                launch_record_verified=record is not None,
+                launch_user=str(record.get("launch_user", "")) if record else "",
+                execution_backend=cfg.execution.backend_for_user(user).id,
+                execution_fingerprint=cfg.execution.backend_for_user(user).fingerprint,
+                runtime=str(record.get("runtime", "")) if record else "",
+                runtime_kind=str(record.get("runtime_kind", "")) if record else "",
+                runtime_fingerprint=(str(record.get("runtime_fingerprint", "")) if record else ""),
+                runtime_resource=str(record.get("runtime_resource", "")) if record else "",
+                runtime_dir=str(record.get("runtime_dir", "")) if record else "",
+                project_slug=str(record.get("project_slug", "")) if record else "",
+                runtime_cgroup=str(record.get("runtime_cgroup", "")) if record else "",
+                runtime_id=str(record.get("runtime_id", "")) if record else "",
+                runtime_epoch=str(record.get("runtime_epoch", "")) if record else "",
+                runtime_marker=runtime_marker,
+                exited=inspected_panes > 0 and not live_pane_id,
+                has_diagnostics=has_diagnostics,
+                active_pane_id=active_pane_id,
+                active_pane_dead=active_pane_dead,
+                active_exit_status=active_exit_status,
+                live_pane_id=live_pane_id,
+                dismissed_panes=tuple(dismissed_panes),
             )
         )
-    enrich_session_usage(sessions)
-    return sessions
+    if socket_path is not None and not for_dismissal:
+        _gc_launch_records(cfg, user, socket_path, live_record_keys)
+    if not for_dismissal:
+        enrich_session_usage(
+            cfg,
+            sessions,
+            runtimes=runtimes,
+            launch_user=user,
+        )
+    return UserSessionSnapshot(user=user, server_state="running", sessions=tuple(sessions))
+
+
+def collect_sessions_for_user(
+    cfg: Config,
+    user: str,
+    session_prefix: str,
+    socket_path: str | None,
+    *,
+    legacy_prefixes: tuple[str, ...] = (),
+    runtimes: dict[str, WorkloadRuntimeSpec] | None = None,
+) -> list[SessionInfo]:
+    """Return only session rows for callers that do not need server liveness."""
+    return list(
+        collect_session_snapshot_for_user(
+            cfg,
+            user,
+            session_prefix,
+            socket_path,
+            legacy_prefixes=legacy_prefixes,
+            runtimes=runtimes,
+        ).sessions
+    )
+
+
+def collect_current_session_snapshot(cfg: Config, user: str) -> UserSessionSnapshot:
+    """Collect the configured dedicated socket once for launch planning."""
+    return collect_session_snapshot_for_user(
+        cfg,
+        user,
+        cfg.session_prefix,
+        tmux.tmux_socket_path(cfg, user),
+        legacy_prefixes=cfg.legacy_session_prefixes,
+        runtimes=cfg.runtimes,
+    )
 
 
 def collect_sessions(users: list[str], cfg: Config) -> list[SessionInfo]:
     sessions: list[SessionInfo] = []
     for user in normalize_user_list(users):
-        sessions.extend(
-            collect_sessions_for_user(
-                user,
-                cfg.session_prefix,
-                tmux.tmux_socket_path(cfg, user),
-                legacy_prefixes=cfg.legacy_session_prefixes,
-            )
-        )
+        sessions.extend(collect_current_session_snapshot(cfg, user).sessions)
     return sessions
 
 
@@ -265,7 +707,6 @@ def _resolve_or_audit_not_found(
     *,
     audit_event: str | None,
     target_user: str,
-    session_field: str = "session",
     extra: dict[str, Any] | None = None,
 ) -> SessionInfo:
     """Resolve a session and, on no-match failure, emit the ``not_found``
@@ -273,17 +714,10 @@ def _resolve_or_audit_not_found(
 
     The audit contract enumerates
     ``outcome ∈ {"ok", "denied", "error", "not_found"}`` for
-    ``session.attach``, ``session.kill``, and their peer-inbound
-    replacements ``attach.remote.in`` / ``kill.remote.in``. Without
-    this wrapper the ``not_found`` outcome would never appear, because
+    ``session.attach.dispatch`` and ``session.kill``. Without this wrapper the
+    ``not_found`` outcome would never appear, because
     :func:`resolve_session` raises :class:`SystemExit` via :func:`fail`
     before any caller-side audit fires.
-
-    ``session_field`` selects the key under which the identifier is
-    recorded: ``"session"`` for ``session.attach`` / ``session.kill``,
-    ``"target_session"`` for ``attach.remote.in`` / ``kill.remote.in``
-    (peer-inbound branches — the spec uses different field names on
-    the two sides of the wire).
 
     Pass ``audit_event=None`` to skip the emit entirely.
     """
@@ -300,7 +734,7 @@ def _resolve_or_audit_not_found(
         from uxon.infra import audit as _audit
 
         fields: dict[str, Any] = {
-            session_field: identifier or "",
+            "session": identifier or "",
             "target_user": target_user,
         }
         if extra:
@@ -313,6 +747,7 @@ def legacy_compatible_sessions(
     cfg: Config, launch_user: str, stem: str, compatibility_root: str
 ) -> list[SessionInfo]:
     sessions = collect_sessions_for_user(
+        cfg,
         launch_user,
         cfg.session_prefix,
         socket_path=None,
@@ -320,17 +755,18 @@ def legacy_compatible_sessions(
     )
     return compatible_indexed_sessions(
         stem,
-        cfg.default_agent,
+        cfg.launch.default_profile,
         compatibility_root,
         sessions,
         prefix=cfg.session_prefix,
         legacy_prefixes=cfg.legacy_session_prefixes,
+        require_verified=False,
     )
 
 
 def legacy_socket_conflict_hint(cfg: Config, launch_user: str, existing: list[SessionInfo]) -> str:
     attach_cmd = shlex.join(
-        tmux.tmux_base(launch_user) + ["attach-session", "-t", existing[0].name]
+        tmux.tmux_base(cfg, launch_user) + ["attach-session", "-t", existing[0].name]
     )
     session_names = ", ".join(session.name for session in existing)
     return (
@@ -355,12 +791,12 @@ def probe_tui_compatible_sessions(
     cfg: Config,
     launch_user: str,
     target_dir: str,
-    agent_id: str,
+    profile_id: str,
     *,
     stem: str | None = None,
     compatibility_root: str | None = None,
 ) -> tuple[SessionInfo, ...]:
-    """Return launch_user's sessions compatible with ``target_dir`` + ``agent_id``.
+    """Return launch user's sessions compatible with a target and launch profile.
 
     Pure side-effect-free read of the live tmux session list (modulo the
     path-safety ``fail()`` inherited from :func:`compatible_indexed_sessions`,
@@ -373,17 +809,19 @@ def probe_tui_compatible_sessions(
     stem and the target dir (the unchanged primary/non-worktree path). For
     a worktree target the caller passes the repo-qualified
     :func:`session_stem_for_worktree` and the worktree path so the probe
-    derives the *same* stem the planner used (§2.5) — generalising here
+    derives the *same* stem the planner used — generalising here
     rather than always deriving from the basename is the fix that keeps
     the attach guard reliable across repos.
     """
-    target_canonical = canonical(target_dir)
-    session_stem = stem if stem is not None else session_stem_for_path(target_canonical)
-    root = canonical(compatibility_root) if compatibility_root is not None else target_canonical
+    target_lexical = os.path.normpath(target_dir)
+    session_stem = stem if stem is not None else session_stem_for_path(target_lexical)
+    root = (
+        os.path.normpath(compatibility_root) if compatibility_root is not None else target_lexical
+    )
     sessions = collect_sessions([launch_user], cfg)
     matches = compatible_indexed_sessions(
         session_stem,
-        agent_id,
+        profile_id,
         root,
         sessions,
         prefix=cfg.session_prefix,
