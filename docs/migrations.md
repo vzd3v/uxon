@@ -5,12 +5,11 @@ rollout; mixed wire majors are unsupported.
 
 ## Drain existing sessions before upgrading
 
-Drain every existing session, including direct-runtime sessions, before replacing
-Uxon. Launch-record schema 4 uses the existing launch nonce as its storage key;
-older records are not migrated or trusted for removal. Older sessions remain
-visible and attachable, but Uxon refuses destructive actions when the nonce or
-protected record is unavailable. If draining was missed, use an explicit tmux
-operator action under the correct account and socket.
+Uxon 4.0 requires a verified protected launch record to remove a session.
+Drain every existing session before replacing Uxon. Pre-upgrade sessions can
+remain visible and attachable, but Uxon refuses destructive actions without the
+required authority. If draining was missed, use an explicit tmux operator action
+under the correct account and socket.
 
 Before resuming team launches, provision the protected shared
 [`launch_record_dir`](reference/configuration.md#launch-records) for every
@@ -78,22 +77,6 @@ Replace removed `agents.enabled`, `agents.default`, per-project agent defaults,
 and top-level git-remote defaults with launch-profile policy. Unknown fields are
 rejected at every config level.
 
-## Replace container configuration with workload runtimes
-
-Container engines are one implementation of a generic workload runtime.
-
-| 3.x concept | 4.0 concept |
-|---|---|
-| `[container]` / container profile | `[runtimes.<id>]` |
-| `container_profile` | `launch.profiles.<id>.runtime` |
-| `name_template` | `resource_name_template` |
-| `exec_template` | `exec_prefix` |
-| `runtime_namespace` | `resource_scope` |
-| `probe/start/create` | `readiness.ready_command/start_command/create_command` |
-| `stop_template` | `session.stop_command` plus mandatory `identity.resolve_command` |
-
-The old keys are not translated. They fail as unknown fields.
-
 ## Configure execution backends explicitly
 
 The built-in `local` backend preserves argv and uses
@@ -123,8 +106,8 @@ prove lifecycle continuity across an operator-managed boundary.
 
 Every controller that must remove another controller's sessions needs the same
 protected record store. Follow the [team setup](start/team-1-bootstrap.md#share-protected-launch-records)
-and [storage contract](reference/configuration.md#launch-records). Schema 4 has
-no fallback to old records; complete the drain above before upgrading.
+and [storage contract](reference/configuration.md#launch-records). Complete the
+drain above before upgrading.
 
 ## Update audit queries and diagnostic storage
 

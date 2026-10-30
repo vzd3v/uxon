@@ -82,6 +82,15 @@ Follow SemVer:
 
 At release, rename the changelog's unreleased section to that version.
 
+Prepare the version and dated changelog in a release PR from `dev` to `main`.
+Use the changelog section for the PR description. After all CI checks pass,
+including every Python version and the tmux/Docker integration gate, squash-merge
+the PR and wait for CI on the resulting `main` commit. Tag that exact commit
+`vX.Y.Z` and push the tag. The release workflow repeats validation, publishes
+the wheel and source distribution to PyPI, then creates the GitHub Release with
+notes from the matching changelog section. After publication, synchronize `dev`
+with `main` and start a new `Unreleased` section.
+
 ## Architectural rules a contributor will hit
 
 These are non-negotiable — see

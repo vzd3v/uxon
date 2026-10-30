@@ -6,15 +6,15 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [4.0.0] — 2026-10-30
 
 ### Changed (breaking)
 - Removal requires protected launch records, including direct workloads. Drain sessions and upgrade controllers and peers together; multiple controllers need a shared record store. See [migration notes](docs/migrations.md).
 - Configuration moves to `/etc/uxon/config.toml`; checkout and project `.uxon.toml` files are ignored. Unknown keys are rejected.
 - Launch profiles replace `agents.enabled`, `agents.default` and project policy. Select with `--profile`; `--agent` passes through to the coding tool. Session names end in `@<profile>[-N]`.
 - Permission modes use `--mode <id>`; Uxon no longer interprets `--auto`, `--dsp` or its legacy aliases.
-- `[execution]` controls target-user commands and tmux; `[runtimes.<id>]` replaces `[container]`. Each backend gets a socket inside a private per-user directory.
-- Wire schema 3, launch-record schema 4 and audit schema 2 change machine-readable contracts. See the [wire](docs/reference/wire-schema.md) and [audit](docs/reference/audit-events.md) references for runtime and actor fields.
+- `[execution]` controls target-user commands and tmux. Each backend gets a socket inside a private per-user directory.
+- Wire schema 3 and audit schema 2 change machine-readable contracts. See the [wire](docs/reference/wire-schema.md) and [audit](docs/reference/audit-events.md) references for runtime and actor fields.
 - Non-root TUI Settings are read-only. Render and review configuration unprivileged, then install it explicitly with `sudo install`.
 - `default_launch_user` replaces `runtime_user`; top-level git-remote defaults move into launch profiles. Removed settings, including `tui.table.default_sort_by`, are rejected.
 - tmux requires the retained-child-status fix from 3.6 or a distribution backport; 3.8 is recommended.
