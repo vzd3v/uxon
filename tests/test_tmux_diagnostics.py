@@ -376,7 +376,7 @@ raise SystemExit(rc)
     markers = ("menu-after-detach-1", "menu-after-detach-2", "title-refresh-failed")
     for index, marker in enumerate(markers, start=1):
         keys += [
-            (15.0, b"\r", f"1 title-mode-{index}"),
+            (15.0, b"\x1b[B\r", f"1 title-mode-{index}"),
             (10.0, b"\r", f"TITLE_WORKLOAD_READY-{index}"),
         ]
         keys += [(15.0, b"\x02d", marker)]
