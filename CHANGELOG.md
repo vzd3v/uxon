@@ -8,6 +8,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `uxon doctor` checks direct launch profiles under their configured accounts and execution backends, reports missing profile binaries, and avoids version commands under unrelated accounts.
+
 ## [4.0.0] — 2026-10-30
 
 ### Changed (breaking)

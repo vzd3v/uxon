@@ -8,13 +8,17 @@ import socket
 import subprocess
 import threading
 from contextlib import ExitStack, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from harness.target_commands import TargetCommands, target_config
 
 from uxon.app import doctor
 from uxon.cli.main import main
+from uxon.domain.agents import AgentSpec, PermissionMode
+from uxon.domain.launch_profiles import LaunchConfig, LaunchProfile
 from uxon.infra import agents, audit, config_loader, execution, path_probe, probes, tmux
 from uxon.infra.config_renderer import render_config
 from uxon.infra.remote import collector
@@ -314,3 +318,79 @@ def test_explicit_remote_collects_actual_success_and_failed_peer_once(doctor_pro
     assert rows[0]["error"] is None
     assert "peer-down-sentinel" in rows[1]["error"]
     assert all(isinstance(row["latency_ms"], int) and row["latency_ms"] >= 0 for row in rows)
+
+
+@pytest.mark.parametrize("outcome", ["ok", "missing", "timeout", "no_version"])
+def test_doctor_diagnoses_each_direct_profile_in_its_execution_account(
+    tmp_path, monkeypatch, outcome
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cfg = target_config(
+        default_launch_mode="fixed",
+        default_launch_user="alice",
+        new_project_root=str(tmp_path),
+        allowed_roots=[str(tmp_path)],
+        tmux_socket_template=str(tmp_path / "socket" / "tmux.sock"),
+    )
+    cfg.agents["custom"] = AgentSpec("custom", "custom-bin", (PermissionMode("normal"),))
+    if outcome == "no_version":
+        cfg.agents["custom"] = replace(cfg.agents["custom"], version_args=())
+    cfg.launch = LaunchConfig(
+        enabled_profiles=("primary", "secondary", "secondary_copy", "custom"),
+        default_profile="primary",
+        profiles={
+            "primary": LaunchProfile("primary", "codex", launch_user="alice"),
+            "secondary": LaunchProfile("secondary", "codex", launch_user="bob"),
+            "secondary_copy": LaunchProfile("secondary_copy", "codex", launch_user="bob"),
+            "custom": LaunchProfile("custom", "custom", launch_user="bob"),
+        },
+    )
+
+    def respond(user, command, kwargs):
+        if "uxon.infra.tmux_server_probe" in command:
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps({"state": "absent", "sessions": [], "error": ""}), ""
+            )
+        assert kwargs["timeout"] == 2.0
+        assert command in [
+            [name, "--version"] for name in ("claude", "codex", "cursor-agent", "custom-bin")
+        ]
+        if command[0] == "custom-bin":
+            assert user == "bob", "An override-only tool must not execute as the default account"
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, f"{command[0]} for {user}\n", "")
+
+    installed = ("tmux", "claude", "codex", "cursor-agent")
+    external = TargetCommands(
+        respond, installed=installed + (() if outcome == "missing" else ("custom-bin",))
+    )
+    with external.installed_boundary(), redirect_stdout(io.StringIO()) as output:
+        assert doctor.do_doctor(cfg, "operator", "alice", str(tmp_path), json_output=True) == 0
+    data = json.loads(output.getvalue())["data"]
+    rows = {row["id"]: row for row in data["launch_profiles"]}
+    assert rows["primary"]["host_agent_version"] == "codex for alice"
+    assert rows["secondary"]["host_agent_version"] == "codex for bob"
+    assert rows["secondary_copy"]["host_agent_version"] == "codex for bob"
+    assert (
+        sum(
+            user == "bob" and command == ["codex", "--version"]
+            for user, command, _ in external.calls
+        )
+        == 1
+    )
+    custom = rows["custom"]
+    assert custom["host_agent_path"] == (None if outcome == "missing" else "/usr/bin/custom-bin")
+    assert custom["host_agent_status"] == ("ok" if outcome == "no_version" else outcome)
+    assert custom["host_agent_version"] == ("custom-bin for bob" if outcome == "ok" else None)
+    assert any("custom" in issue and "bob" in issue for issue in data["issues"]) == (
+        outcome == "missing"
+    )
+    custom_calls = [
+        (user, command)
+        for user, command, _ in external.calls
+        if command == ["custom-bin", "--version"]
+    ]
+    assert custom_calls == (
+        [] if outcome in ("missing", "no_version") else [("bob", ["custom-bin", "--version"])]
+    )
