@@ -40,9 +40,15 @@ def target_config(**overrides):
 
 class TargetCommands:
     def __init__(
-        self, respond=None, *, installed=("tmux", "claude", "codex", "cursor-agent"), denied=()
+        self,
+        respond=None,
+        *,
+        installed=("tmux", "claude", "codex", "cursor-agent"),
+        denied=(),
+        version_respond=None,
     ):
         self.respond = respond
+        self.version_respond = version_respond
         self.installed = set(installed)
         self.calls = []
         self.errors = []
@@ -89,6 +95,10 @@ class TargetCommands:
                 for name in names
             )
             return subprocess.CompletedProcess(argv, 0, output, "")
+        if len(command) == 2 and command[0] in self.installed and command[1] == "--version":
+            if self.version_respond is not None:
+                return self.version_respond(user, command, kwargs)
+            return subprocess.CompletedProcess(argv, 0, f"{command[0]} test-version\n", "")
         assert self.respond is not None, (user, command, kwargs)
         return self.respond(user, command, kwargs)
 

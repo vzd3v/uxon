@@ -1,84 +1,39 @@
-"""Impure agent probe: the per-binary ``--version`` detail for ``do_doctor``.
-
-The pure catalog data (``PermissionMode`` / ``AgentSpec`` / the shipped
-``DEFAULT_AGENT_CATALOG`` / ``permission_mode_for``) lives in
-:mod:`uxon.domain.agents`; this module keeps only the subprocess probe.
-``_probe_one`` uses subprocess locally but never at module scope; it is
-only called by ``do_doctor`` to fetch the per-agent ``--version`` line
-shown for present binaries (the host-wide "is this installed" probe
-lives in ``uxon.infra.probes`` since 0.5.x).
-"""
+"""Bounded agent execution probes shared by launch, TUI and doctor."""
 
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
 
-from uxon.domain.config import Config
-from uxon.infra.execution import command_prefix
+from uxon.domain.host_report import AgentAvailability as AgentAvailability
+from uxon.infra.execution import ExecutionConfigured, command_prefix
 from uxon.infra.run import run_query
 
-# ── Availability probe ───────────────────────────────────────────────
 
-
-@dataclass(frozen=True)
-class AgentAvailability:
-    status: str  # "pending" | "ok" | "missing" | "timeout"
-    path: str | None = None
-    version: str | None = None
-    error: str | None = None
-
-
-PROBE_TIMEOUT_SEC = (
-    10.0  # cursor-agent --version is slow (~5-8s); probe is async + parallel, non-blocking
-)
-
-
-def _probe_one(
-    cfg: Config,
+def probe_agent(
+    cfg: ExecutionConfigured,
     binary: str,
-    launch_user: str | None,
+    launch_user: str,
     *,
-    version_args: tuple[str, ...] = ("--version",),
-    timeout_override: float | None = None,
+    version_args: tuple[str, ...],
+    timeout_seconds: float,
 ) -> AgentAvailability:
-    """Run ``<binary> <version_args>`` (under sudo if launch_user differs from
-    caller) and return a status-tagged :class:`AgentAvailability`.
+    """Execute the configured version command through the launch user's backend.
 
-    Used by ``do_doctor`` to render the version line for binaries that
-    ``uxon.infra.probes.probe_host`` already confirmed are present. The
-    parallel multi-agent driver (``probe_agents``) was removed in 0.5.x
-    once the host-wide probe replaced it everywhere except the doctor's
-    per-binary version detail.
-
-    ``version_args`` comes from the agent's catalog entry (default
-    ``("--version",)``); the doctor caller skips the probe entirely when
-    an agent configures an empty ``version_args``.
-
-    ``timeout_override`` lets the doctor caller (which probes in parallel)
-    use a tighter 2 s deadline; the TUI host-probe path keeps the 10 s
-    default since it is async and off the event loop.
+    Presence is checked separately. A present wrapper can fail to execute its
+    target; retain that failure instead of reporting a missing installation.
+    A timeout establishes neither success nor failure.
     """
-    timeout = PROBE_TIMEOUT_SEC if timeout_override is None else timeout_override
-    ver = list(version_args)
-    if launch_user:
-        # Use the same execution boundary as launch. The local backend does
-        # not source a login shell; operators should configure an absolute
-        # agent binary when the inherited PATH does not contain it.
-        cmd = command_prefix(cfg, launch_user, interactive=False) + [binary, *ver]
-    else:
-        cmd = [binary, *ver]
+    cmd = command_prefix(cfg, launch_user, interactive=False) + [binary, *version_args]
     try:
-        cp = run_query(
-            cmd,
-            timeout=timeout,
-        )
-    except FileNotFoundError as exc:
-        return AgentAvailability(status="missing", error=str(exc))
+        cp = run_query(cmd, timeout=timeout_seconds)
+    except OSError as exc:
+        return AgentAvailability(status="error", error=str(exc))
     except subprocess.TimeoutExpired:
         return AgentAvailability(status="timeout")
     if cp.returncode != 0:
         err = (cp.stderr or cp.stdout or "").strip()
-        return AgentAvailability(status="missing", error=err or f"exit {cp.returncode}")
-    version = (cp.stdout or "").strip().splitlines()[0] if cp.stdout else None
-    return AgentAvailability(status="ok", version=version)
+        return AgentAvailability(
+            status="error", error=(err or f"exit {cp.returncode}")[:512], returncode=cp.returncode
+        )
+    lines = (cp.stdout or "").strip().splitlines()
+    return AgentAvailability(status="ok", version=lines[0] if lines else None)

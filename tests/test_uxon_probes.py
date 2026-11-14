@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+from dataclasses import replace
 from unittest import mock
 
 import pytest
 from helpers import make_config
 
+from uxon.app.doctor import do_doctor
+from uxon.app.launch_profile import resolve_launch_profile
 from uxon.domain.agents import AgentSpec, PermissionMode
 from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
+from uxon.domain.launch_profiles import LaunchConfig, LaunchProfile
+from uxon.infra.identity import process_user
 from uxon.infra.probes import PROBE_TIMEOUT_SEC, probe_host
 
 pytestmark = pytest.mark.usefixtures("real_execution", "real_host_probes")
@@ -110,3 +116,41 @@ def test_public_host_probe_batches_catalog_and_normalizes_failures(subtests):
         empty = probe_host(make_config(), "alice", {})
     assert empty.agents == {} and empty.tmux.path == "/usr/bin/tmux"
     assert run.call_count == 1
+
+
+def test_broken_executable_shim_is_reported_and_rechecked_after_repair(tmp_path, capsys):
+    shim = tmp_path / "agent"
+    missing = tmp_path / "missing-executable"
+    shim.write_text(f'#!/bin/sh\nexec "{missing}" "$@"\n')
+    shim.chmod(0o755)
+    cfg = make_config(
+        allowed_roots=[str(tmp_path)],
+        new_project_root=str(tmp_path),
+        tmux_socket_template=str(tmp_path / "tmux.sock"),
+    )
+    cfg.agents = {"claude": replace(cfg.agents["claude"], binary=str(shim))}
+    cfg.launch = LaunchConfig(
+        default_profile="claude",
+        enabled_profiles=("claude",),
+        profiles={"claude": LaunchProfile(id="claude", agent="claude")},
+    )
+    user = process_user()
+    report = probe_host(cfg, user, cfg.agents)
+    status = report.agents["claude"]
+    assert status.path == str(shim) and not status.launchable
+    assert status.availability.status == "error"
+    assert status.availability.returncode == 127
+    assert str(missing) in status.availability.error
+    with pytest.raises(SystemExit):
+        resolve_launch_profile(cfg, user, "claude", str(tmp_path), "normal")
+    assert str(missing) in capsys.readouterr().err
+    do_doctor(cfg, user, user, str(tmp_path), json_output=True)
+    result = json.loads(capsys.readouterr().out)["data"]
+    assert result["agents"]["claude"]["status"] == "error"
+    assert any(str(missing) in issue for issue in result["issues"])
+    shim.write_text("#!/bin/sh\nprintf 'test-agent 1.0\\n'\n")
+    resolved = resolve_launch_profile(cfg, user, "claude", str(tmp_path), "normal")
+    assert resolved.agent.binary == str(shim)
+    shim.write_text(f'#!/bin/sh\nexec "{missing}" "$@"\n')
+    cfg.agents["claude"] = replace(cfg.agents["claude"], version_args=())
+    assert probe_host(cfg, user, cfg.agents).agents["claude"].launchable

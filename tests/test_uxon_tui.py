@@ -141,7 +141,8 @@ def test_all_missing_requires_resolved_enabled_profiles() -> None:
         (("claude", "codex"), _availability(claude="missing"), False),
         (("claude", "codex"), _availability(claude="missing", codex="pending"), False),
         (("claude", "codex"), _availability(claude="ok", codex="missing"), False),
-        (("claude", "codex"), _availability(claude="missing", codex="timeout"), True),
+        (("claude", "codex"), _availability(claude="missing", codex="timeout"), False),
+        (("claude", "codex"), _availability(claude="missing", codex="error"), True),
         (("claude",), _availability(claude="unknown"), False),
     ):
         assert compute_all_missing(enabled_profiles=enabled, availability=availability) is expected
@@ -206,21 +207,21 @@ def test_launch_options_visibility_preference_and_availability_transitions() -> 
             LaunchOptionsUpdate(("codex", "cursor"), False, "workspace", "codex", False),
         ),
         (
-            _availability(claude="missing", codex="timeout", cursor="ok"),
+            _availability(claude="missing", codex="error", cursor="ok"),
             "claude",
             "claude",
             "agent",
             LaunchOptionsUpdate(("cursor",), True, "mode", "cursor", False),
         ),
         (
-            _availability(claude="missing", codex="timeout", cursor="missing"),
+            _availability(claude="missing", codex="error", cursor="missing"),
             "claude",
             "claude",
             "agent",
             LaunchOptionsUpdate((), True, "mode", "claude", True),
         ),
         (
-            _availability(claude="missing", codex="timeout", cursor="missing"),
+            _availability(claude="missing", codex="error", cursor="missing"),
             "",
             "codex",
             "agent",
@@ -240,8 +241,13 @@ def test_launch_options_visibility_preference_and_availability_transitions() -> 
     assert launch_options_state(
         enabled_profiles=enabled,
         default_profile="claude",
-        availability=_availability(claude="missing", codex="timeout", cursor="ok"),
+        availability=_availability(claude="missing", codex="error", cursor="ok"),
     ) == LaunchOptionsState(("cursor",), True, "mode", "cursor")
+    assert launch_options_state(
+        enabled_profiles=enabled,
+        default_profile="codex",
+        availability=_availability(claude="missing", codex="timeout", cursor="ok"),
+    ) == LaunchOptionsState(("codex", "cursor"), False, "agent", "codex")
     for visible, index, expected in (
         (("claude", "codex"), -1, "cursor"),
         (("claude", "codex"), 0, "claude"),

@@ -61,7 +61,7 @@ _DISPATCH = textwrap.dedent("""
                 calls.append("git-status")
                 return subprocess.CompletedProcess(argv, 0, "", "")
         if action == "list" and argv[:2] == ["sh", "-c"] and "command -v" in argv[2]:
-            assert argv[2] == 'for c in tmux claude codex cursor-agent; do\\n    printf "%s\\\\t%s\\\\n" "$c" "$(command -v "$c" 2>/dev/null)"\\ndone'
+            assert argv[2] == 'for c in tmux; do\\n    printf "%s\\\\t%s\\\\n" "$c" "$(command -v "$c" 2>/dev/null)"\\ndone'
             assert kwargs["timeout"] == 2.0
             calls.append("host-binaries")
             return subprocess.CompletedProcess(argv, 0, "tmux\\t/usr/bin/tmux\\nclaude\\t/usr/bin/claude\\ncodex\\t/usr/bin/codex\\ncursor-agent\\t/usr/bin/cursor-agent\\n", "")

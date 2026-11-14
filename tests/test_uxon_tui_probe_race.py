@@ -13,9 +13,52 @@ from uxon.infra.agents import AgentAvailability
 from uxon.tui.app import UxonApp
 from uxon.tui.context import LaunchProfileOption
 from uxon.tui.messages import _HostReportUpdated
+from uxon.tui.screens.agents_unavailable import AgentsUnavailableScreen
+from uxon.tui.state import compute_all_missing, visible_agent_ids
 
 
 class ProbeWorkerTests(unittest.IsolatedAsyncioTestCase):
+    def test_auto_mode_keeps_missing_and_broken_results_for_unavailable_diagnostics(self):
+        ctx = _mk_ctx(
+            enabled_profiles=("claude", "codex"),
+            launch_auto_mode=True,
+            launch_profiles={
+                aid: LaunchProfileOption(aid, aid, aid, "alice") for aid in ("claude", "codex")
+            },
+        )
+        app = UxonApp(ctx, probe_agents=False)
+        posted = []
+        app.post_message = lambda message: posted.append(message) or True
+        report = HostReport(
+            BinaryStatus("tmux", "/usr/bin/tmux", ""),
+            {
+                "claude": BinaryStatus("claude", None, "install claude"),
+                "codex": BinaryStatus(
+                    "codex",
+                    "/bin/codex",
+                    "install codex",
+                    AgentAvailability("error", error="missing target", returncode=127),
+                ),
+            },
+            "alice",
+        )
+        with patch("uxon.infra.probes.probe_host", return_value=report):
+            app._worker_coord._probe_host_worker()
+        availability = posted[0].availability
+        self.assertTrue(
+            compute_all_missing(enabled_profiles=ctx.enabled_profiles, availability=availability)
+        )
+        self.assertEqual(
+            visible_agent_ids(
+                enabled_profiles=(), availability=availability, catalog_ids=ctx.enabled_profiles
+            ),
+            (),
+        )
+        screen = AgentsUnavailableScreen(
+            enabled_profiles=ctx.enabled_profiles, availability=availability
+        )
+        self.assertIn("missing target", screen.body_text)
+
     async def test_completed_worker_cannot_mutate_state_before_buffered_delivery(self):
         started, release = threading.Event(), threading.Event()
         worker_threads = []

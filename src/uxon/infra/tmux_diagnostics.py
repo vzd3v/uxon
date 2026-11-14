@@ -127,7 +127,7 @@ def _diagnostics_commands(session: str, live_table: str, bindings: str) -> list[
                     "set-option",
                     "-w",
                     "pane-border-format",
-                    "#{?pane_dead,Process exited#{?pane_dead_status, (#{pane_dead_status}),}. Enter / Esc / q: close and return to Uxon.,#{E:@uxon-border-format}}",
+                    "#{?pane_dead,Process exited#{?pane_dead_status, (#{pane_dead_status}),}. PgUp: output. Enter / Esc / q: close and return to Uxon.,#{E:@uxon-border-format}}",
                 ],
             )
         )
@@ -191,6 +191,7 @@ def _diagnostics_commands(session: str, live_table: str, bindings: str) -> list[
     for key in ("Enter", "Escape", "q"):
         bind(key, ack)
     for key, command in (
+        ("PPage", "copy-mode -eu"),
         ("WheelUpPane", "copy-mode -e"),
         ("MouseDown1Pane", "select-pane -t ="),
         ("MouseDrag1Pane", "copy-mode -M"),

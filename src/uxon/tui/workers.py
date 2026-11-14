@@ -331,26 +331,24 @@ class WorkerCoordinator:
             )
             return
 
-        # Strict profile mode: surface exactly the enabled profile ids,
-        # marking absent host binaries as missing. Auto-mode: surface only
-        # profiles that are actually launchable.
+        # Preserve every profile's result, including failures in auto-mode.
+        # Visibility is a separate state decision; the unavailable modal needs
+        # a settled result for every candidate rather than an incomplete map.
         configured = self._cfg.enabled_profiles
         availability: dict = {}
         for pid in configured:
             profile = self._cfg.launch_profiles.get(pid)
             if profile is None:
-                if not self._cfg.launch_auto_mode:
-                    availability[pid] = uxon_agents.AgentAvailability(
-                        status="missing", error="unknown launch profile"
-                    )
+                availability[pid] = uxon_agents.AgentAvailability(
+                    status="missing", error="unknown launch profile"
+                )
                 continue
             report = reports.get(profile.launch_user)
             if report is None or report.tmux.path is None:
-                if not self._cfg.launch_auto_mode:
-                    availability[pid] = uxon_agents.AgentAvailability(
-                        status="missing",
-                        error="tmux not found on PATH",
-                    )
+                availability[pid] = uxon_agents.AgentAvailability(
+                    status="missing",
+                    error="tmux not found on PATH",
+                )
                 continue
             if profile.runtime != "direct":
                 availability[pid] = uxon_agents.AgentAvailability(
@@ -360,8 +358,10 @@ class WorkerCoordinator:
                 continue
             status = report.agents.get(profile.agent)
             if status is not None and status.path is not None:
-                availability[pid] = uxon_agents.AgentAvailability(status="ok", path=status.path)
-            elif not self._cfg.launch_auto_mode:
+                availability[pid] = status.availability or uxon_agents.AgentAvailability(
+                    status="ok", path=status.path
+                )
+            else:
                 spec = self._cfg.agents.get(profile.agent)
                 binary = spec.binary if spec is not None else profile.agent
                 availability[pid] = uxon_agents.AgentAvailability(

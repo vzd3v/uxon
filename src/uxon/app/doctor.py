@@ -11,12 +11,14 @@ under ``--remote`` (:func:`_doctor_remote_rows`).
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import uxon.app.listing as listing_app
 import uxon.app.repeat as repeat_app
 from uxon.domain.config import Config
+from uxon.domain.host_report import AgentAvailability, HostReport
 from uxon.domain.session import SessionInfo
 from uxon.infra import config_loader, identity, sessions_probe, tmux, version_probe
 from uxon.infra import execution as execution_infra
@@ -37,6 +39,7 @@ def doctor_issues(
     socket_path: str,
     current_sessions: list[SessionInfo],
     legacy_sessions: list[SessionInfo],
+    availability: dict[str, AgentAvailability] | None = None,
 ) -> list[str]:
     from uxon.domain.authz import is_under_allowed_roots
 
@@ -61,7 +64,7 @@ def doctor_issues(
             cfg.launch.profiles[pid].agent
             for pid in cfg.launch.effective_enabled_profiles
             if pid in cfg.launch.profiles
-            and cfg.launch.profiles[pid].runtime == "direct"
+            and cfg.runtimes[cfg.launch.profiles[pid].runtime].kind == "direct"
             and (cfg.launch.profiles[pid].launch_user or launch_user) == launch_user
         )
     )
@@ -69,6 +72,10 @@ def doctor_issues(
         for aid in host_required_agents:
             if agent_paths.get(aid) is None:
                 issues.append(f"'{aid}' agent binary is not resolvable for {launch_user}")
+            elif availability and aid in availability and availability[aid].status == "error":
+                issues.append(
+                    f"'{aid}' agent cannot run for {launch_user}: {availability[aid].error}"
+                )
     elif cfg.launch.auto_mode and all(path is None for path in agent_paths.values()):
         issues.append(
             f"no agent binary is resolvable for {launch_user} (auto-mode); "
@@ -99,13 +106,27 @@ def do_doctor(
     probe_remote: bool = False,
 ) -> int:
     from uxon.domain.wire_schema import build_session_records
-    from uxon.infra import agents as uxon_agents
     from uxon.infra import probes as uxon_probes
 
     config_sources = config_loader.config_sources()
     socket_path = tmux.tmux_socket_path(cfg, launch_user)
-    # Single-round-trip probe for tmux + every catalogued agent.
-    report = uxon_probes.probe_host(cfg, launch_user, cfg.agents)
+    enabled = [cfg.launch.profiles[pid] for pid in cfg.launch.effective_enabled_profiles]
+    profiled_agents = {profile.agent for profile in enabled}
+    default_agents = {
+        profile.agent
+        for profile in enabled
+        if cfg.runtimes[profile.runtime].kind == "direct"
+        and (profile.launch_user or launch_user) == launch_user
+    }
+    # Discover the complete catalog, but execute enabled tools only under their
+    # actual direct launch accounts. Catalog-only entries remain informational.
+    catalog = {
+        aid: spec
+        if aid in default_agents or aid not in profiled_agents
+        else replace(spec, version_args=())
+        for aid, spec in cfg.agents.items()
+    }
+    report = uxon_probes.probe_host(cfg, launch_user, catalog)
     tmux_path = report.tmux.path
     # Doctor shows every catalogued agent regardless of strict/auto mode —
     # the operator wants to see the full landscape ("is X installed?")
@@ -114,32 +135,22 @@ def do_doctor(
     agent_paths: dict[str, str | None] = {
         aid: report.agents[aid].path for aid in doctor_agent_ids if aid in report.agents
     }
-    # Per-present-binary version detail. Probes run in parallel with a
-    # 2 s per-probe deadline — slow agents (e.g. cold ``cursor-agent``)
-    # surface as TIMEOUT instead of inflating doctor's wall time. The
-    # host probe above already established presence; ``--version`` is
-    # informational.
-    import concurrent.futures  # noqa: PLC0415
-
-    def _probe(aid: str) -> tuple[str, uxon_agents.AgentAvailability]:
-        if not agent_paths.get(aid):
-            return aid, uxon_agents.AgentAvailability(status="missing", error="not on PATH")
-        spec = cfg.agents[aid]
-        if not spec.version_args:
-            # ``version_args = []`` → operator opted out of the version line.
-            return aid, uxon_agents.AgentAvailability(status="ok", path=agent_paths.get(aid))
-        return aid, uxon_agents._probe_one(
-            cfg,
-            spec.binary,
-            launch_user,
-            version_args=spec.version_args,
-            timeout_override=2.0,
-        )
-
-    availability: dict[str, uxon_agents.AgentAvailability] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        for aid, result in pool.map(_probe, doctor_agent_ids):
-            availability[aid] = result
+    availability = {
+        aid: status.availability
+        for aid, status in report.agents.items()
+        if status.availability is not None
+    }
+    reports = {launch_user: report}
+    for profile in enabled:
+        selected_user = profile.launch_user or launch_user
+        if cfg.runtimes[profile.runtime].kind == "direct" and selected_user not in reports:
+            catalog = {
+                row.agent: cfg.agents[row.agent]
+                for row in enabled
+                if cfg.runtimes[row.runtime].kind == "direct"
+                and (row.launch_user or launch_user) == selected_user
+            }
+            reports[selected_user] = uxon_probes.probe_host(cfg, selected_user, catalog)
     current_sessions = sessions_probe.collect_sessions([launch_user], cfg)
     legacy_sessions = sessions_probe.collect_sessions_for_user(
         cfg,
@@ -159,8 +170,18 @@ def do_doctor(
         socket_path,
         current_sessions,
         legacy_sessions,
+        availability,
     )
-    launch_profile_rows = _doctor_launch_profile_rows(cfg, caller_user, launch_user, agent_paths)
+    launch_profile_rows = _doctor_launch_profile_rows(cfg, caller_user, reports)
+    for row in launch_profile_rows:
+        if (
+            row["launch_user"] != launch_user
+            and not row["uses_runtime"]
+            and row["host_agent_status"] in {"missing", "error"}
+        ):
+            issues.append(
+                f"profile {row['id']!r} cannot run for {row['launch_user']}: {row['host_agent_error']}"
+            )
     runtime_rows = _doctor_runtime_rows(cfg, cwd, caller_user)
     execution_rows = _doctor_execution_rows(cfg, caller_user)
     socket_parent = str(Path(socket_path).parent)
@@ -175,6 +196,7 @@ def do_doctor(
                 "status": (avail.status if avail else "missing"),
                 "version": (avail.version if avail else None),
                 "error": (avail.error if avail else None),
+                "returncode": (avail.returncode if avail else None),
             }
         data: dict[str, Any] = {
             "cwd": cwd,
@@ -252,6 +274,8 @@ def do_doctor(
             print(f"{aid}:  {path}  ok ({avail.version or '?'})")
         elif avail and avail.status == "timeout":
             print(f"{aid}:  {path}  TIMEOUT (>2.0s)")
+        elif avail and avail.status == "error":
+            print(f"{aid}:  {path}  ERROR  ({avail.error})")
         else:
             print(f"{aid}:  -  MISSING  ({spec.install_hint})")
     print(f"launch_profiles={len(launch_profile_rows)}:")
@@ -259,7 +283,9 @@ def do_doctor(
         print(
             f"- {row['id']}  agent={row['agent']}  launch_user={row['launch_user']}  "
             f"runtime={row['runtime'] or '-'}  "
-            f"host_agent={'not-required' if row['uses_runtime'] else row['host_agent_path'] or 'missing'}"
+            f"host_agent={'not-required' if row['uses_runtime'] else row['host_agent_path'] or 'missing'}  "
+            f"status={row['host_agent_status'] or 'not-required'}"
+            + (f" ({row['host_agent_error']})" if row["host_agent_error"] else "")
         )
     print(f"execution_backends={len(execution_rows)}:")
     for row in execution_rows:
@@ -341,8 +367,7 @@ def do_doctor(
 def _doctor_launch_profile_rows(
     cfg: Config,
     caller_user: str,
-    default_launch_user: str,
-    agent_paths: dict[str, str | None],
+    reports: dict[str, HostReport],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for pid in cfg.launch.effective_enabled_profiles:
@@ -352,6 +377,9 @@ def _doctor_launch_profile_rows(
         selected_user = profile.launch_user or identity.resolve_launch_user(cfg, caller_user)
         runtime = profile.runtime
         runtime_kind = cfg.runtimes[runtime].kind
+        report = reports.get(selected_user) if runtime_kind == "direct" else None
+        status = report.agents.get(profile.agent) if report else None
+        availability = status.availability if status else None
         rows.append(
             {
                 "id": pid,
@@ -360,9 +388,10 @@ def _doctor_launch_profile_rows(
                 "runtime": runtime or None,
                 "runtime_kind": runtime_kind,
                 "uses_runtime": runtime_kind != "direct",
-                "host_agent_path": (
-                    agent_paths.get(profile.agent) if selected_user == default_launch_user else None
-                ),
+                "host_agent_path": status.path if status else None,
+                "host_agent_status": availability.status if availability else None,
+                "host_agent_version": availability.version if availability else None,
+                "host_agent_error": availability.error if availability else None,
             }
         )
     return rows

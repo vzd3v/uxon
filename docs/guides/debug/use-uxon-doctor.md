@@ -18,7 +18,7 @@ Prints:
 - `allowed_roots`, `new_project_root`;
 - `repeat_noninteractive_mode` and any env override;
 - `tmux` and agent binary paths for the launch user;
-- enabled launch profiles and their underlying agents;
+- enabled launch profiles with binary diagnostics under each profile's launch account;
 - execution backend status for each effective launch user;
 - dedicated `tmux` socket details;
 - current sessions on the dedicated socket;

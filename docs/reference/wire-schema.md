@@ -153,6 +153,13 @@ available; rejected rows cannot be selected for actions.
 invoked; default doctor does not poll configured peers. Operator-defined
 execution helpers may themselves use remote transports.
 
+Agent probe `status` distinguishes `missing` (unresolved executable), `error`
+(resolved command failed), `timeout` (inconclusive) and `ok`. `returncode` is
+an additive nullable field for failed execution probes. Enabled direct-profile
+execution failures appear in `issues`; optional catalog entries do not make an
+enabled profile unhealthy. Doctor retains its diagnostic exit-code behavior;
+consume `issues` and probe statuses for health decisions.
+
 `audit.sink` carries the raw sink id: `"journal"`, `"syslog"`,
 or `"none"`. The human `uxon doctor` text output uppercases this
 to `journald-native` / `syslog` / `no-sink` for readability — the
@@ -161,6 +168,19 @@ JSON envelope keeps the raw value.
 Each `execution_backends` row carries `launch_user`, `backend`, `kind`, a
 static config `fingerprint`, probe `status`, and an `error` string when the
 fixed target UID/GID probe fails. The fingerprint is diagnostic only.
+
+`agents` describes catalog binaries for the top-level `launch_user`. Version
+commands for enabled profiles run only under their effective direct launch
+accounts; other catalog entries retain informational version checks.
+
+Each `launch_profiles` row carries `id`, `agent`, effective `launch_user`,
+`runtime`, `runtime_kind`, and `uses_runtime`. Direct profiles include
+`host_agent_path`, `host_agent_status` (`"ok"`, `"missing"`, `"error"`, or `"timeout"`),
+`host_agent_version`, and `host_agent_error`, probed through that account's
+execution backend. These four fields are null for command runtimes, which do
+not require a host agent. Version probes are informational and bounded at two
+seconds; absent or failing executables for enabled direct profiles appear in `issues`.
+`agents.<id>.version_args = []` skips version commands in both reports.
 
 ## `kind = "version"`
 

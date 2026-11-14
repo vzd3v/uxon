@@ -292,10 +292,11 @@ def _auto_discover_profile(
     for pid in candidates:
         agent_id = cfg.launch.profiles[pid].agent
         status = probe_report.agents.get(agent_id)
-        if status is not None and status.path is not None:
+        if status is not None and status.launchable:
             return pid, launch_user, probe_report
         hint = status.install_hint if status is not None else ""
-        missing.append(f"{pid} ({agent_id}: not installed{'; ' + hint if hint else ''})")
+        detail = status.availability.error if status and status.availability else "not installed"
+        missing.append(f"{pid} ({agent_id}: {detail}{'; ' + hint if hint else ''})")
     fail(
         f"no auto-mode launch profile has an installed agent for {launch_user!r}; "
         f"candidates: {', '.join(missing)}",
@@ -374,10 +375,22 @@ def resolve_launch_profile(
     _validate_git_selector(git_remote_selector, policy, canonical_target=canonical_target)
 
     final_report = selected_report or _probe_host_for(
-        launch_user, cfg, (profile.agent,), report=report
+        launch_user, cfg, (profile.agent,) if profile.runtime == "direct" else (), report=report
     )
     _fail_if_tmux_missing(final_report)
     status = final_report.agents.get(profile.agent)
+    if (
+        profile.runtime == "direct"
+        and status is not None
+        and status.path is not None
+        and not status.launchable
+    ):
+        detail = status.availability.error if status.availability else "execution probe failed"
+        fail(
+            f"agent {profile.agent!r} for launch profile {selected!r} cannot run for "
+            f"{launch_user!r} ({status.path}): {detail}",
+            1,
+        )
     if profile.runtime == "direct" and (status is None or status.path is None):
         hint = status.install_hint if status is not None else ""
         fail(

@@ -12,12 +12,29 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class AgentAvailability:
+    status: str  # pending | ok | missing | error | timeout
+    path: str | None = None
+    version: str | None = None
+    error: str | None = None
+    returncode: int | None = None
+
+
+@dataclass(frozen=True)
 class BinaryStatus:
     """Status of a single binary on the host."""
 
     name: str  # "tmux" or an open-ended agent id from the merged catalog
     path: str | None  # resolved absolute path or None
     install_hint: str  # ready-to-paste shell command(s)
+    availability: AgentAvailability | None = None
+
+    @property
+    def launchable(self) -> bool:
+        """Timeout is inconclusive; an observed execution failure is not."""
+        return self.path is not None and (
+            self.availability is None or self.availability.status in {"ok", "timeout"}
+        )
 
 
 @dataclass(frozen=True)

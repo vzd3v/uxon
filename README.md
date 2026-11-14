@@ -44,6 +44,8 @@ Launch profiles choose the coding tool, launch account and optional workload
 runtime, including containers. Execution backends can place target-user commands
 and tmux inside an operator-managed boundary. Shared supervision requires
 [protected launch records](docs/reference/configuration.md#launch-records).
+Use [`uxon doctor`](docs/guides/debug/use-uxon-doctor.md) to check launch profiles
+under their configured accounts and execution backends.
 
 ## Install
 

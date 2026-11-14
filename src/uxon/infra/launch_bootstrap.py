@@ -90,7 +90,11 @@ def wait_then_exec(
         detail = (wait.stderr or wait.stdout or "tmux release wait failed").strip()
         print(f"uxon: {detail}", file=sys.stderr)
         return 1
-    os.execvp(agent_argv[0], agent_argv)
+    try:
+        os.execvp(agent_argv[0], agent_argv)
+    except OSError as exc:
+        print(f"uxon: cannot execute {agent_argv[0]!r}: {exc}", file=sys.stderr)
+        return 127 if isinstance(exc, FileNotFoundError) else 126
     raise AssertionError("unreachable")
 
 
