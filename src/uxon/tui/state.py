@@ -159,12 +159,12 @@ def visible_agent_ids(
     """Profile ids the LaunchOptions screen should expose.
 
     Strict mode (``enabled_profiles`` non-empty): the configured profile list,
-    minus any with a resolved ``missing``/``timeout`` status. Pending
+    minus any with a resolved ``missing``/``error`` status. Pending
     entries stay visible so the row renders as "(checking…)" rather
     than vanishing mid-probe.
 
     Auto-mode: every ``catalog_ids`` entry
-    (merged-catalog order) that has resolved to ``ok`` in ``availability``.
+    (merged-catalog order) with ``ok`` or inconclusive ``timeout`` availability.
     No "missing" rows.
     """
     if enabled_profiles and not auto_mode:
