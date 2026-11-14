@@ -74,6 +74,20 @@ class _Client:
     def send(self, keys: bytes) -> None:
         os.write(self.fd, keys)
 
+    def receive(self, marker: bytes) -> bytes:
+        output = bytearray()
+
+        def arrived() -> bool:
+            if select.select([self.fd], [], [], 0)[0]:
+                output.extend(os.read(self.fd, 65536))
+            return marker in output
+
+        try:
+            _wait(arrived)
+        except AssertionError:
+            raise AssertionError(f"terminal did not show {marker!r}: {bytes(output)!r}") from None
+        return bytes(output)
+
     def finish(self) -> dict[str, Any]:
         _wait(self.result.exists)
         status = self.reap()
@@ -215,7 +229,9 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Terminal]:
         directory = Path(temporary)
         monkeypatch.setenv("XDG_STATE_HOME", str(directory / "state"))
         stub = directory / "claude"
-        stub.write_text("#!/bin/sh\nexec sleep 600\n")
+        stub.write_text(
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then echo test-version; exit 0; fi\nexec sleep 600\n'
+        )
         stub.chmod(0o755)
         cfg = make_config(
             allowed_roots=[str(directory)],
@@ -241,17 +257,6 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Terminal]:
 def test_session_titles_reach_the_terminal_and_can_be_disabled(
     terminal: _Terminal, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def receive(client: _Client, marker: bytes) -> bytes:
-        output = bytearray()
-
-        def arrived() -> bool:
-            if select.select([client.fd], [], [], 0)[0]:
-                output.extend(os.read(client.fd, 65536))
-            return marker in output
-
-        _wait(arrived)
-        return bytes(output)
-
     target = terminal.snapshot().sessions[0]
     assert terminal.command("show-options", "-gv", "mouse") == "on"
     assert terminal.command("show-options", "-sv", "extended-keys") == "on"
@@ -260,7 +265,7 @@ def test_session_titles_reach_the_terminal_and_can_be_disabled(
     terminal.command("select-pane", "-t", _SESSION, "-T", "WORKLOAD_TITLE")
     terminal.command("set-option", "-g", "set-titles-string", "GLOBAL_TITLE")
     client = terminal.attach(tmux._build_tmux_attach_request(target, terminal.cfg, terminal.user))
-    output = receive(client, b"\x1b]0;" + _SESSION.encode() + b"\x07")
+    output = client.receive(b"\x1b]0;" + _SESSION.encode() + b"\x07")
     assert b"\x1b]0;WORKLOAD_TITLE\x07" not in output
     assert terminal.command("show-options", "-gv", "set-titles-string") == "GLOBAL_TITLE"
 
@@ -281,16 +286,16 @@ def test_session_titles_reach_the_terminal_and_can_be_disabled(
             ]
             assert session.launch_nonce in request.cmd[-3]
             assert run_launch_request(request).rc == 0
-            receive(client, b"\x1b]0;" + session.name.encode() + b"\x07")
+            client.receive(b"\x1b]0;" + session.name.encode() + b"\x07")
         assert terminal.command("show-options", "-gv", "mouse") == "off"
         assert terminal.command("show-options", "-sv", "terminal-overrides").count("*:Tc") == 1
     terminal.command("kill-session", "-t", sibling)
 
     renamed = "uxon-renamed@claude"
     terminal.command("rename-session", "-t", _SESSION, renamed)
-    receive(client, b"\x1b]0;" + renamed.encode() + b"\x07")
+    client.receive(b"\x1b]0;" + renamed.encode() + b"\x07")
     terminal.command("rename-session", "-t", renamed, _SESSION)
-    receive(client, b"\x1b]0;" + _SESSION.encode() + b"\x07")
+    client.receive(b"\x1b]0;" + _SESSION.encode() + b"\x07")
     terminal.command("detach-client")
     assert client.finish()["rc"] == 0
 
@@ -307,7 +312,7 @@ def test_session_titles_reach_the_terminal_and_can_be_disabled(
         "-c",
         "printf TITLE_DISABLED_READY; sleep 600",
     )
-    output = receive(client, b"TITLE_DISABLED_READY")
+    output = client.receive(b"TITLE_DISABLED_READY")
     assert b"\x1b]0;" not in output
     assert terminal.command("show-options", "-t", _SESSION, "-v", "set-titles") == "off"
     terminal.command("detach-client")
@@ -335,7 +340,7 @@ target = sessions_probe.collect_sessions([user], cfg)[0]
 request = tmux._build_tmux_attach_request(target, cfg, user)
 probes.probe_host = lambda *_args: SimpleNamespace(
     tmux=SimpleNamespace(path='/usr/bin/tmux'),
-    agents={{'claude': SimpleNamespace(path='/usr/bin/claude')}},
+    agents={{'claude': SimpleNamespace(path='/usr/bin/claude', availability=None)}},
 )
 rounds = 0
 def menu_agents(index):
@@ -659,3 +664,48 @@ def test_acknowledgement_closes_fresh_failed_sessions_and_records(
             result = client.finish()
             assert (result["rc"], result["warning"]) == (0, "")
             assert terminal.snapshot().sessions == () and not record.exists()
+
+
+@pytest.mark.parametrize("exists, status", [(False, "127"), (True, "126")])
+def test_failed_screen_page_up_exposes_error_hidden_by_resize(terminal: _Terminal, exists, status):
+    pane = terminal.value(_SESSION, "#{pane_id}")
+    executable = terminal.directory / "broken-agent"
+    if exists:
+        executable.write_text("#!/bin/sh\nexit 0\n")  # Present, but not executable.
+    nonce = "x" * 32
+    terminal.command(
+        "respawn-pane",
+        "-k",
+        "-t",
+        pane,
+        sys.executable,
+        "-m",
+        "uxon.infra.launch_bootstrap",
+        "--socket",
+        terminal.cfg.tmux_socket_template,
+        "--session",
+        _SESSION,
+        "--nonce",
+        nonce,
+        "--",
+        str(executable),
+    )
+    terminal.command("wait-for", "-S", launch_records.handshake_channel(nonce, "release"))
+    _wait(lambda: terminal.value(pane, "#{pane_dead}") == "1")
+    assert terminal.value(pane, "#{pane_dead_status}") == status
+    client = terminal.attach()
+    terminal.command("resize-window", "-t", _SESSION, "-x", "80", "-y", "12")
+    _wait(lambda: "PgUp: output" in terminal.value(pane, "#{E:pane-border-format}"))
+    history = terminal.command("capture-pane", "-p", "-S", "-", "-t", pane)
+    assert "cannot execute" in history and "broken-agent" in history and "Traceback" not in history
+    client.receive(b"PgUp: output")
+    client.send(b"\x1b[5~")
+    _wait(lambda: terminal.value(pane, "#{pane_in_mode}") == "1")
+    # Shrinking 24 rows to 12 can leave more than one page of blank history.
+    # Further PgUp keys follow native copy-mode bindings.
+    client.send(b"\x1b[5~")
+    client.receive(b"cannot execute")
+    terminal.command("send-keys", "-t", pane, "-X", "cancel")
+    client.send(b"q")
+    assert client.finish()["warning"] == ""
+    assert terminal.snapshot().sessions == () and not terminal.record.exists()

@@ -360,7 +360,9 @@ class WorkerCoordinator:
                 continue
             status = report.agents.get(profile.agent)
             if status is not None and status.path is not None:
-                availability[pid] = uxon_agents.AgentAvailability(status="ok", path=status.path)
+                availability[pid] = status.availability or uxon_agents.AgentAvailability(
+                    status="ok", path=status.path
+                )
             elif not self._cfg.launch_auto_mode:
                 spec = self._cfg.agents.get(profile.agent)
                 binary = spec.binary if spec is not None else profile.agent

@@ -54,7 +54,7 @@ def should_show_agents_unavailable(
         return False
 
     return all(
-        getattr(availability[aid], "status", None) in ("missing", "timeout")
+        getattr(availability[aid], "status", None) in ("missing", "error")
         for aid in enabled_profiles
     )
 
@@ -64,7 +64,7 @@ def compute_all_missing(
     enabled_profiles: tuple[str, ...],
     availability: Mapping[str, Any],
 ) -> bool:
-    """Return True when every enabled profile has a resolved missing/timeout status.
+    """Return True when every enabled profile has a resolved missing/error status.
 
     Distinct from :func:`should_show_agents_unavailable` because the
     transition-based push gate (``should_push_agents_unavailable``)
@@ -80,7 +80,7 @@ def compute_all_missing(
     if not resolved:
         return False
     return all(
-        getattr(availability[aid], "status", None) in ("missing", "timeout")
+        getattr(availability[aid], "status", None) in ("missing", "error")
         for aid in enabled_profiles
     )
 
@@ -172,12 +172,12 @@ def visible_agent_ids(
             aid
             for aid in enabled_profiles
             if availability.get(aid) is None
-            or getattr(availability.get(aid), "status", "pending") in ("pending", "ok")
+            or getattr(availability.get(aid), "status", "pending") in ("pending", "ok", "timeout")
         )
     return tuple(
         aid
         for aid in catalog_ids
-        if aid in availability and getattr(availability[aid], "status", None) == "ok"
+        if aid in availability and getattr(availability[aid], "status", None) in ("ok", "timeout")
     )
 
 
@@ -268,6 +268,8 @@ def agent_list_label(index: int, agent_id: str, availability_obj: Any | None) ->
     label = f"{index} {agent_id}"
     if availability_obj is not None and getattr(availability_obj, "status", None) == "pending":
         label += "  (checking…)"
+    elif availability_obj is not None and getattr(availability_obj, "status", None) == "timeout":
+        label += "  (version check timed out)"
     return label
 
 

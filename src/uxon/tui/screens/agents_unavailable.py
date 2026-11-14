@@ -48,6 +48,7 @@ class AgentsUnavailableScreen(CardModal[None]):
         *,
         agents: dict[str, Any] | None = None,
         launch_profiles: dict[str, Any] | None = None,
+        availability: dict[str, Any] | None = None,
         error: str = "",
     ) -> None:
         super().__init__()
@@ -55,6 +56,7 @@ class AgentsUnavailableScreen(CardModal[None]):
         self._agents: dict[str, Any] = dict(agents or {})
         self._launch_profiles: dict[str, Any] = dict(launch_profiles or {})
         self._error = error
+        self._availability = dict(availability or {})
         # Exposed for tests: plain-text body so assertions don't depend
         # on textual's Rich renderable internals.
         self.body_text: str = self._render_body()
@@ -66,6 +68,10 @@ class AgentsUnavailableScreen(CardModal[None]):
             profile = self._launch_profiles.get(aid)
             agent_id = getattr(profile, "agent", aid)
             spec = self._agents.get(agent_id)
+            detail = getattr(self._availability.get(aid), "error", None)
+            if detail:
+                lines.append(f"  • {aid}: {detail}")
+                continue
             if spec is None:
                 lines.append(f"  • {aid}: unknown agent id")
             elif profile is not None:
@@ -87,10 +93,10 @@ class AgentsUnavailableScreen(CardModal[None]):
             )
             footer = "After the probe succeeds the agent list will populate."
         elif self._enabled_profiles:
-            title = "No agents installed"
+            title = "No agents available"
             intro = (
-                "uxon could not find any of the configured agents on PATH.\n"
-                "Install at least one, dismiss this message, then press 'r'."
+                "uxon could not run any of the configured agents.\n"
+                "Fix the reported failure, dismiss this message, then press 'r'."
             )
             footer = "Configured in config.toml → [launch] enabled_profiles"
         else:

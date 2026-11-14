@@ -642,6 +642,7 @@ class UxonApp(App):
                     modal_arg,
                     agents=self.cfg.agents,
                     launch_profiles=self.cfg.launch_profiles,
+                    availability=dict(availability),
                     error=self._host_probe_error,
                 )
             )

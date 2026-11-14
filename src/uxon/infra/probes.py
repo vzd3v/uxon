@@ -10,10 +10,12 @@ import platform
 import shlex
 import subprocess
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from uxon.domain.host_report import BinaryStatus, HostReport
+from uxon.domain.host_report import AgentAvailability, BinaryStatus, HostReport
+from uxon.infra.agents import probe_agent
 from uxon.infra.execution import ExecutionConfigured, binary_probe_prefix
 from uxon.infra.run import run_query
 
@@ -128,13 +130,40 @@ def probe_host(
         install_hint=_INSTALL_HINTS["tmux"],
     )
 
+    keys = tuple(
+        dict.fromkeys(
+            (spec.binary, spec.version_args)
+            for spec in catalog.values()
+            if paths.get(spec.binary) is not None and spec.version_args
+        )
+    )
+
+    def check(key: tuple[str, tuple[str, ...]]) -> AgentAvailability:
+        return probe_agent(
+            cfg, key[0], launch_user, version_args=key[1], timeout_seconds=PROBE_TIMEOUT_SEC
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        checked = dict(zip(keys, pool.map(check, keys), strict=True))
+
     agents: dict[str, BinaryStatus] = {}
     for aid in all_agent_ids:
         spec = catalog[aid]
+        path = paths.get(spec.binary)
+        if path is None:
+            availability = AgentAvailability(status="missing", error="not on PATH")
+        elif not spec.version_args:
+            availability = AgentAvailability(status="ok", path=path)
+        else:
+            availability = replace(
+                checked[(spec.binary, spec.version_args)],
+                path=path,
+            )
         agents[aid] = BinaryStatus(
             name=aid,
-            path=paths.get(spec.binary),
+            path=path,
             install_hint=spec.install_hint,
+            availability=availability,
         )
 
     return HostReport(

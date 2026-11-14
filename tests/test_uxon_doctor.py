@@ -207,22 +207,43 @@ def test_default_json_mixed_statuses_are_parallel_bounded_ordered_and_canonical(
             "status": "ok",
             "version": "claude 1.2.3",
             "error": None,
+            "returncode": None,
         },
-        "codex": {"path": "/fake/codex", "status": "timeout", "version": None, "error": None},
-        "cursor": {"path": None, "status": "missing", "version": None, "error": "not on PATH"},
-        "gone": {
-            "path": "/fake/gone",
+        "codex": {
+            "path": "/fake/codex",
+            "status": "timeout",
+            "version": None,
+            "error": None,
+            "returncode": None,
+        },
+        "cursor": {
+            "path": None,
             "status": "missing",
             "version": None,
+            "error": "not on PATH",
+            "returncode": None,
+        },
+        "gone": {
+            "path": "/fake/gone",
+            "status": "error",
+            "version": None,
             "error": "vanished-sentinel",
+            "returncode": None,
         },
         "failed": {
             "path": "/fake/failed",
-            "status": "missing",
+            "status": "error",
             "version": None,
             "error": "failure-sentinel",
+            "returncode": 9,
         },
-        "noversion": {"path": "/fake/noversion", "status": "ok", "version": None, "error": None},
+        "noversion": {
+            "path": "/fake/noversion",
+            "status": "ok",
+            "version": None,
+            "error": None,
+            "returncode": None,
+        },
     }
     assert data["config_paths"] == [str(operator)]
     assert data["cwd"] == str(cwd)
@@ -320,7 +341,7 @@ def test_explicit_remote_collects_actual_success_and_failed_peer_once(doctor_pro
     assert all(isinstance(row["latency_ms"], int) and row["latency_ms"] >= 0 for row in rows)
 
 
-@pytest.mark.parametrize("outcome", ["ok", "missing", "timeout", "no_version"])
+@pytest.mark.parametrize("outcome", ["ok", "missing", "error", "timeout", "no_version"])
 def test_doctor_diagnoses_each_direct_profile_in_its_execution_account(
     tmp_path, monkeypatch, outcome
 ):
@@ -359,11 +380,15 @@ def test_doctor_diagnoses_each_direct_profile_in_its_execution_account(
             assert user == "bob", "An override-only tool must not execute as the default account"
             if outcome == "timeout":
                 raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            if outcome == "error":
+                return subprocess.CompletedProcess(command, 127, "", "missing target")
         return subprocess.CompletedProcess(command, 0, f"{command[0]} for {user}\n", "")
 
     installed = ("tmux", "claude", "codex", "cursor-agent")
     external = TargetCommands(
-        respond, installed=installed + (() if outcome == "missing" else ("custom-bin",))
+        respond,
+        installed=installed + (() if outcome == "missing" else ("custom-bin",)),
+        version_respond=respond,
     )
     with external.installed_boundary(), redirect_stdout(io.StringIO()) as output:
         assert doctor.do_doctor(cfg, "operator", "alice", str(tmp_path), json_output=True) == 0
@@ -384,7 +409,7 @@ def test_doctor_diagnoses_each_direct_profile_in_its_execution_account(
     assert custom["host_agent_status"] == ("ok" if outcome == "no_version" else outcome)
     assert custom["host_agent_version"] == ("custom-bin for bob" if outcome == "ok" else None)
     assert any("custom" in issue and "bob" in issue for issue in data["issues"]) == (
-        outcome == "missing"
+        outcome in {"missing", "error"}
     )
     custom_calls = [
         (user, command)

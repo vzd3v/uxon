@@ -38,7 +38,7 @@ class AgentSpec:
     binary: str  # executable name on PATH or an absolute executable path
     permission_modes: tuple[PermissionMode, ...]
     install_hint: str = ""  # shown by doctor / agent-select / TUI
-    version_args: tuple[str, ...] = ("--version",)  # doctor probe; () → no version line
+    version_args: tuple[str, ...] = ("--version",)  # execution probe; () → presence only
     default_args: tuple[str, ...] = ()  # flags prepended to every invocation of this agent
 
 

@@ -116,9 +116,17 @@ new id adds it to the catalog (the id must match
 | Key | Type | Default | Purpose |
 |---|---|---|---|
 | `agents.<id>.binary` | string | the agent `<id>` | Executable name resolved on the execution backend's inherited `PATH`, or an absolute executable path. uxon does not source a login shell. |
-| `agents.<id>.version_args` | array | `["--version"]` | Argv passed by `uxon doctor` to read the version. `[]` ⇒ doctor shows no version line for this agent. |
+| `agents.<id>.version_args` | array | `["--version"]` | Non-interactive executable check used by launch, TUI and doctor. `[]` opts out and checks presence only. |
 | `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of this agent. |
 | `agents.<id>.install_hint` | string | `""` | Message shown by `doctor` / the agent picker when the binary is missing. |
+
+The executable check runs through the profile's launch account and execution
+backend. A failed check prevents a new direct launch and reports the concrete
+error, including failures behind an executable wrapper. A two-second timeout
+is inconclusive: the profile remains selectable and the TUI labels the timeout.
+Set `version_args = []` for tools without a reliable non-interactive version
+command. Existing sessions remain attachable and removable regardless of agent
+availability; these operations do not execute agent checks.
 
 Permission modes are an array-of-tables — **order is significant,
 the first entry is the default mode** (used when `--mode` is

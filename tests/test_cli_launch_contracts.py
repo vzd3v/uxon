@@ -15,7 +15,7 @@ from uxon.cli.parsing import parse_args
 from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
 from uxon.domain.launch_profiles import RuntimeContext
 from uxon.domain.runtime import WorkloadRuntimeSpec
-from uxon.infra import execution, launch_records, probes, tmux
+from uxon.infra import agents, execution, launch_records, probes, tmux
 from uxon.infra.tmux_diagnostics import ACKNOWLEDGED_FORMAT
 
 _REAL_REQUIRE_PROBE = execution.require_probe
@@ -104,6 +104,11 @@ def launch_boundary(tmp_path, monkeypatch):
     monkeypatch.setattr(execution, "run_query", identity)
     monkeypatch.setattr(probes, "probe_host", _REAL_PROBE_HOST)
     monkeypatch.setattr(probes, "run_query", binaries)
+    monkeypatch.setattr(
+        agents,
+        "run_query",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "test-version\n", ""),
+    )
     monkeypatch.setattr(tmux, "run_query", server)
     yield cfg, user, root, calls
 
@@ -558,11 +563,7 @@ def test_public_main_missing_tmux_agent_and_list_without_agents(
     state = {"tmux": False, "claude": True}
 
     def discovery(argv, *, timeout):
-        names = (
-            ["tmux", "claude"]
-            if argv[2].startswith("for c in tmux claude;")
-            else ["tmux", "claude", "codex", "cursor-agent"]
-        )
+        names = ["tmux", "claude"] if argv[2].startswith("for c in tmux claude;") else ["tmux"]
         script = (
             "for c in "
             + " ".join(names)
@@ -593,7 +594,7 @@ def test_public_main_missing_tmux_agent_and_list_without_agents(
     assert calls == [
         ["tmux", "claude"],
         ["tmux", "claude"],
-        ["tmux", "claude", "codex", "cursor-agent"],
+        ["tmux"],
     ]
 
 

@@ -6,10 +6,12 @@ renames live in `git log`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [4.0.1] — 2026-11-14
 
 ### Fixed
-- `uxon doctor` checks direct launch profiles under their configured accounts and execution backends, reports missing profile binaries, and avoids version commands under unrelated accounts.
+- New launches detect failed executable wrappers through the selected profile's account and execution backend. TUI and doctor share the same bounded checks; doctor reports enabled-profile failures with their concrete cause. Version-check timeouts remain inconclusive, and `version_args = []` retains a presence-only opt-out.
+- Failed terminals advertise PgUp to inspect retained output, including errors pushed into scrollback by a terminal resize. Direct exec failures print the executable and OS cause with exit status 126 or 127.
+- Listing, attaching and removing sessions no longer probe unrelated agent executables. Doctor checks profiles pinned to other accounts under those actual accounts.
 
 ## [4.0.0] — 2026-10-30
 
@@ -304,7 +306,7 @@ First release on PyPI as
 `uv tool install uxon`, `pipx install uxon`, or
 `pip install --user uxon`.
 
-[Unreleased]: https://github.com/vzd3v/uxon/compare/v4.0.0...HEAD
+[4.0.1]: https://github.com/vzd3v/uxon/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/vzd3v/uxon/compare/v3.6.0...v4.0.0
 [3.6.0]: https://github.com/vzd3v/uxon/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/vzd3v/uxon/compare/v3.4.0...v3.5.0
